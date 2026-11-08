@@ -119,12 +119,17 @@ together so work and context flow between them.
   workspace or stack in no area as a neutral block of its own; workspaces in
   areas get no mark of their own. The view is a rectangle you can drag.
 - **Ghost cards.** Closing a workspace leaves a dashed outline where it was
-  (design option A): a ghost is a closed session this Mac can still resume.
+  (design option A): a ghost is a closed session this Mac can still resume
+  whose place the landscape kept, so in practice one closed on the landscape.
+  One with no place (left in the grid's Previous, or closed elsewhere) is in
+  the **Closed sessions** list instead (below). A ghost whose group has no
+  area is drawn loose where it was; it never makes an area.
   - It shows the title, with **↺ Reopen** and Forget right under it, then the
     last line it wrote, and its status with the ticket and branch. Zoomed out
     it keeps its type at screen size inside its place, and a ghost too small
     for all of that gives up the status line first, then the last line, then
-    its buttons, keeping its title; ⋯ and right-click offer every action.
+    its buttons, keeping its title; ⋯ and right-click offer every action
+    (zoomed out to cards, right-click only, so the title keeps the room).
   - Its wires stay in place.
   - **Reopen** resumes its conversation in the same spot (the session is
     relaunched under its own id).
@@ -134,8 +139,15 @@ together so work and context flow between them.
   - A ghost whose worktree has been removed offers **Start fresh**: New
     session for its agent, area and repo, the new workspace taking the ghost's
     place exactly. One a teammate continues shows **Take it back**.
-  - A closed tab of a stack still on screen is a faded tab on that stack.
+  - A closed tab of a stack still on screen is a faded tab on that stack. A
+    stack's ghost of several closed tabs reopens and forgets them all.
   - Ghosts are pushed aside like anything else but push nothing.
+- **Closed sessions** list, under the area tree above the Connected line (and
+  in ⌘K): the closed sessions with no ghost, every closed session while the
+  landscape is still being read in. Each row has Reopen (a new workspace in
+  its group's area, or loose when that area is gone) and Forget, and the list
+  has Reopen all; a copy a teammate continues offers Take it back, as its
+  ghost would.
 
 ## Finding what needs you
 
@@ -172,9 +184,11 @@ together so work and context flow between them.
 
 - **Tidy** (T, the area's hover toolbar or its ⋯) lays an area out left to
   right along its wires; loose workspaces go below. Undo (the note's, or ⌘Z
-  while it shows) puts them back. Until phase 3 brings wires it packs the
-  area in rows in the order its workspaces and ghosts were made, each tool
-  window after its workspace, and the area fits the result.
+  while it shows, wherever the keyboard is but a terminal or a text field)
+  puts them back, while nothing else has changed the landscape since. Until
+  phase 3 brings wires it packs the area in rows in the order its workspaces
+  and ghosts were made, each tool window after its workspace, and the area
+  fits the result.
 - **Stacks** (⌘G on a selection) pile workspaces into one card with tabs. A
   stack moves, wires and focuses as one. A wire to a stacked workspace attaches
   to the stack and names its tab.
@@ -182,8 +196,9 @@ together so work and context flow between them.
     the first of them was; a stack among them takes the others in. A
     teammate's workspace stays out.
   - A tab click brings that workspace to the front; dragging a tab out drops
-    it where it's let go, as a workspace of its own. A stack left with one tab
-    stops being one.
+    it where it's let go, as a workspace of its own (once it's pulled off the
+    header, or a good way along it: a click that slips stays a click), with
+    Undo. A stack left with one tab and no closed tabs stops being one.
 - **Collapse** shrinks an area to a pill showing its name, its number of
   workspaces and its waiting count. **Lock** freezes an area's layout: its
   workspaces keep their places. The area itself still moves out of the way,
@@ -407,8 +422,9 @@ for. **Create** starts it, and **Dismiss** tells the agent no.
     (design P's menu: presence, Make or remove admin, Hand over ownership,
     Remove, claiming ownership, join requests, backup state, Invite, Follow a
     member, Leave room);
-  - **⋯**: Rename, Collapse, Lock, Tidy, Reopen all, Clear ghosts, the agent-message
-    mode, the message log, and Share as a room (Invite for a room).
+  - **⋯**: Rename, Collapse, Lock, Tidy, Reopen all and Clear ghosts (under
+    Ghosts), the agent-message mode, the message log, and Share as a room
+    (Invite for a room).
 - **No nested areas.** Today's sub-groups (`top/sub`, the tabbed workspace
   cell) become stacks. A group within a group is a second area beside the
   first.
@@ -513,7 +529,7 @@ selected, at every zoom:
 | Join requests | The Needs you tray and Members ▾; the admin prompt unchanged |
 | Backups: freshness, failures, consent | Freshness on the workspace header, failures on the area header, consent unchanged |
 | Take-over, Take it back, Send, Review | The workspace's header and ⋯ menu; a ghost continued on a teammate's Mac shows Take it back |
-| Previous: relaunch, forget, restore all | Ghost cards (Reopen, Forget), Reopen all and Clear ghosts in the area ⋯, the Loose row's menu and ⌘K; Previous leaves the area tree's foot |
+| Previous: relaunch, forget, restore all | Ghost cards (Reopen, Forget), Reopen all and Clear ghosts in the area ⋯, the Loose row's menu and ⌘K; the rest of Previous is the Closed sessions list under the area tree (Reopen, Forget, Reopen all) |
 | Group bar: message mode, message log | The area ⋯ |
 | Council: Open the implementing session | Focuses that workspace on the landscape |
 

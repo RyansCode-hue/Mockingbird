@@ -69,7 +69,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type LabsFlags, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type LabsFlags, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -117,13 +117,14 @@ import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } fr
 // the landscape (Settings → Labs)
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type MovesFailed, type NoteAction } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
-import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, closedIn, forgetPatch, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, planTidy, presetFor, readProblem, tidyRefusal, renameSettled, resolveLayout, sameScope, selectionFor, tileSize, undoOf, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, planTidy, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, withoutGone, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
-import { actionOf, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, paneRow, takenOverWhy, workspaceActions, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, paneRow, takenOverWhy, workspaceActions, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
 import { AreaHeader, GroupBar, stageChip, type GroupBarProps } from "./GroupBar";
 import { AreaTree, treeCounts, treeOf, type TreeArea } from "./AreaTree";
+import { ClosedSessions } from "./ClosedSessions";
 import { MembersMenu } from "./team/MembersMenu";
 import { settled } from "./settled";
 
@@ -188,8 +189,8 @@ function readLegacyLayout(): LegacyLayout {
 function App() {
   const [ownSessions, setSessions] = useState<SessionInfo[]>([]);
   const [resumable, setResumable] = useState<SessionInfo[]>([]);
-  /** The closed (resumable) sessions whose folders are gone: main's missingFolders, read with the lists. */
-  const [goneFolders, setGoneFolders] = useState<ReadonlySet<string>>(() => new Set());
+  /** The closed (resumable) sessions whose folders are gone, by id, and whether each still reopens: main's missingFolders, read with the lists. */
+  const [goneFolders, setGoneFolders] = useState<ReadonlyMap<string, MissingFolder>>(() => new Map());
   // which session lists have been read at least once (the landscape reads the grid's layout in only once they have)
   const [listsLoaded, setListsLoaded] = useState({ live: false, resumable: false });
   const listLoaded = (which: "live" | "resumable") => setListsLoaded((p) => (p[which] ? p : { ...p, [which]: true }));
@@ -309,7 +310,7 @@ function App() {
   const [selArea, setSelArea] = useState<string | null>(null);
   // where the workspace a right-click's New workspace makes goes (resolveLayout); `took` names the session placed
   // there, and it's let go once that session's place is saved, or `until` passes without one
-  const [placeHint, setPlaceHint] = useState<(PlaceHint & { created?: boolean; took?: string; until?: number }) | null>(null);
+  const [placeHint, setPlaceHint] = useState<(PlaceHint & { created?: boolean; until?: number }) | null>(null);
   // several workspaces' Close…: asked once (closeMany), then each closed as its own Close would, one dialog at a time
   const [closeMany, setCloseMany] = useState<SessionInfo[] | null>(null);
   const [closeQueue, setCloseQueue] = useState<string[]>([]);
@@ -613,15 +614,7 @@ function App() {
   };
 
   /** Auto-name for a workspace created by dropping one session onto another. */
-  const nextSubName = (top: string): string => {
-    const subs = new Set(
-      workSessions.filter((s) => topOf(s) === top).map((s) => subOf(s)).filter(Boolean)
-    );
-    if (!subs.has("tabs")) return "tabs";
-    let i = 2;
-    while (subs.has(`tabs-${i}`)) i++;
-    return `tabs-${i}`;
-  };
+  const nextSubName = (top: string): string => freeSubName(workSessions.filter((s) => topOf(s) === top).map(subOf));
 
   /** Re-read the session lists; the live list comes back (the one on screen when the read fails). */
   const refresh = async (): Promise<SessionInfo[]> => {
@@ -638,10 +631,10 @@ function App() {
       setResumable(previous.filter((s) => !s.debrief));
       listLoaded("resumable");
     }
-    // the closed sessions whose folders are gone: their ghosts offer to start fresh rather than reopen
-    const gone: string[] | { error: string } = await window.mb.missingFolders();
+    // the closed sessions whose folders are gone: those that can't run where they ran offer to start fresh instead
+    const gone: MissingFolder[] | { error: string } = await window.mb.missingFolders();
     if (isErr(gone)) readFailed("which closed sessions' folders are gone", gone);
-    else setGoneFolders((p) => (p.size === gone.length && gone.every((id) => p.has(id)) ? p : new Set(gone)));
+    else setGoneFolders((p) => (p.size === gone.length && gone.every((g) => JSON.stringify(p.get(g.id)) === JSON.stringify(g)) ? p : new Map(gone.map((g) => [g.id, g]))));
     return isErr(live) ? ownSessions : live;
   };
 
@@ -1004,27 +997,45 @@ function App() {
   // groups renamed here whose changes (the session list, the landscape's re-keying, teammates' sessions) haven't all
   // arrived: the layout keeps each under the key the landscape holds it under meanwhile
   const [lsRenames, setLsRenames] = useState<PendingRename[]>([]);
+  // the closed sessions this Mac can reopen, with their room tags as a running one has (a copy a teammate took over says
+  // so): the landscape's ghosts, and the Closed sessions list
+  const closedSessions = useMemo(() => mergeRoomSessions(resumable, roomLive.state && { ...roomLive.state, remote: [] }), [resumable, roomLive.state]);
   useEffect(() => {
     if (!lsRenames.length || !landscapeState) return;
-    const left = lsRenames.filter((r) => !renameSettled(r, landscapeState.landscape, workSessions));
+    const left = renamesLeft(lsRenames, landscapeState.landscape, workSessions, closedSessions);
     if (left.length !== lsRenames.length) setLsRenames(left);
-  }, [lsRenames, landscapeState, workSessions]);
-  // the closed sessions this Mac can reopen, with their room tags as a running one has (a copy a teammate took over says
-  // so): the landscape's ghosts
-  const closedSessions = useMemo(() => mergeRoomSessions(resumable, roomLive.state && { ...roomLive.state, remote: [] }), [resumable, roomLive.state]);
-  const landscapeLayout = useMemo(
-    () => (landscapeShown && landscapeState ? resolveLayout(landscapeState.landscape, workSessions, undefined, lsRenames, placeHint, closedSessions) : null),
-    [landscapeShown, landscapeState, workSessions, lsRenames, placeHint, closedSessions]
+  }, [lsRenames, landscapeState, workSessions, closedSessions]);
+  // every session there is, once each list has been read: a place kept for none of them takes no room (withoutGone)
+  const knownSessions = useMemo(
+    () => (listsLoaded.live && listsLoaded.resumable && roomLive.state !== null ? [...sessions, ...resumable] : null),
+    [listsLoaded.live, listsLoaded.resumable, roomLive.state, sessions, resumable]
   );
+  const lsPlaced = useMemo(() => (landscapeState ? withoutGone(landscapeState.landscape, knownSessions) : null), [landscapeState, knownSessions]);
+  const landscapeLayout = useMemo(
+    () => (landscapeShown && lsPlaced ? resolveLayout(lsPlaced, workSessions, undefined, lsRenames, placeHint, closedSessions) : null),
+    [landscapeShown, lsPlaced, workSessions, lsRenames, placeHint, closedSessions]
+  );
+  /** The Closed sessions list: the closed sessions with no ghost on the landscape; all of them until it's laid out. */
+  const closedList = useMemo(() => closedListOf(closedSessions, landscapeLayout), [closedSessions, landscapeLayout]);
+  /** The closed session a Start fresh is letting go of now, so the effect below starts that once. */
+  const lettingGo = useRef<string | null>(null);
   // a right-click's place: kept for the session placed there until its place is saved (let go sooner, the next layout
   // would place it as any new one, and save that over it), or until it's been made and none took it
   useEffect(() => {
     if (!placeHint) return;
     if (placeHint.took && landscapeState && Object.hasOwn(landscapeState.landscape.workspaces, placeHint.took)) {
-      // Start fresh: the new workspace has the ghost's place now, so the closed session it stands in for is let go
+      // Start fresh: the new workspace has the ghost's place now, so the closed session it stands in for is let go, its
+      // place first; the hint (which keeps its ghost from being drawn) stays until then
       const was = placeHint.replaces ? resumable.find((s) => s.id === placeHint.replaces) : undefined;
-      if (was) void forgetGhosts([was], `letting ${titleOf(was)} go for the fresh session in its place`);
-      return setPlaceHint(null);
+      if (!was) return setPlaceHint(null);
+      if (lettingGo.current === was.id) return;
+      lettingGo.current = was.id;
+      const hint = placeHint;
+      void forgetGhosts([was], `letting ${titleOf(was)} go for the fresh session in its place`, true).finally(() => {
+        lettingGo.current = null;
+        setPlaceHint((h) => (h === hint ? null : h));
+      });
+      return;
     }
     if (!placeHint.took && landscapeLayout?.hinted) return setPlaceHint({ ...placeHint, took: landscapeLayout.hinted });
     if (placeHint.until === undefined) return;
@@ -1532,12 +1543,24 @@ function App() {
   // ---- session close flow (design 1e) ----
   /** Close a session's pane and process; returns why it couldn't, leaving the pane as it was. */
   const forceClose = async (s: SessionInfo, forget: boolean): Promise<string | null> => {
-    const r = await window.mb.killSession(s.id, forget);
+    const r = forget ? await forgetSession(s) : await window.mb.killSession(s.id, false);
     if (isErr(r)) return r.error;
     disposeTerm(s.id);
     hide(s.id);
     refresh();
     return null;
+  };
+  /**
+   * Let session `s` go for good in main, and the places the landscape keeps for it (forgetPatch, read before it goes: its
+   * stack's tabs are in the layout until then). Every forget goes through here or forgetGhosts, so no place is left
+   * taking room nobody sees. Off the landscape there's no layout to read: a place left in its file is passed over (withoutGone).
+   */
+  const forgetSession = async (s: SessionInfo): Promise<unknown> => {
+    const l = lsNow.current?.landscape;
+    const layout = layoutNow.current;
+    const r = await window.mb.killSession(s.id, true);
+    if (!isErr(r) && l && layout) await lsChange(forgetPatch(l, layout, [s.id]), `letting ${titleOf(s)}'s place go`);
+    return r;
   };
   /** forceClose where no dialog is open to show the failure. */
   const closeNow = async (s: SessionInfo, forget: boolean) => {
@@ -1807,6 +1830,14 @@ function App() {
   lsNow.current = landscapeState;
   const layoutNow = useRef(landscapeLayout);
   layoutNow.current = landscapeLayout;
+  const placedNow = useRef(lsPlaced);
+  placedNow.current = lsPlaced;
+  /** Closed sessions being reopened or forgotten now: their Reopen and Forget are off until that's done (whileClosedBusy). */
+  const [closedBusy, setClosedBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const closedBusyNow = useRef(new Set<string>());
+  /** A Reopen all under way: another waits for it to finish. */
+  const [reopeningAll, setReopeningAll] = useState(false);
+  const reopeningAllNow = useRef(false);
   const selectedAny = sessions.find((s) => s.id === focused) ?? null;
   /** The area selected as a whole, else the selected session's; null when it's loose or nothing is selected. */
   const selectedArea = selArea ?? (selectedAny && areaKeyOf(selectedAny) !== LOOSE_GROUP ? areaKeyOf(selectedAny) : null);
@@ -2171,67 +2202,135 @@ function App() {
   /** A landscape workspace's actions: its front session's, with its size. */
   const actionsFor = (t: Tile): ModelAction[] => workspaceActions(t.front, wsEnv(t.front, t));
 
-  // ---- ghosts (S6b): closed workspaces this Mac can reopen, drawn where they were ----
+  // ---- closed sessions (S6b): ghosts where they were on the landscape, and the Closed sessions list ----
+  /** Say what happened to closed sessions: over the landscape when it's shown, else in a dialog (it's still being read in). */
+  const closedSay = (text: string) => (landscapeShown ? lsSay(text) : window.alert(text));
   /**
-   * Reopen closed session `s` where its ghost is: Previous's relaunch, asking first when resuming it would cost a lot.
-   * Main refuses one a teammate continues (relaunchGuard) for a window that hasn't heard of the take-over yet.
+   * Run `work` on closed sessions `ids` with their Reopen and Forget off meanwhile (closedBusy); refused, saying so,
+   * while any of them is being reopened or forgotten already, so a second press can't start it again.
    */
-  const reopenGhost = async (s: SessionInfo) => {
-    if (!(await costGate.resume(s))) return;
-    const info: SessionInfo | null | { error: string } = await window.mb.relaunchSession(s.id);
-    if (isErr(info)) return lsSay(`Couldn't reopen ${titleOf(s)}: ${info.error}`);
-    if (!info) {
-      console.error(`[mockingbird] reopening ${s.id}: main has no record of it to relaunch`);
-      await refresh();
-      return lsSay(`Couldn't reopen ${titleOf(s)}: its saved record is gone`);
+  const whileClosedBusy = async (ids: readonly string[], work: () => Promise<void>): Promise<void> => {
+    if (ids.some((id) => closedBusyNow.current.has(id))) return closedSay(CLOSED_BUSY_WHY);
+    for (const id of ids) closedBusyNow.current.add(id);
+    setClosedBusy(new Set(closedBusyNow.current));
+    try {
+      await work();
+    } finally {
+      for (const id of ids) closedBusyNow.current.delete(id);
+      setClosedBusy(new Set(closedBusyNow.current));
     }
-    await refresh();
-    setFocused(info.id);
-    revealWorkspace(info.id);
   };
+  /** Whether closed session `s` can be reopened here now: not a copy a teammate continues, its folder runnable, and not under way. */
+  const reopenableHere = (s: SessionInfo, busy: ReadonlySet<string> = closedBusy) => !takenOverWhy(s, "") && goneFolders.get(s.id)?.reopens !== false && !busy.has(s.id);
   /**
-   * Reopen every one of `list` that can be (Reopen all; Previous's restore all): one at a time, skipping copies a
-   * teammate continues and ones whose folders are gone, saying what was skipped and what failed.
+   * Before relaunching closed session `s` from the Closed sessions list (it has no ghost): it's placed as a new workspace
+   * in its group's area while the landscape has it, else loose, its group let go, so reopening never makes an area. A
+   * room's session keeps its group, which is its room. Returns why it couldn't be made loose.
    */
-  const reopenGhosts = async (list: readonly SessionInfo[], where: string) => {
-    const skipped = list.filter((s) => takenOverWhy(s, "") || goneFolders.has(s.id));
-    const failures: string[] = [];
-    let reopened = 0;
-    for (const s of list.filter((x) => !skipped.includes(x))) {
-      const info: SessionInfo | null | { error: string } = await window.mb.relaunchSession(s.id);
-      if (isErr(info)) failures.push(`${titleOf(s)}: ${info.error}`);
-      else if (!info) failures.push(`${titleOf(s)}: its saved record is gone`);
-      else reopened++;
-    }
-    await refresh();
-    if (failures.length) console.error(`[mockingbird] reopening ${where}'s closed workspaces:`, failures);
-    const parts = [`Reopened ${reopened} of ${list.length} in ${where}`, skipped.length ? `${skipped.length} left closed (taken over, or their worktrees removed)` : "", failures.length ? `couldn't reopen ${failures.join("; ")}` : ""];
-    lsSay(parts.filter(Boolean).join(" · "));
-  };
-  /** Forget closed sessions `list` (a ghost's Forget, Clear ghosts): main lets each go, and the landscape the places kept for them. */
-  const forgetGhosts = async (list: readonly SessionInfo[], what: string) => {
-    const gone: string[] = [];
-    const failures: string[] = [];
-    for (const s of list) {
-      const r = await window.mb.killSession(s.id, true);
-      if (isErr(r)) failures.push(`${titleOf(s)}: ${r.error}`);
-      else gone.push(s.id);
-    }
-    await refresh();
+  const placeReopened = async (s: SessionInfo): Promise<string | null> => {
     const l = lsNow.current?.landscape;
     const layout = layoutNow.current;
-    if (l && layout) await lsChange(forgetPatch(l, layout, gone), what);
-    if (failures.length) {
-      console.error(`[mockingbird] ${what}:`, failures);
-      lsSay(`${what}: couldn't forget ${failures.join("; ")}`);
+    const area = areaKeyOf(s);
+    if (!landscapeOn || !l || !layout || area === LOOSE_GROUP || s.room) return null;
+    if (closedIn(layout, null).some((c) => c.id === s.id)) return null;
+    if (own(l.areas, area) || lsRenames.some((r) => r.from === area && own(l.areas, r.to))) return null;
+    const r = await window.mb.setGroup(s.id, null);
+    return isErr(r) ? `its area is gone, and it couldn't be made loose: ${r.error}` : null;
+  };
+  /**
+   * Reopen closed session `s`: where its ghost is, or (from the list) in its area or loose (placeReopened); asking first
+   * when resuming it would cost a lot. Main refuses one a teammate continues (relaunchGuard) for a window that hasn't
+   * heard of the take-over yet, and one being reopened already.
+   */
+  const reopenGhost = (s: SessionInfo) =>
+    whileClosedBusy([s.id], async () => {
+      if (!(await costGate.resume(s))) return;
+      const moved = await placeReopened(s);
+      if (moved) return closedSay(`Couldn't reopen ${titleOf(s)}: ${moved}`);
+      const info: SessionInfo | null | { error: string } = await window.mb.relaunchSession(s.id);
+      await refresh();
+      if (isErr(info)) return closedSay(`Couldn't reopen ${titleOf(s)}: ${info.error}`);
+      if (!info) {
+        console.error(`[mockingbird] reopening ${s.id}: main has no record of it to relaunch`);
+        return closedSay(`Couldn't reopen ${titleOf(s)}: its saved record is gone`);
+      }
+      setFocused(info.id);
+      revealWorkspace(info.id);
+    });
+  /**
+   * Reopen every one of `list` that can be (Reopen all): one at a time, skipping copies a teammate continues, ones
+   * whose folders can't be run and ones under way, saying what was skipped and what failed. One at a time: a second
+   * waits for it (reopeningAll).
+   */
+  const reopenGhosts = async (list: readonly SessionInfo[], where: string) => {
+    if (reopeningAllNow.current) return closedSay("Reopening them already: wait for that to finish");
+    const can = list.filter((s) => reopenableHere(s, closedBusyNow.current));
+    const skipped = list.length - can.length;
+    reopeningAllNow.current = true;
+    setReopeningAll(true);
+    try {
+      await whileClosedBusy(
+        can.map((s) => s.id),
+        async () => {
+          const failures: string[] = [];
+          let reopened = 0;
+          for (const s of can) {
+            const moved = await placeReopened(s);
+            const info: SessionInfo | null | { error: string } = moved ? { error: moved } : await window.mb.relaunchSession(s.id);
+            if (isErr(info)) failures.push(`${titleOf(s)}: ${info.error}`);
+            else if (!info) failures.push(`${titleOf(s)}: its saved record is gone`);
+            else reopened++;
+          }
+          await refresh();
+          if (failures.length) console.error(`[mockingbird] reopening ${where}'s closed sessions:`, failures);
+          const parts = [`Reopened ${reopened} of ${list.length} in ${where}`, skipped ? `${skipped} left closed (taken over, their folders gone, or under way)` : "", failures.length ? `couldn't reopen ${failures.join("; ")}` : ""];
+          closedSay(parts.filter(Boolean).join(" · "));
+        }
+      );
+    } finally {
+      reopeningAllNow.current = false;
+      setReopeningAll(false);
     }
   };
   /**
-   * Start afresh where closed session `s` was (its folder is gone): New session's dialog with its agent, area, repo
-   * and ticket, the new workspace placed at its ghost's corner, which it takes over once it's made (PlaceHint.replaces).
+   * Forget closed sessions `list` (Forget, Clear ghosts, the Closed sessions list's): main lets each go, and the landscape
+   * the places kept for them (forgetPatch, read before they go: a stack's tabs are in the layout until then). With
+   * `placesFirst` (Start fresh's ghost) the places go first, so the ghost is never drawn over the session in its place;
+   * if forgetting it then fails, it's in the Closed sessions list, and that's said.
    */
-  const startFresh = (s: SessionInfo) => {
-    const g = layoutNow.current?.ghosts.find((x) => x.members.some((m) => m.id === s.id));
+  const forgetGhosts = (list: readonly SessionInfo[], what: string, placesFirst = false) =>
+    whileClosedBusy(
+      list.map((s) => s.id),
+      async () => {
+        const l = lsNow.current?.landscape;
+        const layout = layoutNow.current;
+        if (placesFirst && l && layout) await lsChange(forgetPatch(l, layout, list.map((s) => s.id)), what);
+        const gone: string[] = [];
+        const failures: string[] = [];
+        for (const s of list) {
+          const r = await window.mb.killSession(s.id, true);
+          if (isErr(r)) failures.push(`${titleOf(s)}: ${r.error}`);
+          else gone.push(s.id);
+        }
+        if (!placesFirst && l && layout) await lsChange(forgetPatch(l, layout, gone), what);
+        await refresh();
+        if (failures.length) {
+          console.error(`[mockingbird] ${what}:`, failures);
+          closedSay(`${what}: couldn't forget ${failures.join("; ")}`);
+        }
+      }
+    );
+  /**
+   * Start afresh where closed session `s` was (its folder can't be run): New session's dialog with its agent, area, repo
+   * and ticket. From its ghost, the new workspace goes at the ghost's corner and takes its place once it's made
+   * (PlaceHint.replaces); from the Closed sessions list, where new workspaces go, the closed one left to forget.
+   */
+  const startFresh = (s: SessionInfo, fromGhost: boolean) => {
+    const g = fromGhost ? layoutNow.current?.ghosts.find((x) => x.members.some((m) => m.id === s.id)) : undefined;
+    if (fromGhost && !g) {
+      console.warn(`[mockingbird] starting fresh for ${s.id}: its ghost isn't on the landscape any more`);
+      lsSay(`${titleOf(s)}'s ghost isn't on the landscape any more: the fresh session goes where new workspaces go`);
+    }
     const area = areaKeyOf(s);
     setNewGroup(area === LOOSE_GROUP ? "" : (s.taskGroup ?? ""));
     setNewLaunch(s.shell ? "shell" : (s.agent ?? "claude"));
@@ -2239,51 +2338,71 @@ function App() {
     setPlaceHint(g ? { area, at: { x: g.rect.x, y: g.rect.y }, since: Date.now(), replaces: s.id } : null);
     setModal("new");
   };
-  const ghostEnv = (s: SessionInfo): GhostEnv => {
+  /**
+   * Closed session `s`'s actions' needs (GhostEnv): `tabs` its stack's closed tabs when it's a stack's ghost (Reopen and
+   * Forget act on them all), `fromGhost` whether it's drawn on the landscape (else it's in the Closed sessions list).
+   */
+  const ghostEnv = (s: SessionInfo, tabs: readonly SessionInfo[] = [s], fromGhost = true): GhostEnv => {
     const left = leftFor(s);
+    const several = tabs.length > 1;
     return {
-      folderGone: goneFolders.has(s.id),
-      room: leftCopyActions(left, () => left && takeBack(left), (err) => err && alert(`Couldn't send the changes: ${err}`)),
-      reopen: () => void reopenGhost(s),
-      fresh: () => startFresh(s),
-      forget: () => void forgetGhosts([s], `forgetting ${titleOf(s)}`),
+      gone: goneFolders.get(s.id) ?? null,
+      tabs: tabs.length,
+      busy: tabs.some((t) => closedBusy.has(t.id)),
+      room: leftCopyActions(left, () => left && takeBack(left), (err) => err && closedSay(`Couldn't send the changes: ${err}`)),
+      reopen: () => void (several ? reopenGhosts(tabs, `${titleOf(s)}'s stack`) : reopenGhost(s)),
+      fresh: () => startFresh(s, fromGhost),
+      forget: () => void forgetGhosts(tabs, several ? `forgetting ${titleOf(s)}'s ${tabs.length} closed tabs` : `forgetting ${titleOf(s)}`),
     };
   };
-  /** A ghost's actions (its card's buttons, ⋯ and right-click): its front session's. */
-  const ghostActionsFor = (s: SessionInfo): ModelAction[] => ghostActions(s, ghostEnv(s));
+  /** A ghost's actions (its card's buttons, ⋯ and right-click; a stack's closed tab's): `tabs` a stack ghost's closed tabs. */
+  const ghostActionsFor = (s: SessionInfo, tabs?: readonly SessionInfo[]): ModelAction[] => ghostActions(s, ghostEnv(s, tabs));
+  /** Reopen all and Clear over closed sessions `list` (GhostsEnv), `title` where they are. */
+  const closedRowsOf = (list: readonly SessionInfo[], title: string, what: string): GhostsEnv => ({
+    count: list.length,
+    reopenable: list.filter((s) => reopenableHere(s)).length,
+    running: reopeningAll,
+    reopenAll: () => void reopenGhosts(list, title),
+    clear: () => {
+      if (!window.confirm(`Forget ${list.length === 1 ? `the ${what}` : `the ${list.length} ${what}s`} in ${title}? They can't be reopened after.`)) return;
+      void forgetGhosts(list, `clearing ${title}'s ${what}s`);
+    },
+  });
   /**
    * Area `key`'s (LOOSE_GROUP: the loose ones'; null: every one's) Reopen all and Clear ghosts, over the closed sessions
    * the layout draws there now.
    */
-  const ghostRows = (key: string | null, title: string): GhostsEnv => {
-    const list = landscapeLayout ? closedIn(landscapeLayout, key) : [];
-    return {
-      count: list.length,
-      reopenAll: () => void reopenGhosts(list, title),
-      clear: () => {
-        if (!window.confirm(`Clear ${list.length === 1 ? "the closed workspace" : `the ${list.length} closed workspaces`} in ${title}? They can't be reopened after.`)) return;
-        void forgetGhosts(list, `clearing ${title}'s closed workspaces`);
-      },
-    };
-  };
+  const ghostRows = (key: string | null, title: string): GhostsEnv => closedRowsOf(landscapeLayout ? closedIn(landscapeLayout, key) : [], title, "closed workspace");
+  /** The Closed sessions list's Reopen all and Clear all. */
+  const closedListRows = (): GhostsEnv => closedRowsOf(closedList, "Closed sessions", "closed session");
   /** The loose closed workspaces' Reopen all and Clear ghosts, while there are any: the tree's Loose row, a right-click outside every area. */
   const looseGhostRows = (): ModelAction[] => {
     const g = ghostRows(LOOSE_GROUP, "Loose");
     return g.count ? ghostsActions(g) : [];
   };
-  /** Tidy area `key` (planTidy); the note says so with Undo, which puts every place back. */
+  /**
+   * Tidy area `key` (planTidy); the note says so with Undo, which puts every place back while nothing else has changed
+   * the landscape since (its revision is still the one the Tidy saved): after a drag, a lock or a new workspace placed,
+   * putting the old places back could overlap them, so Undo says it can't.
+   */
   const tidyArea = (key: string) => {
-    const l = lsNow.current?.landscape;
+    const now = lsNow.current;
     const layout = layoutNow.current;
-    if (!l || !layout) return;
+    const placed = placedNow.current;
+    if (!now || !layout || !placed) return;
     const title = areaTitle(key);
-    const plan = planTidy(l, layout, key, areaTitle);
+    const plan = planTidy(placed, layout, key, areaTitle);
     if ("refused" in plan) return lsSay(plan.refused);
     if (!plan.patch) return lsSay(`${title} is tidy already`);
-    const back = undoOf(l, plan.patch);
+    const back = undoOf(now.landscape, plan.patch);
     void landscapeStore.update(plan.patch, `tidying ${title}`).then((error) => {
       if (error) return lsSay(`Tidying ${title}: not saved, ${error}`);
-      lsSay(`Tidied ${title} in the order its workspaces were made`, back ? { label: "Undo", run: () => void lsChange(back, `putting ${title} back as it was`) } : undefined);
+      const saved = landscapeStore.revNow();
+      const undo = () => {
+        if (landscapeStore.revNow() !== saved) return lsSay(`Can't undo tidying ${title}: the landscape has changed since`);
+        void lsChange(back, `putting ${title} back as it was`);
+      };
+      lsSay(`Tidied ${title} in the order its workspaces were made`, back ? { label: "Undo", run: undo } : undefined);
     });
   };
   /**
@@ -2489,7 +2608,10 @@ function App() {
     const accents = accentsOf(order);
     const all = new Map(treeOf(workSessions, order).map((g) => [g.key, g.items]));
     const shownItems = new Map(treeOf(visible, order).map((g) => [g.key, g.items]));
-    return [...all.keys()].map((key): TreeArea => {
+    const keys = [...all.keys()];
+    // loose ghosts have the Loose row (its right-click holds their Reopen all and Clear ghosts) with no running workspace loose
+    if (!all.has(LOOSE_GROUP) && landscapeLayout && closedIn(landscapeLayout, LOOSE_GROUP).length) keys.push(LOOSE_GROUP);
+    return keys.map((key): TreeArea => {
       const a = landscapeLayout?.areas.find((x) => x.key === key);
       const room = roomOfGroup(teamStatus, key);
       const others = room?.members.filter((m) => !m.self && room.online.includes(m.id)) ?? [];
@@ -2538,6 +2660,7 @@ function App() {
           termKey={termKey}
           body={landscapeBody}
           onPatch={landscapeStore.update}
+          revNow={landscapeStore.revNow}
           onMoves={runMoves}
           askAreaName={askAreaName}
           onSeen={onLsSeen}
@@ -2550,6 +2673,7 @@ function App() {
           cardFor={cardFor}
           notice={lsNotice}
           ghostActions={ghostActionsFor}
+          ghostStatus={(s) => closedStatus(s, goneFolders.get(s.id))}
         />
         {dockColumn()}
         </div>
@@ -2954,7 +3078,7 @@ function App() {
             <button
               className="danger"
               onClick={async () => {
-                failed(`Couldn't forget ${s.title}`, await window.mb.killSession(s.id, true));
+                failed(`Couldn't forget ${s.title}`, await forgetSession(s));
                 refresh();
               }}
             >
@@ -3464,7 +3588,8 @@ function App() {
               areaMenu={(key) => (key === LOOSE_GROUP ? ((rows) => (rows.length ? menuOf(rows) : null))(looseGhostRows()) : areaMenu(key))}
               footer={
                 <>
-                  {/* closed sessions are ghosts on the landscape, where Previous's actions are (Reopen, Reopen all, Forget) */}
+                  {/* closed sessions with no ghost on the landscape (every one while it's being read in) */}
+                  <ClosedSessions list={closedList} actionsFor={(s) => ghostActions(s, ghostEnv(s, [s], false))} all={ghostsActions(closedListRows(), { what: "closed session", clearLabel: "Forget all" })} statusFor={(s) => closedStatus(s, goneFolders.get(s.id))} />
                   {/* team rooms: the way into the Team view, as in the Sessions view */}
                   {teamRooms.length > 0 && (
                     <div className="lt-connected">
@@ -3875,6 +4000,18 @@ function App() {
                   .filter((a) => !a.disabled)
                   .map((a) => ({ label: `${a.menuLabel ?? a.label} — closed workspaces, everywhere on the landscape`, run: a.onPick }))
               : []),
+            // the Closed sessions list: all of it at once, and each one to reopen
+            ...(landscapeOn
+              ? [
+                  ...ghostsActions(closedListRows(), { what: "closed session", clearLabel: "Forget all" })
+                    .filter((a) => !a.disabled)
+                    .map((a) => ({ label: `${a.menuLabel ?? a.label} — the Closed sessions list`, run: a.onPick })),
+                  ...closedList.flatMap((s) => {
+                    const reopen = actionOf(ghostActions(s, ghostEnv(s, [s], false)), "reopen");
+                    return reopen && !reopen.disabled ? [{ label: `Reopen ${titleOf(s)} — closed session`, run: reopen.onPick }] : [];
+                  }),
+                ]
+              : []),
             ...(shownTab("dashboard") ? [{ label: "Dashboard — ticket board", run: () => setTab("dashboard") }] : []),
             { label: "Broadcast / CLAUDE.md (control room)", kbd: "⌘⇧B", run: openControlRoom },
             { label: "Go to file…", kbd: "⌘P", run: () => { setTab("sessions"); setModal("quickopen"); } },
@@ -3954,6 +4091,7 @@ function App() {
             refresh();
           }}
           forceClose={forceClose}
+          forget={forgetSession}
           ghost={landscapeOn}
         />
       )}

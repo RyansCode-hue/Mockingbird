@@ -398,6 +398,55 @@ describe("Claude Code's background sessions", () => {
     await m.relaunch(s.id);
     expect(ask).not.toHaveBeenCalled();
   });
+
+  it("make a second relaunch, a resume or a forget wait for nothing: each is refused while the first relaunch is under way", async () => {
+    const { m, store } = await manager();
+    const s = await closedPane(m, "slow-conv");
+    let release!: (notice: string | null) => void;
+    m.freeConversation = () => new Promise((r) => (release = r));
+    const first = m.relaunch(s.id);
+    await Promise.resolve();
+    const started = ptys.length;
+    await expect(m.relaunch(s.id)).rejects.toThrow("It's being reopened already");
+    expect(await m.resume(s.id)).toEqual({ refused: "It's being reopened already" });
+    expect(() => m.kill(s.id, true)).toThrow(/being reopened already: forget it once it has opened/);
+    expect(store.state.sessions.some((x: any) => x.id === s.id)).toBe(true);
+    release(null);
+    await first;
+    expect(ptys.length).toBe(started + 1);
+    expect(ptys.at(-1)!.killed).toBe(false);
+    // once it has opened, forgetting it is the user's to do
+    m.kill(s.id, true);
+    expect(store.state.sessions.some((x: any) => x.id === s.id)).toBe(false);
+  });
+
+  it("refuse relaunching a session that's running, which would kill its agent to take its id", async () => {
+    const { m } = await manager();
+    const s = await m.create(agentPane);
+    const p = ptys.at(-1)!;
+    await expect(m.relaunch(s.id)).rejects.toThrow("It's running already");
+    expect(p.killed).toBe(false);
+    // a dead pane can still be relaunched in place
+    p.exit(1);
+    await m.relaunch(s.id);
+    expect(ptys.at(-1)).not.toBe(p);
+  });
+
+  it("refuse forgetting a pane while it's being resumed", async () => {
+    const { m, store } = await manager();
+    const s = await m.create(agentPane);
+    m.statusFromHook({ paneId: s.id, conversationId: "resume-conv", agent: "claude", status: "idle" });
+    transcript("resume-conv");
+    ptys.at(-1)!.exit(0);
+    let release!: (notice: string | null) => void;
+    m.freeConversation = () => new Promise((r) => (release = r));
+    const resumed = m.resume(s.id);
+    await Promise.resolve();
+    expect(() => m.kill(s.id, true)).toThrow(/being resumed already: forget it once it has opened/);
+    release(null);
+    expect(await resumed).toMatchObject({ id: s.id });
+    expect(store.state.sessions.some((x: any) => x.id === s.id)).toBe(true);
+  });
 });
 
 describe("resuming an exited pane", () => {

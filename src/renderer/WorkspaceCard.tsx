@@ -87,11 +87,14 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
         <span className="chip ls-kind">{kindLabel(s)}</span>
         <span className={`ls-card-status st-${s.status}`}>{STATUS[s.status]}</span>
         {tile.stack && (
-          <span className="ls-card-stack" title={tile.members.map(titleOf).join("\n")}>
-            {name ? `${name}: ` : ""}
-            {tile.members.length} tabs{waiting && s.status !== "waiting" ? `, ${waiting} need you` : ""}
-            {tile.closed?.length ? `, ${tile.closed.length} closed` : ""}
-          </span>
+          <>
+            <span className="chip ls-card-chip" data-stack={tile.stack} title={name ?? undefined}>
+              stack · {tile.members.length + (tile.closed?.length ?? 0)}
+            </span>
+            <span className="ls-card-stack" title={[...tile.members, ...(tile.closed ?? [])].map(titleOf).join("\n")}>
+              {[tile.members.map(titleOf).join(" · "), waiting && s.status !== "waiting" ? `${waiting} need${waiting === 1 ? "s" : ""} you` : "", tile.closed?.length ? `${tile.closed.length} closed` : ""].filter(Boolean).join(" · ")}
+            </span>
+          </>
         )}
         {isRemote(s) && s.room && <span className="ls-card-owner">{s.room.ownerName}'s</span>}
         {tokens > 0 && <span className="ls-card-tokens">{formatTokens(tokens)}</span>}

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { tempDir } from "./helpers";
+import { git, makeRepo, tempDir } from "./helpers";
 
 const emitters: ((d: string) => void)[] = [];
 vi.mock("node-pty", () => ({
@@ -88,16 +88,26 @@ describe("a closed session's ghost", () => {
     expect(() => m.closedOutput(s.id)).toThrow(/isn't one of this Mac's closed sessions/);
   });
 
-  it("whose folder is gone is listed, so it offers Start fresh rather than Reopen", async () => {
+  it("whose folder is gone is listed, reopening only a removed worktree whose branch is still there", async () => {
     const { SessionManager } = await import("../src/main/sessions");
     const here = tempDir("ghost-folders");
-    const gone = path.join(here, "removed-worktree");
+    const repo = makeRepo();
+    git(repo, "branch", "5101-kept");
+    const wt = (b: string) => path.join(here, "worktrees", b);
     const saved: any[] = [
       { id: "kept", cwd: here, title: "kept", status: "dead" },
-      { id: "gone", cwd: gone, title: "gone", status: "dead" },
+      { id: "branchKept", cwd: wt("5101-kept"), repoPath: repo, branch: "5101-kept", title: "a", status: "dead" },
+      { id: "branchGone", cwd: wt("5102-gone"), repoPath: repo, branch: "5102-gone", title: "b", status: "dead" },
+      { id: "folder", cwd: path.join(here, "moved"), repoPath: null, branch: null, title: "c", status: "dead" },
+      { id: "volume", cwd: "/Volumes/MB-test-unplugged/code/x", repoPath: null, branch: null, title: "d", status: "dead" },
     ];
     const store = { settings: { claudeBin: "/bin/echo" }, state: { sessions: saved }, upsertSession() {}, removeSession() {}, save() {} };
     const m = new SessionManager(store as any);
-    expect(m.missingFolders()).toEqual(["gone"]);
+    expect(await m.missingFolders()).toEqual([
+      { id: "branchKept", reopens: true, short: "Its worktree was removed · its branch is kept", why: "Its worktree was removed: reopening makes it again from its branch, 5101-kept" },
+      { id: "branchGone", reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" },
+      { id: "folder", reopens: false, short: "Its folder is gone", why: `Its folder, ${path.join(here, "moved")}, isn't there any more: start fresh instead` },
+      { id: "volume", reopens: false, short: "Its volume isn't connected", why: "Its folder is on MB-test-unplugged, which isn't connected: connect it to reopen it" },
+    ]);
   });
 });

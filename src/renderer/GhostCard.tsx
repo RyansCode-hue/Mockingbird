@@ -6,7 +6,7 @@ import { titleOf } from "./appModel";
 import { kindLabel } from "./WorkspaceCard";
 import { MoreIcon } from "./Icons";
 import { runCheck } from "./settled";
-import { takenOverWhy, usable, type ModelAction } from "./workspaceActions";
+import { CLOSED_BUSY_WHY, actionOf, takenOverWhy, usable, type ModelAction } from "./workspaceActions";
 
 /**
  * A closed session's last line, from the output main saved when it closed (sessions:closedOutput): what its ghost
@@ -31,21 +31,26 @@ export function useClosedLine(s: SessionInfo): { line: string | null; error: str
  * A ghost (docs/landscape.md, Ghost cards): a closed workspace, a dashed outline where it was. It shows its title, its
  * actions under it (its owner's ghost model: Reopen, Start fresh for one whose worktree is gone, Take it back for one a
  * teammate continues, Forget), its last line, and its status with ticket and branch; ⋯ and right-click offer every
- * action. Its type is at landscape scale at 100% and keeps its size on screen zoomed out (--ls-inv), where it's drawn
- * inset in its place as cards are. Its rows are in the order a ghost too short for them all gives them up from the end
- * (styles.css leaves out whole rows that don't fit, never drawing past its place): title, actions, last line, status.
+ * action (zoomed out to cards, right-click only: its title keeps the room). Its type is at landscape scale at 100% and
+ * keeps its size on screen zoomed out (--ls-inv), where it's drawn inset in its place as cards are. A button whose action
+ * is under way (being reopened or forgotten) stays, off, saying so. Its rows are in the order a ghost too short for
+ * them all gives them up from the end (styles.css leaves out whole rows that don't fit, never drawing past its place):
+ * title, actions, last line, status.
  */
 export function GhostCard({
   ghost,
   band,
   actions,
+  status,
   onMore,
   inv,
 }: {
   ghost: GhostView;
   band: Band;
-  /** Its front session's actions (ghostActions). */
+  /** Its actions (ghostActions): its front session's, a stack's over all its closed tabs. */
   actions: ModelAction[];
+  /** Its status line (closedStatus): Closed, its folder gone, or taken over by a teammate. */
+  status: string;
   onMore: (from: HTMLElement) => void;
   /** 1 / the camera's zoom when it rendered (the landscape keeps --ls-inv current as it zooms). */
   inv: number;
@@ -54,11 +59,11 @@ export function GhostCard({
   const { line, error } = useClosedLine(s);
   const r = ghost.rect;
   const taken = takenOverWhy(s, "");
-  const takenLine = s.room?.takenOver ? (s.room.takenOver.back ? "Taken back into another session here" : `Continued by ${s.room.takenOver.byName} on their laptop`) : null;
   const gone = !!actions.find((a) => a.key === "fresh");
-  const status = takenLine ?? (gone ? "Its worktree was removed" : "Closed");
-  const buttons = (["reopen", "fresh", "takeback"] as const).map((k) => usable(actions, k)).filter((a): a is ModelAction => !!a);
-  const forget = usable(actions, "forget");
+  /** Action `k` as a button: while it can be picked, or while it's off only because it's under way. */
+  const shown = (k: string) => usable(actions, k) ?? (actionOf(actions, k)?.title === CLOSED_BUSY_WHY ? actionOf(actions, k) : undefined);
+  const buttons = (["reopen", "fresh", "takeback"] as const).map(shown).filter((a): a is ModelAction => !!a);
+  const forget = shown("forget");
   const where = [s.ticketId ? `#${ticketIdOf(s.ticketId)}` : null, s.branch && s.branch !== titleOf(s) ? s.branch : null].filter(Boolean).join(" · ");
   const name = ghost.stack ? ghost.members.map(titleOf).join(" · ") : titleOf(s);
   const lineText = error ? "Couldn't read what it did last" : (line ?? "It wrote nothing before it closed");
@@ -81,6 +86,7 @@ export function GhostCard({
             {name}
           </span>
           <span className="chip lg-kind">{ghost.stack ? `stack · ${ghost.members.length}` : kindLabel(s)}</span>
+          {!compact && (
           <button
             type="button"
             className="ls-more"
@@ -94,16 +100,17 @@ export function GhostCard({
           >
             <MoreIcon />
           </button>
+          )}
         </div>
         {(buttons.length > 0 || forget) && (
           <div className="lg-acts" data-row="acts">
             {buttons.map((a) => (
-              <button key={a.key} type="button" className={`outline ${a.primary ? "strong" : ""}`} title={a.title} data-act={a.key} onClick={(e) => (e.stopPropagation(), a.onPick())}>
+              <button key={a.key} type="button" className={`outline ${a.primary ? "strong" : ""}`} title={a.title} data-act={a.key} disabled={a.disabled} onClick={(e) => (e.stopPropagation(), a.onPick())}>
                 {a.key === "reopen" ? "↺ Reopen" : a.label}
               </button>
             ))}
             {forget && (
-              <button type="button" className="lg-forget" title={forget.title} data-act="forget" onClick={(e) => (e.stopPropagation(), forget.onPick())}>
+              <button type="button" className="lg-forget" title={forget.title} data-act="forget" disabled={forget.disabled} onClick={(e) => (e.stopPropagation(), forget.onPick())}>
                 Forget
               </button>
             )}

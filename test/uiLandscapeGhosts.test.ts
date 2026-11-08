@@ -63,6 +63,7 @@ describe.skipIf(!local)("ghosts on the landscape (UI preview)", () => {
       reopened: { relaunch: unknown[][]; ghost: boolean; node: boolean; nodeAt: P; stored: R };
       fresh: { dialog: boolean; title: string | null; mentions5101: boolean };
       forgot: { menu: string[]; kill: unknown[][]; ghost: boolean; stored: R | null };
+      moreZoomedOut: boolean;
       cleared: { menu: string[]; asked: string[]; kill: unknown[][]; ghost: boolean };
       loose: { menu: string[]; relaunch: unknown[][]; ghost: boolean; node: boolean };
       error?: string;
@@ -71,7 +72,8 @@ describe.skipIf(!local)("ghosts on the landscape (UI preview)", () => {
     // the area tree's foot has no Previous any more; its Connected line stays
     expect(a.foot).toEqual({ previous: false, connected: true });
     // ⌘K: every ghost at once, as Previous's restore all was
-    expect(a.palette).toEqual(["Reopen all (3) — closed workspaces, everywhere on the landscape", "Clear ghosts (3)… — closed workspaces, everywhere on the landscape"]);
+    // (Reopen all counts the two it can reopen: g2's worktree and branch are gone)
+    expect(a.palette).toEqual(["Reopen all (2) — closed workspaces, everywhere on the landscape", "Clear ghosts (3)… — closed workspaces, everywhere on the landscape"]);
     // closing leaves it resumable, its ghost where the workspace was
     expect(a.closed).toMatchObject({ kill: [["s4", false]], ghost: true, node: false, stored: a.closed.was });
     expect(a.closed.at).toEqual({ x: a.closed.was.x, y: a.closed.was.y, h: a.closed.was.h });
@@ -80,12 +82,14 @@ describe.skipIf(!local)("ghosts on the landscape (UI preview)", () => {
     expect([a.reopened.nodeAt.x, a.reopened.nodeAt.y]).toEqual([a.closed.was.x, a.closed.was.y]);
     // Start fresh, for the one whose worktree is gone: New session, for its area
     expect(a.fresh).toEqual({ dialog: true, title: "New session", mentions5101: true });
-    // Forget from its ⋯: let go in main, and its place on the landscape
+    // Forget from its menu, its right-click zoomed out to cards, where it has no ⋯: let go in main, and its place too
+    expect(a.moreZoomedOut).toBe(false);
     expect(a.forgot).toEqual({ menu: ["Reopen", "Forget it"], kill: [["g1", true]], ghost: false, stored: null });
     // the area's Clear ghosts, asked first
-    expect(a.cleared.menu).toEqual(expect.arrayContaining(["Tidy [T]", "# Closed workspaces", "Reopen all (1)", "Clear ghosts (1)…"]));
-    expect(a.cleared).toMatchObject({ asked: [expect.stringMatching(/^Clear the closed workspace in #5101 .*can't be reopened after/)], kill: [["g2", true]], ghost: false });
+    // (its one ghost can't be reopened here, so Reopen all is there, off)
+    expect(a.cleared.menu).toEqual(expect.arrayContaining(["Tidy [T]", "# Ghosts", "Reopen all (off)", "Clear ghosts (1)…"]));
+    expect(a.cleared).toMatchObject({ asked: [expect.stringMatching(/^Forget the closed workspace in #5101 .*can't be reopened after/)], kill: [["g2", true]], ghost: false });
     // the loose ones' Reopen all, from the tree's Loose row
-    expect(a.loose).toEqual({ menu: ["# Closed workspaces", "Reopen all (1)", "Clear ghosts (1)…"], relaunch: [["p1"]], ghost: false, node: true });
+    expect(a.loose).toEqual({ menu: ["# Ghosts", "Reopen all (1)", "Clear ghosts (1)…"], relaunch: [["p1"]], ghost: false, node: true });
   }, 120_000);
 });

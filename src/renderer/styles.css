@@ -51,6 +51,8 @@
   --on-primary: #1a1917;
   --focus-ring: #b9b3a8;
   --pane-focus: rgba(255, 255, 255, .5);
+  /* the lines a dragged workspace snaps along: apart from every border and outline, in both themes */
+  --snap-guide: #ff4f9a;
   --bg-pane-header-focus: #2b2a26;
   --chip-on-bg: #c9c3b8;
   --chip-on-fg: #1a1917;
@@ -112,6 +114,7 @@
   --on-primary: #fbf9f5;
   --focus-ring: #4f4a3f;
   --pane-focus: rgba(0, 0, 0, .55);
+  --snap-guide: #e0186f;
   --bg-pane-header-focus: #e6e1d6;
   --chip-on-bg: #454034;
   --chip-on-fg: #f4f1e9;
@@ -3234,7 +3237,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-sb-dots svg { width: 14px; height: 14px; }
 /* over the camera's HUD (design E's "Tidied … Undo"), clear of the selection bar that rides above an area */
 .ls-note {
-  position: absolute; left: 50%; bottom: 58px; z-index: 9; transform: translateX(-50%); max-width: min(560px, 80%); padding: 6px 12px; border-radius: 7px;
+  position: absolute; left: 16px; bottom: 58px; z-index: 9; box-sizing: border-box; max-width: min(560px, calc(100% - 32px)); padding: 6px 12px; border-radius: 7px;
   background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2), 0 6px 18px rgba(0, 0, 0, .28);
   font: 400 12px var(--ui); color: var(--text-1); white-space: normal; text-align: center; pointer-events: none;
 }
@@ -3350,6 +3353,35 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .lt-tag.bad { color: var(--red); }
 .lt-none { padding: 8px 6px; font-size: 11.5px; color: var(--text-4); }
 .lt-connected { flex-shrink: 0; padding: 6px 8px 10px; }
+/* the Closed sessions list: under the area tree, its rows scrolling on their own so the tree keeps its room */
+.lt-closed { flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; max-height: 38%; padding: 4px 8px 6px; border-top: 1px solid var(--line-soft); }
+.lt-closed-head { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
+.lt-closed-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 2px 6px; border: none; background: none;
+  font: 400 11px var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--text-4); cursor: pointer; text-align: left;
+}
+.lt-closed-toggle svg { flex-shrink: 0; width: 9px; height: 9px; }
+.lt-closed-toggle:hover { color: var(--text-2); }
+.lt-closed-all {
+  flex-shrink: 0; padding: 2px 8px; border: 1px solid var(--line-med); border-radius: 5px; background: none;
+  font: 400 11.5px var(--ui); color: var(--text-2); cursor: pointer;
+}
+.lt-closed-all:hover:not(:disabled) { color: var(--text-1); border-color: var(--line-btn-hover); }
+.lt-closed-all:disabled, .lt-closed-act:disabled { opacity: .45; cursor: default; }
+.lt-closed-rows { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 1px; }
+.lt-closed-row { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 6px; color: var(--text-3); min-width: 0; }
+.lt-closed-row:hover { background: var(--fill-subtle); }
+.lt-closed-row .dot { flex-shrink: 0; }
+.lt-closed-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.lt-closed-name .lt-t { color: var(--text-2); }
+.lt-closed-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--text-4); }
+.lt-closed-act {
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px;
+  border: 1px solid transparent; border-radius: 5px; background: none; font: 400 12px var(--ui); color: var(--text-3); cursor: pointer;
+}
+.lt-closed-act svg { width: 10px; height: 10px; }
+.lt-closed-act:hover:not(:disabled) { color: var(--text-1); border-color: var(--line-med); }
+.lt-closed-act.danger:hover:not(:disabled) { color: var(--red); }
 /* a workspace (design B): a card, its header bar over its terminal. Its outline is a shadow, never a border,
    so the frame is exactly WORKSPACE_CHROME and the terminal's holder the room colsRows counts */
 .ls-node {
@@ -3492,7 +3524,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-node.remote .ls-rz, .ls-node.placeholder .ls-rz { display: none; }
 /* while one is dragged: the lines it snapped along, and (resizing) the size it would have, with its terminal's cols × rows */
 .ls-guides { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; z-index: 30; }
-.ls-guide { position: absolute; background: var(--pane-focus); }
+.ls-guide { position: absolute; background: var(--snap-guide); }
 .ls-sizebox {
   position: absolute; z-index: 29; box-sizing: border-box; pointer-events: none; border-radius: calc(8px * min(1, var(--ls-inv, 1)));
   border: calc(1.5px * var(--ls-inv, 1)) dashed var(--pane-focus); background: color-mix(in srgb, var(--pane-focus) 8%, transparent);
@@ -3502,11 +3534,13 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   border-radius: calc(4px * var(--ls-inv, 1)); background: var(--bg-chrome); font: 500 calc(11px * var(--ls-inv, 1)) var(--mono); color: var(--text-1); white-space: nowrap;
 }
 /* a stack (design E): its card has the tabs it holds stacked behind it; a closed tab is faded, and opens its ghost's menu */
-.ls-node.stack:not(.focus) { box-shadow: 0 0 0 1px var(--line-strong2), 4px -4px 0 0 var(--bg-pane-dead), 4px -4px 0 1px var(--line-soft), 8px -8px 0 0 var(--bg-pane-dead), 8px -8px 0 1px var(--line-soft), 0 8px 22px rgba(0, 0, 0, .2); }
-.ls-node.stack.selected:not(.focus) { box-shadow: 0 0 0 1.5px var(--pane-focus), 4px -4px 0 0 var(--bg-pane-dead), 4px -4px 0 1px var(--line-soft), 8px -8px 0 0 var(--bg-pane-dead), 8px -8px 0 1px var(--line-soft), 0 8px 22px rgba(0, 0, 0, .24); }
+/* its layers at least 3 and 6 px apart on screen however far it's zoomed out (--ls-inv, which paintScale keeps on stacks) */
+.ls-node.stack { --so: max(4px, calc(3px * var(--ls-inv, 1))); --so2: max(8px, calc(6px * var(--ls-inv, 1))); }
+.ls-node.stack:not(.focus) { box-shadow: 0 0 0 1px var(--line-strong2), var(--so) calc(-1 * var(--so)) 0 0 var(--bg-pane-dead), var(--so) calc(-1 * var(--so)) 0 1px var(--line-soft), var(--so2) calc(-1 * var(--so2)) 0 0 var(--bg-pane-dead), var(--so2) calc(-1 * var(--so2)) 0 1px var(--line-soft), 0 8px 22px rgba(0, 0, 0, .2); }
+.ls-node.stack.selected:not(.focus) { box-shadow: 0 0 0 1.5px var(--pane-focus), var(--so) calc(-1 * var(--so)) 0 0 var(--bg-pane-dead), var(--so) calc(-1 * var(--so)) 0 1px var(--line-soft), var(--so2) calc(-1 * var(--so2)) 0 0 var(--bg-pane-dead), var(--so2) calc(-1 * var(--so2)) 0 1px var(--line-soft), 0 8px 22px rgba(0, 0, 0, .24); }
 .ls-node.card.stack { box-shadow: 0 0 0 var(--u) var(--line-strong2), calc(4 * var(--u)) calc(-4 * var(--u)) 0 0 var(--bg-pane-dead), calc(4 * var(--u)) calc(-4 * var(--u)) 0 var(--u) var(--line-soft), calc(8 * var(--u)) calc(-8 * var(--u)) 0 0 var(--bg-pane-dead), calc(8 * var(--u)) calc(-8 * var(--u)) 0 var(--u) var(--line-soft); }
 .ls-node.card.stack.selected { box-shadow: 0 0 0 calc(2 * var(--u)) var(--pane-focus), calc(4 * var(--u)) calc(-4 * var(--u)) 0 0 var(--bg-pane-dead), calc(4 * var(--u)) calc(-4 * var(--u)) 0 var(--u) var(--line-soft), calc(8 * var(--u)) calc(-8 * var(--u)) 0 0 var(--bg-pane-dead), calc(8 * var(--u)) calc(-8 * var(--u)) 0 var(--u) var(--line-soft); }
-.ls-node.stack.st-waiting:not(.focus):not(.card) { box-shadow: 0 0 0 1px var(--amber), 0 0 0 4px var(--fill-waiting-glow), 6px -6px 0 0 var(--bg-pane-dead), 6px -6px 0 1px var(--line-soft); }
+.ls-node.stack.st-waiting:not(.focus):not(.card) { box-shadow: 0 0 0 1px var(--amber), 0 0 0 4px var(--fill-waiting-glow), calc(1.5 * var(--so)) calc(-1.5 * var(--so)) 0 0 var(--bg-pane-dead), calc(1.5 * var(--so)) calc(-1.5 * var(--so)) 0 1px var(--line-soft); }
 .ls-node.card.stack.st-waiting { box-shadow: 0 0 0 calc(1.5 * var(--u)) var(--amber), 0 0 0 calc(5 * var(--u)) var(--fill-waiting-glow), calc(7 * var(--u)) calc(-7 * var(--u)) 0 0 var(--bg-pane-dead), calc(7 * var(--u)) calc(-7 * var(--u)) 0 var(--u) var(--line-soft); }
 .ls-tab.closed { color: var(--text-4); font-style: italic; border: 1px dashed var(--line-strong2); }
 .ls-tab.closed .lg-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--text-4); }
@@ -3515,13 +3549,12 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
    at landscape scale at 100%, and keeps its size on screen zoomed out (--ls-inv, set with the cards'), where a ghost is
    drawn inset by --ci as cards are */
 .ls-ghost {
-  --u: 1px; --ci: 0px;
+  --u: calc(1px * max(1, var(--ls-inv, 1))); --ci: 0px;
   position: absolute; box-sizing: border-box; display: flex; flex-direction: column; min-width: 0; overflow: hidden;
   height: calc(var(--gh) - 2 * var(--ci)); padding: calc(10 * var(--u)) calc(12 * var(--u)); border-radius: calc(8 * var(--u));
   border: calc(1.5 * var(--u)) dashed var(--line-strong2); background: color-mix(in srgb, var(--bg-pane) 28%, transparent);
   font: 400 calc(11 * var(--u)) var(--ui); color: var(--text-3); user-select: none;
 }
-.ls-band-readonly .ls-ghost { --u: calc(1px * max(1, var(--ls-inv, 1))); }
 .ls-band-cards .ls-ghost {
   --u: calc(1px * var(--ls-inv, 1)); --ci: calc(5 * var(--u));
   height: calc(var(--ls-gh, var(--gh)) - 2 * var(--ci)); padding: calc(7 * var(--u)) calc(9 * var(--u));
@@ -3555,7 +3588,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 /* zoomed out to cards a ghost is a card's size: its title keeps the room, Forget waits in its ⋯, its last line takes two */
 .ls-ghost.compact .lg-kind, .ls-ghost.compact .lg-forget { display: none; }
 .ls-ghost.compact .lg-line { -webkit-line-clamp: 2; }
-.ls-ghost.compact .lg-status { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ls-ghost.compact .lg-status { flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .ls-ghost.compact .lg-where { flex-shrink: 100; }
 
 /* S5: tool windows (design O), placed on the landscape or docked at its right edge */

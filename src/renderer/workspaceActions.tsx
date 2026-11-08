@@ -1,4 +1,4 @@
-import { AGENT_NAME, otherAgent, type MessageMode, type SessionInfo } from "../shared/types";
+import { AGENT_NAME, otherAgent, type MessageMode, type MissingFolder, type SessionInfo } from "../shared/types";
 import { LOOSE_GROUP, SIZE_PRESETS, areaKeyOf, type SizePreset } from "../shared/landscape";
 import { menuHeading, tidyMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, NoteIcon, PanelRightIcon, PencilIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
@@ -20,7 +20,7 @@ const SECTION_NAME: Record<ActionSection, string | null> = {
   handon: "Hand on",
   room: "Team room",
   area: "Area",
-  ghosts: "Closed workspaces",
+  ghosts: "Ghosts",
   messages: "Agent messages",
   sessions: "Sessions",
   share: null,
@@ -191,63 +191,103 @@ export function createActions(env: CreateEnv): ModelAction[] {
   ];
 }
 
-/** What a ghost's actions need to know about it, and do (main.tsx's `ghostEnv` makes it). */
+/**
+ * What a closed session's actions need to know about it, and do (main.tsx's `ghostEnv` makes it): its ghost's card,
+ * ⋯ and right-click, a stack's closed tab, and its row in the Closed sessions list.
+ */
 export interface GhostEnv {
-  /** Its folder is gone (a removed worktree): it can't run where it ran, so it starts fresh instead. */
-  folderGone: boolean;
+  /**
+   * Its folder is gone (main's missingFolders): a removed worktree whose branch is still there reopens (made again from
+   * it); otherwise it can't run where it ran, and `why` says what's missing.
+   */
+  gone: Omit<MissingFolder, "id"> | null;
+  /** How many closed tabs it is: a stack's ghost of more than one, which Reopen and Forget act on together. */
+  tabs: number;
+  /** Being reopened or forgotten now: Reopen and Forget wait for that to finish. */
+  busy: boolean;
   /** Take it back, Send (team rooms): a copy a teammate continues on their laptop. */
   room: Action[];
   /** Relaunch it under its id, resuming its conversation: it lands where its ghost is. */
   reopen: () => void;
-  /** A new session where it was, from its repo, ticket and area: what a ghost whose folder is gone offers. */
+  /** A new session where it was, from its repo, ticket and area: what one whose folder is gone offers. */
   fresh: () => void;
-  /** Let it go for good (Previous's ✕): it can't be reopened after. */
+  /** Let it go for good: it can't be reopened after. */
   forget: () => void;
 }
 
-/** Why a ghost whose folder is gone isn't reopened: what it ran in has been removed. */
-export const FOLDER_GONE_WHY = "Its worktree was removed, so it can't run where it ran: start fresh instead";
+/** A closed session's status line (its ghost's foot, its Closed sessions row): taken over by a teammate, its folder gone, or Closed. */
+export const closedStatus = (s: SessionInfo, gone: Pick<MissingFolder, "short"> | null | undefined): string =>
+  s.room?.takenOver ? (s.room.takenOver.back ? "Taken back into another session here" : `Continued by ${s.room.takenOver.byName} on their laptop`) : (gone?.short ?? "Closed");
+
+/** Why a closed session isn't reopened or forgotten again while that's under way. */
+export const CLOSED_BUSY_WHY = "It's being reopened or forgotten already";
 
 /**
- * Every action of a ghost (a closed workspace this Mac can reopen), in menu order: its card's buttons, its ⋯ and its
- * right-click render this list. Reopen goes through the take-over rule as Resume does (a copy a teammate continues is
- * taken back, never run again here), and main refuses it too (relaunchGuard).
+ * Every action of a closed session this Mac can reopen (its ghost, a stack's closed tab, its Closed sessions row), in
+ * menu order. Reopen goes through the take-over rule as Resume does (a copy a teammate continues is taken back, never
+ * run again here), and main refuses it too (relaunchGuard). A stack's ghost of several tabs reopens and forgets them
+ * all, skipping (and saying so) any that can't be reopened.
  */
 export function ghostActions(s: SessionInfo, env: GhostEnv): ModelAction[] {
-  const taken = takenOverWhy(s, "rather than reopening this copy");
+  const several = env.tabs > 1;
+  const taken = several ? null : takenOverWhy(s, "rather than reopening this copy");
+  const cantRun = !several && env.gone && !env.gone.reopens ? env.gone.why : null;
+  const busy = env.busy ? { no: CLOSED_BUSY_WHY } : null;
+  const reopenTitle = several ? `Start its ${env.tabs} tabs again where it was, resuming their conversations` : env.gone?.reopens ? env.gone.why : "Start it again where it was, resuming its conversation";
   const out: ModelAction[] = [
     {
       section: "end",
       key: "reopen",
       label: "Reopen",
+      menuLabel: several ? `Reopen its ${env.tabs} tabs` : undefined,
       primary: true,
-      title: "Start it again where it was, resuming its conversation",
-      ...can(taken ? { no: taken } : env.folderGone ? { no: FOLDER_GONE_WHY } : env.reopen),
+      title: reopenTitle,
+      ...can(busy ?? (taken ? { no: taken } : cantRun ? { no: cantRun } : env.reopen)),
     },
   ];
-  if (env.folderGone && !taken) out.push({ section: "end", key: "fresh", label: "Start fresh", menuLabel: "Start fresh…", title: "A new session where it was: its repo, ticket and area, on a new worktree", onPick: env.fresh });
+  if (cantRun && !taken) out.push({ section: "end", key: "fresh", label: "Start fresh", menuLabel: "Start fresh…", title: "A new session where it was: its repo, ticket and area, on a new worktree", onPick: env.fresh });
   out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
-  out.push({ section: "end", key: "forget", label: "Forget", menuLabel: "Forget it", danger: true, icon: <CloseIcon />, title: "Take its ghost away for good: it can't be reopened after", onPick: env.forget });
+  out.push({
+    section: "end",
+    key: "forget",
+    label: "Forget",
+    menuLabel: several ? `Forget its ${env.tabs} tabs` : "Forget it",
+    danger: true,
+    icon: <CloseIcon />,
+    ...can(busy ?? env.forget),
+    title: env.busy ? CLOSED_BUSY_WHY : several ? `Let this stack's ${env.tabs} closed tabs go for good: they can't be reopened after` : "Let it go for good: it can't be reopened after",
+  });
   return out;
 }
 
-/** Several ghosts at once (an area's, the loose ones', or every one): how many, and Reopen all and Clear ghosts over them. */
+/**
+ * Several closed sessions at once (an area's ghosts, the loose ones', every one, or the Closed sessions list): how many
+ * (Clear ghosts acts on all of them), how many of those can be reopened here, and Reopen all and Clear ghosts.
+ */
 export interface GhostsEnv {
   count: number;
+  /** Those not taken over by a teammate, whose folders can still be run, and not being reopened or forgotten now. */
+  reopenable: number;
+  /** A Reopen all is under way. */
+  running: boolean;
   reopenAll: Can;
   clear: Can;
 }
 
 /**
  * Reopen all and Clear ghosts (Previous's restore all and its ✕ on each): an area's ⋯, the loose ones' (the tree's
- * Loose row, a right-click outside every area) and ⌘K's over every one. Off, saying why, when there are none.
+ * Loose row, a right-click outside every area), ⌘K's over every one and the Closed sessions list's. Off, saying why,
+ * when there are none, when none of them can be reopened here, and while a Reopen all is under way.
  */
-export function ghostsActions(g: GhostsEnv): ModelAction[] {
+export function ghostsActions(g: GhostsEnv, o: { what?: string; clearLabel?: string } = {}): ModelAction[] {
   const n = g.count;
-  const none = { no: "No closed workspaces here" };
+  const what = o.what ?? "closed workspace";
+  const none = { no: `No ${what}s here` };
+  const reopen: Can = !n ? none : g.running ? { no: "Reopening them already" } : !g.reopenable ? { no: `None of these can be reopened here: taken over by a teammate, their folders gone, or being reopened or forgotten` } : g.reopenAll;
+  const clearLabel = o.clearLabel ?? "Clear ghosts";
   return [
-    { section: "ghosts", key: "reopenAll", label: "Reopen all", menuLabel: n ? `Reopen all (${n})` : "Reopen all", title: "Start every closed workspace here again where it was, resuming its conversation", ...can(n ? g.reopenAll : none) },
-    { section: "ghosts", key: "clearGhosts", label: "Clear ghosts", menuLabel: n ? `Clear ghosts (${n})…` : "Clear ghosts", danger: true, title: "Forget every closed workspace here: they can't be reopened after", ...can(n ? g.clear : none) },
+    { section: "ghosts", key: "reopenAll", label: "Reopen all", menuLabel: g.reopenable ? `Reopen all (${g.reopenable})` : "Reopen all", title: `Start every ${what} here again, resuming its conversation`, ...can(reopen) },
+    { section: "ghosts", key: "clearGhosts", label: clearLabel, menuLabel: n ? `${clearLabel} (${n})…` : clearLabel, danger: true, title: `Forget every ${what} here: they can't be reopened after`, ...can(n ? (g.running ? { no: "Wait for Reopen all to finish" } : g.clear) : none) },
   ];
 }
 

@@ -221,7 +221,7 @@ describe.skipIf(!local)("the selection bar", () => {
     // in no area: the create rows, and the loose closed workspaces' Reopen all and Clear ghosts; Terminal… makes a
     // loose terminal where it was clicked
     const l = b.createLoose;
-    expect(l.rows).toEqual([...CREATE_ROWS, "-", "# Closed workspaces", "Reopen all (1)", "Clear ghosts (1)…"]);
+    expect(l.rows).toEqual([...CREATE_ROWS, "-", "# Ghosts", "Reopen all (1)", "Clear ghosts (1)…"]);
     expect(l.selected).toBeNull();
     expect(l.dialog).toMatchObject({ launch: "Terminal", mode: "New", group: "no group▾" });
     expect(l.made.group).toBeNull();
@@ -272,19 +272,20 @@ describe.skipIf(!local)("the selection bar", () => {
     const e = await run<E>("e", "samView");
     expect(e.error).toBeUndefined();
     // an area that isn't a room's: no Team room heading; its sessions under Sessions; one choice each for messages;
-    // Tidy, and its closed workspace's Reopen all and Clear ghosts
+    // Tidy, and its ghost's Reopen all and Clear ghosts under Ghosts
     expect(e.menus.plain).toEqual([
       "# Area", "Rename…", "Collapse to a pill", "Lock its layout", "Tidy [T]",
-      "-", "# Closed workspaces", "Reopen all (1)", "Clear ghosts (1)…",
+      "-", "# Ghosts", "Reopen all (1)", "Clear ghosts (1)…",
       "-", "# Tools", "Artifacts",
       "-", "# Agent messages", "As in Settings (auto-send)", "Always auto-send", "Always leave in prompt", "Agent message log…",
       "-", "# Sessions", "New session here…", "Ask for status",
       "-", "Share as a team room…",
     ]);
-    // a room's: its Chat, then its board, Follow and Invite under Team room
+    // a room's: its Chat, then its board, Follow and Invite under Team room (its one ghost, g2, can't be reopened here:
+    // its worktree and branch are gone, so Reopen all is off)
     expect(e.menus.room).toEqual([
       "# Area", "Rename…", "Collapse to a pill", "Lock its layout", "Tidy [T]",
-      "-", "# Closed workspaces", "Reopen all (1)", "Clear ghosts (1)…",
+      "-", "# Ghosts", "Reopen all (off)", "Clear ghosts (1)…",
       "-", "# Tools", "Artifacts", "Chat",
       "-", "# Agent messages", "As in Settings (auto-send)", "Always auto-send", "Always leave in prompt", "Agent message log…",
       "-", "# Sessions", "New connected session here…", "Ask for status",

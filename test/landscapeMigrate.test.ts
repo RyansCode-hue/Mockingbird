@@ -393,6 +393,15 @@ describe("migrating sessions the layout doesn't name", () => {
     expect(l.stacks["5199/sub"]).toBeDefined();
   });
 
+  it("gives no place to a closed session the grid didn't show (its Previous), nor an area to a group of only those", () => {
+    const shown = [sess("a", "5101", { status: "dead" })];
+    const previous = [sess("p", "5101", { status: "dead" }), sess("q", "5199", { status: "dead" }), sess("r", null, { status: "dead" })];
+    const m = migrateLayout({ shown: ["a"], activeGroup: "5101", trees: { "5101": leaf("a") } }, [...shown, ...previous], { now: NOW, closed: new Set(["a", "p", "q", "r"]) });
+    expect(Object.keys(m.landscape.workspaces)).toEqual(["a"]);
+    expect(Object.keys(m.landscape.areas)).toEqual(["5101"]);
+    expect(m.stale).toEqual([]);
+  });
+
   it("keeps the places of the previous run's sessions, which a relaunch brings back under the same ids", () => {
     const resumable = [sess("a", "5101", { status: "dead" }), sess("b", "5101", { status: "dead" })];
     const { l, stale } = migrate({ shown: ["b", "a"], activeGroup: "5101", trees: { "5101": row(["b", "a"]) } }, resumable);

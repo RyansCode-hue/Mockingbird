@@ -10,6 +10,19 @@ export const AGENT_NAME: Record<AgentKind, string> = { claude: "Claude", codex: 
 
 export type SessionStatus = "working" | "waiting" | "idle" | "dead";
 
+/**
+ * A closed session whose folder is gone (sessions:missingFolders), and what that means for reopening it: a removed
+ * worktree whose branch is still there is made again from it (`reopens`); otherwise it can't run where it ran, and `why`
+ * says what's missing.
+ */
+export interface MissingFolder {
+  id: string;
+  reopens: boolean;
+  /** What a ghost's status line says ("Its worktree was removed"). */
+  short: string;
+  why: string;
+}
+
 export interface SessionInfo {
   id: string;
   title: string;

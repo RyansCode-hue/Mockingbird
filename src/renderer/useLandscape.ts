@@ -15,6 +15,11 @@ export interface LandscapeStore {
   /** Send a change; why it was refused or never answered (also said in `error`), or null once it's made. */
   update: (patch: LandscapePatch, what: string) => Promise<string | null>;
   reload: () => void;
+  /**
+   * The revision of the newest landscape this window has, as of now (ahead of `state` until it renders): a change's
+   * Undo goes by it, offered only while nothing else has changed the landscape since that change was saved.
+   */
+  revNow: () => number | null;
 }
 
 /** How often a layout file that couldn't be read is read again; the UI preview shortens it. */
@@ -77,7 +82,8 @@ export function useLandscape(on: boolean): LandscapeStore {
     take(r);
     return null;
   }, []);
-  return { state, error, update, reload };
+  const revNow = useCallback(() => cur.current?.rev ?? null, []);
+  return { state, error, update, reload, revNow };
 }
 
 /** The grid's layout prefs as the grid left them in localStorage, each parsed; the keys stay as they are. */
@@ -133,7 +139,7 @@ export function useLandscapeMigration(o: {
     started.current = tries;
     let patch: LandscapePatch;
     try {
-      const m = migrateLayout(readLegacyPrefs(), [...o.live, ...o.resumable, ...o.remote]);
+      const m = migrateLayout(readLegacyPrefs(), [...o.live, ...o.resumable, ...o.remote], { closed: new Set(o.resumable.map((s) => s.id)) });
       if (m.ignored.length) console.warn("[mockingbird] reading the grid's layout into the landscape, left out prefs not in the grid's shape:", m.ignored);
       // read in without teammates' sessions, theirs name no session yet without being stale
       const later = skipRemote && !o.lists.remote ? m.stale.filter(isRemotePaneId) : [];

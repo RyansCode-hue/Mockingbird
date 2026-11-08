@@ -169,15 +169,23 @@ function treeRects(tree: LayoutNode, kindOfKey: (key: string) => WorkspaceKind, 
  * the live ones, the previous run's resumable ones (a relaunch brings them
  * back under the same id, so they aren't stale) and teammates' room sessions,
  * in the sidebar's order. Debriefs live on the WorkTracker tab and are left
- * out. Every other session gets a place.
+ * out. Every other session gets a place, but for the closed ones (`closed`,
+ * main's resumable ids) the layout doesn't name: those were in the grid's
+ * Previous, not on screen, and the landscape lists them (Closed sessions)
+ * rather than drawing ghosts of them, so no area is made for them either.
  */
-export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo[], opts: { now?: Date; cell?: Cell } = {}): Migration {
+export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo[], opts: { now?: Date; cell?: Cell; closed?: ReadonlySet<string> } = {}): Migration {
   const cell = opts.cell ?? CELL_ESTIMATE;
   const ignored: string[] = [];
   const read = readPrefs(prefs, ignored);
   const byId = new Map<string, SessionInfo>();
   for (const s of sessions) if (!s.debrief && !byId.has(s.id)) byId.set(s.id, s);
-  const list = [...byId.values()];
+  const named = new Set(read.named());
+  const onScreen = (s: SessionInfo) => {
+    const stack = stackKeyOf(s);
+    return !opts.closed?.has(s.id) || named.has(s.id) || (!!stack && named.has(`ws:${stack}`));
+  };
+  const list = [...byId.values()].filter(onScreen);
 
   const tiles = new Map<string, Tile>();
   for (const s of list) {

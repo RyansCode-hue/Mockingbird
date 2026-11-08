@@ -238,6 +238,7 @@ export function CloseSessionDialog({
   cancelAll,
   onDone,
   forceClose,
+  forget,
   ghost = false,
 }: {
   session: SessionInfo;
@@ -249,6 +250,8 @@ export function CloseSessionDialog({
   onDone: () => void;
   /** Closes the session's pane and process; answers why it couldn't. */
   forceClose: (s: SessionInfo, forget: boolean) => Promise<string | null>;
+  /** Lets the closed session go for good once its worktree is done with, and what the landscape keeps for it. */
+  forget: (s: SessionInfo) => Promise<unknown>;
   /** On the landscape: what it keeps is its ghost where it was, not a row under Previous. */
   ghost?: boolean;
 }) {
@@ -280,7 +283,7 @@ export function CloseSessionDialog({
         if (!session.repoPath) return stop("The session closed, but it has no repository to clean its worktree up in.");
         const r = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode);
         if (isErr(r)) return stop(r.error);
-        const forgot = await window.mb.killSession(session.id, true);
+        const forgot = await forget(session);
         if (isErr(forgot)) return stop(`The worktree is done with, but the session couldn't be let go: ${forgot.error}`);
         if (r?.branchKept) alert(`The worktree is removed, but its branch is still there: ${r.branchKept}`);
       }

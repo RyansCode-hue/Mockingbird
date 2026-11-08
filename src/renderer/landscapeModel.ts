@@ -6,6 +6,7 @@
  */
 import { isWorkItemId, splitGroupKey, type SessionInfo } from "../shared/types";
 import { areaShelf } from "../shared/areaArtifacts";
+import { isRemotePaneId } from "../shared/team/livePanes";
 import {
   AREA_GAP,
   AREA_HEADER,
@@ -324,6 +325,8 @@ export interface PlaceHint {
   since: number;
   /** A closed session whose ghost the new one takes the place of (Start fresh): it goes exactly there, and the ghost isn't drawn. */
   replaces?: string;
+  /** The session placed by this hint, once one has been (ResolvedLayout.hinted). */
+  took?: string;
 }
 
 /** A tool window's size when it opens, in px at 100%: as tall as the workspace it opens beside, within these. */
@@ -486,6 +489,16 @@ export function renameSettled(r: PendingRename, l: Landscape, sessions: readonly
   return !Object.keys(l.areas).some(under) && !Object.keys(l.stacks).some(under) && !sessions.some((s) => under(s.taskGroup ?? LOOSE_GROUP));
 }
 
+/**
+ * The pending renames still on their way, with the sessions shown and the closed ones (ghosts): main sends the renamed
+ * live list before the window rereads the closed one, and a rename let go meanwhile would leave a ghost in a group the
+ * landscape no longer has.
+ */
+export function renamesLeft(renames: readonly PendingRename[], l: Landscape, shown: readonly SessionInfo[], closed: readonly SessionInfo[]): PendingRename[] {
+  const all = [...shown, ...closed];
+  return renames.filter((r) => !renameSettled(r, l, all));
+}
+
 const tileKind = (members: readonly SessionInfo[]): WorkspaceKind => (members.some((s) => kindOf(s) === "agent") ? "agent" : "terminal");
 
 
@@ -511,10 +524,12 @@ const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(mem
  *
  * `renames` are this window's renames still on their way (PendingRename).
  *
- * `closed` are this Mac's sessions that are closed but can be reopened (main's resumable ones): each is a ghost
- * (GhostView) at its stored place, placed as a new workspace is when it has none, and saved there; a closed tab of a
- * stack that's shown is one of its `closed` tabs instead. Ghosts move with their area and are pushed aside like the
- * places of sessions not shown (passive: one pushed goes on past what it reaches rather than pushing it).
+ * `closed` are this Mac's sessions that are closed but can be reopened (main's resumable ones): one whose place (or
+ * its stack's) is kept is a ghost (GhostView) there; one with none isn't drawn, and nothing is placed for it (the
+ * Closed sessions list holds it: closedListOf). A closed tab of a stack that's shown is one of its `closed` tabs
+ * instead. A ghost never makes an area: one whose group has none is drawn loose. Ghosts move with their area and are
+ * pushed aside like the places of sessions not shown (passive: one pushed goes on past what it reaches rather than
+ * pushing it).
  */
 export function resolveLayout(
   l: Landscape,
@@ -552,7 +567,8 @@ export function resolveLayout(
     else groups.set(key, { area: areaOfSession(s), stack, members: [s], ghost: false, closed: [] });
   }
   const shownIds = new Set(sessions.map((s) => s.id));
-  // the closed sessions: a tab of a stack that's shown, else a ghost of its own (a stack's closed tabs together)
+  // the closed sessions: a tab of a stack that's shown, else a ghost of its own (a stack's closed tabs together) where
+  // its place is kept; one with no place kept isn't drawn (the Closed sessions list holds it: closedListOf)
   for (const s of closed) {
     if (shownIds.has(s.id)) continue;
     const stack = stackOf(s);
@@ -561,6 +577,7 @@ export function resolveLayout(
       shownStack.closed.push(s);
       continue;
     }
+    if (!(stack && Object.hasOwn(l.stacks, stack)) && !own(l.workspaces, s.id)) continue;
     const key = stack ? `${GHOST_KEY}ws:${stack}` : `${GHOST_KEY}${s.id}`;
     const g = groups.get(key);
     if (g) g.members.push(s);
@@ -599,10 +616,11 @@ export function resolveLayout(
     movedTiles.add(key);
   };
 
-  const live = new Set([...groups.values()].map((g) => g.area));
+  // areas form round running workspaces only: a ghost never makes one, and one whose group has no area is drawn loose
+  const live = new Set([...groups.values()].filter((g) => !g.ghost).map((g) => g.area));
   for (const key of live) {
     if (key === LOOSE_GROUP || areas.has(key)) continue;
-    const keys = [...groups].filter(([, g]) => g.area === key).map(([k]) => k);
+    const keys = [...groups].filter(([, g]) => g.area === key && !g.ghost).map(([k]) => k);
     const rects = keys.map((k) => stored.get(k)).filter((r): r is Rect => !!r);
     const around = areaAround(rects);
     if (!around) continue;
@@ -611,6 +629,7 @@ export function resolveLayout(
     setArea(key, a, a);
     for (const k of keys) shiftTile(k, dx, dy);
   }
+  for (const g of groups.values()) if (g.ghost && !areas.has(g.area)) g.area = LOOSE_GROUP;
 
   // everything stored is taken (sessions waiting to be resumed, closed ones' ghosts), where it is now
   const movedIds = new Set<string>();
@@ -650,8 +669,11 @@ export function resolveLayout(
   const tiles: Tile[] = [];
   const placed = new Set<string>();
   let hinted: string | null = null;
-  /** The closed session whose ghost a new one took the place of (PlaceHint.replaces): not drawn. */
-  let replaced: string | null = null;
+  /**
+   * The closed session whose ghost a new one took the place of (PlaceHint.replaces): not drawn, from the pass that places
+   * the new one until the hint is let go (main lets the ghost's place go first, so it isn't drawn over the new one after).
+   */
+  let replaced: string | null = hint?.replaces && hint.took && shownIds.has(hint.took) ? hint.replaces : null;
   for (const [key, g] of groups) {
     let rect = stored.get(key);
     if (!rect) {
@@ -912,6 +934,37 @@ export function closedIn(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: 
 }
 
 /**
+ * The Closed sessions list: the closed sessions the layout doesn't draw (no place kept for them on the landscape), in
+ * the order given; every one while there's no layout yet (the landscape is still being read in, or has no file), so
+ * a closed session can always be reached.
+ */
+export function closedListOf(closed: readonly SessionInfo[], layout: Pick<ResolvedLayout, "tiles" | "ghosts"> | null): SessionInfo[] {
+  if (!layout) return [...closed];
+  const drawn = new Set(closedIn(layout, null).map((s) => s.id));
+  return closed.filter((s) => !drawn.has(s.id));
+}
+
+/**
+ * Landscape `l` without the places of sessions that are gone: a workspace whose session is neither among `known` (this
+ * Mac's live and resumable sessions and teammates' room sessions) nor a teammate's, and a stack none of `known` is in.
+ * Placing new workspaces and Tidy go by this, so those places take no room. Null `known` (the lists haven't all been
+ * read yet, and a session missing from one may only not be read yet) keeps every place. Nothing is removed from the file.
+ */
+export function withoutGone(l: Landscape, known: readonly SessionInfo[] | null): Landscape {
+  if (!known) return l;
+  const ids = new Set(known.map((s) => s.id));
+  const stacks = new Set(known.map(stackKeyOf).filter((k): k is string => !!k));
+  const goneIds = Object.keys(l.workspaces).filter((id) => !ids.has(id) && !isRemotePaneId(id));
+  const goneStacks = Object.keys(l.stacks).filter((k) => !stacks.has(k));
+  if (!goneIds.length && !goneStacks.length) return l;
+  const workspaces = { ...l.workspaces };
+  for (const id of goneIds) delete workspaces[id];
+  const kept = { ...l.stacks };
+  for (const k of goneStacks) delete kept[k];
+  return { ...l, workspaces, stacks: kept };
+}
+
+/**
  * An area's summary line: "Shared room with Nick · 1 waiting · 2 working · 5 workspaces". `shared` leads it for a
  * room's area; `workspaces: false` leaves the count out (the header bar, whose workspaces are under it).
  */
@@ -1135,6 +1188,37 @@ export function undoOf(l: Landscape, patch: LandscapePatch, ids?: readonly strin
     for (const key of Object.keys(from)) if (!ids || ids.includes(key)) put(p[k] as Record<string, unknown>, key, own(had, key) ?? null);
   }
   return finish(p);
+}
+
+/** The note's distance above the viewport's bottom, its gutter at the sides, and its widest, in screen px. */
+export const NOTE_BOTTOM = 58;
+const NOTE_GUTTER = 16;
+const NOTE_MAX_W = 560;
+/** How far the note keeps clear of the minimap and the selection bar. */
+const NOTE_CLEAR = 8;
+/**
+ * Where the landscape's note goes, in viewport px (`left`, and `bottom` up from the viewport's bottom): centred, in the
+ * room left of the minimap (`maxWidth` keeps it there), and lifted clear above the selection bar where the bar is low
+ * enough to be under it. `note` is its size at that width.
+ */
+export function notePlacement(view: Size, note: Size, minimap: Rect | null, bar: Rect | null): { left: number; bottom: number; maxWidth: number } {
+  const right = minimap ? minimap.x - NOTE_CLEAR : view.w - NOTE_GUTTER;
+  const maxWidth = Math.max(120, Math.min(NOTE_MAX_W, right - NOTE_GUTTER));
+  const w = Math.min(note.w, maxWidth);
+  const left = Math.max(NOTE_GUTTER, Math.min((view.w - w) / 2, right - w));
+  const top = view.h - NOTE_BOTTOM - note.h;
+  const under = !!bar && bar.y < view.h - NOTE_BOTTOM && bar.y + bar.h > top && bar.x < left + w && bar.x + bar.w > left;
+  return { left, bottom: under ? view.h - bar!.y + NOTE_CLEAR : NOTE_BOTTOM, maxWidth };
+}
+
+/** What puts back everything plan `p` changed in `l`, its patch and then its `after`, as undoOf does for one patch. */
+export function undoOfPlan(l: Landscape, p: { patch: LandscapePatch | null; after: LandscapePatch | null }): LandscapePatch | null {
+  const a = p.patch ? undoOf(l, p.patch) : null;
+  const b = p.after ? undoOf(l, p.after) : null;
+  if (!a || !b) return a ?? b;
+  const out = emptyPatch();
+  for (const k of PATCH_RECORDS) Object.assign(out[k], a[k] ?? {}, b[k] ?? {});
+  return finish(out);
 }
 
 const isTheirs = (s: SessionInfo) => !!s.room?.remote;
@@ -1718,9 +1802,16 @@ export function planResizeTo(l: Landscape, layout: ResolvedLayout, key: string, 
   const area = t.area === LOOSE_GROUP ? undefined : layout.areas.find((a) => a.key === t.area);
   if (area?.rect.locked) return { refused: `${titleOf(t.area)} is locked: unlock it to resize its workspaces` };
   const min = minWorkspace();
-  let r: Rect = { x: snap(to.x), y: snap(to.y), w: Math.max(min.w, snap(to.w)), h: Math.max(min.h, snap(to.h)) };
-  if (area) r = { ...r, x: Math.max(r.x, snapUp(area.rect.x + AREA_PAD)), y: Math.max(r.y, snapUp(area.rect.y + AREA_HEADER)) };
-  else {
+  let r: Rect = { x: snap(to.x), y: snap(to.y), w: snap(to.w), h: snap(to.h) };
+  if (area) {
+    // a left or top edge dragged past the area's inside edge stops there; the opposite edge stays where it was put
+    const left = snapUp(area.rect.x + AREA_PAD);
+    const top = snapUp(area.rect.y + AREA_HEADER);
+    if (r.x < left) r = { ...r, x: left, w: r.x + r.w - left };
+    if (r.y < top) r = { ...r, y: top, h: r.y + r.h - top };
+  }
+  r = { ...r, w: Math.max(min.w, r.w), h: Math.max(min.h, r.h) };
+  if (!area) {
     const { dx, dy } = clearOf(r, layout.areas.map((a) => a.rect), GAP);
     r = shifted(r, dx, dy);
   }
@@ -1846,18 +1937,19 @@ export const presetFor = (t: Tile, p: SizePreset): Size => presetSize(tileKind(t
 
 // ---- Tidy and ghosts (S6b) ---------------------------------------------------------------------------------------
 
-/** A sub-group name for a new stack in area `area` that no stack there has: "tabs", then "tabs-2", "tabs-3"… */
-export function newStackName(l: Landscape, layout: Pick<ResolvedLayout, "tiles" | "ghosts">, area: string): string {
-  const taken = new Set(
-    [...Object.keys(l.stacks), ...[...layout.tiles, ...layout.ghosts].flatMap((t) => [...t.members, ...(t.closed ?? [])].map((s) => s.taskGroup ?? ""))]
-      .map((k) => splitGroupKey(k))
-      .filter((k) => k.top === area && k.sub)
-      .map((k) => k.sub!)
-  );
-  if (!taken.has("tabs")) return "tabs";
+/** The first of "tabs", "tabs-2", "tabs-3"… that isn't among `taken`: a new stack's sub-group name. */
+export function freeSubName(taken: Iterable<string | null | undefined>): string {
+  const has = new Set(taken);
+  if (!has.has("tabs")) return "tabs";
   let i = 2;
-  while (taken.has(`tabs-${i}`)) i++;
+  while (has.has(`tabs-${i}`)) i++;
   return `tabs-${i}`;
+}
+
+/** A sub-group name for a new stack in area `area` that no stack there has (freeSubName). */
+export function newStackName(l: Landscape, layout: Pick<ResolvedLayout, "tiles" | "ghosts">, area: string): string {
+  const keys = [...Object.keys(l.stacks), ...[...layout.tiles, ...layout.ghosts].flatMap((t) => [...t.members, ...(t.closed ?? [])].map((s) => s.taskGroup ?? ""))];
+  return freeSubName(keys.map((k) => splitGroupKey(k)).filter((k) => k.top === area).map((k) => k.sub));
 }
 
 /**
@@ -1902,8 +1994,9 @@ export function planStack(l: Landscape, layout: ResolvedLayout, picked: readonly
  * Take session `id` out of its stack (a tab dragged out, or Unstack): dropped at `at` (its corner) over area
  * `target` (LOOSE_GROUP: none), as a workspace moved there would be (planMoveTile's rules: kept inside the area's
  * padding, growing it past its right or bottom edge and pushing what's in its way aside). It's the size the stack is.
- * Its group becomes the area's own; a stack left with one tab stops being one, that tab taking the stack's place, and
- * a stack whose front tab left brings another to the front. Refused for a teammate's tab, a tab of a locked area,
+ * Its group becomes the area's own; a stack left with one tab and no closed tabs stops being one, that tab taking the
+ * stack's place (one with closed tabs stays a stack, so they keep its place rather than scattering as ghosts), and a
+ * stack whose front tab left brings another to the front. Refused for a teammate's tab, a tab of a locked area,
  * into a locked area, and loose (a stack's tab stays in an area).
  */
 export function planUnstack(l: Landscape, layout: ResolvedLayout, id: string, at: Point, target: string, titleOf: (key: string) => string): AreaPlan {
@@ -1931,11 +2024,11 @@ export function planUnstack(l: Landscape, layout: ResolvedLayout, id: string, at
   const stackAt = own(p.stacks, t.stack!)?.placement ?? t.rect;
   const rest = t.members.filter((m) => m.id !== id);
   const moves: GroupMove[] = [{ id, group: target }];
-  if (rest.length === 1 && !isTheirs(rest[0])) {
-    // a stack of one is no stack: its last tab takes its place as a workspace of its own, its closed tabs going too
+  if (rest.length === 1 && !isTheirs(rest[0]) && !t.closed?.length) {
+    // a stack of one is no stack: its last tab takes its place as a workspace of its own
     delete p.stacks[t.stack!];
     put(p.workspaces, rest[0].id, stackAt);
-    moves.push({ id: rest[0].id, group: t.area }, ...(t.closed ?? []).map((c) => ({ id: c.id, group: t.area })));
+    moves.push({ id: rest[0].id, group: t.area });
     put(after.stacks, t.stack!, null);
   } else if (t.front.id === id) put(p.stacks, t.stack!, { active: rest[0].id, placement: stackAt });
   return { patch: finish(p), moves, after: finish(after) };
@@ -2024,13 +2117,16 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
 }
 
 /**
- * What forgetting closed sessions `ids` lets go of on the landscape: each one's place, and the place of a stack whose
- * every tab is one of them. Their ghosts are gone with them, so a place left behind would only take room nobody sees
- * (it would pile up as closed sessions are forgotten). Null when nothing is kept for them.
+ * What forgetting sessions `ids` lets go of on the landscape: each one's place, and the place of a stack whose every
+ * tab, running or closed, is one of them. They can't come back, so a place left behind would only take room nobody
+ * sees (it would pile up as sessions are forgotten). Read from the layout before they go: a stack's tabs are in it
+ * until then. Null when nothing is kept for them.
  */
 export function forgetPatch(l: Landscape, layout: Pick<ResolvedLayout, "tiles" | "ghosts">, ids: readonly string[]): LandscapePatch | null {
   const p = emptyPatch();
   for (const id of ids) if (own(l.workspaces, id)) put(p.workspaces, id, null);
-  for (const g of layout.ghosts) if (g.stack && own(l.stacks, g.stack) && g.members.every((s) => ids.includes(s.id))) put(p.stacks, g.stack, null);
+  for (const t of [...layout.tiles, ...layout.ghosts]) {
+    if (t.stack && own(l.stacks, t.stack) && [...t.members, ...(t.closed ?? [])].every((s) => ids.includes(s.id))) put(p.stacks, t.stack, null);
+  }
   return finish(p);
 }

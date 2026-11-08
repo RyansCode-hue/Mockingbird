@@ -4,9 +4,10 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, ticketIdOf, AgentKind, type AgentUpdateNotice, type BroadcastOutcome } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, ticketIdOf, AgentKind, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
+import { git } from "./git";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
@@ -168,6 +169,32 @@ interface LiveSession {
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
 const BEING_RESUMED = "It's being resumed already";
+/** Why a pane can't be relaunched, resumed, restarted or forgotten while a relaunch of it is under way (SessionManager.relaunch). */
+const BEING_RELAUNCHED = "It's being reopened already";
+
+/**
+ * What closed session `s`'s missing folder means for reopening it (SessionManager.missingFolders). A worktree session
+ * is one relaunch makes again (launchAgain): from its branch while that's still here (or on origin as last fetched),
+ * else on a new branch of that name with none of its work, which isn't reopening it.
+ */
+export async function folderGone(s: Pick<SessionInfo, "cwd" | "repoPath" | "branch">): Promise<Omit<MissingFolder, "id">> {
+  const volume = /^\/Volumes\/([^/]+)\//.exec(s.cwd);
+  if (volume && !fs.existsSync(`/Volumes/${volume[1]}`)) return { reopens: false, short: "Its volume isn't connected", why: `Its folder is on ${volume[1]}, which isn't connected: connect it to reopen it` };
+  const repo = s.repoPath ? expandHome(s.repoPath) : null;
+  if (!s.branch || !repo || s.cwd === repo) return { reopens: false, short: "Its folder is gone", why: `Its folder, ${s.cwd}, isn't there any more: start fresh instead` };
+  if (!fs.existsSync(repo)) return { reopens: false, short: "Its repository is gone", why: `Its repository, ${repo}, isn't there any more: start fresh instead` };
+  const has = async (ref: string) => !!(await git(repo, ["rev-parse", "--verify", "-q", ref], { okCodes: [0, 1] }));
+  try {
+    if ((await has(`refs/heads/${s.branch}`)) || (await has(`refs/remotes/origin/${s.branch}`))) {
+      return { reopens: true, short: "Its worktree was removed · its branch is kept", why: `Its worktree was removed: reopening makes it again from its branch, ${s.branch}` };
+    }
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    console.error(`[sessions] couldn't tell whether ${s.branch} is still in ${repo}:`, err);
+    return { reopens: false, short: "Its worktree was removed", why: `Its worktree was removed, and whether its branch is still there couldn't be read: ${why}` };
+  }
+  return { reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" };
+}
 
 /** What relaunching a persisted session resumes (relaunchPlan). */
 type RelaunchPlan = {
@@ -204,6 +231,12 @@ export class SessionManager {
    * of one is refused meanwhile, and it isn't listed as resumable (Previous), where Reopen would launch it again.
    */
   private resuming = new Set<string>();
+  /**
+   * Sessions being relaunched now (relaunch), until each is live again or its relaunch failed: create() takes over
+   * whatever pty holds the id, so a second relaunch would kill the first one's fresh agent, and forgetting one meanwhile
+   * would drop a record that create() then writes back with no history. Both are refused while it's here.
+   */
+  private relaunching = new Set<string>();
   /** Every pty that hasn't exited yet, closed panes' included, with its exit: quitting waits for them (shutdown). */
   private running = new Map<pty.IPty, Promise<void>>();
   /** Set by shutdown: ptys ending now are the app quitting, which leaves each pane's saved state as it was. */
@@ -368,11 +401,15 @@ export class SessionManager {
     }
   }
 
-  /** The closed sessions (resumable) whose folder is gone, a removed worktree's say: Reopen can't run them where they ran. */
-  missingFolders(): string[] {
-    return this.resumable()
-      .filter((s) => !fs.existsSync(s.cwd))
-      .map((s) => s.id);
+  /**
+   * The closed sessions (resumable) whose folder is gone, each with whether Reopen can still run it (MissingFolder): a
+   * removed worktree whose branch is still here, or on origin as last fetched, is made again from it by relaunch
+   * (createWorktree); one whose branch went too, a folder that isn't there, or one on a volume that isn't connected can't.
+   */
+  async missingFolders(): Promise<MissingFolder[]> {
+    const out: MissingFolder[] = [];
+    for (const s of this.resumable()) if (!fs.existsSync(s.cwd)) out.push({ id: s.id, ...(await folderGone(s)) });
+    return out;
   }
 
   /** Start a pane. `notice` is shown in it above the agent's output (see paneNotice). */
@@ -759,6 +796,7 @@ export class SessionManager {
 
   private notResuming(id: string): void {
     if (this.resuming.has(id)) throw new Error(BEING_RESUMED);
+    if (this.relaunching.has(id)) throw new Error(BEING_RELAUNCHED);
   }
 
   /**
@@ -873,6 +911,7 @@ export class SessionManager {
   private resumeRefusal(id: string, asking = false): string | null {
     if (isRemotePaneId(id)) return "That's a teammate's session: only its owner can resume it";
     if (!asking && this.resuming.has(id)) return BEING_RESUMED;
+    if (this.relaunching.has(id)) return BEING_RELAUNCHED;
     const pane = this.live.get(id);
     if (!pane) return "It isn't an exited pane here: reopen it from Previous";
     if (pane.info.status !== "dead") return "It's running already";
@@ -920,16 +959,26 @@ export class SessionManager {
     }
   }
 
-  /** Relaunch a persisted session in its old cwd, resuming the conversation. */
+  /**
+   * Relaunch a persisted session in its old cwd, resuming the conversation. Refused while it's being resumed or
+   * relaunched already, and while it runs: create() would kill the running agent to take its id.
+   */
   async relaunch(id: string): Promise<SessionInfo | null> {
     this.ownOnly(id, "relaunch it");
     this.notResuming(id);
+    const pane = this.live.get(id);
+    if (pane && pane.info.status !== "dead") throw new Error("It's running already");
     this.mayRun(id);
     const old = this.recordOf(id);
     if (!old) return null;
-    const plan = relaunchPlan(old);
-    const notice = (plan.freeing && (await this.freeConversation?.(plan.freeing))) || undefined;
-    return this.launchAgain(old, plan, notice);
+    this.relaunching.add(id);
+    try {
+      const plan = relaunchPlan(old);
+      const notice = (plan.freeing && (await this.freeConversation?.(plan.freeing))) || undefined;
+      return await this.launchAgain(old, plan, notice);
+    } finally {
+      this.relaunching.delete(id);
+    }
   }
 
   private recordOf(id: string): SessionInfo | undefined {
@@ -1108,9 +1157,14 @@ export class SessionManager {
     return this.live.get(id)?.guards ?? null;
   }
 
-  /** Close a pane. Unless `forget`, it stays resumable: its scrollback and undelivered messages are kept for its relaunch. */
+  /**
+   * Close a pane. Unless `forget`, it stays resumable: its scrollback and undelivered messages are kept for its relaunch.
+   * Forgetting one that's being resumed or relaunched is refused: its relaunch would write its record back, history gone.
+   */
   kill(id: string, forget = false): void {
     this.ownOnly(id, "close it");
+    if (forget && this.resuming.has(id)) throw new Error(`${BEING_RESUMED}: forget it once it has opened`);
+    if (forget && this.relaunching.has(id)) throw new Error(`${BEING_RELAUNCHED}: forget it once it has opened`);
     const s = this.live.get(id);
     if (s) {
       try {

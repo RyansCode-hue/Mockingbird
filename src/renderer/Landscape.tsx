@@ -59,6 +59,8 @@ import {
   toLandscape,
   toMinimap,
   undoOf,
+  undoOfPlan,
+  notePlacement,
   wheelPixels,
   wheelZoomFactor,
   worldTransform,
@@ -129,8 +131,8 @@ export interface AreaHooks {
 /** A gesture's plan that can be carried out. */
 export type ReadyPlan = Exclude<AreaPlan, { refused: string }>;
 
-/** An area's actions its hover toolbar shows (AreaFrame.tsx). */
-const ARRANGE = ["collapse", "lock", "tidy"];
+/** An area's actions its hover toolbar shows (AreaFrame.tsx), in this order: Tidy first, as the Zoomed board has it. */
+const ARRANGE = ["tidy", "collapse", "lock"];
 
 /** A button beside a note over the landscape: Tidy's Undo. */
 export interface NoteAction {
@@ -152,6 +154,13 @@ export interface MovesFailed {
 
 /** How far a press moves before it's a drag (a marquee, a workspace or an area moving) rather than a click. */
 const DRAG_PX = 4;
+/**
+ * How far a stack's tab is pulled before it leaves its stack while the pointer is still on its workspace's header: a
+ * click on a tab that slips a few px brings it to the front rather than taking it out.
+ */
+const TAB_DRAG_PX = 14;
+/** How far a snap guide runs past the edges it lines up, in screen px. */
+const GUIDE_PAST_PX = 16;
 /** The area switcher's strip along the view's top (styles.css .ls-switcher: 14px down, 32px tall), and a gap under it. */
 const SWITCHER_STRIP = 56;
 /** How long a note about a gesture (why it was refused, what it left out) stays up. */
@@ -178,6 +187,8 @@ interface Gesture {
   els: HTMLElement[];
   edges?: Edges;
   sid?: string;
+  /** A tab's workspace header, in the viewport: pulled off it, the tab leaves its stack sooner than TAB_DRAG_PX. */
+  strip?: DOMRect;
   /** Where a workspace being moved or resized (or a tab dragged out) lands now: snapped to the grid and its neighbours. */
   snapped?: Rect;
 }
@@ -256,6 +267,7 @@ export function Landscape({
   termKey,
   body,
   onPatch,
+  revNow,
   onMoves,
   askAreaName,
   onSeen,
@@ -268,6 +280,7 @@ export function Landscape({
   cardFor,
   notice,
   ghostActions,
+  ghostStatus,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -298,6 +311,8 @@ export function Landscape({
   body: (s: SessionInfo, size: Size, home: Size | null) => React.ReactNode;
   /** Change landscape.json; why it was refused (also in the banners), or null once it's made. */
   onPatch: (patch: LandscapePatch, what: string) => Promise<string | null>;
+  /** The landscape's newest revision here (LandscapeStore.revNow): a note's Undo is offered while it's the one its change saved. */
+  revNow: () => number | null;
   /** Set these sessions' groups, in order, stopping at the first that can't be: what to say and how many were, or null. */
   onMoves: (moves: readonly GroupMove[], what: string) => Promise<MovesFailed | null>;
   /** A name for the area Make area… makes of `count` workspaces; null when it's cancelled. */
@@ -311,8 +326,13 @@ export function Landscape({
   actionsFor: (t: Tile) => ModelAction[];
   /** Something to say over the landscape, as a gesture's refusal is said (a resize or a tool window refused); a new `n` says it again. */
   notice: LandscapeNote | null;
-  /** A ghost's actions (its front session's): what its buttons, ⋯ and right-click offer. */
-  ghostActions: (s: SessionInfo) => ModelAction[];
+  /**
+   * A closed session's actions: what a ghost's buttons, ⋯ and right-click offer (`tabs` a stack ghost's closed tabs, which
+   * Reopen and Forget act on together), and a stack's closed tab's.
+   */
+  ghostActions: (s: SessionInfo, tabs?: readonly SessionInfo[]) => ModelAction[];
+  /** A ghost's status line (closedStatus). */
+  ghostStatus: (s: SessionInfo) => string;
   /** What a workspace's header chips and footer show. */
   chromeFor: (s: SessionInfo) => WorkspaceChrome;
   /**
@@ -382,6 +402,41 @@ export function Landscape({
     const t = setTimeout(() => setNote(null), NOTE_MS);
     return () => clearTimeout(t);
   }, [note?.n]);
+  // the note in the room left of the minimap, above the selection bar when the bar is low (notePlacement)
+  const noteEl = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = noteEl.current;
+    const vp = viewport.current;
+    if (!el || !vp) return;
+    const box = vp.getBoundingClientRect();
+    const inVp = (q: string): Rect | null => {
+      const r = vp.querySelector<HTMLElement>(q)?.getBoundingClientRect();
+      return r && r.width ? { x: r.left - box.left, y: r.top - box.top, w: r.width, h: r.height } : null;
+    };
+    const view = { w: box.width, h: box.height };
+    const minimap = inVp(".ls-minimap");
+    el.style.maxWidth = `${notePlacement(view, { w: 0, h: 0 }, minimap, null).maxWidth}px`;
+    const at = notePlacement(view, { w: el.offsetWidth, h: el.offsetHeight }, minimap, inVp(".ls-selbar"));
+    Object.assign(el.style, { left: `${at.left}px`, bottom: `${at.bottom}px` });
+  }, [note?.n]);
+  // ⌘Z: the note's action (Tidy's Undo, a tab's) while it's up, wherever the keyboard is but a terminal, a text field,
+  // a menu or a dialog: a Tidy from the hover toolbar or a menu leaves the keyboard on the button, not the landscape
+  useEffect(() => {
+    if (!note?.action) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.key.toLowerCase() !== "z") return;
+      const t = e.target instanceof HTMLElement ? e.target : null;
+      if (t?.closest(".xterm, input, textarea, select, [contenteditable]") || document.querySelector(OVERLAYS)) return;
+      const a = noteNow.current?.action;
+      if (!a) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setNote(null);
+      a.run();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [note?.n, !!note?.action]);
   const gesture = useRef<Gesture | null>(null);
   const marquee = useRef<HTMLDivElement>(null);
   /** While a workspace is moved or resized: the guides it snapped along, and (resizing, or a tab dragged out) where it lands. */
@@ -470,12 +525,13 @@ export function Landscape({
    * Areas' outlines, headers and names, pills, cards' type, and tool windows' and artifact cards' heads zoomed out
    * keep their screen size: --ls-inv is 1/zoom, and --ls-hs that never below 1 (an area's header and pill, which don't
    * shrink past 100% zoomed in). Set on each, never on the world, whose terminals would all have their styles
-   * recalculated; each is drawn with the value of its render, which this keeps current as the camera moves.
+   * recalculated; each is drawn with the value of its render, which this keeps current as the camera moves. A stack's
+   * workspace has it too, for the layers behind it (a few terminals, where every one would be too many).
    */
   const paintScale = (zoom: number) => {
     const inv = String(1 / zoom);
     const hs = String(Math.max(1, 1 / zoom));
-    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-window, .ls-acard, .ls-ghost") ?? []) {
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-window, .ls-acard, .ls-ghost") ?? []) {
       el.style.setProperty("--ls-inv", inv);
       el.style.setProperty("--ls-hs", hs);
     }
@@ -874,6 +930,23 @@ export function Landscape({
     if (plan.note) say(plan.note);
     return !afterError;
   };
+  /**
+   * Tab `s` taken out of stack `t` (planUnstack), said with an Undo that puts it back in the stack and what it pushed
+   * aside back where it was, while nothing else has changed the landscape since (revNow). Its group goes back first,
+   * then the places, so it's never a workspace with no place in between (which the layout would place, and save).
+   */
+  const unstack = async (plan: ReadyPlan, s: SessionInfo, t: Tile) => {
+    const before = storedNow.current;
+    const groups = new Map([...t.members, ...(t.closed ?? [])].map((m) => [m.id, m.taskGroup ?? null]));
+    if (!(await carryOut(plan, `taking ${titleOf(s)} out of the stack`))) return;
+    const saved = revNow();
+    const back = undoOfPlan(before, plan);
+    const undo = () => {
+      if (revNow() !== saved) return say(`Can't put ${titleOf(s)} back in its stack: the landscape has changed since`);
+      void carryOut({ patch: null, moves: plan.moves.map((m) => ({ id: m.id, group: groups.get(m.id) ?? null })), after: back }, `putting ${titleOf(s)} back in its stack`);
+    };
+    say(plan.note ?? `Took ${titleOf(s)} out of its stack`, { label: "Undo", run: undo });
+  };
   const makeArea = async () => {
     const keys = pickedNow.current;
     if (!keys.length) return;
@@ -890,7 +963,11 @@ export function Landscape({
   /** A model's row `key` run as its button would, or its reason said when it can't be done now. */
   const runRow = (actions: readonly ModelAction[], key: string) => {
     const a = actionOf(actions, key);
-    if (!a) return;
+    if (!a) {
+      // a shortcut whose row isn't in its model is a bug here, not something to drop quietly
+      console.error(`[landscape] no "${key}" row to run among`, actions.map((x) => x.key));
+      return say(`That shortcut has nothing to run here (no ${key} row)`);
+    }
     if (a.disabled) say(a.title ?? `${a.label} can't be done now`);
     else a.onPick();
   };
@@ -937,12 +1014,6 @@ export function Landscape({
       const key = selectedArea ?? (sel && sel.area !== LOOSE_GROUP ? sel.area : null);
       if (!key) return say("Select an area, or a workspace in one, to tidy it");
       runRow(areaHooks.bar(key).actions, "tidy");
-    } else if (cmd && !e.shiftKey && e.key.toLowerCase() === "z" && noteNow.current?.action) {
-      // ⌘Z: the last note's Undo (Tidy's), while it's up
-      handled();
-      const a = noteNow.current.action;
-      setNote(null);
-      a.run();
     } else if (e.key === "Escape" && !e.metaKey && escapeClears({ selected: !!(pickedNow.current.length || selected || selectedArea), peek: !!peekNow.current, overlay: !!document.querySelector(OVERLAYS) })) {
       handled();
       clearSelection();
@@ -1061,7 +1132,10 @@ export function Landscape({
     const dx = e.clientX - g.x0;
     const dy = e.clientY - g.y0;
     if (!g.on) {
-      if (Math.hypot(dx, dy) < DRAG_PX) return;
+      const far = Math.hypot(dx, dy);
+      if (far < DRAG_PX) return;
+      const s = g.strip;
+      if (g.kind === "tab" && far < TAB_DRAG_PX && s && e.clientX >= s.left && e.clientX <= s.right && e.clientY >= s.top && e.clientY <= s.bottom) return;
       if (!begin(g)) return endGesture();
       g.on = true;
       // the selection bar is put away while anything is dragged, and comes back where the drop leaves its selection
@@ -1136,13 +1210,17 @@ export function Landscape({
   const drawGuides = (guides: readonly Guide[]) => {
     const el = guidesEl.current;
     if (!el) return;
+    // 1 px on screen, running GUIDE_PAST_PX past both ends, so it reads as a line apart from the edges it lines up
     const w = 1 / cam.current.zoom;
+    const past = GUIDE_PAST_PX * w;
     el.replaceChildren(
       ...guides.map((g) => {
         const d = document.createElement("div");
         d.className = "ls-guide";
         d.dataset.axis = g.axis;
-        Object.assign(d.style, g.axis === "x" ? { left: `${g.at - w / 2}px`, top: `${g.from}px`, width: `${w}px`, height: `${g.to - g.from}px` } : { left: `${g.from}px`, top: `${g.at - w / 2}px`, width: `${g.to - g.from}px`, height: `${w}px` });
+        const from = g.from - past;
+        const len = g.to - g.from + 2 * past;
+        Object.assign(d.style, g.axis === "x" ? { left: `${g.at - w / 2}px`, top: `${from}px`, width: `${w}px`, height: `${len}px` } : { left: `${from}px`, top: `${g.at - w / 2}px`, width: `${len}px`, height: `${w}px` });
         return d;
       })
     );
@@ -1218,7 +1296,7 @@ export function Landscape({
       if (!t || !s || !g.snapped) return;
       const plan = planUnstack(storedNow.current, l, s.id, { x: g.snapped.x, y: g.snapped.y }, dropArea(e), areaTitle);
       if ("refused" in plan) return say(plan.refused);
-      void carryOut(plan, `taking ${titleOf(s)} out of the stack`);
+      void unstack(plan, s, t);
       return;
     }
     if (g.kind === "tile") {
@@ -1428,7 +1506,7 @@ export function Landscape({
           startRef.current({ ...press, kind: "resize", key: node.dataset.ws!, edges: edgesOf(rz.dataset.edge as ResizeEdge) });
         } else if (node && tab && !e.shiftKey) {
           // a tab dragged out leaves its stack; a click on it (no drag) still brings it to the front
-          startRef.current({ ...press, kind: "tab", key: node.dataset.ws!, sid: tab.dataset.sid });
+          startRef.current({ ...press, kind: "tab", key: node.dataset.ws!, sid: tab.dataset.sid, strip: (tab.closest(".ls-head") ?? tab).getBoundingClientRect() });
         } else if (node && (node.classList.contains("card") || t.closest(".ls-head")) && !t.closest("button")) {
           const key = node.dataset.ws!;
           // Shift-click picks it, or lets it go, and selects nothing else (its own press would select it alone);
@@ -1636,7 +1714,7 @@ export function Landscape({
       const g = layout.ghosts.find((x) => x.key === ghostEl.dataset.ghost);
       if (!g) return;
       e.preventDefault();
-      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(ghostActions(g.front)));
+      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(ghostActions(g.front, g.members)));
       return;
     }
     const el = t.closest<HTMLElement>(".ls-node");
@@ -1783,7 +1861,7 @@ export function Landscape({
               selected={selectedArea === a.key && !pickedCount}
               onSelect={() => selectArea(a.key)}
               menu={() => areaHooks.menu(a.key)}
-              arrange={a.rect.collapsed ? [] : areaHooks.bar(a.key).actions.filter((t) => ARRANGE.includes(t.key))}
+              arrange={a.rect.collapsed ? [] : ((acts) => ARRANGE.flatMap((k) => acts.filter((t) => t.key === k)))(areaHooks.bar(a.key).actions)}
               onCollapse={(on) => setAreaFlag(a.key, "collapsed", on)}
               onGrab={(e) => grabArea(a.key, e)}
             />
@@ -1793,9 +1871,10 @@ export function Landscape({
               key={g.key}
               ghost={g}
               band={band}
-              actions={ghostActions(g.front)}
+              actions={ghostActions(g.front, g.members)}
+              status={ghostStatus(g.front)}
               inv={1 / cam.current.zoom}
-              onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front)))}
+              onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front, g.members)))}
             />
           ))}
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}
@@ -1871,7 +1950,7 @@ export function Landscape({
         )}
         {selectionBar()}
         {note && (
-          <div key={note.n} className="ls-note" role="status">
+          <div key={note.n} ref={noteEl} className="ls-note" role="status">
             {note.text}
             {note.action && (
               <button

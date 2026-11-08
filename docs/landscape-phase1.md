@@ -1774,12 +1774,12 @@ Design O, with Artifacts as a window, and N's workspace header.
     - A tab click brings it to the front; a tab dragged out (`"tab"`
       gesture) drops it where it's let go as the area's own workspace,
       pushing what it lands on, its own stack too. A stack left with one tab
-      is let go, that tab taking the stack's place; a front tab leaving
+      and no closed tabs is let go, that tab taking the stack's place; a front tab leaving
       brings the next to the front. A stacked card has its tabs layered
       behind it (`.ls-node.stack`), zoomed out too.
   - **Tidy** (`planTidy`, `tidyRefusal`): T on the selected area (or the
     selected workspace's), its ⋯, or the hover toolbar, which now renders the
-    area model's Collapse, Lock and Tidy rows (`arrange`). Rows as wide as the
+    area model's Tidy, Collapse and Lock rows (`arrange`), in that order. Rows as wide as the
     area is inside, in the order workspaces and ghosts were made (earliest
     session), each session's tool windows after it, then what else the area
     keeps in reading order; the area then fits, pushing neighbours when it
@@ -1788,9 +1788,9 @@ Design O, with Artifacts as a window, and N's workspace header.
   - **Ghost cards** (option A, outline; `GhostCard.tsx`):
     - A ghost is a closed session this Mac can resume (main's resumable
       ones, room tags merged in), drawn at the place `landscape.json` kept for
-      it (`workspaces`, or its stack's). `resolveLayout(…, closed)` places one
-      with no place as any new workspace, saves it, and keeps ghosts apart
-      from `tiles`, so selection, focus, peek and counts never take one. A
+      it (`workspaces`, or its stack's); one with no place is in the Closed
+      sessions list (review round 1, below). `resolveLayout(…, closed)` keeps
+      ghosts apart from `tiles`, so selection, focus, peek and counts never take one. A
       closed tab of a stack on screen is a faded tab on it (`Tile.closed`).
       Ghosts are pushed aside but push nothing. The old `l.ghosts` record is
       left unused (the format stays v2).
@@ -1800,7 +1800,8 @@ Design O, with Artifacts as a window, and N's workspace header.
       gives them up from the end: `.lg-rows` is a column that wraps, each row
       its full width, so a row that doesn't fit whole goes to a second column
       past the clipped edge. Zoomed out (cards band) it's inset by `--ci` as
-      cards are, its type at screen size, Forget in its ⋯, and its foot kept
+      cards are, its type at screen size, Forget and ⋯ left out (right-click),
+      and its foot kept
       clear of the next area's name line (`ghostDrawnHeight`, set by
       `paintCompact` as `--ls-gh`), unless that leaves too little of it.
     - Actions (`ghostActions`, its card, ⋯ and right-click): Reopen
@@ -1822,7 +1823,8 @@ Design O, with Artifacts as a window, and N's workspace header.
       or discard there still lets the session go. The grid is unchanged.
     - **Previous leaves the area tree's foot**; the Connected line stays.
       Relaunch → Reopen, restore all → Reopen all, forget → Forget / Clear
-      ghosts, take back → the ghost's Take it back.
+      ghosts, take back → the ghost's Take it back. (Review round 1 puts the
+      closed sessions with no ghost back there, as the Closed sessions list.)
     - A move of closed sessions (a stack's closed tabs go with it) rereads
       the resumable list (`runMoves`); the preview's `setGroup` and
       `renameGroup` move closed sessions too, as main's do.
@@ -1882,12 +1884,101 @@ Design O, with Artifacts as a window, and N's workspace header.
       loose things.
     - Ghosts can't be dragged; Tidy and pushing move them.
   - **Differences from the designs left, and why:**
-    - guides use the selection colour (`--pane-focus`); no board shows them;
+    - guides have a colour of their own (`--snap-guide`, review round 1); no
+      board shows them;
     - at 100% a ghost leaves the rest of its place empty (option A's frame),
       its actions under the title rather than centred;
     - ghosts aren't rows in the area tree; an area's summary counts them
       ("n closed").
   - **Left for later:** a ghost dragged by hand; Tidy along wires (phase 3).
+- **S6b review fixes (round 1) — As built:**
+  - **Closed sessions list** (Ryan's decision; `ClosedSessions.tsx`,
+    `closedListOf`): only a closed session with a kept place (its own, or its
+    stack's) is a ghost; `resolveLayout` places nothing for one without. The
+    rest are listed under the area tree above the Connected line, and in ⌘K
+    (Reopen all, Forget all, each one's Reopen); every closed session while
+    there's no layout yet (the landscape still being read in). Rows run the
+    ghost model (`ghostActions`), so the take-over rule is the same: a copy a
+    teammate continues offers Take it back, never Reopen. Reopen from the
+    list (`placeReopened`) lets its group go first when the landscape has no
+    area for it (a room's session keeps its group), so it's placed loose. A
+    ghost's group with no area draws it loose; ghosts never form areas (M4).
+    The migration (`migrateLayout`'s `closed`) no longer places a closed
+    session the grid's layout didn't name: Previous stays a list.
+  - **H1:** pending renames settle only when the closed list has followed
+    too (`renamesLeft`), so a ghost in a renamed or merged area stays in it.
+  - **M1:** main refuses a relaunch while one is under way (`relaunching`,
+    "It's being reopened already") or while it's running ("It's running
+    already"), and a forget while it's being relaunched or resumed. The
+    window keeps a busy set per closed session (`whileClosedBusy`): its
+    Reopen and Forget are off meanwhile (`CLOSED_BUSY_WHY`), and Reopen all
+    is off while one runs.
+  - **M2:** a left or top edge dragged past the area's inside edge stops
+    there, the opposite edge kept (`planResizeTo`).
+  - **M3:** Tidy's Undo applies only while the landscape's revision is the
+    one the Tidy saved (`LandscapeStore.revNow`); otherwise the note says it
+    can't.
+  - **M5:** every forget goes through `forgetSession` or `forgetGhosts`,
+    which read `forgetPatch` before the kill (a stack's entry included, now
+    for running stacks with closed tabs too); places left in old data by
+    sessions neither live nor resumable are passed over by placing and Tidy
+    (`withoutGone`, only once every list has been read), never pruned.
+  - **M6:** a tab drag starts only past `TAB_DRAG_PX` (14) or off its
+    workspace's header; the tab-out note has Undo (`undoOfPlan`, groups back
+    first, then places).
+  - **M7:** the note's ⌘Z is a capture-phase listener while the note has an
+    action, skipping terminals, text fields, menus and dialogs.
+  - **Low:** Reopen offered for a removed worktree whose branch is still here
+    or on origin (`folderGone`: `MissingFolder` with accurate wording for a
+    branch gone, a folder gone, a repo gone, a volume not connected); a
+    stack's ghost's Reopen and Forget cover all its closed tabs; Reopen all
+    counts only reopenable ones and is off with a reason at none; the Loose
+    tree row shows for loose ghosts alone; the preview's relaunch refuses a
+    taken-over copy and a running one; Start fresh hides the ghost from the
+    moment its replacement is placed and lets its place go before the
+    forget, saying a failure; a stack keeps its closed tabs when one running
+    tab is left; `freeSubName` shared by `newStackName` and `nextSubName`;
+    the note placed by `notePlacement` (left of the minimap, above a low
+    selection bar); ghost status `flex-shrink: 0`; a workspace card's stack
+    chip `stack · N` with its tabs' names; hover toolbar Tidy first; ghost
+    type 11 px on screen from 100% down (`max(1, inv)` in every band); snap
+    guides in `--snap-guide`, running 16 px past both ends; stack layers at
+    least 3 and 6 px apart on screen; no ⋯ on a ghost zoomed out to cards;
+    room sends' failures as notes; the section named Ghosts; `runRow` and
+    Start fresh say what went wrong.
+  - **Preview:** the fixture's p1 is a loose ghost; o1 (5102) and o2 (5150,
+    no area) are closed with no place, so listed. `?lsUnplaced=<id,…>` drops
+    those sessions' places (closed off the landscape); `?lsHold` never
+    answers the landscape read (no layout). New audits:
+    `?landscapeClosedAudit=list|hold`, `?landscapeFixAudit=a|b`.
+  - **Tests:** `sessionLifecycle` (relaunch and forget refusals),
+    `scrollback` (`missingFolders` cases), `landscapeArrange` (list rule,
+    loose ghosts, rename and merge with ghosts, M2, `forgetPatch` for running
+    stacks, `withoutGone`, unstack Undo, closed tabs keep a stack,
+    `notePlacement`), `landscapeMigrate` (Previous unplaced),
+    `workspaceActions` (busy, branch kept, stacks, Reopen all counts),
+    `uiLandscapeClosed` (the list with and without a layout; toolbar order;
+    ⌘Z after a toolbar Tidy; Undo refused after a drag and a lock; guide
+    colour and reach; the note against the bar and the minimap; a slipped
+    tab click; tab-out Undo; Esc on a move, a resize and a tab drag; ghost
+    status zoomed out; type size either side of 75%).
+  - **Decisions for Ryan:**
+    - Data already migrated keeps its places, so sessions that were in
+      Previous when the landscape was first turned on stay ghosts; only new
+      migrations leave them listed. Clear ghosts in an area or the Loose row
+      clears them.
+    - Reopen from the list makes a session loose (its group dropped) when
+      its area is gone, as asked; a room's session keeps its room group.
+    - Start fresh from the list opens New session seeded as from a ghost but
+      leaves the closed one listed, to forget by hand (there's no place to
+      take over).
+    - The list's clear-all reads "Forget all" (there are no ghosts in it);
+      the confirms now say "Forget …" everywhere.
+    - Undo after Tidy or a tab-out is refused once anything else changed
+      the landscape (another window's change too), rather than checked field
+      by field.
+    - Orphan places are ignored, not pruned, so a list read wrongly can't
+      delete anything.
 
 ### S7 · Needs you
 - **The tray** drops down from the top-bar button. Phase 1 items:
