@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { git, makeRepo, tempDir } from "./helpers";
-import { worktreeRoot } from "../src/main/worktrees";
+import { legacyWorktreeRoot, worktreeRoot } from "../src/main/worktrees";
 
 /** Every pty the manager starts: what it was asked to run and with what environment, what was written to it, and a way to end it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; killed: boolean; signals: string[]; emit(d: string): void; exit(code: number): void };
@@ -290,6 +290,40 @@ describe("Claude Code's background sessions", () => {
     expect(shown.indexOf("earlier output")).toBeGreaterThanOrEqual(0);
     expect(shown.indexOf("earlier output")).toBeLessThan(shown.indexOf(notice));
     expect(warn.mock.calls.map((c) => String(c[0]))).toContain(`[sessions] ${s.id}: ${notice}`);
+  });
+
+  /** A session in a worktree with conversation `conv`, whose worktree and branch have gone: it has nowhere to run. */
+  async function nowhereToRun(m: Awaited<ReturnType<typeof manager>>["m"], conv: string) {
+    transcript(conv);
+    const repo = makeRepo();
+    const s = await m.create({ repoPath: repo, useWorktree: true, branchName: "feat", agent: "claude", title: "w" });
+    m.statusFromHook({ paneId: s.id, conversationId: conv, agent: "claude", status: "idle" });
+    git(repo, "worktree", "remove", "--force", s.cwd);
+    git(repo, "branch", "-q", "-D", "feat");
+    return s;
+  }
+
+  it("aren't let go by a relaunch with nowhere to run: nothing running elsewhere is stopped for it", async () => {
+    const { m } = await manager();
+    const s = await nowhereToRun(m, "bg-conv");
+    m.kill(s.id, false);
+    const asked: unknown[] = [];
+    m.freeConversation = async (c) => (asked.push(c), "stopped it");
+    await expect(m.relaunch(s.id)).rejects.toThrow(/isn't here or on origin/);
+    expect(asked).toEqual([]);
+  });
+
+  it("aren't let go by a resume with nowhere to run: refused, saying why, the pane left to close", async () => {
+    const { m } = await manager();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await nowhereToRun(m, "bg-conv");
+    ptys.at(-1)!.exit(1);
+    const asked: unknown[] = [];
+    m.freeConversation = async (c) => (asked.push(c), "stopped it");
+    expect(await m.resume(s.id)).toEqual({ refused: expect.stringMatching(/isn't here or on origin/) });
+    expect(asked).toEqual([]);
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("dead");
+    warn.mockRestore();
   });
 
   it("that won't let go fail the relaunch with why, start nothing, and leave the session to resume later", async () => {
@@ -610,8 +644,154 @@ describe("relaunching a session in the checkout itself", () => {
   });
 });
 
+describe("relaunching a session whose worktree is gone, its branch's usual folder on another branch", () => {
+  /** A closed session in `<root>/feat-2` on feat, with `<root>/feat` on other holding the user's own files; a take-over's folder is named so. */
+  async function suffixed() {
+    const { m } = await manager();
+    const repo = makeRepo();
+    const root = worktreeRoot(repo);
+    git(repo, "branch", "feat");
+    const usual = path.join(root, "feat");
+    git(repo, "worktree", "add", "-q", "-b", "other", usual);
+    const theirs = path.join(usual, "theirs.txt");
+    fs.writeFileSync(theirs, "uncommitted");
+    const own = path.join(root, "feat-2");
+    git(repo, "worktree", "add", "-q", own, "feat");
+    const s = await m.create({ repoPath: repo, cwd: own, branchName: "feat", useWorktree: false, agent: "claude", title: "t" });
+    m.kill(s.id, false);
+    return { m, repo, s, usual, own, theirs };
+  }
+  const assertBackInItsOwn = (x: { usual: string; own: string; theirs: string }, again: { cwd: string; branch: string | null } | null) => {
+    expect(again).toMatchObject({ cwd: x.own, branch: "feat" });
+    expect(git(x.own, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
+    expect(git(x.usual, "rev-parse", "--abbrev-ref", "HEAD")).toBe("other");
+    expect(fs.existsSync(x.theirs)).toBe(true);
+  };
+
+  it("makes it again in its own folder, never running in the other", async () => {
+    const x = await suffixed();
+    git(x.repo, "worktree", "remove", x.own);
+    assertBackInItsOwn(x, await x.m.relaunch(x.s.id));
+  });
+
+  it("makes it again when its folder was deleted outside git, clearing its own registration", async () => {
+    const x = await suffixed();
+    fs.rmSync(x.own, { recursive: true, force: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    assertBackInItsOwn(x, await x.m.relaunch(x.s.id));
+    warn.mockRestore();
+  });
+
+  it("makes it again with a plain folder at the usual place, or an old-layout one on another branch", async () => {
+    const { m } = await manager();
+    const repo = makeRepo();
+    const root = worktreeRoot(repo);
+    git(repo, "branch", "feat");
+    fs.mkdirSync(path.join(root, "feat"), { recursive: true });
+    const legacy = path.join(legacyWorktreeRoot(repo), "feat");
+    git(repo, "worktree", "add", "-q", "-b", "other", legacy);
+    const own = path.join(root, "feat-2");
+    git(repo, "worktree", "add", "-q", own, "feat");
+    const s = await m.create({ repoPath: repo, cwd: own, branchName: "feat", useWorktree: false, agent: "claude", title: "t" });
+    m.kill(s.id, false);
+    git(repo, "worktree", "remove", own);
+    expect(await m.relaunch(s.id)).toMatchObject({ cwd: own, branch: "feat" });
+    expect(git(own, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
+  });
+
+  it("is refused, with nothing let go, when its branch has gone too", async () => {
+    const x = await suffixed();
+    const log = vi.spyOn(console, "warn").mockImplementation(() => {});
+    git(x.repo, "worktree", "remove", x.own);
+    git(x.repo, "branch", "-q", "-D", "feat");
+    const asked: unknown[] = [];
+    x.m.freeConversation = async (c: unknown) => (asked.push(c), null);
+    await expect(x.m.relaunch(x.s.id)).rejects.toThrow("Its branch, feat, isn't here or on origin any more: start fresh");
+    expect(asked).toEqual([]);
+    log.mockRestore();
+  });
+});
+
+describe("relaunching on what's out in its folder", () => {
+  it("a repo-less session runs in its own folder, not in home", async () => {
+    const { m } = await manager();
+    const own = tempDir("own");
+    const s = await m.create({ repoPath: null, cwd: own, useWorktree: false, agent: "claude", title: "t" });
+    m.kill(s.id, false);
+    expect((await m.relaunch(s.id))?.cwd).toBe(own);
+  });
+
+  it("a worktree switched by hand says what it's on now, in its record and its pane", async () => {
+    const { m } = await manager();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const repo = makeRepo();
+    const s = await m.create({ repoPath: repo, useWorktree: true, branchName: "feat", agent: "claude", title: "t" });
+    m.kill(s.id, false);
+    git(s.cwd, "switch", "-q", "-c", "by-hand");
+    expect(await m.relaunch(s.id)).toMatchObject({ cwd: s.cwd, branch: "by-hand" });
+    expect(m.buffer(s.id)).toContain("This session was on feat. Its folder is on by-hand now.");
+    warn.mockRestore();
+  });
+
+  it("a checkout session back on another branch says so in its pane, and nothing when it's the same", async () => {
+    const { m } = await manager();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const repo = makeRepo();
+    const s = await m.create({ repoPath: repo, branchName: "mine", useWorktree: false, agent: "claude", title: "t" });
+    m.kill(s.id, false);
+    await m.relaunch(s.id);
+    expect(m.buffer(s.id)).not.toContain("This session was on");
+    m.kill(s.id, false);
+    git(repo, "switch", "-q", "main");
+    await m.relaunch(s.id);
+    expect(m.buffer(s.id)).toContain("This session was on mine. Its folder is on main now.");
+    warn.mockRestore();
+  });
+
+  it("a detached one says that, with no branch to its name", async () => {
+    const { m } = await manager();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const repo = makeRepo();
+    const s = await m.create({ repoPath: repo, useWorktree: true, branchName: "feat", agent: "claude", title: "t" });
+    m.kill(s.id, false);
+    git(s.cwd, "switch", "-q", "--detach");
+    expect(await m.relaunch(s.id)).toMatchObject({ cwd: s.cwd, branch: null });
+    expect(m.buffer(s.id)).toContain("This session was on feat. Its folder is on a detached HEAD now.");
+    warn.mockRestore();
+  });
+});
+
+describe("a new ticket session in a checkout with a session running there", () => {
+  const ticket = { ticketId: "9", ticketTitle: "New work", useWorktree: false, agent: "claude" as const, title: "n" };
+
+  it("is refused when that one has no branch of its own: switching would move it all the same", async () => {
+    const { m } = await manager();
+    const repo = makeRepo();
+    await m.create({ repoPath: repo, useWorktree: false, agent: "claude", title: "plain" });
+    await expect(m.create({ repoPath: repo, ...ticket })).rejects.toThrow(/already checked out on main by a running session/);
+    expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  });
+
+  it("goes ahead when nothing would move: what it wants is what's out", async () => {
+    const { m } = await manager();
+    const repo = makeRepo();
+    await m.create({ repoPath: repo, useWorktree: false, agent: "claude", title: "plain" });
+    const s = await m.create({ repoPath: repo, branchName: "main", useWorktree: false, agent: "claude", title: "n" });
+    expect(s.branch).toBe("main");
+  });
+
+  it("goes ahead once that one has exited", async () => {
+    const { m } = await manager();
+    const repo = makeRepo();
+    const plain = await m.create({ repoPath: repo, useWorktree: false, agent: "claude", title: "plain" });
+    m.kill(plain.id, false);
+    const s = await m.create({ repoPath: repo, ...ticket });
+    expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe(s.branch);
+  });
+});
+
 describe("relaunching a session in a worktree whose folder isn't called after its branch (a take-over's)", () => {
-  it("runs in that folder while it's there, and once it's gone makes it again at its branch's usual place", async () => {
+  it("runs in that folder while it's there", async () => {
     const { m } = await manager();
     const repo = makeRepo();
     git(repo, "branch", "feat");
@@ -622,10 +802,6 @@ describe("relaunching a session in a worktree whose folder isn't called after it
     m.kill(s.id, false);
     expect(await m.relaunch(s.id)).toMatchObject({ cwd: folder, branch: "feat" });
     expect(fs.existsSync(path.join(root, "feat"))).toBe(false);
-    m.kill(s.id, false);
-    git(repo, "worktree", "remove", folder);
-    expect(await m.relaunch(s.id)).toMatchObject({ cwd: path.join(root, "feat"), branch: "feat" });
-    expect(git(path.join(root, "feat"), "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
   });
 });
 

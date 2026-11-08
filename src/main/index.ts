@@ -750,7 +750,17 @@ handle("sessions:create", async (req) => {
   if (req?.ticketId && pipeline.startCoding(String(req.ticketId), req.ticketTitle ?? undefined)) pipelineChanged();
   return info;
 });
-handle("sessions:relaunch", (id) => sessions.relaunch(id));
+handle("sessions:relaunch", async (id) => {
+  const info = await sessions.relaunch(id);
+  if (!info) return info;
+  // it's running again, so it belongs in its own area; logged rather than refused, as it's reopened either way
+  try {
+    landscape.sessionReopened(info);
+  } catch (err) {
+    logError(`landscape: placing ${info.id} again`, err);
+  }
+  return info;
+});
 handle("sessions:resume", (id) => sessions.resume(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {

@@ -196,6 +196,9 @@ export async function folderGone(s: Pick<SessionInfo, "cwd" | "repoPath" | "bran
   return { reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" };
 }
 
+/** Where a persisted session runs again (SessionManager.whereAgain), and what to tell it when its folder has moved to another branch. */
+type PlaceAgain = { where: Pick<NewSessionRequest, "cwd" | "branchName" | "useWorktree">; moved?: string };
+
 /** What relaunching a persisted session resumes (relaunchPlan). */
 type RelaunchPlan = {
   /** Its last conversation, while that's still on disk. */
@@ -413,10 +416,9 @@ export class SessionManager {
   }
 
   /**
-   * Start a pane. `notice` is shown in it above the agent's output (see paneNotice). `relaunch`: a closed session
-   * started again, whose worktree is made from its own branch, never a new one (createWorktree's mustExist).
+   * Start a pane. `notice` is shown in it above the agent's output (see paneNotice).
    */
-  async create(req: NewSessionRequest, opts: { notice?: string; relaunch?: boolean } = {}): Promise<SessionInfo> {
+  async create(req: NewSessionRequest, opts: { notice?: string } = {}): Promise<SessionInfo> {
     this.refuseWhileQuitting();
     const settings = this.store.settings;
     let cwd: string;
@@ -432,14 +434,14 @@ export class SessionManager {
       branch = req.branchName?.trim() || null;
     } else if (repoPath && req.useWorktree) {
       branch = wanted || `mb-${Date.now().toString(36)}`;
-      cwd = await createWorktree(repoPath, branch, req.baseBranch, { mustExist: opts.relaunch });
+      cwd = await createWorktree(repoPath, branch, req.baseBranch);
     } else if (repoPath && wanted) {
       // ticket branch in the checkout itself — one branch per checkout, so
-      // another live session there on a different branch blocks this
-      const other = [...this.live.values()].find(
-        (s) => s.info.cwd === repoPath && s.info.status !== "dead" && s.info.branch && s.info.branch !== wanted
-      );
-      await checkoutBranch(repoPath, wanted, req.baseBranch, other?.info.branch ?? undefined);
+      // another live session there on a different branch blocks this. One with
+      // no branch of its own runs on whatever's out, and would be moved all the same
+      const other = [...this.live.values()].find((s) => s.info.cwd === repoPath && s.info.status !== "dead" && s.info.branch !== wanted);
+      const occupiedBy = other && (other.info.branch ?? (await currentBranch(repoPath)) ?? "a detached HEAD");
+      await checkoutBranch(repoPath, wanted, req.baseBranch, occupiedBy === wanted ? undefined : occupiedBy);
       branch = wanted;
       cwd = repoPath;
     } else {
@@ -934,11 +936,21 @@ export class SessionManager {
   async resume(id: string): Promise<SessionInfo | { refused: string }> {
     const refusal = this.resumeRefusal(id);
     if (refusal) return { refused: refusal };
-    const plan = relaunchPlan(this.recordOf(id)!);
+    const record = this.recordOf(id)!;
+    const plan = relaunchPlan(record);
     this.resuming.add(id);
     try {
       let notice: string | undefined;
+      let place: PlaceAgain | undefined;
       if (plan.freeing && this.freeConversation) {
+        // its folder first: a conversation isn't let go for a session that has nowhere to run
+        try {
+          place = await this.whereAgain(record);
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          console.warn(`[sessions] ${id}: not resumed, it has nowhere to run: ${why}`);
+          return { refused: why };
+        }
         try {
           notice = (await this.freeConversation(plan.freeing)) ?? undefined;
         } catch (err) {
@@ -956,7 +968,7 @@ export class SessionManager {
       this.kill(id, false);
       const old = this.recordOf(id);
       if (!old) throw new Error("its saved record went while it was being resumed");
-      return await this.launchAgain(old, plan, notice);
+      return await this.launchAgain(old, plan, place ?? (await this.whereAgain(old)), notice);
     } finally {
       this.resuming.delete(id);
     }
@@ -977,8 +989,10 @@ export class SessionManager {
     this.relaunching.add(id);
     try {
       const plan = relaunchPlan(old);
+      // its folder first: a conversation isn't let go for a session that has nowhere to run
+      const place = await this.whereAgain(old);
       const notice = (plan.freeing && (await this.freeConversation?.(plan.freeing))) || undefined;
-      return await this.launchAgain(old, plan, notice);
+      return await this.launchAgain(old, plan, place, notice);
     } finally {
       this.relaunching.delete(id);
     }
@@ -989,28 +1003,36 @@ export class SessionManager {
   }
 
   /**
-   * Where closed session `old` runs again. A relaunch never switches a checkout's branch or makes one, so it's never
-   * asked for one by name or by ticket there: in the checkout itself it runs on whatever branch is out now. A worktree
-   * session runs in its own folder while that's there, whatever the folder's called (a take-over's can be
-   * <branch>-2), and one that's gone is made again from its branch at the usual place. A detached one's has no branch
-   * to make it from, so create refuses it.
+   * Where closed session `old` runs again: always its own folder, as its conversation's transcript is kept by folder. A
+   * relaunch never switches a branch, so it runs on whatever's out there now, says so (`moved`) when that isn't what it
+   * was on, and is labelled with it, as what a session says it's on is what stops another switching a checkout under it
+   * and what reviewing it reads. A worktree that's gone is made again there, from its branch, never made anew
+   * (createWorktree's mustExist); any other folder that's gone throws. So when this returns it has somewhere to run.
    */
-  private async whereAgain(old: SessionInfo): Promise<Pick<NewSessionRequest, "cwd" | "branchName" | "useWorktree">> {
+  private async whereAgain(old: SessionInfo): Promise<PlaceAgain> {
     const repo = old.repoPath ? expandHome(old.repoPath) : null;
-    if (!repo) return { useWorktree: false };
-    const there = fs.existsSync(old.cwd);
-    if (old.cwd !== repo) return there || !old.branch ? { cwd: old.cwd, branchName: old.branch ?? undefined, useWorktree: false } : { branchName: old.branch, useWorktree: true };
-    if (!there || !old.branch) return { cwd: old.cwd, useWorktree: false };
-    // what's out now is what it says it's on, and what keeps another session from switching the checkout under it
-    const out = await currentBranch(old.cwd).catch((err: unknown) => {
-      console.error(`[sessions] ${old.id}: couldn't read the branch out in ${old.cwd}:`, err);
-      return null;
-    });
-    return { cwd: old.cwd, branchName: out ?? undefined, useWorktree: false };
+    if (!fs.existsSync(old.cwd)) {
+      if (!repo || old.cwd === repo || !old.branch) throw new Error(`${old.cwd} doesn't exist any more`);
+      const cwd = await createWorktree(repo, old.branch, undefined, { mustExist: true, at: old.cwd });
+      return { where: { cwd, branchName: old.branch, useWorktree: false } };
+    }
+    const where = { cwd: old.cwd, useWorktree: false };
+    // a folder with no branch on record, in the repo's own place or in none, may be no repository at all
+    if (!repo || (old.cwd === repo && !old.branch)) return { where };
+    let out: string | null;
+    try {
+      out = await currentBranch(old.cwd);
+    } catch (err) {
+      console.error(`[sessions] ${old.id}: couldn't read the branch out in ${old.cwd}, going by its record:`, err);
+      return { where: { ...where, branchName: old.branch ?? undefined } };
+    }
+    const moved = old.branch && out !== old.branch ? `This session was on ${old.branch}. Its folder is on ${out ?? "a detached HEAD"} now.` : undefined;
+    return { where: { ...where, branchName: out ?? undefined }, moved };
   }
 
-  /** Start persisted session `old` again under its id, resuming what `plan` says; `notice` is shown in its pane. */
-  private async launchAgain(old: SessionInfo, plan: RelaunchPlan, notice: string | undefined): Promise<SessionInfo> {
+  /** Start persisted session `old` again under its id, resuming what `plan` says, where `place` says; `freed` and where it's moved are shown in its pane. */
+  private async launchAgain(old: SessionInfo, plan: RelaunchPlan, place: PlaceAgain, freed: string | undefined): Promise<SessionInfo> {
+    const notice = [freed, place.moved].filter(Boolean).join("\n") || undefined;
     if (notice) console.warn(`[sessions] ${old.id}: ${notice}`);
     const { conv, sameAgent, resume } = plan;
     // create() re-adds the record; only forget the old one once it has, or a
@@ -1019,7 +1041,7 @@ export class SessionManager {
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
       ticketTitle: old.ticketTitle ?? undefined,
-      ...(await this.whereAgain(old)),
+      ...place.where,
       taskGroup: old.taskGroup ?? undefined,
       extraDirs: old.extraDirs,
       resume,
@@ -1031,7 +1053,7 @@ export class SessionManager {
       model: old.model ?? undefined,
       effort: old.effort ?? undefined,
       agent: old.agent,
-    }, { notice, relaunch: true });
+    }, { notice });
     // a muted pane stays muted through restarts
     if (old.muted) {
       info.muted = true;

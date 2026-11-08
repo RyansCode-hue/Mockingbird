@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranches, listWorktrees, migrateWorktree, parseShortstat, unregisterMissing, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
+import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranches, listWorktrees, migrateWorktree, parseShortstat, removeWorktree, unregisterMissing, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
 import { pickDefaultBase } from "../src/main/git";
 import { changedPaths, scmStatus } from "../src/main/scm";
 import { git, makeRepo } from "./helpers";
@@ -161,7 +161,7 @@ describe("a worktree's folder gone, or seeming to be", () => {
 
   it("unregisters only a path git itself calls prunable: one that's there keeps its registration and its files, ignored ones too", async () => {
     const { repo, wt, env, listed } = await withIgnored("keep");
-    await unregisterMissing(repo, worktreeRoot(repo), "keep", wt);
+    await unregisterMissing(repo, wt);
     expect(fs.existsSync(env)).toBe(true);
     expect(listed()).toBe(true);
   });
@@ -204,6 +204,106 @@ describe("a worktree's folder gone, or seeming to be", () => {
   });
 });
 
+describe("a folder that's there, reused for a session on a branch", () => {
+  /** Branches feat and other, and `<root>/feat` out on other with a file of the user's in it. */
+  function feastOnOther() {
+    const repo = makeRepo();
+    git(repo, "branch", "feat");
+    const folder = path.join(worktreeRoot(repo), "feat");
+    git(repo, "worktree", "add", "-q", "-b", "other", folder);
+    const theirs = path.join(folder, "theirs.txt");
+    fs.writeFileSync(theirs, "uncommitted");
+    return { repo, folder, theirs };
+  }
+
+  it("is refused when it's on another branch, the session never put in it", async () => {
+    const { repo, folder, theirs } = feastOnOther();
+    await expect(createWorktree(repo, "feat")).rejects.toThrow(`${folder} is there, on other, so a session on feat can't run in it`);
+    await expect(createWorktree(repo, "feat", undefined, { mustExist: true })).rejects.toThrow(/on other/);
+    expect(git(folder, "rev-parse", "--abbrev-ref", "HEAD")).toBe("other");
+    expect(fs.existsSync(theirs)).toBe(true);
+  });
+
+  it("is refused when it's a plain folder, or one with a detached HEAD", async () => {
+    const repo = makeRepo();
+    const plain = path.join(worktreeRoot(repo), "feat");
+    fs.mkdirSync(plain, { recursive: true });
+    await expect(createWorktree(repo, "feat")).rejects.toThrow(/isn't a checkout of a branch/);
+    const detached = path.join(worktreeRoot(repo), "gone");
+    git(repo, "worktree", "add", "-q", "--detach", detached);
+    await expect(createWorktree(repo, "gone")).rejects.toThrow(/isn't a checkout of a branch/);
+  });
+
+  it("is refused when it's a plain folder inside another repository, whatever that one has out", async () => {
+    const outer = makeRepo({ "a.txt": "1" }, "outer");
+    const repo = path.join(outer, "inner");
+    fs.mkdirSync(repo);
+    git(repo, "init", "-q", "-b", "main");
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "first");
+    const plain = path.join(worktreeRoot(repo), "main");
+    fs.mkdirSync(plain, { recursive: true });
+    await expect(createWorktree(repo, "main")).rejects.toThrow(/isn't a checkout of a branch/);
+  });
+
+  it("is reused when it's on that branch", async () => {
+    const repo = makeRepo();
+    const wt = await createWorktree(repo, "feat");
+    expect(await createWorktree(repo, "feat")).toBe(wt);
+  });
+
+  it("in the old layout is used only while it holds the branch: on another, the worktree's made at the usual place", async () => {
+    const repo = makeRepo();
+    const legacy = path.join(legacyWorktreeRoot(repo), "feat");
+    git(repo, "worktree", "add", "-q", "-b", "feat", legacy);
+    expect(await createWorktree(repo, "feat")).toBe(legacy);
+    git(legacy, "switch", "-q", "-c", "other");
+    const wt = await createWorktree(repo, "feat");
+    expect(wt).toBe(path.join(worktreeRoot(repo), "feat"));
+    expect(git(wt, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
+    expect(git(legacy, "rev-parse", "--abbrev-ref", "HEAD")).toBe("other");
+  });
+
+  it("isn't looked for in the old layout when it's asked for at a folder of its own", async () => {
+    const repo = makeRepo();
+    git(repo, "branch", "feat");
+    fs.mkdirSync(path.join(legacyWorktreeRoot(repo), "feat"), { recursive: true });
+    const at = path.join(worktreeRoot(repo), "a", "own-name");
+    expect(await createWorktree(repo, "feat", undefined, { at })).toBe(at);
+    expect(git(at, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
+  });
+});
+
+describe("removing a worktree", () => {
+  it("leaves every other registered, one it can't look at (as on a volume that's gone) included", async () => {
+    const repo = makeRepo();
+    const shutIn = await createWorktree(repo, "shut/in");
+    const other = await createWorktree(repo, "other");
+    const shut = path.dirname(shutIn);
+    fs.chmodSync(shut, 0o000);
+    try {
+      await removeWorktree(repo, other);
+    } finally {
+      fs.chmodSync(shut, 0o755);
+    }
+    const listed = git(repo, "worktree", "list", "--porcelain");
+    expect(listed).toContain("/shut/in\n");
+    expect(listed).not.toContain("/other\n");
+    expect(git(shutIn, "rev-parse", "--abbrev-ref", "HEAD")).toBe("shut/in");
+  });
+});
+
+describe("a worktree refused", () => {
+  it("leaves no folder behind", async () => {
+    const repo = makeRepo();
+    await expect(createWorktree(repo, "nowhere", undefined, { mustExist: true })).rejects.toThrow(/isn't here or on origin/);
+    expect(fs.existsSync(worktreeRoot(repo))).toBe(false);
+    const plain = path.join(path.dirname(repo), "plain");
+    fs.mkdirSync(plain);
+    await expect(createWorktree(plain, "feat")).rejects.toThrow(/not a git repository/);
+    expect(fs.existsSync(worktreeRoot(plain))).toBe(false);
+  });
+});
+
 describe("a relaunch's worktree, its branch only on origin", () => {
   /** A clone that's fetched origin's `feat`, with no local branch of it. */
   function fetched() {
@@ -238,6 +338,15 @@ describe("a relaunch's worktree, its branch only on origin", () => {
     const wt = await createWorktree(clone, "feat", undefined, { mustExist: true });
     expect(git(wt, "rev-parse", "HEAD")).toBe(head);
     expect(log.mock.calls.some((c) => /couldn't fetch feat, going by the last fetch/.test(String(c[0])))).toBe(true);
+    log.mockRestore();
+  });
+
+  it("says to try again, not to start fresh, when it's not here and origin couldn't be asked", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { origin, clone } = fetched();
+    git(origin, "branch", "never-fetched");
+    fs.renameSync(origin, `${origin}-moved`);
+    await expect(createWorktree(clone, "never-fetched", undefined, { mustExist: true })).rejects.toThrow("Its branch, never-fetched, isn't here, and origin couldn't be reached to check for it: try again when you're online");
     log.mockRestore();
   });
 

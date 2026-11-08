@@ -49,6 +49,7 @@ import {
   pushAside,
   sameLandscape,
   renameAreaPatch,
+  reopenPatch,
   type Area,
   type Landscape,
   type Rect,
@@ -296,6 +297,22 @@ describe("areas' rectangles", () => {
     expect(handler).toMatch(/const closed = sessions\.resumable\(\)\.map\(/);
   });
 
+  it("folding into another area moves another group's closed stack lying inside the old one too, and lets go of one nobody's closed in", () => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 2000, 900);
+    l.areas.B = area(2100, 0, 2000, 900);
+    l.stacks["G/tabs"] = { active: "g1", placement: { x: 24, y: 48, w: 800, h: 600 } };
+    l.stacks["G/other"] = { active: "g2", placement: { x: 900, y: 48, w: 800, h: 600 } };
+    l.stacks["G/away"] = { active: "g3", placement: { x: 5000, y: 48, w: 800, h: 600 } };
+    const p = renameAreaPatch(l, "A", "B", [], [session("g1", { taskGroup: "G/tabs", status: "dead" }), session("g3", { taskGroup: "G/away", status: "dead" })])!;
+    expect(p.stacks?.["G/tabs"]).toEqual({ active: "g1", placement: { x: 2124, y: 48, w: 800, h: 600 } });
+    expect(p.stacks?.["G/other"]).toBeNull();
+    // one lying elsewhere stays out of it
+    expect(Object.hasOwn(p.stacks ?? {}, "G/away")).toBe(false);
+    const merged = applyPatch(l, p);
+    expect(inside(merged.stacks["G/tabs"].placement, merged.areas.B)).toBe(true);
+  });
+
   it("folding into another area also lets go of the places of teammates' and resumable sessions inside the old one", () => {
     const l = emptyLandscape();
     l.areas.A = area(0, 0, 2000, 900);
@@ -312,6 +329,66 @@ describe("areas' rectangles", () => {
     const r = resolveLayout(merged, [session("a1", { taskGroup: "B" }), session("b1", { taskGroup: "B" }), theirs("n1", "B")]);
     const b = r.areas.find((x) => x.key === "B")!.rect;
     for (const t of r.tiles) expect(inside(t.rect, b)).toBe(true);
+  });
+});
+
+describe("a closed session reopened", () => {
+  const withAreas = () => {
+    const l = emptyLandscape();
+    l.areas.G = area(0, 0, 1000, 900);
+    l.areas.B = area(1100, 0, 1000, 900);
+    return l;
+  };
+  const inG = { x: 24, y: 48, w: 400, h: 300 };
+  const inB = { x: 1124, y: 48, w: 400, h: 300 };
+  const loose = { x: 5000, y: 0, w: 400, h: 300 };
+
+  it("keeps a place inside its own area", () => {
+    const l = withAreas();
+    l.workspaces.s = inG;
+    expect(reopenPatch(l, { id: "s", taskGroup: "G" })).toBeNull();
+    l.stacks["G/tabs"] = { active: "s", placement: inG };
+    expect(reopenPatch(l, { id: "s", taskGroup: "G/tabs" })).toBeNull();
+  });
+
+  it("lets go of a place in another area, so it's placed anew in its own, where dragging that takes it along", () => {
+    const l = withAreas();
+    l.workspaces.s = inB;
+    const p = reopenPatch(l, { id: "s", taskGroup: "G" })!;
+    expect(p).toEqual({ workspaces: { s: null } });
+    const r = resolveLayout(applyPatch(l, p), [session("s", { taskGroup: "G" })]);
+    expect(r.tiles[0].area).toBe("G");
+    expect(inside(r.tiles[0].rect, r.areas.find((a) => a.key === "G")!.rect)).toBe(true);
+  });
+
+  it("lets go of a place outside its own area, a stack's too", () => {
+    const l = withAreas();
+    l.workspaces.s = loose;
+    expect(reopenPatch(l, { id: "s", taskGroup: "G" })).toEqual({ workspaces: { s: null } });
+    l.stacks["G/tabs"] = { active: "t", placement: inB };
+    expect(reopenPatch(l, { id: "t", taskGroup: "G/tabs" })).toEqual({ stacks: { "G/tabs": null } });
+  });
+
+  it("with no area of its own, keeps a place that's free, for one to form round, and lets go of one inside another", () => {
+    const l = withAreas();
+    l.workspaces.s = loose;
+    expect(reopenPatch(l, { id: "s", taskGroup: "New" })).toBeNull();
+    l.workspaces.s = inB;
+    expect(reopenPatch(l, { id: "s", taskGroup: "New" })).toEqual({ workspaces: { s: null } });
+  });
+
+  it("loose, keeps a place in no area, and lets go of one in an area", () => {
+    const l = withAreas();
+    l.workspaces.s = loose;
+    expect(reopenPatch(l, { id: "s", taskGroup: null })).toBeNull();
+    l.workspaces.s = inB;
+    expect(reopenPatch(l, { id: "s", taskGroup: null })).toEqual({ workspaces: { s: null } });
+  });
+
+  it("with no place has nothing to let go; and main asks each time one reopens", () => {
+    expect(reopenPatch(withAreas(), { id: "s", taskGroup: "G" })).toBeNull();
+    const handler = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8").split('handle("sessions:relaunch"')[1].split("\nhandle(")[0];
+    expect(handler).toContain("landscape.sessionReopened(info)");
   });
 });
 
@@ -342,6 +419,10 @@ describe("areas in the layout", () => {
     // back to where it began: it ends
     expect(renamedKeys("A", [{ from: "A", to: "B" }, { from: "B", to: "A" }])).toEqual(["B"]);
     expect(renamedKeys("Z", chain)).toEqual([]);
+    // one into its own sub-group makes a longer key each time round: it's cut short, as this runs in a render
+    const longer = renamedKeys("A", [{ from: "A/b", to: "A" }]);
+    expect(longer.length).toBeGreaterThan(1);
+    expect(longer.length).toBeLessThanOrEqual(32);
     // the session list has C; the landscape still has A, and its stack under A: nothing's formed, nothing's saved
     const l = emptyLandscape();
     l.areas.A = area(0, 0, 2000, 900);

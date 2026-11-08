@@ -211,14 +211,40 @@ async function inChrome({ size, query, outDir, args, what, onStdout, onStderr, b
       await new Promise((r) => setTimeout(r, 250));
     }
   } finally {
-    // the profile can only go once Chrome has let go of it
-    if (chrome.exitCode === null) {
-      const exited = new Promise((r) => chrome.once("exit", r));
-      chrome.kill();
-      await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
-    }
+    await stopChild(chrome);
     server.close();
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await removeWhenLetGo(profile);
+  }
+}
+
+/** A child stopped: asked, given `askMs`, then SIGKILLed, and waited for a little longer. */
+export async function stopChild(child, { askMs = 10_000, killMs = 5_000 } = {}) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((r) => child.once("exit", r));
+  const within = (ms) => Promise.race([exited.then(() => true), new Promise((r) => setTimeout(() => r(false), ms))]);
+  child.kill();
+  if (await within(askMs)) return;
+  child.kill("SIGKILL");
+  await within(killMs);
+}
+
+/**
+ * Folder `dir` removed, trying for a while: Chrome's helper processes can still be writing to its profile after Chrome
+ * has gone, under load for seconds. A folder that won't go is no failure of what used it: it's warned about, by name.
+ * Whether it went.
+ */
+export async function removeWhenLetGo(dir, { attempts = 20, delayMs = 500, remove = (d) => fs.rmSync(d, { recursive: true, force: true }), warn = console.warn } = {}) {
+  for (let i = 1; ; i++) {
+    try {
+      remove(dir);
+      return true;
+    } catch (err) {
+      if (i >= attempts) {
+        warn(`UI preview: couldn't remove ${dir} after ${attempts} tries: ${err.message}`);
+        return false;
+      }
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
   }
 }
 

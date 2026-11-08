@@ -70,6 +70,15 @@ describe("the landscape store", () => {
     expect(again.cards.c1.placement).toEqual({ x: 820, y: 620, w: 240, h: 128 });
   });
 
+  it("lets go of a place a session reopened keeps outside its own area, and leaves one inside it", () => {
+    const { store } = setup();
+    store.update({ areas: { "5101": AREA, "5102": { ...AREA, x: 5000 } }, workspaces: { a: { x: AREA.x + 24, y: AREA.y + 48, w: 400, h: 300 }, b: { x: AREA.x + 24, y: AREA.y + 400, w: 400, h: 300 } } });
+    store.sessionReopened({ id: "a", taskGroup: "5101" });
+    expect(store.get().landscape.workspaces.a).toBeDefined();
+    store.sessionReopened({ id: "b", taskGroup: "5102" });
+    expect(store.get().landscape.workspaces.b).toBeUndefined();
+  });
+
   it("writes atomically: a new file renamed over the old, nothing left beside it", () => {
     const { store, file, dir } = setup();
     store.update({ workspaces: { a: placement(0) } });

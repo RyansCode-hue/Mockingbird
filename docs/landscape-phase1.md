@@ -2062,9 +2062,10 @@ Design O, with Artifacts as a window, and N's workspace header.
   - **M1 (zoomed out far):** a card's width in landscape px doesn't change with
     the zoom, so a container query's fixed width can't tell how wide it is on
     screen. `.ls-card` is a size container with `--ls-narrow`, a length that's
-    far above 0 under 200 screen px (`200 * var(--u) - 100cqw`, times 1000) and
-    far below it over them, and clamps on it do the giving way: under 200 px a
-    stack card's ticket goes (its area names it) and `×N` before the title
+    far above 0 while its content box is under 200 screen px (`200 * var(--u) -
+    100cqw`, times 1000; `100cqw` is the content box, so that's a card about 222
+    px wide on screen) and far below it over them, and clamps on it do the giving
+    way: there a stack card's ticket goes (its area names it) and `×N` before the title
     takes over from `stack · N` after it, where the ⋯ over the head's end can't
     reach it (there are two chips, one with no width at any time). No render and
     no JS: it follows the camera. `.ls-card-title` has a floor of `4ch`. 200
@@ -2096,8 +2097,8 @@ Design O, with Artifacts as a window, and N's workspace header.
     ref. `--track` is left off with no `origin` remote (a ref a removed remote
     left), where git refuses it. A new session's fetch still fails aloud.
   - **Suffixed folders:** a worktree session runs in `old.cwd` while that's there
-    (a take-over's can be `<branch>-2`); only one that's gone is made again, at
-    `worktreeRoot/<branch>`.
+    (a take-over's can be `<branch>-2`). (Round 4: one that's gone is made again
+    there too, not at `worktreeRoot/<branch>`.)
   - **One reading of what's where:** `keptIn`, `shiftKept`, `looseOf`, `pushAll`
     and `FullPatch` moved to `shared/landscape.ts`, and `mergeClosedInto` now uses
     them instead of its own `within` loops and `moveAreaWhole`. `holdingArea` is
@@ -2123,8 +2124,7 @@ Design O, with Artifacts as a window, and N's workspace header.
     in an area is inside it and one in none is over none, a locked area moves
     whole with its insides where they were, the mover stays, and membership is
     the same on a second pass. A last test fails if any gesture went untried. A
-    wider one-off (600 seeds of 200 steps) found nothing more. Collapsed areas
-    aren't in it.
+    wider one-off (600 seeds of 200 steps) found nothing more. (Round 4 widened it.)
   - **What the fuzz found:** dragging an area dropped it over what's in no area.
     `planMoveArea` now pushes that aside (`looseThings`, shared with `growArea`),
     the other areas staying put, as one pushed into an area goes on past it.
@@ -2146,9 +2146,68 @@ Design O, with Artifacts as a window, and N's workspace header.
       `SETTLE_MS`.
     - The status bar's meter drops its parts whole, last first (they wrap to a
       row its height hides), so nothing is cut into, and today's word and number
-      go together. Its floor went from 48 to 56 px, room for "5h 100%". The closed
-      list's failing read still re-shows its note on each retry: that's a real
-      failure, still happening.
+      go together. Its floor went from 48 to 56 px, room for "5h 100%".
+- **S6b review fixes (round 4) — As built:**
+  - **M1 (a relaunch in a folder on another branch):** `worktreeAt` picks
+    `<root>/feat-2` only when `<root>/feat` is on another branch, so remaking a
+    gone `feat-2` at the usual place returned that other folder. Now a gone
+    worktree is remade at `old.cwd` (`createWorktree`'s `at`, which skips the
+    old layout), so the agent returns to the folder its transcript is kept by.
+    And `createWorktree` reuses a folder only if `branchIn` says it's a checkout
+    of that branch: it refuses one on another, a plain one (even inside another
+    repository), and a detached one. An old-layout folder on another branch isn't
+    holding the branch, so a new session's worktree goes at the usual place.
+    `unregisterMissing` takes the path itself, resolved by `realOf`, so a `-2`
+    folder deleted outside git clears its own registration.
+  - **`whereAgain` settles the folder, all of it:** it makes a gone worktree or
+    throws, so `create` no longer takes a `relaunch` flag. `relaunch` calls it
+    before `freeConversation`, so a background session isn't stopped for a
+    session with nowhere to run. `resume` does too, but only when there's a
+    conversation to free: with none, its first check to the kill still waits on
+    nothing, and a failure after that leaves the session resumable, as before.
+  - **What's out in its folder:** a worktree session's label is read from
+    `currentBranch` as a checkout session's is, what `reviewPrompt` and
+    `companionSession` go by, and the pane says "This session was on x. Its
+    folder is on y now." when they differ. A failed read logs and keeps the record.
+    A repo-less session runs in its own `cwd`, not home, and is refused once that's gone.
+  - **The checkout's guard** sees any live session there, a plain one too: it
+    runs on whatever's out, so switching would move it. A plain terminal in the
+    checkout now blocks a new ticket session there unless nothing would switch.
+  - **Refusals:** a branch that's missing when origin couldn't be asked says to
+    try again when online, not to start fresh. `mkdirSync` went from
+    `createWorktree` and `worktreeAt`, as `worktree add` makes the folders above
+    it, so a refusal leaves nothing behind.
+  - **`removeWorktree`** no longer runs `worktree prune`, which counted an
+    unreadable folder (and likely a disconnected volume) as gone.
+  - **Merges:** another group's closed stack lying inside the old area moves like
+    a closed session of that group there. One with nobody closed in it is let go,
+    as any place inside the old area is; the fuzz found it left lying inside the
+    grown area, under a ghost.
+  - **Reopen drops a place outside its own area** (`reopenPatch`, from
+    `LandscapeStore.sessionReopened`, after `sessions:relaunch` succeeds, so every
+    way of reopening goes by it). Running, a session is in its group's area wherever
+    it sits, so dragging that area would leave it behind. With no area of its own a
+    free place stays for one to form round; loose, one inside an area goes.
+  - **Any card's ticket gives way** below the threshold, not only a stack's.
+  - **Status bar notes** (`readNotes.ts`): each read source has its own note, and a
+    dismissed one stays away until a success or different words, so retries neither
+    overwrite one another nor bring back what was dismissed. `unlessError` and the
+    session list now clear theirs on success too.
+  - **`renamedKeys`** stops at `RENAMED_MAX` keys: `{A/b→A}` makes a longer key each
+    time round, and it runs in a render.
+  - **Layout fuzz, widened:** a 2×2 grid at exactly AREA_GAP, so growth pushes; a
+    pass between a plan's patch, groups and `after`; renames on their way, chained
+    too, in either order, saving nothing and forming no area meanwhile; collapse;
+    an area dragged onto a loose ghost; another group's ghost and closed stack lying
+    inside an area. New assertions: closed places survive a merge, inside the
+    area joined; nothing's left under the old name; ghosts are inside their area or
+    over none; and only what's drawn pushes (each thing that moved in the area was
+    reached by the mover, or by something drawn that moved). Passive off in `keptIn`
+    or `ghostKept` fails it, and each has a unit test.
+  - **UI tests' cleanup race** (`scripts/ui-preview.mjs`): `stopChild` asks Chrome,
+    waits 10 s, then SIGKILLs it, and `removeWhenLetGo` tries for about 10 s, as its
+    helpers can still be writing. A folder that won't go is a warning naming it, not a
+    failed test.
 
 ### S7 · Needs you
 - **The tray** drops down from the top-bar button. Phase 1 items:

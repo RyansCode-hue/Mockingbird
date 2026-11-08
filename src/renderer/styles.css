@@ -3464,7 +3464,8 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   display: flex; flex-direction: column; gap: calc(6 * var(--u)); box-sizing: border-box; height: 100%; overflow: hidden;
   padding: calc(9 * var(--u)) calc(11 * var(--u)); user-select: none;
   /* a card's px don't change with the zoom but its type does (each --u is a screen px), so a container query's fixed
-     width can't tell how wide it is on screen. This length can: far above 0 under 200 screen px, far below 0 over them */
+     width can't tell how wide it is on screen. This length can: far above 0 while its content box is under 200 screen
+     px, far below 0 over them. 100cqw is the content box, so that's a card about 222 px wide on screen, padding and all */
   container-type: inline-size; --ls-narrow: calc((200 * var(--u) - 100cqw) * 1000);
 }
 .ls-card-head { display: flex; align-items: center; gap: calc(7 * var(--u)); min-width: 0; flex-shrink: 0; }
@@ -3493,14 +3494,14 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 /* a stack's card (the Zoomed board): its stack · N chip in the title row, and its other tabs' names on a row of their
    own under it, those waiting on you first; the row ends in an ellipsis, never taking the title's width */
 .ls-card-head .ls-card-chip { flex-shrink: 0; font: 500 calc(9.5 * var(--u)) var(--ui); padding: calc(2 * var(--u)) calc(5 * var(--u)); border-radius: calc(3 * var(--u)); }
-/* narrow on screen, a stack card's title keeps the room: its ticket, which its area names, gives way, and its chip goes
+/* narrow on screen, a card's title keeps the room: its ticket, which its area names, gives way, and a stack's chip goes
    to ×N before the title, where the ⋯ over the head's end never reaches it. With room it's `stack · N` after the title;
    the ⋯ covers the ticket there, as on any card, and with no ticket a margin keeps the chip clear of it. What gives way
    has no width, padding or room beside it (a margin takes back the head's gap) */
 .ls-card-head .ls-chip-long { max-width: clamp(0px, calc(var(--ls-narrow) * -1), 9999px); padding-inline: clamp(0px, calc(var(--ls-narrow) * -1), calc(5 * var(--u))); margin-left: clamp(calc(-7 * var(--u)), calc(var(--ls-narrow) * -1), 0px); }
 .ls-card-head .ls-chip-short { max-width: clamp(0px, var(--ls-narrow), 9999px); padding-inline: clamp(0px, var(--ls-narrow), calc(5 * var(--u))); margin-right: clamp(calc(-7 * var(--u)), var(--ls-narrow), 0px); }
 .ls-chip-long:not(:has(+ .ls-card-ticket)) { margin-right: clamp(0px, calc(var(--ls-narrow) * -1), calc(19 * var(--u))); }
-.ls-chip-long + .ls-card-ticket { overflow: hidden; max-width: clamp(0px, calc(var(--ls-narrow) * -1), 9999px); margin-left: clamp(calc(-7 * var(--u)), calc(var(--ls-narrow) * -1), 0px); }
+.ls-card-head .ls-card-ticket { overflow: hidden; max-width: clamp(0px, calc(var(--ls-narrow) * -1), 9999px); margin-left: clamp(calc(-7 * var(--u)), calc(var(--ls-narrow) * -1), 0px); }
 .ls-card-tabs {
   flex-shrink: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 500 calc(10.5 * var(--u))/1.3 var(--ui); color: var(--text-2);

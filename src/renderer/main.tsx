@@ -117,6 +117,7 @@ import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } fr
 // the landscape (Settings → Labs)
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type MovesFailed, type NoteAction } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
+import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
 import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, planTidy, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, withoutGone, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, paneRow, takenOverWhy, workspaceActions, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
@@ -270,17 +271,20 @@ function App() {
   const [statusNote, setStatusNote] = useState("");
   // Main-process handlers answer { error } instead of rejecting. A failed read
   // never lands in state: the previous value stays and the status bar says why.
-  const [readError, setReadError] = useState<string | null>(null);
+  const [readNotes, setReadNotes] = useState<ReadNotes>(NO_READ_NOTES);
   const readFailed = (what: string, r: { error: string }) => {
     console.error(`[mockingbird] couldn't read ${what}:`, r.error);
-    setReadError(`Couldn't read ${what}: ${r.error}`);
+    setReadNotes((n) => noteFailed(n, what, `Couldn't read ${what}: ${r.error}`));
   };
-  /** `what` has been read: its error goes from the status bar, and any other's stays. */
-  const readCleared = (what: string) => setReadError((e) => (e?.startsWith(`Couldn't read ${what}:`) ? null : e));
+  /** `what` has been read: its note goes from the status bar, and any other's stays. */
+  const readCleared = (what: string) => setReadNotes((n) => noteCleared(n, what));
   const unlessError =
     <T,>(what: string, apply: (v: T) => void) =>
-    (r: T | { error: string }) =>
-      isErr(r) ? readFailed(what, r) : apply(r as T);
+    (r: T | { error: string }) => {
+      if (isErr(r)) return readFailed(what, r);
+      readCleared(what);
+      apply(r as T);
+    };
   /** A change the main process refused: said right away. Returns whether it failed. */
   const failed = (what: string, r: unknown): boolean => {
     if (!isErr(r)) return false;
@@ -665,6 +669,7 @@ function App() {
     const live: SessionInfo[] | { error: string } = await window.mb.listSessions();
     if (isErr(live)) readFailed("the session list", live);
     else {
+      readCleared("the session list");
       setSessions(live);
       listLoaded("live");
     }
@@ -3956,12 +3961,12 @@ function App() {
         })}
         <UsageMeter usage={usage} meters={meters} focused={sessions.find((s) => s.id === focused) ?? null} />
         <span className="right">
-          {readError && (
-            <span className="update-note bad" title={readError}>
-              <span className="un-text">✕ {readError}</span>
-              <button className="icon" title="Dismiss" onClick={() => setReadError(null)}>✕</button>
+          {Object.entries(readNotes.shown).map(([what, text]) => (
+            <span key={what} className="update-note bad" title={text}>
+              <span className="un-text">✕ {text}</span>
+              <button className="icon" title="Dismiss" onClick={() => setReadNotes((n) => noteDismissed(n, what))}>✕</button>
             </span>
-          )}
+          ))}
           {/* a good update is said by the top bar's "Updated to" label; this note is for what went wrong */}
           {updOutcome && (!updOutcome.ok || !!updOutcome.restoreErrors?.length) && (
             <span

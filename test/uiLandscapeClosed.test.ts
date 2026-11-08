@@ -78,6 +78,15 @@ describe.skipIf(!local)("the Closed sessions list (UI preview)", () => {
     expect(a.forgot).toEqual({ kill: [["y1", true]], list: false });
   }, 120_000);
 
+  it("gives each failing read a note of its own, and a note dismissed stays away through its retries", async () => {
+    const a = await run<{ both: string[]; dismissed: string[]; after: { notes: string[]; retried: number }; error?: string }>("closed", "notes", "&lsClosedReadFails=100&lsGoneReadFails=100");
+    expect(a.error).toBeUndefined();
+    expect(a.both).toEqual([expect.stringMatching(/Couldn't read the previous sessions/), expect.stringMatching(/Couldn't read which closed sessions' folders are gone/)]);
+    expect(a.dismissed).toEqual([expect.stringMatching(/Couldn't read which closed sessions' folders are gone/)]);
+    expect(a.after.retried).toBeGreaterThanOrEqual(1);
+    expect(a.after.notes).toEqual(a.dismissed);
+  }, 120_000);
+
   it("says a failed read of the closed sessions and tries it again until they're read", async () => {
     type Retry = { early: { rows: number; error: string | null; reads: number; goneReads: number }; later: { rows: string[]; error: string | null; reads: number; goneReads: number }; head: { text: string | null; cut: boolean; countShown: boolean; aria: string | null; title: string | null }; error?: string };
     const a = await run<Retry>("closed", "retry", "&lsClosedReadFails=2");
@@ -204,7 +213,7 @@ describe.skipIf(!local)("the S6b review's gesture and look fixes (UI preview)", 
   type CardHead = { zoom: number; card: number; title: number; chipInside: boolean; long: number; short: number; ticket: number | null; clearOfMore: boolean; ticketLast: boolean };
   for (const size of ["1024x768", "1440x900"]) {
     it(`keeps a stack card's title and count readable zoomed out far, at ${size}: the ticket gives way, the chip goes to ×N, and the ⋯ never covers it`, async () => {
-      const c = await run<{ fit: CardHead; at: Record<string, CardHead>; noTicket: Record<string, CardHead>; pastTop: Record<"back" | "far", { startTop: number; heldTop: number; bound: number; releasedSoon: boolean; topSoon: number; topLater: number; updates: number }>; error?: string }>("fix", "c", "", size);
+      const c = await run<{ fit: CardHead; at: Record<string, CardHead>; plain: { zoom: number; card: number; title: number; ticket: number }[]; noTicket: Record<string, CardHead>; pastTop: Record<"back" | "far", { startTop: number; heldTop: number; bound: number; releasedSoon: boolean; topSoon: number; topLater: number; updates: number }>; error?: string }>("fix", "c", "", size);
       expect(c.error).toBeUndefined();
       const say = (h: CardHead) => JSON.stringify(h);
       for (const h of [c.fit, c.at["0.1"], c.at["0.11"], c.at["0.12"], c.at["0.13"], c.noTicket["0.12"]]) {
@@ -225,6 +234,15 @@ describe.skipIf(!local)("the S6b review's gesture and look fixes (UI preview)", 
         expect(h.clearOfMore, say(h)).toBe(true);
         expect(h.ticketLast, say(h)).toBe(true);
       }
+      // an ordinary card's ticket gives way likewise: its area names it, and its title has the room
+      for (const p of c.plain) {
+        if (p.card < 200) {
+          expect(p.ticket, JSON.stringify(p)).toBe(0);
+          expect(p.title, JSON.stringify(p)).toBeGreaterThanOrEqual(50);
+        } else if (p.card > 240) expect(p.ticket, JSON.stringify(p)).toBeGreaterThan(0);
+      }
+      expect(c.plain.some((p) => p.card > 240)).toBe(true);
+      expect(c.plain.some((p) => p.card < 200)).toBe(true);
       // no ticket for the ⋯ to cover: the count stays clear of it all the same
       expect(c.noTicket["0.25"].long).toBeGreaterThan(0);
       expect(c.noTicket["0.25"].clearOfMore).toBe(true);

@@ -41,7 +41,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
-import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
+import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -1394,6 +1394,13 @@ const api: Record<string, (...a: any[]) => any> = {
     const next: SessionInfo = { ...p, status: "idle", exitCode: undefined, createdAt: Date.now() };
     sessions = [...sessions.filter((s) => s.id !== id), next];
     sessionsChanged();
+    // main's LandscapeStore.sessionReopened: a place outside its own area goes
+    const replaced = standIn ? null : reopenPatch(landscape, next);
+    if (replaced) {
+      landscape = applyPatch(landscape, replaced);
+      landscapeRev++;
+      emit("onLandscapeChanged", clone({ rev: landscapeRev, patch: replaced, problems: landscapeProblems }));
+    }
     return next;
   },
   sessionRestart: async (id: string) => {
@@ -6169,6 +6176,17 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(4500);
         out.later = { rows: rows(), error: err(), reads: reads("resumableSessions"), goneReads: reads("missingFolders") };
         out.head = headOf();
+      } else if (part === "notes") {
+        // two reads failing throughout: a note of its own for each, and one dismissed stays away through its retries
+        const notes = () => [...document.querySelectorAll<HTMLElement>(".statusbar .update-note.bad .un-text")].map((x) => x.textContent ?? "");
+        const reads = () => calls.filter((c) => c.fn === "resumableSessions").length;
+        out.both = notes();
+        document.querySelector<HTMLButtonElement>('.statusbar .update-note.bad[title*="previous sessions"] button')!.click();
+        await sleep(200);
+        out.dismissed = notes();
+        const mark = reads();
+        await sleep(4500);
+        out.after = { notes: notes(), retried: reads() - mark };
       } else if (part === "many") {
         // a long list: its header on one line at a two-digit count; each row's ring a ghost's, its status in its title;
         // the header's ⋯ (Reopen all, Forget all, headed as the list); a row's right-click; Forget all's question
@@ -6426,13 +6444,21 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await fitView();
         await sleep(500);
         out.fit = head();
+        const plainHead = () => {
+          const el = node("s1")!;
+          const rect = (sel: string) => el.querySelector<HTMLElement>(sel)!.getBoundingClientRect();
+          return { zoom: Math.round(zoomNow() * 100) / 100, card: Math.round(rect(".ls-card").width), title: Math.round(rect(".ls-card-title").width), ticket: Math.round(rect(".ls-card-ticket").width) };
+        };
+        const plain: unknown[] = [plainHead()];
         const at: Record<string, unknown> = {};
         for (const z of [0.1, 0.11, 0.12, 0.13, 0.25, 0.3]) {
           await pinchTo(z);
           await sleep(400);
           at[String(z)] = head();
+          plain.push(plainHead());
         }
         out.at = at;
+        out.plain = plain;
         // with no ticket on its front tab, nothing else sits under the ⋯ but the chip
         const front = stack().dataset.front!;
         const had = byId(front);

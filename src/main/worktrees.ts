@@ -1,5 +1,5 @@
 import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
-import { branchesOf, currentBranch, git, isAncestor, originUrl, pickDefaultBase, upstreamOf } from "./git";
+import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
 import { dirtyFileCount } from "./scm";
 import * as fs from "fs";
 import * as path from "path";
@@ -19,16 +19,16 @@ const PROBE_TIMEOUT_MS = 15_000;
  * Whether origin has `branch`, asked of origin itself: remote-tracking refs are
  * only as fresh as the last fetch, and a branch pushed since must be checked
  * out, not made anew. When origin can't be reached the last fetch has to do
- * (logged), and `asked` is false.
+ * (logged), and `unreachable` says so.
  */
-async function onOrigin(repo: string, branch: string): Promise<{ has: boolean; asked: boolean }> {
-  if (!(await originUrl(repo))) return { has: false, asked: false };
+async function onOrigin(repo: string, branch: string): Promise<{ has: boolean; unreachable: boolean }> {
+  if (!(await originUrl(repo))) return { has: false, unreachable: false };
   try {
     // exit 2: origin has no such branch
-    return { has: !!(await git(repo, ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS })), asked: true };
+    return { has: !!(await git(repo, ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS })), unreachable: false };
   } catch (err) {
     console.error(`[worktrees] couldn't ask origin about ${branch}, going by the last fetch:`, err);
-    return { has: !!(await git(repo, ["branch", "-r", "--list", `origin/${branch}`])), asked: false };
+    return { has: !!(await git(repo, ["branch", "-r", "--list", `origin/${branch}`])), unreachable: true };
   }
 }
 
@@ -47,7 +47,8 @@ type StartPoint = { existing: true } | { existing: false; track: boolean; from?:
  *  - new branch, no base → branch off the repo's current HEAD
  * With `mustExist` (a relaunch, which makes a session's worktree again) the branch is never made anew: one origin no
  * longer has, or one it can't be fetched from, comes from what the last fetch kept of it (origin/<branch>), and with
- * none of that it throws, so the session isn't resumed on a branch holding none of its work.
+ * none of that it throws, so the session isn't resumed on a branch holding none of its work: saying to try again when
+ * it's origin that didn't answer, as the branch may well be there.
  */
 async function startPoint(repo: string, branch: string, base?: string, mustExist = false): Promise<StartPoint> {
   if (await git(repo, ["branch", "--list", branch])) return { existing: true };
@@ -55,7 +56,7 @@ async function startPoint(repo: string, branch: string, base?: string, mustExist
   if (there.has) {
     if (!mustExist) await git(repo, ["fetch", "origin", branch]);
     // origin just didn't answer: a fetch would only wait out its timeout to fail, and the last fetch's ref is there
-    else if (there.asked) {
+    else if (!there.unreachable) {
       try {
         await git(repo, ["fetch", "origin", branch]);
       } catch (err) {
@@ -68,6 +69,7 @@ async function startPoint(repo: string, branch: string, base?: string, mustExist
   if (mustExist) {
     // with no origin remote there's nothing to track, and --track would refuse the ref
     if (await lastFetched(repo, branch)) return { existing: false, track: !!(await originUrl(repo)), from: `origin/${branch}` };
+    if (there.unreachable) throw new Error(`Its branch, ${branch}, isn't here, and origin couldn't be reached to check for it: try again when you're online`);
     throw new Error(`Its branch, ${branch}, isn't here or on origin any more: start fresh`);
   }
   if (!base) return { existing: false, track: false };
@@ -97,15 +99,32 @@ function folderThere(p: string): boolean {
   }
 }
 
+/** `p` as git lists it: symlinks in what's there of it resolved, the rest as it is. */
+function realOf(p: string): string {
+  const parent = path.dirname(p);
+  if (fs.existsSync(p)) return fs.realpathSync(p);
+  return parent === p ? p : path.join(realOf(parent), path.basename(p));
+}
+
 /**
- * Unregister the worktree git lists at `wtPath` (under `wtRoot`) when its folder was deleted outside git (Finder,
- * rm), so one can be added there again: `worktree add` refuses a path still registered. Only that one: `worktree
- * prune` would also unregister worktrees on volumes that aren't connected. And only when git itself calls that exact
- * path prunable, as `worktree remove` deletes a folder that's there, the files git ignores (a .env) with it: one
- * that's locked or there is left, and `worktree add` says why it can't.
+ * The branch out in `folder` when it's a checkout of its own: null for one that isn't (a plain folder, even inside
+ * another repository) or whose HEAD is detached.
  */
-export async function unregisterMissing(repo: string, wtRoot: string, branch: string, wtPath: string): Promise<void> {
-  const real = path.join(fs.realpathSync(wtRoot), branch);
+async function branchIn(folder: string): Promise<string | null> {
+  if (!(await isRepo(folder))) return null;
+  if (realOf(await git(folder, ["rev-parse", "--show-toplevel"])) !== realOf(folder)) return null;
+  return currentBranch(folder);
+}
+
+/**
+ * Unregister the worktree git lists at `wtPath` when its folder was deleted outside git (Finder, rm), so one can be
+ * added there again: `worktree add` refuses a path still registered. Only that one: `worktree prune` would also
+ * unregister worktrees on volumes that aren't connected. And only when git itself calls that exact path prunable, as
+ * `worktree remove` deletes a folder that's there, the files git ignores (a .env) with it: one that's locked or there
+ * is left, and `worktree add` says why it can't.
+ */
+export async function unregisterMissing(repo: string, wtPath: string): Promise<void> {
+  const real = realOf(wtPath);
   const entries = (await git(repo, ["worktree", "list", "--porcelain"])).split("\n\n").map((block) => block.split("\n"));
   const entry = entries.find((lines) => lines[0] === `worktree ${wtPath}` || lines[0] === `worktree ${real}`);
   if (!entry?.some((l) => l === "prunable" || l.startsWith("prunable "))) return;
@@ -134,28 +153,35 @@ function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
 
 /**
  * Create a worktree for a session on `branch`, made as startPoint says (`mustExist`: a relaunch, which never makes
- * the branch anew). Returns the worktree path. One folder's are made one at a time: the next finds it made and reuses it.
+ * the branch anew), at the usual place or, with `at`, at that folder (a relaunch's own, whatever it's called). Returns
+ * its path. A folder that's there is reused only if it's a checkout of `branch`: a session never runs in a folder on
+ * another branch. One folder's are made one at a time: the next finds it made and reuses it.
  */
-export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean } = {}): Promise<string> {
-  const wtRoot = worktreeRoot(repoPath);
-  const wtPath = path.join(wtRoot, branch);
-  return oneAtATime(wtPath, async () => {
+export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean; at?: string } = {}): Promise<string> {
+  const target = opts.at ?? path.join(worktreeRoot(repoPath), branch);
+  return oneAtATime(target, async () => {
     // a branch can only be checked out once: if the old layout already holds it,
     // keep using that checkout rather than failing on `worktree add`
-    const legacy = path.join(legacyWorktreeRoot(repoPath), branch);
-    if (fs.existsSync(legacy)) return legacy;
-    fs.mkdirSync(wtRoot, { recursive: true });
-    if (folderThere(wtPath)) return wtPath; // reuse (multiple sessions per task)
-    await unregisterMissing(repoPath, wtRoot, branch, wtPath);
+    if (!opts.at) {
+      const legacy = path.join(legacyWorktreeRoot(repoPath), branch);
+      if (fs.existsSync(legacy) && (await branchIn(legacy)) === branch) return legacy;
+    }
+    if (folderThere(target)) {
+      const out = await branchIn(target);
+      if (out === branch) return target; // reuse (multiple sessions per task)
+      throw new Error(`${target} is there, ${out ? `on ${out}` : "but isn't a checkout of a branch"}, so a session on ${branch} can't run in it: move it, or start fresh`);
+    }
+    await unregisterMissing(repoPath, target);
 
     const sp = await startPoint(repoPath, branch, baseBranch, opts.mustExist);
+    // worktree add makes the folders above it, so a refusal leaves nothing behind
     await git(
       repoPath,
       sp.existing
-        ? ["worktree", "add", wtPath, branch]
-        : ["worktree", "add", ...(sp.track ? ["--track"] : []), "-b", branch, wtPath, ...(sp.from ? [sp.from] : [])]
+        ? ["worktree", "add", target, branch]
+        : ["worktree", "add", ...(sp.track ? ["--track"] : []), "-b", branch, target, ...(sp.from ? [sp.from] : [])]
     );
-    return wtPath;
+    return target;
   });
 }
 
@@ -168,7 +194,6 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
  */
 export async function worktreeAt(repoPath: string, branch: string | null, base: string): Promise<{ path: string; branch: string | null; renamedFrom: string | null }> {
   const root = worktreeRoot(repoPath);
-  fs.mkdirSync(root, { recursive: true });
   const freshFolder = (name: string): string => {
     for (let i = 1; ; i++) {
       const p = path.join(root, i === 1 ? name : `${name}-${i}`);
@@ -357,7 +382,6 @@ async function inBatches<T, R>(items: T[], size: number, fn: (item: T) => Promis
 /** Remove a worktree folder (the branch is kept). */
 export async function removeWorktree(repoPath: string, wtPath: string): Promise<void> {
   await git(repoPath, ["worktree", "remove", "--force", wtPath]);
-  await git(repoPath, ["worktree", "prune"]);
   stateCache.delete(wtPath);
 }
 

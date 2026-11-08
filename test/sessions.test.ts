@@ -269,7 +269,7 @@ describe("relaunch after an app restart", () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `${id}.jsonl`), "{}\n");
   };
-  const saved = (over: object) => ({ id: "x1", title: "Weekly Routine", repoPath: null, cwd: "/Users/me", branch: null, taskGroup: "Tasks", extraDirs: [], ...over });
+  const saved = (over: object) => ({ id: "x1", title: "Weekly Routine", repoPath: null, cwd: os.homedir(), branch: null, taskGroup: "Tasks", extraDirs: [], ...over });
   const relaunchReq = async (over: object) => {
     const { m } = manager([saved(over)]);
     const create = vi.fn(() => ({}) as any);

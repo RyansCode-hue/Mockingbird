@@ -7,6 +7,7 @@ import {
   parseLandscape,
   parsePatch,
   renameAreaPatch,
+  reopenPatch,
   sameLandscape,
   versionOf,
   type Landscape,
@@ -128,6 +129,17 @@ export class LandscapeStore {
       return;
     }
     const patch = renameAreaPatch(l.landscape, from, to, members, closed);
+    if (patch) this.update(patch);
+  }
+
+  /** Closed session `s` is running again: a place it kept outside its own area goes, so it's placed anew there (reopenPatch). */
+  sessionReopened(s: Pick<SessionInfo, "id" | "taskGroup">): void {
+    const l = this.load();
+    if (l.standIn) {
+      this.o.log(`landscape: ${s.id} reopened, and its place couldn't be checked`, new Error("landscape.json couldn't be read"));
+      return;
+    }
+    const patch = reopenPatch(l.landscape, s);
     if (patch) this.update(patch);
   }
 

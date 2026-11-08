@@ -244,6 +244,52 @@ describe("an area dragged over what's in no area", () => {
   });
 });
 
+describe("what nobody sees, in a workspace's way", () => {
+  // a1 at the left, a ghost or a place nobody sees just past it, and a2 just past that; a1 moves right, onto the first only
+  const row = () => {
+    const l = emptyLandscape();
+    const small = { w: 400, h: 300 };
+    l.areas.A = area(0, 0, 2 * AREA_PAD + 3 * small.w + 2 * GAP + 1000, AREA_HEADER + small.h + AREA_PAD);
+    l.workspaces.a1 = { x: AREA_PAD, y: AREA_HEADER, ...small };
+    l.workspaces.back = { x: AREA_PAD + small.w + GAP, y: AREA_HEADER, ...small };
+    l.workspaces.a2 = { x: AREA_PAD + 2 * (small.w + GAP), y: AREA_HEADER, ...small };
+    return { l, small };
+  };
+  const live = [session("a1", { taskGroup: "A", createdAt: 2 }), session("a2", { taskGroup: "A", createdAt: 1 })];
+
+  it("a ghost goes on past what it's pushed into, which stays", () => {
+    const { l } = row();
+    const closed = [session("back", { taskGroup: "A", status: "dead" })];
+    const layout = resolveLayout(l, live, undefined, [], null, closed);
+    const p = ready(planMoveTile(l, layout, "a1", { x: AREA_PAD + 80, y: AREA_HEADER }, "A", T));
+    const { r } = settle(l, p, live, closed);
+    expect(rectOf(r, "a2")).toEqual(l.workspaces.a2);
+    expect(overlaps(rectOf(r, "ghost:back"), rectOf(r, "a2"), GAP - 1e-6)).toBe(false);
+  });
+
+  it("a place nobody sees goes on past what it's pushed into, which stays", () => {
+    const { l } = row();
+    const layout = resolveLayout(l, live);
+    const p = ready(planMoveTile(l, layout, "a1", { x: AREA_PAD + 80, y: AREA_HEADER }, "A", T));
+    const { r, l: after } = settle(l, p, live);
+    expect(rectOf(r, "a2")).toEqual(l.workspaces.a2);
+    expect(overlaps(after.workspaces.back, rectOf(r, "a2"), GAP - 1e-6)).toBe(false);
+  });
+
+  it("an area landing on a ghost in no area pushes it aside, and it stays in none", () => {
+    const l = base();
+    const a = l.areas.A;
+    l.workspaces.g = { x: a.x + 2800 + a.w - 200, y: AREA_HEADER, w: 400, h: 300 };
+    const closed = [session("g", { status: "dead" })];
+    const layout = resolveLayout(l, two, undefined, [], null, closed);
+    const { r } = settle(l, ready(planMoveArea(l, layout, "A", 2800, 0, T)), two, closed);
+    const moved = r.areas.find((x) => x.key === "A")!.rect;
+    const g = r.ghosts.find((x) => x.front.id === "g")!;
+    expect(g.area).toBe(LOOSE_GROUP);
+    expect(overlaps(g.rect, moved)).toBe(false);
+  });
+});
+
 describe("a workspace moved onto others", () => {
   it("let go where it started has nothing to save, so nothing waits to see it land", () => {
     const l = base();

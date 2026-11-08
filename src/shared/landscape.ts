@@ -890,7 +890,14 @@ export function renameAreaPatch(l: Landscape, from: string, to: string, members:
   }
   for (const [k, s] of Object.entries(l.stacks)) {
     const nk = remap(k);
-    if (nk === k) continue;
+    if (nk === k) {
+      // another group's stack lying inside the area goes as a place there does: moved along if it's closed, else let go
+      if (merge && from !== to && inFrom(s.placement)) {
+        if (closedStacks.has(k)) moving.push({ r: s.placement, to: (at) => put(patch.stacks, k, { ...s, placement: at }) });
+        else put(patch.stacks, k, null);
+      }
+      continue;
+    }
     put(patch.stacks, k, null);
     const keyed = stackKeyOf({ taskGroup: nk }) === nk && !Object.hasOwn(l.stacks, nk);
     if (!merge && keyed) put(patch.stacks, nk, s);
@@ -1064,6 +1071,22 @@ function mergeClosedInto(l: Landscape, patch: FullPatch, from: string, to: strin
     put(patch.areas, k, { ...(own(patch.areas, k) ?? {}), x: l.areas[k].x + dx, y: l.areas[k].y + dy });
     shiftKept(patch, kept, k, dx, dy, NONE_LEAVING);
   });
+}
+
+/**
+ * What reopening closed session `s` lets go of: its place (or its stack's) when that lies outside its own area, as a
+ * merge or its area moving on can leave it. Running, it's in its group's area wherever it is, so dragging that area would
+ * leave it behind; with no place it's placed anew there. With no area of its own a place stays if it's free, and the
+ * area forms round it; loose, one inside an area goes. Null when there's nothing to let go.
+ */
+export function reopenPatch(l: Landscape, s: Pick<SessionInfo, "id" | "taskGroup">): LandscapePatch | null {
+  const sk = stackKeyOf(s);
+  const stack = sk ? own(l.stacks, sk) : undefined;
+  const place = stack?.placement ?? own(l.workspaces, s.id);
+  if (!place) return null;
+  const mine = own(l.areas, areaKeyOf(s));
+  if (mine ? within(place, mine) : holdingArea(new Map(Object.entries(l.areas)), place) === LOOSE_GROUP) return null;
+  return stack ? { stacks: { [sk!]: null } } : { workspaces: { [s.id]: null } };
 }
 
 /** The same value: objects by their entries in any order, arrays in order. */

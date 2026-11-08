@@ -516,13 +516,14 @@ export function renamesLeft(renames: readonly PendingRename[], l: Landscape, sho
 /**
  * Group key `key` on the other side of the pending renames it's under, nearest first: the new key for one under `from`,
  * the old for one under `to`, and on through a chain of them (A→B, B→C: A, B and C all name one group while they're on
- * their way).
+ * their way). A rename back (A→B, B→A) adds nothing new. One into its own sub-group (A/b→A) makes a longer key each time
+ * round, so at most RENAMED_MAX are followed: this runs in a render, and must end.
  */
 export function renamedKeys(key: string, renames: readonly PendingRename[]): string[] {
   const seen = new Set([key]);
   const out: string[] = [];
   const queue = [key];
-  while (queue.length) {
+  while (queue.length && out.length < RENAMED_MAX) {
     const k = queue.shift()!;
     for (const { from, to } of renames) {
       const other = k === to || k.startsWith(`${to}/`) ? from + k.slice(to.length) : k === from || k.startsWith(`${from}/`) ? to + k.slice(from.length) : null;
@@ -534,6 +535,9 @@ export function renamedKeys(key: string, renames: readonly PendingRename[]): str
   }
   return out;
 }
+
+/** The most keys renamedKeys follows: far more than renames on their way at once ever chain. */
+const RENAMED_MAX = 32;
 
 const tileKind = (members: readonly SessionInfo[]): WorkspaceKind => (members.some((s) => kindOf(s) === "agent") ? "agent" : "terminal");
 

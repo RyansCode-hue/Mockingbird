@@ -200,9 +200,9 @@ together so work and context flow between them.
 - **Stacks** (⌘G on a selection) pile workspaces into one card with tabs. A
   stack moves, wires and focuses as one. Zoomed out, its card has a
   `stack · N` chip in its title row (`×N` before the title when the card is
-  under 200 px on screen, its ticket giving way too) and its other tabs' names
-  on a row under it, those waiting on you first. A wire to a stacked workspace
-  attaches to the stack and names its tab.
+  under about 222 px on screen, where any card's ticket gives way too) and its
+  other tabs' names on a row under it, those waiting on you first. A wire to a
+  stacked workspace attaches to the stack and names its tab.
   - Several picked in one area become a stack (`area/tabs`, `tabs-2`…) where
     the first of them was; a stack among them takes the others in. A
     teammate's workspace stays out.
