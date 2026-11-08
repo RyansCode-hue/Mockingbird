@@ -19,7 +19,11 @@ const pipelines = createIpcStore<PipelinesRead>({ all: {}, error: null }, ({ get
     console.error(`Couldn't read the ticket pipelines: ${error}`);
     set({ ...get(), error });
   };
-  settled<IpcResult<Record<string, TicketPipeline>>>(window.mb.pipelineAll()).then((r) => (isErr(r) ? failed(r.error) : set({ all: r ?? {}, error: null })));
+  // a refused call and an { error } reply are each said once, by `failed`
+  Promise.resolve<IpcResult<Record<string, TicketPipeline>>>(window.mb.pipelineAll()).then(
+    (r) => (isErr(r) ? failed(r.error) : set({ all: r ?? {}, error: null })),
+    (err: unknown) => failed(err instanceof Error ? err.message : String(err))
+  );
   window.mb.onPipelineChanged((r: Record<string, TicketPipeline>) => set({ all: r ?? {}, error: null }));
 });
 const allPipelines = () => pipelines.get().all;

@@ -41,6 +41,7 @@ export interface SessionInfo {
   extraDirs: string[];
   waitingReason: string | null; // hook Notification message, e.g. "permission: Bash"
   waitingSince: number | null; // ts of the waiting transition
+  waitingAt?: number | null; // ts of the latest prompt's event while waiting: a second prompt, worded alike or not, moves it
   queuedCount?: number; // broadcasts queued for this session (live only)
   debrief?: boolean; // morning brief / wrap-up — lives on the WorkTracker tab, not the grid
   shell?: boolean; // plain terminal (no claude) — excluded from broadcasts/re-reads
@@ -608,6 +609,8 @@ export interface BranchStat {
 export interface LastReply {
   line: string | null;
   at: number | null;
+  /** Why `line` is null though the agent may have said something: the part of its transcript read held no message of its. */
+  why?: string;
 }
 
 // ---- run ----------------------------------------------------------------------

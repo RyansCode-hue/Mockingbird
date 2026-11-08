@@ -11,10 +11,14 @@ import {
   goCan,
   needsByArea,
   needsItems,
+  selectionAfter,
   shownItems,
   stepItem,
   targetOf,
+  undismiss,
   type NeedsItem,
+  type NeedsLast,
+  type NeedsSel,
 } from "../src/renderer/needsYouModel";
 import { needsActions, TAKEN_BACK_WHY } from "../src/renderer/workspaceActions";
 
@@ -146,15 +150,41 @@ describe("N and ⇧N", () => {
     expect(list[currentIndex(list, { session: null, area: "5101" })].kind).toBe("join");
     expect(currentIndex(list, { session: null, area: "5102" })).toBe(-1);
   });
-  it("walk the items in the tray's order, visiting each once before coming round", () => {
+  /**
+   * N pressed `times` from `sel`, as the window does it: the item the view is on from the selection and where N last
+   * went (currentIndex), the next item (stepItem), and the selection going there leaves (selectionAfter).
+   */
+  const walk = (all: NeedsItem[], times: number, onLandscape: (area: string) => boolean, sel: NeedsSel = { session: null, area: null }, dir: 1 | -1 = 1) => {
     const seen: string[] = [];
-    let at = -1;
-    for (let i = 0; i < list.length; i++) {
-      const next = stepItem(list, at, 1)!;
+    let last: NeedsLast | null = null;
+    for (let i = 0; i < times; i++) {
+      const next: NeedsItem = stepItem(all, currentIndex(all, sel, last), dir)!;
       seen.push(next.id);
-      at = list.indexOf(next);
+      sel = selectionAfter(next, sel, onLandscape);
+      last = { id: next.id, sel };
     }
-    expect(seen).toEqual(list.map((i) => i.id));
+    return seen;
+  };
+  it("walk the items in the tray's order, visiting each once before coming round, by the selection each leaves", () => {
+    expect(walk(list, list.length + 1, () => true)).toEqual([...list.map((i) => i.id), list[0].id]);
+    expect(walk(list, list.length, () => true, { session: null, area: null }, -1)).toEqual([...list].reverse().map((i) => i.id));
+  });
+  it("move on past two join requests for one room, which select the same area", () => {
+    const two = items(fixture(), [{ request: request(), room: room() }, { request: request({ id: "kim", name: "Kim Lo", at: NOW - 2 * MIN }), room: room() }]);
+    const joins = two.filter((i) => i.kind === "join").map((i) => i.id);
+    expect(joins).toHaveLength(2);
+    const seen = walk(two, two.length, () => true);
+    expect(seen).toEqual(two.map((i) => i.id));
+    expect(seen.filter((id) => joins.includes(id))).toEqual(joins);
+  });
+  it("move on past a join request whose room has no area on the landscape, which selects nothing", () => {
+    expect(walk(list, list.length + 1, (area) => area !== "5101")).toEqual([...list.map((i) => i.id), list[0].id]);
+  });
+  it("go by the selection once it's changed since: N from a workspace picked meanwhile goes on from it", () => {
+    const at = currentIndex(list, { session: "done", area: null }, { id: list[0].id, sel: { session: list[0].session, area: null } });
+    expect(list[at].id).toBe("s:done");
+    // N's place gone from the list (answered meanwhile): the selection says where the view is
+    expect(currentIndex(list, { session: "perm", area: null }, { id: "s:gone", sel: { session: "perm", area: null } })).toBe(currentIndex(list, { session: "perm", area: null }));
   });
 });
 
@@ -176,6 +206,23 @@ describe("Dismiss", () => {
     // the same session finishing rather than waiting is a new state too
     const finished = fixture().map((s) => (s.id === "perm" ? { ...s, status: "idle" as const, waitingReason: null, waitingSince: null, finishedAt: NOW + MIN } : s));
     expect(shownItems(items(finished), d).some((i) => i.id === "s:perm")).toBe(true);
+  });
+
+  it("lets a second prompt worded like a dismissed one through: each prompt's own time tells them apart", () => {
+    const sessions = fixture().map((s) => (s.id === "perm" ? { ...s, waitingAt: NOW - 4 * MIN } : s));
+    const d = dismiss([], items(sessions).find((i) => i.id === "s:perm")!, NOW);
+    // still waiting, the same words, a new prompt's event
+    const again = sessions.map((s) => (s.id === "perm" ? { ...s, waitingAt: NOW - MIN } : s));
+    const back = shownItems(items(again), d).find((i) => i.id === "s:perm");
+    expect(back).toMatchObject({ text: "API: last org per user wants to use Bash", at: NOW - MIN });
+  });
+
+  it("is undone: the item listed again in the state it was dismissed in", () => {
+    const perm = items().find((i) => i.id === "s:perm")!;
+    const done = items().find((i) => i.id === "s:done")!;
+    const d = undismiss(dismiss(dismiss([], perm, NOW), done, NOW), perm);
+    expect(d.map((x) => x.sig)).toEqual([done.sig]);
+    expect(shownItems(items(), d).some((i) => i.id === "s:perm")).toBe(true);
   });
 
   it("keeps the list short: the newest few hundred, none older than a few days", () => {

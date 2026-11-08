@@ -67,7 +67,14 @@ export function useMeters(): Meters | null {
       },
       (err: unknown) => console.warn("the token meters:", err)
     );
-    const off = window.mb.onMetersChanged((next: Meters) => live && setM(next));
+    // a push that says why there are none lets go of the reading before it, rather than keep showing it
+    const off = window.mb.onMetersChanged((next: Meters | { error: string }) => {
+      if (!live) return;
+      if (isErr(next)) {
+        console.warn(`the token meters: ${next.error}`);
+        setM(null);
+      } else setM(next);
+    });
     return () => {
       live = false;
       off();

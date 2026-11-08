@@ -88,7 +88,7 @@ export function AreaFrame({
           <span className="n">{title}</span>
           <span className="c">{plural(counts.workspaces, "workspace")}</span>
           {needs > 0 && (
-            <span className="w" title={`${needs} waiting on you: see Needs you`}>
+            <span className="w" title={`${needs} need you: see Needs you`} aria-label={`${needs} need you`}>
               {needs}
             </span>
           )}

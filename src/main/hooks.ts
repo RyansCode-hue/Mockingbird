@@ -214,7 +214,7 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
   // the transcript's location says which agent wrote the event
   const transcript = typeof evt.payload?.transcript_path === "string" ? evt.payload.transcript_path : "";
   const agent = transcript.includes("/.codex/") ? ("codex" as const) : ("claude" as const);
-  const route = { cwd, conversationId, paneId, agent };
+  const route = { cwd, conversationId, paneId, agent, transcriptPath: transcript || undefined };
   // An agent that has just started, resumed or cleared its conversation waits at
   // its prompt: no turn has run, so no Stop will come until someone prompts it.
   // A compaction's SessionStart can come mid-turn, so it says nothing. A starting

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { listDir, readFile, gitChanges, fileDiff, inside, branchStat, parseShortstatFiles } from "../src/main/files";
+import { listDir, readFile, gitChanges, fileDiff, inside, branchStat, forgetBranchStat, parseShortstatFiles, turns } from "../src/main/files";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 describe("listDir", () => {
@@ -155,6 +155,44 @@ describe("branchStat (a card's diff badge)", () => {
     const repo = featureRepo();
     await expect(branchStat(repo, "uat")).rejects.toThrow(/The base branch uat isn't in this repository/);
     await expect(branchStat(repo, "--output=/tmp/x")).rejects.toThrow(/isn't in this repository/);
+  });
+  it("reads again as soon as the folder changes, not after a few seconds' sharing", async () => {
+    const repo = featureRepo();
+    expect((await branchStat(repo, "dev")).insertions).toBe(4);
+    write(repo, { "b.txt": "b\nmore\nand more\n" });
+    // within the few seconds a read is shared, the old answer stands until the folder watch says it changed
+    expect((await branchStat(repo, "dev")).insertions).toBe(4);
+    forgetBranchStat(repo);
+    expect((await branchStat(repo, "dev")).insertions).toBe(6);
+  });
+  it("follows its base moving on: a fork read again once HEAD or the base's tip has moved", async () => {
+    const repo = featureRepo();
+    expect(await branchStat(repo, "dev")).toMatchObject({ files: 2 });
+    // dev gains the feature's commit (a merge): the fork moves up, the commit isn't the branch's own any more
+    git(repo, "branch", "-f", "dev", "feature");
+    forgetBranchStat(repo);
+    expect(await branchStat(repo, "dev")).toMatchObject({ files: 1, insertions: 2, deletions: 1 });
+  });
+  it("runs at most a few rounds at once, the rest in their turn, each slot passed straight on", async () => {
+    const turn = turns(2);
+    let running = 0;
+    let most = 0;
+    const order: number[] = [];
+    const job = (n: number) => () =>
+      new Promise<number>((done) => {
+        most = Math.max(most, ++running);
+        setTimeout(() => {
+          running--;
+          order.push(n);
+          done(n);
+        }, 5);
+      });
+    expect(await Promise.all([1, 2, 3, 4, 5].map((n) => turn(job(n))))).toEqual([1, 2, 3, 4, 5]);
+    expect(most).toBe(2);
+    expect(order).toEqual([1, 2, 3, 4, 5]);
+    // one that fails passes its slot on all the same
+    await expect(turn(() => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
+    expect(await turn(job(6))).toBe(6);
   });
   it("parses git's summary line", () => {
     expect(parseShortstatFiles(" 3 files changed, 120 insertions(+), 8 deletions(-)")).toEqual({ files: 3, insertions: 120, deletions: 8 });

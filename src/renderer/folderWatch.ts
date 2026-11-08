@@ -3,7 +3,8 @@ import { useEffect, useRef } from "react";
 // one IPC subscription for the whole window, fanned out to every view that cares
 const listeners = new Set<(root: string) => void>();
 let subscribed = false;
-function onFolderChanged(cb: (root: string) => void): () => void {
+/** Hear every watched folder that changes (the main process's folder watch). */
+export function onFolderChanged(cb: (root: string) => void): () => void {
   if (!subscribed) {
     subscribed = true;
     window.mb.onFolderChanged((root: string) => listeners.forEach((l) => l(root)));

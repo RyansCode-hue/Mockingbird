@@ -96,6 +96,19 @@ describe("searching", () => {
     expect(idx.search('" OR (')).toEqual([]); // odd input never throws
   });
 
+  it("files a subagent's transcript under its parent for search, but never among the conversation's own files", async () => {
+    const { idx, cFile } = fixture();
+    const sub = path.join(path.dirname(cFile), "c1", "subagents", "agent-a1.jsonl");
+    fs.mkdirSync(path.dirname(sub), { recursive: true });
+    fs.writeFileSync(sub, L({ type: "assistant", isSidechain: true, sessionId: "c1", timestamp: "2026-09-01T10:01:00Z", message: { role: "assistant", content: [{ type: "text", text: "Subagent report: quokka" }] } }) + "\n");
+    await idx.sync();
+    expect(idx.search("quokka")[0]).toMatchObject({ id: "c1" });
+    expect(idx.filesOf("c1")).toEqual([{ path: cFile, agent: "claude" }]);
+    // a subagent's line in the conversation's own transcript is marked as one
+    const [line] = fs.readFileSync(sub, "utf8").split("\n");
+    expect(parseClaudeLine(line, "c1").chunks).toEqual([expect.objectContaining({ text: "Subagent report: quokka", sidechain: true })]);
+  });
+
   it("reads only what was appended, leaves a half-written line for later, and re-reads a replaced file", async () => {
     const { idx, cFile } = fixture();
     await idx.sync();

@@ -121,6 +121,34 @@ export async function pageDom({ size = "1400x900", query = "", outDir } = {}) {
  * for checks a page script reports on, like the motion audit (src/preview/stub.ts). `scale` sets the device pixel
  * ratio (2 for a Retina screen's raster costs).
  */
+/** The keys a page can ask to have pressed (window.__mbKeys), as Chrome's input names them. */
+const KEYS = {
+  n: { key: "n", code: "KeyN", keyCode: 78, text: "n" },
+  N: { key: "N", code: "KeyN", keyCode: 78, text: "N" },
+  e: { key: "e", code: "KeyE", keyCode: 69, text: "e" },
+  Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
+  Escape: { key: "Escape", code: "Escape", keyCode: 27 },
+};
+
+/**
+ * Press, for real, the keys the page asked for: it pushes { key, shift?, meta? } onto window.__mbKeys, and
+ * window.__mbKeysDone counts the ones pressed. They reach whatever has the keyboard, as a person's would, which a
+ * KeyboardEvent dispatched at an element can't show.
+ */
+async function pressAsked(ask) {
+  const asked = await ask("Runtime.evaluate", { expression: "JSON.stringify((window.__mbKeys || []).splice(0))", returnByValue: true });
+  const keys = JSON.parse(asked?.result?.value ?? "[]");
+  for (const k of keys) {
+    const d = KEYS[k.key];
+    if (!d) throw new Error(`the page asked for a key this driver doesn't press: ${k.key}`);
+    const modifiers = (k.shift ? 8 : 0) | (k.meta ? 4 : 0);
+    const base = { modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, nativeVirtualKeyCode: d.keyCode };
+    await ask("Input.dispatchKeyEvent", { type: d.text && !k.meta ? "keyDown" : "rawKeyDown", ...base, ...(d.text && !k.meta ? { text: d.text, unmodifiedText: d.text } : {}) });
+    await ask("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  }
+  if (keys.length) await ask("Runtime.evaluate", { expression: `window.__mbKeysDone = (window.__mbKeysDone || 0) + ${keys.length}` });
+}
+
 export async function pageResult({ size = "1400x900", query = "", outDir, read, scale = null }) {
   let devtools = null;
   let result = null;
@@ -151,6 +179,7 @@ export async function pageResult({ size = "1400x900", query = "", outDir, read, 
           ws.addEventListener("error", j, { once: true });
         });
       }
+      await pressAsked(ask);
       const r = await ask("Runtime.evaluate", { expression: read, returnByValue: true });
       result = r?.result?.value ?? null;
       return result !== null;

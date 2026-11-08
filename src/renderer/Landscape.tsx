@@ -52,6 +52,7 @@ import {
   type Guide,
   rectFrom,
   revealTile,
+  clearRoom,
   sessionsOnScreen,
   shortAreaName,
   takesKeys,
@@ -71,8 +72,11 @@ import {
   type Band,
   type CardView,
   type Direction,
+  type GoToAsk,
   type GroupMove,
   type PendingReveal,
+  type RevealAsk,
+  type ScreenBox,
   type Point,
   type ResolvedLayout,
   type Tile,
@@ -299,10 +303,10 @@ export function Landscape({
   /** Close these sessions (several selected): asked first, then each as its own Close would. */
   onCloseMany: (ids: string[]) => void;
   onTab: (tile: Tile, id: string) => void;
-  /** Bring this session's workspace into view and select it, with `focus` filling the window with it. */
-  reveal: { id: string; n: number; focus?: boolean } | null;
+  /** Bring this session's workspace into view (in front, if it's a stack's tab), with `focus` filling the window with it. */
+  reveal: RevealAsk | null;
   /** Fly to this area. */
-  goTo: { area: string; n: number } | null;
+  goTo: GoToAsk | null;
   /** A reveal or a go-to (by its `n`) has been taken up: the owner lets go of it, so a landscape mounted again doesn't repeat it. */
   onHandled: (n: number) => void;
   areaTitle: (key: string) => string;
@@ -402,8 +406,10 @@ export function Landscape({
   const say = (text: string, action?: NoteAction) => setNote((p) => ({ text, n: (p?.n ?? 0) + 1, action }));
   // a workspace's ⋯ and right-click, and an area's right-click on its patch zoomed out
   const ctx = useContextMenu("Landscape");
+  // a notice said while this landscape is up; one from before it mounted was said where it happened, not here
+  const noticeAtMount = useRef(notice?.n);
   useEffect(() => {
-    if (notice) say(notice.text, notice.action);
+    if (notice && notice.n !== noticeAtMount.current) say(notice.text, notice.action);
   }, [notice?.n]);
   useEffect(() => {
     if (!note) return;
@@ -756,10 +762,11 @@ export function Landscape({
   };
   const selRefs = useRef({ pickTiles, selectArea, clearSelection });
   selRefs.current = { pickTiles, selectArea, clearSelection };
-  // a workspace selected from elsewhere (its terminal clicked into, the tree, a notification) is the selection now
+  // a workspace or an area selected from elsewhere (its terminal clicked into, the tree, a notification, N) is the
+  // selection now: the several picked before are let go, so there's only ever one selection
   useEffect(() => {
-    if (selected && pickedNow.current.length) setPicked([]);
-  }, [selected]);
+    if ((selected || selectedArea) && pickedNow.current.length) setPicked([]);
+  }, [selected, selectedArea]);
   /** The keyboard to the landscape: the surface, or in focus the focused workspace's frame (so Esc reaches it). */
   const surface = () => (focusNow.current ? overlay.current : viewport.current)?.focus({ preventScroll: true });
   const enterFocus = (t: Tile) => {
@@ -807,6 +814,15 @@ export function Landscape({
   const pendingReveal = useRef<PendingReveal | null>(null);
   /** The pending reveal ends in focus. */
   const revealFocus = useRef(false);
+  /** The pending reveal gives the landscape the keyboard once there (Go there), and keeps clear of a box on screen (the tray). */
+  const revealOpts = useRef<{ keys: boolean; avoid: ScreenBox | null }>({ keys: false, avoid: null });
+  /** The reveal whose stack tab was asked to the front, waiting for the layout to have it there. */
+  const fronting = useRef<PendingReveal | null>(null);
+  /** The view's size to bring something into view in: the part of it clear of `avoid`. */
+  const roomClearOf = (avoid: ScreenBox | null) => {
+    const box = viewport.current?.getBoundingClientRect();
+    return box && avoid ? clearRoom({ left: box.left, top: box.top, width: vpNow.current.w, height: vpNow.current.h }, avoid) : vpNow.current;
+  };
   const gaveUp = (p: PendingReveal) => console.warn(`[mockingbird] the landscape couldn't bring ${p.id} into view: no workspace holds it after ${REVEAL_WAIT_MS} ms`);
   const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => void (revealTimer.current && clearTimeout(revealTimer.current)), []);
@@ -815,6 +831,7 @@ export function Landscape({
     // taken up: the owner lets go of it, so this landscape mounted again (another tab and back) doesn't repeat it
     asks.current.onHandled(reveal.n);
     revealFocus.current = !!reveal.focus;
+    revealOpts.current = { keys: !!reveal.keys, avoid: reveal.avoid ?? null };
     const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
     if (revealTimer.current) clearTimeout(revealTimer.current);
     revealTimer.current = setTimeout(() => {
@@ -844,10 +861,23 @@ export function Landscape({
       });
       return;
     }
+    if (t !== "expired" && t.stack && t.front.id !== p.id) {
+      // a stack's tab behind another comes to the front first, so the workspace shown (its terminal, its focus) is its
+      if (fronting.current === p) return;
+      fronting.current = p;
+      void asks.current.onPatch({ stacks: { [t.stack]: { active: p.id, placement: t.rect } } }, "the stack's front tab").then((error) => {
+        if (!error || pendingReveal.current !== p) return;
+        pendingReveal.current = null;
+        say(`The stack couldn't bring that tab to the front: ${error}`);
+      });
+      return;
+    }
     pendingReveal.current = null;
     opening.current = null;
+    fronting.current = null;
     if (t === "expired") return gaveUp(p);
-    const seen = !vpNow.current.w || inView(cam.current, t.rect, vpNow.current);
+    const room = roomClearOf(revealOpts.current.avoid);
+    const seen = !vpNow.current.w || inView(cam.current, t.rect, room);
     if (revealFocus.current) {
       // under the focus overlay, so there's no flight to see: the landscape is there when focus ends
       if (!seen) {
@@ -857,7 +887,8 @@ export function Landscape({
       return enterFocus(t);
     }
     if (focusNow.current && focusNow.current !== t.key) setFocusKey(null);
-    if (!seen) flyTo(centreOn(cam.current, t.rect, vpNow.current));
+    if (!seen) flyTo(centreOn(cam.current, t.rect, room));
+    if (revealOpts.current.keys) surface();
   }, [reveal?.n, layout]);
 
   // a tool window just opened or placed again comes into view, with its workspace when both fit
@@ -880,7 +911,7 @@ export function Landscape({
     if (!a) return console.warn(`[mockingbird] the landscape has no area ${goTo.area} to go to`);
     placed.current = true;
     if (focusNow.current) setFocusKey(null);
-    flyTo(areaCamera(a, vpNow.current, topNow.current));
+    flyTo(areaCamera(a, roomClearOf(goTo.avoid ?? null), topNow.current));
   }, [goTo?.n, hasSize]);
 
   // what's on screen, for teamLiveView

@@ -87,6 +87,9 @@ let sessions: SessionInfo[] = [
 ];
 // ?stall=hooks: s1 shows the stall banner of a pane whose hooks never reported ("working" may be wrong, Mark idle);
 // ?stall=quiet: of one that's gone quiet while working
+// ?needsMany: four more sessions waiting on a permission prompt, so Needs you lists seven items (with ?joinRequest=later)
+if (new URLSearchParams(location.search).has("needsMany"))
+  sessions = sessions.map((s, i) => (["s1", "s3", "s5", "s7"].includes(s.id) ? { ...s, status: "waiting", waitingReason: "Claude needs your permission to use Edit", waitingSince: now - (i + 1) * min, waitingAt: now - (i + 1) * min } : s));
 const stallQ = new URLSearchParams(location.search).get("stall");
 if (stallQ) sessions = sessions.map((s) => (s.id === "s1" ? { ...s, status: "working", stalledSince: now - 6 * min, hooksSilent: stallQ === "hooks" } : s));
 // closed sessions this Mac can reopen (main's resumable ones): Previous on the grid; on the landscape, ghosts where they
@@ -4280,7 +4283,8 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     try {
       await sleep(1200);
       const before = term("s5");
-      const lineBefore = line();
+      // s5 is idle, its terminal's last line its last message: the card says that once, as what it did
+      const lineBefore = line() ?? node("s5")?.querySelector("[data-did]")?.textContent ?? null;
       document.querySelector<HTMLElement>(".sb-update")!.click();
       await sleep(300);
       const confirm = document.querySelector<HTMLElement>(".close-dlg .primary");

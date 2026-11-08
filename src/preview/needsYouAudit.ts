@@ -1,14 +1,23 @@
 /**
- * ?landscapeNeedsAudit=a|b (with ?labs=landscape&motion=off): S7's Needs you and card badges, worked as a person would
- * in the UI preview, into <script id="mb-landscape-needs-audit"> for test/uiLandscapeNeeds.test.ts.
+ * ?landscapeNeedsAudit=a|g|b|c|d (with ?labs=landscape&motion=off): S7's Needs you and card badges, worked as a person
+ * would in the UI preview, into <script id="mb-landscape-needs-audit"> for test/uiLandscapeNeeds.test.ts. Keys are
+ * pressed for real where the test's Chrome driver is there to press them (scripts/ui-preview.mjs's pageResult takes
+ * them from window.__mbKeys), so they go wherever the browser sends a key; without it (a person's browser) they're
+ * sent to the focused element, and `keys` says "synthetic".
  *
  * =a (with ?joinRequest=later): the button and the tray's items; N and ⇧N from the landscape (the keyboard kept there),
- * in the tray, and refused in a text field and a terminal; Dismiss, and the item back when its state changes; a copy a
- * teammate took over leaving it; the areas' counts in the tree, a collapsed area's pill and the switcher; Go there
- * on a permission prompt, a join request and from another tab.
- * =b: the badges as drawn at the camera's zoom (?lsCamera), each card's or workspace's, with their boxes against their
- * workspace's and their area's; then s1's diff source failing, which its badge then says rather than its old value.
- * With ?badgeFail=… it reports what the failing sources show, and what was said in the console.
+ * in the tray (the item kept clear of it), and refused in a text field and a terminal; Dismiss with the keyboard kept
+ * in the tray, a double click's second Dismiss let go, Undo, and the item back when its state changes; a copy a
+ * teammate took over leaving it; the areas' counts in the tree, a collapsed area's pill and the switcher; Esc giving
+ * the keyboard back to the button.
+ * =g (with ?joinRequest=later): Go there on a permission prompt, on a stack's tab behind another, at the cards' zoom,
+ * on a join request and from another tab; the keyboard on the landscape after it, and Enter giving it to the terminal.
+ * =b: the badges as drawn at the camera's zoom (?lsCamera, or ?lsFit for the fit), each card's or workspace's, with
+ * their boxes against their workspace's and their area's and each row's against its card; then s1's diff source
+ * failing, which its badge then says rather than its old value. With ?badgeFail=… it reports what the failing sources
+ * show, and what was said in the console.
+ * =c (with ?joinRequest=later): the tray's place with seven items, grown while open and opened again.
+ * =d: the top bar's buttons on one line, and the button's contrast (run it at 860 px wide, and with ?theme=light).
  */
 import type { SessionInfo } from "../shared/types";
 
@@ -35,15 +44,50 @@ const box = (el: Element | null | undefined): Box | null => {
 };
 /** `a` lies within `b` (half a pixel's rounding allowed). */
 const within = (a: Box | null, b: Box | null) => !!a && !!b && a.x >= b.x - 0.5 && a.y >= b.y - 0.5 && a.x + a.w <= b.x + b.w + 0.5 && a.y + a.h <= b.y + b.h + 0.5;
-const keyN = (el: Element, shift = false) => {
-  const ev = new KeyboardEvent("keydown", { key: shift ? "N" : "n", shiftKey: shift, bubbles: true, cancelable: true });
-  Object.defineProperty(ev, "keyCode", { get: () => 78 });
-  el.dispatchEvent(ev);
-};
+const overlaps = (a: Box | null, b: Box | null) => !!a && !!b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+// ---- keys: pressed for real by the driver when it's there ----
+type W = Window & { __mbKeys?: { key: string; shift?: boolean; meta?: boolean }[]; __mbKeysDone?: number };
+const w = window as W;
+let asked = 0;
+let driver: boolean | null = null;
+/** Press `key` (n, N, Enter, Escape) as a person would: through the browser to whatever has the keyboard. */
+async function press(key: string, o: { shift?: boolean; meta?: boolean } = {}): Promise<void> {
+  if (driver !== false) {
+    (w.__mbKeys ??= []).push({ key, ...o });
+    const want = ++asked;
+    for (let i = 0; i < 60; i++) {
+      if ((w.__mbKeysDone ?? 0) >= want) {
+        driver = true;
+        await sleep(120);
+        return;
+      }
+      await sleep(50);
+    }
+    if (driver) throw new Error(`the driver didn't press ${key}`);
+    driver = false;
+    w.__mbKeys = [];
+  }
+  const target = document.activeElement ?? document.body;
+  target.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey: !!o.shift, metaKey: !!o.meta, bubbles: true, cancelable: true }));
+  await sleep(120);
+}
+const keysWere = () => (driver ? "real" : "synthetic");
+
 const selectedWs = () => document.querySelector<HTMLElement>(".ls-world .ls-node.selected")?.dataset.front ?? null;
 const selectedArea = () => document.querySelector<HTMLElement>(".ls-world .ls-area.selected, .ls-world .ls-area-pill.selected")?.dataset.area ?? null;
+const picked = () => document.querySelectorAll(".ls-world .ls-node.picked").length;
 const camera = () => document.querySelector<HTMLElement>(".ls-world")?.style.transform ?? "";
-const keyboard = () => (document.activeElement === vp() ? "landscape" : document.activeElement?.closest(".ny-tray") ? "tray" : document.activeElement?.closest(".xterm") ? "terminal" : (document.activeElement?.tagName ?? "none"));
+const term = (id: string) => (window as unknown as { __mbTerms?: Map<string, { term: { textarea?: HTMLTextAreaElement } }> }).__mbTerms?.get(id)?.term;
+const keyboard = () => {
+  const a = document.activeElement;
+  if (a === vp()) return "landscape";
+  if (a?.closest(".ny-tray")) return "tray";
+  if (a?.classList.contains("ny-btn")) return "button";
+  if (a?.closest(".xterm")) return "terminal";
+  if (a?.closest(".ls-focus")) return "focus";
+  return a?.tagName ?? "none";
+};
 const button = () => {
   const b = document.querySelector<HTMLElement>(".ny-btn");
   return { on: !!b?.classList.contains("on"), count: b?.querySelector(".ny-n")?.textContent ?? null, title: b?.title ?? null };
@@ -57,21 +101,27 @@ const tray = () => ({
     on: el.classList.contains("on"),
     meta: el.querySelector(".ny-kind")?.textContent ?? null,
     text: el.querySelector(".ny-text")?.textContent ?? null,
-    acts: [...el.querySelectorAll<HTMLButtonElement>(".ny-acts button")].map((b) => ({ key: b.dataset.action ?? null, label: b.textContent, disabled: b.disabled, title: b.title })),
+    acts: [...el.querySelectorAll<HTMLButtonElement>(".ny-acts button")].map((b) => ({ key: b.dataset.action ?? null, label: b.textContent, disabled: b.disabled, title: b.title, filled: b.classList.contains("fill") })),
   })),
   foot: document.querySelector(".ny-tray .ny-foot")?.textContent ?? null,
+  undo: !!document.querySelector('.ny-tray button[data-action="undo"]'),
   none: document.querySelector(".ny-tray .ny-none")?.textContent ?? null,
+  error: document.querySelector(".ny-tray .ny-err")?.textContent ?? null,
 });
 const treeBadges = () => Object.fromEntries([...document.querySelectorAll<HTMLElement>(".area-tree .lt-area")].map((a) => [a.dataset.area, a.querySelector(".lt-head .lt-badge")?.textContent ?? null]));
 const openTray = async () => {
   if (!document.querySelector(".ny-tray")) document.querySelector<HTMLElement>(".ny-btn")?.click();
-  await sleep(250);
+  await sleep(300);
 };
 const closeTray = async () => {
   if (document.querySelector(".ny-tray")) document.querySelector<HTMLElement>(".ny-btn")?.click();
   await sleep(200);
 };
-const act = (item: string, key: string) => document.querySelector<HTMLElement>(`.ny-tray .ny-item[data-item="${CSS.escape(item)}"] button[data-action="${key}"]`)?.click();
+const actBtn = (item: string, key: string) => document.querySelector<HTMLElement>(`.ny-tray .ny-item[data-item="${CSS.escape(item)}"] button[data-action="${key}"]`);
+const act = (item: string, key: string) => actBtn(item, key)?.click();
+const node = (id: string) => document.querySelector<HTMLElement>(`.ls-world [data-front="${CSS.escape(id)}"]`);
+/** The tab in front of the stack holding `ids`' sessions. */
+const stackFront = (ids: string[]) => ids.map(node).find(Boolean)?.dataset.front ?? null;
 
 /** Console warnings and errors from the page's start, which a failing badge source's reason must be among. */
 const said: string[] = [];
@@ -93,21 +143,24 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
     el.textContent = JSON.stringify(out);
     document.body.appendChild(el);
   };
-  env.waitFor(".ls-world .ls-node", async () => {
+  env.waitFor(part === "d" ? ".ny-btn" : ".ls-world .ls-node", async () => {
     const out: Record<string, unknown> = {};
     try {
       await sleep(1500);
       if (part === "a") await trayPart(env, out);
+      else if (part === "g") await goPart(env, out);
+      else if (part === "c") await placePart(env, out);
+      else if (part === "d") await barPart(out);
       else await badgePart(env, out);
     } catch (err) {
       out.error = String((err as Error)?.stack ?? err);
     }
+    out.keys = keysWere();
     write(out);
   }, 300);
 }
 
 async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
-  const term = (id: string) => (window as unknown as { __mbTerms?: Map<string, { term: { textarea?: HTMLTextAreaElement } }> }).__mbTerms?.get(id)?.term;
   out.button = button();
   out.tree = treeBadges();
   await openTray();
@@ -120,37 +173,47 @@ async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promi
   const steps: unknown[] = [];
   for (const shift of [false, false, false, false, true]) {
     const cam = camera();
-    keyN(vp(), shift);
-    await sleep(700);
+    await press(shift ? "N" : "n", { shift });
+    await sleep(600);
     steps.push({ shift, ws: selectedWs(), area: selectedArea(), keyboard: keyboard(), moved: camera() !== cam, prompt: !!document.querySelector(".join-ask") });
-    vp().focus();
   }
   out.steps = steps;
-  // where the view is, lit in the tray; N in the tray moves on, the tray staying open
+
+  // N in the tray, its next item (s2) first put where the tray will be: the view moves it clear of the tray
+  const trayAt = { x: window.innerWidth - 8 - 160, y: 140 };
+  const s2 = box(node("s2"));
+  if (s2) vp().dispatchEvent(new WheelEvent("wheel", { deltaX: s2.x + s2.w / 2 - trayAt.x, deltaY: s2.y + s2.h / 2 - trayAt.y, bubbles: true, cancelable: true }));
+  await sleep(300);
   await openTray();
+  const trayBox = box(document.querySelector(".ny-tray"));
   out.litAfterSteps = tray().items.filter((i) => i.on).map((i) => i.id);
-  keyN(document.querySelector(".ny-tray .ny-in")!);
-  await sleep(600);
-  out.inTray = { ws: selectedWs(), open: tray().open, lit: tray().items.filter((i) => i.on).map((i) => i.id) };
-  await closeTray();
+  const under = overlaps(box(node("s2")), trayBox);
+  await press("n");
+  await sleep(700);
+  out.inTray = { ws: selectedWs(), open: tray().open, lit: tray().items.filter((i) => i.on).map((i) => i.id), keyboard: keyboard(), under, clear: !overlaps(box(node("s2")), box(document.querySelector(".ny-tray"))) };
+  // Esc gives the keyboard back to the button
+  await press("Escape");
+  out.escape = { open: tray().open, keyboard: keyboard() };
 
   // never in a text field or a terminal
   const filter = document.querySelector<HTMLInputElement>(".area-tree .lt-find input")!;
   const before = { ws: selectedWs(), area: selectedArea() };
   filter.focus();
-  keyN(filter);
-  await sleep(400);
-  out.inField = { before, ws: selectedWs(), area: selectedArea() };
+  await press("n");
+  await sleep(300);
+  out.inField = { before, ws: selectedWs(), area: selectedArea(), typed: filter.value };
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, "");
+  filter.dispatchEvent(new Event("input", { bubbles: true }));
   vp().focus();
   vp().dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true, bubbles: true, cancelable: true }));
   await sleep(800);
-  (document.querySelector<HTMLElement>('.ls-world [data-front="s1"] .ls-head') ?? document.querySelector<HTMLElement>('.ls-world [data-front="s1"]'))!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerId: 7 }));
+  (node("s1")?.querySelector<HTMLElement>(".ls-head") ?? node("s1"))!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerId: 7 }));
   await sleep(300);
   const ta = term("s1")?.textarea;
   const w0 = env.calls.length;
   ta?.focus();
-  if (ta) keyN(ta);
-  await sleep(400);
+  await press("n");
+  await sleep(300);
   out.inTerminal = {
     textarea: !!ta,
     ws: selectedWs(),
@@ -159,11 +222,26 @@ async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promi
   };
   vp().focus();
 
-  // Dismiss: off the list until its state changes, and the counts with it
+  // Dismiss: off the list and the counts, the keyboard still in the tray (N moves on); a double click's second
+  // Dismiss, landing on the item that slid up, is let go; Undo lists it again
   await openTray();
+  const first = tray().items.map((i) => i.id);
+  const d1 = actBtn("s:s8", "dismiss");
+  d1?.click();
+  await sleep(30);
+  // the second click of a double click, on whatever is under the pointer now
+  (document.elementFromPoint(...(() => { const b = d1?.getBoundingClientRect(); return [b ? b.left + 4 : 0, b ? b.top + 4 : 0] as [number, number]; })()) as HTMLElement | null)?.closest<HTMLElement>("button")?.click();
+  await sleep(300);
+  out.dismissed = { before: first, tray: tray(), button: button(), tree: treeBadges(), keyboard: keyboard() };
+  const sel0 = selectedWs();
+  await press("n");
+  await sleep(500);
+  out.afterDismissN = { keyboard: keyboard(), moved: selectedWs() !== sel0 || selectedArea() !== null, open: tray().open };
+  document.querySelector<HTMLElement>('.ny-tray button[data-action="undo"]')?.click();
+  await sleep(300);
+  out.undone = { ids: tray().items.map((i) => i.id), foot: tray().foot };
   act("s:s8", "dismiss");
   await sleep(300);
-  out.dismissed = { tray: tray(), button: button(), tree: treeBadges() };
   await closeTray();
   env.setSession("s8", { status: "working", finishedAt: null });
   await sleep(200);
@@ -171,6 +249,18 @@ async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promi
   await sleep(400);
   await openTray();
   out.back = { ids: tray().items.map((i) => i.id), button: button(), foot: tray().foot };
+  await closeTray();
+
+  // a second prompt worded like a dismissed one is a new item
+  await openTray();
+  act("s:s2", "dismiss");
+  await sleep(300);
+  await closeTray();
+  const s2now = env.sessions().find((s) => s.id === "s2")!;
+  env.setSession("s2", { waitingAt: (s2now.waitingAt ?? s2now.waitingSince ?? Date.now()) + 60_000 });
+  await sleep(400);
+  await openTray();
+  out.samePrompt = { ids: tray().items.map((i) => i.id) };
   await closeTray();
 
   // a copy a teammate took over leaves the tray: its prompts and turns go on on their laptop
@@ -183,23 +273,67 @@ async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promi
   await sleep(500);
 
   // a collapsed area's pill keeps its count, and so does the switcher
-  await (window as unknown as { mb: { landscapeUpdate: (p: unknown, what: string) => Promise<unknown> } }).mb.landscapeUpdate({ areas: { "5101": { collapsed: true } } }, "audit: 5101 collapsed");
+  const mb = (window as unknown as { mb: { landscapeUpdate: (p: unknown, what: string) => Promise<unknown> } }).mb;
+  await mb.landscapeUpdate({ areas: { "5101": { collapsed: true } } }, "audit: 5101 collapsed");
   await sleep(500);
   const pill = document.querySelector<HTMLElement>('.ls-area-pill[data-area="5101"]');
   out.pill = { count: pill?.querySelector(".w")?.textContent ?? null, title: pill?.querySelector(".w")?.getAttribute("title") ?? null };
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true, bubbles: true, cancelable: true }));
   await sleep(400);
   out.switcher = Object.fromEntries([...document.querySelectorAll<HTMLElement>(".ls-switcher .ls-sw")].map((b) => [b.dataset.area, b.querySelector(".w")?.textContent ?? null]));
+  out.switcherTitle = document.querySelector<HTMLElement>('.ls-switcher .ls-sw[data-area="5101"] .w')?.title ?? null;
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true, bubbles: true, cancelable: true }));
-  await (window as unknown as { mb: { landscapeUpdate: (p: unknown, what: string) => Promise<unknown> } }).mb.landscapeUpdate({ areas: { "5101": { collapsed: false } } }, "audit: 5101 opened");
+  await mb.landscapeUpdate({ areas: { "5101": { collapsed: false } } }, "audit: 5101 opened");
   await sleep(600);
+  out.treeTitle = document.querySelector<HTMLElement>('.area-tree .lt-area[data-area="5101"] .lt-head .lt-badge')?.title ?? null;
+}
 
-  // Go there on the permission prompt: the tray goes, the workspace is selected and its terminal has the keyboard
+async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const enterAndBack = async (id: string) => {
+    await press("Enter");
+    await sleep(500);
+    const r = { terminal: document.activeElement === term(id)?.textarea, focus: !!document.querySelector(".ls-focus") };
+    // ⌘E leaves focus, the keyboard back on the landscape
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "e", metaKey: true, bubbles: true, cancelable: true }));
+    await sleep(400);
+    vp().focus();
+    return r;
+  };
+  // Go there on the permission prompt: the tray goes, the workspace is selected, the keyboard on the landscape (a
+  // single letter answers Codex's prompt); Enter then gives its terminal the keyboard
+  vp().focus();
+  await openTray();
+  out.goTitle = actBtn("s:s2", "go")?.title ?? null;
+  act("s:s2", "go");
+  await sleep(800);
+  out.goPermission = { open: tray().open, ws: selectedWs(), keyboard: keyboard(), terminal: document.activeElement === term("s2")?.textarea };
+  out.goPermissionEnter = await enterAndBack("s2");
+
+  // a stack's tab behind another: brought to the front first
+  const sStack = env.sessions().find((s) => s.id === "s3")!;
+  const stack = env.sessions().filter((s) => s.taskGroup === sStack.taskGroup).map((s) => s.id);
+  env.setSession("s3", { status: "waiting", waitingReason: "Codex needs your permission to use shell", waitingSince: Date.now() - 60_000, waitingAt: Date.now() - 60_000 });
+  await sleep(400);
+  out.stackBefore = stackFront(stack);
+  await openTray();
+  act("s:s3", "go");
+  await sleep(1000);
+  out.goStack = { front: stackFront(stack), ws: selectedWs(), keyboard: keyboard() };
+  out.goStackEnter = await enterAndBack("s3");
+  env.setSession("s3", { status: sStack.status, waitingReason: null, waitingSince: null, waitingAt: null });
+  await sleep(300);
+
+  // at the cards' zoom (the fit): the same, and Enter fills the window with it, its terminal live and taking keys
+  vp().dispatchEvent(new KeyboardEvent("keydown", { key: "0", metaKey: true, bubbles: true, cancelable: true }));
+  await sleep(900);
+  out.cardsBand = [...vp().classList].find((c) => c.startsWith("ls-band-"))?.slice(8) ?? null;
   vp().focus();
   await openTray();
   act("s:s2", "go");
-  await sleep(900);
-  out.goPermission = { open: tray().open, ws: selectedWs(), terminal: document.activeElement === term("s2")?.textarea };
+  await sleep(800);
+  out.goCards = { ws: selectedWs(), keyboard: keyboard() };
+  out.goCardsEnter = await enterAndBack("s2");
+
   // Go there on the join request: its room's area, and the admin's prompt for it
   vp().focus();
   await openTray();
@@ -209,16 +343,89 @@ async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promi
   out.goJoin = { open: tray().open, area: selectedArea(), ws: selectedWs(), prompt: document.querySelector(".join-ask h3")?.textContent ?? null };
   document.querySelector<HTMLElement>('.join-ask button[title^="Answer later"]')?.click();
   await sleep(300);
+  // an area selected (by N, by Go there) lets go of several picked workspaces: one selection at a time
+  vp().focus();
+  for (const id of ["s1", "s8"]) {
+    (node(id)?.querySelector<HTMLElement>(".ls-head") ?? node(id))!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerId: 3, shiftKey: true }));
+    await sleep(150);
+  }
+  const pickedBefore = picked();
+  await openTray();
+  act(join, "go");
+  await sleep(700);
+  out.pickThenArea = { pickedBefore, picked: picked(), area: selectedArea() };
+  document.querySelector<HTMLElement>('.join-ask button[title^="Answer later"]')?.click();
+  await sleep(300);
+
   // from another tab, Go there comes back to the landscape
   [...document.querySelectorAll<HTMLElement>(".tab")].find((b) => b.textContent?.trim() === "Dashboard")?.click();
   await sleep(500);
   await openTray();
   act("s:s8", "go");
   await sleep(900);
-  out.goFromTab = { tab: document.querySelector(".tab.on")?.textContent?.trim() ?? null, ws: selectedWs() };
+  out.goFromTab = { tab: document.querySelector(".tab.on")?.textContent?.trim() ?? null, ws: selectedWs(), keyboard: keyboard() };
+}
+
+async function placePart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const place = () => {
+    const t = box(document.querySelector(".ny-tray"));
+    const b = box(document.querySelector(".ny-btn"));
+    const list = document.querySelector<HTMLElement>(".ny-tray .ny-list");
+    return {
+      items: document.querySelectorAll(".ny-tray .ny-item").length,
+      underButton: !!t && !!b && Math.abs(t.y - (b.y + b.h + 4)) <= 1,
+      coversButton: overlaps(t, b),
+      inWindow: !!t && t.y >= 0 && t.y + t.h <= window.innerHeight - 7.5,
+      scrolls: !!list && list.scrollHeight > list.clientHeight + 1,
+      lastBorder: (() => { const items = document.querySelectorAll<HTMLElement>(".ny-tray .ny-list > .ny-item"); return items.length ? getComputedStyle(items[items.length - 1]).borderBottomWidth : null; })(),
+    };
+  };
+  await openTray();
+  out.few = place();
+  // grown while open: four more sessions start waiting on you
+  let t = Date.now() - 30_000;
+  for (const id of ["s1", "s3", "s5", "s7"]) env.setSession(id, { status: "waiting", waitingReason: `Claude needs your permission to use Edit`, waitingSince: (t += 1000), waitingAt: t });
+  await sleep(700);
+  out.grown = place();
+  await closeTray();
+  await openTray();
+  out.reopened = place();
+  out.filled = tray().items.map((i) => [i.kind, i.acts.find((a) => a.key === "go")?.filled ?? null]);
+}
+
+async function barPart(out: Record<string, unknown>): Promise<void> {
+  const bar = document.querySelector<HTMLElement>(".topbar")!;
+  const one = (el: HTMLElement | null) => {
+    if (!el) return null;
+    const line = parseFloat(getComputedStyle(el).lineHeight) || parseFloat(getComputedStyle(el).fontSize) * 1.3;
+    const pad = parseFloat(getComputedStyle(el).paddingTop) + parseFloat(getComputedStyle(el).paddingBottom) + parseFloat(getComputedStyle(el).borderTopWidth) + parseFloat(getComputedStyle(el).borderBottomWidth);
+    return { text: el.textContent?.trim() ?? "", oneLine: el.getBoundingClientRect().height <= pad + line * 1.5 + 2, cut: el.scrollWidth > el.clientWidth + 1 };
+  };
+  out.width = window.innerWidth;
+  out.buttons = [one(document.querySelector<HTMLElement>(".ny-btn")), one(document.querySelector<HTMLElement>(".topbar > button.primary"))];
+  out.barOverflows = bar.scrollWidth > bar.clientWidth + 1;
+  // the amber button's text against what's under it: its own fill over the top bar
+  const rgba = (c: string) => (c.match(/[\d.]+/g) ?? []).map(Number).concat(1).slice(0, 4);
+  const lum = ([r, g, b]: number[]) => {
+    const f = (v: number) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const over = (top: number[], under: number[]) => top.slice(0, 3).map((v, i) => v * top[3] + under[i] * (1 - top[3]));
+  const btn = document.querySelector<HTMLElement>(".ny-btn.on");
+  if (btn) {
+    const barBg = rgba(getComputedStyle(bar).backgroundColor);
+    const bg = over(rgba(getComputedStyle(btn).backgroundColor), barBg);
+    const fg = over(rgba(getComputedStyle(btn).color), bg);
+    const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
+    out.contrast = Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100;
+  }
 }
 
 async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  if (new URLSearchParams(location.search).has("lsFit")) {
+    vp().dispatchEvent(new KeyboardEvent("keydown", { key: "0", metaKey: true, bubbles: true, cancelable: true }));
+    await sleep(900);
+  }
   const band = [...vp().classList].find((c) => c.startsWith("ls-band-"))?.slice(8) ?? null;
   const areaOf = (id: string) => {
     const s = env.sessions().find((x) => x.id === id);
@@ -228,26 +435,52 @@ async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Prom
   const workspaces = () =>
     [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node")].map((n) => {
       const id = n.dataset.front!;
-      const node = box(n);
+      const nodeBox = box(n);
       const area = box(areaOf(id));
       const row = n.querySelector(".ls-badges");
       const rowBox = box(row);
+      const foot = box(n.querySelector(".ls-card-foot"));
       const badges = [...n.querySelectorAll<HTMLElement>(".ls-badge")].map((b) => {
         const bb = box(b);
-        // a badge that didn't fit wrapped onto the row's second line, which it never shows
-        const shown = !!bb && !!rowBox && bb.y < rowBox.y + rowBox.h - 1;
-        return { key: b.dataset.badge ?? null, text: b.textContent, title: b.title, failed: b.classList.contains("failed"), shown, cut: b.scrollWidth > b.clientWidth + 1, inCard: within(bb, node), inArea: !area || within(bb, area) };
+        // a badge that didn't fit wrapped onto the row's second line, which it never shows; one past the foot's end
+        // (whose overflow hides it) would show cut: it must never be there
+        const shown = !!bb && !!rowBox && bb.y < rowBox.y + rowBox.h - 1 && (!foot || bb.x < foot.x + foot.w - 0.5);
+        return { key: b.dataset.badge ?? null, text: b.textContent, title: b.title, failed: b.classList.contains("failed"), shown, whole: shown && within(bb, rowBox) && (!foot || within(bb, foot)), cut: b.scrollWidth > b.clientWidth + 1, inCard: within(bb, nodeBox), inArea: !area || within(bb, area) };
       });
       const did = n.querySelector<HTMLElement>(".ls-card-did");
+      const line = n.querySelector<HTMLElement>(".ls-card-line");
+      const body = box(n.querySelector(".ls-card-body"));
+      const didBox = box(did);
+      // a row too tall for what's left moved to the body's second column, past its edge: gone, not cut
+      const inFirstColumn = (b: Box | null) => !!b && !!body && b.x < body.x + body.w - 0.5;
+      const didShown = inFirstColumn(didBox);
+      const footShown = !body || inFirstColumn(foot);
+      for (const b of badges) if (!footShown) b.shown = b.whole = false;
+      const head = box(n.querySelector(".ls-card-head"));
+      const acts = [...n.querySelectorAll<HTMLElement>(".ls-card-acts button")].map((b) => ({ label: b.textContent, whole: within(box(b), nodeBox) }));
       const diffCell = n.querySelector<HTMLElement>(".ls-foot .ls-diff");
       return {
         id,
         mode: n.classList.contains("card") ? "card" : n.classList.contains("live") ? "live" : [...n.classList].find((c) => ["still", "snapshot", "focus", "placeholder"].includes(c)) ?? "other",
         rowClips: row ? getComputedStyle(row).overflow === "hidden" : null,
-        rowInCard: !rowBox || within(rowBox, node),
+        rowInCard: !rowBox || !badges.some((b) => b.shown) || within(rowBox, nodeBox),
+        rowInFoot: !rowBox || !badges.some((b) => b.shown) || within(rowBox, foot),
         badges,
-        did: did ? { text: did.textContent, title: did.title, failed: did.classList.contains("bad"), inCard: within(box(did), node), inArea: !area || within(box(did), area) } : null,
-        diffCell: diffCell ? { text: diffCell.querySelector(".v")?.textContent ?? null, title: diffCell.title, failed: diffCell.classList.contains("failed"), inNode: within(box(diffCell), node), inArea: !area || within(box(diffCell), area) } : null,
+        rows: n.classList.contains("card")
+          ? {
+              head: within(head, nodeBox),
+              // the foot whole, and each of its words inside it: one that gave way ends in an ellipsis, never past its edge
+              foot: {
+                shown: footShown,
+                whole: !footShown || (within(foot, body) && within(foot, nodeBox) && [...n.querySelectorAll(".ls-card-foot > :not(.ls-badges)")].every((p) => { const pb = box(p); return !pb || pb.w === 0 || within(pb, foot); })),
+              },
+              did: did ? { shown: didShown, whole: !didShown || (within(didBox, body) && within(didBox, nodeBox)) } : null,
+              acts,
+            }
+          : null,
+        line: line?.textContent ?? null,
+        did: did ? { text: did.textContent, title: did.title, failed: did.classList.contains("bad"), inCard: !didShown || within(didBox, nodeBox), inArea: !area || !didShown || within(didBox, area) } : null,
+        diffCell: diffCell ? { text: diffCell.querySelector(".v")?.textContent ?? null, title: diffCell.title, failed: diffCell.classList.contains("failed"), inNode: within(box(diffCell), nodeBox), inArea: !area || within(box(diffCell), area) } : null,
       };
     });
   out.band = band;
@@ -257,8 +490,7 @@ async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Prom
   // s1's diff source failing from now on: its badge says so on the next refresh, never its old value
   const s1 = env.sessions().find((s) => s.id === "s1")!;
   const diffNow = () => {
-    const n = document.querySelector<HTMLElement>('.ls-world [data-front="s1"]');
-    const el = n?.querySelector<HTMLElement>('.ls-badge[data-badge="diff"], .ls-foot .ls-diff');
+    const el = node("s1")?.querySelector<HTMLElement>('.ls-badge[data-badge="diff"], .ls-foot .ls-diff');
     return el ? { text: (el.querySelector(".v") ?? el).textContent, title: el.title } : null;
   };
   const stale: Record<string, unknown> = { before: diffNow() };
@@ -266,10 +498,12 @@ async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Prom
   env.emit("onFolderChanged", s1.cwd);
   await sleep(600);
   stale.after = diffNow();
-  stale.said = said.filter((m) => m.includes("its changes against its base for s1"));
+  stale.said = said.filter((m) => m.includes("couldn't read its changes against its base for"));
   env.badgeFails.delete("diff");
   env.emit("onFolderChanged", s1.cwd);
   await sleep(600);
   stale.again = diffNow();
+  // read once per folder: the cards on s1's folder asked once for each change, not once each
+  stale.asked = env.calls.filter((c) => c.fn === "branchStat").length;
   out.stale = stale;
 }

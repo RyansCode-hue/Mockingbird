@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { handoffKickoff, handoffPrompt, lastReplyLine, lastReplyOf, repoState, transcriptDigest, transcriptLines } from "../src/main/handoff";
+import { handoffKickoff, handoffPrompt, lastReplyLine, lastReplyOf, replyFiles, repoState, transcriptDigest, transcriptLines } from "../src/main/handoff";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 const spawned: { file: string; args: string[]; cwd: string }[] = [];
@@ -149,5 +149,66 @@ describe("what an agent said last (a landscape card's \"what it did\")", () => {
     expect((await lastReplyOf([{ path: old, agent: "claude" }, { path: cur, agent: "claude" }], "c1")).line).toBe("From the earlier file.");
     expect(await lastReplyOf([{ path: cur, agent: "claude" }], "c1")).toEqual({ line: null, at: null });
     await expect(lastReplyOf([{ path: path.join(dir, "gone.jsonl"), agent: "claude" }], "c1")).rejects.toThrow(/ENOENT/);
+  });
+});
+
+describe("what an agent said last, read now and only from its own conversation", () => {
+  const side = (content: unknown) => JSON.stringify({ type: "assistant", isSidechain: true, sessionId: "c1", timestamp: "2026-10-04T10:05:00Z", message: { role: "assistant", content } });
+  const toolOutput = (bytes: number) => JSON.stringify({ type: "user", sessionId: "c1", message: { role: "user", content: [{ type: "tool_result", content: "o".repeat(bytes) }] } });
+
+  it("passes over a subagent's lines in the conversation's transcript, in its latest message and in a digest", () => {
+    const lines = [claude("user", "Ship it"), claude("assistant", "Shipped the dropdown."), side("I'm the explorer subagent: found 12 files.")];
+    expect(lastReplyLine(lines, "claude", "c1")?.line).toBe("Shipped the dropdown.");
+    expect(transcriptDigest(lines, "claude", "c1")).not.toContain("explorer subagent");
+  });
+
+  it("finds a Claude conversation's own file: its hooks', the index's, else its folder's, never a subagent's", () => {
+    const files = ["/p/c1.jsonl", "/p/c1/subagents/agent-a1.jsonl", "/p/other.jsonl"];
+    const exists = (f: string) => files.includes(f);
+    const locate = vi.fn(() => "/p/c1.jsonl");
+    // the index files the subagent under its parent: it's never what's read
+    expect(replyFiles("claude", "c1", { hook: null, indexed: [{ path: "/p/c1.jsonl" }, { path: "/p/c1/subagents/agent-a1.jsonl" }], locate, exists })).toEqual([{ path: "/p/c1.jsonl", agent: "claude" }]);
+    expect(replyFiles("claude", "c1", { hook: "/p/c1.jsonl", indexed: [], locate, exists })).toEqual([{ path: "/p/c1.jsonl", agent: "claude" }]);
+    expect(locate).not.toHaveBeenCalled();
+    // a new conversation the index hasn't caught up with: found in its folder
+    expect(replyFiles("claude", "c1", { hook: null, indexed: [], locate, exists })).toEqual([{ path: "/p/c1.jsonl", agent: "claude" }]);
+    expect(replyFiles("claude", "c1", { hook: "/p/c1/subagents/agent-a1.jsonl", indexed: [], locate: () => null, exists })).toEqual([]);
+    expect(replyFiles("claude", "c2", { hook: null, indexed: [], locate: () => null, exists })).toEqual([]);
+  });
+
+  it("finds every rollout of a Codex conversation, the newest too before the index has it, oldest first", () => {
+    const old = "/s/2026/10/03/rollout-2026-10-03T09-00-00-x1.jsonl";
+    const cur = "/s/2026/10/04/rollout-2026-10-04T10-00-00-x1.jsonl";
+    const exists = (f: string) => f === old || f === cur;
+    expect(replyFiles("codex", "x1", { hook: cur, indexed: [{ path: old }], locate: () => null, exists }).map((f) => f.path)).toEqual([old, cur]);
+    expect(replyFiles("codex", "x1", { hook: null, indexed: [{ path: old }], locate: () => cur, exists }).map((f) => f.path)).toEqual([old, cur]);
+    expect(replyFiles("codex", "x1", { hook: null, indexed: [{ path: cur }, { path: old }], locate: () => cur, exists }).map((f) => f.path)).toEqual([old, cur]);
+  });
+
+  it("reads further back past a long tool output, and says why it's blank when even that held no message", async () => {
+    const dir = tempDir("long-turn");
+    const f = path.join(dir, "c1.jsonl");
+    fs.writeFileSync(f, `${claude("assistant", "Ran the whole suite.")}\n${toolOutput(3 * 1024 * 1024)}\n`);
+    expect(await lastReplyOf([{ path: f, agent: "claude" }], "c1")).toMatchObject({ line: "Ran the whole suite." });
+    fs.writeFileSync(f, `${claude("assistant", "Ran the whole suite.")}\n${toolOutput(9 * 1024 * 1024)}\n`);
+    expect(await lastReplyOf([{ path: f, agent: "claude" }], "c1")).toEqual({ line: null, at: null, why: "no message from the agent in the last 8 MB of its transcript, which a long tool output filled" });
+    // an older file isn't read in its place: its line would be older than what the agent last did
+    const old = path.join(dir, "old.jsonl");
+    fs.writeFileSync(old, `${claude("assistant", "Something from yesterday.")}\n`);
+    expect((await lastReplyOf([{ path: old, agent: "claude" }, { path: f, agent: "claude" }], "c1")).line).toBeNull();
+  });
+
+  it("reads a file once while it's unchanged, and again once it grows", async () => {
+    const dir = tempDir("reply-cache");
+    const f = path.join(dir, "c1.jsonl");
+    fs.writeFileSync(f, `${claude("assistant", "First answer.")}\n`);
+    const open = vi.spyOn(fs.promises, "open");
+    expect((await lastReplyOf([{ path: f, agent: "claude" }], "c1")).line).toBe("First answer.");
+    expect((await lastReplyOf([{ path: f, agent: "claude" }], "c1")).line).toBe("First answer.");
+    expect(open).toHaveBeenCalledTimes(1);
+    fs.appendFileSync(f, `${claude("assistant", "Second answer, a turn later.")}\n`);
+    expect((await lastReplyOf([{ path: f, agent: "claude" }], "c1")).line).toBe("Second answer, a turn later.");
+    expect(open).toHaveBeenCalledTimes(2);
+    open.mockRestore();
   });
 });

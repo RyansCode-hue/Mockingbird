@@ -173,6 +173,7 @@ interface LiveSession {
   rows: number;
   guards: RoomLaunch["guards"] | null; // set when it was started as a room session
   hookEvents: number; // hook events routed to this pty since it started
+  transcripts: Map<string, string>; // conversation id → the transcript file its hooks named, the newest few
   kickoff: boolean; // its initial prompt is still to be typed in
   startTimer: NodeJS.Timeout | null; // delivers queued messages once a just-started agent has drawn its prompt
   compactSentAt: number | null; // when Compact (usage warnings) last sent /compact here
@@ -597,6 +598,7 @@ export class SessionManager {
       rows: 32,
       guards: room?.guards ?? null,
       hookEvents: 0,
+      transcripts: new Map(),
       kickoff: false,
       startTimer: null,
       compactSentAt: null,
@@ -1354,6 +1356,11 @@ export class SessionManager {
     return outcomes;
   }
 
+  /** The transcript file a live pane's hooks named for conversation `conv`, or null when they haven't. */
+  transcriptOf(id: string, conv: string): string | null {
+    return this.live.get(id)?.transcripts.get(conv) ?? null;
+  }
+
   /**
    * Called by the hooks watcher. Every pane exports MOCKINGBIRD_SESSION, which
    * its agent's hooks inherit, so an event names its pane exactly. Events
@@ -1372,6 +1379,8 @@ export class SessionManager {
     started?: boolean;
     /** Its turn ended (the Stop hook). */
     finished?: boolean;
+    /** The transcript file the agent is writing the conversation to (the hook's `transcript_path`). */
+    transcriptPath?: string;
   }): SessionInfo | null {
     // a tagged event that names no live pane comes from something else Mockingbird
     // runs (a Collaborate room) or a closed pane — never guess a pane for it
@@ -1385,6 +1394,11 @@ export class SessionManager {
       this.emitChanged();
     }
     if (ev.conversationId) this.noteConversation(s, ev.agent ?? s.info.agent ?? "claude", ev.conversationId);
+    if (ev.conversationId && ev.transcriptPath) {
+      s.transcripts.delete(ev.conversationId);
+      s.transcripts.set(ev.conversationId, ev.transcriptPath);
+      if (s.transcripts.size > 8) s.transcripts.delete(s.transcripts.keys().next().value!);
+    }
     // a starting agent that is about to be given its kickoff prompt is about to work
     if (ev.started && s.kickoff) return s.info;
     this.setStatus(s.info.id, ev.status, ev.reason, finishedAtAfter(s.info, ev, Date.now()));
@@ -1515,9 +1529,13 @@ export class SessionManager {
     if (status === "waiting") {
       s.info.waitingReason = reason ?? s.info.waitingReason ?? null;
       s.info.waitingSince = s.info.waitingSince ?? Date.now();
+      // each prompt's own event (a Notification, a PermissionRequest) says a new prompt is up, worded alike or not
+      if (reason) s.info.waitingAt = Date.now();
+      else s.info.waitingAt ??= s.info.waitingSince;
     } else {
       s.info.waitingReason = null;
       s.info.waitingSince = null;
+      s.info.waitingAt = null;
     }
     this.store.upsertSession(s.info);
     this.emitChanged();

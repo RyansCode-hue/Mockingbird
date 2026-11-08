@@ -1,6 +1,7 @@
 import * as fs from "fs";
+import * as path from "path";
 import { currentBranch, git, isRepo } from "./git";
-import { parseClaudeLine, parseCodexLine } from "./transcripts";
+import { isSidechainFile, parseClaudeLine, parseCodexLine } from "./transcripts";
 import type { AgentKind, LastReply } from "../shared/types";
 import { readSlice } from "./fileOps";
 import { agentLabel } from "./agents";
@@ -32,6 +33,7 @@ export function transcriptDigest(lines: string[], agent: AgentKind, conv: string
   const entries: string[] = [];
   for (const line of lines) {
     for (const c of parse(line, conv).chunks) {
+      if (c.sidechain) continue; // a subagent's, not the conversation's
       const who = c.kind === "tool" ? "TOOL" : c.role === "user" ? "USER" : "AGENT";
       const text = c.text.length > ENTRY_CHARS ? `${c.text.slice(0, ENTRY_CHARS)} …` : c.text;
       entries.push(`${who}: ${text.trim()}`);
@@ -51,8 +53,11 @@ export function transcriptDigest(lines: string[], agent: AgentKind, conv: string
   return [head, skipped > 0 ? `[… ${skipped} earlier entries left out …]` : "", ...tail].filter(Boolean).join("\n");
 }
 
-/** How much of a transcript's end is read for its latest message: a reply is far smaller, a turn's tool output may not be. */
-const REPLY_TAIL_BYTES = 1024 * 1024;
+/**
+ * How much of a transcript's end is read for its latest message: the last 1 MB, which holds a reply and what followed
+ * it almost always, then, when a turn's tool output filled that, the last 8 MB.
+ */
+export const REPLY_WINDOWS = [1024 * 1024, 8 * 1024 * 1024];
 
 /** A message's first line as a card says it: its leading heading or quote marks and inline emphasis let go. */
 const plainLine = (s: string) =>
@@ -73,7 +78,8 @@ export function lastReplyLine(lines: string[], agent: AgentKind, conv: string): 
     const chunks = parse(lines[i], conv).chunks;
     for (let j = chunks.length - 1; j >= 0; j--) {
       const c = chunks[j];
-      if (c.kind !== "message" || c.role !== "assistant") continue;
+      // a subagent's lines in the conversation's own transcript aren't what the agent said
+      if (c.kind !== "message" || c.role !== "assistant" || c.sidechain) continue;
       const first = c.text.split("\n").map(plainLine).find(Boolean);
       if (first) return { line: first.length > 300 ? `${first.slice(0, 299)}…` : first, at: c.at || null };
     }
@@ -81,20 +87,87 @@ export function lastReplyLine(lines: string[], agent: AgentKind, conv: string): 
   return null;
 }
 
+/** A file's last `bytes` as whole lines, read without blocking: a window that starts mid-file drops the line it cuts. */
+async function tailOf(file: string, size: number, bytes: number): Promise<string[]> {
+  const n = Math.min(size, bytes);
+  const fh = await fs.promises.open(file, "r");
+  try {
+    const buf = Buffer.alloc(n);
+    const { bytesRead } = await fh.read(buf, 0, n, size - n);
+    const lines = buf.toString("utf8", 0, bytesRead).split("\n");
+    return (n < size ? lines.slice(1) : lines).filter(Boolean);
+  } finally {
+    await fh.close();
+  }
+}
+
+/** One file's answer, kept while the file is unchanged (its size and modified time), so a card shown again reads nothing. */
+const replyCache = new Map<string, { size: number; mtime: number; found: LastReply | null }>();
+const REPLY_CACHE_MAX = 300;
+
+/**
+ * The agent's latest message in one transcript file: its last 1 MB first, then its last 8 MB (REPLY_WINDOWS). Null
+ * when the whole file holds none; `{ line: null, why }` when the part read held none but the file goes further back.
+ */
+async function lastReplyIn(f: { path: string; agent: AgentKind }, conv: string): Promise<LastReply | null> {
+  const { size, mtimeMs } = await fs.promises.stat(f.path);
+  const key = `${f.path}\0${conv}`;
+  const hit = replyCache.get(key);
+  if (hit && hit.size === size && hit.mtime === mtimeMs) return hit.found;
+  let found: LastReply | null = null;
+  for (const bytes of REPLY_WINDOWS) {
+    found = lastReplyLine(await tailOf(f.path, size, bytes), f.agent, conv);
+    if (found || bytes >= size) break;
+  }
+  const biggest = REPLY_WINDOWS[REPLY_WINDOWS.length - 1];
+  if (!found && size > biggest) found = { line: null, at: null, why: `no message from the agent in the last ${Math.round(biggest / 1024 / 1024)} MB of its transcript, which a long tool output filled` };
+  replyCache.delete(key);
+  replyCache.set(key, { size, mtime: mtimeMs, found });
+  if (replyCache.size > REPLY_CACHE_MAX) replyCache.delete(replyCache.keys().next().value!);
+  return found;
+}
+
 /**
  * Conversation `conv`'s latest agent message, from its transcript files (a Codex conversation can span several,
- * oldest first): the newest file's end first. `{ line: null }` when it hasn't said anything yet; a file that can't
- * be read throws.
+ * oldest first): the newest file first, an older one only when the newest holds no message at all (a resumed
+ * conversation that hasn't answered yet). `{ line: null }` when it hasn't said anything yet; `why` says when the
+ * newest file was read only in part and held none; a file that can't be read throws.
  */
 export async function lastReplyOf(files: { path: string; agent: AgentKind }[], conv: string): Promise<LastReply> {
   for (const f of [...files].reverse()) {
-    const { size } = await fs.promises.stat(f.path);
-    const tail = readSlice(f.path, "end", REPLY_TAIL_BYTES).split("\n");
-    // a window that starts mid-file starts mid-line: that line is dropped
-    const found = lastReplyLine((size > REPLY_TAIL_BYTES ? tail.slice(1) : tail).filter(Boolean), f.agent, conv);
+    const found = await lastReplyIn(f, conv);
     if (found) return found;
   }
   return { line: null, at: null };
+}
+
+/**
+ * The transcript files to read a conversation's latest message from now, oldest first, without waiting for the index
+ * to catch up (it syncs after a few quiet seconds, and can lag minutes behind): the file the agent's hooks name
+ * (`hook`), then the index's, then `locate` (its project folder's `<conv>.jsonl`, or the newest rollout named for
+ * it). A Claude conversation is its own `<conv>.jsonl` only, never a subagent's file; a Codex one is every rollout
+ * named for it, by their timestamped names.
+ */
+export function replyFiles(
+  agent: AgentKind,
+  conv: string,
+  o: { hook: string | null; indexed: readonly { path: string }[]; locate: () => string | null; exists?: (file: string) => boolean }
+): { path: string; agent: AgentKind }[] {
+  const exists = o.exists ?? fs.existsSync;
+  const usable = (p: string | null | undefined): p is string => !!p && !isSidechainFile(p) && exists(p);
+  if (agent === "claude") {
+    const own = (p: string | null | undefined): p is string => usable(p) && path.basename(p) === `${conv}.jsonl`;
+    const known = [o.hook, ...o.indexed.map((f) => f.path)].find(own);
+    const file = known ?? o.locate();
+    return own(file) ? [{ path: file, agent }] : [];
+  }
+  const files = new Set(o.indexed.map((f) => f.path).filter(usable));
+  if (usable(o.hook)) files.add(o.hook);
+  else {
+    const found = o.locate();
+    if (usable(found)) files.add(found);
+  }
+  return [...files].sort((a, b) => path.basename(a).localeCompare(path.basename(b))).map((p) => ({ path: p, agent }));
 }
 
 /** The worktree as it stands: branch, uncommitted files, recent commits. */

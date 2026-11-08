@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
@@ -8,11 +8,32 @@ import { useLiftOut } from "./lift";
 /**
  * A popover under an element anywhere, even one inside a scaled layer (the landscape's world): it's drawn over
  * everything, at the element's place on screen, so it keeps its own size. A press or a wheel outside it, Escape, or
- * the window resizing or losing focus closes it. It's named for screen readers and takes the keyboard as it opens.
+ * the window resizing or losing focus closes it (`onClose` hears which: Escape gives the keyboard back to whoever
+ * opened it). It's named for screen readers and takes the keyboard as it opens; `onKeyDown` hears keys pressed in it.
  * `align` "end" lines its right edge up with the element's (a button at the window's right end); its left by default.
+ * `below` keeps it under the element however tall it grows, its height capped at the window's bottom (its content
+ * scrolls), and placed again whenever its size changes; otherwise a tall one flips above, as a menu does.
  */
-export function AnchoredPopover({ anchor, className, label, onClose, children, align = "start" }: { anchor: HTMLElement; className: string; label: string; onClose: () => void; children: ReactNode; align?: "start" | "end" }) {
-  useEscape(onClose);
+export function AnchoredPopover({
+  anchor,
+  className,
+  label,
+  onClose,
+  children,
+  align = "start",
+  below = false,
+  onKeyDown,
+}: {
+  anchor: HTMLElement;
+  className: string;
+  label: string;
+  onClose: (how: "escape" | "outside" | "away") => void;
+  children: ReactNode;
+  align?: "start" | "end";
+  below?: boolean;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void;
+}) {
+  useEscape(() => onClose("escape"));
   const box = useRef<HTMLDivElement | null>(null);
   const presence = usePresence<HTMLDivElement>("menu", { also: box });
   const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
@@ -21,16 +42,27 @@ export function AnchoredPopover({ anchor, className, label, onClose, children, a
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
-    const r = anchor.getBoundingClientRect();
-    setPos(placeMenu({ x: align === "end" ? r.right - el.offsetWidth : r.left, y: r.bottom + 4 }, { width: el.offsetWidth, height: el.scrollHeight }, { width: window.innerWidth, height: window.innerHeight }));
-  }, [anchor, align]);
+    const place = () => {
+      const r = anchor.getBoundingClientRect();
+      const x = align === "end" ? r.right - el.offsetWidth : r.left;
+      const view = { width: window.innerWidth, height: window.innerHeight };
+      const at = placeMenu({ x, y: r.bottom + 4 }, { width: el.offsetWidth, height: below ? 0 : el.scrollHeight }, view);
+      const next = below ? { left: at.left, top: r.bottom + 4, maxHeight: Math.max(0, view.height - r.bottom - 4 - 8) } : at;
+      setPos((p) => (p && p.left === next.left && p.top === next.top && p.maxHeight === next.maxHeight ? p : next));
+    };
+    place();
+    if (!below) return;
+    const ro = new ResizeObserver(place);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [anchor, align, below]);
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
     const outside = (e: Event) => {
       const t = e.target as Node;
-      if (!box.current?.contains(t) && !anchor.contains(t)) close.current();
+      if (!box.current?.contains(t) && !anchor.contains(t)) close.current("outside");
     };
-    const away = () => close.current();
+    const away = () => close.current("away");
     // pointerdown too: a press the landscape takes (a pan, a scaled terminal, the minimap) calls preventDefault on it,
     // and the browser then sends no mousedown
     document.addEventListener("pointerdown", outside, true);
@@ -53,6 +85,7 @@ export function AnchoredPopover({ anchor, className, label, onClose, children, a
       role="dialog"
       aria-label={label}
       tabIndex={-1}
+      onKeyDown={onKeyDown}
       style={pos ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight } : { left: -9999, top: -9999 } /* measured first, then placed */}
       // a portal's events reach its component tree: a press here isn't a press on the landscape under the button
       onPointerDown={(e) => e.stopPropagation()}

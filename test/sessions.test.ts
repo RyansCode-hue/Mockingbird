@@ -20,6 +20,7 @@ function manager(saved: any[] = []) {
       draft: false,
       flushTimer: null,
       hookEvents: 0,
+      transcripts: new Map(),
       kickoff: false,
       startTimer: null,
     });

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BranchStat, LastReply, SessionMeter, TicketPipeline } from "../src/shared/types";
-import { FAILED, costBadge, didLine, diffBadge, logFailure, prBadge, readOf, ticketOfSession, type Read } from "../src/renderer/cardBadges";
+import { FAILED, costBadge, didLine, diffBadge, logFailure, prBadge, readOf, readStore, repeatsDid, ticketOfSession, type Read } from "../src/renderer/cardBadges";
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;
@@ -11,6 +11,7 @@ const meter = (tokens: number, sharePct: number | null): SessionMeter => ({
   tokens: { input: tokens, output: 0, cacheRead: 0, cacheWrite: 0, replies: 1 },
   window: sharePct === null ? null : { tokens, sharePct, usedPct: 38, resetsAt: NOW },
 });
+const agent = { shell: false };
 
 describe("the diff badge", () => {
   it("says what changed since the fork from the area repo's base", () => {
@@ -23,9 +24,9 @@ describe("the diff badge", () => {
     expect(diffBadge({ state: "loading" })).toBeNull();
     expect(diffBadge({ state: "ok", value: { base: "origin/dev", files: 0, insertions: 0, deletions: 0 } })).toBeNull();
   });
-  it("shows — with the reason when its source fails, whatever it said before", () => {
+  it("says which badge failed, with the reason, whatever it said before", () => {
     const b = diffBadge(readOf<BranchStat>({ error: "git merge-base: fatal: Not a valid object name origin/dev" }))!;
-    expect(b).toEqual({ key: "diff", text: FAILED, failed: true, title: "Couldn't read its changes against its base: git merge-base: fatal: Not a valid object name origin/dev" });
+    expect(b).toEqual({ key: "diff", text: `diff ${FAILED}`, failed: true, title: "Couldn't read its changes against its base: git merge-base: fatal: Not a valid object name origin/dev" });
     expect(b.lines).toBeUndefined();
   });
 });
@@ -52,23 +53,27 @@ describe("the PR badge (ticket pipelines)", () => {
     expect(prBadge({ ...s, ticketId: "5102", taskGroup: "5102" }, { all, error: null })).toBeNull();
     expect(prBadge(s, { all, error: null })).toBeNull();
   });
-  it("shows — with the reason when the pipelines couldn't be read, never a PR it read before", () => {
+  it("says it couldn't read the pipelines, never a PR it read before", () => {
     const all = { "5101": pipeline({ prs: [pr(88, "5101-orgDropdowns", NOW)] }) };
-    expect(prBadge(s, { all, error: "pipeline.json: EACCES: permission denied" })).toEqual({ key: "pr", text: FAILED, failed: true, title: "Couldn't read the ticket pipelines: pipeline.json: EACCES: permission denied" });
+    expect(prBadge(s, { all, error: "pipeline.json: EACCES: permission denied" })).toEqual({ key: "pr", text: `PR ${FAILED}`, failed: true, title: "Couldn't read the ticket pipelines: pipeline.json: EACCES: permission denied" });
   });
 });
 
 describe("the cost badge (token meters)", () => {
   it("says its tokens and its share of the 5-hour limit", () => {
-    expect(costBadge(meter(22_000_000, 14), null)).toMatchObject({ key: "cost", text: "22M · 14%", title: "22M tokens over its conversations\n≈14% of the current 5-hour limit, its cost on the plan" });
-    expect(costBadge(meter(900, null), null)).toMatchObject({ text: "900", title: "900 tokens over its conversations" });
+    expect(costBadge(agent, meter(22_000_000, 14), null)).toMatchObject({ key: "cost", text: "22M · 14%", title: "22M tokens over its conversations\n≈14% of the current 5-hour limit, its cost on the plan" });
+    expect(costBadge(agent, meter(900, null), null)).toMatchObject({ text: "900", title: "900 tokens over its conversations" });
   });
   it("is none before it has used any", () => {
-    expect(costBadge(undefined, null)).toBeNull();
-    expect(costBadge(meter(0, 1), null)).toBeNull();
+    expect(costBadge(agent, undefined, null)).toBeNull();
+    expect(costBadge(agent, meter(0, 1), null)).toBeNull();
   });
-  it("shows — with the reason when the meters couldn't be read, even with an old meter in hand", () => {
-    expect(costBadge(meter(22_000_000, 14), "SQLITE_BUSY: database is locked")).toEqual({ key: "cost", text: FAILED, failed: true, title: "Couldn't read the token meters: SQLITE_BUSY: database is locked" });
+  it("says it couldn't read the meters, even with an old meter in hand", () => {
+    expect(costBadge(agent, meter(22_000_000, 14), "SQLITE_BUSY: database is locked")).toEqual({ key: "cost", text: `cost ${FAILED}`, failed: true, title: "Couldn't read the token meters: SQLITE_BUSY: database is locked" });
+  });
+  it("is never on a terminal's card, whatever the meters say", () => {
+    expect(costBadge({ shell: true }, meter(22_000_000, 14), null)).toBeNull();
+    expect(costBadge({ shell: true }, undefined, "SQLITE_BUSY: database is locked")).toBeNull();
   });
 });
 
@@ -80,6 +85,27 @@ describe("what it did", () => {
     expect(didLine({ state: "ok", value: { line: null, at: null } })).toBeNull();
     expect(didLine({ state: "loading" })).toBeNull();
     expect(didLine(readOf<LastReply>({ error: "the conversation index isn't available" }))).toEqual({ text: FAILED, title: "Couldn't read what it last said: the conversation index isn't available", failed: true });
+  });
+  it("is — saying why when the part of its transcript read held no message, rather than blank", () => {
+    expect(didLine({ state: "ok", value: { line: null, at: null, why: "no message from the agent in the last 8 MB of its transcript" } })).toEqual({
+      text: FAILED,
+      title: "Couldn't find what it last said: no message from the agent in the last 8 MB of its transcript",
+      failed: true,
+    });
+  });
+});
+
+describe("a card's terminal line beside what it did", () => {
+  it("repeats it when it's the same words, past a bullet, markdown, spacing or a cut end", () => {
+    expect(repeatsDid("● Org pickers now open on the org you used last.", "Org pickers now open on the org you used last.")).toBe(true);
+    expect(repeatsDid("⏺ **Streams** the export   instead of loading 40k rows", "Streams the export instead of loading 40k rows. Then the tests.")).toBe(true);
+    expect(repeatsDid("Org pickers now open on the o…", "Org pickers now open on the org you used last.")).toBe(true);
+  });
+  it("doesn't when the terminal says something else, or too little to tell", () => {
+    expect(repeatsDid("✻ Running the export tests… (18s · esc to interrupt)", "Streams the export instead of loading 40k rows.")).toBe(false);
+    expect(repeatsDid("● Done", "Done with the export, and the tests pass.")).toBe(false);
+    expect(repeatsDid(null, "Done")).toBe(false);
+    expect(repeatsDid("Done", null)).toBe(false);
   });
 });
 
@@ -107,6 +133,66 @@ describe("a badge's source failing", () => {
       "[mockingbird] a landscape card couldn't read its changes against its base for s1: EIO",
       "[mockingbird] a landscape card couldn't read its changes against its base for s1: EIO",
     ]);
+    warn.mockRestore();
+  });
+});
+
+describe("reads shared between cards", () => {
+  afterEach(() => vi.useRealTimers());
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  it("reads a source once for every card showing it, and again only when asked", async () => {
+    const store = readStore<number>("a test source");
+    let n = 0;
+    const load = vi.fn(async () => ++n);
+    const heard: string[] = [];
+    const offA = store.watch("k", { who: "s1", folder: "/w", load }, () => heard.push("a"));
+    const offB = store.watch("k", { who: "s2", folder: "/w", load }, () => heard.push("b"));
+    await flush();
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(store.get("k")).toEqual({ state: "ok", value: 1 });
+    store.refreshWhere((folder) => folder === "/w");
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(store.get("k")).toEqual({ state: "ok", value: 2 });
+    store.refreshWhere((folder) => folder === "/elsewhere");
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(heard).toEqual(["a", "b", "a", "b"]);
+    offA();
+    offB();
+  });
+  it("keeps a read a while after the last card showing it goes, so one drawn again reads nothing", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const store = readStore<number>("a test source", 1000);
+    const load = vi.fn(async () => 7);
+    const off = store.watch("k", { who: "s1", folder: null, load }, () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    off();
+    await vi.advanceTimersByTimeAsync(500);
+    const again = store.watch("k", { who: "s1", folder: null, load }, () => {});
+    expect(store.get("k")).toEqual({ state: "ok", value: 7 });
+    expect(load).toHaveBeenCalledTimes(1);
+    again();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(store.get("k")).toEqual({ state: "loading" });
+  });
+  it("replaces its value with a failure, said once, and takes only the newest read's answer", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = readStore<string>("a flaky source");
+    const answers: ((v: unknown) => void)[] = [];
+    const load = () => new Promise<string | { error: string }>((r) => answers.push(r as (v: unknown) => void));
+    const off = store.watch("k", { who: "s9", folder: null, load }, () => {});
+    answers[0]("first");
+    await flush();
+    store.refresh("k");
+    store.refresh("k");
+    answers[2]({ error: "EIO" });
+    await flush();
+    answers[1]("late and stale");
+    await flush();
+    expect(store.get("k")).toEqual({ state: "failed", error: "EIO" });
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(["[mockingbird] a landscape card couldn't read a flaky source for s9: EIO"]);
+    off();
     warn.mockRestore();
   });
 });

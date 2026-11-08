@@ -120,6 +120,33 @@ describe("a pane's status from its agent's hooks", () => {
     expect(info().status).toBe("idle");
   });
 
+  it("marks each prompt's own time while it waits, a second prompt worded like the first moving it on", async () => {
+    const m = manager();
+    const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "asking twice" });
+    const info = () => pane(m, s.id).info;
+    await hook("Notification", s.id, { message: "Claude needs your permission to use Bash" });
+    await until("the pane to wait", () => info().status === "waiting" && !!info().waitingAt);
+    const first = info().waitingAt!;
+    const since = info().waitingSince;
+    await new Promise((r) => setTimeout(r, 30));
+    // denied, and asked again in the same words without working in between
+    await hook("Notification", s.id, { message: "Claude needs your permission to use Bash" });
+    await until("the second prompt to be marked", () => info().waitingAt! > first);
+    expect(info().waitingSince).toBe(since); // it has waited since the first
+    await hook("PreToolUse", s.id, { tool_name: "Bash" });
+    await until("the pane to work", () => info().status === "working");
+    expect(info().waitingAt).toBeNull();
+  });
+
+  it("keeps the transcript file its hooks name for each conversation, so its latest message can be read at once", async () => {
+    const m = manager();
+    const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "a transcript" });
+    const file = path.join(os.homedir(), ".claude", "projects", "-x", `conv-${s.id}.jsonl`);
+    await hook("SessionStart", s.id, { source: "startup", transcript_path: file });
+    await until("the transcript to be kept", () => m.transcriptOf(s.id, `conv-${s.id}`) === file);
+    expect(m.transcriptOf(s.id, "another")).toBeNull();
+  });
+
   it("works out the turn's end from the status before and the hook", () => {
     const idleAt = (finishedAt: number | null) => ({ status: "idle" as const, finishedAt });
     expect(finishedAtAfter({ status: "working" }, { status: "idle", finished: true }, 5)).toBe(5);

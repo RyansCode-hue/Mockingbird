@@ -296,6 +296,45 @@ export function revealTile(p: PendingReveal, tiles: readonly Tile[], now: number
   return t ?? (now > p.until ? "expired" : "wait");
 }
 
+/** A box on screen, in window pixels: one the view keeps what it brings into view clear of (the open Needs you tray). */
+export interface ScreenBox {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+/**
+ * Bring a session's workspace into view: `focus` fills the window with it, `keys` gives the landscape the keyboard once
+ * it's there, `avoid` is a box to keep it clear of. `n` tells one ask from the next.
+ */
+export interface RevealAsk {
+  id: string;
+  n: number;
+  focus?: boolean;
+  keys?: boolean;
+  avoid?: ScreenBox | null;
+}
+/** Go to an area (fit it in view), clear of `avoid`. */
+export interface GoToAsk {
+  area: string;
+  n: number;
+  avoid?: ScreenBox | null;
+}
+
+/** The narrowest room beside a box that what's brought into view is fitted into; with less, the whole view is used. */
+const CLEAR_MIN_PX = 240;
+
+/**
+ * The part of the viewport (`vp`, on screen) to bring something into view in, as a size from its top-left: left of
+ * `avoid` when that covers part of it and leaves room enough there, else all of it.
+ */
+export function clearRoom(vp: { left: number; top: number; width: number; height: number }, avoid: ScreenBox | null | undefined): Size {
+  const all = { w: vp.width, h: vp.height };
+  if (!avoid || avoid.right <= vp.left || avoid.left >= vp.left + vp.width || avoid.bottom <= vp.top || avoid.top >= vp.top + vp.height) return all;
+  const w = avoid.left - vp.left;
+  return w >= CLEAR_MIN_PX ? { w, h: vp.height } : all;
+}
+
 /** A tool window placed on the landscape: its area (null: loose) and where it sits. */
 export interface WindowView {
   id: string;

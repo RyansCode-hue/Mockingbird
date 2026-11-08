@@ -38,8 +38,12 @@ export interface SearchHit extends ConversationRow {
 /** What one transcript line contributes. */
 export interface Parsed {
   conv?: Partial<ConversationRow> & { id: string; firstPrompt?: string };
-  /** `role` says who wrote a message (the index doesn't store it; a handoff digest uses it). */
-  chunks: { text: string; at: number; kind: "message" | "tool"; role?: "user" | "assistant" }[];
+  /**
+   * `role` says who wrote a message (the index doesn't store it; a handoff digest uses it). `sidechain` marks a
+   * subagent's line written into the conversation's own transcript (Claude's `isSidechain`): it isn't the
+   * conversation's own words.
+   */
+  chunks: { text: string; at: number; kind: "message" | "tool"; role?: "user" | "assistant"; sidechain?: true }[];
   usage?: { id: string; at: number; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
@@ -88,13 +92,14 @@ export function parseClaudeLine(line: string, fileConv: string): Parsed {
   const m = d.message;
   if ((d.type === "user" || d.type === "assistant") && m && !d.isMeta) {
     const content = typeof m.content === "string" ? [{ type: "text", text: m.content }] : Array.isArray(m.content) ? m.content : [];
+    const side = d.isSidechain ? { sidechain: true as const } : {};
     for (const c of content) {
       if (c?.type === "text" && typeof c.text === "string" && c.text.trim() && !isNoise(c.text)) {
-        out.chunks.push({ text: clip(c.text, MAX_TEXT), at, kind: "message", role: d.type });
+        out.chunks.push({ text: clip(c.text, MAX_TEXT), at, kind: "message", role: d.type, ...side });
         if (d.type === "user" && !d.isSidechain && isRealPrompt(c.text)) conv.firstPrompt = clip(firstLine(c.text), TITLE_CHARS);
       } else if (c?.type === "tool_use") {
         const text = toolInputText(String(c.name ?? "tool"), c.input);
-        if (text) out.chunks.push({ text, at, kind: "tool" });
+        if (text) out.chunks.push({ text, at, kind: "tool", ...side });
       }
     }
     if (d.type === "assistant") {
@@ -554,9 +559,15 @@ export class TranscriptIndex {
     return [...out.values()];
   }
 
-  /** The transcript files of a conversation (a Codex conversation can span several). */
+  /**
+   * The transcript files of a conversation, oldest first (a Codex conversation can span several). A Claude subagent's
+   * own file (`<conversation>/subagents/agent-<id>.jsonl`) is filed under its parent conversation for search, but its
+   * words aren't the conversation's: it's left out, so what reads a conversation (a handoff's digest, a refresh brief,
+   * a card's "what it did") reads the conversation itself.
+   */
   filesOf(conv: string): { path: string; agent: AgentKind }[] {
-    return this.db.prepare("SELECT path, agent FROM files WHERE conv = ? ORDER BY path").all(conv) as { path: string; agent: AgentKind }[];
+    const all = this.db.prepare("SELECT path, agent FROM files WHERE conv = ? ORDER BY path").all(conv) as { path: string; agent: AgentKind }[];
+    return all.filter((f) => !isSidechainFile(f.path));
   }
 
   stats(): { conversations: number; files: number } {
@@ -602,6 +613,9 @@ export function linkHits(hits: SearchHit[], live: SessionInfo[], previous: Sessi
     return { ...h, open: { how: "resume" } };
   });
 }
+
+/** A Claude subagent's transcript, which Claude Code keeps beside its parent conversation's, in `<conversation>/subagents/`. */
+export const isSidechainFile = (file: string): boolean => /[\\/]subagents[\\/][^\\/]+\.jsonl$/.test(file);
 
 /** Every .jsonl under a root, with the conversation id its name implies. */
 function listJsonl(root: string, agent: AgentKind): { path: string; agent: AgentKind; conv: string; size: number; mtime: number }[] {

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { AGENT_NAME, isErr, ticketIdOf, type SessionInfo, type SessionMeter } from "../shared/types";
-import { BadgeRow, useCardBadges } from "./cardBadges";
+import { BadgeRow, repeatsDid, useCardBadges } from "./cardBadges";
 import { lastMeaningfulLine, terminalLines } from "../shared/terminalText";
 import type { Tile } from "./landscapeModel";
 import { tailLines } from "./cachedTerm";
@@ -19,9 +19,9 @@ const STATUS: Record<SessionInfo["status"], string> = { working: "Working", wait
 export const kindLabel = (s: SessionInfo): string => (s.shell ? "Terminal" : AGENT_NAME[s.agent ?? "claude"]);
 
 /**
- * A session's "what it did" line for its card: the last meaningful line of its cached terminal (made for it if no
- * pane has made it yet, so the data pump keeps it current), read again a moment after output arrives. A session
- * that has exited reads its saved output once instead. Its error, when that read fails.
+ * A session's terminal line for its card: the last meaningful line of its cached terminal (made for it if no pane has
+ * made it yet, so the data pump keeps it current), read again a moment after output arrives. A session that has
+ * exited reads its saved output once instead. Its error, when that read fails.
  */
 function useLastLine(s: SessionInfo): { line: string | null; error: string | null } {
   const [got, setGot] = useState<{ line: string | null; error: string | null }>({ line: null, error: null });
@@ -66,7 +66,7 @@ function useLastLine(s: SessionInfo): { line: string | null; error: string | nul
 export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Tile; name: string | null; meters?: Record<string, SessionMeter>; actions: ModelAction[]; more: React.ReactNode }) {
   const s = tile.front;
   const { line, error } = useLastLine(s);
-  // S7: what it did (its latest message), and its diff, PR and cost badges (cardBadges.tsx)
+  // what it did (its latest message), and its diff, PR and cost badges (cardBadges.tsx)
   const { badges, did } = useCardBadges(s, tile.area, meters?.[s.id]);
   // a stack's other tabs, by name under its title, those waiting on you counted first (the front one's status is its own)
   const others = tile.members.filter((m) => m.id !== s.id);
@@ -74,6 +74,8 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
   const tabs = tile.members.length + (tile.closed?.length ?? 0);
   const resume = usable(actions, "resume");
   const close = s.status === "dead" ? usable(actions, "close") : undefined;
+  // an idle agent's last output is its last message: said once, as what it did
+  const repeated = !error && did && !did.failed && repeatsDid(line, did.text);
   return (
     <div className="ls-card">
       <div className="ls-card-head">
@@ -94,40 +96,48 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
         {s.ticketId && <span className="ls-card-ticket">#{ticketIdOf(s.ticketId)}</span>}
         {more}
       </div>
-      {tile.stack && (others.length > 0 || !!tile.closed?.length) && (
-        <div className="ls-card-tabs" title={[...tile.members, ...(tile.closed ?? [])].map(titleOf).join("\n")}>
-          {waiting > 0 && <span className="ls-card-needs">{waiting} need{waiting === 1 ? "s" : ""} you</span>}
-          {others.map((m) => (
-            <span key={m.id} className="ls-card-tab">
-              {titleOf(m)}
-            </span>
-          ))}
-          {!!tile.closed?.length && <span className="ls-card-tab closed">{tile.closed.length} closed</span>}
+      {/* drawn bottom up (styles.css, .ls-card-mid, .ls-card-body): the foot, the terminal's line, what it did, a stack's
+          other tabs, so a short card lets go of what it did, then the foot, then the tabs, each whole */}
+      <div className="ls-card-mid">
+        <div className="ls-card-body">
+          <div className="ls-card-foot">
+            <span className="chip ls-kind">{kindLabel(s)}</span>
+            <span className={`ls-card-status st-${s.status}`}>{STATUS[s.status]}</span>
+            {isRemote(s) && s.room && <span className="ls-card-owner">{s.room.ownerName}'s</span>}
+            <BadgeRow badges={badges} />
+          </div>
+          {!repeated && (
+            <div className={`ls-card-line ${error ? "bad" : ""}`} title={error ?? line ?? undefined}>
+              {error ? "Couldn't read its output" : line ?? (s.status === "dead" ? `process exited${typeof s.exitCode === "number" ? ` · code ${s.exitCode}` : ""}` : "No output yet")}
+            </div>
+          )}
+          {did && (
+            <div className={`ls-card-did ${did.failed ? "bad" : ""}`} data-did="" title={did.title}>
+              {did.text}
+            </div>
+          )}
         </div>
-      )}
-      {did && (
-        <div className={`ls-card-did ${did.failed ? "bad" : ""}`} data-did="" title={did.title}>
-          {did.text}
-        </div>
-      )}
-      <div className={`ls-card-line ${error ? "bad" : ""}`} title={error ?? line ?? undefined}>
-        {error ? "Couldn't read its output" : line ?? (s.status === "dead" ? `process exited${typeof s.exitCode === "number" ? ` · code ${s.exitCode}` : ""}` : "No output yet")}
+        {tile.stack && (others.length > 0 || !!tile.closed?.length) && (
+          <div className="ls-card-tabs" title={[...tile.members, ...(tile.closed ?? [])].map(titleOf).join("\n")}>
+            {waiting > 0 && <span className="ls-card-needs">{waiting} need{waiting === 1 ? "s" : ""} you</span>}
+            {others.map((m) => (
+              <span key={m.id} className="ls-card-tab">
+                {titleOf(m)}
+              </span>
+            ))}
+            {!!tile.closed?.length && <span className="ls-card-tab closed">{tile.closed.length} closed</span>}
+          </div>
+        )}
       </div>
-      <div className="ls-card-foot">
-        <span className="chip ls-kind">{kindLabel(s)}</span>
-        <span className={`ls-card-status st-${s.status}`}>{STATUS[s.status]}</span>
-        {isRemote(s) && s.room && <span className="ls-card-owner">{s.room.ownerName}'s</span>}
-      </div>
-      <BadgeRow badges={badges} />
       {s.status === "dead" && (resume || close) && (
         <div className="ls-card-acts">
           {resume && (
-            <button type="button" className="outline strong" onClick={(e) => (e.stopPropagation(), resume.onPick())}>
+            <button type="button" className="outline strong" title={resume.title || "Resume"} onClick={(e) => (e.stopPropagation(), resume.onPick())}>
               Resume
             </button>
           )}
           {close && (
-            <button type="button" className="outline" onClick={(e) => (e.stopPropagation(), close.onPick())}>
+            <button type="button" className="outline" title={close.title || "Close & clean up"} onClick={(e) => (e.stopPropagation(), close.onPick())}>
               Close &amp; clean up
             </button>
           )}

@@ -199,7 +199,7 @@ export function AreaTree({
                   </span>
                 ))}
                 {a.needs > 0 ? (
-                  <span className="lt-badge" title={`${a.needs} waiting on you: see Needs you`}>
+                  <span className="lt-badge" title={`${a.needs} need you: see Needs you`} aria-label={`${a.needs} need you`}>
                     {a.needs}
                   </span>
                 ) : (
@@ -287,7 +287,11 @@ export function AreaSwitcher({
         {areas.map((a) => (
           <button key={a.key} type="button" data-area={a.key} className={`ls-sw ${a.accent === null ? "loose" : `a${a.accent}`} ${current === a.key ? "on" : ""}`} title={`Go to ${a.title}`} onClick={() => onArea(a.key)}>
             {a.name}
-            {a.waiting > 0 && <span className="w">{a.waiting}</span>}
+            {a.waiting > 0 && (
+              <span className="w" title={`${a.waiting} need you: see Needs you`} aria-label={`${a.waiting} need you`}>
+                {a.waiting}
+              </span>
+            )}
           </button>
         ))}
       </span>

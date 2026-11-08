@@ -62,11 +62,13 @@ export function sessionItem(s: SessionInfo, area: string, title: string): NeedsI
   if (notMine(s)) return null;
   if (s.status === "waiting") {
     const tool = permissionTool(s.waitingReason);
+    // each prompt's own time (waitingAt): a second prompt worded like a dismissed one is a new item
+    const at = s.waitingAt ?? s.waitingSince ?? s.createdAt;
     return {
       id: `s:${s.id}`,
-      sig: `s:${s.id}|w|${s.waitingSince ?? ""}|${s.waitingReason ?? ""}`,
+      sig: `s:${s.id}|w|${at}|${s.waitingReason ?? ""}`,
       kind: tool ? "permission" : "question",
-      at: s.waitingSince ?? s.createdAt,
+      at,
       area,
       session: s.id,
       join: null,
@@ -133,6 +135,9 @@ export function dismiss(list: readonly Dismissed[], item: NeedsItem, now: number
   return [{ sig: item.sig, at: now }, ...list.filter((d) => d.sig !== item.sig && now - d.at < DISMISS_KEEP_MS)].slice(0, DISMISS_MAX);
 }
 
+/** A Dismiss undone: `item` listed again in the state it was dismissed in. */
+export const undismiss = (list: readonly Dismissed[], item: Pick<NeedsItem, "sig">): Dismissed[] => list.filter((d) => d.sig !== item.sig);
+
 /** Saved dismissals as read back: anything that isn't one is let go (a hand-edited or older shape), and said. */
 export function dismissedFrom(v: unknown): Dismissed[] {
   if (!Array.isArray(v)) {
@@ -151,14 +156,40 @@ export function needsByArea(items: readonly NeedsItem[]): Map<string, number> {
   return out;
 }
 
+/** The selection as Needs you reads it: the selected workspace's session, or the selected area (one or neither). */
+export interface NeedsSel {
+  session: string | null;
+  area: string | null;
+}
+/** The item N (or Go there) last went to, and the selection that left. */
+export interface NeedsLast {
+  id: string;
+  sel: NeedsSel;
+}
+
 /**
- * The item the view is on: the selected session's, or with no session selected the first join request of the area
- * selected (where N put it); -1 when it's on none.
+ * The item the view is on. The one N last went to, while it's still listed and the selection is still the one it
+ * left: two join requests for one room select the same area, and a room with no area on the landscape selects
+ * nothing, so the selection alone can't tell which. Otherwise the selected session's item, or with an area selected
+ * its first join request; -1 when it's on none.
  */
-export function currentIndex(items: readonly NeedsItem[], sel: { session: string | null; area: string | null }): number {
+export function currentIndex(items: readonly NeedsItem[], sel: NeedsSel, last: NeedsLast | null = null): number {
+  if (last && last.sel.session === sel.session && last.sel.area === sel.area) {
+    const i = items.findIndex((x) => x.id === last.id);
+    if (i >= 0) return i;
+  }
   if (sel.session) return items.findIndex((i) => i.session === sel.session);
   if (sel.area) return items.findIndex((i) => i.join && i.area === sel.area);
   return -1;
+}
+
+/**
+ * The selection going to `item` leaves (main.tsx's toNeeds does this): its workspace's session selected, or its
+ * room's area when that's on the landscape; a room with no area there leaves the selection as it was.
+ */
+export function selectionAfter(item: NeedsItem, sel: NeedsSel, onLandscape: (area: string) => boolean): NeedsSel {
+  if (item.session) return { session: item.session, area: null };
+  return onLandscape(item.area) ? { session: null, area: item.area } : sel;
 }
 
 /** N (`dir` 1) and ⇧N (-1): the next or previous item after `current`, round the end; from none, the first or the last. */

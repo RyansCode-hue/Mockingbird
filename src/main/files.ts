@@ -166,46 +166,106 @@ export function parseShortstatFiles(out: string): { files: number } & ReturnType
   return { files: parseInt(/(\d+) files? changed/.exec(out)?.[1] ?? "0", 10), ...parseShortstat(out) };
 }
 
+/** Where HEAD and a base branch are: their commits, and the base as a ref and as it's named. */
+interface HeadAndBase {
+  head: string;
+  tip: string;
+  ref: string;
+  label: string;
+}
+
 /**
- * The ref branch `name` is at in `root`: origin's when the remote has it, else the local one, as Branch vs base
- * picks; full refs, so a name can't be read as an option. Throws when the repository has neither.
+ * HEAD and branch `name` in `root`, in one git: origin's `name` when the remote has it, else the local one, as Branch
+ * vs base picks; full refs, so a name can't be read as an option. Throws when there's no commit yet, or neither branch.
  */
-async function refOfBranch(root: string, name: string): Promise<{ ref: string; label: string }> {
-  for (const [ref, label] of [[`refs/remotes/origin/${name}`, `origin/${name}`], [`refs/heads/${name}`, name]]) {
-    if (await git(root, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], { okCodes: [0, 1] })) return { ref, label };
+async function headAndBranch(root: string, name: string): Promise<HeadAndBase> {
+  const candidates = [[`refs/remotes/origin/${name}`, `origin/${name}`], [`refs/heads/${name}`, name]] as const;
+  // exits 1 when neither branch is there; HEAD is listed all the same
+  const out = await git(root, ["show-ref", "--head", ...candidates.map(([ref]) => ref)], { okCodes: [0, 1] });
+  const sha = new Map(out.split("\n").filter(Boolean).map((l) => [l.slice(l.indexOf(" ") + 1), l.slice(0, l.indexOf(" "))] as const));
+  const head = sha.get("HEAD");
+  if (!head) throw new Error("It has no commit yet, so there's nothing to compare with its base");
+  for (const [ref, label] of candidates) {
+    const tip = sha.get(ref);
+    if (tip) return { head, tip, ref, label };
   }
   throw new Error(`The base branch ${name} isn't in this repository (neither origin/${name} nor a local ${name})`);
 }
 
+/** HEAD and the repository's own base branch (baseRef's pick, as Branch vs base takes it). */
+async function headAndOwnBase(root: string): Promise<HeadAndBase> {
+  const ref = await baseRef(root);
+  if (!ref) throw new Error("No dev/main-style base branch found to compare against");
+  const [head, tip] = (await git(root, ["rev-parse", "HEAD", `${ref}^{commit}`])).split("\n");
+  return { head, tip, ref, label: ref };
+}
+
+/** Where a worktree forked from its base, kept while neither HEAD nor the base's tip moves (a commit, a fetch): a diff read again needs no merge-base. */
+const forkCache = new Map<string, { head: string; tip: string; fork: string }>();
+const FORK_CACHE_MAX = 200;
+
+async function forkOf(root: string, at: HeadAndBase): Promise<string> {
+  const key = `${root}\0${at.ref}`;
+  const hit = forkCache.get(key);
+  if (hit && hit.head === at.head && hit.tip === at.tip) return hit.fork;
+  let fork: string;
+  try {
+    fork = await git(root, ["merge-base", at.head, at.tip]);
+  } catch (err) {
+    throw new Error(`Cannot find a common ancestor with ${at.label}: ${(err as Error).message}`);
+  }
+  forkCache.delete(key);
+  forkCache.set(key, { head: at.head, tip: at.tip, fork });
+  if (forkCache.size > FORK_CACHE_MAX) forkCache.delete(forkCache.keys().next().value!);
+  return fork;
+}
+
+/**
+ * A queue that runs at most `parallel` jobs at once, in the order they came; a job's slot passes straight to the next
+ * one waiting when it ends, so no newcomer slips in between.
+ */
+export function turns(parallel: number): <T>(job: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  return async (job) => {
+    if (running < parallel) running++;
+    else await new Promise<void>((go) => waiting.push(go));
+    try {
+      return await job();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else running--;
+    }
+  };
+}
+/** The diff badges' rounds of git: a screen of cards on many worktrees doesn't start them all together. */
+const statTurn = turns(3);
+
 const STAT_TTL_MS = 3_000;
 const statCache = new Map<string, { at: number; stat: Promise<BranchStat> }>();
+
+/** A folder's diffs read again on their next ask: its files changed (the folder watch says so), so what was read is out of date. */
+export function forgetBranchStat(root: string): void {
+  for (const key of statCache.keys()) if (key.startsWith(`${root}\0`)) statCache.delete(key);
+}
 
 /**
  * How much the work at `root` changed since it forked from `base`, a card's diff badge: `git diff --shortstat` from
  * the merge base to the working tree, its commits and its uncommitted changes to tracked files together. `base` is
- * the area repo's base branch; null takes the repository's own, as Branch vs base does. Shared for a few seconds like
- * a worktree's state, so every card on one folder starts one round of git; a failed read isn't kept.
+ * the area repo's base branch; null takes the repository's own, as Branch vs base does. Shared for a few seconds (or
+ * until the folder changes, forgetBranchStat), so every card on one folder starts one round of git; a failed read
+ * isn't kept. A round is two gits (where HEAD and the base are, the diff), and merge-base when either moved.
  */
 export function branchStat(root: string, base: string | null): Promise<BranchStat> {
   const key = `${root}\0${base ?? ""}`;
   const hit = statCache.get(key);
   if (hit && Date.now() - hit.at < STAT_TTL_MS) return hit.stat;
-  const stat = (async (): Promise<BranchStat> => {
-    let from: { ref: string; label: string };
-    if (base) from = await refOfBranch(root, base);
-    else {
-      const ref = await baseRef(root);
-      if (!ref) throw new Error("No dev/main-style base branch found to compare against");
-      from = { ref, label: ref };
-    }
-    let fork: string;
-    try {
-      fork = await git(root, ["merge-base", "HEAD", from.ref]);
-    } catch (err) {
-      throw new Error(`Cannot find a common ancestor with ${from.label}: ${(err as Error).message}`);
-    }
-    return { base: from.label, ...parseShortstatFiles(await git(root, ["diff", "--shortstat", fork])) };
-  })();
+  const stat = statTurn(async (): Promise<BranchStat> => {
+    const at = base ? await headAndBranch(root, base) : await headAndOwnBase(root);
+    const fork = await forkOf(root, at);
+    return { base: at.label, ...parseShortstatFiles(await git(root, ["diff", "--shortstat", fork])) };
+  });
   statCache.set(key, { at: Date.now(), stat });
   stat.catch(() => {
     if (statCache.get(key)?.stat === stat) statCache.delete(key);

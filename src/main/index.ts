@@ -18,7 +18,7 @@ import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan, readContextWindow } from "./usage";
 import { planRateOf, refreshBrief, resumeEstimate, type RefreshBrief, type ResumeEstimate } from "./contextActions";
-import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef, inside, branchStat } from "./files";
+import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef, inside, branchStat, forgetBranchStat } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
@@ -36,8 +36,8 @@ import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
-import { CLAUDE_PROJECTS, CODEX_SESSIONS } from "./agentFiles";
-import { handoffKickoff, handoffPrompt, lastReplyOf, repoState, transcriptDigest, transcriptLines } from "./handoff";
+import { CLAUDE_PROJECTS, CODEX_SESSIONS, claudeTranscriptOf, codexRolloutOf } from "./agentFiles";
+import { handoffKickoff, handoffPrompt, lastReplyOf, replyFiles, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify } from "./notifications";
@@ -854,6 +854,7 @@ handle("files:diff", (id, rel, scope, untracked) => fileDiff(sessionRoot(id), re
 const folderWatcher = new FolderWatcher(
   (root) => {
     forgetState(root);
+    forgetBranchStat(root);
     toWindow("folder:changed", root);
     overlapsSoon(root);
   },
@@ -985,16 +986,22 @@ handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
     throw new Error(`Couldn't read the conversation: ${(err as Error).message}`);
   }
 });
-// a landscape card's "what it did": the first line of its agent's latest message, from its conversation's transcript
-// as the digests read it. Nothing said yet (no conversation seen, none indexed yet, a terminal) is `{ line: null }`;
-// an index or a file that can't be read is an error, which the card shows as one
+// a landscape card's "what it did": the first line of its agent's latest message, from its conversation's transcript.
+// The file is found now (the one its hooks named, its project folder's, the newest rollout), not when the index next
+// syncs. Nothing said yet (no conversation seen, its transcript not written yet, a terminal) is `{ line: null }`; a
+// file that can't be read is an error, which the card shows as one
 handle("transcripts:lastReply", async (id): Promise<LastReply> => {
   const s = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id);
   if (!s) throw new Error(isRemotePaneId(String(id)) ? "That's a teammate's session: its conversation is on their Mac" : "Session is no longer running");
   const conv = s.shell ? undefined : (s.conversation?.id ?? conversationsOf(s).at(-1));
   if (!conv) return { line: null, at: null };
-  if (!transcripts) throw new Error(`the conversation index isn't available${transcriptsProblem ? ` (${transcriptsProblem})` : ""}`);
-  return lastReplyOf(transcripts.filesOf(conv), conv);
+  const agent: AgentKind = s.conversation?.id === conv ? s.conversation.agent : (s.agent ?? "claude");
+  const files = replyFiles(agent, conv, {
+    hook: sessions.transcriptOf(s.id, conv),
+    indexed: transcripts?.filesOf(conv) ?? [],
+    locate: () => (agent === "claude" ? claudeTranscriptOf(conv, s.cwd) : codexRolloutOf(conv)),
+  });
+  return lastReplyOf(files, conv);
 });
 // a session of the same agent in the same folder and group, started from the brief
 handle(
@@ -1826,7 +1833,8 @@ function metersNow(): Meters {
   // closed but resumable sessions too: a group's or ticket's usage counts them
   const live = sessions.list();
   const list = [...live, ...sessions.resumable().filter((r) => !live.some((s) => s.id === r.id))];
-  if (!transcripts) return { sessions: {}, today: {}, at: now };
+  // no index, no meters: said as a failure, so a cost badge shows "—" rather than an empty meter reading as none used
+  if (!transcripts) throw new Error(`the conversation index isn't available${transcriptsProblem ? ` (${transcriptsProblem})` : ""}`);
   const convs = [...new Set(list.flatMap(conversationsOf))];
   const report = readUsage(); // reads Codex's session files: once per recompute
   const windows = fiveHourWindows(report, now);
@@ -1851,7 +1859,8 @@ function metersChanged(): void {
     try {
       toWindow("meters:changed", metersNow());
     } catch (err) {
-      logError("meters", err);
+      // the window hears it as it would from meters:get, so what shows the meters says they couldn't be read
+      toWindow("meters:changed", { error: logError("meters", err) });
     }
   }, 1500);
 }

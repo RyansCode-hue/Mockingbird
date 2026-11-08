@@ -118,11 +118,11 @@ import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } fr
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type MovesFailed, type NoteAction } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
-import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, planTidy, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, withoutGone, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, planTidy, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, withoutGone, type CardView, type GoToAsk, type GroupMove, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
-import { currentIndex, goCan, stepItem, targetOf, type NeedsItem } from "./needsYouModel";
+import { currentIndex, goCan, selectionAfter, stepItem, targetOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
 import { BadgeContext } from "./cardBadges";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
@@ -556,21 +556,23 @@ function App() {
   };
   // token meters per pane and for today, pushed when the transcript index catches up
   const [meters, setMeters] = useState<Meters | null>(null);
-  // why they couldn't be read, until they are: a card's cost badge shows "—" meanwhile rather than nothing (S7)
+  // why they couldn't be read, until they are: a card's cost badge shows "—" meanwhile rather than nothing. A reading
+  // (asked, or pushed as the index catches up) is the meters or why there are none; each new reason is said once
   const [metersError, setMetersError] = useState<string | null>(null);
+  const metersSaid = useRef<string | null>(null);
   useEffect(() => {
-    void settled<IpcResult<Meters>>(window.mb.metersGet(), "Couldn't read the token meters").then((r) => {
+    const take = (r: IpcResult<Meters>) => {
       if (isErr(r)) {
-        readFailed("the token meters", r);
+        if (metersSaid.current !== r.error) readFailed("the token meters", r);
+        metersSaid.current = r.error;
         return setMetersError(r.error);
       }
+      metersSaid.current = null;
       setMeters(r);
       setMetersError(null);
-    });
-    return window.mb.onMetersChanged((m: Meters) => {
-      setMeters(m);
-      setMetersError(null);
-    });
+    };
+    Promise.resolve(window.mb.metersGet()).then(take, (err: unknown) => take({ error: err instanceof Error ? err.message : String(err) }));
+    return window.mb.onMetersChanged(take);
   }, []);
   const runningIn = (cwd: string) => runStates.filter((s) => s.worktree === cwd && (s.status === "running" || s.status === "starting")).length;
   /** Show a side bar view, from anywhere: the side bar lives on the Sessions tab. */
@@ -1120,14 +1122,17 @@ function App() {
   // (onHandled): one asked from another tab waits for the landscape to mount, and none is taken up twice when the
   // landscape mounts again
   const asked = useRef(0);
-  const [reveal, setReveal] = useState<{ id: string; n: number; focus?: boolean } | null>(null);
-  /** Bring a session's workspace into view on the landscape, and with `focus` fill the window with it. */
-  const revealWorkspace = (id: string, focus = false) => setReveal({ id, n: ++asked.current, focus });
+  const [reveal, setReveal] = useState<RevealAsk | null>(null);
+  /**
+   * Bring a session's workspace into view on the landscape (in front, if it's a stack's tab), and with `focus` fill the
+   * window with it; `keys` gives the landscape the keyboard once it's there, `avoid` is a box on screen to keep it clear of.
+   */
+  const revealWorkspace = (id: string, focus = false, o: { keys?: boolean; avoid?: ScreenBox | null } = {}) => setReveal({ id, n: ++asked.current, focus, ...o });
   // going to an area on the landscape: the area tree, the switcher, ⌘K
-  const [goTo, setGoTo] = useState<{ area: string; n: number } | null>(null);
-  const goToArea = (area: string) => {
+  const [goTo, setGoTo] = useState<GoToAsk | null>(null);
+  const goToArea = (area: string, avoid: ScreenBox | null = null) => {
     setTab("sessions");
-    setGoTo({ area, n: ++asked.current });
+    setGoTo({ area, n: ++asked.current, avoid });
   };
   /** An area selected as a whole (the selection bar shows its actions): the selected session is let go, as in Figma. */
   const selectArea = (key: string | null) => {
@@ -1885,8 +1890,18 @@ function App() {
   // On the landscape the rail's views open as windows: placed beside the workspace (or in the area) they work on, or
   // docked at the window's edge, following the selected workspace (docs/landscape.md, Tools).
   const [lsNotice, setLsNotice] = useState<LandscapeNote | null>(null);
-  /** Say `text` over the landscape, with `action` (Tidy's Undo) as a button beside it. */
-  const lsSay = (text: string, action?: NoteAction) => setLsNotice((p) => ({ text, n: (p?.n ?? 0) + 1, action }));
+  // a notice is said where you are: over the landscape while it's on screen, else in the status bar (one said on
+  // another tab isn't kept for the landscape to show later, out of its context)
+  const landscapeOnScreen = useRef(false);
+  landscapeOnScreen.current = tab === "sessions" && landscapeShown && !!landscapeLayout;
+  const barNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Say `text` where the view is, over the landscape with `action` (Tidy's Undo) as a button beside it. */
+  const lsSay = (text: string, action?: NoteAction) => {
+    if (landscapeOnScreen.current) return setLsNotice((p) => ({ text, n: (p?.n ?? 0) + 1, action }));
+    setStatusNote(text);
+    if (barNoteTimer.current) clearTimeout(barNoteTimer.current);
+    barNoteTimer.current = setTimeout(() => setStatusNote(""), 6000);
+  };
   /** A change to the landscape; what stopped it is said over the landscape. */
   const lsChange = async (patch: LandscapePatch | null, what: string) => {
     if (!patch) return;
@@ -2667,8 +2682,11 @@ function App() {
   const [areaNameAsk, setAreaNameAsk] = useState<{ count: number; answer: (name: string | null) => void } | null>(null);
   const askAreaName = (count: number) => new Promise<string | null>((answer) => setAreaNameAsk({ count, answer }));
   // ---- Needs you (S7): the tray, N / ⇧N, and the areas' waiting counts (NeedsYou.tsx, needsYouModel.ts) ----
-  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf);
-  const needsAt = currentIndex(needs.items, { session: selArea ? null : focused, area: selArea });
+  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null);
+  const needsSel: NeedsSel = { session: selArea ? null : focused, area: selArea };
+  // where N and Go there last went, so N moves on from it while the selection is still the one it left
+  const needsLast = useRef<NeedsLast | null>(null);
+  const needsAt = currentIndex(needs.items, needsSel, needsLast.current);
   /** The admin's prompt for join request `key`, put off with Later or not (the same prompt Members ▾ shows). */
   const showJoinAsk = (key: string) => {
     setLaterJoins((l) => l.filter((k) => k !== key));
@@ -2678,38 +2696,44 @@ function App() {
   };
   const onLandscape = (area: string) => !!landscapeLayout?.areas.some((a) => a.key === area);
   /**
-   * The view to an item: its workspace brought into view and selected, or its room's area flown to and selected. The
-   * keyboard stays where it is (on the landscape for N), so the next N can't land in a terminal; Go there (`focus`)
-   * gives a workspace's terminal the keyboard and shows a join request's prompt, as a notification's click does.
+   * The view to an item, for N and Go there alike: its workspace brought into view (in front, when it's a stack's tab)
+   * and selected, or its room's area flown to and selected. The keyboard never goes into the workspace's terminal:
+   * Codex's approval prompt answers to a single y, a or n, so a habitual N, or any letter, typed there would answer
+   * it. Enter (focus) or a click on the terminal gives it the keyboard. Go there (`go`) gives the landscape the
+   * keyboard as the tray closes and shows a join request's prompt; `avoid` is the open tray's box, kept clear of.
    */
-  const toNeeds = (item: NeedsItem, focus: boolean) => {
+  const toNeeds = (item: NeedsItem, o: { go: boolean; avoid: ScreenBox | null }) => {
     const t = targetOf(item, sessions);
     if ("no" in t) return lsSay(t.no);
+    needsLast.current = { id: item.id, sel: selectionAfter(item, needsSel, onLandscape) };
     if ("session" in t) {
-      if (focus) return jumpToSession(t.session);
       setTab("sessions");
-      revealWorkspace(t.session.id);
+      revealWorkspace(t.session.id, false, { keys: o.go, avoid: o.avoid });
       return setFocused(t.session.id);
     }
     if (onLandscape(t.area)) {
-      goToArea(t.area);
+      goToArea(t.area, o.avoid);
       selectArea(t.area);
-    } else if (!focus) return lsSay(`${areaTitle(t.area)} has no area on the landscape: Go there in Needs you shows the request`);
-    if (focus && !showJoinAsk(t.requestKey)) lsSay("That join request has been answered");
+    } else if (!o.go) return lsSay(`${areaTitle(t.area)} has no area on the landscape: Go there in Needs you shows the request`);
+    if (o.go && !showJoinAsk(t.requestKey)) lsSay("That join request has been answered");
   };
-  const stepNeeds = (dir: 1 | -1) => {
+  const stepNeeds = (dir: 1 | -1, avoid: ScreenBox | null = null) => {
     const next = stepItem(needs.items, needsAt, dir);
     if (!next) return lsSay("Nothing needs you right now");
-    toNeeds(next, false);
+    toNeeds(next, { go: false, avoid });
   };
   /** An item's actions (needsActions): Go there and Dismiss, Go there off saying why when it can't be gone to. */
   const needsActionsFor = (item: NeedsItem, close: () => void): ModelAction[] =>
     needsActions({
       go: goCan(targetOf(item, sessions), () => {
         close();
-        toNeeds(item, true);
+        toNeeds(item, { go: true, avoid: null });
       }),
-      goTitle: item.join ? "Fly to the room's area and show the request: accept or decline it there" : item.kind === "finished" ? "Bring it into view and focus it" : "Bring it into view and focus it: answer it in its terminal",
+      goTitle: item.join
+        ? "Fly to the room's area and show the request: accept or decline it there"
+        : item.kind === "finished"
+          ? "Bring it into view and select it: Enter or a click on its terminal to type there"
+          : "Bring it into view and select it, the keyboard kept off its prompt (a single letter can answer one): Enter or a click on its terminal to answer it",
       dismiss: () => needs.dismiss(item),
     });
   /** The base branch a card's diff is measured against: its area's entry for the session's repo (null: the repository's own). */
