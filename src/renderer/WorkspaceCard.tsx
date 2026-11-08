@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { AGENT_NAME, formatTokens, isErr, ticketIdOf, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
+import { AGENT_NAME, isErr, ticketIdOf, type SessionInfo, type SessionMeter } from "../shared/types";
+import { BadgeRow, useCardBadges } from "./cardBadges";
 import { lastMeaningfulLine, terminalLines } from "../shared/terminalText";
 import type { Tile } from "./landscapeModel";
 import { tailLines } from "./cachedTerm";
@@ -65,8 +66,8 @@ function useLastLine(s: SessionInfo): { line: string | null; error: string | nul
 export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Tile; name: string | null; meters?: Record<string, SessionMeter>; actions: ModelAction[]; more: React.ReactNode }) {
   const s = tile.front;
   const { line, error } = useLastLine(s);
-  const meter = meters?.[s.id];
-  const tokens = meter ? totalTokens(meter.tokens) : 0;
+  // S7: what it did (its latest message), and its diff, PR and cost badges (cardBadges.tsx)
+  const { badges, did } = useCardBadges(s, tile.area, meters?.[s.id]);
   // a stack's other tabs, by name under its title, those waiting on you counted first (the front one's status is its own)
   const others = tile.members.filter((m) => m.id !== s.id);
   const waiting = others.filter((m) => m.status === "waiting").length;
@@ -104,6 +105,11 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
           {!!tile.closed?.length && <span className="ls-card-tab closed">{tile.closed.length} closed</span>}
         </div>
       )}
+      {did && (
+        <div className={`ls-card-did ${did.failed ? "bad" : ""}`} data-did="" title={did.title}>
+          {did.text}
+        </div>
+      )}
       <div className={`ls-card-line ${error ? "bad" : ""}`} title={error ?? line ?? undefined}>
         {error ? "Couldn't read its output" : line ?? (s.status === "dead" ? `process exited${typeof s.exitCode === "number" ? ` · code ${s.exitCode}` : ""}` : "No output yet")}
       </div>
@@ -111,8 +117,8 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
         <span className="chip ls-kind">{kindLabel(s)}</span>
         <span className={`ls-card-status st-${s.status}`}>{STATUS[s.status]}</span>
         {isRemote(s) && s.room && <span className="ls-card-owner">{s.room.ownerName}'s</span>}
-        {tokens > 0 && <span className="ls-card-tokens">{formatTokens(tokens)}</span>}
       </div>
+      <BadgeRow badges={badges} />
       {s.status === "dead" && (resume || close) && (
         <div className="ls-card-acts">
           {resume && (

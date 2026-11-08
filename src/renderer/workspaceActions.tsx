@@ -10,7 +10,7 @@ import { firstName } from "./team/connectedModel";
  * of them can offer what the others don't, or word it differently. Each action has its label, whether it can be done
  * now and why not (`disabled`, `title`), its shortcut (`kbd`) and its handler; `section` groups the menu's rows.
  */
-export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "ghosts" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "end";
+export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "ghosts" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "needs" | "end";
 
 /** A section's heading in a menu; null: its rows follow a separator only. */
 const SECTION_NAME: Record<ActionSection, string | null> = {
@@ -27,6 +27,7 @@ const SECTION_NAME: Record<ActionSection, string | null> = {
   create: "New workspace",
   several: null,
   move: "Move to area",
+  needs: null,
   end: null,
 };
 
@@ -397,6 +398,23 @@ export function severalActions(env: SeveralEnv): ModelAction[] {
     { section: "several", key: "stack", label: "Stack", kbd: "⌘G", title: "Stack them into one card with a tab each", ...can(env.stack) },
     ...env.areas.map((a): ModelAction => ({ section: "move", key: `move:${a.key}`, label: a.title, onPick: a.pick, ...(a.refused ? { disabled: true, title: a.refused } : {}) })),
     { section: "end", key: "close", label: "Close", menuLabel: "Close…", danger: true, title: "Close them, asking first about any with uncommitted or unpushed work", ...can(env.close) },
+  ];
+}
+
+/** What a Needs you item's actions need (NeedsYou.tsx makes it from needsYouModel's target). */
+export interface NeedsEnv {
+  /** Its workspace focused and brought into view, or its room's area flown to with the admin's prompt; or why not. */
+  go: Can;
+  /** "Answer it in its terminal" and such: what Go there leads to, its tooltip. */
+  goTitle: string;
+  dismiss: () => void;
+}
+
+/** A Needs you item's actions, in the tray's order: Go there, then Dismiss (until its state changes). */
+export function needsActions(env: NeedsEnv): ModelAction[] {
+  return [
+    { section: "needs", key: "go", label: "Go there", primary: true, title: env.goTitle, ...can(env.go) },
+    { section: "needs", key: "dismiss", label: "Dismiss", title: "Take it off the list until its state changes", onPick: env.dismiss },
   ];
 }
 

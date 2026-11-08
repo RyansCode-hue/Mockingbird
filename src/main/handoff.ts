@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import { currentBranch, git, isRepo } from "./git";
 import { parseClaudeLine, parseCodexLine } from "./transcripts";
-import type { AgentKind } from "../shared/types";
+import type { AgentKind, LastReply } from "../shared/types";
 import { readSlice } from "./fileOps";
 import { agentLabel } from "./agents";
 
@@ -49,6 +49,52 @@ export function transcriptDigest(lines: string[], agent: AgentKind, conv: string
   }
   const skipped = entries.length - tail.length - (head ? 1 : 0);
   return [head, skipped > 0 ? `[… ${skipped} earlier entries left out …]` : "", ...tail].filter(Boolean).join("\n");
+}
+
+/** How much of a transcript's end is read for its latest message: a reply is far smaller, a turn's tool output may not be. */
+const REPLY_TAIL_BYTES = 1024 * 1024;
+
+/** A message's first line as a card says it: its leading heading or quote marks and inline emphasis let go. */
+const plainLine = (s: string) =>
+  s
+    .replace(/^(#{1,6}|>)\s+/, "")
+    .replace(/\*\*(.+?)\*\*|__(.+?)__/g, "$1$2")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+
+/**
+ * The first line of the agent's latest message among a transcript's `lines` (oldest first), as the digests read
+ * them, and when it was written; null when the agent hasn't said anything in them. Tool calls and the user's
+ * messages don't count.
+ */
+export function lastReplyLine(lines: string[], agent: AgentKind, conv: string): LastReply | null {
+  const parse = agent === "codex" ? parseCodexLine : parseClaudeLine;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const chunks = parse(lines[i], conv).chunks;
+    for (let j = chunks.length - 1; j >= 0; j--) {
+      const c = chunks[j];
+      if (c.kind !== "message" || c.role !== "assistant") continue;
+      const first = c.text.split("\n").map(plainLine).find(Boolean);
+      if (first) return { line: first.length > 300 ? `${first.slice(0, 299)}…` : first, at: c.at || null };
+    }
+  }
+  return null;
+}
+
+/**
+ * Conversation `conv`'s latest agent message, from its transcript files (a Codex conversation can span several,
+ * oldest first): the newest file's end first. `{ line: null }` when it hasn't said anything yet; a file that can't
+ * be read throws.
+ */
+export async function lastReplyOf(files: { path: string; agent: AgentKind }[], conv: string): Promise<LastReply> {
+  for (const f of [...files].reverse()) {
+    const { size } = await fs.promises.stat(f.path);
+    const tail = readSlice(f.path, "end", REPLY_TAIL_BYTES).split("\n");
+    // a window that starts mid-file starts mid-line: that line is dropped
+    const found = lastReplyLine((size > REPLY_TAIL_BYTES ? tail.slice(1) : tail).filter(Boolean), f.agent, conv);
+    if (found) return found;
+  }
+  return { line: null, at: null };
 }
 
 /** The worktree as it stands: branch, uncommitted files, recent commits. */

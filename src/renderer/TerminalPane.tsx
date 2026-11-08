@@ -482,10 +482,12 @@ export interface PaneRailProps {
   onOpenChanges?: () => void;
   onOpenFiles?: () => void;
   className?: string;
+  /** Cells after git's (a landscape workspace's diff against its base). */
+  afterGit?: React.ReactNode;
 }
 
 /** A pane's rail (design 1b): elapsed, git, its PR, messages, repo, folder (opens Files), queued messages and tokens. */
-export function PaneRail({ session, git, gitErr, pr, readPr, messages, onShowMessages, meter, onOpenChanges, onOpenFiles, className = "rail" }: PaneRailProps) {
+export function PaneRail({ session, git, gitErr, pr, readPr, messages, onShowMessages, meter, onOpenChanges, onOpenFiles, className = "rail", afterGit }: PaneRailProps) {
   const remote = session.room?.remote ? session.room : null;
   const gitStr = git ? `${git.upstream ? `↑${git.ahead} ↓${git.behind}` : "not on origin"} · ${git.dirty ? `${git.dirtyFiles} uncommitted` : "clean"}` : null;
   const gitTitle = git
@@ -515,6 +517,7 @@ export function PaneRail({ session, git, gitErr, pr, readPr, messages, onShowMes
           <span className="v red">couldn't read</span>
         </div>
       )}
+      {afterGit}
       {pr && (pr.pr || pr.error) && (
         <div
           className="cell click"

@@ -40,6 +40,17 @@ const STARTED_SETTLE_MS = 1500;
  * only sent when the earlier output is still in there — otherwise the cursor
  * would jump to the top and the divider overwrite the history.
  */
+/**
+ * When a pane's turn last ended, after a hook moves it to `ev.status`: a Stop (`finished`) marks it, once (a second
+ * Stop while it's still idle keeps the first time); any other status clears it, and so does an agent starting, since
+ * a new or cleared conversation has finished nothing; the idle reminder leaves it as it was.
+ */
+export function finishedAtAfter(prev: Pick<SessionInfo, "status" | "finishedAt">, ev: { status: SessionStatus; finished?: boolean; started?: boolean }, now: number): number | null {
+  if (ev.status !== "idle" || ev.started) return null;
+  if (ev.finished) return prev.status === "idle" && prev.finishedAt ? prev.finishedAt : now;
+  return prev.finishedAt ?? null;
+}
+
 export function restartDivider(at: Date, earlier: string): string {
   const entered = Math.max(earlier.lastIndexOf("\x1b[?1049h"), earlier.lastIndexOf("\x1b[?1047h"), earlier.lastIndexOf("\x1b[?47h"));
   const left = Math.max(earlier.lastIndexOf("\x1b[?1049l"), earlier.lastIndexOf("\x1b[?1047l"), earlier.lastIndexOf("\x1b[?47l"));
@@ -1359,6 +1370,8 @@ export class SessionManager {
     paneId?: string;
     /** The agent has just started (or resumed, or cleared): it is drawing its prompt. */
     started?: boolean;
+    /** Its turn ended (the Stop hook). */
+    finished?: boolean;
   }): SessionInfo | null {
     // a tagged event that names no live pane comes from something else Mockingbird
     // runs (a Collaborate room) or a closed pane — never guess a pane for it
@@ -1374,7 +1387,7 @@ export class SessionManager {
     if (ev.conversationId) this.noteConversation(s, ev.agent ?? s.info.agent ?? "claude", ev.conversationId);
     // a starting agent that is about to be given its kickoff prompt is about to work
     if (ev.started && s.kickoff) return s.info;
-    this.setStatus(s.info.id, ev.status, ev.reason);
+    this.setStatus(s.info.id, ev.status, ev.reason, finishedAtAfter(s.info, ev, Date.now()));
     if (ev.status !== "idle") return s.info;
     // deliver queued broadcasts whenever the session frees up (a session can
     // reach idle from waiting too — e.g. a declined permission, or the idle
@@ -1482,12 +1495,22 @@ export class SessionManager {
     this.emitChanged();
   }
 
-  private setStatus(id: string, status: SessionStatus, reason?: string): void {
+  /** `finishedAt` (finishedAtAfter): when its turn ended, for a hook's change; left out, an idle pane keeps its own. */
+  private setStatus(id: string, status: SessionStatus, reason?: string, finishedAt?: number | null): void {
     const s = this.live.get(id);
     if (!s || s.info.status === "dead") return; // its pty has exited; only a relaunch (a new pty) revives it
-    if (s.info.status === status && (status !== "waiting" || !reason)) return;
+    const finished = status !== "idle" ? null : finishedAt !== undefined ? finishedAt : (s.info.finishedAt ?? null);
+    if (s.info.status === status && (status !== "waiting" || !reason)) {
+      // the same status, its turn's end marked or cleared (a Stop, a /clear while idle): no status change to announce
+      if ((s.info.finishedAt ?? null) === finished) return;
+      s.info.finishedAt = finished;
+      this.store.upsertSession(s.info);
+      this.emitChanged();
+      return;
+    }
     const before = s.info.status;
     s.info.status = status;
+    s.info.finishedAt = finished;
     if (status !== "working") s.info.stalledSince = null;
     if (status === "waiting") {
       s.info.waitingReason = reason ?? s.info.waitingReason ?? null;

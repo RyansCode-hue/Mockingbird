@@ -242,7 +242,7 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
     evt.event === "Notification" ? msg
     : evt.event === "PermissionRequest" ? `Codex needs your permission to use ${tool}`
     : undefined;
-  const info = sessions.statusFromHook({ ...route, status, reason });
+  const info = sessions.statusFromHook({ ...route, status, reason, finished: evt.event === "Stop" });
   if (info && (status === "idle" || status === "waiting")) onStatus(info, status);
   if (info && evt.event === "UserPromptSubmit") onPrompt?.(info, typeof evt.payload?.prompt === "string" ? evt.payload.prompt : "");
 }

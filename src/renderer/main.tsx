@@ -69,7 +69,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type LabsFlags, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type LabsFlags, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -120,7 +120,10 @@ import { useLandscape, useLandscapeMigration } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
 import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, planTidy, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, withoutGone, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
-import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, paneRow, takenOverWhy, workspaceActions, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { NeedsYou, useNeedsYou } from "./NeedsYou";
+import { currentIndex, goCan, stepItem, targetOf, type NeedsItem } from "./needsYouModel";
+import { BadgeContext } from "./cardBadges";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
 import { AreaHeader, GroupBar, stageChip, type GroupBarProps } from "./GroupBar";
@@ -553,9 +556,21 @@ function App() {
   };
   // token meters per pane and for today, pushed when the transcript index catches up
   const [meters, setMeters] = useState<Meters | null>(null);
+  // why they couldn't be read, until they are: a card's cost badge shows "—" meanwhile rather than nothing (S7)
+  const [metersError, setMetersError] = useState<string | null>(null);
   useEffect(() => {
-    window.mb.metersGet().then(unlessError("the token meters", setMeters));
-    return window.mb.onMetersChanged((m: Meters) => setMeters(m));
+    void settled<IpcResult<Meters>>(window.mb.metersGet(), "Couldn't read the token meters").then((r) => {
+      if (isErr(r)) {
+        readFailed("the token meters", r);
+        return setMetersError(r.error);
+      }
+      setMeters(r);
+      setMetersError(null);
+    });
+    return window.mb.onMetersChanged((m: Meters) => {
+      setMeters(m);
+      setMetersError(null);
+    });
   }, []);
   const runningIn = (cwd: string) => runStates.filter((s) => s.worktree === cwd && (s.status === "running" || s.status === "starting")).length;
   /** Show a side bar view, from anywhere: the side bar lives on the Sessions tab. */
@@ -2651,6 +2666,64 @@ function App() {
   // Make area…'s name, asked with the rename dialog; the landscape waits for it
   const [areaNameAsk, setAreaNameAsk] = useState<{ count: number; answer: (name: string | null) => void } | null>(null);
   const askAreaName = (count: number) => new Promise<string | null>((answer) => setAreaNameAsk({ count, answer }));
+  // ---- Needs you (S7): the tray, N / ⇧N, and the areas' waiting counts (NeedsYou.tsx, needsYouModel.ts) ----
+  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf);
+  const needsAt = currentIndex(needs.items, { session: selArea ? null : focused, area: selArea });
+  /** The admin's prompt for join request `key`, put off with Later or not (the same prompt Members ▾ shows). */
+  const showJoinAsk = (key: string) => {
+    setLaterJoins((l) => l.filter((k) => k !== key));
+    const ask = joinAsks.find((a) => joinKey(a.request) === key);
+    if (ask) setJoinShown(ask);
+    return !!ask;
+  };
+  const onLandscape = (area: string) => !!landscapeLayout?.areas.some((a) => a.key === area);
+  /**
+   * The view to an item: its workspace brought into view and selected, or its room's area flown to and selected. The
+   * keyboard stays where it is (on the landscape for N), so the next N can't land in a terminal; Go there (`focus`)
+   * gives a workspace's terminal the keyboard and shows a join request's prompt, as a notification's click does.
+   */
+  const toNeeds = (item: NeedsItem, focus: boolean) => {
+    const t = targetOf(item, sessions);
+    if ("no" in t) return lsSay(t.no);
+    if ("session" in t) {
+      if (focus) return jumpToSession(t.session);
+      setTab("sessions");
+      revealWorkspace(t.session.id);
+      return setFocused(t.session.id);
+    }
+    if (onLandscape(t.area)) {
+      goToArea(t.area);
+      selectArea(t.area);
+    } else if (!focus) return lsSay(`${areaTitle(t.area)} has no area on the landscape: Go there in Needs you shows the request`);
+    if (focus && !showJoinAsk(t.requestKey)) lsSay("That join request has been answered");
+  };
+  const stepNeeds = (dir: 1 | -1) => {
+    const next = stepItem(needs.items, needsAt, dir);
+    if (!next) return lsSay("Nothing needs you right now");
+    toNeeds(next, false);
+  };
+  /** An item's actions (needsActions): Go there and Dismiss, Go there off saying why when it can't be gone to. */
+  const needsActionsFor = (item: NeedsItem, close: () => void): ModelAction[] =>
+    needsActions({
+      go: goCan(targetOf(item, sessions), () => {
+        close();
+        toNeeds(item, true);
+      }),
+      goTitle: item.join ? "Fly to the room's area and show the request: accept or decline it there" : item.kind === "finished" ? "Bring it into view and focus it" : "Bring it into view and focus it: answer it in its terminal",
+      dismiss: () => needs.dismiss(item),
+    });
+  /** The base branch a card's diff is measured against: its area's entry for the session's repo (null: the repository's own). */
+  const badgeEnv = useMemo(
+    () => ({
+      baseOf: (s: SessionInfo, area: string) => {
+        const a = landscapeState ? own(landscapeState.landscape.areas, area) : undefined;
+        return a?.repos.find((r) => r.path === s.repoPath)?.base ?? null;
+      },
+      metersError,
+    }),
+    [landscapeState, metersError]
+  );
+
   // the area tree: areas in the landscape's order, each with its workspaces (those the filter keeps)
   const treeAreas = useMemo((): TreeArea[] => {
     const order = landscapeLayout?.areas.map((a) => a.key) ?? [];
@@ -2672,10 +2745,11 @@ function App() {
         collapsed: !!a?.rect.collapsed,
         online: room ? others.map((m) => ({ id: m.id, name: m.name })) : null,
         counts: treeCounts(all.get(key) ?? []),
+        needs: needs.byArea.get(key) ?? 0,
         items: shownItems.get(key) ?? [],
       };
     });
-  }, [landscapeLayout, workSessions, visible, teamStatus]);
+  }, [landscapeLayout, workSessions, visible, teamStatus, needs.byArea]);
 
   const landscapeMain = () => (
     <>
@@ -2687,6 +2761,7 @@ function App() {
       />
       {landscapeLayout && landscapeState ? (
         <div className="ls-row">
+        <BadgeContext.Provider value={badgeEnv}>
         <Landscape
           layout={landscapeLayout}
           stored={landscapeState.landscape}
@@ -2723,7 +2798,10 @@ function App() {
           notice={lsNotice}
           ghostActions={ghostActionsFor}
           ghostStatus={(s) => closedStatus(s, goneFolders.get(s.id))}
+          needs={needs.byArea}
+          onNeeds={stepNeeds}
         />
+        </BadgeContext.Provider>
         {dockColumn()}
         </div>
       ) : (
@@ -3322,6 +3400,8 @@ function App() {
             <button className="outline" onClick={() => setModal("import")}>Import</button>
           </>
         )}
+        {/* S7: beside New/Import until S8 redoes the top bar */}
+        {landscapeOn && <NeedsYou state={needs} current={needsAt >= 0 ? needs.items[needsAt].id : null} actionsFor={needsActionsFor} areaTitle={areaTitle} onStep={stepNeeds} />}
         <button className="primary" onClick={() => setModal("new")}>
           New/Import Session <span className="kbd">⌘N</span>
         </button>

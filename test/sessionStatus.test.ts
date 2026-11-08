@@ -15,7 +15,7 @@ vi.mock("node-pty", () => ({
   },
 }));
 
-const { SessionManager } = await import("../src/main/sessions");
+const { SessionManager, finishedAtAfter } = await import("../src/main/sessions");
 const { installHooks, watchEvents } = await import("../src/main/hooks");
 
 const script = path.join(os.homedir(), ".mockingbird", "hook.sh");
@@ -86,6 +86,49 @@ describe("a pane's status from its agent's hooks", () => {
     m.deliverAgentMessage(s.id, "after your turn", true, "sender");
     await hook("Stop", s.id);
     await until("the message to be typed in", () => typedInto(m, s.id).includes("after your turn"));
+  });
+
+  it("marks when its turn ended (what Needs you lists as finished) until it works, waits or starts again", async () => {
+    const m = manager();
+    const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "finishing" });
+    const info = () => pane(m, s.id).info;
+    await hook("SessionStart", s.id, { source: "startup" });
+    await until("the pane to go idle", () => info().status === "idle");
+    expect(info().finishedAt ?? null).toBeNull(); // started at its prompt: it has finished nothing
+    await hook("UserPromptSubmit", s.id, { prompt: "go" });
+    await until("the turn to start", () => info().status === "working");
+    const before = Date.now();
+    await hook("Stop", s.id);
+    await until("the turn's end to be marked", () => !!info().finishedAt);
+    expect(info().status).toBe("idle");
+    const at = info().finishedAt!;
+    expect(at).toBeGreaterThanOrEqual(before);
+    // the idle reminder, and a second Stop while it's still idle, leave the first time
+    await hook("Notification", s.id, { message: "Claude is waiting for your input" });
+    await hook("Stop", s.id);
+    await new Promise((r) => setTimeout(r, 700));
+    expect(info().finishedAt).toBe(at);
+    // asking for permission is waiting, not finished
+    await hook("Notification", s.id, { message: "Claude needs your permission to use Bash" });
+    await until("the pane to wait", () => info().status === "waiting");
+    expect(info().finishedAt).toBeNull();
+    await hook("Stop", s.id);
+    await until("the next turn's end to be marked", () => !!info().finishedAt);
+    // a /clear starts a new conversation at its prompt: the mark goes with the old one
+    await hook("SessionStart", s.id, { source: "clear" });
+    await until("the mark to clear", () => info().finishedAt === null);
+    expect(info().status).toBe("idle");
+  });
+
+  it("works out the turn's end from the status before and the hook", () => {
+    const idleAt = (finishedAt: number | null) => ({ status: "idle" as const, finishedAt });
+    expect(finishedAtAfter({ status: "working" }, { status: "idle", finished: true }, 5)).toBe(5);
+    expect(finishedAtAfter(idleAt(3), { status: "idle", finished: true }, 5)).toBe(3);
+    expect(finishedAtAfter(idleAt(3), { status: "idle" }, 5)).toBe(3); // the idle reminder
+    expect(finishedAtAfter({ status: "waiting", finishedAt: null }, { status: "idle" }, 5)).toBeNull(); // a declined prompt, the reminder
+    expect(finishedAtAfter(idleAt(3), { status: "idle", started: true }, 5)).toBeNull();
+    expect(finishedAtAfter(idleAt(3), { status: "working" }, 5)).toBeNull();
+    expect(finishedAtAfter(idleAt(3), { status: "waiting" }, 5)).toBeNull();
   });
 
   it("waits for a kickoff prompt rather than taking its start for idle", async () => {

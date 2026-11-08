@@ -10,6 +10,7 @@ import { WorkspaceCard, kindLabel } from "./WorkspaceCard";
 import { PaneChips, PaneRail, holdSize, usePaneGit, usePanePr, type PaneChipProps, type PaneRailProps } from "./TerminalPane";
 import { isRemote } from "./team/RoomLive";
 import { usable, type ModelAction } from "./workspaceActions";
+import { DiffCell } from "./cardBadges";
 
 /**
  * The frame around a workspace's terminal, from the size colsRows takes off: the sides' padding, the header bar over
@@ -232,7 +233,7 @@ export function WorkspaceNode({
             )}
           </div>
           {drawn && s.status !== "dead" ? (
-            <PaneRail className="rail ls-foot" session={s} git={git} gitErr={gitErr} pr={pr} readPr={readPr} {...chrome.rail} onOpenChanges={pick("tool:changes")} onOpenFiles={pick("tool:files")} />
+            <PaneRail className="rail ls-foot" session={s} git={git} gitErr={gitErr} pr={pr} readPr={readPr} {...chrome.rail} onOpenChanges={pick("tool:changes")} onOpenFiles={pick("tool:files")} afterGit={<DiffCell s={s} area={tile.area} on={drawn} />} />
           ) : (
             <div className="rail ls-foot" />
           )}

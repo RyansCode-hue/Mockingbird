@@ -283,6 +283,8 @@ export function Landscape({
   notice,
   ghostActions,
   ghostStatus,
+  needs,
+  onNeeds,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -345,6 +347,10 @@ export function Landscape({
   onCloseWindow: (id: string) => void;
   /** An artifact card's face. */
   cardFor: (c: CardView) => React.ReactNode;
+  /** What needs you in each area (S7, needsYouModel.ts): a collapsed area's pill and the switcher count it. */
+  needs?: ReadonlyMap<string, number>;
+  /** N (1) and ⇧N (-1): the view to the next or previous thing that needs you. */
+  onNeeds?: (dir: 1 | -1) => void;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -1028,6 +1034,9 @@ export function Landscape({
       const key = selectedArea ?? (sel && sel.area !== LOOSE_GROUP ? sel.area : null);
       if (!key) return say("Select an area, or a workspace in one, to tidy it");
       runRow(areaHooks.bar(key).actions, "tidy");
+    } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "n" && onNeeds) {
+      handled();
+      onNeeds(e.shiftKey ? -1 : 1);
     } else if (e.key === "Escape" && !e.metaKey && escapeClears({ selected: !!(pickedNow.current.length || selected || selectedArea), peek: !!peekNow.current, overlay: !!document.querySelector(OVERLAYS) })) {
       handled();
       clearSelection();
@@ -1886,6 +1895,7 @@ export function Landscape({
               shared={info.shared}
               summary={areaSummary(counts)}
               counts={counts}
+              needs={needs?.get(a.key) ?? 0}
               hot={hot === a.key}
               selected={selectedArea === a.key && !pickedCount}
               onSelect={() => selectArea(a.key)}
@@ -1967,8 +1977,8 @@ export function Landscape({
             cam={cam}
             vp={vp}
             areas={[
-              ...areaViews.map(({ a, accent, counts, title }) => ({ key: a.key, name: shortAreaName(a.key, title), title, accent, waiting: counts.waiting })),
-              ...(loose ? [{ key: LOOSE_GROUP, name: "Loose", title: "the workspaces in no area", accent: null, waiting: areaCounts(layout.tiles, LOOSE_GROUP).waiting }] : []),
+              ...areaViews.map(({ a, accent, title }) => ({ key: a.key, name: shortAreaName(a.key, title), title, accent, waiting: needs?.get(a.key) ?? 0 })),
+              ...(loose ? [{ key: LOOSE_GROUP, name: "Loose", title: "the workspaces in no area", accent: null, waiting: needs?.get(LOOSE_GROUP) ?? 0 }] : []),
             ]}
             onArea={(key) => {
               const a = stops.find((x) => x.key === key);

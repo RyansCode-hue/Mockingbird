@@ -41,6 +41,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
+import { recordConsole, runNeedsAudit } from "./needsYouAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
@@ -76,7 +77,8 @@ let sessions: SessionInfo[] = [
   session("s2", { title: "API: last org per user", ticketId: "5101", ticketTitle: "API: last org per user", taskGroup: "5101/api", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "waiting", waitingReason: new URLSearchParams(location.search).has("houseApproval") ? "Claude needs your permission to use mockingbird - claim_house_ticket (MCP)" : "Claude needs your permission to use Bash", waitingSince: now - 4 * min }),
   session("s3", { title: "API tests", taskGroup: "5101/api", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), agent: "codex", agentVersion: "0.131.0", status: "idle" }),
   session("s4", { title: "test runner", taskGroup: "5101", shell: true, agent: undefined, status: "idle" }),
-  session("s8", { title: "Release notes for #5101", taskGroup: "5101", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "idle" }),
+  // S7: its turn ended 12 minutes ago and it has been idle since, so Needs you lists it as finished
+  session("s8", { title: "Release notes for #5101", taskGroup: "5101", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "idle", finishedAt: now - 12 * min }),
   session("s5", { title: "#5102 — Pathways quick view freezes", ticketId: "5102", ticketTitle: "Pathways quick view freezes", taskGroup: "5102", branch: "5102-quickViewFreeze", cwd: WT("5102-quickViewFreeze"), status: "idle" }),
   session("s6", { title: "Crashed session", taskGroup: "5102", status: "dead", exitCode: 1 }),
   session("s7", { title: "assistant", repoPath: null, cwd: "/Users/you", kind: "assistant", taskGroup: null, status: "idle" }),
@@ -213,7 +215,8 @@ const pipelines: Record<string, TicketPipeline> = {
     title: "Org dropdowns remember the last org",
     stage: "local-test",
     history: [{ at: now - 26 * 60 * min, stage: "coding" }, { at: now - 60 * min, stage: "local-test" }],
-    prs: [],
+    // S7: a card's PR badge (s1's and s8's branch)
+    prs: [{ target: "dev", provider: "ado", id: 88, url: "https://dev.azure.com/acme/Backoffice/_git/backoffice/pullrequest/88", repo: "backoffice", branch: "5101-orgDropdowns", base: "dev", at: now - 40 * min }],
     feedback: [],
     drafts: [{ id: "d1", stage: "local-test", text: "Development is done; testing locally.", at: now - 60 * min }],
     checks: { "dev:tests": true },
@@ -246,6 +249,8 @@ const meters: Meters = {
   sessions: {
     s1: { agent: "claude", tokens: tokens(900_000, 120_000, 21_000_000), window: { tokens: 6_000_000, sharePct: 14, usedPct: 38, resetsAt: now + 2.5 * 60 * min } },
     s2: { agent: "claude", tokens: tokens(300_000, 60_000, 7_000_000), window: { tokens: 1_000_000, sharePct: 2.4, usedPct: 38, resetsAt: now + 2.5 * 60 * min } },
+    s5: { agent: "claude", tokens: tokens(400_000, 70_000, 9_000_000), window: { tokens: 1_400_000, sharePct: 3.1, usedPct: 38, resetsAt: now + 2.5 * 60 * min } },
+    s8: { agent: "claude", tokens: tokens(150_000, 30_000, 2_000_000), window: { tokens: 400_000, sharePct: 0.9, usedPct: 38, resetsAt: now + 2.5 * 60 * min } },
   },
   // a group's and a ticket's sessions summed (each conversation once): 5101's s1, s2 and s3
   groups: {
@@ -258,6 +263,26 @@ const meters: Meters = {
     // the House's #143, claimed by you
     "143": { sessions: 1, tokens: tokens(240_000, 41_000, 5_300_000), window: { claude: { tokens: 900_000, sharePct: 2.2 } } },
   },
+};
+
+// S7, Needs you and the cards' badges: each worktree's diff against its area repo's base, what each agent said last,
+// and ?badgeFail=diff,pr,reply,meters failing those sources (an unreadable worktree, pipeline.json, conversation index,
+// token meters), so the badges show "—" and say why. s8 finished its turn 12 minutes ago (the fixture above), s2 waits on
+// a permission prompt, and ?joinRequest adds Lee asking to join 5101: the tray's three kinds
+const badgeFails = new Set(new URLSearchParams(location.search).get("badgeFail")?.split(",") ?? []);
+const branchStats: Record<string, { files: number; insertions: number; deletions: number }> = {
+  [WT("5101-orgDropdowns")]: { files: 3, insertions: 214, deletions: 38 },
+  [WT("5102-quickViewFreeze")]: { files: 1, insertions: 12, deletions: 4 },
+  [WT("5110-donor-entities")]: { files: 5, insertions: 340, deletions: 0 },
+};
+const lastReplies: Record<string, string> = {
+  s1: "I'll store the choice per user and preselect it.",
+  s2: "Adding GET/PUT /api/users/me/last-org with its tests.",
+  s3: "Added tests/api/test_last_org.py: 4 tests, all passing.",
+  s5: "The tag list re-renders on every keystroke; memoizing it fixes the freeze.",
+  s7: "Two tickets in progress (#5101, #5102) and one PR waiting on review.",
+  s8: "Org pickers now open on the org you used last.",
+  y1: "Added Donor and Gift with a one-to-many relation.",
 };
 
 // team rooms: 5101 is shared with Nick (connected) and Sam (offline); 5110 was joined and has no session here yet
@@ -1444,7 +1469,7 @@ const api: Record<string, (...a: any[]) => any> = {
     new URLSearchParams(location.search).get("contextWindow") === "error"
       ? { error: `EACCES: permission denied, open '/Users/you/.mockingbird/context/${id}.json'` }
       : (contexts[id] ?? { state: "none", why: "No reply yet in this conversation" }),
-  metersGet: async () => meters,
+  metersGet: async () => (badgeFails.has("meters") ? err("transcripts:sync: SQLITE_BUSY: database is locked") : meters),
   // context warnings: Compact goes only to an idle session (compactBlocker); then the context drops a moment later
   contextCompact: async (id: string) => {
     const s = byId(id);
@@ -1604,6 +1629,15 @@ const api: Record<string, (...a: any[]) => any> = {
     return { hits, files: new Set(hits.map((h) => h.path)).size, stopped: null, warning: null };
   },
   filesChanges: async () => ({ changes: [{ path: "src/org/Dropdown.tsx", status: "M" }, { path: "src/org/lastOrg.ts", status: "U" }], base: "origin/dev" }),
+  // S7: a card's diff badge and "what it did" (badgeFail=diff / reply fails them, as an unreadable worktree or index would)
+  branchStat: async (id: string, base: string | null) => {
+    if (badgeFails.has("diff")) return later(err(`git merge-base: fatal: Not a valid object name origin/${base ?? "dev"}`));
+    const s = sessions.find((x) => x.id === id);
+    if (!s) return err("Session is no longer running");
+    const d = branchStats[s.cwd] ?? { files: 0, insertions: 0, deletions: 0 };
+    return later({ base: `origin/${base ?? "dev"}`, ...d });
+  },
+  lastReply: async (id: string) => (badgeFails.has("reply") ? later(err("the conversation index isn't available (SQLITE_CANTOPEN: unable to open database file)")) : later({ line: lastReplies[id] ?? null, at: lastReplies[id] ? now - 6 * min : null })),
   filesDiff: async (_id: string, rel: string) => unifiedDiff(rel),
   scmStatus: async () => ({ branch: "5101-orgDropdowns", upstream: "origin/5101-orgDropdowns", published: true, ahead: 1, behind: 0, staged: [], unstaged: [{ path: "src/org/Dropdown.tsx", status: "M" }, { path: "src/org/lastOrg.ts", status: "U" }], conflicted: [] }),
   scmDiff: async (_id: string, rel: string) => unifiedDiff(rel),
@@ -1693,7 +1727,7 @@ const api: Record<string, (...a: any[]) => any> = {
     }
     return answer;
   },
-  pipelineAll: async () => JSON.parse(JSON.stringify(pipelines)),
+  pipelineAll: async () => (badgeFails.has("pr") ? err("~/.mockingbird/pipeline.json: EACCES: permission denied") : JSON.parse(JSON.stringify(pipelines))),
   pipelineStage: async (id: string, stage: TicketStage) => setStage(id, stage),
   pipelineFeedback: async (id: string, text: string) => {
     pipelineOf(id).feedback.push({ at: Date.now(), text });
@@ -2675,6 +2709,17 @@ else if (params.has("new")) {
 }
 // team rooms: ?joinRequest=later puts the admin's join prompt off (Later), leaving the request in Settings → Team
 if (params.get("joinRequest") === "later") setTimeout(() => click('.join-ask button[title^="Answer later"]'), 600);
+// S7: ?needsTray opens the Needs you tray (with ?labs=landscape; ?joinRequest=later to list Lee's request in it too);
+// ?needsStep=<n> then presses N on the landscape n times (a negative n, ⇧N), the tray kept open
+if (params.has("needsTray") || params.has("needsStep")) {
+  const steps = Number(params.get("needsStep")) || 0;
+  setTimeout(() => {
+    const vpEl = document.querySelector<HTMLElement>(".ls-viewport");
+    // a press per frame or so, as a person's: each N steps on from where the last one landed
+    for (let i = 0; i < Math.abs(steps); i++) setTimeout(() => vpEl?.dispatchEvent(new KeyboardEvent("keydown", { key: steps < 0 ? "N" : "n", shiftKey: steps < 0, bubbles: true, cancelable: true })), i * 150);
+    if (params.has("needsTray")) setTimeout(() => click(".ny-btn"), steps ? Math.abs(steps) * 150 + 700 : 0);
+  }, 1200);
+}
 // ?joining (with ?section=team) pastes a code into Join a room… and presses Join: the joiner's side (see teamJoin)
 if (params.has("joining")) {
   setTimeout(() => click(".set-actions button.outline.strong"), 500);
@@ -2699,6 +2744,22 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
     if (el) then(el);
   }, 100);
 };
+// S7: ?landscapeNeedsAudit=a|b works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
+if (params.has("landscapeNeedsAudit")) {
+  recordConsole();
+  const setSession = (id: string, over: Partial<SessionInfo>) => {
+    sessions = sessions.map((s) => (s.id === id ? { ...s, ...over } : s));
+    sessionsChanged();
+  };
+  // a session of this Mac's room tag as team rooms report it (a take-over lands there, not in the session)
+  const fixtureTags = clone(live.own);
+  const setOwnTag = (id: string, over: Partial<RoomSessionTag> | null) => {
+    if (!fixtureTags[id]) return;
+    live.own[id] = over ? { ...fixtureTags[id], ...over } : clone(fixtureTags[id]);
+    emit("onTeamLive", clone(live));
+  };
+  runNeedsAudit({ sessions: () => sessions, setSession, setOwnTag, calls, emit, badgeFails, waitFor }, params.get("landscapeNeedsAudit") || "a");
+}
 const lsFocus = params.get("lsFocus");
 if (lsFocus) {
   const at = `.ls-world [data-front="${CSS.escape(lsFocus)}"]`;
@@ -2863,7 +2924,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu"))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray"))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {

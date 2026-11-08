@@ -167,8 +167,23 @@ together so work and context flow between them.
 
   Each item has its own action (Send, Allow once / Deny, Create / Dismiss, Go
   there). `N` and ⇧N move the view to the next or previous item.
+
+  Phase 1 (built, S7) lists permission prompts and questions an agent asked,
+  room join requests you answer as admin, and sessions that finished and are
+  idle, in that order, newest first within each. "Finished" there means the
+  agent's turn ended (the Stop hook) and it has been idle since; it goes when
+  the session works, waits or starts again. Teammates' sessions, copies a
+  teammate took over and morning briefs aren't listed. Each item has **Go
+  there** (the workspace focused with its terminal's keyboard, or the room's
+  area and the admin's prompt) and **Dismiss** (off the list until its state
+  changes). Allowing or denying stays in the terminal. `N` / ⇧N select the
+  next or previous item's workspace (or its room's area) and bring it into
+  view, leaving the keyboard on the landscape; they work only while the
+  landscape has the keyboard. How it's built:
+  [landscape-phase1.md, S7 — As built](landscape-phase1.md).
 - **Area badges.** The sidebar and area switcher show a count of waiting items
-  per area. A collapsed area keeps its count.
+  per area. A collapsed area keeps its count. The count is the area's Needs
+  you items, so the tray, the tree, the switcher and the pill agree.
 - **Card badges.** A card's footer shows:
   - diff size;
   - tests passing or failing;
@@ -178,6 +193,16 @@ together so work and context flow between them.
 
   The area header sums these up ("2 working · 1 waiting · 1 blocked · PR #88
   draft") and shows the area's budget.
+
+  Phase 1 (built, S7) has the diff ("+214 −38" since the worktree forked from
+  its area repo's base, commits and uncommitted changes), the PR ("PR #88",
+  the newest pipeline.json records from its branch; its approval state stays
+  in the live footer's PR cell), the cost ("22M · 14%", tokens and the share
+  of the 5-hour limit) and "what it did" (the first line of the agent's
+  latest message). A badge whose source can't be read shows "—", says why on
+  hover and in the console, and never keeps a value it read before. A badge
+  that doesn't fit the card is left out whole. Tests wait for phase 3; the
+  area header's sum and budget aren't built yet.
 - **Hover peek.** Below 75% zoom, resting the pointer on a card (or a read-only
   workspace) for 600 ms shows a large read-only live preview over it. It closes
   as the pointer leaves that workspace, even while over the preview, which
@@ -676,7 +701,8 @@ group order.
    - tool windows, the Artifacts window in every area, the workspace header
      and ⋯ menu;
    - stacks, Tidy, hover peek, card badges;
-   - the Needs you tray (permission prompts and finished workspaces for now);
+   - the Needs you tray (permission prompts, questions, join requests and
+     finished workspaces for now);
    - migration with its tour, the shortcuts sheet, the empty landscape.
 
    Ships with no wires.

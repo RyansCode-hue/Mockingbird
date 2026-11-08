@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { listDir, readFile, gitChanges, fileDiff, inside } from "../src/main/files";
+import { listDir, readFile, gitChanges, fileDiff, inside, branchStat, parseShortstatFiles } from "../src/main/files";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 describe("listDir", () => {
@@ -122,6 +122,44 @@ describe("gitChanges and fileDiff", () => {
     const d = await fileDiff(repo, "new.txt", "working", false);
     expect(d).toMatch(/rename from old\.txt\nrename to new\.txt/);
     expect(d).not.toMatch(/new file mode/);
+  });
+});
+
+describe("branchStat (a card's diff badge)", () => {
+  /** A repo on main with a `dev` branch, and a feature branch off dev with a commit and an uncommitted change. */
+  const featureRepo = () => {
+    const repo = makeRepo({ "a.txt": "one\ntwo\nthree\n", "b.txt": "b\n" });
+    git(repo, "branch", "dev");
+    git(repo, "switch", "-q", "-c", "feature", "dev");
+    write(repo, { "c.txt": "c1\nc2\n" });
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "feature work");
+    write(repo, { "a.txt": "one\nTWO\nthree\nfour\n" });
+    return repo;
+  };
+  it("counts the commits and the uncommitted changes since the fork from the area repo's base", async () => {
+    const repo = featureRepo();
+    // c.txt's 2 lines committed; a.txt's line changed (+1 −1) and one added, uncommitted
+    expect(await branchStat(repo, "dev")).toEqual({ base: "dev", files: 2, insertions: 4, deletions: 1 });
+  });
+  it("takes the repository's own base when the area names none, as Branch vs base does", async () => {
+    const repo = featureRepo();
+    expect((await branchStat(repo, null)).base).toMatch(/^(dev|main)$/);
+  });
+  it("is nothing for a branch with no work of its own", async () => {
+    const repo = makeRepo();
+    git(repo, "branch", "dev");
+    expect(await branchStat(repo, "dev")).toEqual({ base: "dev", files: 0, insertions: 0, deletions: 0 });
+  });
+  it("fails, saying which, for a base branch the repository doesn't have, and never reads it as an option", async () => {
+    const repo = featureRepo();
+    await expect(branchStat(repo, "uat")).rejects.toThrow(/The base branch uat isn't in this repository/);
+    await expect(branchStat(repo, "--output=/tmp/x")).rejects.toThrow(/isn't in this repository/);
+  });
+  it("parses git's summary line", () => {
+    expect(parseShortstatFiles(" 3 files changed, 120 insertions(+), 8 deletions(-)")).toEqual({ files: 3, insertions: 120, deletions: 8 });
+    expect(parseShortstatFiles(" 1 file changed, 1 deletion(-)")).toEqual({ files: 1, insertions: 0, deletions: 1 });
+    expect(parseShortstatFiles("")).toEqual({ files: 0, insertions: 0, deletions: 0 });
   });
 });
 

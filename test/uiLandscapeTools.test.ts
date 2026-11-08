@@ -137,10 +137,10 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     expect(a.actions.area5102).toEqual(expect.arrayContaining(["# Area", "Rename…", "Collapse to a pill", "Lock its layout", "# Tools", "Artifacts", "Agent message log…", "Share as a team room…", "New session here…", "Ask for status"]));
     expect(a.actions.area5102).not.toContain("Chat");
     expect(a.actions.area5101).toEqual(expect.arrayContaining(["# Area", "Rename…", "Artifacts", "Chat", "Invite a teammate…", "New connected session here…"]));
-    // the header's chips and the footer's cells (elapsed and tokens read without their key)
+    // the header's chips and the footer's cells (elapsed and tokens read without their key; the diff after git)
     expect(a.actions.chrome.chips).toBeGreaterThanOrEqual(5);
-    expect(a.actions.chrome.foot).toEqual(["Elapsed", "Git", "PR", "Msgs", "Repo", "Folder", "Tokens"]);
-    expect(a.actions.chrome.footShown).toBe(7);
+    expect(a.actions.chrome.foot).toEqual(["Elapsed", "Git", "Diff", "PR", "Msgs", "Repo", "Folder", "Tokens"]);
+    expect(a.actions.chrome.footShown).toBe(8);
 
     // a dead workspace's card: Resume (what it re-reads asked first) and Close & clean up
     expect(a.dead.s6).toEqual(["Resume", "Close & clean up"]);

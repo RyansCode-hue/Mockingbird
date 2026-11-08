@@ -1,21 +1,36 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { openLink } from "./uiUtil";
 import { GATES, TICKET_STAGES, stageLabel, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
 import { ago, plural } from "../shared/format";
-import { createIpcStore, loadInto } from "./ipcStore";
+import { createIpcStore } from "./ipcStore";
 import { useAction } from "./useAction";
 import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";
 import { settled } from "./settled";
 
 
-const pipelines = createIpcStore<Record<string, TicketPipeline>>({}, ({ set }) => {
-  loadInto("the ticket pipelines", window.mb.pipelineAll(), (r: Record<string, TicketPipeline>) => set(r ?? {}));
-  window.mb.onPipelineChanged((r: Record<string, TicketPipeline>) => set(r ?? {}));
+/** Every ticket's pipeline, and why the first read failed (null once a read or a change has come). */
+export interface PipelinesRead {
+  all: Record<string, TicketPipeline>;
+  error: string | null;
+}
+const pipelines = createIpcStore<PipelinesRead>({ all: {}, error: null }, ({ get, set }) => {
+  const failed = (error: string) => {
+    console.error(`Couldn't read the ticket pipelines: ${error}`);
+    set({ ...get(), error });
+  };
+  settled<IpcResult<Record<string, TicketPipeline>>>(window.mb.pipelineAll()).then((r) => (isErr(r) ? failed(r.error) : set({ all: r ?? {}, error: null })));
+  window.mb.onPipelineChanged((r: Record<string, TicketPipeline>) => set({ all: r ?? {}, error: null }));
 });
+const allPipelines = () => pipelines.get().all;
 
 /** Every ticket's pipeline, kept current. */
 export function usePipelines(): Record<string, TicketPipeline> {
+  return useSyncExternalStore(pipelines.subscribe, allPipelines);
+}
+
+/** The pipelines with their read's failure, for what must tell "no PR" from "couldn't read" (a card's PR badge). */
+export function usePipelinesRead(): PipelinesRead {
   return pipelines.use();
 }
 

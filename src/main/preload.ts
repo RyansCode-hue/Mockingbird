@@ -99,6 +99,10 @@ const api = {
   filesRead: (id: string, rel: string) => ipcRenderer.invoke("files:read", id, rel),
   filesWrite: (id: string, rel: string, content: string, expectedMtimeMs: number | null) => ipcRenderer.invoke("files:write", id, rel, content, expectedMtimeMs),
   filesChanges: (id: string, scope: string) => ipcRenderer.invoke("files:changes", id, scope),
+  /** A landscape card's diff badge: the session's worktree against `base` (its area repo's base; null: the repository's own). */
+  branchStat: (id: string, base: string | null) => ipcRenderer.invoke("git:branchStat", id, base),
+  /** A landscape card's "what it did": the first line of the session's agent's latest message. */
+  lastReply: (id: string) => ipcRenderer.invoke("transcripts:lastReply", id),
   filesAll: (id: string) => ipcRenderer.invoke("files:all", id),
   watchFolders: (ids: string[]) => ipcRenderer.invoke("folders:watch", ids),
   runProfile: (id: string) => ipcRenderer.invoke("run:profile", id),

@@ -18,7 +18,7 @@ import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan, readContextWindow } from "./usage";
 import { planRateOf, refreshBrief, resumeEstimate, type RefreshBrief, type ResumeEstimate } from "./contextActions";
-import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef, inside } from "./files";
+import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef, inside, branchStat } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
@@ -37,7 +37,7 @@ import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summa
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS } from "./agentFiles";
-import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
+import { handoffKickoff, handoffPrompt, lastReplyOf, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify } from "./notifications";
@@ -54,7 +54,7 @@ import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, BroadcastRequest, ContextWindow, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
+import type { AgentKind, BroadcastRequest, ContextWindow, FileOverlap, LastReply, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
@@ -846,6 +846,8 @@ handle("files:write", (id, rel, content, expected) => {
   return writeFile(sessionRoot(id), String(rel), content, typeof expected === "number" ? expected : null);
 });
 handle("files:changes", (id, scope) => gitChanges(sessionRoot(id), scope));
+// a landscape card's diff badge: its worktree against its area repo's base (null: the repository's own)
+handle("git:branchStat", (id, base) => branchStat(sessionRoot(String(id)), typeof base === "string" && base.trim() ? base.trim() : null));
 handle("files:diff", (id, rel, scope, untracked) => fileDiff(sessionRoot(id), rel, scope, untracked));
 // Folders the window shows are watched, so its views refresh on a change instead
 // of polling. Addressed by session id, like the explorer: only live sessions' folders.
@@ -982,6 +984,17 @@ handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
   } catch (err) {
     throw new Error(`Couldn't read the conversation: ${(err as Error).message}`);
   }
+});
+// a landscape card's "what it did": the first line of its agent's latest message, from its conversation's transcript
+// as the digests read it. Nothing said yet (no conversation seen, none indexed yet, a terminal) is `{ line: null }`;
+// an index or a file that can't be read is an error, which the card shows as one
+handle("transcripts:lastReply", async (id): Promise<LastReply> => {
+  const s = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id);
+  if (!s) throw new Error(isRemotePaneId(String(id)) ? "That's a teammate's session: its conversation is on their Mac" : "Session is no longer running");
+  const conv = s.shell ? undefined : (s.conversation?.id ?? conversationsOf(s).at(-1));
+  if (!conv) return { line: null, at: null };
+  if (!transcripts) throw new Error(`the conversation index isn't available${transcriptsProblem ? ` (${transcriptsProblem})` : ""}`);
+  return lastReplyOf(transcripts.filesOf(conv), conv);
 });
 // a session of the same agent in the same folder and group, started from the brief
 handle(

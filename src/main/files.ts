@@ -3,7 +3,8 @@ import * as fs from "fs";
 import { applyTextEdits, type LspTextEdit } from "../shared/textEdits";
 import { lineBreakOf, splitBom } from "../shared/editorText";
 import * as path from "path";
-import type { FileEntry, FileContent, FileSave, GitChange, GitChanges, ChangeScope } from "../shared/types";
+import type { BranchStat, FileEntry, FileContent, FileSave, GitChange, GitChanges, ChangeScope } from "../shared/types";
+import { parseShortstat } from "./worktrees";
 
 const MAX_FILE_BYTES = 1_500_000;
 
@@ -158,6 +159,58 @@ async function branchBase(root: string): Promise<{ sha: string; name: string }> 
   } catch (err) {
     throw new Error(`Cannot find a common ancestor with ${ref}: ${(err as Error).message}`);
   }
+}
+
+/** `git diff --shortstat`'s " 3 files changed, 120 insertions(+), 8 deletions(-)" ("" when nothing changed). */
+export function parseShortstatFiles(out: string): { files: number } & ReturnType<typeof parseShortstat> {
+  return { files: parseInt(/(\d+) files? changed/.exec(out)?.[1] ?? "0", 10), ...parseShortstat(out) };
+}
+
+/**
+ * The ref branch `name` is at in `root`: origin's when the remote has it, else the local one, as Branch vs base
+ * picks; full refs, so a name can't be read as an option. Throws when the repository has neither.
+ */
+async function refOfBranch(root: string, name: string): Promise<{ ref: string; label: string }> {
+  for (const [ref, label] of [[`refs/remotes/origin/${name}`, `origin/${name}`], [`refs/heads/${name}`, name]]) {
+    if (await git(root, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], { okCodes: [0, 1] })) return { ref, label };
+  }
+  throw new Error(`The base branch ${name} isn't in this repository (neither origin/${name} nor a local ${name})`);
+}
+
+const STAT_TTL_MS = 3_000;
+const statCache = new Map<string, { at: number; stat: Promise<BranchStat> }>();
+
+/**
+ * How much the work at `root` changed since it forked from `base`, a card's diff badge: `git diff --shortstat` from
+ * the merge base to the working tree, its commits and its uncommitted changes to tracked files together. `base` is
+ * the area repo's base branch; null takes the repository's own, as Branch vs base does. Shared for a few seconds like
+ * a worktree's state, so every card on one folder starts one round of git; a failed read isn't kept.
+ */
+export function branchStat(root: string, base: string | null): Promise<BranchStat> {
+  const key = `${root}\0${base ?? ""}`;
+  const hit = statCache.get(key);
+  if (hit && Date.now() - hit.at < STAT_TTL_MS) return hit.stat;
+  const stat = (async (): Promise<BranchStat> => {
+    let from: { ref: string; label: string };
+    if (base) from = await refOfBranch(root, base);
+    else {
+      const ref = await baseRef(root);
+      if (!ref) throw new Error("No dev/main-style base branch found to compare against");
+      from = { ref, label: ref };
+    }
+    let fork: string;
+    try {
+      fork = await git(root, ["merge-base", "HEAD", from.ref]);
+    } catch (err) {
+      throw new Error(`Cannot find a common ancestor with ${from.label}: ${(err as Error).message}`);
+    }
+    return { base: from.label, ...parseShortstatFiles(await git(root, ["diff", "--shortstat", fork])) };
+  })();
+  statCache.set(key, { at: Date.now(), stat });
+  stat.catch(() => {
+    if (statCache.get(key)?.stat === stat) statCache.delete(key);
+  });
+  return stat;
 }
 
 /**

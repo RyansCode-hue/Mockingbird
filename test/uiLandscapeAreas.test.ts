@@ -59,7 +59,7 @@ describe.skipIf(!local)("the landscape's areas", () => {
 
     // the area tree: the areas in the landscape's order, waiting counts, who's online in a room's, loose last
     expect(a.tree.map((t) => t.key)).toEqual(["5101", "5102", "5110", "ungrouped"]);
-    expect(a.tree[0]).toMatchObject({ title: "#5101 Org dropdowns remember the last org", waiting: "1", online: ["N"] });
+    expect(a.tree[0]).toMatchObject({ title: "#5101 Org dropdowns remember the last org", waiting: "2", online: ["N"] });
     // a stack once, its front tab's row; a teammate's workspace too
     expect(a.tree[0].rows).toEqual(["s1", "s2", "s4", "s8", N1]);
     expect(a.tree[1]).toMatchObject({ count: "2", rows: ["s5", "s6"], online: [] });

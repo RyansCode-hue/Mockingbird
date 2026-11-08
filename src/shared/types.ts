@@ -59,6 +59,12 @@ export interface SessionInfo {
   muted?: boolean;
   /** What a reply from the user's phone did to this session last (phone alerts), shown in its pane until dismissed. */
   phoneNote?: { text: string; at: number } | null;
+  /**
+   * When its agent's turn last ended (its Stop hook: what the Finished notification announces), while it has been
+   * idle since. Null or absent once it works or waits again, or its agent starts a new or cleared conversation. The
+   * Needs you tray lists it as finished.
+   */
+  finishedAt?: number | null;
   // team rooms: live panes
   /** Set in the window on a session in a shared group: its room, owner, and who's looking at it. */
   room?: RoomSessionTag;
@@ -587,6 +593,21 @@ export interface FileSearch {
 export interface GitChanges {
   changes: GitChange[];
   base: string; // what the changes are measured against
+}
+
+/** How much a worktree changed since it forked from its base: `git diff --shortstat` from the merge base (a card's diff badge). */
+export interface BranchStat {
+  /** The ref it's measured against: origin/dev, or a local branch. */
+  base: string;
+  files: number;
+  insertions: number;
+  deletions: number;
+}
+
+/** The first line of an agent's latest message in its conversation (a card's "what it did"); null: it hasn't said anything yet. */
+export interface LastReply {
+  line: string | null;
+  at: number | null;
 }
 
 // ---- run ----------------------------------------------------------------------

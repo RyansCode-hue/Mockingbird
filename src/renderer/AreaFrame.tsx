@@ -24,6 +24,7 @@ export function AreaFrame({
   shared,
   summary,
   counts,
+  needs = 0,
   hot,
   selected = false,
   onSelect,
@@ -44,6 +45,8 @@ export function AreaFrame({
   shared: string | null;
   summary: string;
   counts: AreaCounts;
+  /** What needs you in it (S7: the Needs you tray's items here), the count its pill keeps. */
+  needs?: number;
   /** A workspace dragged over it would move into it. */
   hot: boolean;
   /** It's the selection: the selection bar shows its actions (Landscape.tsx). */
@@ -84,9 +87,9 @@ export function AreaFrame({
         >
           <span className="n">{title}</span>
           <span className="c">{plural(counts.workspaces, "workspace")}</span>
-          {counts.waiting > 0 && (
-            <span className="w" title={`${counts.waiting} waiting on you`}>
-              {counts.waiting}
+          {needs > 0 && (
+            <span className="w" title={`${needs} waiting on you: see Needs you`}>
+              {needs}
             </span>
           )}
           {a.locked && <LockIcon />}

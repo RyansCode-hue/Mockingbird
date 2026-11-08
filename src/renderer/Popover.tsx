@@ -9,8 +9,9 @@ import { useLiftOut } from "./lift";
  * A popover under an element anywhere, even one inside a scaled layer (the landscape's world): it's drawn over
  * everything, at the element's place on screen, so it keeps its own size. A press or a wheel outside it, Escape, or
  * the window resizing or losing focus closes it. It's named for screen readers and takes the keyboard as it opens.
+ * `align` "end" lines its right edge up with the element's (a button at the window's right end); its left by default.
  */
-export function AnchoredPopover({ anchor, className, label, onClose, children }: { anchor: HTMLElement; className: string; label: string; onClose: () => void; children: ReactNode }) {
+export function AnchoredPopover({ anchor, className, label, onClose, children, align = "start" }: { anchor: HTMLElement; className: string; label: string; onClose: () => void; children: ReactNode; align?: "start" | "end" }) {
   useEscape(onClose);
   const box = useRef<HTMLDivElement | null>(null);
   const presence = usePresence<HTMLDivElement>("menu", { also: box });
@@ -21,8 +22,8 @@ export function AnchoredPopover({ anchor, className, label, onClose, children }:
     const el = box.current;
     if (!el) return;
     const r = anchor.getBoundingClientRect();
-    setPos(placeMenu({ x: r.left, y: r.bottom + 4 }, { width: el.offsetWidth, height: el.scrollHeight }, { width: window.innerWidth, height: window.innerHeight }));
-  }, [anchor]);
+    setPos(placeMenu({ x: align === "end" ? r.right - el.offsetWidth : r.left, y: r.bottom + 4 }, { width: el.offsetWidth, height: el.scrollHeight }, { width: window.innerWidth, height: window.innerHeight }));
+  }, [anchor, align]);
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
     const outside = (e: Event) => {

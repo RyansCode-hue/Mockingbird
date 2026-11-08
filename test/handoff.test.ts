@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "../src/main/handoff";
+import { handoffKickoff, handoffPrompt, lastReplyLine, lastReplyOf, repoState, transcriptDigest, transcriptLines } from "../src/main/handoff";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 const spawned: { file: string; args: string[]; cwd: string }[] = [];
@@ -112,5 +112,42 @@ describe("starting a session in another session's folder", () => {
     expect(spawned.at(-1)!.cwd).toBe(repo);
     expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
     await expect(m.create({ repoPath: null, cwd: path.join(repo, "gone"), useWorktree: false })).rejects.toThrow(/doesn't exist/);
+  });
+});
+
+describe("what an agent said last (a landscape card's \"what it did\")", () => {
+  it("is the first line of the agent's latest message, past tool calls and the user's messages, its markdown let go", () => {
+    const lines = [
+      claude("user", "Make the dropdown remember the org"),
+      claude("assistant", [{ type: "text", text: "## Done\n\nThe dropdown now remembers it." }]),
+      claude("assistant", [{ type: "text", text: "\n\n**Streams** the export instead of loading `40k` rows.\nThen the tests." }, { type: "tool_use", name: "Bash", input: { command: "npm test" } }]),
+      claude("assistant", [{ type: "tool_use", name: "Edit", input: { file_path: "a.ts" } }]),
+      claude("user", "thanks"),
+    ];
+    expect(lastReplyLine(lines, "claude", "c1")).toEqual({ line: "Streams the export instead of loading 40k rows.", at: Date.parse("2026-10-04T10:00:00Z") });
+    expect(lastReplyLine(lines.slice(0, 2), "claude", "c1")?.line).toBe("Done");
+  });
+  it("reads Codex rollouts", () => {
+    const codex = [
+      JSON.stringify({ type: "response_item", timestamp: "2026-10-04T10:00:02Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Fixed the import." }] } }),
+      JSON.stringify({ type: "response_item", timestamp: "2026-10-04T10:00:03Z", payload: { type: "function_call", name: "shell", arguments: "{}" } }),
+    ];
+    expect(lastReplyLine(codex, "codex", "x1")?.line).toBe("Fixed the import.");
+  });
+  it("is null before the agent has said anything, and for lines that aren't JSON", () => {
+    expect(lastReplyLine([claude("user", "Start"), claude("assistant", [{ type: "tool_use", name: "Read", input: {} }]), "{not json"], "claude", "c1")).toBeNull();
+  });
+  it("reads a transcript from its end, dropping a line the window cut, and the newest file first", async () => {
+    const dir = tempDir("transcripts");
+    const old = path.join(dir, "old.jsonl");
+    const cur = path.join(dir, "cur.jsonl");
+    fs.writeFileSync(old, `${claude("assistant", "From the earlier file.")}\n`);
+    // past the tail window: the line it starts inside is dropped, and the last message read
+    fs.writeFileSync(cur, `${claude("assistant", "x".repeat(1_200_000))}\n${claude("user", "go on")}\n${claude("assistant", "The newest reply.")}\n`);
+    expect((await lastReplyOf([{ path: old, agent: "claude" }, { path: cur, agent: "claude" }], "c1")).line).toBe("The newest reply.");
+    fs.writeFileSync(cur, `${claude("user", "only a question so far")}\n`);
+    expect((await lastReplyOf([{ path: old, agent: "claude" }, { path: cur, agent: "claude" }], "c1")).line).toBe("From the earlier file.");
+    expect(await lastReplyOf([{ path: cur, agent: "claude" }], "c1")).toEqual({ line: null, at: null });
+    await expect(lastReplyOf([{ path: path.join(dir, "gone.jsonl"), agent: "claude" }], "c1")).rejects.toThrow(/ENOENT/);
   });
 });

@@ -59,6 +59,8 @@ export interface TreeArea {
   /** A room's area: its online teammates, whose initials the row shows. */
   online: { id: string; name: string }[] | null;
   counts: AreaCounts;
+  /** What needs you in it (S7: the Needs you tray's items here), its badge. */
+  needs: number;
   items: TreeItem[];
 }
 
@@ -196,9 +198,9 @@ export function AreaTree({
                     {initialsOf(m.name).slice(0, 1)}
                   </span>
                 ))}
-                {a.counts.waiting > 0 ? (
-                  <span className="lt-badge" title={`${a.counts.waiting} waiting on you`}>
-                    {a.counts.waiting}
+                {a.needs > 0 ? (
+                  <span className="lt-badge" title={`${a.needs} waiting on you: see Needs you`}>
+                    {a.needs}
                   </span>
                 ) : (
                   <span className="lt-n" title={plural(a.counts.workspaces, "workspace")}>
