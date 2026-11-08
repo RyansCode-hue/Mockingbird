@@ -1271,6 +1271,8 @@ const api: Record<string, (...a: any[]) => any> = {
   renameGroup: async (from: string, to: string) => {
     const members = sessions.filter((s) => areaKeyOf(s) === from).map((s) => s.id);
     sessions = sessions.map((s) => (s.taskGroup === from || s.taskGroup?.startsWith(`${from}/`) ? { ...s, taskGroup: to + s.taskGroup.slice(from.length) } : s));
+    // closed sessions too, as main's renameGroup remaps the stored ones
+    previous = previous.map((s) => (s.taskGroup === from || s.taskGroup?.startsWith(`${from}/`) ? { ...s, taskGroup: to + s.taskGroup.slice(from.length) } : s));
     // the sessions' change goes out first, then the area's, as main's renameGroup sends them (LandscapeStore.groupRenamed);
     // an audit's renameLag holds the area's back that long, as a slow write would
     sessionsChanged();

@@ -150,7 +150,8 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     // one call to main, which checks, lets the dead pty go and relaunches
     expect(a.dead.resumed).toEqual(expect.arrayContaining(['resumeSession ["s6"]']));
     expect(a.dead.s6Now).not.toBe("dead");
-    expect(a.dead.cleaned).toContain('killSession ["y1",true]');
+    // closed on the landscape it stays resumable, as its ghost (S6b): its workspace goes, its session isn't forgotten
+    expect(a.dead.cleaned).toContain('killSession ["y1",false]');
     expect(a.dead.y1Gone).toBe(true);
 
     // an area's artifacts on this Mac: listed from its own shelf

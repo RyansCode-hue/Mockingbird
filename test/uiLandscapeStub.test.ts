@@ -56,8 +56,10 @@ describe.skipIf(!local)("the UI preview's landscape", () => {
     const remote = Object.keys(l.workspaces).filter((id) => id.startsWith("r~"));
     expect(remote.some((id) => inside(l.areas["5101"], l.workspaces[id]))).toBe(true);
     expect(remote.some((id) => inside(l.areas["5110"], l.workspaces[id]))).toBe(true);
-    expect(Object.values(l.ghosts).map((g) => g.group)).toEqual(["5102"]);
-    expect(inside(l.areas["5102"], Object.values(l.ghosts)[0].placement)).toBe(true);
+    // ghosts are closed sessions' kept places (S6b): g1's in 5102, g2's in 5101; the old ghosts record is unused
+    expect(l.ghosts).toEqual({});
+    expect(inside(l.areas["5102"], l.workspaces.g1)).toBe(true);
+    expect(inside(l.areas["5101"], l.workspaces.g2)).toBe(true);
     expect(Object.values(l.areas).some((a) => overlaps(a, l.workspaces.s7))).toBe(false);
     const all = [...Object.values(l.workspaces), ...Object.values(l.stacks).map((s) => s.placement), ...Object.values(l.ghosts).map((g) => g.placement)];
     all.forEach((a, i) => all.forEach((b, j) => i < j && expect(overlaps(a, b)).toBe(false)));

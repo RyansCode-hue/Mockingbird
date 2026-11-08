@@ -218,9 +218,10 @@ describe.skipIf(!local)("the selection bar", () => {
     const p = i.made.placed!;
     expect(p.x >= i.area.x && p.y >= i.area.y && p.x + p.w <= i.area.x + i.area.w && p.y + p.h <= i.area.y + i.area.h).toBe(true);
     expect(Math.abs(p.x - i.at.x) <= p.w && Math.abs(p.y - i.at.y) <= p.h, JSON.stringify({ at: i.at, p })).toBe(true);
-    // in no area: only the create rows; Terminal… makes a loose terminal where it was clicked
+    // in no area: the create rows, and the loose closed workspaces' Reopen all and Clear ghosts; Terminal… makes a
+    // loose terminal where it was clicked
     const l = b.createLoose;
-    expect(l.rows).toEqual(CREATE_ROWS);
+    expect(l.rows).toEqual([...CREATE_ROWS, "-", "# Closed workspaces", "Reopen all (1)", "Clear ghosts (1)…"]);
     expect(l.selected).toBeNull();
     expect(l.dialog).toMatchObject({ launch: "Terminal", mode: "New", group: "no group▾" });
     expect(l.made.group).toBeNull();
@@ -270,9 +271,11 @@ describe.skipIf(!local)("the selection bar", () => {
   it("has area menus without a room's rows outside rooms, makes New session here… in the area's repo, and keeps the selection true to the areas there are", async () => {
     const e = await run<E>("e", "samView");
     expect(e.error).toBeUndefined();
-    // an area that isn't a room's: no Team room heading; its sessions under Sessions; one choice each for messages
+    // an area that isn't a room's: no Team room heading; its sessions under Sessions; one choice each for messages;
+    // Tidy, and its closed workspace's Reopen all and Clear ghosts
     expect(e.menus.plain).toEqual([
-      "# Area", "Rename…", "Collapse to a pill", "Lock its layout",
+      "# Area", "Rename…", "Collapse to a pill", "Lock its layout", "Tidy [T]",
+      "-", "# Closed workspaces", "Reopen all (1)", "Clear ghosts (1)…",
       "-", "# Tools", "Artifacts",
       "-", "# Agent messages", "As in Settings (auto-send)", "Always auto-send", "Always leave in prompt", "Agent message log…",
       "-", "# Sessions", "New session here…", "Ask for status",
@@ -280,7 +283,8 @@ describe.skipIf(!local)("the selection bar", () => {
     ]);
     // a room's: its Chat, then its board, Follow and Invite under Team room
     expect(e.menus.room).toEqual([
-      "# Area", "Rename…", "Collapse to a pill", "Lock its layout",
+      "# Area", "Rename…", "Collapse to a pill", "Lock its layout", "Tidy [T]",
+      "-", "# Closed workspaces", "Reopen all (1)", "Clear ghosts (1)…",
       "-", "# Tools", "Artifacts", "Chat",
       "-", "# Agent messages", "As in Settings (auto-send)", "Always auto-send", "Always leave in prompt", "Agent message log…",
       "-", "# Sessions", "New connected session here…", "Ask for status",

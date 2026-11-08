@@ -1442,7 +1442,8 @@ export function Landscape({
           startRef.current({ ...press, kind: "window", key: win.dataset.win! });
         } else if (card && !t.closest("button, a, input")) {
           startRef.current({ ...press, kind: "card", key: card.dataset.card! });
-        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty, .ls-ghost")) {
+        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty, .ls-ghost button")) {
+          // a ghost isn't selected: a press on it is one on the landscape where it lies, its buttons aside
           startRef.current({ ...press, kind: "marquee", key: "" });
         }
       }

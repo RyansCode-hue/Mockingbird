@@ -1824,8 +1824,11 @@ Design O, with Artifacts as a window, and N's workspace header.
       Relaunch → Reopen, restore all → Reopen all, forget → Forget / Clear
       ghosts, take back → the ghost's Take it back.
     - A move of closed sessions (a stack's closed tabs go with it) rereads
-      the resumable list (`runMoves`); the preview's `setGroup` moves closed
-      sessions too, as main's does.
+      the resumable list (`runMoves`); the preview's `setGroup` and
+      `renameGroup` move closed sessions too, as main's do.
+    - `?landscapeAreasAudit`'s minimap has the loose ghost's block;
+      `?landscapeBarAudit=b`'s right-click outside every area has the loose
+      ghosts' rows; `?landscapeToolsAudit`'s dead card closes to a ghost.
   - **Preview:** `?lsClosed=<id,…>` closes those sessions as if closed with
     their places kept (y1 shows Take it back); the fixture's closed ones are
     p1 (loose), g1 (5102) and g2 (5101, its worktree gone). `?lsKey=<key>`
@@ -1863,7 +1866,11 @@ Design O, with Artifacts as a window, and N's workspace header.
       relaunches under the same id; merged groups' ghosts move into the area
       they merged into (the rename drops their places; they're placed anew).
     - Closing on the landscape always leaves a ghost, even a clean worktree's
-      (the grid forgot those); the dialog's push and discard still forget.
+      (the grid forgot those), and so does a dead workspace's Close & clean
+      up (a taken-over one's ghost offers Take it back); the dialog's push
+      and discard still forget.
+    - A press on a ghost (not its buttons) is one on the landscape where it
+      lies: it selects the area, or starts a marquee. Ghosts aren't selected.
     - Clear ghosts asks (a browser confirm); a single Forget doesn't.
     - The notes (Tidy's Undo among them) moved from the top to over the zoom
       HUD, as design E has its toast, clear of the selection bar.

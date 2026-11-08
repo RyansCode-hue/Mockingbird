@@ -66,8 +66,9 @@ describe.skipIf(!local)("the landscape's areas", () => {
     expect(a.tree[2].rows).toEqual(["y1", N7]);
     expect(a.tree[3]).toMatchObject({ title: "Loose", count: "1", rows: [] });
 
-    // the minimap: a block per area and one for the loose assistant; no dots, and no mark for a workspace in an area
-    expect(a.minimap).toEqual({ areas: ["5101", "5102", "5110"], loose: ["s7"], dots: 0, marks: 4 });
+    // the minimap: a block per area, one for the loose assistant and one for the loose closed session's ghost; no dots,
+    // and no mark for a workspace in an area
+    expect(a.minimap).toEqual({ areas: ["5101", "5102", "5110"], loose: ["s7", "ghost:p1"], dots: 0, marks: 5 });
 
     // teammates stream what's on screen: everything at fit, then what the fly to 5110 shows
     expect(a.atFit.streams).toEqual(expect.arrayContaining([N1, N7, "s1", "y1"]));
@@ -95,8 +96,8 @@ describe.skipIf(!local)("the landscape's areas", () => {
     expect(a.make.changes.map((c) => c.fn)).toEqual(["landscapeUpdate", "setGroup"]);
     expect(a.make.changes[1].args).toEqual(["s7", "Spike"]);
     expect(a.make).toMatchObject({ inside: true, group: "Spike", drawn: true, cleared: true, apart: true });
-    // in an area now, the assistant has no block of its own: its area has one
-    expect(a.make.minimap).toEqual({ areas: ["5101", "5102", "5110", "Spike"], loose: [], dots: 0, marks: 4 });
+    // in an area now, the assistant has no block of its own: its area has one (the loose ghost keeps its own)
+    expect(a.make.minimap).toEqual({ areas: ["5101", "5102", "5110", "Spike"], loose: ["ghost:p1"], dots: 0, marks: 5 });
 
     // dragged across 5102's edge: it lights up, the place is saved, then the group set; areas pushed aside stay apart
     expect(a.dragIn.hot).toBe(true);
