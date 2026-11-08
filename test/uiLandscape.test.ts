@@ -243,8 +243,10 @@ describe.skipIf(!local)("the landscape", () => {
     expect(fresh.migrations).toHaveLength(1);
     expect(fresh.migrations[0].areas).toEqual(["5101", "5102", "5110"]);
     expect(fresh.migrations[0].stacks).toEqual(["5101/api"]);
-    // the previous run's session is read in too, so relaunching it finds its place
-    expect(fresh.migrations[0].workspaces).toEqual(expect.arrayContaining(["s1", "s4", "s5", "s7", "s8", "p1"]));
+    // the closed sessions the grid's layout didn't name (its Previous) get no place: the Closed sessions list holds
+    // them, and 5150, which only o2 is in, gets no area
+    expect(fresh.migrations[0].workspaces).toEqual(expect.arrayContaining(["s1", "s4", "s5", "s7", "s8"]));
+    for (const id of ["p1", "g1", "g2", "o1", "o2"]) expect([id, fresh.migrations[0].workspaces.includes(id)]).toEqual([id, false]);
     expect(fresh.others).toBe(0);
     expect(fresh.workspaces).toBeGreaterThan(8);
     expect(fresh.banners).toEqual([]);

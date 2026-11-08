@@ -6153,7 +6153,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     const out: Record<string, unknown> = { part };
     try {
       await sleep(900);
-      await fitView();
+      if (part !== "n") await fitView();
       const ws = (key: string) => document.querySelector<HTMLElement>(`.ls-world .ls-node[data-ws="${CSS.escape(key)}"]`);
       const spacer = (el: HTMLElement) => el.querySelector<HTMLElement>(".ls-head .ls-spacer")!;
       const bareHead = (el: HTMLElement) => mid(spacer(el).getBoundingClientRect());
@@ -6184,13 +6184,25 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         on.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, shiftKey: true, pointerId: 3, clientX: p.x, clientY: p.y }));
         window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, button: 0, pointerId: 3, clientX: p.x, clientY: p.y }));
         await sleep(500);
+        // panned (the wheel) until y1's top is at the view's foot and its left edge just left of the middle: the bar
+        // sits along the bottom edge there, where a centred note would be
+        for (let i = 0; i < 6; i++) {
+          const v = vp().getBoundingClientRect();
+          const r = node("y1")!.getBoundingClientRect();
+          const dx = r.left - (v.left + v.width / 2 - 80);
+          const dy = r.top - (v.bottom - 24);
+          if (Math.abs(dx) < 4 && Math.abs(dy) < 4) break;
+          vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: v.left + v.width / 2, clientY: v.top + v.height / 2, deltaX: dx, deltaY: dy }));
+          await sleep(250);
+        }
+        await sleep(400);
         vp().focus();
         key(vp(), "g", { metaKey: true });
         await sleep(500);
         const n = document.querySelector<HTMLElement>(".ls-note")?.getBoundingClientRect();
         const bar = document.querySelector<HTMLElement>(".ls-selbar")?.getBoundingClientRect();
         const mm = document.querySelector<HTMLElement>(".ls-minimap")?.getBoundingClientRect();
-        out.note = { said: noteText(), note: n ? R(n) : null, bar: bar ? R(bar) : null, minimap: mm ? R(mm) : null, overBar: !!(n && bar && meet(n, bar)), overMinimap: !!(n && mm && meet(n, mm)), viewport: R(vp().getBoundingClientRect()) };
+        out.note = { said: noteText(), note: n ? R(n) : null, bar: bar ? R(bar) : null, minimap: mm ? R(mm) : null, overBar: !!(n && bar && meet(n, bar)), overMinimap: !!(n && mm && meet(n, mm)), viewport: R(vp().getBoundingClientRect()), camera: camera() };
       } else if (part === "a") {
         await zoomOnArea("5101", 0.5);
         out.toolbar = [...document.querySelectorAll<HTMLButtonElement>(`${areaEl("5101")} .ls-area-tools button[data-act]`)].map((b) => b.dataset.act);

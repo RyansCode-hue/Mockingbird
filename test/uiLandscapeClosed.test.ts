@@ -113,6 +113,9 @@ describe.skipIf(!local)("the S6b review's gesture and look fixes (UI preview)", 
     expect(n.note.said).toMatch(/Pick two or more workspaces to stack them/);
     expect(n.note.bar).not.toBeNull();
     expect(n.note.minimap).not.toBeNull();
+    // the bar really is low: its foot in the band a note 58 px up from the view's foot takes
+    const bar = n.note.bar!;
+    expect(bar.y + bar.h).toBeGreaterThan(n.note.viewport.y + n.note.viewport.h - 58 - 30);
     expect(n.note).toMatchObject({ overBar: false, overMinimap: false });
   }, 120_000);
 
