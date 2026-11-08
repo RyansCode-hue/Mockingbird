@@ -99,8 +99,16 @@ together so work and context flow between them.
 - **Focus.** Double-click a workspace, or select it and press ⌘E or Enter, and
   it fills the window. Esc returns to where you were.
 - **Move and arrange.**
-  - Drag the title bar to move a workspace, and its edges to resize it.
-  - Workspaces snap to an 8 px grid and to their neighbours' edges.
+  - Drag the title bar to move a workspace, and its edges or corners to
+    resize it.
+  - Workspaces snap to an 8 px grid and to their neighbours' edges (lined up,
+    or a gap apart) and their area's inside edges, within 6 px on screen, with
+    a guide drawn along each line they snap to. A resize shows its outline and
+    the terminal size it would hold; the terminal takes that size only on the
+    drop, and zooming never resizes it.
+  - What a moved or resized workspace lands on is pushed aside, its area
+    growing to hold it; the workspace itself stays where it's put. A locked
+    area refuses both and says why.
   - Dragging a workspace into or out of an area changes its group.
 - **Keyboard.**
   - ⌥ plus the arrow keys moves focus to the nearest workspace in that
@@ -110,12 +118,24 @@ together so work and context flow between them.
 - **Minimap** in a corner, showing each area as a block in its colour and each
   workspace or stack in no area as a neutral block of its own; workspaces in
   areas get no mark of their own. The view is a rectangle you can drag.
-- **Ghost cards.** Closing a workspace leaves a faded card on the landscape:
-  - it shows the title, the last summary, the ticket and its branch;
-  - its wires stay in place;
-  - **Reopen** resumes its conversation in the same spot;
-  - an area's menu has **Clear ghosts**, and a ghost whose worktree has been
-    removed offers to start fresh.
+- **Ghost cards.** Closing a workspace leaves a dashed outline where it was
+  (design option A): a ghost is a closed session this Mac can still resume.
+  - It shows the title, with **↺ Reopen** and Forget right under it, then the
+    last line it wrote, and its status with the ticket and branch. Zoomed out
+    it keeps its type at screen size inside its place, and a ghost too small
+    for all of that gives up the status line first, then the last line, then
+    its buttons, keeping its title; ⋯ and right-click offer every action.
+  - Its wires stay in place.
+  - **Reopen** resumes its conversation in the same spot (the session is
+    relaunched under its own id).
+  - **Forget** lets it go for good; an area's ⋯ has **Reopen all** and
+    **Clear ghosts** (asked first), and so do the loose ones (the tree's Loose
+    row, a right-click outside every area) and ⌘K, over every ghost.
+  - A ghost whose worktree has been removed offers **Start fresh**: New
+    session for its agent, area and repo, the new workspace taking the ghost's
+    place exactly. One a teammate continues shows **Take it back**.
+  - A closed tab of a stack still on screen is a faded tab on that stack.
+  - Ghosts are pushed aside like anything else but push nothing.
 
 ## Finding what needs you
 
@@ -150,11 +170,20 @@ together so work and context flow between them.
 
 ## Arranging
 
-- **Tidy** (T, or the area's hover toolbar) lays an area out left to right
-  along its wires; loose workspaces go below. Undo puts them back.
+- **Tidy** (T, the area's hover toolbar or its ⋯) lays an area out left to
+  right along its wires; loose workspaces go below. Undo (the note's, or ⌘Z
+  while it shows) puts them back. Until phase 3 brings wires it packs the
+  area in rows in the order its workspaces and ghosts were made, each tool
+  window after its workspace, and the area fits the result.
 - **Stacks** (⌘G on a selection) pile workspaces into one card with tabs. A
   stack moves, wires and focuses as one. A wire to a stacked workspace attaches
   to the stack and names its tab.
+  - Several picked in one area become a stack (`area/tabs`, `tabs-2`…) where
+    the first of them was; a stack among them takes the others in. A
+    teammate's workspace stays out.
+  - A tab click brings that workspace to the front; dragging a tab out drops
+    it where it's let go, as a workspace of its own. A stack left with one tab
+    stops being one.
 - **Collapse** shrinks an area to a pill showing its name, its number of
   workspaces and its waiting count. **Lock** freezes an area's layout: its
   workspaces keep their places. The area itself still moves out of the way,
@@ -378,7 +407,7 @@ for. **Create** starts it, and **Dismiss** tells the agent no.
     (design P's menu: presence, Make or remove admin, Hand over ownership,
     Remove, claiming ownership, join requests, backup state, Invite, Follow a
     member, Leave room);
-  - **⋯**: Rename, Collapse, Lock, Clear ghosts, Reopen all, the agent-message
+  - **⋯**: Rename, Collapse, Lock, Tidy, Reopen all, Clear ghosts, the agent-message
     mode, the message log, and Share as a room (Invite for a room).
 - **No nested areas.** Today's sub-groups (`top/sub`, the tabbed workspace
   cell) become stacks. A group within a group is a second area beside the
@@ -484,7 +513,7 @@ selected, at every zoom:
 | Join requests | The Needs you tray and Members ▾; the admin prompt unchanged |
 | Backups: freshness, failures, consent | Freshness on the workspace header, failures on the area header, consent unchanged |
 | Take-over, Take it back, Send, Review | The workspace's header and ⋯ menu; a ghost continued on a teammate's Mac shows Take it back |
-| Previous: relaunch, forget, restore all | Ghost cards (Reopen, Clear ghosts) and Reopen all in the area ⋯ |
+| Previous: relaunch, forget, restore all | Ghost cards (Reopen, Forget), Reopen all and Clear ghosts in the area ⋯, the Loose row's menu and ⌘K; Previous leaves the area tree's foot |
 | Group bar: message mode, message log | The area ⋯ |
 | Council: Open the implementing session | Focuses that workspace on the landscape |
 

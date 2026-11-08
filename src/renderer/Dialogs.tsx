@@ -238,6 +238,7 @@ export function CloseSessionDialog({
   cancelAll,
   onDone,
   forceClose,
+  ghost = false,
 }: {
   session: SessionInfo;
   /** The worktree's state, or why it couldn't be read — then the only choice is to keep it. */
@@ -248,6 +249,8 @@ export function CloseSessionDialog({
   onDone: () => void;
   /** Closes the session's pane and process; answers why it couldn't. */
   forceClose: (s: SessionInfo, forget: boolean) => Promise<string | null>;
+  /** On the landscape: what it keeps is its ghost where it was, not a row under Previous. */
+  ghost?: boolean;
 }) {
   // the safe option is always preselected; the destructive one is never the default
   const [mode, setMode] = useState<CleanupMode>("keep");
@@ -269,8 +272,8 @@ export function CloseSessionDialog({
       setBusy(false);
     };
     try {
-      // the session closes but stays resumable under Previous (scrollback and
-      // undo snapshots included) until its worktree has been pushed or removed
+      // the session closes but stays resumable (scrollback and undo snapshots
+      // included), under Previous or as its ghost, until its worktree has been pushed or removed
       const closeErr = await forceClose(session, false);
       if (closeErr) return stop(`Couldn't close the session: ${closeErr}`);
       if (mode !== "keep") {
@@ -278,7 +281,7 @@ export function CloseSessionDialog({
         const r = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode);
         if (isErr(r)) return stop(r.error);
         const forgot = await window.mb.killSession(session.id, true);
-        if (isErr(forgot)) return stop(`The worktree is done with, but the session couldn't be removed from Previous: ${forgot.error}`);
+        if (isErr(forgot)) return stop(`The worktree is done with, but the session couldn't be let go: ${forgot.error}`);
         if (r?.branchKept) alert(`The worktree is removed, but its branch is still there: ${r.branchKept}`);
       }
       onDone();
@@ -291,7 +294,7 @@ export function CloseSessionDialog({
     {
       mode: "keep",
       label: "Keep worktree, close pane",
-      consequence: "nothing is lost · resumable under Previous",
+      consequence: ghost ? "nothing is lost · its ghost stays where it was, to reopen" : "nothing is lost · resumable under Previous",
     },
     ...(st
       ? [

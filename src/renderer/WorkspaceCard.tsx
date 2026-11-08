@@ -90,6 +90,7 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
           <span className="ls-card-stack" title={tile.members.map(titleOf).join("\n")}>
             {name ? `${name}: ` : ""}
             {tile.members.length} tabs{waiting && s.status !== "waiting" ? `, ${waiting} need you` : ""}
+            {tile.closed?.length ? `, ${tile.closed.length} closed` : ""}
           </span>
         )}
         {isRemote(s) && s.room && <span className="ls-card-owner">{s.room.ownerName}'s</span>}

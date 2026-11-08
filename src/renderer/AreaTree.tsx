@@ -42,7 +42,7 @@ export function treeOf(sessions: readonly SessionInfo[], order: readonly string[
 
 /** What an area's tree rows are doing, as areaCounts counts its workspaces: a stack once, statuses of this Mac's sessions only. */
 export function treeCounts(items: readonly TreeItem[]): AreaCounts {
-  const c: AreaCounts = { working: 0, waiting: 0, idle: 0, dead: 0, workspaces: items.length };
+  const c: AreaCounts = { working: 0, waiting: 0, idle: 0, dead: 0, workspaces: items.length, closed: 0 };
   for (const it of items) for (const s of it.kind === "ws" ? [it.s] : it.members) if (!s.room?.remote) c[s.status]++;
   return c;
 }

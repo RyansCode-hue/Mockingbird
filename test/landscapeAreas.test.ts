@@ -751,7 +751,7 @@ describe("what an area says about itself", () => {
       theirs("n1", "A"),
     ]);
     const c = areaCounts(r.tiles, "A");
-    expect(c).toEqual({ working: 1, waiting: 1, idle: 0, dead: 1, workspaces: 3 });
+    expect(c).toEqual({ working: 1, waiting: 1, idle: 0, dead: 1, workspaces: 3, closed: 0 });
     expect(areaSummary(c)).toBe("1 waiting · 1 working · 1 exited · 3 workspaces");
     expect(areaSummary(c, { shared: "Shared room with Nick", workspaces: false })).toBe("Shared room with Nick · 1 waiting · 1 working · 1 exited");
     expect(shortAreaName("5101", "#5101 Org dropdowns")).toBe("#5101");
@@ -767,7 +767,7 @@ describe("what an area says about itself", () => {
       ["Empty", []],
       ["ungrouped", ["l1"]],
     ]);
-    expect(treeCounts(tree[0].items)).toEqual({ working: 0, waiting: 1, idle: 2, dead: 0, workspaces: 2 });
+    expect(treeCounts(tree[0].items)).toEqual({ working: 0, waiting: 1, idle: 2, dead: 0, workspaces: 2, closed: 0 });
   });
 });
 

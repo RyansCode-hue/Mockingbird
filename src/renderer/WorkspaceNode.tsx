@@ -60,6 +60,7 @@ export function WorkspaceNode({
   onBack,
   onTab,
   onMore,
+  onClosedTab,
   body,
 }: {
   tile: Tile;
@@ -88,6 +89,8 @@ export function WorkspaceNode({
   onTab: (tile: Tile, id: string) => void;
   /** ⋯ pressed: its menu, under the button. */
   onMore: (tile: Tile, from: HTMLElement) => void;
+  /** A stack's closed tab pressed: its ghost's menu, under it. */
+  onClosedTab?: (s: SessionInfo, from: HTMLElement) => void;
   /** The terminal of the session in front, at this size. */
   body: (s: SessionInfo, size: Size) => React.ReactNode;
 }) {
@@ -126,7 +129,7 @@ export function WorkspaceNode({
   );
   return (
     <div
-      className={["ls-node", mode, selected ? "selected" : "", picked ? "picked" : "", tile.hidden && mode !== "focus" ? "hidden" : "", waiting ? "st-waiting" : "", s.status === "dead" ? "st-dead" : "", isRemote(s) ? "remote" : ""].filter(Boolean).join(" ")}
+      className={["ls-node", mode, tile.stack ? "stack" : "", selected ? "selected" : "", picked ? "picked" : "", tile.hidden && mode !== "focus" ? "hidden" : "", waiting ? "st-waiting" : "", s.status === "dead" ? "st-dead" : "", isRemote(s) ? "remote" : ""].filter(Boolean).join(" ")}
       style={card ? { ...style, ["--ls-inv" as string]: inv } : { ...style, gridTemplateRows: `${WORKSPACE_HEAD}px minmax(0, 1fr) ${WORKSPACE_FOOT}px` }}
       data-ws={tile.key}
       data-front={s.id}
@@ -159,10 +162,27 @@ export function WorkspaceNode({
                     role="tab"
                     aria-selected={m.id === s.id}
                     className={`ls-tab ${m.id === s.id ? "on" : ""}`}
-                    title={titleOf(m)}
+                    data-sid={m.id}
+                    title={`${titleOf(m)} — drag it out to take it out of the stack`}
                     onClick={() => m.id !== s.id && onTab(tile, m.id)}
                   >
                     <StatusDot status={m.status} className="sm" />
+                    <span className="t">{titleOf(m)}</span>
+                  </button>
+                ))}
+                {tile.closed?.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className="ls-tab closed"
+                    data-closed={m.id}
+                    title={`${titleOf(m)} — closed: its actions`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClosedTab?.(m, e.currentTarget);
+                    }}
+                  >
+                    <span className="lg-dot" aria-hidden="true" />
                     <span className="t">{titleOf(m)}</span>
                   </button>
                 ))}
@@ -218,6 +238,13 @@ export function WorkspaceNode({
           )}
         </>
       )}
+      {mode !== "focus" && mode !== "placeholder" && RESIZE_EDGES.map((e) => <div key={e} className={`ls-rz ${e}`} data-edge={e} aria-hidden="true" />)}
     </div>
   );
 }
+
+/** A workspace's resize handles (Landscape.tsx drags them): its four edges and four corners. */
+export const RESIZE_EDGES = ["t", "r", "b", "l", "tl", "tr", "bl", "br"] as const;
+export type ResizeEdge = (typeof RESIZE_EDGES)[number];
+/** The edges a handle moves. */
+export const edgesOf = (e: ResizeEdge): { left: boolean; right: boolean; top: boolean; bottom: boolean } => ({ left: e.includes("l"), right: e.includes("r"), top: e.includes("t"), bottom: e.includes("b") });

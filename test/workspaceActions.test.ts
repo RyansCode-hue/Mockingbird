@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { actionOf, areaActions, artifactsOf, createActions, inSection, lockTitle, menuOf, usable, workspaceActions, type AreaEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { FOLDER_GONE_WHY, actionOf, areaActions, artifactsOf, createActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, usable, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -200,6 +200,8 @@ describe("an area's actions", () => {
     rename: vi.fn(),
     collapse: vi.fn(),
     lock: vi.fn(),
+    tidy: null,
+    ghosts: null,
     artifacts: vi.fn(),
     chat: vi.fn(),
     board: vi.fn(),
@@ -248,5 +250,61 @@ describe("an area's actions", () => {
     expect(actionOf(areaActions(area({ empty: true })), "remove")).toMatchObject({ section: "end", danger: true });
     expect(actionOf(areaActions(area({ empty: true, stored: null })), "remove")).toBeUndefined();
     expect(actionOf(areaActions(area()), "remove")).toBeUndefined();
+  });
+
+  it("offer Tidy (T) with the area's own rows, off saying why it can't be done, and none off the landscape", () => {
+    const tidy = vi.fn();
+    const on = actionOf(areaActions(area({ tidy })), "tidy")!;
+    expect(on).toMatchObject({ section: "area", label: "Tidy", kbd: "T" });
+    on.onPick();
+    expect(tidy).toHaveBeenCalledOnce();
+    expect(actionOf(areaActions(area({ tidy: { no: "#5102 Pathways is locked: unlock it to tidy it" } })), "tidy")).toMatchObject({ disabled: true, title: "#5102 Pathways is locked: unlock it to tidy it" });
+    expect(actionOf(areaActions(area()), "tidy")).toBeUndefined();
+  });
+
+  it("offer Reopen all and Clear ghosts under Closed workspaces, counted, off with none to act on", () => {
+    const reopenAll = vi.fn();
+    const clear = vi.fn();
+    const acts = areaActions(area({ ghosts: { count: 2, reopenAll, clear } }));
+    expect(menuOf(acts.filter((a) => a.section === "ghosts")).map((e) => (e === "-" ? "-" : e.heading ? `# ${e.label}` : (e.menuLabel ?? e.label)))).toEqual(["# Closed workspaces", "Reopen all (2)", "Clear ghosts (2)…"]);
+    expect(actionOf(acts, "clearGhosts")?.danger).toBe(true);
+    usable(acts, "reopenAll")!.onPick();
+    usable(acts, "clearGhosts")!.onPick();
+    expect([reopenAll.mock.calls.length, clear.mock.calls.length]).toEqual([1, 1]);
+    expect(ghostsActions({ count: 0, reopenAll, clear }).map((a) => [a.key, a.disabled, a.title])).toEqual([
+      ["reopenAll", true, "No closed workspaces here"],
+      ["clearGhosts", true, "No closed workspaces here"],
+    ]);
+  });
+});
+
+describe("a ghost's actions", () => {
+  const genv = (over: Partial<GhostEnv> = {}): GhostEnv => ({ folderGone: false, room: [], reopen: vi.fn(), fresh: vi.fn(), forget: vi.fn(), ...over });
+  const closed = sess({ status: "dead" });
+
+  it("are Reopen, first and primary, then Forget, each running its own handler", () => {
+    const e = genv();
+    const acts = ghostActions(closed, e);
+    expect(keys(acts)).toEqual(["reopen", "forget"]);
+    expect(actionOf(acts, "reopen")).toMatchObject({ primary: true });
+    expect(actionOf(acts, "forget")).toMatchObject({ danger: true, menuLabel: "Forget it" });
+    usable(acts, "reopen")!.onPick();
+    usable(acts, "forget")!.onPick();
+    expect([vi.mocked(e.reopen).mock.calls.length, vi.mocked(e.forget).mock.calls.length]).toEqual([1, 1]);
+  });
+
+  it("of one whose worktree was removed: Reopen off saying why, and Start fresh", () => {
+    const acts = ghostActions(closed, genv({ folderGone: true }));
+    expect(actionOf(acts, "reopen")).toMatchObject({ disabled: true, title: FOLDER_GONE_WHY });
+    expect(usable(acts, "fresh")).toMatchObject({ label: "Start fresh", menuLabel: "Start fresh…" });
+  });
+
+  it("of one a teammate continues: Reopen off by the take-over rule, its room's Take it back offered, never Start fresh", () => {
+    const taken = sess({ status: "dead", room: { roomId: "R", sessionId: "s1", owner: "me", ownerName: "Ryan", takenOver: { by: "m2", byName: "Nick", at: 0 } } as SessionInfo["room"] });
+    const back = vi.fn();
+    const acts = ghostActions(taken, genv({ folderGone: true, room: [{ key: "takeback", label: "Take it back", onPick: back }] }));
+    expect(actionOf(acts, "reopen")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back rather than reopening this copy/) });
+    expect(actionOf(acts, "fresh")).toBeUndefined();
+    expect(usable(acts, "takeback")).toMatchObject({ section: "room", label: "Take it back" });
   });
 });

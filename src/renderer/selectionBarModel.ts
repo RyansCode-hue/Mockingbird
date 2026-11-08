@@ -4,7 +4,6 @@ import { readPref, writePref, type PrefStore } from "./prefs";
 import { tidyMenu, type MenuEntry } from "./ContextMenu";
 import { actionOf, type ModelAction } from "./workspaceActions";
 
-export { STACK_COMING } from "./workspaceActions";
 
 /**
  * The selection bar's buttons and geometry (design Q, sized as Q2): which buttons a selection has, which of them fit,

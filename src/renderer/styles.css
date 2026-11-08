@@ -3126,7 +3126,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 /* a narrow area's header gives up its words before its buttons */
 @container (max-width: 820px) { .ls-ah-usage, .ls-ah-summary { display: none; } }
 @container (max-width: 560px) { .ls-ah-repo { display: none; } }
-/* the hover toolbar (E): Tidy (coming), Collapse, Lock, over the header's right end, or on the name's line zoomed out */
+/* the hover toolbar (E): the area model's Collapse, Lock and Tidy, over the header's right end, or on the name's line zoomed out */
 .ls-area-tools {
   display: flex; gap: 4px; padding: 3px; border-radius: 7px; background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2);
   opacity: 0; pointer-events: none; transition: opacity var(--dur-2) var(--ease-enter);
@@ -3232,10 +3232,16 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 }
 .ls-sb-dots:hover { color: var(--text-1); background: var(--fill-subtle); }
 .ls-sb-dots svg { width: 14px; height: 14px; }
+/* over the camera's HUD (design E's "Tidied … Undo"), clear of the selection bar that rides above an area */
 .ls-note {
-  position: absolute; left: 50%; top: 56px; z-index: 9; transform: translateX(-50%); max-width: min(560px, 80%); padding: 6px 12px; border-radius: 7px;
+  position: absolute; left: 50%; bottom: 58px; z-index: 9; transform: translateX(-50%); max-width: min(560px, 80%); padding: 6px 12px; border-radius: 7px;
   background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2), 0 6px 18px rgba(0, 0, 0, .28);
   font: 400 12px var(--ui); color: var(--text-1); white-space: normal; text-align: center; pointer-events: none;
+}
+/* a note's action (Tidy's Undo): the one part of it that takes the pointer */
+.ls-note-act {
+  margin-left: 10px; padding: 0; border: none; background: none; font: 500 12px var(--ui); color: var(--accent-text, var(--teal-text));
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer; pointer-events: auto;
 }
 /* the flight's clock: an animation the camera follows, never seen */
 .ls-clock { position: absolute; width: 1px; height: 1px; left: 0; top: 0; opacity: 0; pointer-events: none; }
@@ -3343,8 +3349,6 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .lt-tag { flex-shrink: 0; font-size: 10px; color: var(--text-4); }
 .lt-tag.bad { color: var(--red); }
 .lt-none { padding: 8px 6px; font-size: 11.5px; color: var(--text-4); }
-.lt-previous { flex-shrink: 0; max-height: 30%; overflow-y: auto; padding: 0 8px 4px; border-top: 1px solid var(--line-soft); }
-.lt-previous h2 { margin-top: 10px; }
 .lt-connected { flex-shrink: 0; padding: 6px 8px 10px; }
 /* a workspace (design B): a card, its header bar over its terminal. Its outline is a shadow, never a border,
    so the frame is exactly WORKSPACE_CHROME and the terminal's holder the room colsRows counts */
@@ -3473,6 +3477,86 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 }
 .ls-node.card:hover .ls-more, .ls-node.card.selected .ls-more, .ls-card .ls-more:focus-visible, .ls-card .ls-more[aria-expanded="true"] { opacity: 1; }
 .ls-card .ls-more svg { width: calc(13 * var(--u)); height: calc(13 * var(--u)); }
+
+/* S6b: resizing a workspace by its edges and corners. The handles sit inside its frame (it clips what's outside it) */
+.ls-rz { position: absolute; z-index: 4; }
+.ls-rz.t, .ls-rz.b { left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+.ls-rz.l, .ls-rz.r { top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+.ls-rz.t { top: 0; } .ls-rz.b { bottom: 0; } .ls-rz.l { left: 0; } .ls-rz.r { right: 0; }
+.ls-rz.tl, .ls-rz.tr, .ls-rz.bl, .ls-rz.br { width: 10px; height: 10px; }
+.ls-rz.tl { left: 0; top: 0; cursor: nwse-resize; } .ls-rz.br { right: 0; bottom: 0; cursor: nwse-resize; }
+.ls-rz.tr { right: 0; top: 0; cursor: nesw-resize; } .ls-rz.bl { left: 0; bottom: 0; cursor: nesw-resize; }
+.ls-node.card .ls-rz.t, .ls-node.card .ls-rz.b { height: calc(6 * var(--u)); }
+.ls-node.card .ls-rz.l, .ls-node.card .ls-rz.r { width: calc(6 * var(--u)); }
+.ls-node.card .ls-rz.tl, .ls-node.card .ls-rz.tr, .ls-node.card .ls-rz.bl, .ls-node.card .ls-rz.br { width: calc(10 * var(--u)); height: calc(10 * var(--u)); }
+.ls-node.remote .ls-rz, .ls-node.placeholder .ls-rz { display: none; }
+/* while one is dragged: the lines it snapped along, and (resizing) the size it would have, with its terminal's cols × rows */
+.ls-guides { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; z-index: 30; }
+.ls-guide { position: absolute; background: var(--pane-focus); }
+.ls-sizebox {
+  position: absolute; z-index: 29; box-sizing: border-box; pointer-events: none; border-radius: calc(8px * min(1, var(--ls-inv, 1)));
+  border: calc(1.5px * var(--ls-inv, 1)) dashed var(--pane-focus); background: color-mix(in srgb, var(--pane-focus) 8%, transparent);
+}
+.ls-sizebox span {
+  position: absolute; right: calc(8px * var(--ls-inv, 1)); bottom: calc(8px * var(--ls-inv, 1)); padding: calc(2px * var(--ls-inv, 1)) calc(7px * var(--ls-inv, 1));
+  border-radius: calc(4px * var(--ls-inv, 1)); background: var(--bg-chrome); font: 500 calc(11px * var(--ls-inv, 1)) var(--mono); color: var(--text-1); white-space: nowrap;
+}
+/* a stack (design E): its card has the tabs it holds stacked behind it; a closed tab is faded, and opens its ghost's menu */
+.ls-node.stack:not(.focus) { box-shadow: 0 0 0 1px var(--line-strong2), 4px -4px 0 0 var(--bg-pane-dead), 4px -4px 0 1px var(--line-soft), 8px -8px 0 0 var(--bg-pane-dead), 8px -8px 0 1px var(--line-soft), 0 8px 22px rgba(0, 0, 0, .2); }
+.ls-node.stack.selected:not(.focus) { box-shadow: 0 0 0 1.5px var(--pane-focus), 4px -4px 0 0 var(--bg-pane-dead), 4px -4px 0 1px var(--line-soft), 8px -8px 0 0 var(--bg-pane-dead), 8px -8px 0 1px var(--line-soft), 0 8px 22px rgba(0, 0, 0, .24); }
+.ls-node.card.stack { box-shadow: 0 0 0 var(--u) var(--line-strong2), calc(4 * var(--u)) calc(-4 * var(--u)) 0 0 var(--bg-pane-dead), calc(4 * var(--u)) calc(-4 * var(--u)) 0 var(--u) var(--line-soft), calc(8 * var(--u)) calc(-8 * var(--u)) 0 0 var(--bg-pane-dead), calc(8 * var(--u)) calc(-8 * var(--u)) 0 var(--u) var(--line-soft); }
+.ls-node.card.stack.selected { box-shadow: 0 0 0 calc(2 * var(--u)) var(--pane-focus), calc(4 * var(--u)) calc(-4 * var(--u)) 0 0 var(--bg-pane-dead), calc(4 * var(--u)) calc(-4 * var(--u)) 0 var(--u) var(--line-soft), calc(8 * var(--u)) calc(-8 * var(--u)) 0 0 var(--bg-pane-dead), calc(8 * var(--u)) calc(-8 * var(--u)) 0 var(--u) var(--line-soft); }
+.ls-node.stack.st-waiting:not(.focus):not(.card) { box-shadow: 0 0 0 1px var(--amber), 0 0 0 4px var(--fill-waiting-glow), 6px -6px 0 0 var(--bg-pane-dead), 6px -6px 0 1px var(--line-soft); }
+.ls-node.card.stack.st-waiting { box-shadow: 0 0 0 calc(1.5 * var(--u)) var(--amber), 0 0 0 calc(5 * var(--u)) var(--fill-waiting-glow), calc(7 * var(--u)) calc(-7 * var(--u)) 0 0 var(--bg-pane-dead), calc(7 * var(--u)) calc(-7 * var(--u)) 0 var(--u) var(--line-soft); }
+.ls-tab.closed { color: var(--text-4); font-style: italic; border: 1px dashed var(--line-strong2); }
+.ls-tab.closed .lg-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--text-4); }
+
+/* S6b: ghosts — closed workspaces where they were (GhostCard.tsx), a dashed outline the workspace's size. --u is a px
+   at landscape scale at 100%, and keeps its size on screen zoomed out (--ls-inv, set with the cards'), where a ghost is
+   drawn inset by --ci as cards are */
+.ls-ghost {
+  --u: 1px; --ci: 0px;
+  position: absolute; box-sizing: border-box; display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+  height: calc(var(--gh) - 2 * var(--ci)); padding: calc(10 * var(--u)) calc(12 * var(--u)); border-radius: calc(8 * var(--u));
+  border: calc(1.5 * var(--u)) dashed var(--line-strong2); background: color-mix(in srgb, var(--bg-pane) 28%, transparent);
+  font: 400 calc(11 * var(--u)) var(--ui); color: var(--text-3); user-select: none;
+}
+.ls-band-readonly .ls-ghost { --u: calc(1px * max(1, var(--ls-inv, 1))); }
+.ls-band-cards .ls-ghost {
+  --u: calc(1px * var(--ls-inv, 1)); --ci: calc(5 * var(--u));
+  height: calc(var(--ls-gh, var(--gh)) - 2 * var(--ci)); padding: calc(7 * var(--u)) calc(9 * var(--u));
+}
+.ls-ghost.hidden { display: none; }
+/* its rows top to bottom, in the order a short ghost gives them up (GhostCard.tsx): a column that wraps, each row its full
+   width, so a row that doesn't fit whole goes to a second column past the right edge, which is clipped */
+.ls-ghost .lg-rows {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; flex-wrap: wrap; align-content: flex-start;
+  row-gap: calc(8 * var(--u)); column-gap: 100%; overflow: hidden;
+}
+.ls-ghost .lg-rows > * { flex: none; width: 100%; box-sizing: border-box; min-width: 0; }
+.ls-ghost.compact .lg-rows { row-gap: calc(5 * var(--u)); }
+.ls-ghost .lg-head { display: flex; align-items: center; gap: calc(7 * var(--u)); }
+.ls-ghost .lg-dot { flex-shrink: 0; width: calc(8 * var(--u)); height: calc(8 * var(--u)); border-radius: 50%; box-sizing: border-box; border: calc(1.5 * var(--u)) solid var(--text-4); }
+.ls-ghost .lg-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 calc(12.5 * var(--u))/1.25 var(--ui); color: var(--text-2); }
+.ls-ghost .lg-kind { flex-shrink: 0; font-size: calc(9.5 * var(--u)); padding: calc(2 * var(--u)) calc(5 * var(--u)); border-radius: calc(3 * var(--u)); }
+.ls-ghost .ls-more { width: calc(22 * var(--u)); height: calc(22 * var(--u)); border-radius: calc(4 * var(--u)); margin-left: auto; }
+.ls-ghost .ls-more svg { width: calc(13 * var(--u)); height: calc(13 * var(--u)); }
+/* under the title, where the eye already is; a button too wide for a narrow ghost ends in an ellipsis */
+.ls-ghost .lg-acts { display: flex; align-items: center; gap: calc(6 * var(--u)); overflow: hidden; }
+.ls-ghost .lg-acts button { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: calc(3 * var(--u)) calc(10 * var(--u)); border-radius: calc(5 * var(--u)); font-size: calc(11 * var(--u)); white-space: nowrap; }
+.ls-ghost .lg-forget { border: none; background: none; color: var(--text-4); cursor: pointer; }
+.ls-ghost .lg-forget:hover { color: var(--red); }
+.ls-ghost .lg-line { font: 400 calc(11 * var(--u))/1.45 var(--mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere; }
+.ls-ghost .lg-foot { display: flex; align-items: center; gap: calc(8 * var(--u)); overflow: hidden; white-space: nowrap; }
+.ls-ghost .lg-status { flex-shrink: 0; font: 500 calc(10.5 * var(--u)) var(--ui); color: var(--text-4); }
+.ls-ghost.taken .lg-status { color: var(--teal-text); }
+.ls-ghost.gone .lg-status { color: var(--amber-text); }
+.ls-ghost .lg-where { min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 400 calc(10.5 * var(--u)) var(--mono); color: var(--text-4); }
+/* zoomed out to cards a ghost is a card's size: its title keeps the room, Forget waits in its ⋯, its last line takes two */
+.ls-ghost.compact .lg-kind, .ls-ghost.compact .lg-forget { display: none; }
+.ls-ghost.compact .lg-line { -webkit-line-clamp: 2; }
+.ls-ghost.compact .lg-status { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ls-ghost.compact .lg-where { flex-shrink: 100; }
 
 /* S5: tool windows (design O), placed on the landscape or docked at its right edge */
 .ls-row { flex: 1; min-height: 0; min-width: 0; display: flex; }

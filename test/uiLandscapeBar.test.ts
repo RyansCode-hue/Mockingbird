@@ -2,7 +2,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
-import { STACK_COMING } from "../src/renderer/selectionBarModel";
 
 // The selection bar (S6a) in the UI preview, in real headless Chrome: local only (CI runners have no desktop); the
 // script passes a mock keychain. ?landscapeBarAudit (src/preview/stub.ts) selects areas, workspaces and several as a
@@ -192,10 +191,11 @@ describe.skipIf(!local)("the selection bar", () => {
     // Close… asks first, listing every tab of the stack that's this Mac's
     const v = b.several;
     expect(v.cleared).toMatchObject({ bar: null, selected: null });
-    expect(v.three).toMatchObject({ name: "3 selected", row: ["Make area… M", "Stack ⌘G (off)", "Move to area ▾", "Close…"], inView: true });
-    expect(v.three.why).toEqual({ "Stack ⌘G (off)": STACK_COMING });
+    expect(v.three).toMatchObject({ name: "3 selected", row: ["Make area… M", "Stack ⌘G", "Move to area ▾", "Close…"], inView: true });
+    // all three in one area that isn't locked: they can be stacked
+    expect(v.three.why).toEqual({});
     // all three are in 5101 already: Move to area offers the others
-    expect(v.onPicked).toEqual(["# 3 selected", "Make area… [M]", "Stack (off) [⌘G]", "-", "# Move to area", "#5101 Org dropdowns remember the last org (off)", "#5102 Pathways quick view freezes", "#5110", "-", "Close…"]);
+    expect(v.onPicked).toEqual(["# 3 selected", "Make area… [M]", "Stack [⌘G]", "-", "# Move to area", "#5101 Org dropdowns remember the last org (off)", "#5102 Pathways quick view freezes", "#5110", "-", "Close…"]);
     expect(v.onBar).toEqual(v.onPicked);
     expect(v.move).toEqual(["#5101 Org dropdowns remember the last org (off)", "#5102 Pathways quick view freezes", "#5110"]);
     expect(v.closeDlg).toBe("Close 4 sessions?");

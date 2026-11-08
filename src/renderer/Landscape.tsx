@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatTokens, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
-import { LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
+import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
 import type { Migrating } from "./useLandscape";
 import {
   BAND_SETTLE_MS,
@@ -20,6 +20,7 @@ import {
   cameraForOpened,
   centreOn,
   compactPlaces,
+  ghostDrawnHeight,
   COMPACT_MIN,
   centredAt,
   contentRects,
@@ -41,6 +42,14 @@ import {
   planMoveArea,
   planMoveExtra,
   planMoveTile,
+  planResizeTo,
+  planStack,
+  planUnstack,
+  snapRect,
+  MOVE_EDGES,
+  minWorkspace,
+  type Edges,
+  type Guide,
   rectFrom,
   revealTile,
   sessionsOnScreen,
@@ -67,10 +76,11 @@ import {
   type Tile,
   type WindowView,
 } from "./landscapeModel";
-import { WorkspaceNode, type NodeMode, type WorkspaceChrome } from "./WorkspaceNode";
+import { WorkspaceNode, edgesOf, type NodeMode, type ResizeEdge, type WorkspaceChrome } from "./WorkspaceNode";
 import { ToolWindow } from "./ToolWindow";
 import { LiftOut } from "./lift";
-import { menuOf, severalActions, severalMenu, type ModelAction } from "./workspaceActions";
+import { actionOf, menuOf, severalActions, severalMenu, type ModelAction } from "./workspaceActions";
+import { GhostCard } from "./GhostCard";
 import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
 import { AreaSwitcher } from "./AreaTree";
@@ -119,6 +129,21 @@ export interface AreaHooks {
 /** A gesture's plan that can be carried out. */
 export type ReadyPlan = Exclude<AreaPlan, { refused: string }>;
 
+/** An area's actions its hover toolbar shows (AreaFrame.tsx). */
+const ARRANGE = ["collapse", "lock", "tidy"];
+
+/** A button beside a note over the landscape: Tidy's Undo. */
+export interface NoteAction {
+  label: string;
+  run: () => void;
+}
+/** Something said over the landscape; a new `n` says it again. */
+export interface LandscapeNote {
+  text: string;
+  n: number;
+  action?: NoteAction;
+}
+
 /** Setting a gesture's groups stopped: what to say, and how many of its moves were made first. */
 export interface MovesFailed {
   said: string;
@@ -139,7 +164,8 @@ const SETTLE_MS = 1500;
  * area by its header. `on` once it has moved DRAG_PX; `els` are what move with it until the layout has them there.
  */
 interface Gesture {
-  kind: "marquee" | "tile" | "area" | "window" | "card";
+  /** `resize`: a workspace by an edge or corner (`edges`); `tab`: a stack's tab (`sid`) dragged out of it. */
+  kind: "marquee" | "tile" | "area" | "window" | "card" | "resize" | "tab";
   id: number;
   x0: number;
   y0: number;
@@ -150,6 +176,10 @@ interface Gesture {
   base: string[];
   on: boolean;
   els: HTMLElement[];
+  edges?: Edges;
+  sid?: string;
+  /** Where a workspace being moved or resized (or a tab dragged out) lands now: snapped to the grid and its neighbours. */
+  snapped?: Rect;
 }
 
 /** A drop waiting for the layout: its elements keep their drag offset until `moved` says the layout has them there. */
@@ -237,6 +267,7 @@ export function Landscape({
   onCloseWindow,
   cardFor,
   notice,
+  ghostActions,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -279,7 +310,9 @@ export function Landscape({
   /** A workspace's actions (its front session's): what its chips, ⋯ and right-click offer, in every band. */
   actionsFor: (t: Tile) => ModelAction[];
   /** Something to say over the landscape, as a gesture's refusal is said (a resize or a tool window refused); a new `n` says it again. */
-  notice: { text: string; n: number } | null;
+  notice: LandscapeNote | null;
+  /** A ghost's actions (its front session's): what its buttons, ⋯ and right-click offer. */
+  ghostActions: (s: SessionInfo) => ModelAction[];
   /** What a workspace's header chips and footer show. */
   chromeFor: (s: SessionInfo) => WorkspaceChrome;
   /**
@@ -335,12 +368,14 @@ export function Landscape({
     setPickedState(v);
   };
   const [hot, setHot] = useState<string | null>(null);
-  const [note, setNote] = useState<{ text: string; n: number } | null>(null);
-  const say = (text: string) => setNote((p) => ({ text, n: (p?.n ?? 0) + 1 }));
+  const [note, setNote] = useState<LandscapeNote | null>(null);
+  const noteNow = useRef(note);
+  noteNow.current = note;
+  const say = (text: string, action?: NoteAction) => setNote((p) => ({ text, n: (p?.n ?? 0) + 1, action }));
   // a workspace's ⋯ and right-click, and an area's right-click on its patch zoomed out
   const ctx = useContextMenu("Landscape");
   useEffect(() => {
-    if (notice) say(notice.text);
+    if (notice) say(notice.text, notice.action);
   }, [notice?.n]);
   useEffect(() => {
     if (!note) return;
@@ -349,6 +384,9 @@ export function Landscape({
   }, [note?.n]);
   const gesture = useRef<Gesture | null>(null);
   const marquee = useRef<HTMLDivElement>(null);
+  /** While a workspace is moved or resized: the guides it snapped along, and (resizing, or a tab dragged out) where it lands. */
+  const guidesEl = useRef<HTMLDivElement>(null);
+  const sizeBox = useRef<HTMLDivElement>(null);
   const settling = useRef<Settling[]>([]);
   /** No drag going and no drop settling: the selection bar shows again (styles.css hides it under .ls-dragging). */
   const dragDone = () => {
@@ -437,7 +475,7 @@ export function Landscape({
   const paintScale = (zoom: number) => {
     const inv = String(1 / zoom);
     const hs = String(Math.max(1, 1 / zoom));
-    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-window, .ls-acard") ?? []) {
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-window, .ls-acard, .ls-ghost") ?? []) {
       el.style.setProperty("--ls-inv", inv);
       el.style.setProperty("--ls-hs", hs);
     }
@@ -468,6 +506,12 @@ export function Landscape({
       el.style.setProperty("--ls-dy", `${p.dy}px`);
       el.style.setProperty("--ls-cw", `${p.w}px`);
       el.style.setProperty("--ls-ch", `${p.h}px`);
+    }
+    // a ghost keeps to its place, its foot clear of the next area's name line (--ls-gh, styles.css)
+    const ghosts = new Map(l.ghosts.map((g) => [g.key, g.rect]));
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-ghost[data-ghost]") ?? []) {
+      const r = ghosts.get(el.dataset.ghost ?? "");
+      if (r) el.style.setProperty("--ls-gh", `${ghostDrawnHeight(r, zoom, names)}px`);
     }
   };
   const apply = useCallback((next: Camera) => {
@@ -843,6 +887,13 @@ export function Landscape({
   const makeRef = useRef(makeArea);
   makeRef.current = makeArea;
 
+  /** A model's row `key` run as its button would, or its reason said when it can't be done now. */
+  const runRow = (actions: readonly ModelAction[], key: string) => {
+    const a = actionOf(actions, key);
+    if (!a) return;
+    if (a.disabled) say(a.title ?? `${a.label} can't be done now`);
+    else a.onPick();
+  };
   // the surface's own keys: only while it has the keyboard itself
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.target !== viewport.current || focusNow.current) return;
@@ -876,6 +927,22 @@ export function Landscape({
     } else if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "m" && pickedNow.current.length) {
       handled();
       void makeArea();
+    } else if (cmd && !e.shiftKey && e.key.toLowerCase() === "g" && pickedNow.current.length) {
+      // ⌘G: the several's Stack row, as its button and right-click run it
+      handled();
+      runRow(pickedActions(), "stack");
+    } else if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "t") {
+      // T: the selected area's Tidy row (or the selected workspace's area's), as its ⋯ and toolbar run it
+      handled();
+      const key = selectedArea ?? (sel && sel.area !== LOOSE_GROUP ? sel.area : null);
+      if (!key) return say("Select an area, or a workspace in one, to tidy it");
+      runRow(areaHooks.bar(key).actions, "tidy");
+    } else if (cmd && !e.shiftKey && e.key.toLowerCase() === "z" && noteNow.current?.action) {
+      // ⌘Z: the last note's Undo (Tidy's), while it's up
+      handled();
+      const a = noteNow.current.action;
+      setNote(null);
+      a.run();
     } else if (e.key === "Escape" && !e.metaKey && escapeClears({ selected: !!(pickedNow.current.length || selected || selectedArea), peek: !!peekNow.current, overlay: !!document.querySelector(OVERLAYS) })) {
       handled();
       clearSelection();
@@ -960,15 +1027,21 @@ export function Landscape({
       }
       const el = world.current?.querySelector<HTMLElement>(g.kind === "window" ? `.ls-window[data-win="${CSS.escape(g.key)}"]` : `.ls-acard[data-card="${CSS.escape(g.key)}"]`);
       g.els = el ? [el] : [];
-    } else if (g.kind === "tile") {
+    } else if (g.kind === "tile" || g.kind === "resize" || g.kind === "tab") {
       const t = l.tiles.find((x) => x.key === g.key);
       const a = t && l.areas.find((x) => x.key === t.area);
       if (!t) return false;
       if (a?.rect.locked) {
-        say(`${areaTitle(a.key)} is locked: unlock it to move its workspaces`);
+        say(`${areaTitle(a.key)} is locked: unlock it to ${g.kind === "resize" ? "resize" : g.kind === "tab" ? "take tabs out of" : "move"} its workspaces`);
         return false;
       }
-      g.els = [nodeEl(t.key)].filter((x): x is HTMLElement => !!x);
+      const theirs = g.kind === "resize" ? t.members.find(isRemote) : g.kind === "tab" ? t.members.find((m) => m.id === g.sid && isRemote(m)) : undefined;
+      if (theirs) {
+        say(g.kind === "resize" ? `${theirs.room?.ownerName ?? "A teammate"}'s workspace is the size their terminal is` : `${theirs.room?.ownerName ?? "A teammate"}'s session leaves the stack only on their Mac`);
+        return false;
+      }
+      // a resize and a tab show where they'd land (sizeBox); the workspace itself moves only when it's dragged
+      g.els = g.kind === "tile" ? [nodeEl(t.key)].filter((x): x is HTMLElement => !!x) : [];
     } else {
       const a = l.areas.find((x) => x.key === g.key);
       if (!a) return false;
@@ -1006,13 +1079,85 @@ export function Landscape({
       return;
     }
     const z = cam.current.zoom;
-    for (const el of g.els) el.style.translate = `${dx / z}px ${dy / z}px`;
-    if (g.kind === "tile") {
-      const t = layoutNow.current.tiles.find((x) => x.key === g.key);
+    if (g.kind === "tile" || g.kind === "resize" || g.kind === "tab") {
+      const l = layoutNow.current;
+      const t = l.tiles.find((x) => x.key === g.key);
+      if (!t) return;
       const target = dropArea(e);
-      const a = layoutNow.current.areas.find((x) => x.key === target);
-      setHot(t && a && target !== t.area && !a.rect.locked ? target : null);
+      // snapped to the grid and to the edges of what's near, in the area it's over (its inside edges too)
+      const inner = innerOf(g.kind === "resize" ? t.area : target);
+      const others = snapTargets(t.key);
+      const ddx = dx / z;
+      const ddy = dy / z;
+      if (g.kind === "resize") {
+        const ed = g.edges!;
+        const want: Rect = {
+          x: ed.left ? t.rect.x + ddx : t.rect.x,
+          y: ed.top ? t.rect.y + ddy : t.rect.y,
+          w: t.rect.w + (ed.right ? ddx : ed.left ? -ddx : 0),
+          h: t.rect.h + (ed.bottom ? ddy : ed.top ? -ddy : 0),
+        };
+        const s = snapRect(want, ed, others, z, inner, minWorkspace());
+        g.snapped = s.rect;
+        const held = colsRows(s.rect.w, s.rect.h, CELL_ESTIMATE.w, CELL_ESTIMATE.h);
+        showBox(s.rect, `${held.cols} × ${held.rows}`);
+        drawGuides(s.guides);
+        return;
+      }
+      const s = snapRect({ ...t.rect, x: t.rect.x + ddx, y: t.rect.y + ddy }, MOVE_EDGES, others, z, inner);
+      g.snapped = s.rect;
+      drawGuides(s.guides);
+      if (g.kind === "tab") {
+        const m = t.members.find((x) => x.id === g.sid);
+        showBox(s.rect, m ? titleOf(m) : "");
+      } else for (const el of g.els) el.style.translate = `${s.rect.x - t.rect.x}px ${s.rect.y - t.rect.y}px`;
+      const a = l.areas.find((x) => x.key === target);
+      setHot(a && (target !== t.area || g.kind === "tab") && !a.rect.locked ? target : null);
+      return;
     }
+    for (const el of g.els) el.style.translate = `${dx / z}px ${dy / z}px`;
+  };
+  /** What a workspace moved or resized snaps to: everything else drawn (workspaces, ghosts, windows, cards) but `except`. */
+  const snapTargets = (except: string): Rect[] => {
+    const l = layoutNow.current;
+    return [
+      ...l.tiles.filter((t) => !t.hidden && t.key !== except).map((t) => t.rect),
+      ...l.ghosts.filter((g) => !g.hidden).map((g) => g.rect),
+      ...l.windows.filter((w) => !w.hidden).map((w) => w.rect),
+      ...l.cards.filter((c) => !c.hidden).map((c) => c.rect),
+    ];
+  };
+  /** Area `key`'s inside (inside its padding, under its header): what's dropped or resized in it lines up with; null for none, or a collapsed one. */
+  const innerOf = (key: string): Rect | null => {
+    const a = layoutNow.current.areas.find((x) => x.key === key && !x.rect.collapsed)?.rect;
+    return a ? { x: a.x + AREA_PAD, y: a.y + AREA_HEADER, w: a.w - 2 * AREA_PAD, h: a.h - AREA_HEADER - AREA_PAD } : null;
+  };
+  /** The guides a drag snapped along, drawn in the world at a screen px wide; none takes them away. Never through a render. */
+  const drawGuides = (guides: readonly Guide[]) => {
+    const el = guidesEl.current;
+    if (!el) return;
+    const w = 1 / cam.current.zoom;
+    el.replaceChildren(
+      ...guides.map((g) => {
+        const d = document.createElement("div");
+        d.className = "ls-guide";
+        d.dataset.axis = g.axis;
+        Object.assign(d.style, g.axis === "x" ? { left: `${g.at - w / 2}px`, top: `${g.from}px`, width: `${w}px`, height: `${g.to - g.from}px` } : { left: `${g.from}px`, top: `${g.at - w / 2}px`, width: `${g.to - g.from}px`, height: `${w}px` });
+        return d;
+      })
+    );
+  };
+  /** Where a resize or a tab dragged out would land, with what it says (cols × rows, the tab's name); null hides it. */
+  const showBox = (r: Rect | null, label = "") => {
+    const el = sizeBox.current;
+    if (!el) return;
+    el.hidden = !r;
+    if (!r) return;
+    Object.assign(el.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
+    el.style.setProperty("--ls-inv", String(1 / cam.current.zoom));
+    el.dataset.size = `${r.w}x${r.h}`;
+    const span = el.firstElementChild as HTMLElement | null;
+    if (span) span.textContent = label;
   };
   const gestureUp = (e: PointerEvent) => {
     const g = gesture.current;
@@ -1057,10 +1202,30 @@ export function Landscape({
       });
       return;
     }
+    if (g.kind === "resize") {
+      const t = l.tiles.find((x) => x.key === g.key);
+      if (!t || !g.snapped) return;
+      const plan = planResizeTo(storedNow.current, l, t.key, g.snapped, areaTitle);
+      if ("refused" in plan) return say(plan.refused);
+      void carryOut(plan, `${titleOf(t.front)}'s size`);
+      return;
+    }
+    if (g.kind === "tab") {
+      // a tab dragged out leaves its stack where it's dropped; the click its release would make doesn't switch to it
+      swallowClick();
+      const t = l.tiles.find((x) => x.key === g.key);
+      const s = t?.members.find((m) => m.id === g.sid);
+      if (!t || !s || !g.snapped) return;
+      const plan = planUnstack(storedNow.current, l, s.id, { x: g.snapped.x, y: g.snapped.y }, dropArea(e), areaTitle);
+      if ("refused" in plan) return say(plan.refused);
+      void carryOut(plan, `taking ${titleOf(s)} out of the stack`);
+      return;
+    }
     if (g.kind === "tile") {
       const t = l.tiles.find((x) => x.key === g.key);
       if (!t) return release(g.els);
-      const plan = planMoveTile(storedNow.current, l, t.key, { x: t.rect.x + dx, y: t.rect.y + dy }, dropArea(e), areaTitle);
+      const to = g.snapped ?? { x: t.rect.x + dx, y: t.rect.y + dy };
+      const plan = planMoveTile(storedNow.current, l, t.key, { x: to.x, y: to.y }, dropArea(e), areaTitle);
       if ("refused" in plan) {
         release(g.els);
         return say(plan.refused);
@@ -1109,9 +1274,20 @@ export function Landscape({
     up: (e: PointerEvent) => handlers.current.up(e),
     key: (e: KeyboardEvent) => handlers.current.key(e),
   }));
+  /** The click a drag's release would make (a tab's: switching to it) is taken before it reaches anything. */
+  function swallowClick() {
+    const stop = (ev: MouseEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    window.addEventListener("click", stop, { capture: true, once: true });
+    setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 0);
+  }
   function endGesture() {
     gesture.current = null;
     if (marquee.current) marquee.current.hidden = true;
+    drawGuides([]);
+    showBox(null);
     setHot(null);
     viewport.current?.classList.remove("ls-gesture");
     // a drop's settling starts as it's carried out, just after this: the bar waits for it
@@ -1244,7 +1420,16 @@ export function Landscape({
         const press = { id: e.pointerId, x0: e.clientX, y0: e.clientY, add: e.shiftKey, base };
         const win = t.closest<HTMLElement>(".ls-world .ls-window");
         const card = t.closest<HTMLElement>(".ls-world .ls-acard");
-        if (node && (node.classList.contains("card") || t.closest(".ls-head")) && !t.closest("button")) {
+        const rz = t.closest<HTMLElement>(".ls-world .ls-rz");
+        const tab = t.closest<HTMLElement>(".ls-world .ls-tab[data-sid]");
+        if (node && rz && !e.shiftKey) {
+          // an edge or a corner resizes it
+          e.stopPropagation();
+          startRef.current({ ...press, kind: "resize", key: node.dataset.ws!, edges: edgesOf(rz.dataset.edge as ResizeEdge) });
+        } else if (node && tab && !e.shiftKey) {
+          // a tab dragged out leaves its stack; a click on it (no drag) still brings it to the front
+          startRef.current({ ...press, kind: "tab", key: node.dataset.ws!, sid: tab.dataset.sid });
+        } else if (node && (node.classList.contains("card") || t.closest(".ls-head")) && !t.closest("button")) {
           const key = node.dataset.ws!;
           // Shift-click picks it, or lets it go, and selects nothing else (its own press would select it alone);
           // otherwise its header (or its card) moves it
@@ -1257,7 +1442,7 @@ export function Landscape({
           startRef.current({ ...press, kind: "window", key: win.dataset.win! });
         } else if (card && !t.closest("button, a, input")) {
           startRef.current({ ...press, kind: "card", key: card.dataset.card! });
-        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty")) {
+        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty, .ls-ghost")) {
           startRef.current({ ...press, kind: "marquee", key: "" });
         }
       }
@@ -1384,13 +1569,24 @@ export function Landscape({
     if (picked.some((k) => !pickable.has(k))) setPicked((p) => p.filter((k) => pickable.has(k)));
   }, [pickable]);
   const accents = useMemo(() => accentsOf(layout.areas.map((a) => a.key)), [layout.areas]);
-  const areaViews = layout.areas.map((a) => ({ a, accent: accents.get(a.key) ?? accentOf(a.key), counts: areaCounts(layout.tiles, a.key), title: areaTitle(a.key), info: areaHooks.info(a.key) }));
+  const areaViews = layout.areas.map((a) => ({ a, accent: accents.get(a.key) ?? accentOf(a.key), counts: areaCounts(layout.tiles, a.key, layout.ghosts), title: areaTitle(a.key), info: areaHooks.info(a.key) }));
   const loose = useMemo(() => (switcher ? looseStop(layout.tiles) : null), [switcher, layout]);
   const stops = useMemo(() => (loose ? [...layout.areas, loose] : layout.areas), [loose, layout]);
 
   const tileActions = (t: Tile): ModelAction[] => actionsFor(t);
   /** The picked workspaces still drawn, in layout order. */
   const pickedTiles = (): Tile[] => layoutNow.current.tiles.filter((t) => !t.hidden && pickedNow.current.includes(t.key));
+  /** The picked workspaces stacked into one card with a tab each (planStack): its front tab is selected once it's made. */
+  const stackPicked = async () => {
+    const keys = pickedNow.current;
+    const plan = planStack(storedNow.current, layoutNow.current, keys, asks.current.areaTitle);
+    if ("refused" in plan) return say(plan.refused);
+    const front = layoutNow.current.tiles.filter((t) => keys.includes(t.key)).sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x)[0]?.front.id ?? null;
+    if (await carryOut(plan, "stacking them")) {
+      setPicked([]);
+      if (front) onSelect(front);
+    }
+  };
   /** The picked workspaces moved into area `key`, as Make area… with that area's name does (planMakeArea). */
   const moveTo = async (key: string) => {
     const keys = pickedNow.current;
@@ -1407,8 +1603,10 @@ export function Landscape({
   const pickedActions = (): ModelAction[] => {
     const tiles = pickedTiles();
     const ids = tiles.flatMap((t) => t.members.filter((m) => !isRemote(m)).map((m) => m.id));
+    const stackPlan = planStack(storedNow.current, layoutNow.current, pickedNow.current, asks.current.areaTitle);
     return severalActions({
       makeArea: () => void makeArea(),
+      stack: "refused" in stackPlan ? { no: stackPlan.refused } : () => void stackPicked(),
       areas: moveTargets(storedNow.current, layoutNow.current, pickedNow.current, asks.current.areaTitle).map((a) => ({ ...a, pick: () => void moveTo(a.key) })),
       close: ids.length ? () => onCloseMany(ids) : { no: tiles.length ? "They're teammates' sessions: theirs to close" : "Nothing to close" },
     });
@@ -1431,6 +1629,15 @@ export function Landscape({
    */
   const onContextMenu = (e: React.MouseEvent) => {
     const t = e.target as Element;
+    const ghostEl = t.closest<HTMLElement>(".ls-world .ls-ghost");
+    if (ghostEl) {
+      // a ghost's right-click: its actions, as its ⋯ has them
+      const g = layout.ghosts.find((x) => x.key === ghostEl.dataset.ghost);
+      if (!g) return;
+      e.preventDefault();
+      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(ghostActions(g.front)));
+      return;
+    }
     const el = t.closest<HTMLElement>(".ls-node");
     if (el) {
       // a terminal that takes the mouse (at 100%, and in focus) keeps its own right-click
@@ -1505,7 +1712,7 @@ export function Landscape({
           name={shortAreaName(a.key, title)}
           title={title}
           accent={accents.get(a.key) ?? accentOf(a.key)}
-          status={areaStatus(areaCounts(layout.tiles, a.key))}
+          status={areaStatus(areaCounts(layout.tiles, a.key, layout.ghosts))}
           actions={b.actions}
           roomId={b.roomId}
           members={b.members}
@@ -1541,6 +1748,7 @@ export function Landscape({
         select(tile);
         ctx.openBelow(from, menuOf(tileActions(tile)));
       }}
+      onClosedTab={(s, from) => ctx.openBelow(from, menuOf(ghostActions(s)))}
       body={(s, sz) => body(s, sz, mode === "focus" ? { w: t.rect.w, h: t.rect.h } : null)}
     />
   );
@@ -1574,9 +1782,19 @@ export function Landscape({
               selected={selectedArea === a.key && !pickedCount}
               onSelect={() => selectArea(a.key)}
               menu={() => areaHooks.menu(a.key)}
+              arrange={a.rect.collapsed ? [] : areaHooks.bar(a.key).actions.filter((t) => ARRANGE.includes(t.key))}
               onCollapse={(on) => setAreaFlag(a.key, "collapsed", on)}
-              onLock={(on) => setAreaFlag(a.key, "locked", on)}
               onGrab={(e) => grabArea(a.key, e)}
+            />
+          ))}
+          {layout.ghosts.map((g) => (
+            <GhostCard
+              key={g.key}
+              ghost={g}
+              band={band}
+              actions={ghostActions(g.front)}
+              inv={1 / cam.current.zoom}
+              onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front)))}
             />
           ))}
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}
@@ -1607,6 +1825,10 @@ export function Landscape({
               </div>
             )
           )}
+          <div ref={sizeBox} className="ls-sizebox" hidden aria-hidden="true">
+            <span />
+          </div>
+          <div ref={guidesEl} className="ls-guides" aria-hidden="true" />
         </div>
         </LiftOut.Provider>
         <div ref={marquee} className="ls-marquee" hidden aria-hidden="true" />
@@ -1650,6 +1872,18 @@ export function Landscape({
         {note && (
           <div key={note.n} className="ls-note" role="status">
             {note.text}
+            {note.action && (
+              <button
+                type="button"
+                className="ls-note-act"
+                onClick={() => {
+                  note.action!.run();
+                  setNote(null);
+                }}
+              >
+                {note.action.label}
+              </button>
+            )}
           </div>
         )}
         <CameraHud listeners={listeners.current} cam={cam} onFit={fit} onZoom={zoomTo} />

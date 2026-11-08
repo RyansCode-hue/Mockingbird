@@ -741,6 +741,8 @@ app.on("window-all-closed", () => {
 // ---- IPC ----
 handle("sessions:list", () => sessions.list());
 handle("sessions:resumable", () => sessions.resumable());
+handle("sessions:closedOutput", (id) => sessions.closedOutput(String(id)));
+handle("sessions:missingFolders", () => sessions.missingFolders());
 handle("sessions:create", async (req) => {
   const info = await sessions.create(req);
   if (info.repoPath) overlapsSoon(info.cwd);

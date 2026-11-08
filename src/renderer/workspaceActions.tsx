@@ -10,7 +10,7 @@ import { firstName } from "./team/connectedModel";
  * of them can offer what the others don't, or word it differently. Each action has its label, whether it can be done
  * now and why not (`disabled`, `title`), its shortcut (`kbd`) and its handler; `section` groups the menu's rows.
  */
-export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "end";
+export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "ghosts" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "end";
 
 /** A section's heading in a menu; null: its rows follow a separator only. */
 const SECTION_NAME: Record<ActionSection, string | null> = {
@@ -20,6 +20,7 @@ const SECTION_NAME: Record<ActionSection, string | null> = {
   handon: "Hand on",
   room: "Team room",
   area: "Area",
+  ghosts: "Closed workspaces",
   messages: "Agent messages",
   sessions: "Sessions",
   share: null,
@@ -190,6 +191,66 @@ export function createActions(env: CreateEnv): ModelAction[] {
   ];
 }
 
+/** What a ghost's actions need to know about it, and do (main.tsx's `ghostEnv` makes it). */
+export interface GhostEnv {
+  /** Its folder is gone (a removed worktree): it can't run where it ran, so it starts fresh instead. */
+  folderGone: boolean;
+  /** Take it back, Send (team rooms): a copy a teammate continues on their laptop. */
+  room: Action[];
+  /** Relaunch it under its id, resuming its conversation: it lands where its ghost is. */
+  reopen: () => void;
+  /** A new session where it was, from its repo, ticket and area: what a ghost whose folder is gone offers. */
+  fresh: () => void;
+  /** Let it go for good (Previous's ✕): it can't be reopened after. */
+  forget: () => void;
+}
+
+/** Why a ghost whose folder is gone isn't reopened: what it ran in has been removed. */
+export const FOLDER_GONE_WHY = "Its worktree was removed, so it can't run where it ran: start fresh instead";
+
+/**
+ * Every action of a ghost (a closed workspace this Mac can reopen), in menu order: its card's buttons, its ⋯ and its
+ * right-click render this list. Reopen goes through the take-over rule as Resume does (a copy a teammate continues is
+ * taken back, never run again here), and main refuses it too (relaunchGuard).
+ */
+export function ghostActions(s: SessionInfo, env: GhostEnv): ModelAction[] {
+  const taken = takenOverWhy(s, "rather than reopening this copy");
+  const out: ModelAction[] = [
+    {
+      section: "end",
+      key: "reopen",
+      label: "Reopen",
+      primary: true,
+      title: "Start it again where it was, resuming its conversation",
+      ...can(taken ? { no: taken } : env.folderGone ? { no: FOLDER_GONE_WHY } : env.reopen),
+    },
+  ];
+  if (env.folderGone && !taken) out.push({ section: "end", key: "fresh", label: "Start fresh", menuLabel: "Start fresh…", title: "A new session where it was: its repo, ticket and area, on a new worktree", onPick: env.fresh });
+  out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
+  out.push({ section: "end", key: "forget", label: "Forget", menuLabel: "Forget it", danger: true, icon: <CloseIcon />, title: "Take its ghost away for good: it can't be reopened after", onPick: env.forget });
+  return out;
+}
+
+/** Several ghosts at once (an area's, the loose ones', or every one): how many, and Reopen all and Clear ghosts over them. */
+export interface GhostsEnv {
+  count: number;
+  reopenAll: Can;
+  clear: Can;
+}
+
+/**
+ * Reopen all and Clear ghosts (Previous's restore all and its ✕ on each): an area's ⋯, the loose ones' (the tree's
+ * Loose row, a right-click outside every area) and ⌘K's over every one. Off, saying why, when there are none.
+ */
+export function ghostsActions(g: GhostsEnv): ModelAction[] {
+  const n = g.count;
+  const none = { no: "No closed workspaces here" };
+  return [
+    { section: "ghosts", key: "reopenAll", label: "Reopen all", menuLabel: n ? `Reopen all (${n})` : "Reopen all", title: "Start every closed workspace here again where it was, resuming its conversation", ...can(n ? g.reopenAll : none) },
+    { section: "ghosts", key: "clearGhosts", label: "Clear ghosts", menuLabel: n ? `Clear ghosts (${n})…` : "Clear ghosts", danger: true, title: "Forget every closed workspace here: they can't be reopened after", ...can(n ? g.clear : none) },
+  ];
+}
+
 /** What an area's actions need to know about it, and do (main.tsx's `areaActions` makes it). */
 export interface AreaEnv {
   title: string;
@@ -208,6 +269,10 @@ export interface AreaEnv {
   rename: () => void;
   collapse: () => void;
   lock: () => void;
+  /** Pack it in creation order (T), or why it can't be (locked, collapsed, nothing in it); null where there's no landscape. */
+  tidy: Can | null;
+  /** Its closed workspaces (ghosts): how many, Reopen all and Clear ghosts; null where there's no landscape. */
+  ghosts: GhostsEnv | null;
   artifacts: () => void;
   chat: () => void;
   board: () => void;
@@ -243,6 +308,8 @@ export function areaActions(env: AreaEnv): ModelAction[] {
       { section: "area", key: "collapse", label: st.collapsed ? "Open" : "Collapse", menuLabel: st.collapsed ? "Open the area" : "Collapse to a pill", onPick: env.collapse },
       { section: "area", key: "lock", label: st.locked ? "Locked" : "Lock", menuLabel: st.locked ? "Unlock its layout" : "Lock its layout", title: lockTitle(!!st.locked), pressed: !!st.locked, onPick: env.lock }
     );
+  if (env.tidy) out.push({ section: "area", key: "tidy", label: "Tidy", kbd: "T", title: "Pack its workspaces in the order they were made — Undo puts them back", ...can(env.tidy) });
+  if (env.ghosts) out.push(...ghostsActions(env.ghosts));
   if (env.landscape) {
     out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: env.room ? "The room's artifacts" : "The area's artifacts, on this Mac", onPick: env.artifacts });
     if (env.room) out.push({ section: "tools", key: "tool:chat", label: "Chat", icon: env.chatIcon, title: "The room's chat", onPick: env.chat });
@@ -269,12 +336,11 @@ export function areaActions(env: AreaEnv): ModelAction[] {
   return out;
 }
 
-/** Why Stack is off until stacks come (S6b). */
-export const STACK_COMING = "Stacking them into one card with a tab each (⌘G) is coming in a later version";
-
 /** What several workspaces' actions need (Landscape.tsx makes it from the picked ones). */
 export interface SeveralEnv {
   makeArea: () => void;
+  /** Stack them into one card with a tab each (⌘G), or why they can't be (planStack's refusal). */
+  stack: Can;
   /** Move to area's rows: each area, with why it can't take them (null: it can), as moving them would say. */
   areas: readonly { key: string; title: string; refused: string | null; pick: () => void }[];
   /** Close…: every session of this Mac's in them (a stack's tabs each), asked about once; or why it can't be done here. */
@@ -285,7 +351,7 @@ export interface SeveralEnv {
 export function severalActions(env: SeveralEnv): ModelAction[] {
   return [
     { section: "several", key: "makeArea", label: "Make area…", kbd: "M", title: "Make an area of them", onPick: env.makeArea },
-    { section: "several", key: "stack", label: "Stack", kbd: "⌘G", disabled: true, title: STACK_COMING, onPick: () => {} },
+    { section: "several", key: "stack", label: "Stack", kbd: "⌘G", title: "Stack them into one card with a tab each", ...can(env.stack) },
     ...env.areas.map((a): ModelAction => ({ section: "move", key: `move:${a.key}`, label: a.title, onPick: a.pick, ...(a.refused ? { disabled: true, title: a.refused } : {}) })),
     { section: "end", key: "close", label: "Close", menuLabel: "Close…", danger: true, title: "Close them, asking first about any with uncommitted or unpushed work", ...can(env.close) },
   ];

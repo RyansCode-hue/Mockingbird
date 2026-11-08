@@ -12,6 +12,7 @@ import {
   AREA_PAD,
   CELL_ESTIMATE,
   colsRows,
+  sizeFor,
   GAP,
   WORKSPACE_SIZES,
   LOOSE_GROUP,
@@ -246,7 +247,18 @@ export interface Tile {
   rect: Rect;
   /** Its area is collapsed to a pill: it isn't drawn, and counts as off screen. */
   hidden: boolean;
+  /** A stack's tabs whose sessions are closed but can be reopened: drawn as faded tabs after the others. */
+  closed?: SessionInfo[];
 }
+
+/**
+ * A ghost (docs/landscape.md, Ghost cards): a closed workspace of this Mac's that can still be reopened (main keeps its
+ * session resumable), drawn faded where it was. Shaped as a Tile, kept apart from the layout's `tiles` so nothing that
+ * works on running workspaces (selection, focus, peek, counts) takes one for one. Its place is the one landscape.json
+ * keeps for its session (`workspaces`, or its stack's in `stacks`), so Reopen, which relaunches the session under its
+ * id, lands it there. `members` are its closed sessions (several for a stack none of whose tabs runs).
+ */
+export type GhostView = Tile;
 
 export interface AreaView {
   key: string;
@@ -288,6 +300,8 @@ export interface CardView {
 
 export interface ResolvedLayout {
   tiles: Tile[];
+  /** Closed workspaces that can be reopened, where they were (GhostView). */
+  ghosts: GhostView[];
   areas: AreaView[];
   /** Placed tool windows; docked ones are in `docked`, in the order they were docked. */
   windows: WindowView[];
@@ -308,6 +322,8 @@ export interface PlaceHint {
   area: string;
   at: Point;
   since: number;
+  /** A closed session whose ghost the new one takes the place of (Start fresh): it goes exactly there, and the ghost isn't drawn. */
+  replaces?: string;
 }
 
 /** A tool window's size when it opens, in px at 100%: as tall as the workspace it opens beside, within these. */
@@ -338,6 +354,27 @@ export function compactShifts(items: readonly { id: string; rect: Rect; min: Siz
 const COMPACT_PAD = 4;
 /** The least height worth giving one squeezed under another at its area's foot: its name's line, in screen px. */
 const COMPACT_SQUEEZE = 28;
+
+/** How far in from its place's edges a ghost is drawn zoomed out to cards, in screen px: as cards are (styles.css --ci). */
+export const GHOST_INSET = 5;
+
+/**
+ * How tall a ghost's place is drawn zoomed out to cards, at `zoom`, in landscape px (it's then drawn GHOST_INSET in from
+ * that): its place's height, less the strip at its foot that `avoid` covers (another area's name line, kept at screen
+ * size, reaches up past that area's top into the area above), COMPACT_GAP clear of it. As with windows and cards
+ * (compactPlaces), one left less than COMPACT_SQUEEZE is drawn over the name line rather than squeezed out of sight.
+ */
+export function ghostDrawnHeight(rect: Rect, zoom: number, avoid: readonly Rect[]): number {
+  const inset = GHOST_INSET / zoom;
+  const box = { x: rect.x + inset, y: rect.y + inset, w: rect.w - 2 * inset, h: rect.h - 2 * inset };
+  let h = rect.h;
+  for (const a of avoid) {
+    if (!(a.x < box.x + box.w && a.x + a.w > box.x && a.y < box.y + box.h && a.y + a.h > box.y)) continue;
+    const room = a.y - COMPACT_GAP / zoom - box.y;
+    if (room >= COMPACT_SQUEEZE / zoom) h = Math.min(h, room + 2 * inset);
+  }
+  return h;
+}
 
 /** Where a tool window or an artifact card is drawn zoomed out to cards, against its place: moved by dx, dy, w × h big (landscape px). */
 export interface CompactPlace {
@@ -473,8 +510,20 @@ const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(mem
  * moves; of two that grow into each other, the one right-clicked stays.
  *
  * `renames` are this window's renames still on their way (PendingRename).
+ *
+ * `closed` are this Mac's sessions that are closed but can be reopened (main's resumable ones): each is a ghost
+ * (GhostView) at its stored place, placed as a new workspace is when it has none, and saved there; a closed tab of a
+ * stack that's shown is one of its `closed` tabs instead. Ghosts move with their area and are pushed aside like the
+ * places of sessions not shown (passive: one pushed goes on past what it reaches rather than pushing it).
  */
-export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], cell: Cell = CELL_ESTIMATE, renames: readonly PendingRename[] = [], hint: PlaceHint | null = null): ResolvedLayout {
+export function resolveLayout(
+  l: Landscape,
+  sessions: readonly SessionInfo[],
+  cell: Cell = CELL_ESTIMATE,
+  renames: readonly PendingRename[] = [],
+  hint: PlaceHint | null = null,
+  closed: readonly SessionInfo[] = []
+): ResolvedLayout {
   /**
    * A group key under a rename still on its way: the key the landscape holds it under, the old one or the new. The
    * session list and the landscape's re-keying (main's renameAreaPatch) arrive one after the other, and a teammate's
@@ -489,18 +538,40 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     }
     return key;
   };
-  const groups = new Map<string, { area: string; stack: string | null; members: SessionInfo[] }>();
-  for (const s of sessions) {
+  const groups = new Map<string, { area: string; stack: string | null; members: SessionInfo[]; ghost: boolean; closed: SessionInfo[] }>();
+  const stackOf = (s: SessionInfo) => {
     const sk = stackKeyOf(s);
-    const stack = sk && held(sk, (k) => Object.hasOwn(l.stacks, k));
+    return sk && held(sk, (k) => Object.hasOwn(l.stacks, k));
+  };
+  const areaOfSession = (s: SessionInfo) => held(areaKeyOf(s), (k) => Object.hasOwn(l.areas, k));
+  for (const s of sessions) {
+    const stack = stackOf(s);
     const key = stack ? `ws:${stack}` : s.id;
     const g = groups.get(key);
     if (g) g.members.push(s);
-    else groups.set(key, { area: held(areaKeyOf(s), (k) => Object.hasOwn(l.areas, k)), stack, members: [s] });
+    else groups.set(key, { area: areaOfSession(s), stack, members: [s], ghost: false, closed: [] });
   }
-  /** The sessions and stacks shown: a place stored for any other (a session waiting to be resumed) stays taken, and moves with its area. */
   const shownIds = new Set(sessions.map((s) => s.id));
-  const shownStacks = new Set([...groups.values()].map((g) => g.stack).filter((k): k is string => !!k));
+  // the closed sessions: a tab of a stack that's shown, else a ghost of its own (a stack's closed tabs together)
+  for (const s of closed) {
+    if (shownIds.has(s.id)) continue;
+    const stack = stackOf(s);
+    const shownStack = stack ? groups.get(`ws:${stack}`) : undefined;
+    if (shownStack && !shownStack.ghost) {
+      shownStack.closed.push(s);
+      continue;
+    }
+    const key = stack ? `${GHOST_KEY}ws:${stack}` : `${GHOST_KEY}${s.id}`;
+    const g = groups.get(key);
+    if (g) g.members.push(s);
+    else groups.set(key, { area: areaOfSession(s), stack, members: [s], ghost: true, closed: [] });
+  }
+  /**
+   * The sessions and stacks drawn, running or as ghosts: a place stored for any other (a session hidden, or forgotten)
+   * stays taken, and moves with its area.
+   */
+  const drawnIds = new Set([...groups.values()].flatMap((g) => [...g.members, ...g.closed].map((s) => s.id)));
+  const drawnStacks = new Set([...groups.values()].map((g) => g.stack).filter((k): k is string => !!k));
 
   const areas = new Map<string, Area>(Object.entries(l.areas));
   const patch: FullPatch = emptyPatch();
@@ -568,8 +639,8 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   };
   const firstArea = (): Area | null => [...areas.values()].sort((a, b) => a.y - b.y || a.x - b.x)[0] ?? null;
 
-  /** What's kept besides the workspaces shown, each with the area it's in before this pass moves any: what every move below goes by. */
-  const kept = keptIn(l, areas, { ids: shownIds, stacks: shownStacks });
+  /** What's kept besides the workspaces and ghosts drawn, each with the area it's in before this pass moves any: what every move below goes by. */
+  const kept = keptIn(l, areas, { ids: drawnIds, stacks: drawnStacks });
   const othersOf = (key: string) => [...areas].filter(([k]) => k !== key).map(([, r]) => r);
   const grew = new Set<string>();
   const growTo = (key: string, grown: Area) => {
@@ -579,14 +650,21 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   const tiles: Tile[] = [];
   const placed = new Set<string>();
   let hinted: string | null = null;
+  /** The closed session whose ghost a new one took the place of (PlaceHint.replaces): not drawn. */
+  let replaced: string | null = null;
   for (const [key, g] of groups) {
     let rect = stored.get(key);
     if (!rect) {
       const size = presetSize(tileKind(g.members), "M", cell);
       // the first of this Mac's sessions made since a right-click's New workspace, in the area clicked, goes where it was clicked
-      const here = !hinted && !!hint && g.area === hint.area && g.members.some((s) => !s.room?.remote && s.createdAt >= hint.since);
+      const here = !hinted && !!hint && !g.ghost && g.area === hint.area && g.members.some((s) => !s.room?.remote && s.createdAt >= hint.since);
       if (here) hinted = fronts.get(key)!.id;
-      if (g.area === LOOSE_GROUP) {
+      const instead = here && hint!.replaces ? own(l.workspaces, hint!.replaces) : undefined;
+      if (instead) {
+        // Start fresh: in the place of the ghost it replaces, which isn't drawn
+        rect = instead;
+        replaced = hint!.replaces!;
+      } else if (g.area === LOOSE_GROUP) {
         const loose = [...occupied, ...areas.values()];
         rect = here ? placeAt(size, hint!.at, loose, null, firstArea()) : placeNew(size, loose, null, firstArea());
       } else {
@@ -599,8 +677,9 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
       stored.set(key, rect);
       placed.add(key);
     }
-    tiles.push({ key, area: g.area, stack: g.stack, members: g.members, front: fronts.get(key)!, rect, hidden: false });
+    tiles.push({ key, area: g.area, stack: g.stack, members: g.members, front: fronts.get(key)!, rect, hidden: false, ...(g.closed.length ? { closed: g.closed } : {}) });
   }
+  const isGhost = (key: string) => groups.get(key)!.ghost;
 
   /** Area `k` moved by `dx`, `dy`, with everything in it: its workspaces, and what's kept in it (`kept`). */
   const moveAreaBy = (k: string, dx: number, dy: number) => {
@@ -636,7 +715,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   // aside: other areas, each with everything in it (a locked one as a whole), and what's in no area, which stays in none
   if (grew.size) {
     const loose: Pushed[] = [
-      ...tiles.filter((t) => t.area === LOOSE_GROUP).map((t) => ({ rect: stored.get(t.key)!, passive: false, move: (dx: number, dy: number) => shiftTile(t.key, dx, dy) })),
+      ...tiles.filter((t) => t.area === LOOSE_GROUP).map((t) => ({ rect: stored.get(t.key)!, passive: isGhost(t.key), move: (dx: number, dy: number) => shiftTile(t.key, dx, dy) })),
       ...looseOf(patch, kept, NONE_LEAVING),
     ];
     const still = [...grew].sort((a, b) => Number(b === hint?.area) - Number(a === hint?.area));
@@ -667,8 +746,20 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     const card = own(patch.cards, id) ?? stored;
     if (card.placement) cards.push({ id, card, rect: card.placement, hidden: areas.get(card.area)?.collapsed === true });
   }
-  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), windows, docked, cards, patch: finish(patch), hinted };
+  return {
+    tiles: tiles.filter((t) => !isGhost(t.key)),
+    ghosts: tiles.filter((t) => isGhost(t.key) && !(t.members.length === 1 && t.front.id === replaced)),
+    areas: [...areas].map(([key, rect]) => ({ key, rect })),
+    windows,
+    docked,
+    cards,
+    patch: finish(patch),
+    hinted,
+  };
 }
+
+/** The prefix of a ghost's key (GhostView), apart from the keys of running workspaces (a session's id, "ws:<top/sub>"). */
+export const GHOST_KEY = "ghost:";
 
 
 /** How big a collapsed area's pill counts for fitting the view and the minimap, in landscape px at 100%. */
@@ -677,8 +768,8 @@ export const PILL_SIZE: Size = { w: 320, h: 48 };
 /** What an area takes on the landscape as drawn: its rectangle, or its pill while it's collapsed. */
 export const areaShown = (a: AreaView): Rect => (a.rect.collapsed ? { x: a.rect.x, y: a.rect.y, ...PILL_SIZE } : a.rect);
 
-/** Everything a fit shows: the areas (a collapsed one's pill) and the workspaces drawn. */
-export const contentRects = (r: ResolvedLayout): Rect[] => [...r.areas.map(areaShown), ...r.tiles.filter((t) => !t.hidden).map((t) => t.rect)];
+/** Everything a fit shows: the areas (a collapsed one's pill) and the workspaces and ghosts drawn. */
+export const contentRects = (r: ResolvedLayout): Rect[] => [...r.areas.map(areaShown), ...[...r.tiles, ...r.ghosts].filter((t) => !t.hidden).map((t) => t.rect)];
 
 // ---- keeping a window's landscape in step -------------------------------------------------------
 
@@ -795,16 +886,29 @@ export interface AreaCounts {
   dead: number;
   /** Workspaces, a stack once, teammates' included. */
   workspaces: number;
+  /** Closed sessions that can be reopened: its ghosts' and its stacks' closed tabs. */
+  closed: number;
 }
 
-export function areaCounts(tiles: readonly Tile[], key: string): AreaCounts {
-  const c: AreaCounts = { working: 0, waiting: 0, idle: 0, dead: 0, workspaces: 0 };
+export function areaCounts(tiles: readonly Tile[], key: string, ghosts: readonly GhostView[] = []): AreaCounts {
+  const c: AreaCounts = { working: 0, waiting: 0, idle: 0, dead: 0, workspaces: 0, closed: 0 };
   for (const t of tiles) {
     if (t.area !== key) continue;
     c.workspaces++;
+    c.closed += t.closed?.length ?? 0;
     for (const s of t.members) if (!s.room?.remote) c[s.status]++;
   }
+  for (const g of ghosts) if (g.area === key) c.closed += g.members.length;
   return c;
+}
+
+/**
+ * The closed sessions of area `key` (LOOSE_GROUP: in no area; null: every one) that the layout draws: its ghosts', then
+ * its stacks' closed tabs.
+ */
+export function closedIn(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: string | null): SessionInfo[] {
+  const here = (t: { area: string }) => key === null || t.area === key;
+  return [...layout.ghosts.filter(here).flatMap((g) => g.members), ...layout.tiles.filter(here).flatMap((t) => t.closed ?? [])];
 }
 
 /**
@@ -814,6 +918,7 @@ export function areaCounts(tiles: readonly Tile[], key: string): AreaCounts {
 export function areaSummary(c: AreaCounts, o: { shared?: string | null; workspaces?: boolean } = {}): string {
   const parts = [o.shared ?? null, c.waiting ? `${c.waiting} waiting` : null, c.working ? `${c.working} working` : null, c.dead ? `${c.dead} exited` : null];
   if (o.workspaces !== false) parts.push(`${c.workspaces} workspace${c.workspaces === 1 ? "" : "s"}`);
+  if (c.closed) parts.push(`${c.closed} closed`);
   return parts.filter(Boolean).join(" · ");
 }
 
@@ -897,12 +1002,12 @@ export interface MinimapBlock {
   rect: Rect;
 }
 
-/** What the minimap draws: each area as it's shown (a collapsed one's pill), then each workspace in no area at its place. */
+/** What the minimap draws: each area as it's shown (a collapsed one's pill), then each workspace and ghost in no area at its place. */
 export function minimapBlocks(r: ResolvedLayout): MinimapBlock[] {
   const areas = new Set(r.areas.map((a) => a.key));
   return [
     ...r.areas.map((a) => ({ key: a.key, loose: false, rect: areaShown(a) })),
-    ...r.tiles.filter((t) => !areas.has(t.area) && !t.hidden).map((t) => ({ key: t.key, loose: true, rect: t.rect })),
+    ...[...r.tiles, ...r.ghosts].filter((t) => !areas.has(t.area) && !t.hidden).map((t) => ({ key: t.key, loose: true, rect: t.rect })),
   ];
 }
 
@@ -974,10 +1079,25 @@ function keptIn(l: Landscape, areas: ReadonlyMap<string, Rect>, shown: { ids: Re
   return out;
 }
 
-/** keptIn for a gesture on `layout`: its areas, the workspaces it shows, and the places it gave windows and cards. */
+/**
+ * keptIn for a gesture on `layout`: its areas, the workspaces it shows, and the places it gave windows and cards. Its
+ * ghosts are kept too, each in the area the layout drew it in (its group's, as a running workspace's), passive, at the
+ * place the layout drew it at when landscape.json has none for it yet.
+ */
 function keptOf(l: Landscape, layout: ResolvedLayout): Kept[] {
   const laid = new Map<string, Rect>([...layout.windows.map((w): [string, Rect] => [`tool:${w.id}`, w.rect]), ...layout.cards.map((c): [string, Rect] => [`card:${c.id}`, c.rect])]);
-  return keptIn(l, new Map(layout.areas.map((a) => [a.key, a.rect])), shownIn(layout), laid);
+  const areas = new Map(layout.areas.map((a) => [a.key, a.rect]));
+  return [...keptIn(l, areas, shownIn(layout), laid), ...layout.ghosts.map((g) => ghostKept(g, areas.has(g.area) ? g.area : LOOSE_GROUP))];
+}
+
+/** Ghost `g` as something kept in area `area`: passive, at its place in `p`, else where the layout drew it. */
+function ghostKept(g: GhostView, area: string): Kept {
+  const id = g.front.id;
+  if (g.stack) {
+    const sk = g.stack;
+    return { key: `stack:${sk}`, area, passive: true, at: (p) => own(p.stacks, sk)?.placement ?? g.rect, to: (p, to) => put(p.stacks, sk, { active: own(p.stacks, sk)?.active ?? id, placement: to }) };
+  }
+  return { key: `place:${id}`, area, passive: true, at: (p) => own(p.workspaces, id) ?? g.rect, to: (p, to) => put(p.workspaces, id, to) };
 }
 
 const NONE_LEAVING: ReadonlySet<string> = new Set();
@@ -1021,21 +1141,28 @@ const isTheirs = (s: SessionInfo) => !!s.room?.remote;
 const subOf = (t: Tile) => splitGroupKey(t.stack!).sub!;
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
-/** The sessions and stacks a layout shows. A place stored for any other (a session waiting to be resumed) stays taken, and moves with the area it's in. */
+/**
+ * The sessions and stacks a layout draws, running or as ghosts (a stack's closed tabs too). A place stored for any
+ * other (a session hidden, or forgotten) stays taken, and moves with the area it's in.
+ */
 function shownIn(layout: ResolvedLayout): { ids: Set<string>; stacks: Set<string> } {
   const ids = new Set<string>();
   const stacks = new Set<string>();
-  for (const t of layout.tiles) {
-    for (const s of t.members) ids.add(s.id);
+  for (const t of [...layout.tiles, ...layout.ghosts]) {
+    for (const s of [...t.members, ...(t.closed ?? [])]) ids.add(s.id);
     if (t.stack) stacks.add(t.stack);
   }
   return { ids, stacks };
 }
 
-/** The places stored for sessions and stacks the layout doesn't show: taken, as resolveLayout keeps them. */
+/** The places of what isn't a running workspace: those stored for sessions and stacks the layout doesn't draw, and its ghosts'. Taken, as resolveLayout keeps them. */
 const unshownPlaces = (l: Landscape, layout: ResolvedLayout): Rect[] => {
   const shown = shownIn(layout);
-  return [...Object.entries(l.workspaces).filter(([id]) => !shown.ids.has(id)).map(([, r]) => r), ...Object.entries(l.stacks).filter(([k]) => !shown.stacks.has(k)).map(([, s]) => s.placement)];
+  return [
+    ...Object.entries(l.workspaces).filter(([id]) => !shown.ids.has(id)).map(([, r]) => r),
+    ...Object.entries(l.stacks).filter(([k]) => !shown.stacks.has(k)).map(([, s]) => s.placement),
+    ...layout.ghosts.map((g) => g.rect),
+  ];
 };
 
 /**
@@ -1101,6 +1228,51 @@ function growArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: strin
   pushAll(areas, loose, [key], (k, dx, dy) => moveArea(p, layout, kept, k, dx, dy, leaving));
 }
 
+const STILL_KEY = "still\n";
+
+/**
+ * A workspace now at `r` in area `key` (LOOSE_GROUP: in none), moved, resized or taken out of a stack there: what's in
+ * its way is pushed aside, and it never moves (docs/landscape-phase1.md, S6b). In an area: what else is in it (its
+ * workspaces, and what it keeps: ghosts, windows, cards, the places of sessions not shown) goes right or down,
+ * whichever is shorter, pushing on in turn, and the area grows to hold it all, pushing the areas in its way aside (a
+ * locked one as a whole) and what's in no area (growArea). Loose: the loose things in its way go aside, and one pushed
+ * into an area goes on past it. What nobody sees (ghosts, places of sessions not shown) is pushed but pushes nothing.
+ * `leaving` (tile keys) and `leavingKept` (Kept keys) are what the gesture moves itself: never in the way. What's in
+ * which area is read once from `l` and `layout` as stored (keptOf), never from what `p` has moved so far.
+ */
+function pushFrom(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, r: Rect, leaving: ReadonlySet<string>, leavingKept: ReadonlySet<string> = NONE_LEAVING): void {
+  const kept = keptOf(l, layout).filter((k) => !leavingKept.has(k.key));
+  type Item = { rect: Rect; passive: boolean; move: (dx: number, dy: number) => void };
+  const items: Item[] = [
+    ...layout.tiles.filter((t) => t.area === key && !leaving.has(t.key)).map((t) => ({ rect: t.rect, passive: false, move: (dx: number, dy: number) => moveTile(p, t, dx, dy) })),
+    ...kept.flatMap((k): Item[] => {
+      const at = k.area === key ? k.at(p) : null;
+      return at ? [{ rect: at, passive: k.passive, move: (dx, dy) => k.to(p, shifted(k.at(p)!, dx, dy)) }] : [];
+    }),
+  ];
+  const rects: Record<string, Rect> = {};
+  put(rects, STILL_KEY, r);
+  items.forEach((x, i) => put(rects, LOOSE_KEY + i, x.rect));
+  const passive = new Set(items.flatMap((x, i) => (x.passive ? [LOOSE_KEY + i] : [])));
+  const area = key === LOOSE_GROUP ? undefined : layout.areas.find((a) => a.key === key);
+  if (!area) {
+    // loose: the areas stay where they are, and a loose thing pushed into one goes on past it
+    for (const a of layout.areas) put(rects, AREA_KEY + a.key, a.rect);
+    const still = [STILL_KEY, ...layout.areas.map((a) => AREA_KEY + a.key)];
+    const gap = (a: string, b: string) => (a.startsWith(AREA_KEY) && b.startsWith(AREA_KEY) ? 0 : GAP);
+    for (const [k, m] of Object.entries(pushAside(rects, still, gap, passive))) if (k.startsWith(LOOSE_KEY)) items[Number(k.slice(LOOSE_KEY.length))].move(m.dx, m.dy);
+    return;
+  }
+  const moved: Rect[] = [r];
+  for (const [k, m] of Object.entries(pushAside(rects, STILL_KEY, GAP, passive))) {
+    const i = Number(k.slice(LOOSE_KEY.length));
+    items[i].move(m.dx, m.dy);
+    moved.push(shifted(items[i].rect, m.dx, m.dy));
+  }
+  const grown = fitAreaTo(area.rect, moved);
+  if (grown !== area.rect) growArea(p, l, layout, key, grown, leaving);
+}
+
 /** A stack moving to area `area`: its new key, and its old one let go after the move (AreaPlan). */
 function restack(p: FullPatch, after: FullPatch, l: Landscape, t: Tile, area: string, r: Rect): void {
   const sk = `${area}/${subOf(t)}`;
@@ -1157,7 +1329,8 @@ export function planMakeArea(l: Landscape, layout: ResolvedLayout, picked: reado
     put(p.areas, key, { ...shifted(around, dx, dy), repos });
     for (const t of tiles) if (t.stack || dx || dy) place(t, shifted(t.rect, dx, dy));
   }
-  const moves = tiles.flatMap((t) => t.members.filter((s) => !isTheirs(s)).map((s) => ({ id: s.id, group: t.stack ? `${key}/${subOf(t)}` : key })));
+  // a stack's closed tabs go along with it
+  const moves = tiles.flatMap((t) => [...t.members.filter((s) => !isTheirs(s)), ...(t.closed ?? [])].map((s) => ({ id: s.id, group: t.stack ? `${key}/${subOf(t)}` : key })));
   return { patch: finish(p), moves, after: finish(after), note: left.length ? left.join("; ") : undefined };
 }
 
@@ -1195,21 +1368,21 @@ export function planMoveTile(l: Landscape, layout: ResolvedLayout, tileKey: stri
   let r: Rect = { ...t.rect, x: snap(at.x), y: snap(at.y) };
   const p = emptyPatch();
   const after = emptyPatch();
-  if (into) {
-    r = { ...r, x: Math.max(r.x, snapUp(into.x + AREA_PAD)), y: Math.max(r.y, snapUp(into.y + AREA_HEADER)) };
-    const grown = fitAreaTo(into, [r]);
-    if (grown !== into) growArea(p, l, layout, target, grown, new Set([t.key]));
-  } else {
+  if (into) r = { ...r, x: Math.max(r.x, snapUp(into.x + AREA_PAD)), y: Math.max(r.y, snapUp(into.y + AREA_HEADER)) };
+  else {
     // a loose workspace stays out of every area, a collapsed one's whole rectangle too (it's all there once it opens):
     // one dropped partly over an area's edge is moved clear of it
     const { dx, dy } = clearOf(r, layout.areas.map((a) => a.rect), GAP);
     r = shifted(r, dx, dy);
   }
+  // what it's dropped on is pushed aside, and its area grows to hold it all (it never moves itself)
+  pushFrom(p, l, layout, target, r, new Set([t.key]));
   if (t.stack && crossing) restack(p, after, l, t, target, r);
   else if (t.stack) put(p.stacks, t.stack, { active: t.front.id, placement: r });
   else put(p.workspaces, t.front.id, r);
   const group = target === LOOSE_GROUP ? null : t.stack ? `${target}/${subOf(t)}` : target;
-  return { patch: finish(p), moves: crossing ? t.members.map((s) => ({ id: s.id, group })) : [], after: finish(after) };
+  // a stack's closed tabs go along with it
+  return { patch: finish(p), moves: crossing ? [...t.members, ...(t.closed ?? [])].map((s) => ({ id: s.id, group })) : [], after: finish(after) };
 }
 
 /** Area `key` dragged by `dx`, `dy`: snapped, moved clear of the others (clearOf), its workspaces and ghosts with it. Refused while it's locked. */
@@ -1513,35 +1686,351 @@ export function cardsAfterShare(l: Landscape, key: string, roomId: string, ids: 
 }
 
 /**
- * Workspace `key` at a preset's `size` (Size S/M/L): where it is when that keeps it clear of everything else, else at
- * its area's first free spot (placeNew), the area growing to take it. Its terminal follows its new size. Refused in a
- * locked area, and for a teammate's workspace, which is the size its owner's terminal is.
+ * Workspace `key` at a preset's `size` (Size S/M/L), its corner where it is: planResizeTo's rules. Its terminal follows
+ * its new size.
  */
 export function planResizeTile(l: Landscape, layout: ResolvedLayout, key: string, size: Size, titleOf: (key: string) => string): AreaPlan {
+  const t = layout.tiles.find((x) => x.key === key);
+  if (!t) return { refused: "That workspace isn't on the landscape any more" };
+  return planResizeTo(l, layout, key, { ...t.rect, ...size }, titleOf);
+}
+
+/** The smallest a workspace is resized to: a terminal of this many columns and rows. */
+export const MIN_TERM: { cols: number; rows: number } = { cols: 40, rows: 8 };
+/** MIN_TERM's workspace, on the grid. */
+export const minWorkspace = (cell: Cell = CELL_ESTIMATE): Size => {
+  const s = sizeFor(MIN_TERM.cols, MIN_TERM.rows, cell.w, cell.h);
+  return { w: snapUp(s.w), h: snapUp(s.h) };
+};
+
+/**
+ * Workspace `key` resized to `to` (an edge dragged, or a size preset): on the grid, at least minWorkspace, in an area
+ * kept inside its padding and under its header, and what it now covers pushed aside, its area growing to hold it all
+ * (pushFrom); the workspace itself stays where it's put. Loose, it's kept clear of the areas, as a loose drop is. Its
+ * terminal follows its new size (zooming never resizes it). Refused in a locked area, and for a teammate's workspace,
+ * which is the size its owner's terminal is.
+ */
+export function planResizeTo(l: Landscape, layout: ResolvedLayout, key: string, to: Rect, titleOf: (key: string) => string): AreaPlan {
   const t = layout.tiles.find((x) => x.key === key);
   if (!t) return { refused: "That workspace isn't on the landscape any more" };
   const theirs = t.members.find(isTheirs);
   if (theirs) return { refused: `${theirs.room!.ownerName}'s workspace is the size their terminal is` };
   const area = t.area === LOOSE_GROUP ? undefined : layout.areas.find((a) => a.key === t.area);
   if (area?.rect.locked) return { refused: `${titleOf(t.area)} is locked: unlock it to resize its workspaces` };
-  if (size.w === t.rect.w && size.h === t.rect.h) return { patch: null, moves: [], after: null };
-  const occupied = placedBut(l, layout, key);
-  const others = layout.areas.map((a) => a.rect);
-  let r: Rect = { ...t.rect, ...size };
-  if (occupied.some((o) => overlaps(r, o, GAP - 1e-6))) r = area ? placeNew(size, occupied, area.rect) : placeNew(size, [...occupied, ...others], null, others[0] ?? null);
-  else if (!area) {
-    const { dx, dy } = clearOf(r, others, GAP);
+  const min = minWorkspace();
+  let r: Rect = { x: snap(to.x), y: snap(to.y), w: Math.max(min.w, snap(to.w)), h: Math.max(min.h, snap(to.h)) };
+  if (area) r = { ...r, x: Math.max(r.x, snapUp(area.rect.x + AREA_PAD)), y: Math.max(r.y, snapUp(area.rect.y + AREA_HEADER)) };
+  else {
+    const { dx, dy } = clearOf(r, layout.areas.map((a) => a.rect), GAP);
     r = shifted(r, dx, dy);
   }
+  if (r.x === t.rect.x && r.y === t.rect.y && r.w === t.rect.w && r.h === t.rect.h) return { patch: null, moves: [], after: null };
   const p = emptyPatch();
+  pushFrom(p, l, layout, t.area, r, new Set([key]));
   if (t.stack) put(p.stacks, t.stack, { active: t.front.id, placement: r });
   else put(p.workspaces, t.front.id, r);
-  if (area) {
-    const grown = fitAreaTo(area.rect, [r]);
-    if (grown !== area.rect) growArea(p, l, layout, area.key, grown, new Set([key]));
-  }
   return { patch: finish(p), moves: [], after: null };
+}
+
+// ---- moving and resizing by hand: snapping and guides (S6b) -------------------------------------------------------
+
+/** How near, in screen px, an edge comes to a neighbour's before it snaps to it. */
+export const SNAP_PX = 6;
+
+/**
+ * A guide drawn while dragging: the line an edge snapped along. `axis` "x" is a vertical line at x = `at` from y =
+ * `from` to `to`; "y" a horizontal one at y = `at` from x = `from` to `to`. Landscape px.
+ */
+export interface Guide {
+  axis: "x" | "y";
+  at: number;
+  from: number;
+  to: number;
+}
+
+/** Which edges a drag moves: all four (moving it), or those of a resize handle. */
+export interface Edges {
+  left: boolean;
+  right: boolean;
+  top: boolean;
+  bottom: boolean;
+}
+export const MOVE_EDGES: Edges = { left: true, right: true, top: true, bottom: true };
+
+/** A snap candidate on one axis: where the moving edge goes, and the line its guide is drawn along with the rect it lines up with. */
+type Candidate = { pos: number; line: number; other: Rect };
+
+/** The nearest candidate within `within` of `want`, or null. */
+const nearestOf = (cands: readonly Candidate[], want: number, within: number): Candidate | null => {
+  let best: Candidate | null = null;
+  for (const c of cands) if (Math.abs(c.pos - want) <= within && (!best || Math.abs(c.pos - want) < Math.abs(best.pos - want))) best = c;
+  return best;
+};
+
+/**
+ * A rect dragged to `want` (moved, or resized by the `edges` its handle moves), snapped: each moving edge to the
+ * nearest neighbour edge within SNAP_PX on screen (`zoom`): lined up with one of `others`' edges, or GAP beside it,
+ * and to `inner` (its area's inside edges, the padding and the header's line) the same way; an edge with none near is
+ * on the 8 px grid. A move keeps its size; a resize keeps at least `min`. The guides are the lines it snapped along, one
+ * per neighbour it lines up with on that line, spanning both.
+ */
+export function snapRect(want: Rect, edges: Edges, others: readonly Rect[], zoom: number, inner: Rect | null = null, min: Size = { w: 1, h: 1 }): { rect: Rect; guides: Guide[] } {
+  const within = SNAP_PX / zoom;
+  const moving = edges.left && edges.right;
+  const targets: Rect[] = [...others];
+  // the area's inside lines up like a neighbour's edges, without the gap beside it
+  const insideCands = (lo: number, hi: number, len: number, start: boolean, end: boolean): Candidate[] => {
+    if (!inner) return [];
+    const o: Rect = inner;
+    return [...(start ? [{ pos: lo, line: lo, other: o }] : []), ...(end ? [{ pos: hi - len, line: hi, other: o }] : [])];
+  };
+  const axis = (x: "x" | "y") => {
+    const p = x === "x" ? "x" : "y";
+    const s = x === "x" ? "w" : "h";
+    const lo = x === "x" ? edges.left : edges.top;
+    const hi = x === "x" ? edges.right : edges.bottom;
+    const r = want;
+    const innerLo = inner ? inner[p] : 0;
+    const innerHi = inner ? inner[p] + inner[s] : 0;
+    if (moving) {
+      // the rect's start edge: lined up with a start or an end, GAP past an end or before a start; its end edge likewise
+      const cands: Candidate[] = [
+        ...targets.flatMap((o) => [
+          { pos: o[p], line: o[p], other: o },
+          { pos: o[p] + o[s] - r[s], line: o[p] + o[s], other: o },
+          { pos: o[p] + o[s] + GAP, line: o[p] + o[s] + GAP, other: o },
+          { pos: o[p] - GAP - r[s], line: o[p] - GAP, other: o },
+        ]),
+        ...insideCands(innerLo, innerHi, r[s], true, true),
+      ];
+      const c = nearestOf(cands, r[p], within);
+      return { start: c ? c.pos : snap(r[p]), size: r[s], guide: c };
+    }
+    if (lo) {
+      const end = r[p] + r[s];
+      const cands: Candidate[] = [...targets.flatMap((o) => [{ pos: o[p], line: o[p], other: o }, { pos: o[p] + o[s] + GAP, line: o[p] + o[s] + GAP, other: o }]), ...(inner ? [{ pos: innerLo, line: innerLo, other: inner }] : [])];
+      const c = nearestOf(cands, r[p], within);
+      const start = Math.min(c ? c.pos : snap(r[p]), end - min[s]);
+      return { start, size: end - start, guide: c && c.pos === start ? c : null };
+    }
+    if (hi) {
+      const cands: Candidate[] = [...targets.flatMap((o) => [{ pos: o[p] + o[s], line: o[p] + o[s], other: o }, { pos: o[p] - GAP, line: o[p] - GAP, other: o }]), ...(inner ? [{ pos: innerHi, line: innerHi, other: inner }] : [])];
+      const c = nearestOf(cands, r[p] + r[s], within);
+      const end = Math.max(c ? c.pos : snap(r[p] + r[s]), r[p] + min[s]);
+      return { start: r[p], size: end - r[p], guide: c && c.pos === end ? c : null };
+    }
+    return { start: r[p], size: r[s], guide: null };
+  };
+  const ax = axis("x");
+  const ay = axis("y");
+  const rect: Rect = { x: ax.start, y: ay.start, w: ax.size, h: ay.size };
+  const guides: Guide[] = [];
+  // every neighbour lined up along the snapped line gets its own guide, spanning it and the rect
+  const along = (g: Candidate | null, a: "x" | "y") => {
+    if (!g) return;
+    const cross = a === "x" ? "y" : "x";
+    const len = a === "x" ? "h" : "w";
+    for (const o of [...targets, ...(inner ? [inner] : [])]) {
+      const lines = a === "x" ? [o.x, o.x + o.w, o.x - GAP, o.x + o.w + GAP] : [o.y, o.y + o.h, o.y - GAP, o.y + o.h + GAP];
+      if (!lines.some((v) => Math.abs(v - g.line) < 1e-6)) continue;
+      guides.push({ axis: a, at: g.line, from: Math.min(o[cross], rect[cross]), to: Math.max(o[cross] + o[len], rect[cross] + rect[len]) });
+    }
+  };
+  along(ax.guide, "x");
+  along(ay.guide, "y");
+  return { rect, guides };
 }
 
 /** The size preset `p` for workspace `t`: an agent's, or a terminal's when it holds only terminals. */
 export const presetFor = (t: Tile, p: SizePreset): Size => presetSize(tileKind(t.members), p);
+
+// ---- Tidy and ghosts (S6b) ---------------------------------------------------------------------------------------
+
+/** A sub-group name for a new stack in area `area` that no stack there has: "tabs", then "tabs-2", "tabs-3"… */
+export function newStackName(l: Landscape, layout: Pick<ResolvedLayout, "tiles" | "ghosts">, area: string): string {
+  const taken = new Set(
+    [...Object.keys(l.stacks), ...[...layout.tiles, ...layout.ghosts].flatMap((t) => [...t.members, ...(t.closed ?? [])].map((s) => s.taskGroup ?? ""))]
+      .map((k) => splitGroupKey(k))
+      .filter((k) => k.top === area && k.sub)
+      .map((k) => k.sub!)
+  );
+  if (!taken.has("tabs")) return "tabs";
+  let i = 2;
+  while (taken.has(`tabs-${i}`)) i++;
+  return `tabs-${i}`;
+}
+
+/**
+ * Stack the picked workspaces `picked` into one card with a tab each (⌘G): a sub-group of their area ("area/sub"),
+ * which rooms, usage and the grid already read. The first stack among them (in reading order) takes the others in;
+ * with none, a new one ("tabs", "tabs-2"…) forms in the place of the first of them, its session in front. The others
+ * leave their places, which stay free. A stack's closed tabs go along with it. Refused unless two or more are picked
+ * in one area that isn't locked; a teammate's workspace (only its owner moves it, a stack holding one too) stays out,
+ * and `note` says so.
+ */
+export function planStack(l: Landscape, layout: ResolvedLayout, picked: readonly string[], titleOf: (key: string) => string): AreaPlan {
+  const chosen = layout.tiles.filter((t) => picked.includes(t.key) && !t.hidden).sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x);
+  if (chosen.length < 2) return { refused: "Pick two or more workspaces to stack them" };
+  const areasOf = new Set(chosen.map((t) => t.area));
+  if (areasOf.has(LOOSE_GROUP)) return { refused: "A stack is part of an area: make an area of them first (M), or move them into one" };
+  if (areasOf.size > 1) return { refused: "They're in different areas: move them into one area first" };
+  const key = chosen[0].area;
+  const area = layout.areas.find((a) => a.key === key);
+  if (!area) return { refused: `${titleOf(key)} isn't on the landscape any more` };
+  if (area.rect.locked) return { refused: `${titleOf(key)} is locked: unlock it to stack its workspaces` };
+  const target = chosen.find((t) => t.stack);
+  const others = chosen.filter((t) => t !== target);
+  const theirs = others.filter((t) => t.members.some(isTheirs));
+  const moving = others.filter((t) => !theirs.includes(t));
+  const note = theirs.length ? `${theirs.length} teammate's ${plural(theirs.length, "workspace stays", "workspaces stay")} out of the stack: only ${plural(theirs.length, "its owner moves it", "their owners move them")}` : undefined;
+  if (!target && moving.length < 2) return { refused: theirs.length ? `Only one of them is this Mac's: ${note}` : "Pick two or more workspaces to stack them" };
+  if (!moving.length) return { refused: `Nothing to stack: ${note}` };
+  const p = emptyPatch();
+  const after = emptyPatch();
+  const sk = target?.stack ?? `${key}/${newStackName(l, layout, key)}`;
+  if (!target) put(p.stacks, sk, { active: moving[0].front.id, placement: moving[0].rect });
+  const moves: GroupMove[] = [];
+  for (const t of moving) {
+    for (const s of [...t.members, ...(t.closed ?? [])]) moves.push({ id: s.id, group: sk });
+    if (t.stack) put(after.stacks, t.stack, null);
+    else if (own(l.workspaces, t.front.id)) put(after.workspaces, t.front.id, null);
+  }
+  return { patch: finish(p), moves, after: finish(after), note };
+}
+
+/**
+ * Take session `id` out of its stack (a tab dragged out, or Unstack): dropped at `at` (its corner) over area
+ * `target` (LOOSE_GROUP: none), as a workspace moved there would be (planMoveTile's rules: kept inside the area's
+ * padding, growing it past its right or bottom edge and pushing what's in its way aside). It's the size the stack is.
+ * Its group becomes the area's own; a stack left with one tab stops being one, that tab taking the stack's place, and
+ * a stack whose front tab left brings another to the front. Refused for a teammate's tab, a tab of a locked area,
+ * into a locked area, and loose (a stack's tab stays in an area).
+ */
+export function planUnstack(l: Landscape, layout: ResolvedLayout, id: string, at: Point, target: string, titleOf: (key: string) => string): AreaPlan {
+  const t = layout.tiles.find((x) => x.stack && x.members.some((m) => m.id === id));
+  if (!t) return { refused: "That tab isn't in a stack on the landscape any more" };
+  const s = t.members.find((m) => m.id === id)!;
+  if (isTheirs(s)) return { refused: `${s.room!.ownerName}'s session leaves the stack only on their Mac` };
+  if (t.members.length < 2) return { refused: "A stack's only tab: there's nothing to take it out of" };
+  const from = layout.areas.find((a) => a.key === t.area)?.rect;
+  if (from?.locked) return { refused: `${titleOf(t.area)} is locked: unlock it to take tabs out of its stacks` };
+  if (target === LOOSE_GROUP) return { refused: "A stack's tab stays in an area: drop it inside one" };
+  const into = layout.areas.find((a) => a.key === target)?.rect;
+  if (!into) return { refused: `${titleOf(target)} isn't on the landscape any more` };
+  if (target !== t.area && into.locked) return { refused: `${titleOf(target)} is locked: unlock it to add workspaces` };
+  const theirsIn = target !== t.area && t.members.some((m) => m.id !== id && isTheirs(m)) && t.members.length === 2;
+  // the one left behind would leave the stack, and a teammate's session moves only on their Mac
+  if (theirsIn) return { refused: `${t.members.find((m) => m.id !== id)!.room!.ownerName}'s session would be left alone in the stack: take it out on their Mac` };
+  const p = emptyPatch();
+  const after = emptyPatch();
+  let r: Rect = { x: snap(at.x), y: snap(at.y), w: t.rect.w, h: t.rect.h };
+  r = { ...r, x: Math.max(r.x, snapUp(into.x + AREA_PAD)), y: Math.max(r.y, snapUp(into.y + AREA_HEADER)) };
+  put(p.workspaces, id, r);
+  // the stack stays where it is, unless the tab is dropped over it: then it's pushed aside as anything in the way is
+  pushFrom(p, l, layout, target, r, NONE_LEAVING, new Set([`place:${id}`]));
+  const stackAt = own(p.stacks, t.stack!)?.placement ?? t.rect;
+  const rest = t.members.filter((m) => m.id !== id);
+  const moves: GroupMove[] = [{ id, group: target }];
+  if (rest.length === 1 && !isTheirs(rest[0])) {
+    // a stack of one is no stack: its last tab takes its place as a workspace of its own, its closed tabs going too
+    delete p.stacks[t.stack!];
+    put(p.workspaces, rest[0].id, stackAt);
+    moves.push({ id: rest[0].id, group: t.area }, ...(t.closed ?? []).map((c) => ({ id: c.id, group: t.area })));
+    put(after.stacks, t.stack!, null);
+  } else if (t.front.id === id) put(p.stacks, t.stack!, { active: rest[0].id, placement: stackAt });
+  return { patch: finish(p), moves, after: finish(after) };
+}
+
+/**
+ * Why area `key` can't be tidied now, or null: the one rule its Tidy row, T and the hover toolbar keep. Not a locked
+ * area (its layout is frozen), nor a collapsed one, nor one with no workspace or ghost in it.
+ */
+export function tidyRefusal(layout: Pick<ResolvedLayout, "areas" | "tiles" | "ghosts">, key: string, titleOf: (key: string) => string): string | null {
+  const area = layout.areas.find((a) => a.key === key);
+  if (!area) return `${titleOf(key)} isn't on the landscape any more`;
+  if (area.rect.locked) return `${titleOf(key)} is locked: unlock it to tidy it`;
+  if (area.rect.collapsed) return `${titleOf(key)} is collapsed: open it to tidy it`;
+  if (![...layout.tiles, ...layout.ghosts].some((t) => t.area === key)) return `${titleOf(key)} has no workspaces to tidy`;
+  return null;
+}
+
+/** When a workspace or ghost was made: its earliest session's. */
+const madeAt = (t: Tile) => Math.min(...t.members.map((s) => s.createdAt));
+
+/**
+ * Tidy area `key` (T, or its ⋯): everything in it packed in rows, left to right in the order it was made, from its
+ * top-left inside the padding and under the header, each row as wide as the area is inside. Its workspaces and ghosts
+ * go by when their sessions were made; a workspace's tool window right after it; then what else it keeps (its own
+ * windows and cards, the places of sessions not shown) as they lie, in reading order. The area then fits what it
+ * holds: smaller, or larger, when it pushes what's in its way aside as any area that grows does. Phase 3 lays it out
+ * along its wires instead. Refused while it's locked or collapsed. `undoOf(l, patch)` puts every place back.
+ */
+export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titleOf: (key: string) => string): AreaPlan {
+  const refused = tidyRefusal(layout, key, titleOf);
+  if (refused) return { refused };
+  const area = layout.areas.find((a) => a.key === key)!;
+  const kept = keptOf(l, layout).filter((k) => k.area === key);
+  const none = emptyPatch();
+  type Item = { key: string; rect: Rect; move: (p: FullPatch, r: Rect) => void };
+  const tiles = [...layout.tiles, ...layout.ghosts].filter((t) => t.area === key).sort((a, b) => madeAt(a) - madeAt(b) || a.rect.y - b.rect.y || a.rect.x - b.rect.x);
+  const windowsOf = new Map<string, Item[]>();
+  const rest: Item[] = [];
+  for (const k of kept) {
+    const r = k.at(none);
+    if (!r || layout.ghosts.some((g) => g.area === key && (k.key === `place:${g.front.id}` || (g.stack && k.key === `stack:${g.stack}`)))) continue;
+    const item = { key: k.key, rect: r, move: k.to };
+    const w = k.key.startsWith("tool:") ? layout.windows.find((x) => `tool:${x.id}` === k.key) : undefined;
+    const owner = w?.win.session ? tiles.find((t) => [...t.members, ...(t.closed ?? [])].some((m) => m.id === w.win.session)) : undefined;
+    if (owner) windowsOf.set(owner.key, [...(windowsOf.get(owner.key) ?? []), item]);
+    else rest.push(item);
+  }
+  const items: Item[] = [];
+  for (const t of tiles) {
+    items.push({ key: t.key, rect: t.rect, move: (p, r) => (t.stack ? put(p.stacks, t.stack, { active: own(p.stacks, t.stack)?.active ?? t.front.id, placement: r }) : put(p.workspaces, t.front.id, r)) });
+    items.push(...(windowsOf.get(t.key) ?? []));
+  }
+  items.push(...rest.sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x));
+  if (!items.length) return { refused: `${titleOf(key)} has nothing in it to tidy` };
+  const left = snapUp(area.rect.x + AREA_PAD);
+  const top = snapUp(area.rect.y + AREA_HEADER);
+  const inner = Math.max(area.rect.w - 2 * AREA_PAD, ...items.map((i) => i.rect.w));
+  const p = emptyPatch();
+  let x = left;
+  let y = top;
+  let rowH = 0;
+  const placed: Rect[] = [];
+  for (const it of items) {
+    if (x > left && x + it.rect.w > left + inner) {
+      x = left;
+      y = snapUp(y + rowH + GAP);
+      rowH = 0;
+    }
+    const r = { ...it.rect, x, y };
+    placed.push(r);
+    if (r.x !== it.rect.x || r.y !== it.rect.y) it.move(p, r);
+    x = snapUp(x + it.rect.w + GAP);
+    rowH = Math.max(rowH, it.rect.h);
+  }
+  const b = boundsOf(placed)!;
+  const w = snapUp(b.x + b.w + AREA_PAD - area.rect.x);
+  const h = snapUp(b.y + b.h + AREA_PAD - area.rect.y);
+  if (w !== area.rect.w || h !== area.rect.h) {
+    const grown = { ...area.rect, w, h };
+    // larger either way: what's in its way is pushed aside; only smaller: nothing else moves
+    if (w > area.rect.w || h > area.rect.h) growArea(p, l, layout, key, grown, new Set(items.map((i) => i.key)));
+    else put(p.areas, key, { w, h });
+  }
+  return { patch: finish(p), moves: [], after: null };
+}
+
+/**
+ * What forgetting closed sessions `ids` lets go of on the landscape: each one's place, and the place of a stack whose
+ * every tab is one of them. Their ghosts are gone with them, so a place left behind would only take room nobody sees
+ * (it would pile up as closed sessions are forgotten). Null when nothing is kept for them.
+ */
+export function forgetPatch(l: Landscape, layout: Pick<ResolvedLayout, "tiles" | "ghosts">, ids: readonly string[]): LandscapePatch | null {
+  const p = emptyPatch();
+  for (const id of ids) if (own(l.workspaces, id)) put(p.workspaces, id, null);
+  for (const g of layout.ghosts) if (g.stack && own(l.stacks, g.stack) && g.members.every((s) => ids.includes(s.id))) put(p.stacks, g.stack, null);
+  return finish(p);
+}

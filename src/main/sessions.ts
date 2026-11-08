@@ -17,6 +17,18 @@ import { compactBlocker } from "../shared/contextBudget";
 import { isRemotePaneId, type PaneSnapshot } from "../shared/team/livePanes";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
+/** How much of a closed session's saved output its ghost card reads: its last screens, far more than its last line needs. */
+export const CLOSED_OUTPUT_MAX = 32_000;
+
+/** A tail cut from mid-line, from just after its first line break where one comes before its end (no half line, no split escape). */
+const fromLineStart = (cut: string): string => {
+  const nl = cut.indexOf("\n");
+  return nl >= 0 && nl < cut.length - 1 ? cut.slice(nl + 1) : cut;
+};
+/** The end of `text`, at most `max` characters, from the start of a line where one starts within it. */
+export function tailOf(text: string, max: number): string {
+  return text.length <= max ? text : fromLineStart(text.slice(-max));
+}
 /** How long after an agent's start hook its prompt is ready to take a queued message. */
 const STARTED_SETTLE_MS = 1500;
 
@@ -325,6 +337,42 @@ export class SessionManager {
   resumable(): SessionInfo[] {
     const liveIds = new Set(this.live.keys());
     return this.store.state.sessions.filter((s) => !liveIds.has(s.id));
+  }
+
+  /**
+   * The end of closed session `id`'s saved output, at most `max` bytes cut at a line's start: what its ghost card on the
+   * landscape reads its last line from. "" when it has none saved (it never wrote any, or it was forgotten). Only a
+   * resumable session's: a live pane's output is its terminal's (paneBuffer). Throws when the file can't be read.
+   */
+  closedOutput(id: string, max = CLOSED_OUTPUT_MAX): string {
+    if (this.live.has(id)) throw new Error(`${id} is running: its output is its pane's`);
+    if (!this.store.state.sessions.some((s) => s.id === id)) throw new Error(`${id} isn't one of this Mac's closed sessions`);
+    const held = this.debriefScrollback.get(id);
+    if (held !== undefined) return tailOf(held, max);
+    let fd: number;
+    try {
+      fd = fs.openSync(this.scrollbackFile(id), "r");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return "";
+      throw err;
+    }
+    try {
+      const size = fs.fstatSync(fd).size;
+      const n = Math.min(size, max);
+      const buf = Buffer.alloc(n);
+      fs.readSync(fd, buf, 0, n, size - n);
+      // the last `max` bytes, which may start mid-line (or mid-character): from the next line's start
+      return n < size ? fromLineStart(buf.toString("utf8")) : buf.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  /** The closed sessions (resumable) whose folder is gone, a removed worktree's say: Reopen can't run them where they ran. */
+  missingFolders(): string[] {
+    return this.resumable()
+      .filter((s) => !fs.existsSync(s.cwd))
+      .map((s) => s.id);
   }
 
   /** Start a pane. `notice` is shown in it above the agent's output (see paneNotice). */

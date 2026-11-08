@@ -41,7 +41,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
-import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
+import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -87,7 +87,32 @@ let sessions: SessionInfo[] = [
 // ?stall=quiet: of one that's gone quiet while working
 const stallQ = new URLSearchParams(location.search).get("stall");
 if (stallQ) sessions = sessions.map((s) => (s.id === "s1" ? { ...s, status: "working", stalledSince: now - 6 * min, hooksSilent: stallQ === "hooks" } : s));
-const previous: SessionInfo[] = [session("p1",{ title: "Yesterday's spike", status: "dead", taskGroup: null })];
+// closed sessions this Mac can reopen (main's resumable ones): Previous on the grid, ghosts on the landscape. p1 is loose
+// with no place yet; g1 has its place in 5102; g2's worktree has been removed (missingFolders), so it starts fresh
+let previous: SessionInfo[] = [
+  session("p1", { title: "Yesterday's spike", status: "dead", taskGroup: null }),
+  session("g1", { title: "Profile the tag list", ticketId: "5102", taskGroup: "5102", branch: "5102-quickViewFreeze", cwd: WT("5102-quickViewFreeze"), agent: "codex", status: "dead", conversation: { agent: "codex", id: "conv-g1" }, createdAt: now - 3 * 60 * min }),
+  session("g2", { title: "Spike: org cache", ticketId: "5101", taskGroup: "5101", branch: "5101-orgCache", cwd: WT("5101-orgCache"), status: "dead", conversation: { agent: "claude", id: "conv-g2" }, createdAt: now - 5 * 60 * min }),
+];
+/** The closed sessions whose folders are gone (main's sessions:missingFolders). */
+const goneFolders = new Set(["g2"]);
+// ?lsClosed=<id,…>: those sessions are closed, as if closed with their places kept (y1, which Nick took over, shows Take it back)
+const lsClosedQ = new URLSearchParams(location.search).get("lsClosed")?.split(",").filter(Boolean) ?? [];
+// what each closed session last showed: its saved output (main's sessions:closedOutput)
+const closedOutput: Record<string, string> = {
+  p1: "\x1b[1m> Try a Redis cache for the org list\x1b[0m\r\n\r\n⏺ Measured: the org list loads in 40 ms from Redis, 1.2 s from SQL.\r\n",
+  g1: "codex\r\n› Profile the tag list\r\n\r\n• Memoizing the tag list keeps typing under 16 ms a key.\r\n\r\n› ",
+  g2: "\x1b[1m> Cache the last org per user\x1b[0m\r\n\r\n⏺ The cache works; its backup wasn't deleted from origin.\r\n",
+};
+for (const id of lsClosedQ) {
+  const s = sessions.find((x) => x.id === id);
+  if (!s) {
+    console.error(`[preview] ?lsClosed found no session ${id}`);
+    continue;
+  }
+  sessions = sessions.filter((x) => x !== s);
+  previous = [...previous, { ...s, status: "dead" }];
+}
 
 const C = { dim: "\x1b[2m", reset: "\x1b[0m", bold: "\x1b[1m", amber: "\x1b[38;5;214m", teal: "\x1b[38;5;43m", red: "\x1b[31m", green: "\x1b[32m" };
 const buffers: Record<string, string> = {
@@ -943,9 +968,9 @@ const landscapeFixture = (): Landscape => {
   l.migratedAt = new Date(now - 2 * 24 * 60 * min).toISOString();
   l.tourDone = true;
   const M = presetSize("agent");
-  const everyone = [...sessions, ...live.remote];
-  /** An area two M workspaces wide at (x, y): `ids` in reading order (a stack once, its first member in front), then its ghosts. */
-  const area = (key: string, x: number, y: number, ids: string[], ghosts: Record<string, Omit<Ghost, "placement" | "group">> = {}): Area => {
+  const everyone = [...sessions, ...previous, ...live.remote];
+  /** An area two M workspaces wide at (x, y): `ids` in reading order (a stack once, its first member in front), closed ones' (ghosts') too. */
+  const area = (key: string, x: number, y: number, ids: string[]): Area => {
     const inside: Rect[] = [];
     let frame: Area = { x, y, w: 2 * AREA_PAD + 2 * M.w + GAP, h: AREA_PAD, repos: [{ path: REPO, base: "dev" }] };
     // grown for each, as placeNew needs: its next row starts below what's in the area
@@ -961,7 +986,6 @@ const landscapeFixture = (): Landscape => {
       if (!stack) l.workspaces[id] = put(presetSize(kindOf(s)));
       else l.stacks[stack] ??= { active: id, placement: put(presetSize(kindOf(s))) };
     }
-    for (const [id, g] of Object.entries(ghosts)) l.ghosts[id] = { ...g, group: key, placement: put(M) };
     return (l.areas[key] = fitAreaTo(frame, inside));
   };
   if (manyQ) {
@@ -989,13 +1013,8 @@ const landscapeFixture = (): Landscape => {
       }
     return l;
   }
-  const a5101 = area("5101", 0, 0, ["s1", "s2", "s3", SAM_PANE, NICK_PANE, "s4", "s8"]);
-  const a5102 = area("5102", a5101.w + AREA_GAP, 0, ["s5", "s6"], {
-    g1: {
-      title: "Profile the tag list", agent: "codex", cwd: WT("5102-quickViewFreeze"), repoPath: REPO, branch: "5102-quickViewFreeze", ticketId: "5102",
-      conversation: { agent: "codex", id: "conv-g1" }, summary: "Memoizing the tag list keeps typing under 16 ms a key.", closedAt: new Date(now - 50 * min).toISOString(),
-    },
-  });
+  const a5101 = area("5101", 0, 0, ["s1", "s2", "s3", SAM_PANE, NICK_PANE, "s4", "s8", "g2"]);
+  const a5102 = area("5102", a5101.w + AREA_GAP, 0, ["s5", "s6", "g1"]);
   area("5110", a5102.x, a5102.y + a5102.h + AREA_GAP, ["y1", remotePaneId(NICK, "n7")]);
   // the assistant is ungrouped: loose, next to the first area
   const placed = [...Object.values(l.areas), ...Object.values(l.workspaces)];
@@ -1207,7 +1226,12 @@ let renameLag = 0;
 const api: Record<string, (...a: any[]) => any> = {
   // sessions and the grid
   listSessions: async () => sessions.map((s) => ({ ...s })),
-  resumableSessions: async () => previous,
+  // as main's resumable(): the closed ones it keeps, never one running now
+  resumableSessions: async () => previous.filter((p) => !sessions.some((s) => s.id === p.id)).map((p) => ({ ...p })),
+  // main's sessions:closedOutput: a closed session's saved output (its scrollback), "" when it has none
+  closedOutput: async (id: string) => closedOutput[id] ?? buffers[id] ?? "",
+  // main's sessions:missingFolders: the closed sessions whose folders are gone (a removed worktree)
+  missingFolders: async () => previous.filter((p) => goneFolders.has(p.id)).map((p) => p.id),
   openExternal: async (url: string) => console.info(`[preview] would open ${url} in the browser`),
   collabProblems: async () => [],
   // main answers { path, content } (the path with ~ expanded), or { error }; ?claudeMd=error rejects the call outright
@@ -1235,7 +1259,9 @@ const api: Record<string, (...a: any[]) => any> = {
   setGroup: async (id: string, group: string | null) => {
     // ?setGroupFail=<id>: that session's group can't be set
     if (params.get("setGroupFail") === id) return err(`${id}'s group can't be set here`);
+    // a live session or a closed one, as main's setGroup moves either
     sessions = sessions.map((s) => (s.id === id ? { ...s, taskGroup: group } : s));
+    previous = previous.map((s) => (s.id === id ? { ...s, taskGroup: group } : s));
     sessionsChanged();
   },
   renameSession: async (id: string, title: string) => {
@@ -1268,8 +1294,12 @@ const api: Record<string, (...a: any[]) => any> = {
     if (renameLag) setTimeout(rekey, renameLag);
     else rekey();
   },
-  killSession: async (id: string) => {
-    sessions = sessions.filter((s) => s.id !== id);
+  // as main's kill: closed, it stays resumable (its place kept) unless it's forgotten
+  killSession: async (id: string, forget: boolean) => {
+    const s = byId(id);
+    sessions = sessions.filter((x) => x.id !== id);
+    previous = previous.filter((p) => p.id !== id);
+    if (!forget && s && !s.room?.remote) previous = [...previous, { ...s, status: "dead" }];
     sessionsChanged();
   },
   clearWaiting: async (id: string) => {
@@ -2648,6 +2678,41 @@ if (lsPick)
       }, 450);
     }, 400)
   );
+// S6b: ?lsKey=<key> presses that key on the landscape once the selection has settled (cmd-g: ⌘G), as ?lsPick=s4,s8&
+// lsKey=cmd-g stacks two, or ?lsSelect=area:5101&lsKey=t tidies an area; ?lsDrag=move|resize|tab holds a drag mid-way
+// for a screenshot of its guides or size box: s8's header 2 px off the api stack's left edge, s8's right edge 60 px
+// wider, or (in a stack) s8's tab over s1. Nothing is released.
+const lsKey = params.get("lsKey");
+if (lsKey)
+  waitFor(".ls-world .ls-node", () =>
+    setTimeout(() => {
+      const meta = lsKey.startsWith("cmd-");
+      const v = document.querySelector<HTMLElement>(".ls-viewport");
+      v?.focus();
+      v?.dispatchEvent(new KeyboardEvent("keydown", { key: meta ? lsKey.slice(4) : lsKey, metaKey: meta, bubbles: true, cancelable: true }));
+    }, 750)
+  );
+const lsDrag = params.get("lsDrag");
+if (lsDrag)
+  waitFor(".ls-world .ls-node", () =>
+    setTimeout(() => {
+      const q = (sel: string) => document.querySelector<HTMLElement>(`.ls-world ${sel}`);
+      const mid = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      };
+      const s8 = q('.ls-node[data-front="s8"]');
+      const from = lsDrag === "tab" ? q('.ls-tab[data-sid="s8"]') : lsDrag === "resize" ? s8?.querySelector(".ls-rz.r") : s8?.querySelector(".ls-head .ls-spacer");
+      const api = q('.ls-node[data-ws="ws:5101/api"]');
+      const s1 = q('.ls-node[data-front="s1"] .ls-head .ls-spacer');
+      if (!from || (lsDrag === "move" && (!s8 || !api)) || (lsDrag === "tab" && !s1)) return console.error(`[preview] ?lsDrag=${lsDrag} found nothing to drag`);
+      const p = mid(from);
+      const to = lsDrag === "resize" ? { x: p.x + 60, y: p.y } : lsDrag === "tab" ? mid(s1!) : { x: p.x + api!.getBoundingClientRect().left - s8!.getBoundingClientRect().left + 2, y: p.y + 24 };
+      const init = { bubbles: true, cancelable: true, pointerId: 11, button: 0, buttons: 1 };
+      from.dispatchEvent(new PointerEvent("pointerdown", { ...init, clientX: p.x, clientY: p.y }));
+      for (let i = 1; i <= 6; i++) window.dispatchEvent(new PointerEvent("pointermove", { ...init, clientX: p.x + ((to.x - p.x) * i) / 6, clientY: p.y + ((to.y - p.y) * i) / 6 }));
+    }, 1100)
+  );
 // the selection bar (S6a): ?lsSelect=area:<key> clicks that area's bare patch (its lower right corner) as a person
 // would, =ws:<id> that workspace's header (or card), =pick:<id,…> Shift-clicks those after Esc lets the selection go;
 // ?lsBarMenu=more|tools|move then opens the bar's ⋯, Tools ▾ or Move to area ▾; ?lsBarExtended starts with the bar's
@@ -3165,7 +3230,7 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit", "landscapeReviewAudit", "landscapeReadOnlyAudit", "landscapeBarAudit"].some((k) => params.has(k)) || flyAudit) {
+if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit", "landscapeReviewAudit", "landscapeReadOnlyAudit", "landscapeBarAudit", "landscapeGhostAudit", "landscapeGhostLifeAudit", "landscapeArrangeAudit"].some((k) => params.has(k)) || flyAudit) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
@@ -5701,6 +5766,271 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       out.error = String(err instanceof Error ? err.stack : err);
     }
     report(`mb-landscape-bar-audit-${part}`, out);
+  });
+
+  // ?landscapeGhostAudit (with ?motion=off&lsClosed=y1): ghosts (S6b) drawn at zooms through the cards band and at 45%
+  // and 100%. Each ghost: inside its area's patch and clear of another area's name line or header; every row it shows
+  // wholly inside it, and its buttons inside their row; the rows it shows the first of its rows (a short one gives up
+  // the last first). Into <script id="mb-landscape-ghost-audit">.
+  if (params.has("landscapeGhostAudit")) waitFor(".ls-world .ls-ghost", async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(900);
+      const shown = (e: Element) => {
+        const st = getComputedStyle(e);
+        const r = e.getBoundingClientRect();
+        return st.display !== "none" && st.visibility !== "hidden" && r.width > 0 && r.height > 0;
+      };
+      const R = (r: DOMRect) => ({ x: r.left, y: r.top, w: r.width, h: r.height });
+      const inside = (r: DOMRect, a: DOMRect) => r.left >= a.left - 0.5 && r.top >= a.top - 0.5 && r.right <= a.right + 0.5 && r.bottom <= a.bottom + 0.5;
+      const meet = (r: DOMRect, a: DOMRect) => r.left < a.right && a.left < r.right && r.top < a.bottom && a.top < r.bottom;
+      const zooms: { zoom: number; band: string | null; ghosts: Record<string, { area: string; rows: string[]; rect: Rect }> }[] = [];
+      const problems: string[] = [];
+      for (const z of [0.1, 0.13, 0.15, 0.2, 0.3, 0.45, 1]) {
+        await pinchTo(z);
+        await sleep(400);
+        const zoom = Math.round(zoomNow() * 1000) / 1000;
+        const band = [...vp().classList].find((c) => c.startsWith("ls-band-")) ?? null;
+        const ghosts: (typeof zooms)[number]["ghosts"] = {};
+        const names = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-area")].flatMap((a) =>
+          [...a.querySelectorAll<HTMLElement>(":scope > .ls-area-title, :scope > .ls-area-head")].filter(shown).map((n) => ({ area: a.dataset.area ?? "", r: n.getBoundingClientRect() })),
+        );
+        for (const g of document.querySelectorAll<HTMLElement>(".ls-world .ls-ghost")) {
+          if (!shown(g)) continue;
+          const id = g.dataset.front ?? "?";
+          const at = `${zoom} ${id}`;
+          const gr = g.getBoundingClientRect();
+          const area = g.dataset.area ?? "";
+          const patch = document.querySelector(`.ls-world ${areaEl(area)}`);
+          if (patch && !inside(gr, patch.getBoundingClientRect())) problems.push(`${at}: drawn past its area ${area}`);
+          for (const n of names) if (n.area !== area && meet(gr, n.r)) problems.push(`${at}: drawn under ${n.area}'s name`);
+          const box = g.querySelector(".lg-rows")!.getBoundingClientRect();
+          if (!inside(box, gr)) problems.push(`${at}: its rows' box is past its place`);
+          const rows = [...g.querySelectorAll<HTMLElement>("[data-row]")];
+          // a row left out has wrapped to the column past the right edge, clipped
+          const kept = rows.filter((r) => r.getBoundingClientRect().left < box.right - 1);
+          kept.forEach((r, i) => {
+            if (r !== rows[i]) problems.push(`${at}: shows ${r.dataset.row} without ${rows[i].dataset.row}`);
+            const rr = r.getBoundingClientRect();
+            if (!inside(rr, box)) problems.push(`${at}: its ${r.dataset.row} is cut by its edge`);
+            for (const b of r.querySelectorAll("button"))
+              if (shown(b) && !inside(b.getBoundingClientRect(), rr)) problems.push(`${at}: ${b.textContent} is past its ${r.dataset.row} row`);
+            for (const n of names) if (n.area !== area && meet(rr, n.r)) problems.push(`${at}: its ${r.dataset.row} is under ${n.area}'s name`);
+          });
+          if (!kept.length) problems.push(`${at}: shows nothing`);
+          ghosts[id] = { area, rows: kept.map((r) => r.dataset.row ?? "?"), rect: R(gr) };
+        }
+        zooms.push({ zoom, band, ghosts });
+      }
+      out.zooms = zooms;
+      out.problems = problems;
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-ghost-audit", out);
+  });
+
+  // ?landscapeGhostLifeAudit (with ?motion=off): a ghost's life (S6b), worked as a person would. The area tree's foot
+  // without Previous, its Connected line kept; s4 closed from its menu leaving its ghost where it was, and reopened from
+  // the ghost's Reopen in the same place; g2's Start fresh opening New session for its area; g1 forgotten from its ⋯,
+  // its place let go; 5101's Clear ghosts (confirmed); the Loose row's menu offering Reopen all, which reopens p1.
+  // Into <script id="mb-landscape-ghost-life-audit">.
+  if (params.has("landscapeGhostLifeAudit")) waitFor(".ls-world .ls-ghost", async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(900);
+      await fitView();
+      const ghost = (id: string) => document.querySelector<HTMLElement>(`.ls-world .ls-ghost[data-front="${CSS.escape(id)}"]`);
+      const wsNode = (id: string) => document.querySelector<HTMLElement>(`.ls-world .ls-node[data-front="${CSS.escape(id)}"]`);
+      // its place, as its style has it: calc(<x>px + var(--ci))
+      const placeOf = (el: HTMLElement | null) => {
+        const num = (v: string) => Number(/(-?[\d.]+)px/.exec(v)?.[1] ?? NaN);
+        return el ? { x: num(el.style.left), y: num(el.style.top), h: num(el.style.getPropertyValue("--gh")) } : null;
+      };
+      const tree = document.querySelector(".area-tree");
+      out.foot = { previous: [...(tree?.querySelectorAll("h2") ?? [])].some((h) => h.textContent?.includes("Previous")), connected: !!tree?.querySelector(".lt-connected") };
+
+      // ⌘K offers every ghost at once (Previous's restore all)
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
+      await sleep(300);
+      const input = document.querySelector<HTMLInputElement>(".palette input");
+      if (input) {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "closed workspaces");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await sleep(200);
+      }
+      out.palette = [...document.querySelectorAll<HTMLElement>(".palette .row .lab")].map((r) => r.textContent ?? "").filter((t) => t.includes("closed workspaces"));
+      esc(input ?? undefined);
+      await sleep(300);
+
+      // closed from its menu: no dialog for a terminal with no worktree, kept resumable, its ghost at its place
+      const s4Place = { ...landscape.workspaces.s4! };
+      let mark = calls.length;
+      wsNode("s4")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(wsNode("s4")!, 0.5, 0.3) }));
+      await sleep(300);
+      await ctxPick("Close…");
+      await sleep(600);
+      out.closed = { kill: callsSince(mark, "killSession"), ghost: !!ghost("s4"), node: !!wsNode("s4"), stored: landscape.workspaces.s4, at: placeOf(ghost("s4")), was: s4Place };
+
+      // Reopen: relaunched under its id, back where it was
+      mark = calls.length;
+      ghost("s4")!.querySelector<HTMLButtonElement>('[data-act="reopen"]')!.click();
+      await sleep(900);
+      out.reopened = { relaunch: callsSince(mark, "relaunchSession"), ghost: !!ghost("s4"), node: !!wsNode("s4"), nodeAt: placeOf(wsNode("s4")), stored: landscape.workspaces.s4 };
+
+      // Start fresh, for g2 whose worktree is gone: New session, for its area
+      ghost("g2")!.querySelector<HTMLButtonElement>('[data-act="fresh"]')!.click();
+      await sleep(600);
+      const dlg = document.querySelector(".modal");
+      out.fresh = { dialog: !!dlg, title: dlg?.querySelector("h3, h2")?.textContent ?? null, mentions5101: !!dlg?.textContent?.includes("5101") };
+      esc(dlg ?? undefined);
+      await sleep(400);
+
+      // Forget g1 from its ⋯: let go in main, and its place on the landscape
+      mark = calls.length;
+      ghost("g1")!.querySelector<HTMLButtonElement>(".ls-more")!.click();
+      await sleep(300);
+      const g1Menu = ctxRows();
+      await ctxPick("Forget it");
+      await sleep(700);
+      out.forgot = { menu: g1Menu, kill: callsSince(mark, "killSession"), ghost: !!ghost("g1"), stored: landscape.workspaces.g1 ?? null };
+
+      // 5101's Clear ghosts, confirmed
+      const asked: string[] = [];
+      w.confirm = (q: string) => (asked.push(q), true);
+      mark = calls.length;
+      const head = document.querySelector(`${areaEl("5101")} .ls-area-head`) ?? document.querySelector(`${areaEl("5101")} .ls-area-title`);
+      head!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(head!, 0.2, 0.5) }));
+      await sleep(300);
+      const areaMenu = ctxRows();
+      await ctxPick("Clear ghosts (1)…");
+      await sleep(700);
+      out.cleared = { menu: areaMenu, asked, kill: callsSince(mark, "killSession"), ghost: !!ghost("g2") };
+
+      // the Loose row's menu: Reopen all (1), which reopens p1
+      mark = calls.length;
+      const loose = document.querySelector<HTMLElement>('.area-tree .lt-area[data-area="ungrouped"] .lt-head');
+      loose!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(loose!, 0.3, 0.5) }));
+      await sleep(300);
+      const looseMenu = ctxRows();
+      await ctxPick("Reopen all (1)");
+      await sleep(900);
+      out.loose = { menu: looseMenu, relaunch: callsSince(mark, "relaunchSession"), ghost: !!ghost("p1"), node: !!wsNode("p1") };
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-ghost-life-audit", out);
+  });
+
+  // ?landscapeArrangeAudit=a|b (with ?motion=off): moving, resizing, stacks and Tidy (S6b), worked as a person would, at
+  // 50%. =a: s8 dragged by its header to within a few px of the api stack's left edge (a guide drawn meanwhile, the
+  // place snapped to that edge), then its right edge dragged (the size box saying cols × rows, the pty resized only
+  // after the drop), then 5102 locked and s5 dragged and resized (refused, said). =b: s4 and s8 picked and stacked with
+  // ⌘G, its tab bringing s8 to the front, s8's tab dragged out into 5101 (the stack of one let go); 5101 tidied with T
+  // and put back with the note's Undo. Into <script id="mb-landscape-arrange-audit-<part>">.
+  if (params.has("landscapeArrangeAudit")) waitFor(".ls-world .ls-node", async () => {
+    const part = params.get("landscapeArrangeAudit") || "a";
+    const out: Record<string, unknown> = { part };
+    try {
+      await sleep(900);
+      await fitView();
+      await zoomOnArea("5101", 0.5);
+      const ws = (key: string) => document.querySelector<HTMLElement>(`.ls-world .ls-node[data-ws="${CSS.escape(key)}"]`);
+      const spacer = (el: HTMLElement) => el.querySelector<HTMLElement>(".ls-head .ls-spacer")!;
+      const bareHead = (el: HTMLElement) => mid(spacer(el).getBoundingClientRect());
+      const guidesNow = () => [...document.querySelectorAll<HTMLElement>(".ls-guides .ls-guide")].map((g) => g.dataset.axis ?? "?");
+      const boxNow = () => {
+        const b = document.querySelector<HTMLElement>(".ls-sizebox");
+        return b && !b.hidden ? { size: b.dataset.size ?? null, label: b.textContent } : null;
+      };
+      const updates = (mark: number) => calls.slice(mark).filter((c) => c.fn === "landscapeUpdate").length;
+      /** A drag from `from` by (dx, dy) in steps; `during` reads what's shown before the release. */
+      const dragBy = async <T,>(from: { x: number; y: number }, dx: number, dy: number, during: () => T, on?: Element) => {
+        pressAt(from.x, from.y, on);
+        for (let i = 1; i <= 6; i++) {
+          moveTo(from.x + (dx * i) / 6, from.y + (dy * i) / 6);
+          await sleep(16);
+        }
+        const seen = during();
+        upAt(from.x + dx, from.y + dy);
+        await sleep(800);
+        return seen;
+      };
+      if (part === "a") {
+        // moved by its header to the api stack's left edge, give or take 2 px on screen
+        const dx = ws("ws:5101/api")!.getBoundingClientRect().left - node("s8")!.getBoundingClientRect().left + 2;
+        let mark = calls.length;
+        const during = await dragBy(bareHead(node("s8")!), dx, 24, () => ({ guides: guidesNow(), box: boxNow() }), spacer(node("s8")!));
+        out.move = { during, guidesAfter: guidesNow().length, updates: updates(mark), s8: landscape.workspaces.s8, apiX: landscape.stacks["5101/api"]?.placement.x ?? null };
+
+        // its right edge: a size box saying cols × rows while dragging, the pty resized only after the drop
+        const before = { ...landscape.workspaces.s8! };
+        mark = calls.length;
+        const rz = node("s8")!.querySelector<HTMLElement>(".ls-rz.r")!;
+        const seen = await dragBy(mid(rz.getBoundingClientRect()), 60, 0, () => ({ box: boxNow(), resized: callsSince(mark, "sessionResize").length, guides: guidesNow() }), rz);
+        out.resize = { during: seen, boxAfter: boxNow(), updates: updates(mark), before, after: landscape.workspaces.s8 };
+
+        // 5102 locked: s5 neither moves nor resizes, and the note says why
+        tools("5102", "Lock")!.click();
+        await sleep(400);
+        mark = calls.length;
+        await dragBy(bareHead(node("s5")!), 80, 40, () => null, spacer(node("s5")!));
+        const moveSaid = noteText();
+        const r5 = node("s5")!.querySelector<HTMLElement>(".ls-rz.b")!;
+        await dragBy(mid(r5.getBoundingClientRect()), 0, 60, () => null, r5);
+        out.locked = { updates: updates(mark), moveSaid, resizeSaid: noteText(), s5: landscape.workspaces.s5 };
+      } else {
+        // s4 and s8 picked (Shift-clicks on their headers) and stacked with ⌘G
+        for (const id of ["s4", "s8"]) {
+          const p = bareHead(node(id)!);
+          node(id)!.querySelector(".ls-head .ls-spacer")!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, shiftKey: true, pointerId: 3, clientX: p.x, clientY: p.y }));
+          window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, button: 0, pointerId: 3, clientX: p.x, clientY: p.y }));
+          await sleep(150);
+        }
+        await sleep(300);
+        out.picked = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node.picked")].map((n) => n.dataset.front);
+        vp().focus();
+        let mark = calls.length;
+        key(vp(), "g", { metaKey: true });
+        await sleep(900);
+        const stack = () => document.querySelector<HTMLElement>('.ls-world .ls-node.stack[data-ws^="ws:5101/tabs"]');
+        const tabs = () => [...(stack()?.querySelectorAll<HTMLElement>(".ls-tab[data-sid]") ?? [])].map((t) => t.dataset.sid);
+        out.stacked = { groups: callsSince(mark, "setGroup"), tabs: tabs(), front: stack()?.dataset.front ?? null, stored: landscape.stacks["5101/tabs"] ?? null, s4: landscape.workspaces.s4 ?? null, s8: landscape.workspaces.s8 ?? null };
+
+        // its other tab brings s8 to the front
+        const otherId = stack()?.dataset.front === "s8" ? "s4" : "s8";
+        stack()!.querySelector<HTMLElement>(`.ls-tab[data-sid="${otherId}"]`)!.click();
+        await sleep(500);
+        out.switched = { to: otherId, front: stack()?.dataset.front ?? null, stored: landscape.stacks["5101/tabs"]?.active ?? null };
+
+        // s8's tab dragged out over s1 in 5101: s8 is 5101's own again where it's dropped, what it lands on pushed
+        // aside, and the stack of one is let go
+        const tab8 = stack()!.querySelector<HTMLElement>('.ls-tab[data-sid="s8"]')!;
+        const onto = bareHead(node("s1")!);
+        mark = calls.length;
+        const t0 = mid(tab8.getBoundingClientRect());
+        const during = await dragBy(t0, onto.x - t0.x, onto.y - t0.y, () => ({ box: boxNow() }), tab8);
+        const placed = Object.fromEntries(["s1", "s4", "s8"].map((id) => [id, landscape.workspaces[id] ?? null]));
+        out.unstacked = { during, groups: callsSince(mark, "setGroup"), stack: !!stack(), stored: landscape.stacks["5101/tabs"] ?? null, s8: !!node("s8"), s4: !!node("s4"), placed, api: landscape.stacks["5101/api"]?.placement ?? null };
+
+        // T on the selected area tidies it; the note's Undo puts every place back
+        const placesBefore = JSON.stringify(landscape.workspaces);
+        await selectAreaAt("5101");
+        vp().focus();
+        mark = calls.length;
+        key(vp(), "t");
+        await sleep(800);
+        const said = noteText();
+        const tidied = JSON.stringify(landscape.workspaces) !== placesBefore;
+        const undo = [...document.querySelectorAll<HTMLButtonElement>(".ls-note .ls-note-act")].find((b) => b.textContent === "Undo");
+        undo?.click();
+        await sleep(800);
+        out.tidy = { said, tidied, updates: updates(mark), undo: !!undo, back: JSON.stringify(landscape.workspaces) === placesBefore };
+      }
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report(`mb-landscape-arrange-audit-${part}`, out);
   });
 
   // ?landscapeReviewAudit (with ?motion=off&lsPersist): the S5 review's fixes, worked as a person would, in two pages

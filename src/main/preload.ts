@@ -6,6 +6,10 @@ const api = {
   // sessions
   listSessions: () => ipcRenderer.invoke("sessions:list"),
   resumableSessions: () => ipcRenderer.invoke("sessions:resumable"),
+  /** A closed session's saved output, its end only: what its ghost card's last line comes from. */
+  closedOutput: (id: string): Promise<IpcResult<string>> => ipcRenderer.invoke("sessions:closedOutput", id),
+  /** The closed sessions whose folders are gone: their ghosts offer to start fresh. */
+  missingFolders: (): Promise<IpcResult<string[]>> => ipcRenderer.invoke("sessions:missingFolders"),
   createSession: (req: unknown) => ipcRenderer.invoke("sessions:create", req),
   relaunchSession: (id: string) => ipcRenderer.invoke("sessions:relaunch", id),
   /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */

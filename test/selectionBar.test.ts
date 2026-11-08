@@ -7,7 +7,6 @@ import {
   BAR_EXTENDED_PREF,
   BAR_GAP,
   BAR_MARGIN,
-  STACK_COMING,
   areaBarItems,
   areaStatus,
   barAnchor,
@@ -76,6 +75,8 @@ const areaEnv = (over: Partial<AreaEnv> = {}): AreaEnv => ({
   rename: vi.fn(),
   collapse: vi.fn(),
   lock: vi.fn(),
+  tidy: null,
+  ghosts: null,
   artifacts: vi.fn(),
   chat: vi.fn(),
   board: vi.fn(),
@@ -156,12 +157,14 @@ describe("the selection bar's buttons come from the action model", () => {
     expect(items[1].disabled).toBeFalsy();
   });
 
-  it("several: Make area… M, Stack ⌘G (coming), Move to area ▾ and Close…, one model with their right-click", () => {
+  it("several: Make area… M, Stack ⌘G, Move to area ▾ and Close…, one model with their right-click", () => {
     const make = vi.fn();
     const close = vi.fn();
     const to = vi.fn();
+    const stack = vi.fn();
     const acts = severalActions({
       makeArea: make,
+      stack,
       areas: [
         { key: "5101", title: "#5101", refused: "They're in #5101 already", pick: vi.fn() },
         { key: "5102", title: "#5102", refused: null, pick: to },
@@ -171,11 +174,13 @@ describe("the selection bar's buttons come from the action model", () => {
     const items = severalBarItems(acts);
     expect(keys(items)).toEqual(["makeArea", "stack", "move", "close"]);
     expect(items[0]).toMatchObject({ label: "Make area…", kbd: "M", title: "Make an area of them (M)" });
-    expect(items[1]).toMatchObject({ disabled: true, title: STACK_COMING, kbd: "⌘G" });
+    expect(items[1]).toMatchObject({ label: "Stack", kbd: "⌘G", title: "Stack them into one card with a tab each (⌘G)" });
+    expect(items[1].disabled).toBeFalsy();
     expect(items[3]).toMatchObject({ label: "Close…", tone: "danger" });
     items[0].onPick!(null as unknown as HTMLElement);
+    items[1].onPick!(null as unknown as HTMLElement);
     items[3].onPick!(null as unknown as HTMLElement);
-    expect([make.mock.calls.length, close.mock.calls.length]).toEqual([1, 1]);
+    expect([make.mock.calls.length, stack.mock.calls.length, close.mock.calls.length]).toEqual([1, 1, 1]);
     // Move to area ▾ is the model's Move rows, the area they're in off saying why
     const moves = items[2].menu!() as ModelAction[];
     expect(moves.map((m) => [m.label, !!m.disabled, m.title ?? null])).toEqual([
@@ -188,7 +193,9 @@ describe("the selection bar's buttons come from the action model", () => {
     expect(rows(severalMenu(3, acts))).toEqual(["# 3 selected", "Make area…", "Stack", "-", "# Move to area", "#5101", "#5102", "-", "Close…"]);
     expect(actionOf(acts, "makeArea")!.title).toBe("Make an area of them");
     // none that can be closed here: Close is off, saying why
-    expect(severalBarItems(severalActions({ makeArea: make, areas: [], close: { no: "They're teammates' sessions: theirs to close" } })).at(-1)).toMatchObject({ disabled: true, title: "They're teammates' sessions: theirs to close" });
+    expect(severalBarItems(severalActions({ makeArea: make, stack, areas: [], close: { no: "They're teammates' sessions: theirs to close" } })).at(-1)).toMatchObject({ disabled: true, title: "They're teammates' sessions: theirs to close" });
+    // several that can't be stacked: Stack is off, saying why (planStack's refusal)
+    expect(severalBarItems(severalActions({ makeArea: make, stack: { no: "They're in different areas" }, areas: [], close })).find((i) => i.key === "stack")).toMatchObject({ disabled: true, title: "They're in different areas" });
   });
 
   it("an area's status says what its sessions do, or how many workspaces it has", () => {

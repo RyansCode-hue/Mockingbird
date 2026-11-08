@@ -2,8 +2,8 @@
 
 Status: S1 (model, store, migration), S2 (the surface, behind Settings →
 Labs → Landscape), S3 (semantic zoom and peek), S4 (areas), S5 (tools and
-the workspace header) and S6a (the selection bar and right-click create)
-built; S6b (moving, resizing, stacks, Tidy, ghost cards) next.
+the workspace header), S6a (the selection bar and right-click create) and
+S6b (moving, resizing, stacks, Tidy, ghost cards) built; S7 (Needs you) next.
 The spec is [landscape.md](landscape.md); this file is how its phase 1 gets
 built.
 
@@ -1741,6 +1741,146 @@ Design O, with Artifacts as a window, and N's workspace header.
   - **Left for S6b:** moving and resizing with snapping and guides; stacks
     (the bar's Stack is off until then); Tidy; ghost cards, Reopen all and
     Clear ghosts, with S2's and S4's leftovers above.
+- **S6b — As built** (moving, resizing, stacks, Tidy and ghost cards):
+  - **Moving and resizing** (`Landscape.tsx`'s gestures, the rules in
+    `landscapeModel.ts`):
+    - A header drag moves a workspace; its edges and corners (`.ls-rz`
+      handles, `RESIZE_EDGES`) resize it. Both go through `snapRect`: each
+      moving edge snaps, within `SNAP_PX` (6) on screen, to a neighbour's edge
+      lined up or `GAP` beside it, or to the area's inside edges (its padding,
+      under its header); otherwise it's on the 8 px grid. A resize keeps at
+      least `minWorkspace()` (a 40 × 8 terminal). Guides are drawn in the
+      world, a screen px wide, one per neighbour lined up on the snapped line
+      (`drawGuides`, imperative, never through a render).
+    - A move translates the workspace itself while dragging. A resize and a
+      tab dragged out show an outline instead (`.ls-sizebox`), labelled with
+      the cols × rows the terminal would hold, or the tab's title; the pty is
+      resized only once the drop's place is saved, and zooming never resizes
+      it (S2's rule, unchanged).
+    - `planMoveTile` and `planResizeTo` push what the dropped rect covers
+      aside (`pushFrom`: in an area, its workspaces and what it keeps, places
+      nobody sees passive; then the area fits and grows, pushing neighbours,
+      locked ones whole). The moved workspace never moves. Loose, it's kept
+      clear of the areas and pushes only loose things. Size S/M/L (the ⋯) now
+      pushes too, rather than looking for a free spot (S5's rule).
+    - A locked area refuses a move or resize as the drag starts, and the
+      note says why; so is a teammate's resize (their terminal's size).
+  - **Stacks** (`planStack`, `planUnstack`):
+    - ⌘G on several, or the bar's Stack (now the model's row, through the
+      one gate), makes a sub-group `area/tabs` (`tabs-2`… when taken) where
+      the first of them in reading order was, its session in front; a stack
+      among them takes the others in. A teammate's workspace stays out, the
+      note saying so. Refused across areas, loose, or in a locked area.
+    - A tab click brings it to the front; a tab dragged out (`"tab"`
+      gesture) drops it where it's let go as the area's own workspace,
+      pushing what it lands on, its own stack too. A stack left with one tab
+      is let go, that tab taking the stack's place; a front tab leaving
+      brings the next to the front. A stacked card has its tabs layered
+      behind it (`.ls-node.stack`), zoomed out too.
+  - **Tidy** (`planTidy`, `tidyRefusal`): T on the selected area (or the
+    selected workspace's), its ⋯, or the hover toolbar, which now renders the
+    area model's Collapse, Lock and Tidy rows (`arrange`). Rows as wide as the
+    area is inside, in the order workspaces and ghosts were made (earliest
+    session), each session's tool windows after it, then what else the area
+    keeps in reading order; the area then fits, pushing neighbours when it
+    grows. The note says "Tidied …" with **Undo** (`undoOf`), also ⌘Z while
+    it shows. Refused locked, collapsed or empty.
+  - **Ghost cards** (option A, outline; `GhostCard.tsx`):
+    - A ghost is a closed session this Mac can resume (main's resumable
+      ones, room tags merged in), drawn at the place `landscape.json` kept for
+      it (`workspaces`, or its stack's). `resolveLayout(…, closed)` places one
+      with no place as any new workspace, saves it, and keeps ghosts apart
+      from `tiles`, so selection, focus, peek and counts never take one. A
+      closed tab of a stack on screen is a faded tab on it (`Tile.closed`).
+      Ghosts are pushed aside but push nothing. The old `l.ghosts` record is
+      left unused (the format stays v2).
+    - Rows, top to bottom: title (with the kind and ⋯), **↺ Reopen** and
+      Forget, its last line (`sessions:closedOutput`, the scrollback's tail),
+      its status with ticket · branch. They're also the order a short ghost
+      gives them up from the end: `.lg-rows` is a column that wraps, each row
+      its full width, so a row that doesn't fit whole goes to a second column
+      past the clipped edge. Zoomed out (cards band) it's inset by `--ci` as
+      cards are, its type at screen size, Forget in its ⋯, and its foot kept
+      clear of the next area's name line (`ghostDrawnHeight`, set by
+      `paintCompact` as `--ls-gh`), unless that leaves too little of it.
+    - Actions (`ghostActions`, its card, ⋯ and right-click): Reopen
+      (relaunched under its id, the cost asked first, so it lands in its
+      spot), off for a copy a teammate continues (the take-over rule; main
+      refuses too) and for one whose folder is gone (`sessions:
+      missingFolders`), which offers **Start fresh** (New session seeded
+      with its agent, area and repo; `PlaceHint.replaces` puts the new one
+      exactly in the ghost's place and the ghost is forgotten once it's
+      saved); the room's Take it back; **Forget** (`killSession(id, true)`
+      and `forgetPatch`, which drops its place, and a stack's once every tab
+      is forgotten).
+    - `ghostsActions`: Reopen all and Clear ghosts (asked with a confirm),
+      over an area's (its ⋯), the loose ones' (the tree's Loose row, a
+      right-click outside every area) and every ghost (⌘K).
+    - **Closing on the landscape keeps the session resumable**, so every
+      close leaves a ghost: `requestClose`'s quick paths no longer forget,
+      and the close dialog's Keep says "its ghost stays where it was". Push
+      or discard there still lets the session go. The grid is unchanged.
+    - **Previous leaves the area tree's foot**; the Connected line stays.
+      Relaunch → Reopen, restore all → Reopen all, forget → Forget / Clear
+      ghosts, take back → the ghost's Take it back.
+    - A move of closed sessions (a stack's closed tabs go with it) rereads
+      the resumable list (`runMoves`); the preview's `setGroup` moves closed
+      sessions too, as main's does.
+  - **Preview:** `?lsClosed=<id,…>` closes those sessions as if closed with
+    their places kept (y1 shows Take it back); the fixture's closed ones are
+    p1 (loose), g1 (5102) and g2 (5101, its worktree gone). `?lsKey=<key>`
+    presses a key on the landscape once the selection settles (`cmd-g`: ⌘G;
+    `t`), with `?lsPick` or `?lsSelect`; `?lsDrag=move|resize|tab` holds a
+    drag mid-way for a screenshot of its guides or size box.
+  - **Tests:**
+    - `test/landscapeArrange.test.ts`: `snapRect` (grid, neighbours, GAP
+      beside, SNAP_PX on screen, inside edges, resize edges and minimum);
+      `planResizeTo` and `planMoveTile` pushing, refusals; `planStack`,
+      `newStackName`, `planUnstack` (front, dissolving, dropped over its own
+      stack, refusals); `planTidy` with a ghost and its undo, `tidyRefusal`;
+      ghosts in `resolveLayout` (kept places, placed when they have none,
+      pushed never pushing, `replaces`), `forgetPatch`, `ghostDrawnHeight`.
+    - `test/workspaceActions.test.ts`: Tidy and the ghosts' rows in the area
+      model, `ghostsActions` off with none, `ghostActions` (folder gone,
+      taken over). `test/selectionBar.test.ts`: Stack ⌘G on, and off with
+      planStack's reason. `test/scrollback.test.ts`: `closedOutput` (tail
+      from a line's start, refused while running or not this Mac's, "" with
+      none saved), `tailOf`, `missingFolders`.
+    - `test/uiLandscapeGhosts.test.ts` drives `?landscapeGhostAudit` (every
+      ghost at 10%, 13%, 15%, 20%, 30%, 45% and 100%: inside its area and
+      clear of other areas' name lines, every row it shows wholly inside it,
+      the rows it shows a prefix of its order) and `?landscapeGhostLifeAudit`
+      (the tree's foot, ⌘K's rows, close → ghost in place → Reopen in place,
+      Start fresh, Forget, Clear ghosts, the Loose row's Reopen all).
+    - `test/uiLandscapeArrange.test.ts` drives `?landscapeArrangeAudit`: =a a
+      header drag snapping to an edge with a guide, an edge resize with its
+      size box and no pty resize until the drop, a locked area refusing both;
+      =b ⌘G, a tab switch, a tab dragged out over s1 with nothing left
+      overlapping, T and the note's Undo.
+    - `test/uiLandscapeBar.test.ts`: the several bar's Stack now on.
+  - **Decisions for Ryan:**
+    - Ghosts are resumable closed sessions (accepted with option A); Reopen
+      relaunches under the same id; merged groups' ghosts move into the area
+      they merged into (the rename drops their places; they're placed anew).
+    - Closing on the landscape always leaves a ghost, even a clean worktree's
+      (the grid forgot those); the dialog's push and discard still forget.
+    - Clear ghosts asks (a browser confirm); a single Forget doesn't.
+    - The notes (Tidy's Undo among them) moved from the top to over the zoom
+      HUD, as design E has its toast, clear of the selection bar.
+    - Size presets push neighbours instead of moving to a free spot.
+    - A stack's auto-name is `tabs`, `tabs-2`…; ⌘G with a stack picked fills
+      that stack; a stack of one dissolves.
+    - Tidy packs into the area's inside width and lets the area shrink.
+    - Loose drops and resizes stay clear of areas (S4's rule) and push only
+      loose things.
+    - Ghosts can't be dragged; Tidy and pushing move them.
+  - **Differences from the designs left, and why:**
+    - guides use the selection colour (`--pane-focus`); no board shows them;
+    - at 100% a ghost leaves the rest of its place empty (option A's frame),
+      its actions under the title rather than centred;
+    - ghosts aren't rows in the area tree; an area's summary counts them
+      ("n closed").
+  - **Left for later:** a ghost dragged by hand; Tidy along wires (phase 3).
 
 ### S7 · Needs you
 - **The tray** drops down from the top-bar button. Phase 1 items:
