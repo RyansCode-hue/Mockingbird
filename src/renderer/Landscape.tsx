@@ -1761,6 +1761,9 @@ export function Landscape({
     const offTerm = (e: MouseEvent): HTMLElement | null => {
       if (mouseAt(cam.current.zoom)) return null;
       const t = e.target as Element | null;
+      // a button drawn over the terminal (a typing ask's Allow and Deny, Jump to latest, an exited session's Resume)
+      // takes the mouse at any zoom: only the terminal waits for 100%, where its cells are where xterm puts them
+      if (t?.closest?.("button") && !t.closest(".term-holder")) return null;
       return t?.closest?.(".ls-world .ls-term") ? t.closest<HTMLElement>(".ls-node") : null;
     };
     const onWheel = (e: WheelEvent) => {

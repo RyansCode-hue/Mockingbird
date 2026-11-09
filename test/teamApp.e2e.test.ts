@@ -9,7 +9,7 @@ import { tempDir } from "./helpers";
  * Two real Mockingbird instances (this checkout's build) on one Mac, each with
  * its own HOME and userData, share and join a room over the local signaling
  * server (or the deployed Worker at MB_E2E_SIGNALING_URL): the whole app path
- * — IPC, the service, the hidden peer host inside the app, the sidebar badge.
+ * — IPC, the service, the hidden peer host inside the app, the Connected line.
  * Their windows open on screen while it runs, so it's opt-in:
  *
  *   MB_E2E_APP=1 npx vitest run test/teamApp.e2e.test.ts
@@ -39,7 +39,7 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(n.peers).toEqual([expect.objectContaining({ name: "Ryan", state: route })]);
         if (signal.real) console.log(`[e2e] connected through ${signal.url}: Ryan→Nick ${(await routes(ryan, nick)).join(", Nick→Ryan ")}`);
         expect(n.rooms[0]).toMatchObject({ name: "#5110 Donor entities", groupKey: "5110", members: [{ name: "Ryan" }, { name: "Nick", self: true }] });
-        // the Sessions view: one line for the rooms, naming the teammate online
+        // under the area tree: one line for the rooms, naming the teammate online
         await untilTrue("Nick's connected line", async () => (await nick.evaluate<string>(`document.querySelector(".connected-line")?.textContent ?? ""`)).includes("Ryan online"));
         await untilTrue("Ryan's connected line", async () => (await ryan.evaluate<string>(`document.querySelector(".connected-line")?.textContent ?? ""`)).includes("Nick online"));
         // the hidden peer host never became the app's window
@@ -69,8 +69,9 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(Buffer.from(got.bytes).equals(png)).toBe(true);
         expect(await nick.evaluate<{ view: string; text: string }>(`window.mb.artifactsRead(${rid}, ${JSON.stringify(note.id)})`)).toMatchObject({ view: "note", text: "# API\nGET /api/donors/:id" });
         await ryan.evaluate(`window.mb.teamChatPost(${rid}, ${JSON.stringify(`Spec is in #[API spec](artifact:${note.id})`)})`);
-        await nick.evaluate(`document.querySelector('.ab-btn[aria-label="Team room"]')?.click()`);
-        await untilTrue("the note's chip in Nick's Team room", async () => (await nick.evaluate<string>(`[...document.querySelectorAll(".rc-artifact")].map((b) => b.textContent).join("|")`)).includes("API spec"), 30_000);
+        // the Connected line opens the one room's chat
+        await nick.evaluate(`document.querySelector(".connected-line")?.click()`);
+        await untilTrue("the note's chip in Nick's room chat", async () => (await nick.evaluate<string>(`[...document.querySelectorAll(".rc-artifact")].map((b) => b.textContent).join("|")`)).includes("API spec"), 30_000);
 
         // Ryan (the creator, so the admin) removes Nick: Nick's app deletes the room, his group stays a local one
         const roomDir = path.join(nick.home, ".mockingbird", "team", "rooms", share.roomId);
@@ -98,8 +99,8 @@ describe("team rooms between two Mockingbird instances", () => {
         try {
           await untilTrue("Ryan to be told", async () => !!(await ryan.status()).rooms[0]?.warnings?.some((w) => w.key === "replaced"), 60_000);
           expect((await ryan.status()).rooms[0].warnings!.find((w) => w.key === "replaced")!.text).toMatch(/^Your room identity connected from another place; this Mac was disconnected\./);
-          await ryan.evaluate(`document.querySelector('.ab-btn[aria-label="Team room"]')?.click()`);
-          await untilTrue("the warning under the room in Ryan's Team room", async () => (await ryan.evaluate<string>(`document.querySelector(".room-warning")?.textContent ?? ""`)).includes("Your room identity connected from another place"), 30_000);
+          await ryan.evaluate(`document.querySelector(".connected-line")?.click()`);
+          await untilTrue("the warning under the room in Ryan's room chat", async () => (await ryan.evaluate<string>(`document.querySelector(".room-warning")?.textContent ?? ""`)).includes("Your room identity connected from another place"), 30_000);
         } finally {
           elsewhere.close();
           await quitApp(elsewhere.child);
@@ -136,8 +137,8 @@ describe("team rooms between two Mockingbird instances", () => {
         const ryanId = (await ryan.status()).self!.id;
         expect((await nick.status()).rooms[0]).toMatchObject({ owner: ryanId, admins: [] });
 
-        // Ryan right-clicks Nick in the Team room: Make admin
-        await ryan.evaluate(`document.querySelector('.ab-btn[aria-label="Team room"]')?.click()`);
+        // Ryan right-clicks Nick in the room's chat: Make admin
+        await ryan.evaluate(`document.querySelector(".connected-line")?.click()`);
         await untilTrue("Nick in Ryan's member strip", async () => await ryan.evaluate<boolean>(`[...document.querySelectorAll(".rc-member")].some((m) => m.textContent.toLowerCase().includes("nick"))`), 30_000);
         await ryan.evaluate(`(() => {
           const m = [...document.querySelectorAll(".rc-member")].find((x) => x.textContent.toLowerCase().includes("nick"));
@@ -147,7 +148,7 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("the member menu", async () => await ryan.evaluate<boolean>(`[...document.querySelectorAll(".mb-ctx button, .mb-ctx [role=menuitem]")].some((b) => b.textContent.includes("Make admin"))`), 10_000);
         await ryan.evaluate(`[...document.querySelectorAll(".mb-ctx button, .mb-ctx [role=menuitem]")].find((b) => b.textContent.includes("Make admin")).click()`);
         await untilTrue("Nick an admin at Nick's", async () => (await nick.status()).rooms[0]?.admins?.includes(nickId) === true, 30_000);
-        await nick.evaluate(`document.querySelector('.ab-btn[aria-label="Team room"]')?.click()`);
+        await nick.evaluate(`document.querySelector(".connected-line")?.click()`);
         await untilTrue("the announcement in Nick's chat", async () => (await nick.evaluate<string>(`[...document.querySelectorAll(".rc-member-note")].map((n) => n.textContent).join("|")`)).includes("Ryan made you an admin"), 30_000);
 
         // Lee joins with Nick's code, and Nick — an admin — accepts him from his prompt

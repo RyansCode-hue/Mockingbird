@@ -110,15 +110,15 @@ const buffer = (a: AppInstance, id: string) => a.evaluate<string>(`window.mb.ses
 /** What a pane's terminal shows in a window, as text. */
 const screenOf = (a: AppInstance, id: string) =>
   a.evaluate<string>(`(() => { const e = window.__mbTerms?.get(${JSON.stringify(id)}); if (!e) return ""; const b = e.term.buffer.active; const out = []; for (let i = 0; i < b.length; i++) out.push(b.getLine(i)?.translateToString(true) ?? ""); return out.join("\\n"); })()`);
-/** A sidebar row's text and controls, by its session's title. */
-const row = (title: string) => `[...document.querySelectorAll(".sess-item")].find((r) => r.textContent.includes(${JSON.stringify(title)}))`;
 /**
- * A teammate's session row, as a person finds it: teammates' sessions are in
- * the Team room view, opened from the Sessions view's Connected sessions line
- * (with one room, straight on it). Opens the view when it isn't showing.
+ * A room session's rows (teammates' and this Mac's), by its title, as a person finds them: under the room's name in
+ * its chat, which the Connected line under the area tree opens (with one room, straight on it, in the room's area).
+ * Opens it when it isn't showing.
  */
-const teamRow = (title: string) =>
-  `(() => { if (!document.querySelector(".room-sess-body")) document.querySelector(".connected-line")?.click(); return [...document.querySelectorAll(".room-sess-body .sess-item")].find((r) => r.textContent.includes(${JSON.stringify(title)})); })()`;
+const roomRows = (title: string) =>
+  `(() => { if (!document.querySelector(".room-sess-body")) document.querySelector(".connected-line")?.click(); return [...document.querySelectorAll(".room-sess-body .sess-item")].filter((r) => r.textContent.includes(${JSON.stringify(title)})); })()`;
+/** A room session's row, with its words and controls. */
+const teamRow = (title: string) => `${roomRows(title)}[0]`;
 /** The words under a room session's name: whose it is, whether it runs, who's looking. */
 const whoLine = (title: string) => `(${teamRow(title)}?.querySelector(".br.who")?.textContent ?? "")`;
 /** A row's Take over button (shown on hover or focus; clicking it works either way). */
@@ -206,22 +206,21 @@ describe("team rooms between two Mockingbird instances", () => {
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "echo live-$((50+5))\\r")`);
         await untilTrue("live output in Nick's pane", async () => (await screenOf(nick, paneId)).includes("live-55"));
         const typeAsNick = async (text: string) => {
-          await nick.evaluate(`(() => { const t = window.__mbTerms.get(${JSON.stringify(paneId)}).term; t.element.closest(".pane").dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); t.focus(); })()`);
+          await nick.evaluate(`(() => { const t = window.__mbTerms.get(${JSON.stringify(paneId)}).term; t.element.closest(".ls-node").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); t.focus(); })()`);
           await nick.send("Input.insertText", { text });
           await nick.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
           await nick.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
         };
         // Nick's copy is view-only: his typing is refused on Ryan's Mac, he's told why, and Ryan is asked
-        await untilTrue("Nick's copy marked view-only", async () => /View only · Ask to type/.test(await nick.evaluate<string>(`document.querySelector(".pane .chip.view-only")?.textContent ?? ""`)));
+        await untilTrue("Nick's copy marked view-only", async () => /View only · Ask to type/.test(await nick.evaluate<string>(`document.querySelector(".ls-node .chip.view-only")?.textContent ?? ""`)));
         await typeAsNick("echo refused-$((6*7))");
         await untilTrue("why at Nick's", async () => /Ryan hasn't allowed|Waiting for Ryan to let you type/.test(await nick.evaluate<string>(`document.querySelector(".typing-refused")?.textContent ?? ""`)));
         await untilTrue("the ask at Ryan's", async () => !!(await live(ryan)).own[sh.id]?.typingAsks?.some((a) => a.name === "Nick"));
-        await ryan.evaluate(`${row("shared shell")}?.click()`); // the pane, as the ask's notification brings it up
+        await ryan.evaluate(`${teamRow("shared shell")}?.click()`); // its workspace into view, as the ask's notification brings it
         await untilTrue("the ask on Ryan's pane", async () => /Nick wants to type in “shared shell”/.test(await ryan.evaluate<string>(`document.querySelector(".typing-ask")?.textContent ?? ""`)), 30_000);
         expect(await buffer(ryan, sh.id)).not.toContain("refused-");
         // Ryan allows it from the prompt; Nick's typing then goes through
-        await ryan.evaluate(`[...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session").click()`);
-        await untilTrue("Nick told he can type", async () => (await live(nick)).remote.find((x) => x.id === paneId)?.room?.typing?.state === "allowed");
+        await ryan.evaluate(`[...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session").click()`);        await untilTrue("Nick told he can type", async () => (await live(nick)).remote.find((x) => x.id === paneId)?.room?.typing?.state === "allowed");
         await untilTrue("Ryan's pane says Nick can type", async () => /Nick can type/.test(await ryan.evaluate<string>(`document.querySelector(".chip.typist")?.textContent ?? ""`)));
         await typeAsNick("echo from-nick-$((6*7))");
         await untilTrue("Nick's typing in Ryan's shell", async () => (await buffer(ryan, sh.id)).includes("from-nick-42"));
@@ -245,6 +244,9 @@ describe("team rooms between two Mockingbird instances", () => {
         // ---- Nick scrolls his copy of Ryan's shell; nothing reaches Ryan's, even while Ryan's program asks for the mouse.
         // cat -v shows whatever arrives: a mouse report or an arrow key as ^[[…
         const term = `window.__mbTerms.get(${JSON.stringify(paneId)}).term`;
+        // a terminal on the landscape scrolls its history where it takes the mouse: Nick focuses his copy first
+        await nick.evaluate(`document.querySelector('.ls-world .ls-node[data-front=${JSON.stringify(paneId)}] .ls-head').dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`);
+        await untilTrue("Nick's copy in focus", async () => nick.evaluate<boolean>(`!!${term}.element.closest(".ls-focus")`));
         const copyView = () => nick.evaluate<{ viewportY: number; baseY: number; type: string }>(`(() => { const b = ${term}.buffer.active; return { viewportY: b.viewportY, baseY: b.baseY, type: b.type }; })()`);
         const wheel = async (deltaY: number) => {
           const at = await nick.evaluate<{ x: number; y: number }>(`(() => { const r = ${term}.element.querySelector(".xterm-screen").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
@@ -296,6 +298,8 @@ describe("team rooms between two Mockingbird instances", () => {
         await key({ key: "c", code: "KeyC", keyCode: 67, ctrl: true });
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "printf '\\\\033[?1049l\\\\033[?1000l\\\\033[?1002l\\\\033[?1006l'\\r")`);
         await untilTrue("Nick's copy back on the normal screen", async () => (await copyView()).type === "normal");
+        await nick.evaluate(`document.querySelector(".ls-focus .ls-back").click()`);
+        await untilTrue("Nick back on the landscape", async () => !(await nick.evaluate<boolean>(`!!document.querySelector(".ls-focus")`)));
 
         // ---- the team chat: Nick's message reaches Ryan
         expect(await nick.evaluate(`window.mb.teamChatPost(${JSON.stringify(roomId)}, "morning, taking the export")`)).not.toHaveProperty("error");
@@ -346,7 +350,7 @@ describe("team rooms between two Mockingbird instances", () => {
         expect((await takeovers(nick)).sessions.find((v) => v.sessionId === s.id)).toMatchObject({ toOrigin: false, pushed: null });
         expect(git(r.bare, "for-each-ref", "--format=%(refname)", "refs/mockingbird")).toBe("");
         await untilTrue("the freshness on Nick's row", async () => /^copied here/.test(await nick.evaluate<string>(`${teamRow("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
-        await untilTrue("the freshness on Ryan's row", async () => /^copied to Nick/.test(await ryan.evaluate<string>(`${row("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
+        await untilTrue("the freshness on Ryan's row", async () => /^copied to Nick/.test(await ryan.evaluate<string>(`${teamRow("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
         expect(await nick.evaluate<boolean>(`!!${takeOverOf("Donor entities")}`)).toBe(true);
 
         // ---- Ryan online: Nick asks for another of his sessions, Ryan hands it over from his prompt
@@ -390,7 +394,7 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(await buffer(nick, nickEx.id)).not.toContain("--resume");
         expect(fs.existsSync(path.join(nickEx.cwd, ".mockingbird", "takeover", `${convOf(ex.id)}.jsonl`))).toBe(true);
         await untilTrue("Ryan's row: continued on Nick's laptop", async () =>
-          /continued on Nick's laptop/.test(await ryan.evaluate<string>(`[...document.querySelectorAll(".sess-item")].filter((x) => x.textContent.includes("Gift export")).map((x) => x.textContent).join("|")`))
+          /continued on Nick's laptop/.test(await ryan.evaluate<string>(`${roomRows("Gift export")}.map((x) => x.textContent).join("|")`))
         );
         expect(await ryan.evaluate(`window.mb.relaunchSession(${JSON.stringify(ex.id)})`)).toMatchObject({ error: expect.stringMatching(/continues on Nick's laptop/) });
         await nick.evaluate(`[...document.querySelectorAll(".tk-dlg button")].find((x) => x.textContent === "Close").click()`);
@@ -402,7 +406,7 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("Ryan offline at Nick's", async () => (await nick.status()).rooms[0]?.online.length === 0, 60_000);
         await untilTrue("Nick's row: Ryan offline", async () => /^Ryan's session · offline/.test(await nick.evaluate<string>(whoLine("Donor entities"))));
 
-        // ---- Nick takes the session over from his sidebar: no grant, Ryan is offline
+        // ---- Nick takes the session over from its row in the room: no grant, Ryan is offline
         await untilTrue("Take over, prominent", async () => nick.evaluate<boolean>(`!!${takeOverOf("Donor entities")}?.classList.contains("primary")`));
         const plan = await nick.evaluate<TakeoverPlan>(`window.mb.teamTakeoverPlan(${JSON.stringify(roomId)}, ${JSON.stringify(s.id)}, null)`);
         expect(plan).toMatchObject({ ownerOnline: false, branch: "5110-donors", conversation: { kind: "full" }, latestMissing: false, toOrigin: false, snapshot: { source: "peer" }, grant: { kind: "offline" } });
@@ -424,7 +428,8 @@ describe("team rooms between two Mockingbird instances", () => {
         // the room's session is Nick's now; Ryan's copy no longer shows
         expect((await live(nick)).own[mine.id]).toMatchObject({ roomId, remote: false });
         expect((await live(nick)).remote.some((x) => x.room?.sessionId === s.id)).toBe(false);
-        await untilTrue("the old row gone from Nick's Team room view", async () => !(await nick.evaluate<boolean>(`[...document.querySelectorAll(".sess-item")].some((x) => x.textContent.includes("Donor entities") && /^Ryan's session/.test(x.querySelector(".br.who")?.textContent ?? ""))`)));
+        await untilTrue("the old row gone from Nick's room", async () => !(await nick.evaluate<boolean>(`${roomRows("Donor entities")}.some((x) => /^Ryan's session/.test(x.querySelector(".br.who")?.textContent ?? ""))`)));
+        expect(await nick.evaluate<boolean>(`!!document.querySelector(".room-sess-body")`)).toBe(true);
 
         // ---- Ryan's Mockingbird starts again, and runs his session again at once (as an update restart brings
         // open sessions back), before the room has caught up: his copy stops as soon as it hears
@@ -446,7 +451,7 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(await ryan.evaluate(`window.mb.relaunchSession(${JSON.stringify(s.id)})`)).toMatchObject({ error: expect.stringMatching(/continues on Nick's laptop/) });
         await untilTrue("Nick's session at Ryan's", async () => (await live(ryan)).remote.some((x) => x.room?.sessionId === mine.id && x.room.owner === nickId));
         await untilTrue("Ryan's row says so", async () =>
-          /continued on Nick's laptop/.test(await ryan.evaluate<string>(`[...document.querySelectorAll(".sess-item")].filter((x) => x.textContent.includes("Donor entities")).map((x) => x.textContent).join("|")`))
+          /continued on Nick's laptop/.test(await ryan.evaluate<string>(`${roomRows("Donor entities")}.map((x) => x.textContent).join("|")`))
         );
         expect((await takeovers(ryan)).left.map((l) => l.sessionId).sort()).toEqual([ex.id, s.id].sort());
         expect((await takeovers(ryan)).refused).toEqual([]);

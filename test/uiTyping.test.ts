@@ -65,6 +65,20 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     expect(JSON.parse(await result(`${AT}&typingAsk`, read, SIZE)).sort()).toEqual(["Nick can type · 12 min✕", "Nick can type · 15 min✕"]);
   }, 90_000);
 
+  it("takes Allow below 100%, where the terminal under the strip doesn't take the mouse", async () => {
+    const read = `(() => {
+      const allow = [...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for 15 min");
+      if (!window.__asked) {
+        if (!allow || !document.querySelector(".ls-viewport.ls-mouse-off")) return null;
+        window.__asked = true;
+        allow.click();
+        return null;
+      }
+      return document.querySelector(".typing-ask") ? null : JSON.stringify([...document.querySelectorAll(".chip.typist")].map((c) => c.textContent).sort());
+    })()`;
+    expect(JSON.parse(await result("lsCamera=0,0,0.8&typingAsk", read, SIZE))).toEqual(["Nick can type · 12 min✕", "Nick can type · 15 min✕"]);
+  }, 90_000);
+
   it("shows the strip over the terminal: no re-fit, no pty resize", async () => {
     // runs once in the page (Runtime.evaluate doesn't await): it leaves its answer in window.__done
     const read = `(window.__audit ??= (async () => {
