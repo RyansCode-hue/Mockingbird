@@ -12,7 +12,7 @@
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
-import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
+import { DEFAULT_SETTINGS, clearGateTicks, clearsGates, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, fitSize, followsBottom, measuredCell } from "../renderer/cachedTerm";
 import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
@@ -1274,8 +1274,9 @@ const pipelineOf = (id: string) => (pipelines[id] ??= { ticketId: id, stage: "ba
 const pipelinesChanged = () => emit("onPipelineChanged", JSON.parse(JSON.stringify(pipelines)));
 const setStage = (id: string, stage: TicketStage) => {
   const p = pipelineOf(id);
+  const cleared = clearsGates(p.stage, stage) ? clearGateTicks(p) : null;
   p.stage = stage;
-  p.history.push({ at: Date.now(), stage, by: "you" });
+  p.history.push({ at: Date.now(), stage, by: "you", ...(cleared ? { note: cleared } : {}) });
   pipelinesChanged();
   return p;
 };

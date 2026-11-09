@@ -333,23 +333,46 @@ and 7 an entry, 3 and 7 a checklist).
   tick would still name the agent, reachable only by running 1.6.0 on a 1.7 file. The
   checklist's items say "Ticked by you, 3m ago" as a tip. The person's items (peer
   review, security doc reviewed, sign-off) aren't flagged in `GATES`: W14's refusal.
+- **Back at Coding, the gates start over** (the coordinator's decision, review 1).
+  Feedback, a move back to Coding on the rail and Reopen clear every gate's ticks and
+  their `checkedBy` (`clearsGates`, `clearGateTicks`): a move to Coding from anywhere
+  but BA. In practice feedback clears the dev gate and Reopen all three. The move's
+  history note says so ("Gate ticks cleared: Before the PR to dev/UAT (6)"), after
+  the feedback's text, and the panel says it first: the feedback form, and the tip of
+  Reopen and of the rail's Coding. A newer build's gate keys are left alone; `checks`
+  keeps holding only `true`, which 1.6.0 reads.
 - **Comments** as the table, and Coding drafts "Back in development." rather than
   "Development has started." once the ticket has been at step 2 or later (Reopen, a
   move back on the rail). Feedback drafts "Stakeholder feedback received; back in
-  development to address it:" and the text. `addDraft` refuses an unknown id too.
+  development to address it:" and the text. PR to dev and PR to main reached on the
+  rail, with no PR, draft nothing. `addDraft` refuses an unknown id too.
+- **A record that isn't whole** (review 1). Reading starts a missing `history`,
+  `prs`, `feedback`, `drafts` or `checks` empty and logs it; fields that are there
+  are never rewritten. A change to a record holding something else there (or a
+  `checkedBy` that isn't a map) is refused with why, before anything changes. Every
+  change runs in `change()`, which puts the record back when anything throws, its
+  save included, so a failed change is never written later by another ticket's save.
+  `stageLabel` gives `String(s)` for a stage that isn't text, and `tickOf` reads no
+  `checks` as none.
 - **Panel.** Rail and next steps are `src/renderer/ticketPipelineModel.ts` (`railOf`,
   `nextSteps`, a `Record<TicketStage, …>`, so a new stage doesn't compile without its
-  steps). Step 6 shows "approved" or "PR to main open" under it. An unknown id: its
-  label, "a stage this version of Mockingbird doesn't know", no step, next step or
-  checklist; the rail moves it to a known stage. Comms is Patch notes. The rail's
-  steps size to their content and wrap between words: in the board's ticket detail
-  (about 526px wide) the rail scrolled sideways, with 10 steps as with 9.
+  steps). Step 6 shows "approved" or "PR to main open" under it, and a click on it
+  there goes back to Stakeholder testing (`moves`: a step moves the ticket unless
+  it's at that step's stage). Approved and PR to main offer Record feedback… too. An
+  unknown id: its label, "a stage this version of Mockingbird doesn't know", no step,
+  next step or checklist; the rail moves it to a known stage. Comms is Patch notes.
+  The rail's steps size to their content and wrap between words: in the board's
+  ticket detail (about 526px wide) the rail scrolled sideways, with 10 steps as with 9.
+- **The window's `by`** is pinned by reading `index.ts` (it can't be imported in a
+  test): every `pipeline.setStage`, `startCoding`, `addFeedback`, `addPr` and
+  `setCheck` call there passes `BY_YOU`.
 - **Preview.** 5102 sits at `dev-test`, so its area header, tree row and board card
   show the new label. It records no PR: one on s5's branch would add the PR badge
-  `uiLandscapeNeeds` pins s5 without. The stub's feedback goes to Coding,
-  its ticks keep `checkedBy`. The stub drafts no comments, as before: main does, and
-  the table test covers it. Shots of the panel at all 11 stages, an unknown id, the
-  feedback form and the board detail, both themes.
+  `uiLandscapeNeeds` pins s5 without. The stub's feedback goes to Coding, its ticks
+  keep `checkedBy`, and its moves clear the gates as main's do. The stub drafts no
+  comments, as before: main does, and the table test covers it. Shots of the panel at
+  all 11 stages, an unknown id, the feedback form, the board detail, step 6 at
+  Approved and feedback from PR to main, both themes.
 - **1.6.0.** `test/fixtures/pipeline-1.6.0/` is 1.6.0's `pipeline.ts` with only its
   imports changed, and its ticket types (`types.ts:968–1021` at 4907cc3), diffed against
   git when made; `readJsonOrSetAside` and `writeFileAtomic` are unchanged since. The
@@ -365,9 +388,10 @@ and 7 an entry, 3 and 7 a checklist).
 - **The plan was wrong** in section 2: "the rail (`TicketPipeline.tsx:63`)" is today's
   line, `:44` at 4907cc3. And the stub's `pipelineFeedback` hard-coded Local testing
   too. The rest of W13's citations checked out.
-- **Open:** feedback leaves the dev gate's ticks from the first pass ticked, as 1.6.0
-  did when feedback landed on Local testing. README's 1.x feature line names the old
-  stages; it's history, and the roadmap is W12's.
+- **Open:** README's 1.x feature line names the old stages; it's history, and the
+  roadmap is W12's. The window still trusts a record's lists to be lists: one holding
+  something else (a hand-edited file) is refused by main but would break the panel's
+  drawing, as in 1.6.0.
 
 ### W14 · Ticket tools (main, no UI). Size M
 Through W1's per-launch identity, routed beside the House's (`messaging.ts:342`),

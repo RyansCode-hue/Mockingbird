@@ -150,6 +150,10 @@ describe("the comment each stage drafts", () => {
     // a ticket set straight to a later stage by hand, then back, has been in development too
     s.setStage("8", "stakeholder");
     expect(s.setStage("8", "coding").drafts.at(-1)!.text).toBe("Back in development.");
+    // so has one that only reached Coding, then went back to BA
+    s.startCoding("9");
+    s.setStage("9", "ba");
+    expect(s.setStage("9", "coding").drafts.at(-1)!.text).toBe("Back in development.");
     // BA isn't development
     s.setStage("10", "ba");
     expect(s.setStage("10", "coding").drafts.at(-1)!.text).toBe("Development has started.");
@@ -158,6 +162,167 @@ describe("the comment each stage drafts", () => {
     const s = new PipelineStore(storeFile());
     for (const stage of ["ba", "dev-test", "comms"] as const) s.setStage("11", stage);
     expect(s.get("11")!.drafts).toEqual([]);
+  });
+  it("drafts nothing for a PR stage reached with no PR, and the link when a PR opens", () => {
+    expect([stageComment("pr-dev", {}), stageComment("pr-main", { summary: "x" })]).toEqual([null, null]);
+    const s = new PipelineStore(storeFile());
+    s.setStage("12", "pr-dev", { by: BY_YOU });
+    s.setStage("12", "pr-main", { by: BY_YOU });
+    expect(s.get("12")!.drafts).toEqual([]);
+    expect(s.addPr("12", prTo("main", 13)).drafts.map((d) => d.text)).toEqual(["Pull request to main opened:\n\nhttps://dev.azure.com/o/p/_git/r/pullrequest/13\n5101-x → main\n\nPR 13's summary."]);
+  });
+});
+
+describe("going back to Coding", () => {
+  const DEV = GATES[0].items.map((it) => `dev:${it.key}`);
+  const ALL = GATES.flatMap((g) => g.items.map((it) => `${g.id}:${it.key}`));
+  /** A ticket at `stage` with `keys` ticked by `by`, and a newer build's gate ticked too. */
+  const ticked = (s: PipelineStore, id: string, stage: TicketStage, keys: string[], by = "Coder") => {
+    s.startCoding(id);
+    for (const k of [...keys, "uat:sign"]) s.setCheck(id, k, true, by);
+    s.setStage(id, stage);
+  };
+
+  it("clears the gates' ticks and who made them on feedback, saying so in the move's note", () => {
+    for (const from of ["stakeholder", "approved", "pr-main"] as const) {
+      const s = new PipelineStore(storeFile());
+      ticked(s, "1", from, [...DEV, "staging:peer-review"]);
+      const p = s.addFeedback("1", "The dropdown forgets the org", BY_YOU);
+      expect(p.stage).toBe("coding");
+      expect(p.checks).toEqual({ "uat:sign": true });
+      expect(Object.keys(p.checkedBy!)).toEqual(["uat:sign"]);
+      expect(p.history.at(-1)).toEqual({
+        at: expect.any(Number),
+        stage: "coding",
+        by: "you",
+        note: "The dropdown forgets the org\n\nGate ticks cleared: Before the PR to dev/UAT (6), Before the PR to main (1)",
+      });
+      // the drafted comment quotes the feedback alone
+      expect(p.drafts.at(-1)!.text).toBe("Stakeholder feedback received; back in development to address it:\n\nThe dropdown forgets the org");
+      // back at Local testing, the dev gate starts over
+      expect(s.setStage("1", "local-test").checks).toEqual({ "uat:sign": true });
+    }
+  });
+  it("clears them on a move back to Coding on the rail, and every gate's on Reopen from Done", () => {
+    const s = new PipelineStore(storeFile());
+    ticked(s, "2", "local-test", DEV.slice(0, 2));
+    expect(s.setStage("2", "coding", { by: BY_YOU }).history.at(-1)!.note).toBe("Gate ticks cleared: Before the PR to dev/UAT (2)");
+    expect(s.get("2")!.checks).toEqual({ "uat:sign": true });
+    ticked(s, "3", "done", ALL);
+    const p = s.setStage("3", "coding", { by: BY_YOU });
+    expect(p.checks).toEqual({ "uat:sign": true });
+    expect(p.history.at(-1)!.note).toBe("Gate ticks cleared: Before the PR to dev/UAT (6), Before the PR to main (4), Before production (3)");
+  });
+  it("keeps the ticks on a move forward to Coding, a move back elsewhere, and says nothing with none to clear", () => {
+    const s = new PipelineStore(storeFile());
+    s.setCheck("4", "dev:tests", true, BY_YOU);
+    expect(s.startCoding("4")!.checks).toEqual({ "dev:tests": true });
+    s.setStage("4", "approved");
+    s.setCheck("4", "staging:secrets", true, BY_YOU);
+    expect(s.setStage("4", "stakeholder").checks).toEqual({ "dev:tests": true, "staging:secrets": true });
+    s.setStage("5", "done");
+    expect("note" in s.setStage("5", "coding").history.at(-1)!).toBe(false);
+  });
+  it("leaves a file 1.6.0 reads: checks hold only true", () => {
+    const f = storeFile();
+    const s = new PipelineStore(f);
+    ticked(s, "6", "stakeholder", DEV);
+    s.addFeedback("6", "Again");
+    const old = new PipelineStore160(f).get("6")!;
+    expect(old.checks).toEqual({ "uat:sign": true });
+    expect(old.stage).toBe("coding");
+  });
+});
+
+describe("a record that isn't whole", () => {
+  const quiet = () => vi.spyOn(console, "error").mockImplementation(() => {});
+  const base = { ticketId: "1", title: "Kept", stage: "coding", history: [{ at: 1, stage: "coding" }], prs: [], feedback: [], drafts: [], checks: { "dev:tests": true } };
+
+  it("starts a missing list or checks empty on reading, says so, and keeps every other field", () => {
+    for (const missing of ["history", "prs", "feedback", "drafts", "checks"] as const) {
+      const f = storeFile();
+      const rec: Record<string, unknown> = { ...base };
+      delete rec[missing];
+      fs.writeFileSync(f, JSON.stringify({ "1": rec }));
+      const errors = quiet();
+      try {
+        const s = new PipelineStore(f);
+        expect(errors.mock.calls.map((c) => String(c[0]))).toEqual([`[mockingbird] pipeline.json: #1 had no ${missing}; started empty.`]);
+        expect(tickOf(s.get("1")!, "dev:tests")).toBeNull();
+        s.setStage("1", "local-test", { by: BY_YOU });
+        s.setCheck("1", "dev:smoke", true, BY_YOU);
+        s.addDraft("1", "comms", "Notes");
+        s.addFeedback("1", "More", BY_YOU);
+        s.addPr("1", prTo("dev", 2));
+        const after = readFile(f)["1"];
+        expect(after.title).toBe("Kept");
+        expect(after.stage).toBe("pr-dev");
+        for (const k of ["history", "prs", "feedback", "drafts"] as const) expect(Array.isArray(after[k])).toBe(true);
+        if (missing !== "history") expect(after.history[0]).toEqual({ at: 1, stage: "coding" });
+      } finally {
+        errors.mockRestore();
+      }
+    }
+  });
+  it("reads no tick's author from a record with no checks", () => {
+    expect(tickOf({ ticketId: "1", stage: "coding" } as unknown as TicketPipeline, "dev:tests")).toBeNull();
+  });
+  it("refuses a change to a record holding something else in a list, leaving it as it was, in memory and on disk", () => {
+    const f = storeFile();
+    const odd = { ...base, drafts: "not a list" };
+    fs.writeFileSync(f, JSON.stringify({ "1": odd }));
+    const s = new PipelineStore(f);
+    expect(() => s.setStage("1", "local-test", { title: "Changed" })).toThrow("#1's record in pipeline.json can't be changed: its drafts isn't a list");
+    expect(() => s.addFeedback("1", "x")).toThrow(/its drafts isn't a list/);
+    expect(() => s.findDraft("1", "d")).toThrow(/its drafts isn't a list/);
+    expect(s.get("1")).toEqual(odd);
+    s.setStage("2", "coding");
+    expect(readFile(f)["1"]).toEqual(odd);
+  });
+  it("refuses a tick on a record whose checkedBy isn't a map, ticking nothing", () => {
+    const f = storeFile();
+    fs.writeFileSync(f, JSON.stringify({ "1": { ...base, checkedBy: "x" } }));
+    const s = new PipelineStore(f);
+    expect(() => s.setCheck("1", "dev:smoke", true, BY_YOU)).toThrow(/its checkedBy isn't a map/);
+    expect(s.get("1")!.checks).toEqual({ "dev:tests": true });
+  });
+  it("puts a record back when its save fails, so another ticket's save doesn't write the change", () => {
+    const f = storeFile();
+    const s = new PipelineStore(f);
+    s.setStage("1", "coding", { title: "Before" });
+    const saved = readFile(f)["1"];
+    fs.chmodSync(path.dirname(f), 0o500); // the save's temporary file can't be made
+    try {
+      expect(() => s.setStage("1", "local-test", { title: "After" })).toThrow();
+      expect(() => s.setStage("3", "coding")).toThrow();
+    } finally {
+      fs.chmodSync(path.dirname(f), 0o700);
+    }
+    expect(s.get("1")).toEqual(saved);
+    expect(s.get("3")).toBeNull();
+    s.setStage("2", "coding");
+    expect(readFile(f)["1"]).toEqual(saved);
+    expect(readFile(f)["3"]).toBeUndefined();
+  });
+});
+
+describe("the window's moves and ticks", () => {
+  // main's index.ts can't be imported here (Electron), so its calls are read: each pipeline call that moves a ticket
+  // or ticks a gate from the window says it's Ryan's
+  it("pass BY_YOU on every pipeline call in index.ts that records who", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8");
+    const calls: string[] = [];
+    for (const m of src.matchAll(/\bpipeline\.(setStage|startCoding|addFeedback|addPr|setCheck)\(/g)) {
+      let depth = 0;
+      let i = m.index! + m[0].length - 1;
+      for (; i < src.length; i++) {
+        if (src[i] === "(") depth++;
+        else if (src[i] === ")" && --depth === 0) break;
+      }
+      calls.push(src.slice(m.index!, i + 1));
+    }
+    expect(calls.map((c) => c.match(/^pipeline\.(\w+)/)![1]).sort()).toEqual(["addFeedback", "addPr", "setCheck", "setStage", "startCoding"]);
+    for (const c of calls) expect(c, c).toMatch(/\bBY_YOU\b/);
   });
 });
 
@@ -226,8 +391,8 @@ describe("pipeline.json across versions", () => {
     "local-test": { label: "Local testing", step: 3, sub: null, next: ["Create PR to dev…"] },
     "pr-dev": { label: "PR to dev", step: 4, sub: null, next: ["Merged — AI testing in dev/UAT"] },
     stakeholder: { label: "Stakeholder testing", step: 6, sub: null, next: ["Record feedback…", "Approve"] },
-    approved: { label: "Approved", step: 6, sub: "approved", next: ["Create PR to main…"] },
-    "pr-main": { label: "PR to main", step: 6, sub: "PR to main open", next: ["Merged — AI testing in staging/prod"] },
+    approved: { label: "Approved", step: 6, sub: "approved", next: ["Record feedback…", "Create PR to main…"] },
+    "pr-main": { label: "PR to main", step: 6, sub: "PR to main open", next: ["Record feedback…", "Merged — AI testing in staging/prod"] },
     "prod-test": { label: "AI testing in staging/prod", step: 7, sub: null, next: ["Write patch notes"] },
     comms: { label: "Patch notes", step: 8, sub: null, next: ["Done"] },
     done: { label: "Done", step: 9, sub: null, next: ["Reopen"] },

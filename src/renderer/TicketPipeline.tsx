@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { openLink } from "./uiUtil";
-import { GATES, stageLabel, stageStep, tickOf, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
+import { GATES, clearsGates, gateTicks, stageLabel, stageStep, tickOf, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
 import { nextSteps, railOf } from "./ticketPipelineModel";
 import { ago, plural } from "../shared/format";
 import { createIpcStore } from "./ipcStore";
@@ -59,8 +59,11 @@ export function StageChip({ p, onClick }: { p: TicketPipeline | undefined; onCli
   );
 }
 
-/** The lifecycle across the top: done steps ticked, the current one marked; click one to move there. */
-function StageRail({ stage, onSet }: { stage: StoredStage | null; onSet: (s: TicketStage) => void }) {
+/**
+ * The lifecycle across the top: done steps ticked, the current one marked; click one to move there. `clearing`
+ * says what a move to a stage would clear, for its tip.
+ */
+function StageRail({ stage, onSet, clearing }: { stage: StoredStage | null; onSet: (s: TicketStage) => void; clearing: (to: TicketStage) => string | null }) {
   return (
     <div className="pl-rail" role="list">
       {railOf(stage).map((s) => (
@@ -69,8 +72,14 @@ function StageRail({ stage, onSet }: { stage: StoredStage | null; onSet: (s: Tic
           role="listitem"
           className={`pl-step ${s.state === "todo" ? "" : s.state}`}
           aria-current={s.state === "on" ? "step" : undefined}
-          data-tip={s.state === "on" ? `Now: ${s.label}${s.sub ? `, ${s.sub}` : ""}` : `Move the ticket to ${s.label}`}
-          onClick={() => s.state !== "on" && onSet(s.stage)}
+          data-tip={[
+            s.state === "on" ? `Now: ${s.label}${s.sub ? `, ${s.sub}` : ""}` : null,
+            s.moves ? `${s.state === "on" ? "Back to" : "Move the ticket to"} ${s.label}` : null,
+            s.moves ? clearing(s.stage) : null,
+          ]
+            .filter(Boolean)
+            .join(". ")}
+          onClick={() => s.moves && onSet(s.stage)}
         >
           <span className="pl-dot">{s.state === "done" ? "✓" : ""}</span>
           <span className="pl-lbl">{s.label}</span>
@@ -370,23 +379,30 @@ export function PipelinePanel(props: PipelineProps) {
   const go = (stage: TicketStage) => run("stage", () => window.mb.pipelineStage(ticketId, stage, title));
   const live = sessions.filter((s) => s.status !== "dead");
   const prs = p?.prs ?? [];
-  const last = p?.history.at(-1);
+  const last = p?.history?.at(-1);
+  const ticks = p ? gateTicks(p) : 0;
+  /** What going to `to` would clear: back at Coding, the gates' ticks. */
+  const clearing = (to: TicketStage) => (p && ticks && clearsGates(p.stage, to) ? `Clears the gates' ${plural(ticks, "tick")}` : null);
   return (
     <div className="pl">
-      <StageRail stage={p?.stage ?? null} onSet={go} />
+      <StageRail stage={p?.stage ?? null} onSet={go} clearing={clearing} />
       <div className="pl-now">
         {!p ? (
           <span className="pl-dim">Not tracked yet.</span>
         ) : (
           <span>
             <b>{stageLabel(p.stage)}</b>
-            {last && <span className="pl-dim" data-tip={last.by ? `Moved here by ${last.by}` : undefined}> · {ago(last.at)}</span>}
+            {last && (
+              <span className="pl-dim" data-tip={[last.by && `Moved here by ${last.by}`, last.note].filter(Boolean).join(". ") || undefined}>
+                {" "}· {ago(last.at)}
+              </span>
+            )}
             {stageStep(p.stage) === null && <span className="pl-dim"> · a stage this version of Mockingbird doesn't know</span>}
           </span>
         )}
         {nextSteps(p?.stage ?? null).map((n) =>
           n.kind === "stage" ? (
-            <button key={n.label} className={n.primary ? "primary" : "outline"} onClick={() => go(n.to)}>{n.label}</button>
+            <button key={n.label} className={n.primary ? "primary" : "outline"} data-tip={clearing(n.to) ?? undefined} onClick={() => go(n.to)}>{n.label}</button>
           ) : n.kind === "pr" ? (
             <button key={n.label} className="primary" onClick={() => setPrFor(n.target)}>{n.label}</button>
           ) : (
@@ -406,6 +422,7 @@ export function PipelinePanel(props: PipelineProps) {
             </label>
           )}
           <div className="row">
+            {clearing("coding") && <span className="pl-dim">{clearing("coding")}, taken before the changes</span>}
             <button className="outline" onClick={() => setFeedback(null)}>Cancel</button>
             <button
               className="primary"

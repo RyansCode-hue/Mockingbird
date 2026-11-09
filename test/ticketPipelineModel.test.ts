@@ -56,8 +56,33 @@ describe("the pipeline panel's rail", () => {
       done: { on: [9], done: 8, sub: null },
     });
   });
-  it("marks no step for a stage id this build doesn't know", () => {
-    expect(railOf("uat-signoff").every((r) => r.state === "todo" && r.sub === null)).toBe(true);
+  it("moves the ticket from every step but the stage it's at, so step 6 takes Approved and PR to main back to Stakeholder testing", () => {
+    const still = (stage: TicketStage | null) => railOf(stage).filter((r) => !r.moves).map((r) => r.stage);
+    expect(Object.fromEntries(TICKET_STAGES.map((s) => [s.id, still(s.id)]))).toEqual({
+      ba: ["ba"],
+      coding: ["coding"],
+      "local-test": ["local-test"],
+      "pr-dev": ["pr-dev"],
+      "dev-test": ["dev-test"],
+      stakeholder: ["stakeholder"],
+      approved: [],
+      "pr-main": [],
+      "prod-test": ["prod-test"],
+      comms: ["comms"],
+      done: ["done"],
+    });
+    expect(railOf("approved").find((r) => r.step === 6)).toMatchObject({ state: "on", stage: "stakeholder", moves: true });
+    expect(still(null)).toEqual([]);
+  });
+  it("marks no step for a stage id this build doesn't know, and moves it from any", () => {
+    expect(railOf("uat-signoff").every((r) => r.state === "todo" && r.sub === null && r.moves)).toBe(true);
+  });
+  it("never throws on a stage the file holds as something other than text", () => {
+    for (const odd of [5, null, { id: "x" }, ["coding"]] as unknown as string[]) {
+      expect(stageLabel(odd)).toBe(String(odd));
+      expect(railOf(odd).filter((r) => r.state !== "todo")).toEqual([]);
+    }
+    expect(nextSteps({ id: "x" } as unknown as string)).toEqual([]);
   });
 });
 
@@ -70,8 +95,8 @@ describe("the pipeline panel's next steps", () => {
       "pr-dev": ["Merged — AI testing in dev/UAT → dev-test"],
       "dev-test": ["Ready for stakeholder testing → stakeholder"],
       stakeholder: ["Record feedback… (feedback form)", "Approve → approved"],
-      approved: ["Create PR to main… (PR form, main)"],
-      "pr-main": ["Merged — AI testing in staging/prod → prod-test"],
+      approved: ["Record feedback… (feedback form)", "Create PR to main… (PR form, main)"],
+      "pr-main": ["Record feedback… (feedback form)", "Merged — AI testing in staging/prod → prod-test"],
       "prod-test": ["Write patch notes → comms"],
       comms: ["Done → done"],
       done: ["Reopen → coding (outline)"],

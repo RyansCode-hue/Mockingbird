@@ -1038,8 +1038,8 @@ export type TicketStage = (typeof TICKET_STAGES)[number]["id"];
 /** A stage id as pipeline.json holds it: one of TICKET_STAGES, or a newer build's, which is kept as it is. */
 export type StoredStage = TicketStage | (string & {});
 export const isTicketStage = (s: unknown): s is TicketStage => TICKET_STAGES.some((x) => x.id === s);
-/** A stage's name; an id this build doesn't know is shown as itself. */
-export const stageLabel = (s: StoredStage): string => TICKET_STAGES.find((x) => x.id === s)?.label ?? s;
+/** A stage's name; an id this build doesn't know is shown as itself, as text whatever the file held. */
+export const stageLabel = (s: StoredStage): string => TICKET_STAGES.find((x) => x.id === s)?.label ?? String(s);
 /** A stage's place on the rail (1–8, Done 9), or null for an id this build doesn't know. */
 export const stageStep = (s: StoredStage): number | null => TICKET_STAGES.find((x) => x.id === s)?.step ?? null;
 /** `by` for a move or a tick made in the window. */
@@ -1097,7 +1097,7 @@ export interface TicketPipeline {
 }
 
 /** Who ticked a gate item that's ticked; null for one that isn't, or one ticked before authors were kept. */
-export const tickOf = (p: TicketPipeline, key: string): GateTick | null => (p.checks[key] ? (p.checkedBy?.[key] ?? null) : null);
+export const tickOf = (p: TicketPipeline, key: string): GateTick | null => (p.checks?.[key] ? (p.checkedBy?.[key] ?? null) : null);
 
 /**
  * The promotion gates (local → dev/UAT → staging → production) and what each
@@ -1139,6 +1139,33 @@ export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketS
     ],
   },
 ];
+
+/** The gate keys ("<gate>:<item>") that are ticked; a gate this build doesn't know isn't counted. */
+const gateKeysTicked = (p: TicketPipeline): string[] => Object.keys(p.checks ?? {}).filter((k) => p.checks[k] && GATES.some((g) => k.startsWith(`${g.id}:`)));
+
+/** How many gate items are ticked. */
+export const gateTicks = (p: TicketPipeline): number => gateKeysTicked(p).length;
+
+/**
+ * Whether a move from `from` to `to` clears the gates' ticks: going back to Coding from anywhere past BA means the
+ * work changes, so ticks taken before it would read as evidence about work that isn't there any more.
+ */
+export const clearsGates = (from: StoredStage, to: TicketStage): boolean => to === "coding" && from !== "ba" && from !== "coding";
+
+/**
+ * Untick every gate item and forget who ticked it, for a ticket going back to Coding. Keys of gates this build
+ * doesn't know are left alone. Returns the line its history entry keeps, or null when nothing was ticked.
+ */
+export function clearGateTicks(p: TicketPipeline): string | null {
+  const counts = GATES.map((g) => {
+    const prefix = `${g.id}:`;
+    const ticked = gateKeysTicked(p).filter((k) => k.startsWith(prefix)).length;
+    for (const k of Object.keys(p.checks)) if (k.startsWith(prefix)) delete p.checks[k];
+    for (const k of Object.keys(p.checkedBy ?? {})) if (k.startsWith(prefix)) delete p.checkedBy![k];
+    return { title: g.title, ticked };
+  }).filter((c) => c.ticked > 0);
+  return counts.length ? `Gate ticks cleared: ${counts.map((c) => `${c.title} (${c.ticked})`).join(", ")}` : null;
+}
 
 /** What creating a pull request needs to know about a session's worktree. */
 export interface PrPreflight {

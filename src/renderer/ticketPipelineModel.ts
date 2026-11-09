@@ -16,6 +16,8 @@ export interface RailStep {
   state: "done" | "on" | "todo";
   /** Step 6's stage after stakeholder testing, while the ticket is at it. */
   sub: string | null;
+  /** Whether a click moves the ticket: not when it's at `stage` already. Step 6 at Approved or PR to main moves it back to Stakeholder testing. */
+  moves: boolean;
 }
 
 /** Each step's first stage, which names it on the rail. */
@@ -30,7 +32,8 @@ export function railOf(stage: StoredStage | null): RailStep[] {
     stage: s.id,
     label: s.label,
     state: at === null ? "todo" : s.step < at ? "done" : s.step === at ? "on" : "todo",
-    sub: s.step === at && stage !== s.id && isTicketStage(stage) ? (SUB[stage] ?? null) : null,
+    sub: s.step === at && isTicketStage(stage) ? (SUB[stage] ?? null) : null,
+    moves: stage !== s.id,
   }));
 }
 
@@ -49,8 +52,8 @@ const NEXT: Record<TicketStage, NextStep[]> = {
   "pr-dev": [move("Merged — AI testing in dev/UAT", "dev-test")],
   "dev-test": [move("Ready for stakeholder testing", "stakeholder")],
   stakeholder: [{ kind: "feedback", label: "Record feedback…" }, move("Approve", "approved")],
-  approved: [{ kind: "pr", label: "Create PR to main…", target: "main" }],
-  "pr-main": [move("Merged — AI testing in staging/prod", "prod-test")],
+  approved: [{ kind: "feedback", label: "Record feedback…" }, { kind: "pr", label: "Create PR to main…", target: "main" }],
+  "pr-main": [{ kind: "feedback", label: "Record feedback…" }, move("Merged — AI testing in staging/prod", "prod-test")],
   "prod-test": [move("Write patch notes", "comms")],
   comms: [move("Done", "done")],
   done: [move("Reopen", "coding", false)],
