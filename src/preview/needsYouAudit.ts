@@ -173,6 +173,8 @@ export function recordConsole(): void {
     };
   }
 }
+/** What's been said so far (recordConsole). */
+export const consoleSaid = (): readonly string[] => said;
 
 export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
   const write = (out: unknown) => {

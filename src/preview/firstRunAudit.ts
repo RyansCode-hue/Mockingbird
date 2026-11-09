@@ -9,7 +9,7 @@
  * &do=skip|esc|next|done. Reloads with ?lsPersist to say whether it comes back.
  * =u: the tour against what else is going on, by &case=terminal|typing|dropped|keys|field|ring|undo|dialog|palette|focus|tray.
  * =c: the camera the tour moves, by &case=esc|skip|tab|restart|goto (cameraPart).
- * =a: typed keys against the landscape's arming (keyArm.ts), by &case=tour|peekLog|peekGone|jumpInTour|jumpKeys|press|zoomOut.
+ * =a: typed keys against the landscape's arming (keyArm.ts), by &case=tour|peekLog|peekGone|jumpInTour|jumpKeys|press|zoomOut|cap|frame.
  * =e (with ?lsOnly=…): what's in the empty landscape's place, right-clicks all over it, its tiles and its links.
  * =b: the top bar's boxes at this window's width, + New's menu and its »; &case=tab for + New on another tab, &case=fold
  * for what folds, &case=sheet for the sheet at this size and beside the tray and the palette.
@@ -17,7 +17,7 @@
 import type { Landscape as Stored, LandscapePatch } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
 import { SHORTCUTS } from "../renderer/landscapeShortcuts";
-import { drive, type Asked } from "./needsYouAudit";
+import { consoleSaid, drive, type Asked } from "./needsYouAudit";
 import { armFocus } from "../renderer/keyArm";
 import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
 
@@ -1461,7 +1461,9 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
  * - jumpInTour (with ?lsCamera=0,0,1): ⌘K to another session during the tour, then the tour ended and typing;
  * - jumpKeys (with ?lsCamera=0,0,1): ⌘K to another session from s1's terminal, typing straight after Enter;
  * - press (with ?needsMany): the landscape given the keyboard by code, as a hand-back gives it, then by a press;
- * - zoomOut (with ?lsCamera=0,0,1&needsMany): a terminal typed in, then a trackpad zoom out of the band it takes keys in.
+ * - zoomOut (with ?lsCamera=0,0,1&needsMany): a terminal typed in, then a trackpad zoom out of the band it takes keys in;
+ * - cap (with ?lsCamera=0,0,1): the tour's hold on the keyboard running to its cap, the terminal unable to take it;
+ * - frame: focus's frame given the keyboard by code, then by a press on its header.
  */
 async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<void> {
   const which = params.get("case");
@@ -1690,6 +1692,56 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await press("?", { shift: true });
     await sleep(300);
     out.afterPalette2 = { sheet: !!q(".ls-keys") };
+  } else if (which === "cap") {
+    // s1's terminal made unable to take the keyboard while the tour holds it: the hold after the tour runs to its cap,
+    // each key holding it longer, then leaves the keyboard nowhere and says so in the log
+    out.before = await intoTerm("s1");
+    const ta = document.activeElement as HTMLTextAreaElement;
+    env.patch({ tourDone: false });
+    await sleep(1500);
+    out.tourUp = !!q(".ls-tour-card");
+    ta.disabled = true;
+    const said = () => consoleSaid().filter((l) => l.includes("couldn't give s1's terminal its keyboard back")).length;
+    await press("Escape");
+    await sleep(1000);
+    await press("x");
+    await sleep(1500);
+    // past the cap from the tour's end, short of it from the key
+    out.beforeCap = { said: said(), keyboard: keyboard() };
+    await sleep(1000);
+    out.afterCap = { said: said(), keyboard: keyboard(), tour: !!q(".ls-tour-card") };
+    ta.disabled = false;
+  } else if (which === "frame") {
+    // focus on s1, then its frame given the keyboard by code, as a hand-back gives it: Esc there doesn't leave focus
+    await fit();
+    await clickOn(card("s1")!);
+    await sleep(200);
+    await press("Enter");
+    await sleep(500);
+    const frame = () => q(".ls-focus");
+    const where = () => (document.activeElement && document.activeElement === frame() ? "frame" : keyboard());
+    out.entered = !!frame();
+    frame()?.focus({ preventScroll: true });
+    await sleep(60);
+    await press("Escape");
+    await sleep(300);
+    out.byCode = { focus: !!frame(), keyboard: where() };
+    if (!frame()) return;
+    // a press on the frame's header, off its buttons, arms it: Esc then leaves focus
+    const h = box(q(".ls-focus .ls-head"));
+    if (!h) throw new Error("no header on the focused workspace");
+    let pt: { x: number; y: number } | null = null;
+    for (let x = h.x + 4; x < h.x + h.w - 4 && !pt; x += 6) {
+      const el = document.elementFromPoint(x, h.y + h.h / 2);
+      if (el?.closest(".ls-focus") && !el.closest("button, a, input, textarea, .xterm")) pt = { x, y: h.y + h.h / 2 };
+    }
+    if (!pt) throw new Error("no bare point on the focused workspace's header");
+    await act([{ mouse: { ...pt, clickCount: 1 } }]);
+    await sleep(200);
+    out.pressed = where();
+    await press("Escape");
+    await sleep(400);
+    out.byPress = { focus: !!frame() };
   } else if (which === "zoomOut") {
     // the window opened on it, so it was armed; then a terminal typed in, and the trackpad zooms out: the band hands
     // the landscape the keyboard, disarmed

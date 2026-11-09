@@ -350,6 +350,22 @@ describe.skipIf(!local)("the landscape's typed keys act only once the user arms 
     expect(a.afterPalette2).toEqual({ sheet: true });
   }, 120_000);
 
+  it("runs the tour's hold to its cap when the terminal can't take the keyboard, each key holding it longer, then leaves it nowhere and logs it", async () => {
+    const a = await run("a", "case=cap&lsCamera=0,0,1", "1024x768");
+    expect(a.before).toBe(true);
+    expect(a.tourUp).toBe(true);
+    expect(a.beforeCap).toEqual({ said: 0, keyboard: "body" });
+    expect(a.afterCap).toEqual({ said: 1, keyboard: "body", tour: false });
+  }, 120_000);
+
+  it("leaves focus at Esc on its frame only once a press armed it, not with the keyboard given it by code", async () => {
+    const a = await run("a", "case=frame");
+    expect(a.entered).toBe(true);
+    expect(a.byCode).toEqual({ focus: true, keyboard: "frame" });
+    expect(a.pressed).toBe("frame");
+    expect(a.byPress).toEqual({ focus: false });
+  }, 120_000);
+
   it("takes nothing typed on after a zoom out moves the keyboard from a terminal to it", async () => {
     const a = await run("a", "case=zoomOut&lsCamera=0,0,1&needsMany");
     expect(a.afterZoom).toEqual({ inS1: true, terminalsTakeKeys: false, keyboard: "landscape", moved: false });

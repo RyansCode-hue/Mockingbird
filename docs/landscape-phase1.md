@@ -3016,7 +3016,12 @@ Design O, with Artifacts as a window, and N's workspace header.
     - the landscape given the keyboard by code (keys do nothing, the palette
       left gives it back disarmed), then armed by a press (N works, the
       palette left with Esc gives it back armed);
-    - a trackpad zoom out of a terminal (N does nothing).
+    - a trackpad zoom out of a terminal (N does nothing);
+    - the hold running to its cap, s1's terminal made unable to take the
+      keyboard: a key during it holds it longer, then the keyboard is left
+      nowhere and the log says so;
+    - focus's frame given the keyboard by code (Esc doesn't leave focus), then
+      armed by a press on its header (Esc does).
 
     Each "nothing reached s1" has a positive control: a key typed once things
     settle reaches the right session. The log terminal's input guard holds
@@ -3034,13 +3039,13 @@ Design O, with Artifacts as a window, and N's workspace header.
     - leaving a palette re-arming;
     - H2's peek check;
     - M1's jump;
-    - L1's `keyboardMoves`.
-  - **Not tested:** the hold's cap and its log line (no fixture keeps the
-    camera coming back for longer than the cap); a terminal asked for during
-    the tour taking the keyboard after it (in the tour's zoomed-out step the
-    jump's terminal isn't attached, so the hand-back finds no way back and
-    leaves the keyboard nowhere, which is what's tested); a disarmed focus
-    frame swallowing Esc.
+    - L1's `keyboardMoves`;
+    - the cap's log line, and each key holding the hold longer;
+    - the focus frame swallowing typed keys while disarmed.
+  - **Not tested:** a terminal asked for during the tour taking the keyboard
+    after it. In the tour's zoomed-out step the jump's terminal isn't
+    attached, so the hand-back finds no way back and leaves the keyboard
+    nowhere, which is what's tested.
   - **Found, not fixed:** with the keyboard nowhere (the page's body), Tab
     still moves it to the window's first control and Enter presses it. That's
     the browser's own, outside the landscape.
