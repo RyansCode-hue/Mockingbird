@@ -342,7 +342,7 @@ write_patch_notes({ text })
   `holdsPrivateKey`. Its guidance shares `pipeline:comms`' words
   (`index.ts:1779–1780`), moved into one constant.
 - **`gate_notes`**: the agent's report against the stage's checklist, kept beside
-  each item (`gateNotes`). Ticks stay yours (decision b).
+  each item (`gateNotes`). An agent may tick an item it has done, marked as its tick, and Ryan can untick it; a person's items are refused (decision b).
 - **`pipeline:approve`** (window): `approved`, then one line through
   `deliverAgentMessage`, with Mockingbird's label, to whoever asked for the PR to
   dev (`PipelinePr.by`): approved, prepare the PR to main. Not running: the reply
@@ -1118,27 +1118,27 @@ edge handle and the tour's step, as before.
     pasted in, never read from Teams or email (W19). Mockingbird's browser cards stay
     later.
 
-### Open, for Ryan
+### Settled 2026-11-09 (were open)
 
-a. **Decision 8 against 15.** Stages following the furthest finished step would move
-   the ticket when a step finishes, and your table moves it on events (a PR opening,
-   a merge, your approval). **Recommend** steps name their role (Orchestrator, Coder,
-   Verifier), stages move only by the table, and W9 drops `notes.stage`.
-b. **Who ticks the gate checklists.** **Recommend agents report and you tick:**
-   `gate_notes` shows beside each item in the PR request and the panel, and you tick
-   as you open the PR. The alternative is agents ticking items that aren't a person's
-   (peer review, the security doc reviewed and approver sign-off stay yours).
-c. **When 4 becomes 5.** **Recommend on the merge** (W16), with the Verifier's deploy
-   check inside 5. The alternative is the Verifier moving it once the deploy is
-   confirmed, which leaves PR to dev showing while it waits.
-d. **A Council plan has no ticket**, so no stages, PR requests or PR-merged wires.
-   **Recommend wires only in 1.7.0**, Coder → Verifier on `finished`. The alternative
-   is a ticket picker on Implement.
-e. **Tool output in a room's area**, where a read lands on teammates' screens.
-   **Recommend off by default there**, on by default elsewhere, as you decided.
-f. **The Tasks workspace's folder.** **Recommend `~/Helpdesk`**, made on first
-   start: its conversations and `--continue` stay apart from home's. The
-   alternative is home, as repo-less assistants run today (`sessions.ts:466`).
+a. **Stages move only by W13's table.** Steps name their role (Orchestrator, Coder,
+   Verifier); a step finishing doesn't move the ticket, and W9 drops `notes.stage`.
+   Follows from decision 15.
+b. **Agents tick the gate checklists, and Ryan can untick** (Ryan's). An agent ticks an
+   item it has done, with its `gate_notes` evidence kept beside the tick and the tick
+   marked as the agent's (who and when), so the panel and the PR request show which
+   ticks are an agent's and Ryan unticks any he disagrees with. Items that record a
+   person's act (peer review completed, the security doc reviewed, approver sign-off)
+   aren't something an agent can have done, and `set_stage`/`gate_notes` refuse to tick
+   them. Keep 1.6 reading `checks` as it does: who ticked goes in a field beside it,
+   not in `checks`' values.
+c. **4 becomes 5 on the merge** (W16), with the Verifier's deploy check inside 5.
+d. **A Council plan has no ticket**, so in 1.7.0 it gets wires only (Coder → Verifier
+   on `finished`): no stages, PR requests or PR-merged wires.
+e. **Tool output in `read_context` is on by default everywhere, room areas included**
+   (Ryan's). A wire's setting leaves it out; redaction still applies, and in a room a
+   read can land on teammates' screens, which the wire settings say.
+f. **The Tasks workspace runs in `~/Helpdesk`**, made on first start, so its
+   conversations and `--continue` stay apart from home's.
 
 ## 7. Spec conflicts
 
