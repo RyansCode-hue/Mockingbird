@@ -133,6 +133,20 @@ interface AroundAudit {
   dialogClosed: { dialog: boolean; keyboard: string };
   palette: { tray: boolean; palette: boolean };
   paletteClosed: { palette: boolean; keyboard: string };
+  quickOpen: { tray: boolean; open: boolean };
+  quickOpenClosed: { open: boolean; keyboard: string };
+  error?: string;
+}
+type StackShown = { card: string | null; front: string | null; stackRow: string | null; button: string | null };
+interface StackAudit {
+  tabs: string | null;
+  before: StackShown;
+  waiting: StackShown;
+  dismissed: StackShown;
+  secondPrompt: StackShown;
+  finished: StackShown;
+  teammate: string;
+  teammateWaiting: StackShown & { status: string };
   error?: string;
 }
 interface BarAudit {
@@ -489,6 +503,26 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(f.dialogClosed).toEqual({ dialog: false, keyboard: "button" });
     expect(f.palette).toEqual({ tray: false, palette: true });
     expect(f.paletteClosed).toEqual({ palette: false, keyboard: "button" });
+    expect(f.quickOpen).toEqual({ tray: false, open: true });
+    expect(f.quickOpenClosed).toEqual({ open: false, keyboard: "button" });
+  });
+
+  it("counts a stack card's other tabs as the tray and the tree do: not one you dismissed, nor a teammate's", async () => {
+    const s = await run<StackAudit>("s", "lsCamera=-200,-300,0.15");
+    expect(s.error).toBeUndefined();
+    // the fixture's stack: s2 in front on its prompt (an item, the card's own status), s3 and Sam's tab behind
+    expect(s.before).toEqual({ card: null, front: "s2", stackRow: "1", button: "2" });
+    // s3 on a prompt: one more everywhere, the card counting it
+    expect(s.waiting).toEqual({ card: "1 needs you", front: "s2", stackRow: "2", button: "3" });
+    // dismissed: gone everywhere, and the card can't be left saying it
+    expect(s.dismissed).toEqual({ card: null, front: "s2", stackRow: "1", button: "2" });
+    expect(s.secondPrompt).toEqual({ card: "1 needs you", front: "s2", stackRow: "2", button: "3" });
+    // finished is an item too, as the tray and the tree count it
+    expect(s.finished).toEqual({ card: "1 needs you", front: "s2", stackRow: "2", button: "3" });
+    // a teammate's tab on a prompt waits on them: counted nowhere here, though the tab is in the stack and waiting
+    expect(s.tabs).toContain("Last-org API tests");
+    expect(s.teammate).toMatch(/^r~/);
+    expect(s.teammateWaiting).toEqual({ card: null, front: "s2", stackRow: "1", button: "2", status: "waiting" });
   });
 
   it("with the rooms unreadable, says that rather than that nothing needs you", async () => {

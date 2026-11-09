@@ -2759,8 +2759,9 @@ function App() {
         return a?.repos.find((r) => r.path === s.repoPath)?.base ?? null;
       },
       metersError,
+      needIds: needs.sessions,
     }),
-    [landscapeState, metersError]
+    [landscapeState, metersError, needs.sessions]
   );
 
   // the area tree: areas in the landscape's order, each with its workspaces (those the filter keeps)

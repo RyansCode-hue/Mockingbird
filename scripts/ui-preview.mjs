@@ -127,6 +127,7 @@ const KEYS = {
   N: { key: "N", code: "KeyN", keyCode: 78, text: "N" },
   e: { key: "e", code: "KeyE", keyCode: 69, text: "e" },
   k: { key: "k", code: "KeyK", keyCode: 75, text: "k" },
+  p: { key: "p", code: "KeyP", keyCode: 80, text: "p" },
   Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
   Escape: { key: "Escape", code: "Escape", keyCode: 27 },
 };

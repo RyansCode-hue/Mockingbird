@@ -188,7 +188,10 @@ export function readStore<T>(what: string, keepMs = READ_KEEP_MS) {
     void settled(watcher.load()).then((reply) => {
       if (entries.get(key) !== e || n !== e.seq) return;
       e.reading = false;
-      e.read = readOf<T>(reply as T | { error: string });
+      const read = readOf<T>(reply as T | { error: string });
+      // the card it went through has gone meanwhile, perhaps with its session: that says nothing about the source
+      if (read.state === "failed" && e.watchers.size && ![...e.watchers.values()].includes(watcher)) return run(key);
+      e.read = read;
       logFailure(failuresSaid, what, [...new Set([...e.watchers.values()].map((w) => w.who))].sort().join(", ") || key, e.read);
       e.watchers.forEach((_, l) => l());
     });
@@ -275,8 +278,10 @@ export interface BadgeEnv {
   baseOf: (s: SessionInfo, area: string) => string | null;
   /** Why the token meters couldn't be read, or null. */
   metersError: string | null;
+  /** The sessions with a Needs you item shown: what a stack's card counts of its other tabs, as the tray and the tree do. */
+  needIds: ReadonlySet<string>;
 }
-export const BadgeContext = createContext<BadgeEnv>({ baseOf: () => null, metersError: null });
+export const BadgeContext = createContext<BadgeEnv>({ baseOf: () => null, metersError: null, needIds: new Set() });
 
 /**
  * A session's diff against its area repo's base: read while `on`, shared with every other card on its folder, and

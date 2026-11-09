@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useContext, useEffect, useState } from "react";
 import { AGENT_NAME, isErr, ticketIdOf, type SessionInfo, type SessionMeter } from "../shared/types";
-import { BadgeRow, repeatsDid, useCardBadges } from "./cardBadges";
+import { BadgeContext, BadgeRow, repeatsDid, useCardBadges } from "./cardBadges";
 import { lastMeaningfulLine, terminalLines } from "../shared/terminalText";
 import type { Tile } from "./landscapeModel";
 import { needsLabel } from "./needsYouModel";
@@ -67,11 +67,12 @@ function useLastLine(s: SessionInfo): { line: string | null; error: string | nul
 export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Tile; name: string | null; meters?: Record<string, SessionMeter>; actions: ModelAction[]; more: React.ReactNode }) {
   const s = tile.front;
   const { line, error } = useLastLine(s);
+  const { needIds } = useContext(BadgeContext);
   // what it did (its latest message), and its diff, PR and cost badges (cardBadges.tsx)
   const { badges, did } = useCardBadges(s, tile.area, meters?.[s.id]);
-  // a stack's other tabs, by name under its title, those waiting on you counted first (the front one's status is its own)
+  // a stack's other tabs, by name under its title, those Needs you lists counted first (the front one's status is its own)
   const others = tile.members.filter((m) => m.id !== s.id);
-  const waiting = others.filter((m) => m.status === "waiting").length;
+  const need = others.filter((m) => needIds.has(m.id)).length;
   const tabs = tile.members.length + (tile.closed?.length ?? 0);
   const resume = usable(actions, "resume");
   const close = s.status === "dead" ? usable(actions, "close") : undefined;
@@ -123,7 +124,7 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
         </div>
         {tile.stack && (others.length > 0 || !!tile.closed?.length) && (
           <div className="ls-card-tabs" title={[...tile.members, ...(tile.closed ?? [])].map(titleOf).join("\n")}>
-            {waiting > 0 && <span className="ls-card-needs">{needsLabel(waiting)}</span>}
+            {need > 0 && <span className="ls-card-needs">{needsLabel(need)}</span>}
             {others.map((m) => (
               <span key={m.id} className="ls-card-tab">
                 {titleOf(m)}

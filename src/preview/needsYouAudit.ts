@@ -1,5 +1,5 @@
 /**
- * ?landscapeNeedsAudit=a|g|b|c|d|e|f (with ?labs=landscape&motion=off): S7's Needs you and card badges, worked as a person
+ * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s (with ?labs=landscape&motion=off): S7's Needs you and card badges, worked as a person
  * would in the UI preview, into <script id="mb-landscape-needs-audit"> for test/uiLandscapeNeeds.test.ts. Keys and the
  * mouse are pressed for real where the test's Chrome driver is there to press them (scripts/ui-preview.mjs's pageResult
  * takes them from window.__mbKeys), so they go wherever the browser sends them; without it (a person's browser) they're
@@ -27,7 +27,9 @@
  * without them; then g1 reopened, not listed, until a turn ends in it.
  * =f (with ?joinRequest=later, or ?teamFail): the mouse and keyboard round a Dismiss: a keyboard Dismiss, a real double
  * click on the last item's, the tray with nothing left (or with the rooms unreadable), Undo with the mouse, the button's
- * height with and without its count; ⌘N and ⌘K with the tray open, and Esc after each.
+ * height with and without its count; ⌘N, ⌘K and ⌘P with the tray open, and Esc after each.
+ * =s (at the cards' zoom): a stack's card counting its other tabs as the tray and the tree do: a tab on a prompt,
+ * dismissed, on a second prompt, finished, and a teammate's tab on a prompt.
  */
 import type { SessionInfo } from "../shared/types";
 
@@ -37,6 +39,10 @@ export interface NeedsAuditEnv {
   setSession: (id: string, over: Partial<SessionInfo>) => void;
   /** Change session `id`'s room tag as team rooms report it (null: back to the fixture's), and tell the window. */
   setOwnTag: (id: string, over: Partial<NonNullable<SessionInfo["room"]>> | null) => void;
+  /** Teammates' sessions as team rooms report them. */
+  remote: () => SessionInfo[];
+  /** Change teammate's session `id`, and tell the window. */
+  setRemote: (id: string, over: Partial<SessionInfo>) => void;
   calls: { fn: string; args: unknown[] }[];
   emit: (name: string, ...args: unknown[]) => void;
   /** The badge sources failing now (stub.ts's ?badgeFail), changeable. */
@@ -180,6 +186,7 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
       else if (part === "d") await barPart(out);
       else if (part === "e") await closedPart(env, out);
       else if (part === "f") await aroundDismissPart(out);
+      else if (part === "s") await stackCardPart(env, out);
       else await badgePart(env, out);
     } catch (err) {
       out.error = String((err as Error)?.stack ?? err);
@@ -630,6 +637,58 @@ async function aroundDismissPart(out: Record<string, unknown>): Promise<void> {
   await press("Escape");
   await sleep(400);
   out.paletteClosed = { palette: !!document.querySelector(".palette"), keyboard: keyboard() };
+  // ⌘P: the same
+  await openTray();
+  await press("p", { meta: true });
+  await sleep(500);
+  out.quickOpen = { tray: tray().open, open: !!document.querySelector(".palette.qo") };
+  await press("Escape");
+  await sleep(400);
+  out.quickOpenClosed = { open: !!document.querySelector(".palette.qo"), keyboard: keyboard() };
+}
+
+async function stackCardPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const noPrompt = { waitingReason: null, waitingSince: null, waitingAt: null };
+  const ago = Date.now() - 60_000;
+  const prompt = { status: "waiting" as const, waitingReason: "Claude needs your permission to use Bash", waitingSince: ago, waitingAt: ago };
+  const shown = () => ({
+    card: document.querySelector('.ls-world .ls-node[data-ws="ws:5101/api"] .ls-card-needs')?.textContent ?? null,
+    front: document.querySelector<HTMLElement>('.ls-world .ls-node[data-ws="ws:5101/api"]')?.dataset.front ?? null,
+    stackRow: stackBadge()?.count ?? null,
+    button: button().count,
+  });
+  out.tabs = document.querySelector('.ls-world .ls-node[data-ws="ws:5101/api"] .ls-card-tabs')?.textContent ?? null;
+  out.before = shown();
+
+  // s3, behind the front tab, on a prompt: an item, counted on the card as in the tree and on the button
+  env.setSession("s3", prompt);
+  await sleep(500);
+  out.waiting = shown();
+  // dismissed: gone from all of them
+  await openTray();
+  act("s:s3", "dismiss");
+  await sleep(600);
+  await closeTray();
+  out.dismissed = shown();
+
+  // a second prompt: back on all of them
+  env.setSession("s3", { waitingAt: ago + 30_000 });
+  await sleep(500);
+  out.secondPrompt = shown();
+
+  // its turn ended: an item too, so counted
+  env.setSession("s3", { ...noPrompt, status: "idle", finishedAt: Date.now() });
+  await sleep(500);
+  out.finished = shown();
+  env.setSession("s3", { status: "idle", finishedAt: null });
+  await sleep(300);
+
+  // a teammate's tab in the stack, on a prompt: it waits on them, so it's in none of them
+  const teammate = env.remote().find((s) => s.taskGroup === "5101/api")!;
+  out.teammate = teammate.id;
+  env.setRemote(teammate.id, prompt);
+  await sleep(500);
+  out.teammateWaiting = { ...shown(), status: env.remote().find((s) => s.id === teammate.id)!.status };
 }
 
 async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {

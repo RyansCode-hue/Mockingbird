@@ -2767,7 +2767,7 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
 };
 // a sync failing after the window has read them: main pushes the failure as well as answering with it
 if (badgeFails.has("meters")) setTimeout(() => emit("onMetersChanged", err(METERS_FAIL)), 1000);
-// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
+// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
   recordConsole();
   const setSession = (id: string, over: Partial<SessionInfo>) => {
@@ -2781,7 +2781,11 @@ if (params.has("landscapeNeedsAudit")) {
     live.own[id] = over ? { ...fixtureTags[id], ...over } : clone(fixtureTags[id]);
     emit("onTeamLive", clone(live));
   };
-  runNeedsAudit({ sessions: () => sessions, setSession, setOwnTag, calls, emit, badgeFails, waitFor }, params.get("landscapeNeedsAudit") || "a");
+  const setRemote = (id: string, over: Partial<SessionInfo>) => {
+    live.remote = live.remote.map((s) => (s.id === id ? { ...s, ...over } : s));
+    emit("onTeamLive", clone(live));
+  };
+  runNeedsAudit({ sessions: () => sessions, setSession, setOwnTag, remote: () => live.remote, setRemote, calls, emit, badgeFails, waitFor }, params.get("landscapeNeedsAudit") || "a");
 }
 const lsFocus = params.get("lsFocus");
 if (lsFocus) {

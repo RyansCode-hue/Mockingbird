@@ -234,6 +234,38 @@ export function ftsQuery(q: string): string | null {
 
 const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 
+/** SQLite's result codes that one line's data can cause: too big, a constraint, a type mismatch, a value out of range. */
+const LINE_FAILURES = new Set([18, 19, 20, 25]);
+
+/**
+ * A failure of the index itself (locked, read-only, full, corrupt), rather than of the transcript being read: any
+ * SQLite error but those. Its code's low byte is the primary code; the rest says which variety.
+ */
+export function isIndexFailure(err: unknown): boolean {
+  const e = err as { code?: string; errcode?: number } | null;
+  return e?.code === "ERR_SQLITE_ERROR" && !LINE_FAILURES.has((e.errcode ?? 0) & 0xff);
+}
+
+/** How soon a sync that failed is tried again. */
+export const SYNC_RETRY_MS = 30_000;
+
+/**
+ * `run` (a sync) as one that's tried again SYNC_RETRY_MS after it fails, as with idle agents nothing else may ask for
+ * minutes, until one succeeds or another is asked for. `after` hears each outcome.
+ */
+export function retryingSync(run: () => Promise<void>, after: () => void): () => Promise<void> {
+  let retry: ReturnType<typeof setTimeout> | null = null;
+  const sync = () => {
+    if (retry) clearTimeout(retry);
+    retry = null;
+    return run().then(after, () => {
+      after();
+      retry ??= setTimeout(sync, SYNC_RETRY_MS);
+    });
+  };
+  return sync;
+}
+
 export interface UsageRow {
   conv: string;
   agent: AgentKind;
@@ -335,6 +367,8 @@ export class TranscriptIndex {
         if (k && from === 0) this.forgetFile(f.path);
         await this.ingest(f, from);
       } catch (err) {
+        // no other file would fare better, and what relies on the index has to hear of it
+        if (isIndexFailure(err)) throw err;
         // one transcript never stops the rest: Claude deletes old ones on its
         // own schedule, so a file can vanish between listing and reading
         if ((err as NodeJS.ErrnoException).code === "ENOENT") this.forgetFile(f.path);

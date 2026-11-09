@@ -231,6 +231,45 @@ describe("reads shared between cards", () => {
     offA();
     warn.mockRestore();
   });
+  it("reads again when a read in flight through a card that then goes comes back failed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = readStore<number>("a test source");
+    const a = vi.fn(async () => 1);
+    const heard: unknown[] = [];
+    const offA = store.watch("k", { who: "a", folder: "/w", load: a }, () => heard.push(store.get("k")));
+    await flush();
+    let answer!: (v: unknown) => void;
+    const b = vi.fn(() => new Promise<number>((r) => (answer = r as (v: unknown) => void)));
+    const offB = store.watch("k", { who: "b", folder: "/w", load: b }, () => {});
+    store.refresh("k");
+    expect(b).toHaveBeenCalledTimes(1);
+    const before = a.mock.calls.length;
+    offB(); // b's session closes with its read on the way
+    answer(NO_SESSION);
+    await flush();
+    expect(a.mock.calls.length).toBe(before + 1);
+    expect(store.get("k")).toEqual({ state: "ok", value: 1 });
+    // the card that stayed never saw the failure
+    expect(heard.some((r) => (r as { state: string }).state === "failed")).toBe(false);
+    offA();
+    warn.mockRestore();
+  });
+  it("shows a failure that came through a card still there, or with no card left to read through", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = readStore<number>("a test source");
+    let answer!: (v: unknown) => void;
+    const load = () => new Promise<number>((r) => (answer = r as (v: unknown) => void));
+    const off = store.watch("k", { who: "a", folder: "/w", load }, () => {});
+    answer(NO_SESSION);
+    await flush();
+    expect(store.get("k").state).toBe("failed");
+    store.refresh("k");
+    off();
+    answer(NO_SESSION);
+    await flush();
+    expect(store.get("k").state).toBe("failed");
+    warn.mockRestore();
+  });
   it("reads again for a card shown for another turn than its read was, and not for the same one", async () => {
     const store = readStore<string>("a test source");
     let said = "before the turn ended";
@@ -310,7 +349,7 @@ describe("reads shared between cards", () => {
 describe("the token meters when the index can't sync", () => {
   const index = fs.readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
   it("pushes the failure to the window, and meters:get says it, rather than leaving costs as they were", () => {
-    expect(index).toContain("syncTranscripts(transcripts!).then(metersChanged, metersChanged)");
+    expect(index).toContain("retryingSync(() => syncTranscripts(transcripts!), metersChanged)");
     expect(index).toContain("if (!transcripts || transcriptsProblem) throw new Error(");
   });
 });

@@ -2243,11 +2243,11 @@ Design O, with Artifacts as a window, and N's workspace header.
       than the window below it (its list scrolls), and placed again when
       its size or the window's changes (a `ResizeObserver`). The tray takes
       no focus ring; Esc closes it and gives the keyboard back to the
-      button, where N and ⇧N still work, as its tooltip says. A dialog or
-      the command palette opening puts the tray away (`DIALOG_OPENED`,
-      `useDialogFocus` in `Modal.tsx`) rather than leaving it over their
-      backdrop, and they give the keyboard back to the button when they
-      close. The button is 24 px tall, beside New / Import, with its count
+      button, where N and ⇧N still work, as its tooltip says. A dialog, the
+      command palette or Quick Open opening puts the tray away
+      (`DIALOG_OPENED`, `useDialogFocus` in `Modal.tsx`) rather than leaving
+      it over their backdrop, and they give the keyboard back to the button
+      when they close. The button is 24 px tall, beside New / Import, with its count
       or without, so the tray under it never moves. In the top bar nothing
       wraps (`nowrap`); below 1000 px the brand's name and New / Import's ⌘N
       hint go, so the bar fits at 860.
@@ -2341,9 +2341,10 @@ Design O, with Artifacts as a window, and N's workspace header.
     tree's amber count, a collapsed area's pill and the switcher ("3 need
     you: see Needs you", on hover and to a screen reader; `needsLabel`
     says "1 needs you") agree with the tray, dismissals included. A stack's
-    row in the tree counts its own items the same way (`needIds`). A loose
-    workspace counts toward the loose group's row. Selecting an area clears
-    the landscape's picks.
+    row in the tree and a stack's card, of its other tabs, count their own
+    items the same way (`needIds`), so a dismissed prompt or a teammate's
+    waiting tab counts on neither. A loose workspace counts toward the loose
+    group's row. Selecting an area clears the landscape's picks.
   - **Card badges** (`cardBadges.tsx`): on a card, at the end of its foot's
     line after the kind and status, in design D's order with the cost at
     the right, each with its full story on hover:
@@ -2358,7 +2359,9 @@ Design O, with Artifacts as a window, and N's workspace header.
       a zoom or a remount reads nothing unless its source changed
       meanwhile or its read failed). A read goes through a card showing it
       now: one that has gone may be a closed session's, which main refuses,
-      and a failure is read again when a card goes. It's read again when
+      and a failure is read again when a card goes, or when it comes back
+      through a card that went while it was on its way, the cards still there
+      seeing no failure. It's read again when
       the folder watch the Changes view refreshes on says that folder
       changed (`onFolderChanged`, one window-wide subscription), when the
       window shows again, and by one window-wide safety net every 60 s for
@@ -2392,10 +2395,15 @@ Design O, with Artifacts as a window, and N's workspace header.
       message. The hook's path comes from the events file, so whatever can
       write there could name any file: it's opened only when its real path
       is inside `~/.claude/projects` or `~/.codex/sessions` and it's a
-      regular file (`hookTranscript`: a FIFO would hold a thread), a refusal
-      said in the console once and, when nothing else held a message, as
-      "—" with why on hover (an agent with its own `CLAUDE_CONFIG_DIR` keeps
-      its transcripts elsewhere). A subagent's file (`subagents/`) and
+      regular file (`hookTranscript`: a FIFO would hold a thread). One that
+      can't be looked at (a link loop, no permission) is refused too; only
+      one that isn't there isn't. A refusal is logged once for each reason
+      (`logError`) and, when nothing else held a message, shows as "—" with
+      why on hover (an agent with its own `CLAUDE_CONFIG_DIR` keeps its
+      transcripts elsewhere). Whichever file is picked, what's read is what's
+      checked: opened with `O_NOFOLLOW | O_NONBLOCK`, `fstat`ed and read from
+      that handle, so a link or a FIFO swapped in since it was picked is
+      refused and can't hold the open. A subagent's file (`subagents/`) and
       sidechain lines are never read, here or in the digests and the
       take-over brief, its quoted conversation and its latest plan alike
       (`filesOf`, `isSidechainFile`, `c.sidechain`, `isSidechain`). It reads
@@ -2421,7 +2429,15 @@ Design O, with Artifacts as a window, and N's workspace header.
       of the meters (`setMeters(null)`), so the rail's tokens, a group's bar
       and the usage meter's today go too rather than go stale beside
       "cost —". On the status bar the meters have their own note
-      (`readNotes.ts`), gone once they're read again.
+      (`readNotes.ts`), gone once they're read again. An index that can't be
+      written (locked, full, corrupt: `isIndexFailure`) fails the sync rather
+      than counting as one skipped transcript, while what one transcript can
+      cause (unreadable, a line SQLite refuses) stays a skip. A failed sync
+      is tried again after 30 s (`retryingSync`), since with idle agents
+      nothing else asks for one for minutes. A refresh brief and a handoff
+      go on when a sync fails (`syncForFiles`): they read the conversation's
+      own files and only need them known. The weekly rollup, worked out from
+      the index's contents, fails with it.
     - **On a card at any zoom:** under its head it's laid out from the
       bottom in columns that wrap, so a row too tall for what's left goes
       whole, never cut mid-glyph: `.ls-card-mid` holds `.ls-card-body` and
@@ -2452,7 +2468,7 @@ Design O, with Artifacts as a window, and N's workspace header.
       and o2 on an unanswered prompt, the rest idle with a turn's end);
     - `?badgeFail=diff,pr,reply,meters` (those sources fail; the meters
       answer and push as main does when the index can't sync);
-    - `?landscapeNeedsAudit=a|g|b|c|d|e|f` (`src/preview/needsYouAudit.ts`),
+    - `?landscapeNeedsAudit=a|g|b|c|d|e|f|s` (`src/preview/needsYouAudit.ts`),
       whose key presses and clicks, where it matters, are real ones: the
       audit asks for them (`window.__mbKeys`) and `ui-preview.mjs` sends them
       through the DevTools protocol to whatever has the focus or is under
@@ -2484,7 +2500,9 @@ Design O, with Artifacts as a window, and N's workspace header.
       pill, then a ghost reopened, not listed until a turn ends in it; =f a
       keyboard Dismiss, a real double click on the last item's, the tray
       with nothing left or the rooms unreadable (`?teamFail`), Undo with the
-      mouse, the button's height, and ⌘N and ⌘K with the tray open;
+      mouse, the button's height, and ⌘N, ⌘K and ⌘P with the tray open; =s a
+      stack's card's count against the tray and the tree: a tab on a prompt,
+      dismissed, on a second prompt, finished, and a teammate's tab waiting;
     - fixtures: s8 finished 12 minutes ago, PR #88 from 5101's branch, the
       branch stats and last replies, s5's and s8's meters.
   - **Tests:**
@@ -2502,9 +2520,10 @@ Design O, with Artifacts as a window, and N's workspace header.
       that repeats "what it did", one read shared by every card on a folder
       and kept across a remount, a folder change reading only that folder's
       diffs, reads through a card still showing, a failure read again when
-      the card it went through goes, by a card shown again and by the safety
-      net, another turn or a source changed while no card showed it read
-      when one next does, and main's meters failing on a sync;
+      the card it went through goes (before or while it's on its way), by a
+      card shown again and by the safety net, another turn or a source
+      changed while no card showed it read when one next does, and main's
+      meters failing on a sync;
     - `test/files.test.ts` (`branchStat` on a real repo: commits plus
       uncommitted changes against dev, a missing base and an option-looking
       one refused, a folder change forgetting the kept answer, one round and
@@ -2514,12 +2533,15 @@ Design O, with Artifacts as a window, and N's workspace header.
       or said, a file read once while unchanged; `replyFiles`: the hook's
       file, the index's, one looked for, a subagent's never;
       `hookTranscript` and `replyOfConversation`: inside with links
-      followed, outside, a link out, a name beside the folder, a FIFO, the
-      why, the fallback), `test/takeoverBrief.test.ts` (a subagent's lines
-      out of the quoted conversation and the latest plan),
+      followed, outside, a link out, a name beside the folder, a FIFO, a link
+      loop and no permission refused, the why, the fallback; a FIFO or a link
+      swapped in before the read), `test/takeoverBrief.test.ts` (a subagent's
+      lines out of the quoted conversation and the latest plan),
       `test/landscapeView.test.ts` (`clearRoom` at 1024×768),
       `test/transcripts.test.ts` (a subagent's file searchable under its
-      parent, never among the conversation's files),
+      parent, never among the conversation's files; a locked index failing
+      the sync and picked up after, a line SQLite refuses still one skip,
+      `retryingSync`, what goes on or fails with a sync),
       `test/sessionStatus.test.ts` (`finishedAt`, `waitingAt` and
       `transcript_path` through the real hook script, `finishedAtAfter`, and
       a reopened agent's or terminal's record not finished until a turn
@@ -2529,7 +2551,7 @@ Design O, with Artifacts as a window, and N's workspace header.
       wide fit (each with a stack's front tab exited too), at 10.5%, 11% and
       13%, the fit's 18%, 50% and 100%, and with every source failing, =c at
       1024×768, at 1024×600 and at 1024×768's fit, =d at 860 px in the light
-      theme, =e, =f with a join request and with the rooms unreadable;
+      theme, =e, =f with a join request and with the rooms unreadable, =s;
       `test/uiLandscapeAreas.test.ts` counts the tree's 5101 as 2 (s2's
       prompt and s8 finished).
   - **Decisions for Ryan:**
@@ -2566,9 +2588,12 @@ Design O, with Artifacts as a window, and N's workspace header.
     - at 1024×768's fit (11%) a card's foot is too narrow for its kind and
       a longer status together, so "Working" ends in an ellipsis; the
       status dot in its head still says it;
-    - a stack's card counts its other tabs waiting by their status ("1 needs
-      you" on the tabs' row), a dismissed prompt too, where the tree's row
-      counts Needs you's items;
+    - the selection bar can sit under the open tray at 1024 wide, the card
+      itself clear of it;
+    - the keyboard ends on the body after three ways out of the palette: a
+      click on its scrim, palette → a dialog → Esc, and palette → Go to from
+      focus;
+    - a card's terminal line can stop mid-sentence with no ellipsis;
     - Claude Code's number-key prompt shortcuts are from its interface, and
       Codex's y / a / n from its source; neither was driven here.
 

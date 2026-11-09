@@ -4,6 +4,7 @@ import { fuzzyFilter } from "./fuzzy";
 import { useListNav } from "./listNav";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
+import { useDialogFocus } from "./Modal";
 import { useEscape } from "./useEscape";
 import { settled } from "./settled";
 
@@ -41,6 +42,7 @@ export function QuickOpen({
 }) {
   const [q, setQ] = useState("");
   useEscape(onClose);
+  useDialogFocus();
   const [list, setList] = useState<IpcResult<FileList> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 

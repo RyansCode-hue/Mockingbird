@@ -227,80 +227,124 @@ describe("the transcript path a hook named, which comes from a file others could
     fs.writeFileSync(secret, `${claude("assistant", "From outside the transcript folders.")}\n`);
     return { root, outside, own, secret, real: (p: string) => fs.realpathSync(p) };
   };
+  const logged = () => vi.fn((_context: string, err: unknown) => String(err));
   it("is read inside the transcript folders, with links followed", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = logged();
     const t = setup("hook-in");
-    expect(hookTranscript(t.own, [t.root])).toEqual({ path: t.real(t.own), refused: null });
+    expect(hookTranscript(t.own, [t.root], log)).toEqual({ path: t.real(t.own), refused: null });
     const link = path.join(t.root, "link.jsonl");
     fs.symlinkSync(t.own, link);
-    expect(hookTranscript(link, [t.root])).toEqual({ path: t.real(t.own), refused: null });
+    expect(hookTranscript(link, [t.root], log)).toEqual({ path: t.real(t.own), refused: null });
     // a transcript folder reached through a link itself: the same place
     const linkedRoot = path.join(t.outside, "linked-projects");
     fs.symlinkSync(t.root, linkedRoot);
-    expect(hookTranscript(t.own, [linkedRoot]).path).toBe(t.real(t.own));
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+    expect(hookTranscript(t.own, [linkedRoot], log).path).toBe(t.real(t.own));
+    expect(log).not.toHaveBeenCalled();
   });
-  it("is none, and not refused, when there's nothing there yet", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("is none, and not refused, only when there's nothing there yet", () => {
+    const log = logged();
     const t = setup("hook-missing");
-    expect(hookTranscript(null, [t.root])).toEqual({ path: null, refused: null });
-    expect(hookTranscript(path.join(t.root, "new.jsonl"), [t.root])).toEqual({ path: null, refused: null });
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+    expect(hookTranscript(null, [t.root], log)).toEqual({ path: null, refused: null });
+    expect(hookTranscript(path.join(t.root, "new.jsonl"), [t.root], log)).toEqual({ path: null, refused: null });
+    // a link to a file that isn't there is nothing there too
+    const dangling = path.join(t.root, "dangling.jsonl");
+    fs.symlinkSync(path.join(t.root, "gone.jsonl"), dangling);
+    expect(hookTranscript(dangling, [t.root], log)).toEqual({ path: null, refused: null });
+    expect(log).not.toHaveBeenCalled();
   });
-  it("is refused outside them, through a link out of them, or beside them with a name that starts the same; said once each", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("is refused, not taken for missing, when it can't be looked at: a link loop, a folder it has no permission for", () => {
+    const log = logged();
+    const t = setup("hook-unreadable");
+    const a = path.join(t.root, "a.jsonl");
+    const b = path.join(t.root, "b.jsonl");
+    fs.symlinkSync(a, b);
+    fs.symlinkSync(b, a);
+    const loop = hookTranscript(a, [t.root], log);
+    expect(loop.path).toBeNull();
+    expect(loop.refused).toMatch(/is unreadable \(ELOOP/);
+    const shut = path.join(t.root, "shut");
+    fs.mkdirSync(shut);
+    const inShut = path.join(shut, "c1.jsonl");
+    fs.writeFileSync(inShut, "");
+    fs.chmodSync(shut, 0o000);
+    try {
+      const denied = hookTranscript(inShut, [t.root], log);
+      expect(denied.path).toBeNull();
+      expect(denied.refused).toMatch(/is unreadable \(EACCES/);
+    } finally {
+      fs.chmodSync(shut, 0o755);
+    }
+    expect(log).toHaveBeenCalledTimes(2);
+  });
+  it("is refused outside them, through a link out of them, or beside them with a name that starts the same; logged once each", () => {
+    const log = logged();
     const t = setup("hook-out");
-    expect(hookTranscript(t.secret, [t.root])).toEqual({ path: null, refused: expect.stringContaining(`is outside ${t.root}`) });
-    hookTranscript(t.secret, [t.root]);
+    expect(hookTranscript(t.secret, [t.root], log)).toEqual({ path: null, refused: expect.stringContaining(`is outside ${t.root}`) });
+    hookTranscript(t.secret, [t.root], log);
     const out = path.join(t.root, "out.jsonl");
     fs.symlinkSync(t.secret, out);
-    expect(hookTranscript(out, [t.root]).path).toBeNull();
+    expect(hookTranscript(out, [t.root], log).path).toBeNull();
     const beside = `${t.root}-other`;
     fs.mkdirSync(beside);
     fs.writeFileSync(path.join(beside, "c1.jsonl"), "");
-    expect(hookTranscript(path.join(beside, "c1.jsonl"), [t.root]).path).toBeNull();
-    expect(warn.mock.calls.map((c) => c[0])).toEqual([
-      expect.stringMatching(/^\[mockingbird\] not reading the transcript a hook named, .*outside\/c1\.jsonl: it's outside /),
-      expect.stringMatching(/^\[mockingbird\] not reading the transcript a hook named, .*projects\/out\.jsonl: it's outside /),
-      expect.stringMatching(/^\[mockingbird\] not reading the transcript a hook named, .*projects-other\/c1\.jsonl: it's outside /),
+    expect(hookTranscript(path.join(beside, "c1.jsonl"), [t.root], log).path).toBeNull();
+    expect(log.mock.calls).toEqual([
+      ["not reading the transcript a hook named", expect.stringMatching(/outside\/c1\.jsonl, is outside /)],
+      ["not reading the transcript a hook named", expect.stringMatching(/projects\/out\.jsonl, is outside /)],
+      ["not reading the transcript a hook named", expect.stringMatching(/projects-other\/c1\.jsonl, is outside /)],
     ]);
-    warn.mockRestore();
   });
   it("is refused when it isn't a regular file, so a FIFO can't hold a thread, and isn't read as one from elsewhere", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = logged();
     const t = setup("hook-fifo");
     const fifo = path.join(t.root, "c2.jsonl");
     execFileSync("mkfifo", [fifo]);
-    expect(hookTranscript(fifo, [t.root])).toEqual({ path: null, refused: expect.stringContaining("not a regular file") });
-    expect(hookTranscript(t.root, [t.root]).refused).toContain("not a regular file");
+    expect(hookTranscript(fifo, [t.root], log)).toEqual({ path: null, refused: expect.stringContaining("not a regular file") });
+    expect(hookTranscript(t.root, [t.root], log).refused).toContain("not a regular file");
     expect(replyFiles("claude", "c2", { hook: null, indexed: [{ path: fifo }], locate: () => fifo })).toEqual([]);
     expect(replyFiles("codex", "c2", { hook: null, indexed: [{ path: fifo }], locate: () => fifo })).toEqual([]);
-    warn.mockRestore();
   });
   it("gives the file's message when it's in, and never one from outside", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const t = setup("hook-reply");
-    const o = { roots: [t.root], indexed: [], locate: () => null };
+    const o = { roots: [t.root], indexed: [], locate: () => null, log: logged() };
     expect(await replyOfConversation("claude", "c1", { ...o, hook: t.own })).toMatchObject({ line: "From the transcript folder." });
     for (const agent of ["claude", "codex"] as const) {
       const r = await replyOfConversation(agent, "c1", { ...o, hook: t.secret });
       expect(r.line).toBeNull();
       expect(r.why).toContain(`its transcript, ${t.secret}, is outside ${t.root}`);
     }
-    warn.mockRestore();
   });
-  it("is checked by main's handler, against the agents' transcript folders", () => {
+  it("is checked by main's handler, against the agents' transcript folders, and logged as main logs", () => {
     const index = fs.readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
-    expect(index).toMatch(/replyOfConversation\(agent, conv, \{\s*hook: sessions\.transcriptOf\(s\.id, conv\),\s*roots: \[CLAUDE_PROJECTS, CODEX_SESSIONS\],/);
+    expect(index).toMatch(/replyOfConversation\(agent, conv, \{\s*hook: sessions\.transcriptOf\(s\.id, conv\),\s*roots: \[CLAUDE_PROJECTS, CODEX_SESSIONS\],[^}]*log: logError,/);
   });
   it("still finds the conversation's own file when the path was refused, saying nothing then", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const t = setup("hook-fallback");
-    const r = await replyOfConversation("claude", "c1", { hook: t.secret, roots: [t.root], indexed: [], locate: () => t.own });
+    const r = await replyOfConversation("claude", "c1", { hook: t.secret, roots: [t.root], indexed: [], locate: () => t.own, log: logged() });
     expect(r).toMatchObject({ line: "From the transcript folder." });
     expect(r.why).toBeUndefined();
-    warn.mockRestore();
+  });
+});
+
+describe("reading a transcript picked a moment ago", () => {
+  it("refuses a FIFO swapped in since, without waiting for something to write to it", async () => {
+    const dir = tempDir("swap-fifo");
+    const fifo = path.join(dir, "c1.jsonl");
+    execFileSync("mkfifo", [fifo]);
+    await expect(lastReplyOf([{ path: fifo, agent: "claude" }], "c1")).rejects.toThrow(/isn't a regular file/);
+  });
+  it("refuses a link swapped in since, rather than reading where it points", async () => {
+    const dir = tempDir("swap-link");
+    const secret = path.join(dir, "secret.txt");
+    fs.writeFileSync(secret, `${claude("assistant", "From where the link points.")}\n`);
+    const link = path.join(dir, "c1.jsonl");
+    fs.symlinkSync(secret, link);
+    await expect(lastReplyOf([{ path: link, agent: "claude" }], "c1")).rejects.toThrow(/ELOOP/);
+  });
+  it("still reads the file itself, sized by the handle it reads from", async () => {
+    const dir = tempDir("swap-none");
+    const f = path.join(dir, "c1.jsonl");
+    fs.writeFileSync(f, `${claude("assistant", "From the file itself.")}\n`);
+    expect(await lastReplyOf([{ path: f, agent: "claude" }], "c1")).toMatchObject({ line: "From the file itself." });
   });
 });

@@ -3,7 +3,7 @@ import * as path from "path";
 import { currentBranch, git, isRepo } from "./git";
 import { isSidechainFile, parseClaudeLine, parseCodexLine } from "./transcripts";
 import type { AgentKind, LastReply } from "../shared/types";
-import { readSlice } from "./fileOps";
+import { isMissing, readSlice } from "./fileOps";
 import { agentLabel } from "./agents";
 import { realpathOr } from "./agentFiles";
 import { inside } from "./files";
@@ -89,18 +89,13 @@ export function lastReplyLine(lines: string[], agent: AgentKind, conv: string): 
   return null;
 }
 
-/** A file's last `bytes` as whole lines, read without blocking: a window that starts mid-file drops the line it cuts. */
-async function tailOf(file: string, size: number, bytes: number): Promise<string[]> {
+/** An open file's last `bytes` as whole lines, read without blocking: a window that starts mid-file drops the line it cuts. */
+async function tailOf(fh: fs.promises.FileHandle, size: number, bytes: number): Promise<string[]> {
   const n = Math.min(size, bytes);
-  const fh = await fs.promises.open(file, "r");
-  try {
-    const buf = Buffer.alloc(n);
-    const { bytesRead } = await fh.read(buf, 0, n, size - n);
-    const lines = buf.toString("utf8", 0, bytesRead).split("\n");
-    return (n < size ? lines.slice(1) : lines).filter(Boolean);
-  } finally {
-    await fh.close();
-  }
+  const buf = Buffer.alloc(n);
+  const { bytesRead } = await fh.read(buf, 0, n, size - n);
+  const lines = buf.toString("utf8", 0, bytesRead).split("\n");
+  return (n < size ? lines.slice(1) : lines).filter(Boolean);
 }
 
 /** One file's answer, kept while the file is unchanged (its size and modified time), so a card shown again reads nothing. */
@@ -112,21 +107,31 @@ const REPLY_CACHE_MAX = 300;
  * when the whole file holds none; `{ line: null, why }` when the part read held none but the file goes further back.
  */
 async function lastReplyIn(f: { path: string; agent: AgentKind }, conv: string): Promise<LastReply | null> {
-  const { size, mtimeMs } = await fs.promises.stat(f.path);
+  const seen = await fs.promises.stat(f.path);
   const key = `${f.path}\0${conv}`;
   const hit = replyCache.get(key);
-  if (hit && hit.size === size && hit.mtime === mtimeMs) return hit.found;
-  let found: LastReply | null = null;
-  for (const bytes of REPLY_WINDOWS) {
-    found = lastReplyLine(await tailOf(f.path, size, bytes), f.agent, conv);
-    if (found || bytes >= size) break;
+  if (hit && hit.size === seen.size && hit.mtime === seen.mtimeMs) return hit.found;
+  // what's read is what's checked, on the one handle: a link or a FIFO swapped in since the file was picked is refused,
+  // and O_NONBLOCK keeps a FIFO from holding the open until something writes to it
+  const fh = await fs.promises.open(f.path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) throw new Error(`${f.path} isn't a regular file`);
+    const { size, mtimeMs } = st;
+    let found: LastReply | null = null;
+    for (const bytes of REPLY_WINDOWS) {
+      found = lastReplyLine(await tailOf(fh, size, bytes), f.agent, conv);
+      if (found || bytes >= size) break;
+    }
+    const biggest = REPLY_WINDOWS[REPLY_WINDOWS.length - 1];
+    if (!found && size > biggest) found = { line: null, at: null, why: `no message from the agent in the last ${Math.round(biggest / 1024 / 1024)} MB of its transcript, which a long tool output filled` };
+    replyCache.delete(key);
+    replyCache.set(key, { size, mtime: mtimeMs, found });
+    if (replyCache.size > REPLY_CACHE_MAX) replyCache.delete(replyCache.keys().next().value!);
+    return found;
+  } finally {
+    await fh.close();
   }
-  const biggest = REPLY_WINDOWS[REPLY_WINDOWS.length - 1];
-  if (!found && size > biggest) found = { line: null, at: null, why: `no message from the agent in the last ${Math.round(biggest / 1024 / 1024)} MB of its transcript, which a long tool output filled` };
-  replyCache.delete(key);
-  replyCache.set(key, { size, mtime: mtimeMs, found });
-  if (replyCache.size > REPLY_CACHE_MAX) replyCache.delete(replyCache.keys().next().value!);
-  return found;
 }
 
 /**
@@ -186,24 +191,30 @@ const hookRefusalsSaid = new Set<string>();
 /**
  * The transcript path a hook named (`file`), as a path main may open: a regular file inside one of `roots` with links
  * followed, as `path`. The path comes from the events file the hooks write to, so whatever can write there could name
- * any file main can read: anything else is `refused`, with why, said in the console once. One that isn't there is
- * neither (a new conversation's file isn't written yet).
+ * any file main can read: anything else is `refused`, with why, logged once for each reason, and so is one that can't
+ * be looked at (a link loop, no permission). Only one that isn't there is neither (a new conversation's file isn't
+ * written yet).
  */
-export function hookTranscript(file: string | null, roots: readonly string[]): { path: string | null; refused: string | null } {
+export function hookTranscript(file: string | null, roots: readonly string[], log: (context: string, err: unknown) => string): { path: string | null; refused: string | null } {
   if (!file) return { path: null, refused: null };
-  let real: string;
+  let real: string | null = null;
+  let why: string | null = null;
   try {
     real = fs.realpathSync(file);
-  } catch {
-    return { path: null, refused: null };
+    const at = real;
+    if (!roots.some((root) => inside(realpathOr(root), at))) why = `outside ${roots.join(" and ")}, the folders Mockingbird reads transcripts from`;
+    else if (!fs.statSync(at).isFile()) why = "not a regular file";
+  } catch (err) {
+    if (isMissing(err)) return { path: null, refused: null };
+    why = `unreadable (${(err as Error).message})`;
   }
-  const why = !roots.some((root) => inside(realpathOr(root), real)) ? `outside ${roots.join(" and ")}, the folders Mockingbird reads transcripts from` : !isRegularFile(real) ? "not a regular file" : null;
   if (!why) return { path: real, refused: null };
-  if (!hookRefusalsSaid.has(file)) {
-    hookRefusalsSaid.add(file);
-    console.warn(`[mockingbird] not reading the transcript a hook named, ${file}: it's ${why}`);
+  const refused = `its transcript, ${file}, is ${why}`;
+  if (!hookRefusalsSaid.has(refused)) {
+    hookRefusalsSaid.add(refused);
+    log("not reading the transcript a hook named", refused);
   }
-  return { path: null, refused: `its transcript, ${file}, is ${why}` };
+  return { path: null, refused };
 }
 
 /**
@@ -214,9 +225,9 @@ export function hookTranscript(file: string | null, roots: readonly string[]): {
 export async function replyOfConversation(
   agent: AgentKind,
   conv: string,
-  o: { hook: string | null; roots: readonly string[]; indexed: readonly { path: string }[]; locate: () => string | null }
+  o: { hook: string | null; roots: readonly string[]; indexed: readonly { path: string }[]; locate: () => string | null; log: (context: string, err: unknown) => string }
 ): Promise<LastReply> {
-  const hook = hookTranscript(o.hook, o.roots);
+  const hook = hookTranscript(o.hook, o.roots, o.log);
   const reply = await lastReplyOf(replyFiles(agent, conv, { hook: hook.path, indexed: o.indexed, locate: o.locate }), conv);
   return hook.refused && !reply.line && !reply.why ? { ...reply, why: hook.refused } : reply;
 }

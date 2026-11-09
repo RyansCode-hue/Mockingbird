@@ -52,7 +52,7 @@ import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
 import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
-import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
+import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, ContextWindow, FileOverlap, LastReply, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
@@ -978,7 +978,7 @@ handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
   const conv = s.conversation?.id ?? conversationsOf(s).at(-1);
   if (!conv) throw new Error("Couldn't read the conversation: Mockingbird hasn't seen this session's conversation yet");
   if (!transcripts) throw new Error(`Couldn't read the conversation: the conversation index isn't available${transcriptsProblem ? ` (${transcriptsProblem})` : ""}`);
-  await syncTranscripts(transcripts);
+  await syncForFiles(transcripts);
   const agent: AgentKind = s.agent ?? "claude";
   try {
     return await refreshBrief(s, { files: transcripts.filesOf(conv), conversationId: conv, context: readContextWindow(s), rate: planRate(agent), now: Date.now() });
@@ -1001,6 +1001,7 @@ handle("transcripts:lastReply", async (id): Promise<LastReply> => {
     roots: [CLAUDE_PROJECTS, CODEX_SESSIONS],
     indexed: transcripts?.filesOf(conv) ?? [],
     locate: () => (agent === "claude" ? claudeTranscriptOf(conv, s.cwd) : codexRolloutOf(conv)),
+    log: logError,
   });
 });
 // a session of the same agent in the same folder and group, started from the brief
@@ -1443,7 +1444,7 @@ handle("handoff:draft", async (id) => {
   const conv = conversationsOf(s).at(-1);
   let digest = "";
   if (conv && transcripts) {
-    await syncTranscripts(transcripts);
+    await syncForFiles(transcripts);
     const files = transcripts.filesOf(conv);
     const lines = (await Promise.all(files.map((f) => transcriptLines(f.path)))).flat();
     digest = transcriptDigest(lines, files[0]?.agent ?? from, conv);
@@ -1799,7 +1800,7 @@ function startTranscriptIndex(): void {
     return;
   }
   // a failed sync is logged and kept as the index's problem by syncTranscripts; the meters then say so, not go on as they were
-  const sync = () => syncTranscripts(transcripts!).then(metersChanged, metersChanged);
+  const sync = retryingSync(() => syncTranscripts(transcripts!), metersChanged);
   void sync();
   let timer: NodeJS.Timeout | null = null;
   for (const root of Object.values(transcriptRoots)) {
@@ -1823,6 +1824,19 @@ async function syncTranscripts(index: TranscriptIndex): Promise<void> {
   } catch (err) {
     transcriptsProblem = logError("transcripts:sync", err);
     throw err;
+  }
+}
+
+/**
+ * A sync before reading a conversation's own files, which only needs them known: one that fails is logged and kept as
+ * the index's problem by syncTranscripts, and the read goes on with the files known so far. What's worked out from the
+ * index's contents (the weekly rollup) calls syncTranscripts, and fails with it.
+ */
+async function syncForFiles(index: TranscriptIndex): Promise<void> {
+  try {
+    await syncTranscripts(index);
+  } catch {
+    return;
   }
 }
 

@@ -1,8 +1,9 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TranscriptIndex, ftsQuery, importable, linkHits, parseClaudeLine, parseCodexLine } from "../src/main/transcripts";
+import { SYNC_RETRY_MS, TranscriptIndex, ftsQuery, importable, isIndexFailure, linkHits, parseClaudeLine, parseCodexLine, retryingSync } from "../src/main/transcripts";
 import type { CollabRoom, SessionInfo } from "../src/shared/types";
 
 const L = (o: unknown) => JSON.stringify(o);
@@ -303,5 +304,91 @@ describe("reading transcripts that change underneath", () => {
     failing.mockRestore();
     await idx.sync();
     expect(chunks(idx, file)).toBe(10);
+  });
+
+  it("fails the sync when the index can't be written, not counting that as a skipped transcript, and picks up after", async () => {
+    const { home, idx, cFile } = fixture();
+    await idx.sync();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const other = new DatabaseSync(path.join(home, "index.db"));
+    other.exec("BEGIN IMMEDIATE");
+    fs.appendFileSync(cFile, L({ type: "user", sessionId: "c1", timestamp: "2026-09-01T11:00:00Z", message: { role: "user", content: "the wombat report" } }) + "\n");
+    await expect(idx.sync()).rejects.toThrow(/database is locked/);
+    expect(errors).not.toHaveBeenCalled();
+    expect(idx.indexing).toBe(false);
+    // what's indexed can still be read meanwhile
+    expect(idx.filesOf("c1").map((f) => f.path)).toEqual([cFile]);
+    other.exec("ROLLBACK");
+    other.close();
+    await idx.sync();
+    expect(idx.search("wombat")).toHaveLength(1);
+  });
+
+  it("keeps a line SQLite refuses as one skipped transcript, the others indexed", async () => {
+    const { idx, cFile, xId } = fixture();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const apply = (idx as any).apply.bind(idx);
+    vi.spyOn(idx as any, "apply").mockImplementation((...a: any[]) => {
+      if (a[2] === cFile) throw Object.assign(new Error("NOT NULL constraint failed: conversations.started"), { code: "ERR_SQLITE_ERROR", errcode: 1299 });
+      return apply(...a);
+    });
+    await idx.sync();
+    expect(idx.search("nightly.py")[0]).toMatchObject({ id: xId });
+    expect(errors.mock.calls.some((c) => String(c[0]).includes(cFile))).toBe(true);
+  });
+
+  it("tells the index's own failures from what one transcript can cause", () => {
+    const sqlite = (errcode: number) => ({ code: "ERR_SQLITE_ERROR", errcode });
+    for (const code of [5, 6, 8, 10, 11, 13, 14, 26, 517, 1]) expect(isIndexFailure(sqlite(code))).toBe(true);
+    for (const code of [18, 19, 20, 25, 1299]) expect(isIndexFailure(sqlite(code))).toBe(false);
+    for (const err of [Object.assign(new Error("gone"), { code: "ENOENT" }), Object.assign(new Error("no"), { code: "EACCES" }), new Error("disk I/O error"), null, undefined]) expect(isIndexFailure(err)).toBe(false);
+  });
+});
+
+describe("what relies on the index's sync", () => {
+  const source = fs.readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+  const handler = (name: string) => {
+    const at = source.indexOf(`handle("${name}"`);
+    expect(at).toBeGreaterThan(-1);
+    return source.slice(at, at + 700);
+  };
+  it("goes on when it's reading a conversation's own files, and fails with it when it's worked out from the index", () => {
+    expect(handler("usage:brief")).toContain("await syncForFiles(transcripts)");
+    expect(handler("handoff:draft")).toContain("await syncForFiles(transcripts)");
+    expect(handler("rollup:write")).toContain("await syncTranscripts(transcripts)");
+  });
+});
+
+describe("a sync that fails", () => {
+  afterEach(() => vi.useRealTimers());
+  const timers = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  it("is tried again after half a minute until one succeeds, each outcome heard", async () => {
+    timers();
+    const run = vi.fn<() => Promise<void>>().mockRejectedValueOnce(new Error("locked")).mockRejectedValueOnce(new Error("locked")).mockResolvedValue(undefined);
+    const after = vi.fn();
+    await retryingSync(run, after)();
+    expect([run.mock.calls.length, after.mock.calls.length]).toEqual([1, 1]);
+    await vi.advanceTimersByTimeAsync(SYNC_RETRY_MS - 1);
+    expect(run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect([run.mock.calls.length, after.mock.calls.length]).toEqual([2, 2]);
+    await vi.advanceTimersByTimeAsync(SYNC_RETRY_MS);
+    expect([run.mock.calls.length, after.mock.calls.length]).toEqual([3, 3]);
+    await vi.advanceTimersByTimeAsync(10 * SYNC_RETRY_MS);
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+  it("keeps one retry waiting however many fail or are asked for meanwhile", async () => {
+    timers();
+    const run = vi.fn<() => Promise<void>>().mockRejectedValueOnce(new Error("locked")).mockRejectedValueOnce(new Error("locked")).mockRejectedValueOnce(new Error("locked")).mockResolvedValue(undefined);
+    const sync = retryingSync(run, () => {});
+    // a sync's fold: two asked at once both fail
+    await Promise.all([sync(), sync()]);
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(SYNC_RETRY_MS);
+    expect(run).toHaveBeenCalledTimes(3);
+    await sync();
+    expect(run).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(10 * SYNC_RETRY_MS);
+    expect(run).toHaveBeenCalledTimes(4);
   });
 });
