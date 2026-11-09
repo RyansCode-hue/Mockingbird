@@ -165,6 +165,32 @@ describe("branchStat (a card's diff badge)", () => {
     forgetBranchStat(repo);
     expect((await branchStat(repo, "dev")).insertions).toBe(6);
   });
+  it("runs one round per folder and at most one more, shared, however often a busy folder changes", async () => {
+    const repo = featureRepo();
+    const first = branchStat(repo, "dev");
+    forgetBranchStat(repo);
+    const queued = branchStat(repo, "dev");
+    forgetBranchStat(repo);
+    expect(branchStat(repo, "dev")).toBe(queued);
+    forgetBranchStat(repo);
+    expect(branchStat(repo, "dev")).toBe(queued);
+    expect(queued).not.toBe(first);
+    // the change comes after the first round began: the round after it sees it
+    write(repo, { "b.txt": "b\nmore\nand more\n" });
+    await first;
+    expect((await queued).insertions).toBe(6);
+  });
+  it("runs the queued round after one that failed, and keeps neither", async () => {
+    const repo = featureRepo();
+    const first = branchStat(repo, "uat");
+    forgetBranchStat(repo);
+    const queued = branchStat(repo, "uat");
+    expect(queued).not.toBe(first);
+    await expect(first).rejects.toThrow(/isn't in this repository/);
+    await expect(queued).rejects.toThrow(/isn't in this repository/);
+    git(repo, "branch", "uat", "dev");
+    expect(await branchStat(repo, "uat")).toMatchObject({ base: "uat", files: 2 });
+  });
   it("follows its base moving on: a fork read again once HEAD or the base's tip has moved", async () => {
     const repo = featureRepo();
     expect(await branchStat(repo, "dev")).toMatchObject({ files: 2 });

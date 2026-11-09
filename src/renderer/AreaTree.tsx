@@ -10,6 +10,7 @@ import { titleOf } from "./appModel";
 import { usePersisted } from "./prefs";
 import { initialsOf } from "./Team";
 import type { AreaCounts } from "./landscapeModel";
+import { needsLabel } from "./needsYouModel";
 
 /** One row under an area in the tree: a workspace, or a stack (a sub-group) with its tabs. */
 export type TreeItem = { kind: "ws"; key: string; s: SessionInfo } | { kind: "stack"; key: string; name: string; members: SessionInfo[] };
@@ -72,6 +73,7 @@ export interface TreeArea {
  */
 export function AreaTree({
   areas,
+  needIds,
   filter,
   onFilter,
   selected,
@@ -84,6 +86,8 @@ export function AreaTree({
   footer,
 }: {
   areas: TreeArea[];
+  /** The sessions with a Needs you item shown: what a stack's row counts. */
+  needIds: ReadonlySet<string>;
   filter: string;
   onFilter: (q: string) => void;
   /** The selected session. */
@@ -199,7 +203,7 @@ export function AreaTree({
                   </span>
                 ))}
                 {a.needs > 0 ? (
-                  <span className="lt-badge" title={`${a.needs} need you: see Needs you`} aria-label={`${a.needs} need you`}>
+                  <span className="lt-badge" title={`${needsLabel(a.needs)}: see Needs you`} aria-label={needsLabel(a.needs)}>
                     {a.needs}
                   </span>
                 ) : (
@@ -212,7 +216,7 @@ export function AreaTree({
                 a.items.map((it) => {
                   if (it.kind === "ws") return wsRow(it.s, 1);
                   const stOpen = openStacks.includes(it.key);
-                  const waiting = it.members.filter((s) => s.status === "waiting").length;
+                  const need = it.members.filter((s) => needIds.has(s.id)).length;
                   const front = it.members[0];
                   return (
                     <React.Fragment key={it.key}>
@@ -242,7 +246,11 @@ export function AreaTree({
                           <StatusDot status={stackStatus(it.members)} className="sm" />
                           <span className="lt-t">{it.name}</span>
                           <span className="lt-tag">stack · {it.members.length}</span>
-                          {waiting > 0 && <span className="lt-badge">{waiting}</span>}
+                          {need > 0 && (
+                            <span className="lt-badge" title={`${needsLabel(need)}: see Needs you`} aria-label={needsLabel(need)}>
+                              {need}
+                            </span>
+                          )}
                         </span>
                       </div>
                       {stOpen && it.members.map((s) => wsRow(s, 2, undefined, `${it.key}:${s.id}`))}
@@ -288,7 +296,7 @@ export function AreaSwitcher({
           <button key={a.key} type="button" data-area={a.key} className={`ls-sw ${a.accent === null ? "loose" : `a${a.accent}`} ${current === a.key ? "on" : ""}`} title={`Go to ${a.title}`} onClick={() => onArea(a.key)}>
             {a.name}
             {a.waiting > 0 && (
-              <span className="w" title={`${a.waiting} need you: see Needs you`} aria-label={`${a.waiting} need you`}>
+              <span className="w" title={`${needsLabel(a.waiting)}: see Needs you`} aria-label={needsLabel(a.waiting)}>
                 {a.waiting}
               </span>
             )}

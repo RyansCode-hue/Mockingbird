@@ -130,9 +130,15 @@ export const shownItems = (items: readonly NeedsItem[], dismissed: readonly Dism
   return items.filter((i) => !gone.has(i.sig));
 };
 
-/** `item` dismissed at `now`, keeping the list short (the newest DISMISS_MAX, none older than DISMISS_KEEP_MS). */
-export function dismiss(list: readonly Dismissed[], item: NeedsItem, now: number): Dismissed[] {
-  return [{ sig: item.sig, at: now }, ...list.filter((d) => d.sig !== item.sig && now - d.at < DISMISS_KEEP_MS)].slice(0, DISMISS_MAX);
+/**
+ * `item` dismissed at `now`, keeping the list short: the newest DISMISS_MAX, none older than DISMISS_KEEP_MS. A
+ * dismissal of a state still `current` is kept however old, and before any other: letting it go would bring back an
+ * item that hasn't changed.
+ */
+export function dismiss(list: readonly Dismissed[], item: NeedsItem, now: number, current: readonly string[] = []): Dismissed[] {
+  const live = new Set(current);
+  const kept = list.filter((d) => d.sig !== item.sig && (live.has(d.sig) || now - d.at < DISMISS_KEEP_MS));
+  return [{ sig: item.sig, at: now }, ...kept.filter((d) => live.has(d.sig)), ...kept.filter((d) => !live.has(d.sig))].slice(0, DISMISS_MAX);
 }
 
 /** A Dismiss undone: `item` listed again in the state it was dismissed in. */
@@ -148,6 +154,9 @@ export function dismissedFrom(v: unknown): Dismissed[] {
   if (ok.length !== v.length) console.warn(`[mockingbird] ${v.length - ok.length} saved Needs you dismissals weren't readable and were let go`);
   return ok;
 }
+
+/** A count of items as a badge's title says it. */
+export const needsLabel = (n: number): string => `${n} ${n === 1 ? "needs" : "need"} you`;
 
 /** How many shown items count toward each area: the area tree's, the switcher's and a collapsed area's badge. */
 export function needsByArea(items: readonly NeedsItem[]): Map<string, number> {

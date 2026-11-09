@@ -37,7 +37,7 @@ import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summa
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, claudeTranscriptOf, codexRolloutOf } from "./agentFiles";
-import { handoffKickoff, handoffPrompt, lastReplyOf, replyFiles, repoState, transcriptDigest, transcriptLines } from "./handoff";
+import { handoffKickoff, handoffPrompt, replyOfConversation, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify } from "./notifications";
@@ -996,12 +996,12 @@ handle("transcripts:lastReply", async (id): Promise<LastReply> => {
   const conv = s.shell ? undefined : (s.conversation?.id ?? conversationsOf(s).at(-1));
   if (!conv) return { line: null, at: null };
   const agent: AgentKind = s.conversation?.id === conv ? s.conversation.agent : (s.agent ?? "claude");
-  const files = replyFiles(agent, conv, {
+  return replyOfConversation(agent, conv, {
     hook: sessions.transcriptOf(s.id, conv),
+    roots: [CLAUDE_PROJECTS, CODEX_SESSIONS],
     indexed: transcripts?.filesOf(conv) ?? [],
     locate: () => (agent === "claude" ? claudeTranscriptOf(conv, s.cwd) : codexRolloutOf(conv)),
   });
-  return lastReplyOf(files, conv);
 });
 // a session of the same agent in the same folder and group, started from the brief
 handle(
@@ -1798,8 +1798,8 @@ function startTranscriptIndex(): void {
     transcriptsProblem = logError("transcripts:open", err);
     return;
   }
-  // a failed sync is logged and kept as the index's problem by syncTranscripts
-  const sync = () => syncTranscripts(transcripts!).then(metersChanged, () => {});
+  // a failed sync is logged and kept as the index's problem by syncTranscripts; the meters then say so, not go on as they were
+  const sync = () => syncTranscripts(transcripts!).then(metersChanged, metersChanged);
   void sync();
   let timer: NodeJS.Timeout | null = null;
   for (const root of Object.values(transcriptRoots)) {
@@ -1833,8 +1833,9 @@ function metersNow(): Meters {
   // closed but resumable sessions too: a group's or ticket's usage counts them
   const live = sessions.list();
   const list = [...live, ...sessions.resumable().filter((r) => !live.some((s) => s.id === r.id))];
-  // no index, no meters: said as a failure, so a cost badge shows "—" rather than an empty meter reading as none used
-  if (!transcripts) throw new Error(`the conversation index isn't available${transcriptsProblem ? ` (${transcriptsProblem})` : ""}`);
+  // no index, or one that couldn't sync: said as a failure, so a cost badge shows "—" rather than an empty meter reading
+  // as none used, or one going stale
+  if (!transcripts || transcriptsProblem) throw new Error(`the conversation index isn't available${transcriptsProblem ? ` (${transcriptsProblem})` : ""}`);
   const convs = [...new Set(list.flatMap(conversationsOf))];
   const report = readUsage(); // reads Codex's session files: once per recompute
   const windows = fiveHourWindows(report, now);

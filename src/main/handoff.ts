@@ -5,6 +5,8 @@ import { isSidechainFile, parseClaudeLine, parseCodexLine } from "./transcripts"
 import type { AgentKind, LastReply } from "../shared/types";
 import { readSlice } from "./fileOps";
 import { agentLabel } from "./agents";
+import { realpathOr } from "./agentFiles";
+import { inside } from "./files";
 
 const HEAD_BYTES = 256 * 1024;
 const TAIL_BYTES = 6 * 1024 * 1024;
@@ -153,7 +155,7 @@ export function replyFiles(
   conv: string,
   o: { hook: string | null; indexed: readonly { path: string }[]; locate: () => string | null; exists?: (file: string) => boolean }
 ): { path: string; agent: AgentKind }[] {
-  const exists = o.exists ?? fs.existsSync;
+  const exists = o.exists ?? isRegularFile;
   const usable = (p: string | null | undefined): p is string => !!p && !isSidechainFile(p) && exists(p);
   if (agent === "claude") {
     const own = (p: string | null | undefined): p is string => usable(p) && path.basename(p) === `${conv}.jsonl`;
@@ -168,6 +170,55 @@ export function replyFiles(
     if (usable(found)) files.add(found);
   }
   return [...files].sort((a, b) => path.basename(a).localeCompare(path.basename(b))).map((p) => ({ path: p, agent }));
+}
+
+/** A file that opening can't hang on: a FIFO would hold a thread until something writes to it. */
+function isRegularFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+const hookRefusalsSaid = new Set<string>();
+
+/**
+ * The transcript path a hook named (`file`), as a path main may open: a regular file inside one of `roots` with links
+ * followed, as `path`. The path comes from the events file the hooks write to, so whatever can write there could name
+ * any file main can read: anything else is `refused`, with why, said in the console once. One that isn't there is
+ * neither (a new conversation's file isn't written yet).
+ */
+export function hookTranscript(file: string | null, roots: readonly string[]): { path: string | null; refused: string | null } {
+  if (!file) return { path: null, refused: null };
+  let real: string;
+  try {
+    real = fs.realpathSync(file);
+  } catch {
+    return { path: null, refused: null };
+  }
+  const why = !roots.some((root) => inside(realpathOr(root), real)) ? `outside ${roots.join(" and ")}, the folders Mockingbird reads transcripts from` : !isRegularFile(real) ? "not a regular file" : null;
+  if (!why) return { path: real, refused: null };
+  if (!hookRefusalsSaid.has(file)) {
+    hookRefusalsSaid.add(file);
+    console.warn(`[mockingbird] not reading the transcript a hook named, ${file}: it's ${why}`);
+  }
+  return { path: null, refused: `its transcript, ${file}, is ${why}` };
+}
+
+/**
+ * Conversation `conv`'s latest agent message, found now (replyFiles), the path its hooks named (`hook`) only when it's
+ * inside `roots` (hookTranscript). When that was refused and nothing else held a message, `why` says so, rather than
+ * looking like an agent that hasn't said anything (an agent with its own config folder keeps its transcripts elsewhere).
+ */
+export async function replyOfConversation(
+  agent: AgentKind,
+  conv: string,
+  o: { hook: string | null; roots: readonly string[]; indexed: readonly { path: string }[]; locate: () => string | null }
+): Promise<LastReply> {
+  const hook = hookTranscript(o.hook, o.roots);
+  const reply = await lastReplyOf(replyFiles(agent, conv, { hook: hook.path, indexed: o.indexed, locate: o.locate }), conv);
+  return hook.refused && !reply.line && !reply.why ? { ...reply, why: hook.refused } : reply;
 }
 
 /** The worktree as it stands: branch, uncommitted files, recent commits. */

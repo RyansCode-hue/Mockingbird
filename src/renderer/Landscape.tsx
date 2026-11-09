@@ -289,6 +289,7 @@ export function Landscape({
   ghostStatus,
   needs,
   onNeeds,
+  keysTo = 0,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -355,6 +356,8 @@ export function Landscape({
   needs?: ReadonlyMap<string, number>;
   /** N (1) and ⇧N (-1): the view to the next or previous thing that needs you. */
   onNeeds?: (dir: 1 | -1) => void;
+  /** Going up gives the landscape the keyboard: a prompt shown from the Needs you tray has closed, the tray long gone. */
+  keysTo?: number;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -887,10 +890,23 @@ export function Landscape({
       }
       return enterFocus(t);
     }
-    if (focusNow.current && focusNow.current !== t.key) setFocusKey(null);
+    const keys = revealOpts.current.keys;
+    const leaving = !!focusNow.current && focusNow.current !== t.key;
+    if (leaving) {
+      // surface would pick the focus overlay, which is about to go
+      if (keys) leaveFocus();
+      else setFocusKey(null);
+    }
     if (!seen) flyTo(centreOn(cam.current, t.rect, room));
-    if (revealOpts.current.keys) surface();
+    if (keys && !leaving) surface();
   }, [reveal?.n, layout]);
+
+  const keysGiven = useRef(keysTo);
+  useEffect(() => {
+    if (keysGiven.current === keysTo) return;
+    keysGiven.current = keysTo;
+    surface();
+  }, [keysTo]);
 
   // a tool window just opened or placed again comes into view, with its workspace when both fit
   const placedWindows = useRef<Set<string> | null>(null);

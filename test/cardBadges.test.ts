@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BranchStat, LastReply, SessionMeter, TicketPipeline } from "../src/shared/types";
 import { FAILED, costBadge, didLine, diffBadge, logFailure, prBadge, readOf, readStore, repeatsDid, ticketOfSession, type Read } from "../src/renderer/cardBadges";
@@ -194,5 +195,122 @@ describe("reads shared between cards", () => {
     expect(warn.mock.calls.map((c) => c[0])).toEqual(["[mockingbird] a landscape card couldn't read a flaky source for s9: EIO"]);
     off();
     warn.mockRestore();
+  });
+
+  const NO_SESSION = { error: "Session is no longer running" } as const;
+  it("reads through a card showing it now, never one that has gone, whose session main may refuse", async () => {
+    const store = readStore<number>("a test source");
+    const a = vi.fn(async () => 1);
+    const b = vi.fn(async () => NO_SESSION as unknown as number);
+    const offA = store.watch("k", { who: "a", folder: "/w", load: a }, () => {});
+    await flush();
+    const offB = store.watch("k", { who: "b", folder: "/w", load: b }, () => {});
+    offB();
+    store.refresh("k");
+    await flush();
+    store.refreshWhere((folder) => folder === "/w");
+    await flush();
+    expect(b).not.toHaveBeenCalled();
+    expect(a).toHaveBeenCalledTimes(3);
+    expect(store.get("k")).toEqual({ state: "ok", value: 1 });
+    offA();
+  });
+  it("reads a failure again through another card when the card it went through goes", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = readStore<number>("a test source");
+    const a = vi.fn(async () => 1);
+    const offA = store.watch("k", { who: "a", folder: "/w", load: a }, () => {});
+    await flush();
+    const offB = store.watch("k", { who: "b", folder: "/w", load: async () => NO_SESSION as unknown as number }, () => {});
+    store.refresh("k");
+    await flush();
+    expect(store.get("k")).toEqual({ state: "failed", error: NO_SESSION.error });
+    offB();
+    await flush();
+    expect(store.get("k")).toEqual({ state: "ok", value: 1 });
+    offA();
+    warn.mockRestore();
+  });
+  it("reads again for a card shown for another turn than its read was, and not for the same one", async () => {
+    const store = readStore<string>("a test source");
+    let said = "before the turn ended";
+    const load = vi.fn(async () => said);
+    const off = store.watch("s1", { who: "s1", folder: null, load, turn: "working|" }, () => {});
+    await flush();
+    off();
+    said = "the turn's last message";
+    const same = store.watch("s1", { who: "s1", folder: null, load, turn: "working|" }, () => {});
+    await flush();
+    expect(load).toHaveBeenCalledTimes(1);
+    same();
+    const other = store.watch("s1", { who: "s1", folder: null, load, turn: "idle|1" }, () => {});
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(store.get("s1")).toEqual({ state: "ok", value: "the turn's last message" });
+    other();
+  });
+  it("reads again as a shown card's turn moves on, once for each turn", async () => {
+    const store = readStore<number>("a test source");
+    const load = vi.fn(async () => 1);
+    const off = store.watch("s1", { who: "s1", folder: null, load, turn: "t1" }, () => {});
+    await flush();
+    store.turnIs("s1", "t1");
+    expect(load).toHaveBeenCalledTimes(1);
+    store.turnIs("s1", "t2");
+    store.turnIs("s1", "t2");
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    off();
+  });
+  it("reads a source that changed while no card showed it when one next does, and not before", async () => {
+    const store = readStore<number>("a test source");
+    let n = 0;
+    const load = vi.fn(async () => ++n);
+    const off = store.watch("k", { who: "s1", folder: "/w", load }, () => {});
+    await flush();
+    off();
+    store.refreshWhere((folder) => folder === "/elsewhere");
+    const unchanged = store.watch("k", { who: "s1", folder: "/w", load }, () => {});
+    await flush();
+    expect(load).toHaveBeenCalledTimes(1);
+    unchanged();
+    store.refreshWhere((folder) => folder === "/w");
+    await flush();
+    expect(load).toHaveBeenCalledTimes(1);
+    const again = store.watch("k", { who: "s1", folder: "/w", load }, () => {});
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(store.get("k")).toEqual({ state: "ok", value: 2 });
+    again();
+  });
+  it("retries a failed read for a card shown again and by the safety net's refreshFailed, and only a failed one", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = readStore<number>("a test source");
+    const answers: (number | { error: string })[] = [{ error: "SQLITE_BUSY" }, { error: "SQLITE_BUSY" }, 5];
+    const load = vi.fn(async () => answers.shift() as number);
+    const off = store.watch("k", { who: "s1", folder: null, load }, () => {});
+    await flush();
+    expect(store.get("k").state).toBe("failed");
+    off();
+    const again = store.watch("k", { who: "s1", folder: null, load }, () => {});
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    store.refreshFailed();
+    await flush();
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(store.get("k")).toEqual({ state: "ok", value: 5 });
+    store.refreshFailed();
+    await flush();
+    expect(load).toHaveBeenCalledTimes(3);
+    again();
+    warn.mockRestore();
+  });
+});
+
+describe("the token meters when the index can't sync", () => {
+  const index = fs.readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+  it("pushes the failure to the window, and meters:get says it, rather than leaving costs as they were", () => {
+    expect(index).toContain("syncTranscripts(transcripts!).then(metersChanged, metersChanged)");
+    expect(index).toContain("if (!transcripts || transcriptsProblem) throw new Error(");
   });
 });

@@ -5,6 +5,28 @@ import { usePresence } from "./motion";
 import { useLiftOut } from "./lift";
 
 /**
+ * Said on `document` as a dialog opens, so what floats over the app can get out of its way. `handBack` names who gets
+ * the keyboard when the dialog closes, in place of what had it as it opened (which may be leaving with what floated).
+ */
+export const DIALOG_OPENED = "mb-dialog-opened";
+export interface DialogOpened {
+  handBack: (to: HTMLElement) => void;
+}
+
+/** What opens over the app: says so (DIALOG_OPENED), and gives focus back to what had it when it closes, if nothing has taken it since. */
+export function useDialogFocus(): void {
+  const opener = useRef(document.activeElement);
+  useEffect(() => {
+    document.dispatchEvent(new CustomEvent<DialogOpened>(DIALOG_OPENED, { detail: { handBack: (to) => (opener.current = to) } }));
+    const back = opener.current;
+    return () => {
+      const lost = !document.activeElement || document.activeElement === document.body;
+      if (lost && back instanceof HTMLElement && back.isConnected) back.focus({ preventScroll: true });
+    };
+  }, []);
+}
+
+/**
  * A dialog over the app. A click on the backdrop, or Esc, closes it; without
  * `onClose` neither does (an update installing), and `closeOnBackdrop={false}`
  * keeps a stray click from losing a multi-step dialog. It takes focus when
@@ -30,17 +52,12 @@ export function Modal({
   children: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
-  const opener = useRef(document.activeElement);
   const presence = usePresence<HTMLDivElement>("dialog");
   const lift = useLiftOut();
   useEscape(() => onClose?.());
+  useDialogFocus();
   useEffect(() => {
     if (box.current && !box.current.contains(document.activeElement)) box.current.focus({ preventScroll: true });
-    const back = opener.current;
-    return () => {
-      const lost = !document.activeElement || document.activeElement === document.body;
-      if (lost && back instanceof HTMLElement && back.isConnected) back.focus({ preventScroll: true });
-    };
   }, []);
   const dialog = (
     <div ref={presence} className="modal-back" onMouseDown={closeOnBackdrop ? () => onClose?.() : undefined}>

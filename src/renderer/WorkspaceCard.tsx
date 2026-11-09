@@ -3,6 +3,7 @@ import { AGENT_NAME, isErr, ticketIdOf, type SessionInfo, type SessionMeter } fr
 import { BadgeRow, repeatsDid, useCardBadges } from "./cardBadges";
 import { lastMeaningfulLine, terminalLines } from "../shared/terminalText";
 import type { Tile } from "./landscapeModel";
+import { needsLabel } from "./needsYouModel";
 import { tailLines } from "./cachedTerm";
 import { landscapeTerm } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
@@ -96,30 +97,33 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
         {s.ticketId && <span className="ls-card-ticket">#{ticketIdOf(s.ticketId)}</span>}
         {more}
       </div>
-      {/* drawn bottom up (styles.css, .ls-card-mid, .ls-card-body): the foot, the terminal's line, what it did, a stack's
-          other tabs, so a short card lets go of what it did, then the foot, then the tabs, each whole */}
+      {/* drawn bottom up (styles.css, .ls-card-mid, .ls-card-body): the foot, its words (what it did, the terminal's
+          line), a stack's other tabs, so a short card lets go of the line, what it did, the foot, then the tabs, each whole */}
       <div className="ls-card-mid">
         <div className="ls-card-body">
           <div className="ls-card-foot">
             <span className="chip ls-kind">{kindLabel(s)}</span>
             <span className={`ls-card-status st-${s.status}`}>{STATUS[s.status]}</span>
-            {isRemote(s) && s.room && <span className="ls-card-owner">{s.room.ownerName}'s</span>}
-            <BadgeRow badges={badges} />
+            <BadgeRow badges={badges} lead={isRemote(s) && s.room ? <span className="ls-card-owner">{s.room.ownerName}'s</span> : null} />
           </div>
-          {!repeated && (
-            <div className={`ls-card-line ${error ? "bad" : ""}`} title={error ?? line ?? undefined}>
-              {error ? "Couldn't read its output" : line ?? (s.status === "dead" ? `process exited${typeof s.exitCode === "number" ? ` · code ${s.exitCode}` : ""}` : "No output yet")}
-            </div>
-          )}
-          {did && (
-            <div className={`ls-card-did ${did.failed ? "bad" : ""}`} data-did="" title={did.title}>
-              {did.text}
-            </div>
-          )}
+          <div className="ls-card-text">
+            {did && (
+              <div className={`ls-card-did ${did.failed ? "bad" : ""}`} data-did="" title={did.title}>
+                {did.text}
+              </div>
+            )}
+            {!repeated && (
+              <div className="ls-card-lines">
+                <div className={`ls-card-line ${error ? "bad" : ""}`} title={error ?? line ?? undefined}>
+                  {error ? "Couldn't read its output" : line ?? (s.status === "dead" ? `process exited${typeof s.exitCode === "number" ? ` · code ${s.exitCode}` : ""}` : "No output yet")}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
         {tile.stack && (others.length > 0 || !!tile.closed?.length) && (
           <div className="ls-card-tabs" title={[...tile.members, ...(tile.closed ?? [])].map(titleOf).join("\n")}>
-            {waiting > 0 && <span className="ls-card-needs">{waiting} need{waiting === 1 ? "s" : ""} you</span>}
+            {waiting > 0 && <span className="ls-card-needs">{needsLabel(waiting)}</span>}
             {others.map((m) => (
               <span key={m.id} className="ls-card-tab">
                 {titleOf(m)}

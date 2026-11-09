@@ -250,27 +250,45 @@ export function forgetBranchStat(root: string): void {
   for (const key of statCache.keys()) if (key.startsWith(`${root}\0`)) statCache.delete(key);
 }
 
-/**
- * How much the work at `root` changed since it forked from `base`, a card's diff badge: `git diff --shortstat` from
- * the merge base to the working tree, its commits and its uncommitted changes to tracked files together. `base` is
- * the area repo's base branch; null takes the repository's own, as Branch vs base does. Shared for a few seconds (or
- * until the folder changes, forgetBranchStat), so every card on one folder starts one round of git; a failed read
- * isn't kept. A round is two gits (where HEAD and the base are, the diff), and merge-base when either moved.
- */
-export function branchStat(root: string, base: string | null): Promise<BranchStat> {
-  const key = `${root}\0${base ?? ""}`;
-  const hit = statCache.get(key);
-  if (hit && Date.now() - hit.at < STAT_TTL_MS) return hit.stat;
+/** Each folder and base's round of git running now, and the one to follow it, shared by whoever asks while it runs. */
+const statRounds = new Map<string, { stat: Promise<BranchStat>; next: Promise<BranchStat> | null }>();
+
+function statRound(key: string, root: string, base: string | null): Promise<BranchStat> {
   const stat = statTurn(async (): Promise<BranchStat> => {
     const at = base ? await headAndBranch(root, base) : await headAndOwnBase(root);
     const fork = await forkOf(root, at);
     return { base: at.label, ...parseShortstatFiles(await git(root, ["diff", "--shortstat", fork])) };
   });
+  const round = { stat, next: null as Promise<BranchStat> | null };
+  statRounds.set(key, round);
   statCache.set(key, { at: Date.now(), stat });
-  stat.catch(() => {
+  const ended = () => {
+    if (!round.next && statRounds.get(key) === round) statRounds.delete(key);
+  };
+  stat.then(ended, () => {
     if (statCache.get(key)?.stat === stat) statCache.delete(key);
+    ended();
   });
   return stat;
+}
+
+/**
+ * How much the work at `root` changed since it forked from `base`, a card's diff badge: `git diff --shortstat` from
+ * the merge base to the working tree, its commits and its uncommitted changes to tracked files together. `base` is
+ * the area repo's base branch; null takes the repository's own, as Branch vs base does. Shared for a few seconds (or
+ * until the folder changes, forgetBranchStat), so every card on one folder starts one round of git; a failed read
+ * isn't kept. A round is two gits (where HEAD and the base are, the diff), and merge-base when either moved. A busy
+ * folder runs one round and at most one more: asked while one runs (its answer may be out of date by then), the next
+ * starts when it ends, and everyone who asks meanwhile shares that.
+ */
+export function branchStat(root: string, base: string | null): Promise<BranchStat> {
+  const key = `${root}\0${base ?? ""}`;
+  const hit = statCache.get(key);
+  if (hit && Date.now() - hit.at < STAT_TTL_MS) return hit.stat;
+  const round = statRounds.get(key);
+  if (!round) return statRound(key, root, base);
+  const start = () => statRound(key, root, base);
+  return (round.next ??= round.stat.then(start, start));
 }
 
 /**

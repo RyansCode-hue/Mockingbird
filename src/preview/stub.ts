@@ -277,6 +277,10 @@ const meters: Meters = {
 // token meters), so the badges show "—" and say why. s8 finished its turn 12 minutes ago (the fixture above), s2 waits on
 // a permission prompt, and ?joinRequest adds Lee asking to join 5101: the tray's three kinds
 const badgeFails = new Set(new URLSearchParams(location.search).get("badgeFail")?.split(",") ?? []);
+/** Main's reason when the conversation index can't sync: what meters:get answers and meters:changed pushes (main's metersNow). */
+const METERS_FAIL = "the conversation index isn't available (transcripts:sync: SQLITE_BUSY: database is locked)";
+/** ?teamFail: the team status can't be read, so the rooms' join requests aren't known (the Needs you tray says so). */
+const teamFails = new URLSearchParams(location.search).has("teamFail");
 const branchStats: Record<string, { files: number; insertions: number; deletions: number }> = {
   [WT("5101-orgDropdowns")]: { files: 3, insertions: 214, deletions: 38 },
   [WT("5102-quickViewFreeze")]: { files: 1, insertions: 12, deletions: 4 },
@@ -1477,7 +1481,7 @@ const api: Record<string, (...a: any[]) => any> = {
     new URLSearchParams(location.search).get("contextWindow") === "error"
       ? { error: `EACCES: permission denied, open '/Users/you/.mockingbird/context/${id}.json'` }
       : (contexts[id] ?? { state: "none", why: "No reply yet in this conversation" }),
-  metersGet: async () => (badgeFails.has("meters") ? err("transcripts:sync: SQLITE_BUSY: database is locked") : meters),
+  metersGet: async () => (badgeFails.has("meters") ? err(METERS_FAIL) : meters),
   // context warnings: Compact goes only to an idle session (compactBlocker); then the context drops a moment later
   contextCompact: async (id: string) => {
     const s = byId(id);
@@ -1841,7 +1845,7 @@ const api: Record<string, (...a: any[]) => any> = {
   modelCatalog: async () => err("UI preview: no model catalog"),
 
   // team rooms: sharing, invites and joins are simulated; nothing connects
-  teamStatus: async () => JSON.parse(JSON.stringify(team)),
+  teamStatus: async () => (teamFails ? err("~/.mockingbird/team.json: EACCES: permission denied") : JSON.parse(JSON.stringify(team))),
   teamShareGroup: async (groupKey: string, title: string) => {
     // ?refuse: the signaling Worker refuses new rooms, as one without this key on ALLOWED_CREATORS does
     if (new URLSearchParams(location.search).has("refuse") && !team.rooms.some((r) => r.groupKey === groupKey)) {
@@ -2718,13 +2722,22 @@ else if (params.has("new")) {
 // team rooms: ?joinRequest=later puts the admin's join prompt off (Later), leaving the request in Settings → Team
 if (params.get("joinRequest") === "later") setTimeout(() => click('.join-ask button[title^="Answer later"]'), 600);
 // S7: ?needsTray opens the Needs you tray (with ?labs=landscape; ?joinRequest=later to list Lee's request in it too);
-// ?needsStep=<n> then presses N on the landscape n times (a negative n, ⇧N), the tray kept open
-if (params.has("needsTray") || params.has("needsStep")) {
+// ?needsStep=<n> then presses N on the landscape n times (a negative n, ⇧N), the tray kept open; ?needsTrayStep=<n>
+// presses it in the tray instead, so the view keeps the item clear of the tray (?lsFit fits the landscape first)
+if (params.has("needsTray") || params.has("needsStep") || params.has("needsTrayStep")) {
   const steps = Number(params.get("needsStep")) || 0;
+  const inTray = Number(params.get("needsTrayStep")) || 0;
+  const key = (n: number) => new KeyboardEvent("keydown", { key: n < 0 ? "N" : "n", shiftKey: n < 0, bubbles: true, cancelable: true });
   setTimeout(() => {
     const vpEl = document.querySelector<HTMLElement>(".ls-viewport");
+    if (inTray) {
+      if (params.has("lsFit")) vpEl?.dispatchEvent(new KeyboardEvent("keydown", { key: "0", metaKey: true, bubbles: true, cancelable: true }));
+      setTimeout(() => click(".ny-btn"), 200);
+      for (let i = 0; i < Math.abs(inTray); i++) setTimeout(() => document.querySelector(".ny-tray")?.dispatchEvent(key(inTray)), 500 + i * 200);
+      return;
+    }
     // a press per frame or so, as a person's: each N steps on from where the last one landed
-    for (let i = 0; i < Math.abs(steps); i++) setTimeout(() => vpEl?.dispatchEvent(new KeyboardEvent("keydown", { key: steps < 0 ? "N" : "n", shiftKey: steps < 0, bubbles: true, cancelable: true })), i * 150);
+    for (let i = 0; i < Math.abs(steps); i++) setTimeout(() => vpEl?.dispatchEvent(key(steps)), i * 150);
     if (params.has("needsTray")) setTimeout(() => click(".ny-btn"), steps ? Math.abs(steps) * 150 + 700 : 0);
   }, 1200);
 }
@@ -2752,7 +2765,9 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
     if (el) then(el);
   }, 100);
 };
-// S7: ?landscapeNeedsAudit=a|g|b|c|d|e works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
+// a sync failing after the window has read them: main pushes the failure as well as answering with it
+if (badgeFails.has("meters")) setTimeout(() => emit("onMetersChanged", err(METERS_FAIL)), 1000);
+// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
   recordConsole();
   const setSession = (id: string, over: Partial<SessionInfo>) => {

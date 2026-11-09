@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BRIEF_MAX, latestPlan, MESSAGE_MAX, takeoverBrief, TOOL_MAX, type BriefInput } from "../src/main/team/takeoverBrief";
+import { BRIEF_MAX, conversationEntries, latestPlan, MESSAGE_MAX, takeoverBrief, TOOL_MAX, type BriefInput } from "../src/main/team/takeoverBrief";
 
 const CONV = "c0ffee00-1111-4222-8333-444455556666";
 const user = (text: string) => JSON.stringify({ type: "user", sessionId: CONV, message: { role: "user", content: text } });
@@ -144,5 +144,26 @@ describe("the latest plan in a transcript", () => {
   it("is Codex's newest update_plan", () => {
     const plan = (s: string) => JSON.stringify({ type: "response_item", payload: { type: "function_call", name: "update_plan", arguments: JSON.stringify({ plan: [{ step: "Add the route", status: s }] }) } });
     expect(latestPlan([plan("pending"), plan("completed")], "codex")).toEqual({ kind: "todo", items: ["[completed] Add the route"] });
+  });
+});
+
+describe("a subagent's lines in the conversation's transcript", () => {
+  const side = (type: "user" | "assistant", content: unknown) => JSON.stringify({ type, isSidechain: true, sessionId: CONV, message: { role: type, content } });
+  const todos = (what: string) => ({ type: "tool_use", id: "t", name: "TodoWrite", input: { todos: [{ content: what, status: "pending" }] } });
+  const lines = [
+    user("Add a CSV export of donors"),
+    say("On it."),
+    agent(todos("The conversation's own step")),
+    side("user", "SUBAGENT PROMPT: look everywhere"),
+    side("assistant", [{ type: "text", text: "SUBAGENT REPORT" }, todos("SUBAGENT STEP")]),
+  ];
+  it("stay out of what the brief quotes of the conversation", () => {
+    expect(conversationEntries(lines, "claude", CONV).join("\n")).not.toContain("SUBAGENT");
+    expect(conversationEntries(lines, "claude", CONV).slice(0, 2)).toEqual(["USER: Add a CSV export of donors", "AGENT: On it."]);
+    expect(takeoverBrief(input({ lines }))).not.toContain("SUBAGENT");
+  });
+  it("are never the latest plan, however new", () => {
+    expect(latestPlan(lines, "claude")).toEqual({ kind: "todo", items: ["[pending] The conversation's own step"] });
+    expect(latestPlan([side("assistant", [todos("SUBAGENT STEP")])], "claude")).toBeNull();
   });
 });

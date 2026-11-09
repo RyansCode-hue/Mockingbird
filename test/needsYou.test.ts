@@ -11,6 +11,7 @@ import {
   goCan,
   needsByArea,
   needsItems,
+  needsLabel,
   selectionAfter,
   shownItems,
   stepItem,
@@ -236,6 +237,25 @@ describe("Dismiss", () => {
     // dismissing one again moves it to the front, once
     d = dismiss(d, item(DISMISS_MAX + 5), NOW);
     expect(d.filter((x) => x.sig === `s:${DISMISS_MAX + 5}|f|${DISMISS_MAX + 5}`)).toHaveLength(1);
+  });
+
+  it("keeps a dismissal however old while its state is still current, so an unrelated Dismiss brings nothing back", () => {
+    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, text: "", code: null });
+    const current = [item(0).sig, item(1).sig];
+    let d = dismiss([], item(0), NOW - DISMISS_KEEP_MS - 1);
+    d = dismiss(d, item(1), NOW, current);
+    expect(shownItems([item(0), item(1)], d)).toEqual([]);
+    // and with the list full, before any that's over
+    for (let n = 2; n < DISMISS_MAX + 20; n++) d = dismiss(d, item(n), NOW, current);
+    expect(d).toHaveLength(DISMISS_MAX);
+    expect(shownItems([item(0), item(1)], d)).toEqual([]);
+    // once its state has moved on it's let go like any other
+    expect(dismiss(d, item(1), NOW, [item(1).sig]).map((x) => x.sig)).not.toContain(item(0).sig);
+  });
+
+  it("says a count of items in words that agree with it", () => {
+    expect(needsLabel(1)).toBe("1 needs you");
+    expect(needsLabel(2)).toBe("2 need you");
   });
 
   it("reads saved dismissals back, letting go of (and saying) what isn't one", () => {

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useSyncExternalStore } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { formatShare, formatTokens, isErr, isWorkItemId, stageLabel, ticketIdOf, topOfKey, totalTokens, type BranchStat, type IpcResult, type LastReply, type SessionInfo, type SessionMeter, type TicketPipeline } from "../shared/types";
 import { agoShort, plural } from "../shared/format";
 import { onFolderChanged } from "./folderWatch";
@@ -151,18 +151,25 @@ export const READ_KEEP_MS = 60_000;
 interface Entry<T> {
   read: Read<T>;
   seq: number;
-  /** Each card showing it, and whose card it is. */
-  listeners: Map<() => void, string>;
-  load: () => Promise<IpcResult<T>>;
+  /** A read is on its way. */
+  reading: boolean;
+  /** Each card showing it: whose card it is, and how that card reads it. */
+  watchers: Map<() => void, { who: string; load: () => Promise<IpcResult<T>> }>;
   folder: string | null;
+  /** What the read was made for (a session's turn), when that says whether it's still current. */
+  turn: string | undefined;
+  /** Its source changed while no card showed it: the next card to show it reads it again. */
+  stale: boolean;
   drop: ReturnType<typeof setTimeout> | null;
 }
 
 /**
  * Reads shared by every card showing the same source (a folder's diff, a session's last message), by key: read when
- * first shown, then again only on `refresh`. A read that fails replaces the value, never keeping the one before; only
- * the newest read's answer is taken; a failure is said in the console with `what` and the sessions whose cards show
- * it. Kept for `keepMs` after the last card showing it goes.
+ * first shown, then again on `refresh`, for another turn, or for a card shown again when its source changed meanwhile
+ * or its read failed. A read goes through a card showing it now, as one that has gone may be a closed session's, which
+ * main refuses (and a failure is read again when a card goes, as it may have been that card's). A read that fails
+ * replaces the value, never keeping the one before; only the newest read's answer is taken; a failure is said in the
+ * console with `what` and the sessions whose cards show it. Kept for `keepMs` after the last card showing it goes.
  */
 export function readStore<T>(what: string, keepMs = READ_KEEP_MS) {
   const entries = new Map<string, Entry<T>>();
@@ -170,48 +177,72 @@ export function readStore<T>(what: string, keepMs = READ_KEEP_MS) {
   const run = (key: string) => {
     const e = entries.get(key);
     if (!e) return;
+    const watcher = [...e.watchers.values()].at(-1);
+    if (!watcher) {
+      e.stale = true;
+      return;
+    }
+    e.stale = false;
+    e.reading = true;
     const n = ++e.seq;
-    void settled(e.load()).then((reply) => {
+    void settled(watcher.load()).then((reply) => {
       if (entries.get(key) !== e || n !== e.seq) return;
+      e.reading = false;
       e.read = readOf<T>(reply as T | { error: string });
-      logFailure(failuresSaid, what, [...new Set(e.listeners.values())].sort().join(", ") || key, e.read);
-      e.listeners.forEach((_, l) => l());
+      logFailure(failuresSaid, what, [...new Set([...e.watchers.values()].map((w) => w.who))].sort().join(", ") || key, e.read);
+      e.watchers.forEach((_, l) => l());
     });
   };
+  const failedNow = (e: Entry<T>) => e.read.state === "failed" && !e.reading;
   return {
-    /** Show `key`'s read to `listener` until the returned function is called; the first to show it reads it. */
-    watch(key: string, o: { who: string; folder: string | null; load: () => Promise<IpcResult<T>> }, listener: () => void): () => void {
+    /** Show `key`'s read to `listener` until the returned function is called; read when it hasn't a current one. */
+    watch(key: string, o: { who: string; folder: string | null; load: () => Promise<IpcResult<T>>; turn?: string }, listener: () => void): () => void {
       let e = entries.get(key);
       const fresh = !e;
-      if (!e) entries.set(key, (e = { read: LOADING, seq: 0, listeners: new Map(), load: o.load, folder: o.folder, drop: null }));
+      if (!e) entries.set(key, (e = { read: LOADING, seq: 0, reading: false, watchers: new Map(), folder: o.folder, turn: o.turn, stale: false, drop: null }));
       const entry = e;
-      entry.load = o.load;
       if (entry.drop) clearTimeout(entry.drop);
       entry.drop = null;
-      entry.listeners.set(listener, o.who);
-      if (fresh) run(key);
+      entry.watchers.set(listener, { who: o.who, load: o.load });
+      const otherTurn = o.turn !== undefined && o.turn !== entry.turn;
+      if (otherTurn) entry.turn = o.turn;
+      if (fresh || otherTurn || entry.stale || failedNow(entry)) run(key);
       return () => {
-        entry.listeners.delete(listener);
-        if (entry.listeners.size) return;
-        entry.drop = setTimeout(() => entries.get(key) === entry && !entry.listeners.size && entries.delete(key), keepMs);
+        entry.watchers.delete(listener);
+        if (entry.watchers.size) {
+          if (failedNow(entry)) run(key);
+          return;
+        }
+        entry.drop = setTimeout(() => entries.get(key) === entry && !entry.watchers.size && entries.delete(key), keepMs);
       };
     },
     get: (key: string): Read<T> => entries.get(key)?.read ?? LOADING,
     refresh: run,
-    /** Read again every source still shown that `test` picks (a folder that changed). */
+    /** The turn `key`'s read should be of now: read again when it was made for another. */
+    turnIs(key: string, turn: string): void {
+      const e = entries.get(key);
+      if (!e || e.turn === turn) return;
+      e.turn = turn;
+      run(key);
+    },
+    /** Read again the sources `test` picks (a folder that changed); one no card shows, when one next does. */
     refreshWhere(test: (folder: string | null) => boolean): void {
-      for (const [key, e] of entries) if (e.listeners.size && test(e.folder)) run(key);
+      for (const [key, e] of entries) if (test(e.folder)) run(key);
+    },
+    /** Read again what failed, which may have been passing: a locked database, a file being replaced. */
+    refreshFailed(): void {
+      for (const [key, e] of entries) if (failedNow(e)) run(key);
     },
   };
 }
 type ReadStore<T> = ReturnType<typeof readStore<T>>;
 
 /** A store's read of `key` (null: nothing to read, and no badge), shown while this component is. */
-function useStoreRead<T>(store: ReadStore<T>, key: string | null, o: { who: string; folder: string | null; load: () => Promise<IpcResult<T>> }): Read<T> | null {
+function useStoreRead<T>(store: ReadStore<T>, key: string | null, o: { who: string; folder: string | null; load: () => Promise<IpcResult<T>>; turn?: string }): Read<T> | null {
   const opts = useRef(o);
   opts.current = o;
   const subscribe = useCallback(
-    (listener: () => void) => (key ? store.watch(key, { who: opts.current.who, folder: opts.current.folder, load: () => opts.current.load() }, listener) : () => {}),
+    (listener: () => void) => (key ? store.watch(key, { who: opts.current.who, folder: opts.current.folder, load: () => opts.current.load(), turn: opts.current.turn }, listener) : () => {}),
     [store, key]
   );
   const read = useSyncExternalStore(subscribe, () => (key ? store.get(key) : null));
@@ -220,18 +251,23 @@ function useStoreRead<T>(store: ReadStore<T>, key: string | null, o: { who: stri
 
 /** The diffs, one read per folder and base, read again when the folder changes and by one slow window-wide safety net. */
 const diffs = readStore<BranchStat>("its changes against its base");
-/** The safety net, for changes the folder watch can't see (a commit in a worktree, whose git folder is the main repository's). */
-export const DIFF_SAFETY_MS = 60_000;
-let diffRefreshing = false;
-function refreshDiffsOnChange(): void {
-  if (diffRefreshing) return;
-  diffRefreshing = true;
-  onFolderChanged((root) => !document.hidden && diffs.refreshWhere((folder) => folder === root));
-  setInterval(() => !document.hidden && diffs.refreshWhere(() => true), DIFF_SAFETY_MS);
-  document.addEventListener("visibilitychange", () => !document.hidden && diffs.refreshWhere(() => true));
-}
-/** The last messages, one read per session, read again as its turn moves on. */
+/** The last messages, one read per session, read again as its turn moves on, or by the safety net when the read failed. */
 const replies = readStore<LastReply>("what it last said");
+/** The safety net, for what the folder watch can't see (a commit in a worktree, whose git folder is the main repository's) and reads that failed. */
+export const DIFF_SAFETY_MS = 60_000;
+let keepingCurrent = false;
+function keepReadsCurrent(): void {
+  if (keepingCurrent) return;
+  keepingCurrent = true;
+  onFolderChanged((root) => !document.hidden && diffs.refreshWhere((folder) => folder === root));
+  const safety = () => {
+    if (document.hidden) return;
+    diffs.refreshWhere(() => true);
+    replies.refreshFailed();
+  };
+  setInterval(safety, DIFF_SAFETY_MS);
+  document.addEventListener("visibilitychange", safety);
+}
 
 /** What the badges need from the window (main.tsx provides it around the landscape). */
 export interface BadgeEnv {
@@ -251,23 +287,22 @@ export function useDiff(s: SessionInfo, area: string, on: boolean): Read<BranchS
   const env = useContext(BadgeContext);
   const base = env.baseOf(s, area);
   const root = on && s.repoPath && !s.room?.remote && s.status !== "dead" ? s.cwd : null;
-  if (root) refreshDiffsOnChange();
+  if (root) keepReadsCurrent();
   return useStoreRead(diffs, root && `${root}\0${base ?? ""}`, { who: s.id, folder: root, load: () => window.mb.branchStat(s.id, base) });
 }
 
 /**
  * A session's "what it did": read while `on`, and again as its turn moves on (its status, its turn's end, its
- * conversation), since that's when its transcript gains a message. None for a terminal or a teammate's session.
+ * conversation), since that's when its transcript gains a message, whether its card was on screen for that or not.
+ * None for a terminal or a teammate's session.
  */
 export function useDid(s: SessionInfo, on: boolean): Read<LastReply> | null {
   const key = on && !s.shell && !s.room?.remote ? s.id : null;
   const turn = `${s.status}|${s.finishedAt ?? ""}|${s.conversation?.id ?? ""}`;
-  const read = useStoreRead(replies, key, { who: s.id, folder: null, load: () => window.mb.lastReply(s.id) });
-  const seen = useRef(turn);
+  if (key) keepReadsCurrent();
+  const read = useStoreRead(replies, key, { who: s.id, folder: null, load: () => window.mb.lastReply(s.id), turn });
   useEffect(() => {
-    if (seen.current === turn) return;
-    seen.current = turn;
-    if (key) replies.refresh(key);
+    if (key) replies.turnIs(key, turn);
   }, [turn, key]);
   return read;
 }
@@ -286,11 +321,13 @@ export function useCardBadges(s: SessionInfo, area: string, meter: SessionMeter 
 /**
  * Badges as drawn at the end of a card's footer: on its one line, the cost last, at the right. Short of width, whole
  * badges give way, the last first: one that doesn't fit beside those before it wraps onto a line the row never shows.
+ * `lead` starts the same line and goes the same way, last of all.
  */
-export function BadgeRow({ badges }: { badges: readonly Badge[] }) {
-  if (!badges.length) return null;
+export function BadgeRow({ badges, lead }: { badges: readonly Badge[]; lead?: ReactNode }) {
+  if (!badges.length && !lead) return null;
   return (
     <span className="ls-badges">
+      {lead}
       {badges.map((b) => (
         <span key={b.key} className={`ls-badge b-${b.key} ${b.failed ? "failed" : ""}`} data-badge={b.key} title={b.title}>
           {b.lines ? (

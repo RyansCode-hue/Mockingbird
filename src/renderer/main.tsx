@@ -565,6 +565,7 @@ function App() {
       if (isErr(r)) {
         if (metersSaid.current !== r.error) readFailed("the token meters", r);
         metersSaid.current = r.error;
+        setMeters(null); // what's shown from them would otherwise go stale beside "cost —"
         return setMetersError(r.error);
       }
       metersSaid.current = null;
@@ -2716,11 +2717,24 @@ function App() {
       goToArea(t.area, o.avoid);
       selectArea(t.area);
     } else if (!o.go) return lsSay(`${areaTitle(t.area)} has no area on the landscape: Go there in Needs you shows the request`);
-    if (o.go && !showJoinAsk(t.requestKey)) lsSay("That join request has been answered");
+    if (!o.go) return;
+    // the tray has gone, so the keyboard has nowhere to come back to: it's the landscape's once the prompt is answered
+    if (showJoinAsk(t.requestKey)) keysAfterJoin.current = true;
+    else {
+      lsSay("That join request has been answered");
+      setLandscapeKeys((k) => k + 1);
+    }
   };
+  const [landscapeKeys, setLandscapeKeys] = useState(0);
+  const keysAfterJoin = useRef(false);
+  useEffect(() => {
+    if (joinShown || !keysAfterJoin.current) return;
+    keysAfterJoin.current = false;
+    setLandscapeKeys((k) => k + 1);
+  }, [joinShown]);
   const stepNeeds = (dir: 1 | -1, avoid: ScreenBox | null = null) => {
     const next = stepItem(needs.items, needsAt, dir);
-    if (!next) return lsSay("Nothing needs you right now");
+    if (!next) return lsSay(needs.joinError ? `Couldn't read the rooms' join requests: ${needs.joinError}` : "Nothing needs you right now");
     toNeeds(next, { go: false, avoid });
   };
   /** An item's actions (needsActions): Go there and Dismiss, Go there off saying why when it can't be gone to. */
@@ -2825,6 +2839,7 @@ function App() {
           ghostStatus={(s) => closedStatus(s, goneFolders.get(s.id))}
           needs={needs.byArea}
           onNeeds={stepNeeds}
+          keysTo={landscapeKeys}
         />
         </BadgeContext.Provider>
         {dockColumn()}
@@ -3721,6 +3736,7 @@ function App() {
           {landscapeOn && !lsTeam && (
             <AreaTree
               areas={treeAreas}
+              needIds={needs.sessions}
               filter={filter}
               onFilter={setFilter}
               selected={focused}

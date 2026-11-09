@@ -35,6 +35,7 @@ export function conversationEntries(lines: string[], agent: AgentKind, conv: str
   const out: string[] = [];
   for (const line of lines) {
     for (const c of parse(line, conv).chunks) {
+      if (c.sidechain) continue; // a subagent's, not the conversation's
       if (c.kind === "tool") out.push(`TOOL: ${fenced(c.text, TOOL_MAX)}`);
       else out.push(`${c.role === "user" ? "USER" : "AGENT"}: ${fenced(c.text, MESSAGE_MAX)}`);
     }
@@ -53,6 +54,7 @@ export function latestPlan(lines: string[], agent: AgentKind): { kind: "todo" | 
     } catch {
       continue; // a line cut by the read window
     }
+    if (d?.isSidechain) continue; // a subagent's plan isn't the conversation's
     if (agent === "codex") {
       const p = d?.payload;
       if (d?.type !== "response_item" || p?.type !== "function_call" || p.name !== "update_plan") continue;

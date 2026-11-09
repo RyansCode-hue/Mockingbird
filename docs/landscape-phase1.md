@@ -2243,8 +2243,14 @@ Design O, with Artifacts as a window, and N's workspace header.
       than the window below it (its list scrolls), and placed again when
       its size or the window's changes (a `ResizeObserver`). The tray takes
       no focus ring; Esc closes it and gives the keyboard back to the
-      button. In the top bar nothing wraps (`nowrap`); below 1000 px the
-      brand's name and New / Import's ⌘N hint go, so the bar fits at 860.
+      button, where N and ⇧N still work, as its tooltip says. A dialog or
+      the command palette opening puts the tray away (`DIALOG_OPENED`,
+      `useDialogFocus` in `Modal.tsx`) rather than leaving it over their
+      backdrop, and they give the keyboard back to the button when they
+      close. The button is 24 px tall, beside New / Import, with its count
+      or without, so the tray under it never moves. In the top bar nothing
+      wraps (`nowrap`); below 1000 px the brand's name and New / Import's ⌘N
+      hint go, so the bar fits at 860.
     - **Its items, in order** (`needsItems`): sessions waiting on you
       first (a permission prompt, "API wants to use Bash", the tool set in
       code, or a question it asked, labelled Waiting), then join requests,
@@ -2267,7 +2273,9 @@ Design O, with Artifacts as a window, and N's workspace header.
       only those this install answers as a room's admin and still waiting.
       Accepting or declining stays in the admin's prompt. When the team
       status can't be read, the tray's first row says so ("Couldn't read the
-      rooms' join requests: …"), so no requests listed isn't taken for none.
+      rooms' join requests: …"), so no requests listed isn't taken for none;
+      with nothing else listed, the button's tooltip and N say it too, and
+      "Nothing needs you right now" isn't said.
     - **"Finished, now idle"** is told by the main process, since the
       window can't tell a session that has just started (idle) from one
       whose turn ended (idle): the Stop hook sets `finishedAt` on the
@@ -2290,41 +2298,52 @@ Design O, with Artifacts as a window, and N's workspace header.
         or a click on the terminal gives it the keyboard; Go there's tooltip
         says so. A join request flies to its room's area, selects it and
         shows the admin's prompt (or says it has been answered); a room with
-        no area on the landscape still shows the prompt. It's off with the
-        reason as its tooltip when the target can't be gone to (`targetOf` /
-        `goCan`: the session has gone, or the request was answered).
-        Allowing or denying a prompt stays in the terminal.
+        no area on the landscape still shows the prompt, and the landscape
+        gets the keyboard when it closes (`keysTo`), the tray having gone.
+        From focus on another workspace, focus ends and the keyboard goes
+        to the landscape (`leaveFocus`), not to the overlay leaving with it.
+        It's off with the reason as its tooltip when the target can't be
+        gone to (`targetOf` / `goCan`: the session has gone, or the request
+        was answered). Allowing or denying a prompt stays in the terminal.
       - **Dismiss** takes it off the list and the counts until its state
         changes (the item's `sig`: a new prompt, another turn ended, the
         request answered), then it's back. A prompt's `sig` carries
         `waitingAt`, the time main saw the session start waiting
         (`sessions.ts`), so a second prompt worded like the first is a new
         item. Dismissals are kept in localStorage (`mb.needsYou.dismissed`),
-        at most 200 and none older than 3 days; a saved list that isn't one
-        is let go and said in the console (`dismissedFrom`). The keyboard
-        stays in the tray after a Dismiss (its button goes with the item),
-        a second Dismiss within 450 ms is let go (a double click landing on
-        the item that slid up), and the tray's foot says how many are
-        dismissed, with Undo for the last one.
+        at most 200 and none older than 3 days, unless its state is still
+        current, which would bring back an item that hasn't changed; a saved
+        list that isn't one is let go and said in the console
+        (`dismissedFrom`). The keyboard moves to the tray as a Dismiss or
+        Undo runs (its button leaves with it). For 450 ms after a Dismiss a
+        click on any of the tray's actions is let go and the tray holds its
+        height, so a double click's second click, on the item that slid up
+        or past the last item's end, stays in the tray and never reaches the
+        landscape. The tray's foot says how many are dismissed, with Undo for
+        the last one.
   - **N and ⇧N** (`stepItem`): the next or previous item, round the end;
     from no current item N starts at the first and ⇧N at the last. The
     current item is the one N or Go there last went to while the selection
     is still the one that left (`NeedsLast`), so two join requests on one
     room, or one whose room has no area, don't hold N in place; otherwise
     the selected workspace, or the selected area for a join request
-    (`currentIndex`). It's lit in the tray. N does what Go there does but
-    shows no join prompt: the keyboard stays with the landscape, so a second
-    N can't type into an agent's prompt. The landscape takes it as it takes
-    M and Esc: only while it has the keyboard, never in a text field or a
-    terminal. In the open tray N and ⇧N step the same way and keep it open:
-    the tray's root takes them wherever its focus is (the popover's
-    `onKeyDown`), and the item is brought into view clear of the tray's box
-    (`avoid`). "Nothing needs you right now" when the list is empty.
+    (`currentIndex`). It's lit in the tray, its list scrolled to keep it in
+    view. N does what Go there does but shows no join prompt: the keyboard
+    stays with the landscape, so a second N can't type into an agent's
+    prompt. The landscape takes it as it takes M and Esc: only while it has
+    the keyboard, never in a text field or a terminal. In the open tray N
+    and ⇧N step the same way and keep it open: the tray's root takes them
+    wherever its focus is (the popover's `onKeyDown`), and the item is
+    brought into view clear of the tray's box (`avoid`, `clearRoom`: left of
+    it when 200 px or more are there, which 1024×768's 240 are). "Nothing
+    needs you right now" when the list is empty.
   - **Area badges:** each area's count is its items (`needsByArea`), so the
     tree's amber count, a collapsed area's pill and the switcher ("3 need
-    you: see Needs you", on hover and to a screen reader) agree with the
-    tray, dismissals included. A loose workspace counts toward the loose
-    group's row. Selecting an area clears the landscape's picks.
+    you: see Needs you", on hover and to a screen reader; `needsLabel`
+    says "1 needs you") agree with the tray, dismissals included. A stack's
+    row in the tree counts its own items the same way (`needIds`). A loose
+    workspace counts toward the loose group's row. Selecting an area clears
+    the landscape's picks.
   - **Card badges** (`cardBadges.tsx`): on a card, at the end of its foot's
     line after the kind and status, in design D's order with the cost at
     the right, each with its full story on hover:
@@ -2336,18 +2355,23 @@ Design O, with Artifacts as a window, and N's workspace header.
       `origin/<base>` or a local `<base>`; with none, the repository's own
       dev/main-style branch. One read per folder and base, shared by every
       card on it and kept a minute after the last one goes (`readStore`, so
-      a zoom or a remount reads nothing); read again when the folder watch
-      the Changes view refreshes on says that folder changed
-      (`onFolderChanged`, one window-wide subscription), when the window
-      shows again, and by one window-wide safety net every 60 s for what
-      the watch can't see (a commit in a worktree, whose git folder is the
-      main repository's), none while the window is hidden. Main keeps an
-      answer 3 s, or until that folder changes (`forgetBranchStat`); a
+      a zoom or a remount reads nothing unless its source changed
+      meanwhile or its read failed). A read goes through a card showing it
+      now: one that has gone may be a closed session's, which main refuses,
+      and a failure is read again when a card goes. It's read again when
+      the folder watch the Changes view refreshes on says that folder
+      changed (`onFolderChanged`, one window-wide subscription), when the
+      window shows again, and by one window-wide safety net every 60 s for
+      what the watch can't see (a commit in a worktree, whose git folder is
+      the main repository's), none while the window is hidden. Main keeps
+      an answer 3 s, or until that folder changes (`forgetBranchStat`); a
       round is two gits (`show-ref --head` for where HEAD and the base are,
       then the diff), plus merge-base only when either moved (kept by HEAD
-      and the base's tip), and at most three rounds run at once (`turns`).
-      None when nothing has changed, and none for a teammate's session, a
-      terminal outside git or an exited one.
+      and the base's tip), at most three rounds run at once (`turns`), and
+      one folder runs one round and at most one more, shared by whoever
+      asks meanwhile, however often it changes (`statRounds`). None when
+      nothing has changed, and none for a teammate's session, a terminal
+      outside git or an exited one.
     - **PR:** "PR #88", the newest pull request pipeline.json records from
       the session's branch for its ticket (its own, or its group's when
       that's named after one), with its target, age, the ticket's stage and
@@ -2365,17 +2389,26 @@ Design O, with Artifacts as a window, and N's workspace header.
       conversation, `transcriptOf`), else the index, else looked for under
       `~/.claude/projects`; for Codex the index's rollouts and the hook's,
       newest first, an older file read only when the newest holds no
-      message. A subagent's file (`subagents/`) and sidechain lines are
-      never read, here or in the digests and the take-over brief
-      (`filesOf`, `isSidechainFile`). It reads the last 1 MB, then 8 MB
-      when a long tool output fills that; past that it says why ("—", the
-      reason on hover). An answer is kept by file, size and modified time,
-      and the file read without blocking main. One read per session,
-      shared like the diffs, read again as its turn moves on (status,
-      `finishedAt`, conversation). None for a terminal or a teammate's
-      session. When the card's terminal line only says what this line says
-      (an idle agent's last output is its last message, `repeatsDid`), the
-      terminal line isn't drawn.
+      message. The hook's path comes from the events file, so whatever can
+      write there could name any file: it's opened only when its real path
+      is inside `~/.claude/projects` or `~/.codex/sessions` and it's a
+      regular file (`hookTranscript`: a FIFO would hold a thread), a refusal
+      said in the console once and, when nothing else held a message, as
+      "—" with why on hover (an agent with its own `CLAUDE_CONFIG_DIR` keeps
+      its transcripts elsewhere). A subagent's file (`subagents/`) and
+      sidechain lines are never read, here or in the digests and the
+      take-over brief, its quoted conversation and its latest plan alike
+      (`filesOf`, `isSidechainFile`, `c.sidechain`, `isSidechain`). It reads
+      the last 1 MB, then 8 MB when a long tool output fills that; past that
+      it says why ("—", the reason on hover). An answer is kept by file,
+      size and modified time, and the file read without blocking main. One
+      read per session, shared like the diffs, read again as its turn moves
+      on (status, `finishedAt`, conversation), which its record remembers,
+      so a card back on screen after its turn ended reads it then; a failed
+      read is tried again by the safety net. None for a terminal or a
+      teammate's session. When the card's terminal line only says what this
+      line says (an idle agent's last output is its last message,
+      `repeatsDid`), the terminal line isn't drawn.
     - **A failing source** shows "diff —", "PR —" or "cost —" (a bare dash
       for "what it did"), its reason on hover, and `[mockingbird] a
       landscape card couldn't read <what> for <session>: <reason>` in the
@@ -2383,57 +2416,75 @@ Design O, with Artifacts as a window, and N's workspace header.
       replaces the value; a badge never goes on showing what it read
       before. The meters' error comes from `metersGet` and their pushes
       (`metersChanged` sends `{ error }` when the conversation index can't
-      be opened, rather than no sessions), the pipelines' from their first
-      read, said once. On the status bar the meters have their own note
+      be opened or synced, rather than no sessions or what it last had), the
+      pipelines' from their first read, said once. The window then lets go
+      of the meters (`setMeters(null)`), so the rail's tokens, a group's bar
+      and the usage meter's today go too rather than go stale beside
+      "cost —". On the status bar the meters have their own note
       (`readNotes.ts`), gone once they're read again.
     - **On a card at any zoom:** under its head it's laid out from the
       bottom in columns that wrap, so a row too tall for what's left goes
       whole, never cut mid-glyph: `.ls-card-mid` holds `.ls-card-body` and
-      above it a stack's other tabs' names; the body holds the foot, the
-      terminal's line and above them what it did. So a short card lets go
-      of the terminal's line (fading), what it did, the foot and lastly the
-      tabs' names, and an exited card's Resume and Close & clean up stay
-      whole below it all, on a stack's card too. In the foot's line the
-      badges take only the room the words leave (a flex basis of 0), each
-      whole (the group is one line tall and wraps, the last first); when
-      the words alone don't fit, the status and owner end in an ellipsis.
-      In the live and read-only bands the workspace footer (its rail)
-      already has the PR cell and the tokens, so it gains only a Diff cell
-      after the git cells (`DiffCell`); "what it did" is on cards only.
+      above it a stack's other tabs' names; the body holds the foot and
+      above it the words (`.ls-card-text`): what it did, then the terminal's
+      line. So a short card lets go of the terminal's line, a whole line at
+      a time (its height rounded down to whole lines in a size container,
+      `.ls-card-lines`), what it did, the foot and lastly the tabs' names,
+      and an exited card's Resume and Close & clean up stay whole below it
+      all, on a stack's card too. The terminal's line never outlasts what
+      it did. In the foot's line the badges take only the room the words
+      leave (a flex basis of 0), each whole (the group is one line tall and
+      wraps, the last first). A teammate's name leads the same group, going
+      whole last of it, so it gives way before the status is ever cut; when
+      the status alone doesn't fit, it ends in an ellipsis. In the live and
+      read-only bands the workspace footer (its rail) already has the PR
+      cell and the tokens, so it gains only a Diff cell after the git cells
+      (`DiffCell`); "what it did" is on cards only.
   - **Preview:**
     - `?needsTray` (the tray open; the stub keeps the shot's resize from
-      closing it) and `?needsStep=<n>` (N pressed n times on the landscape,
-      a negative n ⇧N, a moment apart);
+      closing it), `?needsStep=<n>` (N pressed n times on the landscape, a
+      negative n ⇧N, a moment apart) and `?needsTrayStep=<n>` (pressed in
+      the tray instead, `?lsFit` fitting the landscape first);
+    - `?teamFail` (the team status can't be read);
     - `?needsMany` (four more sessions on a permission prompt: with
       `?joinRequest=later`, seven items);
     - `?closedAsLeft` (the closed sessions' records as main keeps them: g2
       and o2 on an unanswered prompt, the rest idle with a turn's end);
-    - `?badgeFail=diff,pr,reply,meters` (those sources fail);
-    - `?landscapeNeedsAudit=a|g|b|c|d|e` (`src/preview/needsYouAudit.ts`),
-      whose key presses are real ones: the audit asks for them
-      (`window.__mbKeys`) and `ui-preview.mjs` sends them through the
-      DevTools protocol to whatever has the focus (a synthetic event to
-      `document.activeElement` when it runs without one, said in its
-      report). =a the button, tree, pill and switcher counts, the tray, N
-      from the landscape, in the tray (focus anywhere in it, after a
-      Dismiss too), in a text field and in a terminal, two join requests
-      on one room and one on a room with no area, Dismiss, its Undo, its
-      double-click guard and its return, a taken-over copy leaving; =g Go
-      there for a prompt, N and Go there for a stack's tab behind another
-      and off screen, at the cards' zoom (the keyboard on the landscape,
-      not the terminal), for a join request and from another tab; =b every
-      workspace's badges, "what it did" and Diff cell as drawn at the camera
-      given (inside its card and area and its foot, or dropped by their
-      row), each row of each card whole and its actions inside it (with
-      `?deadFront`, on a stack's card whose front tab exited), no word cut
-      beside a badge, no "what it did" said twice, what was said in the
-      console, the diff failing then read again, and the meters' status bar
-      note going once they're read; =c the tray under its button, inside
-      the window and scrolling, as it grows open and when opened again; =d
-      the top bar on one line and the amber button's contrast; =e (with
+    - `?badgeFail=diff,pr,reply,meters` (those sources fail; the meters
+      answer and push as main does when the index can't sync);
+    - `?landscapeNeedsAudit=a|g|b|c|d|e|f` (`src/preview/needsYouAudit.ts`),
+      whose key presses and clicks, where it matters, are real ones: the
+      audit asks for them (`window.__mbKeys`) and `ui-preview.mjs` sends them
+      through the DevTools protocol to whatever has the focus or is under
+      the pointer (a synthetic event when it runs without one, said in its
+      report). =a the button, tree, stack row, pill and switcher counts, the
+      tray, N from the landscape, in the tray (focus anywhere in it, after a
+      Dismiss too), on the button after Esc, in a text field and in a
+      terminal, two join requests on one room and one on a room with no
+      area, Dismiss, its Undo, its double-click guard and its return, a
+      taken-over copy leaving; =g Go there for a prompt, N and Go there for
+      a stack's tab behind another and off screen, at the cards' zoom (the
+      keyboard on the landscape, not the terminal), for a join request (the
+      keyboard the landscape's after its prompt), from focus on another
+      workspace and from another tab; =b every workspace's badges, "what it
+      did" and Diff cell as drawn at the camera given (inside its card and
+      area and its foot, or dropped by their row), each row of each card
+      whole, in order and its actions inside it (with `?deadFront`, on a
+      stack's card whose front tab exited), whole lines of the terminal's
+      line, no status cut beside a badge or a teammate's name, no "what it
+      did" said twice, what was said in the console, the diff failing then
+      read again, and the meters' status bar note going once they're read
+      and today's tokens going with a pushed failure; =c the tray under its
+      button, inside the window and scrolling, as it grows open and when
+      opened again, ⇧N to the last item kept in the list's view, and with
+      `?lsFit` N bringing each card clear of the tray; =d the top bar on one
+      line and the amber button's contrast; =e (with
       `?closedAsLeft&lsClosed=s3`) ghosts, the Closed sessions list and a
       stack's closed tab left out of the tray, the tree, the switcher and a
-      pill, then a ghost reopened, not listed until a turn ends in it;
+      pill, then a ghost reopened, not listed until a turn ends in it; =f a
+      keyboard Dismiss, a real double click on the last item's, the tray
+      with nothing left or the rooms unreadable (`?teamFail`), Undo with the
+      mouse, the button's height, and ⌘N and ⌘K with the tray open;
     - fixtures: s8 finished 12 minutes ago, PR #88 from 5101's branch, the
       branch stats and last replies, s5's and s8's meters.
   - **Tests:**
@@ -2442,32 +2493,43 @@ Design O, with Artifacts as a window, and N's workspace header.
       order (round the end, from none, a join request's area, walked with
       the real selection: two requests on one room, a room with no area),
       Dismiss until the state changes and a second prompt worded like the
-      first, Undo, the saved list trimmed and checked, Go there's targets
-      and taken-over reasons, the action rows;
+      first, Undo, the saved list trimmed and checked, a dismissal kept
+      while its state is current, Go there's targets and taken-over reasons,
+      the action rows, the count's wording;
     - `test/cardBadges.test.ts`: each badge's value, none when there's
       nothing to say (no cost on a terminal), "diff —" and the rest with
       their reasons, the failure logged once per reason, a terminal line
       that repeats "what it did", one read shared by every card on a folder
       and kept across a remount, a folder change reading only that folder's
-      diffs;
+      diffs, reads through a card still showing, a failure read again when
+      the card it went through goes, by a card shown again and by the safety
+      net, another turn or a source changed while no card showed it read
+      when one next does, and main's meters failing on a sync;
     - `test/files.test.ts` (`branchStat` on a real repo: commits plus
       uncommitted changes against dev, a missing base and an option-looking
-      one refused, a folder change forgetting the kept answer, the merge
-      base kept until HEAD moves, `turns`), `test/handoff.test.ts`
-      (`lastReplyOf` and the digest: a subagent's lines never taken, a long
-      tool output read past or said, a file read once while unchanged;
-      `replyFiles`: the hook's file, the index's, one looked for, a
-      subagent's never), `test/transcripts.test.ts` (a subagent's file
-      searchable under its parent, never among the conversation's files),
+      one refused, a folder change forgetting the kept answer, one round and
+      one more shared however often it changes, the merge base kept until
+      HEAD moves, `turns`), `test/handoff.test.ts` (`lastReplyOf` and the
+      digest: a subagent's lines never taken, a long tool output read past
+      or said, a file read once while unchanged; `replyFiles`: the hook's
+      file, the index's, one looked for, a subagent's never;
+      `hookTranscript` and `replyOfConversation`: inside with links
+      followed, outside, a link out, a name beside the folder, a FIFO, the
+      why, the fallback), `test/takeoverBrief.test.ts` (a subagent's lines
+      out of the quoted conversation and the latest plan),
+      `test/landscapeView.test.ts` (`clearRoom` at 1024×768),
+      `test/transcripts.test.ts` (a subagent's file searchable under its
+      parent, never among the conversation's files),
       `test/sessionStatus.test.ts` (`finishedAt`, `waitingAt` and
       `transcript_path` through the real hook script, `finishedAtAfter`, and
       a reopened agent's or terminal's record not finished until a turn
       ends in it);
     - `test/uiLandscapeNeeds.test.ts` drives `?landscapeNeedsAudit` in
       Chrome: =a, =g, =b at 15%, at 1024×768's fit (11%), at 10% and at the
-      wide fit (each with a stack's front tab exited too), the fit's 18%,
-      50% and 100%, and with every source failing, =c at 1024×768, =d at
-      860 px in the light theme, =e;
+      wide fit (each with a stack's front tab exited too), at 10.5%, 11% and
+      13%, the fit's 18%, 50% and 100%, and with every source failing, =c at
+      1024×768, at 1024×600 and at 1024×768's fit, =d at 860 px in the light
+      theme, =e, =f with a join request and with the rooms unreadable;
       `test/uiLandscapeAreas.test.ts` counts the tree's 5101 as 2 (s2's
       prompt and s8 finished).
   - **Decisions for Ryan:**
@@ -2504,6 +2566,9 @@ Design O, with Artifacts as a window, and N's workspace header.
     - at 1024×768's fit (11%) a card's foot is too narrow for its kind and
       a longer status together, so "Working" ends in an ellipsis; the
       status dot in its head still says it;
+    - a stack's card counts its other tabs waiting by their status ("1 needs
+      you" on the tabs' row), a dismissed prompt too, where the tree's row
+      counts Needs you's items;
     - Claude Code's number-key prompt shortcuts are from its interface, and
       Codex's y / a / n from its source; neither was driven here.
 

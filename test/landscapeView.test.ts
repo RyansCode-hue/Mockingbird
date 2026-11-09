@@ -8,6 +8,7 @@ import {
   cameraFrom,
   centreOn,
   clampZoom,
+  clearRoom,
   contentRects,
   fitAll,
   inView,
@@ -113,6 +114,18 @@ describe("the landscape's camera", () => {
     close(toLandscape(cam, { x: 500, y: 400 }).y, 350);
     expect(inView(cam, r, { w: 1000, h: 800 })).toBe(true);
     expect(inView({ x: 0, y: 0, zoom: 1 }, { x: 900, y: 0, w: 200, h: 10 }, { w: 1000, h: 800 })).toBe(false);
+  });
+  it("brings something into view left of a box over the view, in what's left at 1024×768 too, and in all of it when too little is", () => {
+    const vp = { left: 456.23, top: 40, width: 567.77, height: 700 };
+    const tray = (left: number) => ({ left, top: 44, right: left + 320, bottom: 500 });
+    // the tray at 1024×768: 239.77 px beside it
+    expect(clearRoom(vp, tray(696)).w).toBeCloseTo(239.77);
+    expect(clearRoom(vp, tray(696)).h).toBe(700);
+    // too narrow to bring anything into: all of it
+    expect(clearRoom(vp, tray(456.23 + 150))).toEqual({ w: 567.77, h: 700 });
+    // nothing over it
+    expect(clearRoom(vp, null)).toEqual({ w: 567.77, h: 700 });
+    expect(clearRoom(vp, { left: 0, top: 44, right: 400, bottom: 500 })).toEqual({ w: 567.77, h: 700 });
   });
   it("reads a kept camera only when it's one, and puts it on the world as a transform", () => {
     expect(cameraFrom({ x: 1, y: -2, zoom: 0.5 })).toEqual({ x: 1, y: -2, zoom: 0.5 });

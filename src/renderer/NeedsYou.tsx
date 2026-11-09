@@ -1,12 +1,13 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo } from "../shared/types";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import { LOOSE_GROUP } from "../shared/landscape";
 import { agoShort, plural } from "../shared/format";
+import { DIALOG_OPENED, type DialogOpened } from "./Modal";
 import { AnchoredPopover } from "./Popover";
 import { usePersisted } from "./prefs";
 import { shortAreaName } from "./landscapeModel";
-import { KIND_LABEL, dismiss, dismissedFrom, needsByArea, needsItems, shownItems, undismiss, type NeedsItem } from "./needsYouModel";
+import { KIND_LABEL, dismiss, dismissedFrom, needsByArea, needsItems, needsLabel, shownItems, undismiss, type NeedsItem } from "./needsYouModel";
 import type { ModelAction } from "./workspaceActions";
 
 /** What the window knows of what needs you: the items shown (not dismissed), how many are dismissed, and each area's count. */
@@ -14,6 +15,8 @@ export interface NeedsYouState {
   items: NeedsItem[];
   dismissed: number;
   byArea: Map<string, number>;
+  /** The sessions with an item shown: a stack's row counts its own, as its area's does. */
+  sessions: ReadonlySet<string>;
   dismiss: (item: NeedsItem) => void;
   /** A Dismiss undone: the item is listed again. */
   undismiss: (item: NeedsItem) => void;
@@ -45,11 +48,21 @@ export function useNeedsYou(
   // the same items in the same areas give the same counts, so what's memoized on them (the area tree) holds
   const shape = items.map((i) => `${i.sig}@${i.area}`).join("\n");
   const byArea = useMemo(() => needsByArea(items), [shape]);
+  const withItem = useMemo(() => new Set(items.flatMap((i) => (i.session ? [i.session] : []))), [shape]);
   return {
     items,
     dismissed: all.length - items.length,
     byArea,
-    dismiss: (item) => setSaved((d: unknown) => dismiss(dismissedFrom(d), item, Date.now())),
+    sessions: withItem,
+    dismiss: (item) =>
+      setSaved((d: unknown) =>
+        dismiss(
+          dismissedFrom(d),
+          item,
+          Date.now(),
+          all.map((i) => i.sig)
+        )
+      ),
     undismiss: (item) => setSaved((d: unknown) => undismiss(dismissedFrom(d), item)),
     isDismissed: (item) => list.some((d) => d.sig === item.sig),
     joinError,
@@ -59,14 +72,22 @@ export function useNeedsYou(
 /** The dot before an item's kind: amber while something waits on you, grey for what's only done. */
 const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", join: "waiting", finished: "idle" };
 
-/** A second Dismiss this soon after one is a double click landing on the item that slid up under the pointer: it's let go. */
+/**
+ * A click in the tray this soon after a Dismiss is a double click's second, landing on whatever slid up under the
+ * pointer: it's let go. The tray holds its height this long, so that click lands in it however short it got, rather
+ * than on the landscape.
+ */
 const DISMISS_GUARD_MS = 450;
+
+/** N (1) and ⇧N (-1), or null for any other key. */
+const stepOf = (e: React.KeyboardEvent): 1 | -1 | null => (e.metaKey || e.ctrlKey || e.altKey || e.key.toLowerCase() !== "n" ? null : e.shiftKey ? -1 : 1);
 
 /**
  * The Needs you button in the top bar and the tray it drops down (design D, "Inbox"): every item with its kind and
  * area, how long it has waited, what it is, and its actions (needsActions: Go there and Dismiss, through the one
- * model). The item the view is on (N's place) is lit. N and ⇧N work in the tray as they do on the landscape, and keep
- * it open; the view keeps the item clear of the tray. The last Dismiss can be undone from its foot.
+ * model). The item the view is on (N's place) is lit and kept in the list's view. N and ⇧N work in the tray as they do
+ * on the landscape, and keep it open; the view keeps the item clear of the tray. They work on the button too, which
+ * has the keyboard after Esc. The last Dismiss can be undone from its foot. A dialog opening puts the tray away.
  */
 export function NeedsYou({
   state,
@@ -85,30 +106,61 @@ export function NeedsYou({
   onStep: (dir: 1 | -1, avoid: DOMRect | null) => void;
 }) {
   const btn = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [last, setLast] = useState<{ item: NeedsItem; at: number } | null>(null);
+  const [last, setLast] = useState<NeedsItem | null>(null);
+  const guardUntil = useRef(0);
+  const guarded = () => Date.now() < guardUntil.current;
   const close = (how?: "escape" | "outside" | "away") => {
     setOpen(false);
     // Escape gives the keyboard back to the button that opened it; Go there gives it to the landscape
     if (how === "escape") btn.current?.focus({ preventScroll: true });
   };
+  useEffect(() => {
+    if (!open) return;
+    // the tray floats over the dialogs' backdrop; the keyboard comes back to the button, as the tray won't be there
+    const onDialog = (e: Event) => {
+      setOpen(false);
+      if (btn.current) (e as CustomEvent<DialogOpened>).detail.handBack(btn.current);
+    };
+    document.addEventListener(DIALOG_OPENED, onDialog);
+    return () => document.removeEventListener(DIALOG_OPENED, onDialog);
+  }, [open]);
+  // after the tray is placed, which is when the list gets its height
+  useEffect(() => {
+    if (!open || !current) return;
+    const frame = requestAnimationFrame(() => list.current?.querySelector(`[data-item="${CSS.escape(current)}"]`)?.scrollIntoView({ block: "nearest" }));
+    return () => cancelAnimationFrame(frame);
+  }, [open, current]);
   const n = state.items.length;
   const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.key.toLowerCase() !== "n") return;
-    if ((e.target as Element).closest("input, textarea, select, [contenteditable]")) return;
+    const dir = stepOf(e);
+    if (!dir || (e.target as Element).closest("input, textarea, select, [contenteditable]")) return;
     e.preventDefault();
     e.stopPropagation();
-    onStep(e.shiftKey ? -1 : 1, e.currentTarget.getBoundingClientRect());
+    onStep(dir, e.currentTarget.getBoundingClientRect());
   };
   const onDismiss = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
-    if (last && Date.now() - last.at < DISMISS_GUARD_MS) return;
+    if (guarded()) return;
+    guardUntil.current = Date.now() + DISMISS_GUARD_MS;
     const tray = (e.currentTarget as HTMLElement).closest<HTMLElement>(".ny-tray");
+    if (tray) {
+      // its button leaves with it: the keyboard moves to the tray first, so N and Esc still reach it
+      tray.focus({ preventScroll: true });
+      tray.style.minHeight = `${tray.getBoundingClientRect().height}px`;
+      setTimeout(() => (tray.style.minHeight = ""), DISMISS_GUARD_MS);
+    }
     a.onPick();
-    setLast({ item, at: Date.now() });
-    // its button leaves with it: the keyboard stays in the tray, so N and Esc still reach it
-    requestAnimationFrame(() => tray?.isConnected && tray.focus({ preventScroll: true }));
+    setLast(item);
   };
-  const undoable = last && state.isDismissed(last.item) ? last.item : null;
+  const onUndo = (item: NeedsItem, e: React.MouseEvent) => {
+    if (guarded()) return;
+    // Undo's button leaves with the dismissal
+    (e.currentTarget as HTMLElement).closest<HTMLElement>(".ny-tray")?.focus({ preventScroll: true });
+    state.undismiss(item);
+    setLast(null);
+  };
+  const undoable = last && state.isDismissed(last) ? last : null;
   return (
     <>
       <button
@@ -117,8 +169,20 @@ export function NeedsYou({
         className={`ny-btn ${n ? "on" : ""}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={n ? `${n} need you: permission prompts, questions, join requests and finished sessions (N goes to the next on the landscape)` : "Nothing needs you right now"}
+        title={
+          n
+            ? `${needsLabel(n)}: permission prompts, questions, join requests and finished sessions (N goes to the next on the landscape)`
+            : state.joinError
+              ? `Couldn't read the rooms' join requests: ${state.joinError}`
+              : "Nothing needs you right now"
+        }
         onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          const dir = stepOf(e);
+          if (!dir) return;
+          e.preventDefault();
+          onStep(dir, null);
+        }}
       >
         Needs you
         {n > 0 && <span className="ny-n">{n}</span>}
@@ -129,13 +193,13 @@ export function NeedsYou({
             <span className="ny-title">Needs you</span>
             <span className="ny-keys">N next · ⇧N back</span>
           </div>
-          <div className="ny-list">
+          <div className="ny-list" ref={list}>
             {state.joinError && (
               <div className="ny-err" title={state.joinError}>
                 Couldn't read the rooms' join requests: {state.joinError}
               </div>
             )}
-            {!n && <div className="ny-none">Nothing needs you right now.</div>}
+            {!n && !state.joinError && <div className="ny-none">Nothing needs you right now.</div>}
             {state.items.map((item) => (
               <div key={item.id} className={`ny-item k-${item.kind} ${current === item.id ? "on" : ""}`} data-item={item.id}>
                 <div className="ny-meta">
@@ -167,7 +231,7 @@ export function NeedsYou({
                       data-action={a.key}
                       disabled={a.disabled}
                       title={a.title}
-                      onClick={(e) => (a.key === "dismiss" ? onDismiss(item, a, e) : a.onPick())}
+                      onClick={(e) => (a.key === "dismiss" ? onDismiss(item, a, e) : !guarded() && a.onPick())}
                     >
                       {a.label}
                     </button>
@@ -180,7 +244,7 @@ export function NeedsYou({
             <div className="ny-foot" title="A dismissed item comes back when its state changes: a new prompt, another turn ending, another request">
               <span>{plural(state.dismissed, "item")} dismissed</span>
               {undoable && (
-                <button type="button" className="ny-undo" data-action="undo" title={`List “${undoable.text}” again`} onClick={() => (state.undismiss(undoable), setLast(null))}>
+                <button type="button" className="ny-undo" data-action="undo" title={`List “${undoable.text}” again`} onClick={(e) => onUndo(undoable, e)}>
                   Undo
                 </button>
               )}

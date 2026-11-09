@@ -322,7 +322,7 @@ export interface GoToAsk {
 }
 
 /** The narrowest room beside a box that what's brought into view is fitted into; with less, the whole view is used. */
-const CLEAR_MIN_PX = 240;
+const CLEAR_MIN_PX = 200;
 
 /**
  * The part of the viewport (`vp`, on screen) to bring something into view in, as a size from its top-left: left of

@@ -126,19 +126,28 @@ const KEYS = {
   n: { key: "n", code: "KeyN", keyCode: 78, text: "n" },
   N: { key: "N", code: "KeyN", keyCode: 78, text: "N" },
   e: { key: "e", code: "KeyE", keyCode: 69, text: "e" },
+  k: { key: "k", code: "KeyK", keyCode: 75, text: "k" },
   Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
   Escape: { key: "Escape", code: "Escape", keyCode: 27 },
 };
 
 /**
- * Press, for real, the keys the page asked for: it pushes { key, shift?, meta? } onto window.__mbKeys, and
- * window.__mbKeysDone counts the ones pressed. They reach whatever has the keyboard, as a person's would, which a
- * KeyboardEvent dispatched at an element can't show.
+ * Press, for real, the keys and the mouse the page asked for: it pushes { key, shift?, meta? } or
+ * { mouse: { x, y, clickCount } } (clickCount 2: a double click's second) onto window.__mbKeys, and window.__mbKeysDone
+ * counts the ones done. They reach whatever has the keyboard or is under the pointer, as a person's would, which an
+ * event dispatched at an element can't show.
  */
 async function pressAsked(ask) {
   const asked = await ask("Runtime.evaluate", { expression: "JSON.stringify((window.__mbKeys || []).splice(0))", returnByValue: true });
   const keys = JSON.parse(asked?.result?.value ?? "[]");
   for (const k of keys) {
+    if (k.mouse) {
+      const { x, y, clickCount } = k.mouse;
+      await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+      await ask("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount });
+      await ask("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount });
+      continue;
+    }
     const d = KEYS[k.key];
     if (!d) throw new Error(`the page asked for a key this driver doesn't press: ${k.key}`);
     const modifiers = (k.shift ? 8 : 0) | (k.meta ? 4 : 0);

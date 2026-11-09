@@ -1,6 +1,7 @@
 import type React from "react";
 import type { ReactNode } from "react";
 import type { AreaCounts, AreaView, Band } from "./landscapeModel";
+import { needsLabel } from "./needsYouModel";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { LockIcon } from "./Icons";
 import type { ModelAction } from "./workspaceActions";
@@ -88,7 +89,7 @@ export function AreaFrame({
           <span className="n">{title}</span>
           <span className="c">{plural(counts.workspaces, "workspace")}</span>
           {needs > 0 && (
-            <span className="w" title={`${needs} need you: see Needs you`} aria-label={`${needs} need you`}>
+            <span className="w" title={`${needsLabel(needs)}: see Needs you`} aria-label={needsLabel(needs)}>
               {needs}
             </span>
           )}

@@ -3,7 +3,7 @@ import { shortReason } from "./TerminalPane";
 import { titleOf } from "./appModel";
 import type { SessionInfo } from "../shared/types";
 import { fmtElapsed } from "../shared/format";
-import { Modal } from "./Modal";
+import { Modal, useDialogFocus } from "./Modal";
 import { useEscape } from "./useEscape";
 import { rankMatches } from "./fuzzy";
 import { useListNav } from "./listNav";
@@ -36,6 +36,7 @@ export function CommandPalette({
 }) {
   const [q, setQ] = useState("");
   useEscape(onClose);
+  useDialogFocus();
 
   const statusPhrase = (s: SessionInfo): string => {
     if (s.status === "waiting")
