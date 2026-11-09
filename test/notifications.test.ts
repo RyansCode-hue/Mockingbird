@@ -31,5 +31,7 @@ describe("notification controls", () => {
       title: "Filter orgs lost its Mockingbird tools",
       body: "Its token file is gone, as it is once the launch it was made for has ended. Messages and wires won't work from that agent.",
     });
+    // a title with characters that reorder or hide text shows as plain text
+    expect(toolsLostNotice({ title: "Filter\u202e orgs\u200b", why: "its token file is empty" }).title).toBe("Filter orgs lost its Mockingbird tools");
   });
 });

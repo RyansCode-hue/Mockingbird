@@ -1,4 +1,5 @@
 import type { QuietHours, SessionInfo, Settings } from "../shared/types";
+import { plainLine } from "../shared/team/agentText";
 
 const minutes = (hhmm: string): number | null => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
@@ -39,7 +40,11 @@ export function roomWaitingNotice(o: { owner: string; title: string; reason: str
   return { title: `Needs input · ${o.owner}'s session`, body: `${o.title} · ${o.reason ?? "waiting on you"}` };
 }
 
-/** An agent pane whose tool server Mockingbird doesn't recognise (messaging.ts): which pane, and why, said once a launch. */
+/**
+ * An agent pane whose running launch's tool server has no usable token (messaging.ts): which pane, and why, in
+ * Mockingbird's words, said once a launch.
+ */
 export function toolsLostNotice(o: { title: string; why: string }): { title: string; body: string } {
-  return { title: `${o.title} lost its Mockingbird tools`, body: `${o.why.charAt(0).toUpperCase()}${o.why.slice(1)}. Messages and wires won't work from that agent.` };
+  const why = plainLine(o.why, 300);
+  return { title: `${plainLine(o.title, 120)} lost its Mockingbird tools`, body: `${why.charAt(0).toUpperCase()}${why.slice(1)}. Messages and wires won't work from that agent.` };
 }

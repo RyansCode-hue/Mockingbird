@@ -19,6 +19,14 @@ export function oneLine(s: unknown, max = 200): string {
     .trim();
 }
 
+/**
+ * `s` on one line with Unicode format characters taken out (bidi overrides and isolates, zero-width spaces and joiners),
+ * for a line read by a person: in a log or a notification, text one of those reorders or hides can't pass for other text.
+ */
+export function plainLine(s: unknown, max = 200): string {
+  return oneLine(String(s ?? "").replace(/\p{Cf}/gu, ""), max);
+}
+
 /** `s` on one line, JSON-quoted, with `<` and `>` escaped: "Nick \u003cdev\u003e". */
 export function quoted(s: unknown, max = 200): string {
   return JSON.stringify(oneLine(s, max)).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");

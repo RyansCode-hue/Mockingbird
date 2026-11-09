@@ -15,16 +15,17 @@ import { tempDir, write } from "./helpers";
  * runner, the real script and socket, and only the pty faked or the agent CLI a stand-in.
  */
 
-type FakePty = { args: string[]; env: Record<string, string>; killed: boolean; exit(code: number): void };
+type FakePty = { args: string[]; env: Record<string, string>; killed: boolean; exit(code: number): void; data(text: string): void };
 const ptys: FakePty[] = [];
 let spawnFails = false;
 vi.mock("node-pty", () => ({
   spawn: (_file: string, args: string[], opts: { env: Record<string, string> }) => {
     if (spawnFails) throw new Error("posix_spawnp failed");
     let onExit: (e: { exitCode: number }) => void = () => {};
-    const p: FakePty = { args, env: opts.env, killed: false, exit: (exitCode) => onExit({ exitCode }) };
+    let onData: (text: string) => void = () => {};
+    const p: FakePty = { args, env: opts.env, killed: false, exit: (exitCode) => onExit({ exitCode }), data: (text) => onData(text) };
     ptys.push(p);
-    return { onData: () => ({ dispose() {} }), onExit: (cb: any) => ((onExit = cb), { dispose() {} }), write() {}, resize() {}, kill: () => void (p.killed = true), pid: 1 };
+    return { onData: (cb: any) => ((onData = cb), { dispose() {} }), onExit: (cb: any) => ((onExit = cb), { dispose() {} }), write() {}, resize() {}, kill: () => void (p.killed = true), pid: 1 };
   },
 }));
 
@@ -230,8 +231,10 @@ describe("a pane's launch", () => {
     sessions.kill(s.id, true);
   });
 
-  it("that can't be saved is stopped with its token, and the records and panes are as they were", async () => {
+  it("that can't be saved is stopped with its token, and the records, panes and messages it owes are as they were", async () => {
     const s = await start();
+    // owed to the pane being replaced: its sender was told it's queued
+    expect(sessions.deliverAgentMessage(s.id, "the API changed", true, "front")).toMatch(/^queued/);
     const before = structuredClone(records.sessions);
     const files = tokenFiles();
     let token = "";
@@ -259,7 +262,27 @@ describe("a pane's launch", () => {
     replacement.exit(1);
     await new Promise((r) => setImmediate(r));
     expect(records.sessions).toEqual(before);
+    // the next launch that's saved still owes the message
+    await sessions.create({ repoPath: null, useWorktree: false, agent: "claude", title: "pane", reuseId: s.id });
+    expect(sessions.overdueMessages(Date.now() + 3_600_000, 0)).toEqual([expect.objectContaining({ from: "front", to: s.id })]);
     sessions.kill(s.id, true);
+  });
+
+  it("that can't be saved on its way back keeps a debrief's interview so far for its next launch", async () => {
+    const d = await start({ debrief: true, title: "debrief" });
+    ptys.at(-1)!.data("Q1: what went well?\r\n");
+    sessions.kill(d.id, false);
+    expect(sessions.closedOutput(d.id)).toContain("Q1: what went well?");
+    saveFails = () => {
+      throw new Error("disk full");
+    };
+    try {
+      await expect(sessions.create({ repoPath: null, useWorktree: false, agent: "claude", title: "debrief", debrief: true, reuseId: d.id })).rejects.toThrow(/couldn't be saved/);
+    } finally {
+      saveFails = null;
+    }
+    expect(sessions.closedOutput(d.id)).toContain("Q1: what went well?");
+    sessions.kill(d.id, true);
   });
 
   it("isn't started without its token, and says why", async () => {

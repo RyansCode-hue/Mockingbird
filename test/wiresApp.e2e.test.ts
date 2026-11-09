@@ -119,14 +119,25 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         const old = await claude.call("list_sessions");
         expect(old.isError).toBe(true);
         expect(old.content[0].text).toMatch(/: its token is from a launch that has ended/);
-        // one started from the ended launch is refused, saying its file has gone, and main.log names the pane
+        // one started from the ended launch is refused, saying its file has gone; main.log has the old server refused as
+        // not from the pane's running launch, which it can't speak for
         const late = startServer(claudeLaunch);
         try {
           expect((await late.call("list_sessions")).content[0].text).toMatch(/: its token file is gone/);
         } finally {
           await late.stop();
         }
-        await untilTrue("the lost tools logged", async () => /messaging: A tool server for "Builder" \(.+\) lost its Mockingbird tools: its token is from a launch that has ended/.test(mainLog(app)));
+        await untilTrue("the ended launch's server logged", async () => /messaging: A tool server naming "Builder" \(.+\), not from its running launch, was refused: its token is from a launch that has ended/.test(mainLog(app)));
+        // the running launch's own server, kept from its file, is the one that lost its tools
+        fs.chmodSync(again.env.MOCKINGBIRD_TOKEN_FILE, 0o000);
+        const blocked = startServer(again);
+        try {
+          expect((await blocked.call("list_sessions")).content[0].text).toMatch(/: its token file couldn't be read \(EACCES\)\./);
+        } finally {
+          await blocked.stop();
+          fs.chmodSync(again.env.MOCKINGBIRD_TOKEN_FILE, 0o600);
+        }
+        await untilTrue("the lost tools logged", async () => /messaging: The tool server of "Builder" \(.+\) lost its Mockingbird tools: its token file couldn't be read \(EACCES\)/.test(mainLog(app)));
         const fresh = startServer(again);
         try {
           expect(parsed(await fresh.call("list_links")).links[0]).toMatchObject({ wire: made.id, direction: "out" });

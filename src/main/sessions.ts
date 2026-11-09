@@ -629,7 +629,8 @@ export class SessionManager {
       this.store.upsertSession(info);
     } catch (err) {
       // one that can't be saved isn't left running unrecorded: it's stopped as kill() stops one, its exit still awaited
-      // at quit, and the records are as they were
+      // at quit, and the records are as they were. What it took over for its launch is put back for the next one: the
+      // messages it owes (their senders were told they're queued) and a debrief's held scrollback.
       this.store.state.sessions = records;
       this.live.delete(info.id);
       retireMcpLaunch(mcp);
@@ -638,6 +639,12 @@ export class SessionManager {
       } catch {
         /* already dead */
       }
+      const kept = [...(this.undelivered.get(info.id) ?? []), ...sess.queued];
+      if (kept.length) this.undelivered.set(info.id, kept);
+      if (info.debrief && req.reuseId && earlier) this.debriefScrollback.set(info.id, earlier);
+      console.warn(
+        `[sessions] ${info.id} couldn't be saved, so it was stopped: ${kept.length} message(s) it owes${info.debrief && earlier ? " and its interview so far" : ""} are kept for its next launch`
+      );
       this.emitChanged();
       throw new Error(`${req.shell ? "The terminal" : `“${info.title}”`} couldn't be saved (${err instanceof Error ? err.message : err}), so it was stopped`, { cause: err });
     }

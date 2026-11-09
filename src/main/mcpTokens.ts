@@ -38,6 +38,13 @@ export class McpTokens {
     return file;
   }
 
+  /** Whose running launch `file` is: the identity its token stands for, or null once it has ended (or never was). */
+  launchOf(file: unknown): string | null {
+    if (typeof file !== "string") return null;
+    const hash = this.hashes.get(file);
+    return hash ? (this.identities.get(hash) ?? null) : null;
+  }
+
   /** Who a request's token stands for; null for anything else. */
   identity(token: unknown): string | null {
     return typeof token === "string" && token ? (this.identities.get(hashOf(token)) ?? null) : null;

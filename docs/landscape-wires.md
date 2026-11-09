@@ -32,7 +32,7 @@ new tools on the MCP server, which answer "no wires".
 
 ```
 now, S8 still open        W1 (building)  W13
-after W1                  W2  W3                 main process only
+after W1                  W2  W3  W20            main process only
 after W1 + W13            W14                    main process only
 after W1 + S8b on main    W4a  W6  W10  W19
 after W2 + W3 + W4a       W4b  W4c  W7
@@ -44,11 +44,12 @@ after W8 + W10            W9
 after W9 + W14 + W16      W17
 after W17                 W18
 after W9 + S8a            W11
-last                      W12
+last                      W12 (after W20 too)
 ```
 
-That's two now (W1 is being built), three more once W1 is on main (W2, W3, W14),
-and four more once S8b is too (W4a, W6, W10, W19).
+That's two now (W1 is being built), four more once W1 is on main (W2, W3, W14,
+W20), and four more once S8b is too (W4a, W6, W10, W19). W20 is required for 1.7.0
+(Ryan, 2026-11-09): W12 waits for it.
 
 **What can start now: W13.** Branches' files, from their merge base (ae345ab):
 - **S8a** (`worktree-agent-a934866ca667a9f67`, 573f641, in review): `scripts/ui-preview.mjs`,
@@ -260,14 +261,17 @@ mutation-checks them with its own fixes (below).
 Node 22.22.3's `net.Socket` offers no peer pid or credentials: `_getpeername` only,
 and no `remoteAddress` on a unix socket.
 
-**Still to check by hand, with real CLIs:**
-- `/mcp` reconnect, and a sub-agent's server, working while the launch runs (the
-  tests start the real script a second and third time, but not from a real CLI);
-- Codex's room sandbox denying an agent's commands the token folder while its MCP
-  server reads it. If the sandbox covers the server too, every call says the file
-  couldn't be read, and main logs it and tells the user;
-- Claude room sessions' `Read(~/.mockingbird/mcp-tokens/**)` deny not reaching the
-  server. It covers Claude's file tools only: its Bash can read the folder.
+**Checked in review 3 (2026-11-09):**
+- Codex doesn't sandbox its MCP servers: upstream `rust-v0.156.1` spawns a stdio
+  server with a plain `Command`, outside the sandbox its commands run in, so a room
+  session's server reads its token while the agent's commands are denied the folder.
+- Claude's `Read()` deny rules apply to its file tools, not to the MCP servers it
+  starts, so a Claude room session's server reads its token too. Room agents keep
+  their tools.
+
+**Still to check by hand, with real CLIs:** `/mcp` reconnect, and a sub-agent's
+server, working while the launch runs (the tests start the real script a second and
+third time, but not from a real CLI).
 
 #### W1 review fixes 1 as built
 
@@ -277,7 +281,8 @@ and no `remoteAddress` on a unix socket.
   Council turn end), the start's sweep and quit remove it, as before. The cost is
   in section 4: a same-uid process outside a sandbox can read a live launch's token
   for as long as the launch runs.
-- **A server without a valid token still reaches main (M1).** It sends `lost`, its
+- **A server without a valid token still reaches main (M1; what it sends and who is
+  told changed in review fixes 2, below).** It sends `lost`, its
   reason (no file, empty, gone with its launch, or unreadable with the errno, as a
   sandbox would have it), and `claimed`, the pane it was started for. Both are hints
   for telling the user, never identity: with a live token they're ignored, and
@@ -331,7 +336,51 @@ and no `remoteAddress` on a unix socket.
 Every fix was reverted in turn and its test failed: 33 of W1's (the two whose code
 changed are replaced by the H1 and M1 ones) and 35 of these, the stub's run in
 headless Chrome. One more only the app test reaches: without main's `log` hook,
-`wiresApp.e2e` fails waiting for the line in `main.log`.
+`wiresApp.e2e` fails waiting for the line in `main.log`. That list missed restore
+using the kept wires (`this.context(book, kept)` at restore): nothing failed without
+it until review fixes 2's test.
+
+#### W1 review fixes 2 as built
+
+- **The "lost" report is Mockingbird's words, for the right launch (M1).**
+  - **What mcp.js sends:** only a code: `nofile`, `empty`, `enoent`, or
+    `read:<errno>` with the errno checked against `[A-Z][A-Z0-9_]{0,23}`. It also
+    sends its token file's path.
+  - **The words:** main writes every word the user or the log reads (`lostReason`).
+    A code it doesn't know is "it gave a reason this Mockingbird doesn't know".
+    Nothing a caller wrote reaches a notification, and in the log only the pane it
+    names and the op it asked for, as plain text.
+  - **Who gets the notice:** the user is told only when the token file is the named
+    pane's running launch's (`McpTokens.launchOf`), once per launch (keyed by that
+    file). A forged report without that file, a server from an ended launch, or
+    another pane's file is logged and nothing else. So none of them can use up the
+    notice or show text of their own. The e2e test now expects the ended launch's
+    server logged as "not from its running launch". The real server of the running
+    launch, kept from its file, is logged as having lost its tools.
+  - **Log rate:** once a minute per running launch, per pane for the rest, and once
+    for all naming none. A forger's reports can't hold back a running launch's line.
+  - **Plain text:** `plainLine` (`agentText.ts`) takes out Unicode format characters
+    (bidi overrides and isolates, zero-width spaces and joiners) from the log's pane
+    name and op, and from the notice's title and reason.
+  - **Left:** a caller that knows a running launch's token file path can still use
+    up that launch's one notice, though only with Mockingbird's words. The path is in
+    the agent's argv, so `ps` shows it. A process that can see it can read the token
+    too, which W20 is for.
+- **Section 4 says what a token gives, to whom (M2):** the Claude room sessions and
+  older Codex rooms that can read any running launch's token for its whole run, what
+  holding one lets you do, and what limits it (ask-only gates in rooms). Fixing it
+  is planned as W20, required for 1.7.0: the calling process has to descend from
+  its launch's.
+- **A restart that can't be saved keeps what it was owed (L1).** The catch in
+  `create()` puts the pane's queued messages back on its undelivered list, as
+  `kill()` does, and a debrief's held scrollback back where its next launch reads it.
+  It logs how many.
+- **Restore counts readable kept wires (L2)**, now tested.
+- The Codex sandbox and Claude deny hand checks are closed with review 3's evidence
+  (W1 as built, above).
+
+Each of these fixes was reverted in turn and its test failed: 10 more, 78 with W1's
+and round one's, all run again after the M1 rewrite.
 
 ### W2 · Tools and finishing (main, no UI). Size M
 - `src/main/wireTools.ts` (`finish_step`, `read_context`, `read_terminal`, routed
@@ -818,6 +867,132 @@ coworkers' requests; it works in your Chrome through Claude in Chrome.
   `test/sessionLifecycle.test.ts` (relaunch keeps both), `test/presets.test.ts`,
   messages refused, share refused, a Claude without `--chrome` refused saying why.
 
+### W20 · Who's calling, by process (main, no UI). Size M. Required for 1.7.0
+Citations here are at W1's review fixes 2 (on 1acf933), read, and the `lsof` timing
+run on this Mac.
+
+Today the token is the whole proof of who's calling, and any same-uid process
+outside a sandbox can read a running launch's token from its file (section 4). W20
+makes the socket check the calling process too: it has to descend from that
+launch's own process. A token read by another pane's shell, or by anything else on
+the Mac, is then useless to it.
+
+**How mcp.js talks to main today.** One connection per tool call: `ask()`
+(`messaging.ts:195`) opens the socket (`:198`), writes the request, half-closes, and
+reads the reply to its end. Main accepts with `allowHalfOpen` (`:428`) and answers
+from `dispatch` (`:469`). So whatever the check costs, it's paid once per tool call,
+unless mcp.js keeps one connection open (below).
+
+**Finding the peer's pid. Measured here, load average about 25, 1,250 processes:**
+- **`lsof`, no native code.** Main takes its accepted socket's fd
+  (`conn._handle.fd`, Node-internal but present on every unix socket) and runs one
+  `lsof -a -U -F pfdn -p <main>,<candidates>`. The `d` field of main's fd is that
+  end's kernel address. The peer's socket lists it as its `n->0x…`. That took 38 ms,
+  and `ps -A -o pid=,ppid=` for the process tree 31 ms: about 70–100 ms a call, all
+  told. Listing every process's sockets instead of the candidates' took 150–165 ms.
+  `/usr/sbin/lsof` ships with macOS. Its `-F` output has been stable for decades,
+  but it's still parsing another program's output.
+- **`getsockopt(LOCAL_PEERPID)`, through a native helper.** The kernel's own answer,
+  in microseconds. `LOCAL_PEERTOKEN` adds the pid's version, so pid reuse can't
+  fool it, and `proc_pidinfo` gives each pid's parent and start time with no `ps`.
+  The cost is a native module. node-pty is one already: `postinstall` runs
+  `electron-builder install-app-deps`, `asarUnpack` lists it, and Update runs
+  `npm ci` then builds. A ~60-line N-API addon is ABI-stable, so Electron bumps
+  wouldn't need it rebuilt. But `npm ci` would compile it on Ryan's and Nick's Macs.
+  That needs the Command Line Tools (clang, and Python for node-gyp), which git on
+  macOS already needs. If it fails to compile, Update fails loudly at "install"
+  until it's fixed. Prebuilt binaries would avoid the compile, but they'd have to be
+  committed or published for both arches.
+- **Nothing better turned up.** Node 22 has no `getsockopt`, peer credentials or
+  FFI. An inherited socket or pipe can't reach the server: node-pty starts the pane
+  and the CLI starts mcp.js, and neither passes extra fds. A token or nonce sent any
+  other way (argv, env, a file, an HTTP header in the CLI's config) can be read by
+  the same same-uid process the file can. Spawning `perl` to call `getsockopt` on a
+  passed fd would work today, but Apple has said those runtimes are going away.
+
+**Keeping one connection per server** would pay for the check once per server, not
+once per call. It needs newline framing in place of the half-close. mcp.js would
+reconnect when main restarts (servers outlive the app: the "outlives the app
+restarting" test), and main would still answer the half-close form, since a server
+from before an update keeps running. Not worth it at 70–100 ms a call. Worth it if
+calls get chatty (W14's ticket tools are the likeliest).
+
+**Tying a pid to a launch.**
+- **A pane:** node-pty's `proc.pid` is `/bin/zsh -ilc "exec <agent>"`
+  (`sessions.ts:503`, `:512`), so the pty's pid becomes the CLI's. The peer must
+  descend from it, checked by walking parents in one process-table snapshot. The
+  launch keeps the pid and the pty's start time. Its `onExit` already retires the
+  launch, so an ended pty's pid is never matched.
+- **What that covers** (*inferred*, to check with real CLIs):
+  - `/mcp` reconnect and a Codex sub-agent's server: the CLI starts the server
+    again itself;
+  - Claude's subagents and in-process teammates: they run in the lead's process;
+  - Claude teammates in split-pane mode: these start under tmux's server, which
+    doesn't descend from the pane. They're refused, through M1's path, saying so.
+- **A Council turn** (`cliTurnRunner`): `userShellWithInput` (`shell.ts:184`)
+  spawns the CLI through a shell. It would hand back the child's pid, and the turn's
+  launch keeps it until its `finally` (`collab.ts:1026`) retires it.
+- **Headless runs** with no MCP launch need nothing. Only `mcpLaunch`'s callers
+  (`sessions.ts`, `collab.ts`) make one.
+- **The order, and pid reuse:** one `ps` snapshot first gives the launch's
+  descendants, the candidates. Then one `lsof` over main and those pids finds which
+  of them holds the socket's other end. The peer is blocked waiting on its reply,
+  so the pid `lsof` names is live then. The pane's own pid is pinned by its start
+  time. The gap is a descendant that dies in the ~40 ms between the two, whose pid
+  is taken at once by an outside process that has connected to the socket. That
+  can't be aimed. `LOCAL_PEERTOKEN` closes it if the helper is native.
+- **Narrower than the process:** any descendant of the pane passes, its agent's own
+  shell commands included. Those could already reach its tools through the agent,
+  minus the CLI's prompt for each MCP call. Checking that the peer's argv is the
+  launch's MCP command narrows that further, but a command line can be copied, so
+  it's a rule, not a wall.
+
+**The token stays, as the launch it names.** Both have to hold: the token picks the
+launch, and the peer has to descend from that launch's process. Dropping the token
+would take the secret off disk, but the token is still how main tells a running
+launch from an ended one cheaply, and how the M1 report finds the right launch
+without a process check. It also protects anything the process check misses: a
+caller would need both the file and a place in the tree. Revisit after 1.7.0.
+
+**When the check can't run, the call is refused.** That covers `lsof` or `ps`
+missing, failing, timing out (a 2 s cap), or output that can't be parsed. The refusal
+goes through M1's path:
+- the agent is told why in Mockingbird's words ("Mockingbird couldn't check which
+  process is calling: lsof timed out");
+- `main.log` gets a line once a minute per launch;
+- when the token is valid for that pane's running launch, the user is told once.
+Nothing falls back to the token alone. A peer outside the launch's tree is refused
+and logged the same way ("not from its pane's processes"). The user isn't told: a
+stolen token isn't the pane's fault, and a notice for it would be another thing a
+forger could spend.
+
+**Tests:**
+- unit, with real processes, where the pty's pid is a real `node` the test starts
+  and the real mcp.js runs under it:
+  - accepted;
+  - a second real process, the child of a different stand-in pane, holding the
+    first pane's token: refused, and logged;
+  - a grandchild (a sub-agent's or a reconnect's server): accepted;
+  - a process the pane started that has since exited, its pid unmatched;
+- an injected checker that fails, times out or gives garbage: refused, logged, and
+  told only for the running launch;
+- `test/wiresApp.e2e.test.ts`: the stand-in agent starts the real mcp.js itself, as a
+  descendant of its pty, and that works. The test's own server with the same token,
+  outside the tree, is refused;
+- `cliTurnRunner` under the existing Council stand-in;
+- a timing test: one call's check under 250 ms on an idle CI runner, with the number
+  logged.
+
+**Recommendation.** Build it on `lsof` and one `ps` per call, behind a `PeerCheck`
+interface (`peerOf(conn) → { pid, ancestors } | { failed }`) with a 2 s cap. That
+means no native module, so nothing new for Update's `npm ci` to compile, and about
+0.1 s per tool call. Keep one connection per call. If the cost shows (W14's tools,
+W12's run), swap in a `LOCAL_PEERTOKEN` N-API helper behind the same interface, or
+keep one connection per server. Keep the token as a second factor.
+- Files: `src/main/peerCheck.ts` (new), `messaging.ts` (dispatch, the M1 path),
+  `mcpTokens.ts` (a launch's pid and start time), `sessions.ts` (the pty's pid into
+  its launch), `collab.ts` and `shell.ts` (a turn's pid), tests.
+
 ## 2. Data model
 
 ### The file
@@ -1113,29 +1288,62 @@ forge another's `finish_step`, approving its own review, or send as someone else
   Council turn end), the start's sweep and quit remove it.
 - `dispatch` takes identity from the token alone and ignores `from`. No valid token,
   no answer. That covers `collab-` tags too, which today can be forged to reach
-  `roomHandler`. A server without one still sends main its reason and the pane it was
-  started for, as a hint for telling the user, never as identity.
+  `roomHandler`. A server without one still sends main a code for why, the pane it
+  was started for and its token file. Main writes every word the user reads. Only a
+  file that is that pane's running launch's gets the user told. None of it is ever
+  identity.
 - A relaunch rotates it. The folder joins `HOME_SECRETS` (`secrets.ts:52`), so a
   Codex room session's sandbox denies it to the agent's commands. A Claude room
   session's deny rules (`roomSecretReads`) cover only Claude's file tools: its Bash
   can still read the folder.
 
-**What this doesn't do.** A same-uid process outside a sandbox can read a live
-launch's token from its file for as long as the launch runs, and reach transcripts
-and `~/.mockingbird` directly. Inside a Codex room sandbox the folder is denied. The
-OS gives no peer identity through Node's `net` (checked in W1). The boundary is the
-agent's own permissions and, in a room, its sandbox. Wire scope is a rule on the
-tool, not a wall, and this file shouldn't be read as saying otherwise.
+**What this doesn't do, until W20.** The token is the whole proof.
 
-*Later:* identify the caller by its peer pid (`LOCAL_PEERPID` on macOS, through a
-small native addon since Node doesn't expose it) and check it descends from the
-pane's pty. That would make a token read by another process useless to it.
+*Who can read one, and when.* Anything running as the user outside a sandbox can
+read any running launch's token from its file, from its launch until its pane closes
+or restarts, not only at start-up. That includes:
+- the user's own shells and apps;
+- every Claude pane's shell, private or in a room. A Claude room session has no OS
+  sandbox, only `Read()` deny rules, and those cover its file tools, not its Bash;
+- a Codex pane outside a room;
+- a Codex room session older than `CODEX_ROOM_GUARD_SINCE` (0.138.0,
+  `livePanes.ts:71`).
+
+Only a Codex room session on 0.138.0 or later has the folder denied to its commands.
+From an agent it takes a shell command that reads the folder. Claude asks the user
+to approve that, unless its permission mode lets Bash run without asking. The review
+did it from a room pane's shell long after a private pane started, and sent a
+message as the private pane.
+
+*What a token lets its holder do, as that pane:*
+- send messages, labelled with the pane's name;
+- list the sessions it would see and its own wires (`list_links`);
+- use the House, room artifact and team-changes tools as it;
+- from W2 and W14, `finish_step`, `read_context` along its context wires, and the
+  ticket tools on its ticket.
+
+*What limits it:*
+- a wire in a room's area is ask-only (`gateOf`), so a forged finish or handoff waits
+  at a gate a person opens;
+- sends are rate-limited per pair (`PAIR_LIMIT`);
+- nothing writes a wire.
+
+It is still better than before W1, when any socket client could name any pane in
+`from` without reading anything. The rest of the boundary is the agent's own
+permissions and, in a Codex room, its sandbox. Wire scope is a rule on the tool,
+not a wall, and this file shouldn't be read as saying otherwise.
+
+**W20 removes this:** the socket checks that the calling process descends from the
+launch the token names, so a token taken by another pane's shell, or anything else,
+is refused.
 
 **A restarted MCP server** (`/mcp` reconnect, a sub-agent's) reads the same file and
-works while its launch runs. One started after its launch has ended, or kept from
-the file by a sandbox, has every call refused saying why. Main logs it (`main.log`,
-once a minute per pane launch) and tells the user once per pane launch. The refusal
-doesn't tell the agent to restart, since that helps neither case.
+works while its launch runs. One that can't read the file has every call refused
+saying why, in Mockingbird's words. Main logs it, once a minute per running launch.
+When the server's token file is its pane's running launch's, the user is told once
+for that launch. A server from a launch that has ended is logged and nothing else:
+it can't speak for the launch that replaced it. The refusal doesn't tell the agent
+to restart, since that doesn't help.
 
 **Enforced in main:** every tool resolves from the token's session.
 `read_context(from)` needs a context wire from `from` to the caller, `list_links`
@@ -1537,8 +1745,9 @@ Not verified, to check by hand in the slice named:
 - `/mcp` reconnect and a sub-agent's server with real CLIs (W1). With the token file
   kept for the launch's life, either works while the launch runs.
 - `ps` showing argv for same-user processes, and Node's `net` offering no peer pid (W1).
-- That Codex's sandbox denies an agent's commands the token folder while its MCP
-  server, which must read it, runs outside the sandbox (W1, with a real room session).
+- What W20's process check covers with real CLIs: `/mcp` reconnect, a Codex
+  sub-agent's server, Claude's in-process teammates (inside the tree) and split-pane
+  teammates (outside it, so refused) (W20).
 - A pasted prompt starting with `/` or `!` acting as a command in each CLI (W2; the label
   makes it moot either way).
 - How a Codex pane behaves before `/hooks` approval (`hooks.ts:151` says it ignores new

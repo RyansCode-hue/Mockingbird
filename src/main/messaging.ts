@@ -8,7 +8,7 @@ import { writeGenerated } from "./fileOps";
 import { HOUSE_TOOL_SCHEMAS, isHouseTool } from "./team/houseTools";
 import { houseToolCall } from "./team/houseService";
 import { ARTIFACT_TOOL } from "../shared/team/artifacts";
-import { named, oneLine, quoted } from "../shared/team/agentText";
+import { named, plainLine, quoted } from "../shared/team/agentText";
 import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
 import { isTeamChangesTool, TEAM_CHANGES_TOOL_SCHEMAS, teamChangesToolCall } from "./team/teamChanges";
 import { parseRemoteId, remoteSessionId } from "../shared/team/livePanes";
@@ -31,6 +31,18 @@ const tokens = new McpTokens(TOKENS_DIR);
 const noTokenText = (why: string): string =>
   `Mockingbird doesn't recognise this tool server, so its tools can't be used from here: ${why}. ` +
   "They work for an agent Mockingbird started in a workspace, for as long as that launch runs. Mockingbird has logged this for the user; tell them if you need these tools.";
+
+/**
+ * Why a tool server has no usable token, in Mockingbird's words, from the code it sent (`lost`); null for a code this
+ * build doesn't know. `current` is whether its token file is its pane's running launch's.
+ */
+function lostReason(code: unknown, current: boolean): string | null {
+  if (code === "nofile") return "it was started without a token file";
+  if (code === "empty") return "its token file is empty";
+  if (code === "enoent") return current ? "its token file was removed while its launch runs" : "its token file is gone, as it is once the launch it was made for has ended (its workspace was closed or restarted)";
+  const read = typeof code === "string" ? /^read:([A-Z][A-Z0-9_]{0,23})$/.exec(code) : null;
+  return read ? `its token file couldn't be read (${read[1]})` : null;
+}
 
 /** Messages allowed between one pair of sessions per window, in either direction. */
 const PAIR_LIMIT = 8;
@@ -78,11 +90,13 @@ const FROM = process.env.MOCKINGBIRD_SESSION;
 
 // The token is read here, from a file Mockingbird keeps for as long as this server's launch runs: every server the
 // agent starts from that launch (a sub-agent's, a reconnect) reads the same one. The file goes when the launch ends.
-// Without a token, calls still reach Mockingbird, saying why there's none, so the user hears of it; they get no answer.
+// Without a token, calls still reach Mockingbird with a code for why (lost) and the file it was given, so the user can
+// be told when that's a launch still running; they get no answer. The words the user reads are Mockingbird's own.
+const TOKEN_FILE = process.env.MOCKINGBIRD_TOKEN_FILE;
 let lost = null;
 function readToken(file) {
   if (!file) {
-    lost = "it was started without a token file";
+    lost = "nofile";
     return null;
   }
   let fd;
@@ -90,20 +104,17 @@ function readToken(file) {
     fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     if (!fs.fstatSync(fd).isFile()) throw Object.assign(new Error("not a file"), { code: "ENOTFILE" });
     const token = fs.readFileSync(fd, "utf8").trim();
-    if (!token) lost = "its token file is empty";
+    if (!token) lost = "empty";
     return token || null;
   } catch (e) {
-    lost =
-      e.code === "ENOENT"
-        ? "its token file is gone, as it is once the launch it was made for has ended (its workspace was closed or restarted)"
-        : "its token file couldn't be read (" + (e.code || "unknown") + "), as happens when a sandbox keeps the server from it";
-    process.stderr.write("mockingbird: " + lost + "\n");
+    lost = e.code === "ENOENT" ? "enoent" : "read:" + (/^[A-Z][A-Z0-9_]{0,23}$/.test(String(e.code)) ? e.code : "UNKNOWN");
     return null;
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
   }
 }
-const TOKEN = readToken(process.env.MOCKINGBIRD_TOKEN_FILE);
+const TOKEN = readToken(TOKEN_FILE);
+if (lost) process.stderr.write("mockingbird: no token (" + lost + "), so Mockingbird's tools won't answer\n");
 
 // A Collaborate room's model gets the tools named in MOCKINGBIRD_TOOLS: asking
 // the room's code reader, and (for Claude's --permission-prompt-tool, never the
@@ -195,8 +206,9 @@ function ask(req) {
       }
     });
     c.on("error", (e) => resolve({ error: "Mockingbird is not reachable (" + (e.code || e.message) + ") — is the app running?" }));
-    // claimed: the pane this server says it's for, a hint for telling the user when its token isn't valid; never who's calling
-    c.end(JSON.stringify({ ...req, token: TOKEN, claimed: FROM, ...(lost ? { lost } : {}) }));
+    // claimed and tokenFile: the pane this server says it's for, and its launch's file, for telling the user when its
+    // token isn't valid; never who's calling
+    c.end(JSON.stringify({ ...req, token: TOKEN, claimed: FROM, tokenFile: TOKEN_FILE, ...(lost ? { lost } : {}) }));
   });
 }
 
@@ -312,8 +324,8 @@ export interface RemoteSendResult {
 }
 
 /**
- * An agent's tool server reached Mockingbird without a valid token. `session` is the agent pane its request says it's
- * for: a hint for telling the user, never who's calling.
+ * The tool server of `session`'s running launch (by the token file main gave that launch) reached Mockingbird without a
+ * usable token, and `why` is Mockingbird's own words for it. Never who's calling: only for telling the user.
  */
 export interface ToolsLost {
   session: SessionInfo;
@@ -359,7 +371,10 @@ export class Messaging {
   private roomHandler: RoomRequestHandler | null = null;
   private remote: RemoteAgents | null = null;
   private wires: WireLinks | null = null;
-  /** When each pane launch's lost tools were last logged ("unknown" for a request naming no pane here), and which have been told. */
+  /**
+   * When refusals were last logged: per running launch whose server lost its token, per pane for the rest that name one,
+   * and once for all that name none. And the launches (by token file) whose loss the user has been told of.
+   */
   private lostLogged = new Map<string, number>();
   private lostTold = new Set<string>();
 
@@ -463,28 +478,45 @@ export class Messaging {
   }
 
   /**
-   * Refused, saying why. Logged at most once a minute for each pane launch the request names (and once a minute for
-   * all that name none here), since whatever's asking may keep asking; the user is told once per pane launch. What the
-   * request says about itself is only used to say which pane lost its tools. The token itself is never logged.
+   * Refused, saying why in Mockingbird's own words: a request brings only a code for that (`lost`). The user is told
+   * once per launch, and only when the request names its pane's running launch by that launch's token file (`claimed`
+   * and `tokenFile`): a server from a launch that has ended, or anything else on the socket, can't speak for a launch
+   * that works or use up its one notice. Logged at most once a minute per running launch, per pane for the rest, and
+   * once for all naming no pane, since whatever's asking may keep asking; what a request says goes in as plain text.
+   * The token itself is never logged.
    */
   private noToken(op: string, req: Record<string, unknown>): Reply {
+    const claimed = typeof req.claimed === "string" ? req.claimed : "";
+    const session = claimed ? (this.sessions.list().find((s) => s.id === claimed && !s.shell) ?? null) : null;
+    const file = typeof req.tokenFile === "string" && req.tokenFile ? req.tokenFile : null;
+    const current = !!session && !!file && tokens.launchOf(file) === session.id;
     const why =
-      typeof req.lost === "string" && oneLine(req.lost)
-        ? oneLine(req.lost, 300)
+      req.lost !== undefined
+        ? (lostReason(req.lost, current) ?? "it gave a reason this Mockingbird doesn't know")
         : req.token === undefined || req.token === null
           ? "it sent no token"
-          : "its token is from a launch that has ended (its workspace was closed or restarted, or Mockingbird was)";
-    const claimed = typeof req.claimed === "string" ? oneLine(req.claimed, 80) : "";
-    const session = claimed ? (this.sessions.list().find((s) => s.id === claimed && !s.shell) ?? null) : null;
-    const key = session ? `${session.id}@${session.createdAt}` : "unknown";
+          : current
+            ? "its token isn't the one its launch was given"
+            : "its token is from a launch that has ended (its workspace was closed or restarted, or Mockingbird was)";
+    const key = current ? `launch ${file}` : session ? `pane ${session.id}` : "none";
     const now = Date.now();
     if (now - (this.lostLogged.get(key) ?? -Infinity) >= NO_TOKEN_LOG_MS) {
       this.lostLogged.set(key, now);
-      const who = session ? `for ${quoted(titleOf(session))} (${session.id})` : claimed ? `naming ${quoted(claimed)}, which isn't an agent pane here,` : "naming no pane";
-      this.log("messaging", `A tool server ${who} lost its Mockingbird tools: ${why} (asked for ${JSON.stringify(oneLine(op, 60))})`);
+      const asked = `(asked for ${JSON.stringify(plainLine(op, 60))})`;
+      const pane = session ? `${quoted(plainLine(titleOf(session)))} (${session.id})` : "";
+      this.log(
+        "messaging",
+        current
+          ? `The tool server of ${pane} lost its Mockingbird tools: ${why} ${asked}`
+          : session
+            ? `A tool server naming ${pane}, not from its running launch, was refused: ${why} ${asked}`
+            : claimed
+              ? `A tool server naming ${quoted(plainLine(claimed, 80))}, which isn't an agent pane here, was refused: ${why} ${asked}`
+              : `A tool server naming no pane was refused: ${why} ${asked}`
+      );
     }
-    if (session && !this.lostTold.has(key)) {
-      this.lostTold.add(key);
+    if (current && session && !this.lostTold.has(file!)) {
+      this.lostTold.add(file!);
       try {
         this.hooks.onToolsLost?.({ session, why });
       } catch (err) {

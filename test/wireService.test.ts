@@ -241,6 +241,13 @@ describe("kept entries", () => {
     expect(refusal(service.add("a", "old", "handoff"))).toMatch(/cycle of handoffs/);
     expect(made(service.add("a", "c", "handoff")).id).toBeTruthy();
   });
+  it("count as there already when a removed wire would come back beside one", () => {
+    const { service, store } = setup({ wires: KEPT });
+    // put there past the rules, as a book from before them could hold it
+    store.editWires((book) => ({ book: { ...book, links: { ...book.links, live: newWire("b", "a", "feedback", 1) } } }));
+    service.remove("live");
+    expect(refusal(service.restore("live"))).toMatch(/feedback wire already/);
+  });
   it("never give their key to a new wire", () => {
     const ids = ["odd", "junk", "fresh"];
     const { service, file } = setup({ wires: KEPT, newId: () => ids.shift()! });

@@ -50,8 +50,10 @@ export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 
 /**
  * Credentials outside any repository, this install's own team keys and invite tokens, and each running launch's MCP
- * token. A Codex room session's sandbox denies these to the agent's commands; a Claude room session's deny rules
- * (roomSecretReads) cover only Claude's file tools, so its Bash can still read them.
+ * token. Only a Codex room session's sandbox (from CODEX_ROOM_GUARD_SINCE) denies these to the agent's commands. A
+ * Claude room session has no OS sandbox: its deny rules (roomSecretReads) cover Claude's file tools, so its Bash can read
+ * them, a running pane's MCP token included, for as long as that pane runs. Neither covers the MCP servers the agents
+ * start, which read their own token here.
  */
 export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**", "~/.mockingbird/mcp-tokens/**"];
 
