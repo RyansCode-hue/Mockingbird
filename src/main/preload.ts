@@ -1,5 +1,6 @@
 import type { IpcResult, MissingFolder, SessionInfo, UiCommand, WorktreeCleanupMode } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
+import type { WireChange, WireReply, WireSettings, WireState, WireType } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api = {
@@ -283,6 +284,18 @@ const api = {
     const h = (_e: unknown, change: LandscapeChange) => cb(change);
     ipcRenderer.on("landscape:changed", h);
     return () => ipcRenderer.removeListener("landscape:changed", h);
+  },
+  // wires: typed links between workspaces. A change answers { refused } when it wasn't made, saying why
+  wiresGet: (): Promise<IpcResult<WireState>> => ipcRenderer.invoke("wires:get"),
+  wiresAdd: (from: string, to: string, type: WireType, settings?: WireSettings): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:add", from, to, type, settings),
+  wiresSet: (id: string, settings: WireSettings): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:set", id, settings),
+  wiresRemove: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:remove", id),
+  wiresRestore: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:restore", id),
+  wiresRekey: (old: string, next: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:rekey", old, next),
+  onWiresChanged: (cb: (change: WireChange) => void) => {
+    const h = (_e: unknown, change: WireChange) => cb(change);
+    ipcRenderer.on("wires:changed", h);
+    return () => ipcRenderer.removeListener("wires:changed", h);
   },
   onPipelineChanged: (cb: (all: unknown) => void) => {
     const h = (_e: unknown, all: unknown) => cb(all);

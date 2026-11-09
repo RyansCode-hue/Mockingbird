@@ -13,7 +13,7 @@ import type { RoomChatView as ChatView } from "../src/shared/team/chat";
 import type { MigrationsView } from "../src/shared/team/migrations";
 import type { OverlapsFile } from "../src/shared/team/overlaps";
 
-/** A Mockingbird MCP tool call, as an agent in session `from` makes it: through the app's own socket. */
+/** A Mockingbird MCP tool call, as an agent in session `from` makes it: through the app's own socket, with the token its launch was given (FAKE_CLAUDE keeps it). */
 const tool = (a: AppInstance, from: string, op: string, args: Record<string, unknown> = {}) =>
   new Promise<{ result?: string; error?: string }>((resolve, reject) => {
     const c = net.createConnection(path.join(a.home, ".mockingbird", "mb.sock"));
@@ -27,7 +27,7 @@ const tool = (a: AppInstance, from: string, op: string, args: Record<string, unk
       }
     });
     c.on("error", reject);
-    c.end(JSON.stringify({ op, args, from }));
+    c.end(JSON.stringify({ op, args, token: fs.readFileSync(path.join(a.home, "e2e-tokens", from), "utf8") }));
   });
 
 /** An agent's edit (Claude Code's PreToolUse) through an instance's installed hook script: what it answers. */
@@ -73,6 +73,9 @@ const FAKE_CLAUDE = `#!/bin/bash
 conv="e2e-$MOCKINGBIRD_SESSION"
 if [ "$1" = "--resume" ]; then conv="$2"; fi
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code stand-in)"; exit 0; fi
+# takes this launch's token from where its MCP server would, so the test can call tools as this session
+token_file=$(printf '%s' "$*" | sed -n 's/.*"MOCKINGBIRD_TOKEN_FILE":"\\([^"]*\\)".*/\\1/p')
+if [ -n "$token_file" ]; then mkdir -p "$HOME/e2e-tokens" && mv -f "$token_file" "$HOME/e2e-tokens/$MOCKINGBIRD_SESSION"; fi
 echo "fake-claude started: $* (inline=\${CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN:-no})"
 cwd=$(pwd -P)
 dir="$HOME/.claude/projects/$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"

@@ -3,6 +3,7 @@ import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LANDSCAPE_SAVE_MS, LandscapeStore } from "../src/main/landscape";
 import { emptyLandscape, type LandscapeChange } from "../src/shared/landscape";
+import { emptyWireBook } from "../src/shared/wires";
 import { tempDir } from "./helpers";
 
 // reads of a file named here fail with these error codes, one per read, then read it as it is
@@ -20,11 +21,13 @@ vi.mock("fs", async (importOriginal) => {
 const placement = (x: number) => ({ x, y: 0, w: 800, h: 600 });
 const asRoot = process.getuid?.() === 0;
 const SAVED = { ...emptyLandscape(), migratedAt: "2026-11-01T00:00:00.000Z", workspaces: { a: placement(0) } };
+/** The file as this version writes it: the layout, and the wire book beside it. */
+const ON_DISK = { ...SAVED, wires: emptyWireBook() };
 
 function setup() {
   const dir = tempDir("landscape-read");
   const file = path.join(dir, "landscape.json");
-  fs.writeFileSync(file, JSON.stringify(SAVED, null, 2));
+  fs.writeFileSync(file, JSON.stringify(ON_DISK, null, 2));
   const text = fs.readFileSync(file, "utf8");
   const changes: LandscapeChange[] = [];
   const logged: string[] = [];
@@ -86,7 +89,7 @@ describe("a landscape file that can't be read just now", () => {
     // and saving goes on from the file's layout, without the stand-in's changes
     store.update({ workspaces: { c: placement(1800) } });
     vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
-    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ ...SAVED, workspaces: { a: placement(0), c: placement(1800) } });
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ ...ON_DISK, workspaces: { a: placement(0), c: placement(1800) } });
   });
 
   it("drops a patch made against the stand-in that arrives just as the file reads again", () => {

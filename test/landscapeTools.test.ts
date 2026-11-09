@@ -521,7 +521,7 @@ describe("stored tool windows and cards", () => {
   it("from a version 1 file: every placement kept, and no windows or cards", () => {
     const v1 = { v: 1, workspaces: { s1: { x: 8, y: 16, w: 400, h: 300 } }, areas: { a: { x: 0, y: 0, w: 600, h: 400, repos: [] } }, stacks: {}, ghosts: {}, migratedAt: "2026-01-01T00:00:00.000Z" };
     const l = parseLandscape(v1);
-    expect(l).toEqual({ ...v1, v: 2, tools: {}, cards: {} });
+    expect(l).toEqual({ ...v1, v: 3, tools: {}, cards: {} });
     // a version 1 file with a field only version 2 has is wrong, not read
     expect(() => parseLandscape({ ...v1, tools: {} })).toThrow(/tools/);
   });

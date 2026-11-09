@@ -99,6 +99,171 @@ named, differences fixed or listed in as-built notes. Chrome tests are
   (forged `from` refused, `args.from` ignored, a token rotated on relaunch, the
   real `mcp.js` over stdio).
 
+#### W1 as built
+
+**Who's calling.** `src/main/mcpTokens.ts` holds each launch's token as a hash in
+memory, keyed to the identity it stands for. `mcpLaunch(id, tools?)` mints one into
+`~/.mockingbird/mcp-tokens/<random>` (folder 0700, file 0600, `wx`) and puts only
+`MOCKINGBIRD_TOKEN_FILE` in the env. A mint that fails throws ("couldn't give this
+agent its tools"), so the agent doesn't start without its tools. `mcp.js` opens the
+file with `O_NOFOLLOW | O_NONBLOCK`, checks with `fstat` that it's a regular file,
+reads it, unlinks it, and sends `token`, never `from`. `dispatch` takes the identity
+from the token alone. A `collab-` identity goes to `roomHandler` only when its
+token says so, and `args.from` is passed through as an argument, never as identity.
+A request with no live token gets one fixed answer: restart this workspace. That's
+logged at most once a minute, with the op and never the token. A request that isn't
+JSON is answered without echoing what it held.
+
+A token goes with its launch (`retireMcpLaunch`), not after a set time:
+- in `create`: when the spawn fails, when an earlier pty under the same id is
+  replaced, and when its own pty exits (that launch's own, so a dying pty can't
+  retire its replacement's);
+- in `kill`: at once, since the same id may run again before the pty has gone;
+- in a Council turn (`cliTurnRunner`): in its `finally`.
+
+Retiring removes the file if no server read it. `Messaging.start` sweeps what an
+earlier run left (a crash), past the single-instance lock. The quit runs a step,
+"removing unread tool tokens". The mint comes after the take-over and quitting
+checks in `create`, so a refused launch mints nothing.
+
+**The file.** `LANDSCAPE_VERSION` is 3. `wires` is one unchecked field in the
+landscape's format and is never required. `parseLandscape` reads v1 and v2 as v3
+with no wires, and leaves `wires` out of the `Landscape` it returns.
+`LandscapeStore` reads the book apart (`parseWireBook`) and writes it back in the
+same atomic write as the layout (`storedWireBook`). What couldn't be parsed is
+written back exactly as it was read: a bad entry, a bad note, an unknown field in
+the book, a newer `wv`, or a book that isn't one. `editWires` writes at once,
+before the change counts. A write that fails leaves the book as it was and answers
+`{ refused }`. Nothing about a wire waits for the 300 ms debounce. Wire changes move
+`wiresRev` and send `wires:changed`, never `rev` or `landscape:changed`, and layout
+changes do the reverse.
+
+`wires()` answers `book: null` with `refused` in these cases:
+- the file is a stand-in;
+- the store is read-only (newer file, or corrupt and unmovable);
+- the book is newer or isn't one.
+
+`wiresWriteRefusal()` adds a file chmodded read-only (an `access(W_OK)` check). W3
+calls it before sending. `problems` lists entries kept, a v3 file with no book
+("missing"), and wires gone aside with a corrupt file ("aside"), so an empty book
+after a move isn't read as none.
+
+**Main.** `src/main/wires.ts`'s `WireService` checks every change against
+`shared/wires.ts` with the sessions as they are now: running and closed, room by
+`livePanes.roomOfSession`, take-over by `takenOverRefusal(id, "wiring it")`, folder
+by `canonical`.
+- `wires:add` takes settings.
+- `wires:set` takes only `template`, `files`, `when`, `gate` and `limit`
+  (`parseWireSettings` refuses anything else), and writes nothing when nothing
+  changes.
+- `wires:restore` puts back only what `wires:remove` took this run, the last 50,
+  counter and pending included, and only if the rules allow it now.
+- `wires:rekey` moves all or none. It refuses what would duplicate, cycle or pair a
+  second feedback wire, a take-over, a different kind of workspace, or a wire
+  that's sending. A blocked wire moves and stays blocked.
+- `sessions:kill` with forget calls `sessionForgotten`. `wires:changed` names the
+  dropped wires with what was waiting. If the book can't be changed, that's logged
+  and the wires show blocked, their end gone.
+
+`list_links` answers only the caller's wires. When there are none it says so in
+words. It refuses when the book can't be read, adds `incomplete` when part of it
+couldn't be, and says "aren't ready" before the service registers. Claude's
+`--allowedTools` gains it. No tool writes a wire.
+
+**The rules** (`wireRefusal`, `linkRefusal`, `settingsRefusal`, `gateOf`):
+- A teammate's session is refused in both of its id forms, `r~…` (the window's) and
+  `<id>@<member>` (messaging's).
+- Refused at either end: a debrief, or a session taken over.
+- Both ends are in one room, or neither is.
+- A terminal can only be the end of a worktree wire, agent to terminal, in the same
+  canonical folder.
+- One feedback wire per pair, either direction. No duplicate of the same type, and
+  no cycle of handoffs.
+- Automatic only on handoff and feedback, never in a room. `gateOf` turns it to ask
+  once either end is in one.
+
+`gateOf(id, wire, ctx)` takes the wire's id, so rules across wires leave the wire
+itself out. It works out:
+- sending, for `queued`/`pasting`, whatever else holds;
+- blocked: the file, the rules, an end closed with no place, unconfirmed,
+  "needs approve", at the limit with something waiting, or B's hooks silent;
+- ready, idle, and sent/placed.
+
+**Survival table, W1's rows, each tested:**
+- reopened, resumed or restarted: keyed by id, token rotated (`mcpLaunches`, e2e);
+- closed with no place: blocked;
+- Forget: dropped, and the drop announced;
+- Start fresh: `wires:rekey`;
+- area merged or renamed: book untouched;
+- moved in or out of a room: blocked and back;
+- Undo and Tidy: `rev` and `PATCH_RECORDS` untouched;
+- removing a wire: restore with counter;
+- partial write;
+- whole file corrupt: aside, and said;
+- one bad entry;
+- unreadable;
+- read-only.
+
+**Rows that are later slices':**
+- drawing to a ghost, strip listings, stacks: W4a/W6;
+- Send reopening a closed B: W3;
+- the Forget note and the remove note's Undo: the UI slices, from `dropped` and
+  `wires:restore`;
+- the renderer calling `wiresRekey` before Start fresh's `forgetGhosts`
+  (`main.tsx:1101`): the first UI slice. Until then a Start fresh drops the old
+  session's wires, harmless while nothing makes one;
+- `/clear`: W2;
+- branch change, worktree removed: W2/W3/W7.
+
+**Where the plan was off:**
+- `main.tsx:1013` is `Landscape.tsx:1013`.
+- "`v: 2` in 13 test fixtures" was 6 lines in 4 files, plus the format pin and
+  `landscapeStoreRead`'s fixture. The other `v: 2`s are `areaArtifacts`' own format.
+- The W1 file list missed `src/main/sessions.ts` (a pane's launch, and its token's
+  retirement) and `src/main/collab.ts` (Council turns mint their own).
+- W1 adds one tool, not four.
+- A token rotated on relaunch but never retired would leave the old server working
+  beside the new one.
+- `ps eww` shows a same-uid process's environment as well as its argv. Neither holds
+  the token.
+- A chmodded-read-only `landscape.json` never stopped the layout's saves:
+  `writeFileAtomic` renames over it and keeps the mode. Wire changes refuse it; the
+  layout's behaviour is unchanged.
+- A restarted MCP server (`/mcp` reconnect) used to keep working. Now every call
+  says to restart the workspace. That's loud, not silent, but it's the hand check
+  that matters.
+
+**Tests:**
+- `test/wires.test.ts`: the rules, `gateOf`, the tolerant parse, the `WIRE_FORMAT`
+  pin.
+- `test/landscapeStore.test.ts`: the file rows.
+- `test/wireService.test.ts`: `wires:*`, Forget, rekey, `list_links` through the
+  real server.
+- `test/messaging.test.ts`: forged `from`, `args.from`, retirement, the real
+  server's token: read once, links, FIFOs, EACCES, never logged.
+- `test/mcpLaunches.test.ts`: every launch through the real `SessionManager` and
+  `cliTurnRunner`, both CLIs' arguments driving the real script; restart, relaunch,
+  resume, replacement, failed spawn, a refused launch, an unwritable folder,
+  terminals, Council turns side by side.
+- `test/wiresApp.e2e.test.ts` (`MB_E2E_APP=1`): the real app's IPC, Forget, quit
+  and the start's sweep.
+- `teamLiveApp.e2e`'s room tools now go through a token too.
+
+Every fix was reverted in turn (35 of them) and its test failed.
+
+**Checked here:** `ps -ww` shows `--mcp-config`'s value for a same-uid process.
+Node 22.22.3's `net.Socket` offers no peer pid or credentials: `_getpeername` only,
+and no `remoteAddress` on a unix socket.
+
+**Still to check by hand, with real CLIs:**
+- whether Claude or Codex ever starts the stdio server more than once per launch
+  (a health check, a subagent, a crash restart): each later start has no token;
+- `/mcp` reconnect showing the restart message;
+- Codex's room sandbox denying an agent's commands the token folder while its MCP
+  server reads it;
+- Claude room sessions' `Read(~/.mockingbird/mcp-tokens/**)` deny not reaching the
+  server.
+
 ### W2 · Tools and finishing (main, no UI). Size M
 - `src/main/wireTools.ts` (`finish_step`, `read_context`, `read_terminal`, routed
   beside the House's at `messaging.ts:342`), `src/main/wirePrompt.ts` (templates,

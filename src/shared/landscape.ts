@@ -116,7 +116,7 @@ export interface ArtifactCard {
 }
 
 export interface Landscape {
-  v: 2;
+  v: 3;
   /** Set once the grid's layout has been read in. */
   migratedAt?: string;
   tourDone?: boolean;
@@ -141,10 +141,12 @@ export interface Landscape {
  * on its next save.
  *
  * 2 added tool windows and artifact cards (`tools`, `cards`); a version 1 file is read as one with none.
+ * 3 added the wire book (`wires`), kept beside the layout rather than in it (shared/wires.ts); a version 1 or 2 file
+ * is read as one with none.
  */
-export const LANDSCAPE_VERSION = 2;
+export const LANDSCAPE_VERSION = 3;
 
-export const emptyLandscape = (): Landscape => ({ v: 2, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} });
+export const emptyLandscape = (): Landscape => ({ v: LANDSCAPE_VERSION, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} });
 
 // ---- what a session is on the landscape ---------------------------------------------
 
@@ -544,25 +546,25 @@ export class LandscapeShapeError extends Error {
 export const MAX_COORD = 1e7;
 export const MAX_EXTENT = 1e5;
 
-type Check<T> = (v: unknown, where: string) => T;
+export type Check<T> = (v: unknown, where: string) => T;
 /** The fields one part of the stored format has, how each is checked, and which it must have. */
-interface Part {
+export interface Part {
   checks: Record<string, Check<unknown>>;
   required: readonly string[];
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-const fail = (where: string, what: string): never => {
+export const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+export const fail = (where: string, what: string): never => {
   throw new LandscapeShapeError(where, what);
 };
-const num: Check<number> = (v, where) => (typeof v === "number" && Number.isFinite(v) ? v : fail(where, "is not a number"));
+export const num: Check<number> = (v, where) => (typeof v === "number" && Number.isFinite(v) ? v : fail(where, "is not a number"));
 const coord: Check<number> = (v, where) => (Math.abs(num(v, where)) <= MAX_COORD ? (v as number) : fail(where, `is beyond ±${MAX_COORD}`));
 const extent: Check<number> = (v, where) => {
   const n = num(v, where);
   return n <= 0 ? fail(where, "is not above 0") : n > MAX_EXTENT ? fail(where, `is over ${MAX_EXTENT}`) : n;
 };
-const str: Check<string> = (v, where) => (typeof v === "string" ? v : fail(where, "is not a string"));
-const name: Check<string> = (v, where) => (str(v, where) ? (v as string) : fail(where, "is empty"));
+export const str: Check<string> = (v, where) => (typeof v === "string" ? v : fail(where, "is not a string"));
+export const name: Check<string> = (v, where) => (str(v, where) ? (v as string) : fail(where, "is empty"));
 const bool: Check<boolean> = (v, where) => (typeof v === "boolean" ? v : fail(where, "is not true or false"));
 const agentKind: Check<AgentKind> = (v, where) => (v === "claude" || v === "codex" ? v : fail(where, "is not claude or codex"));
 const orNull =
@@ -583,7 +585,7 @@ function record(v: unknown, where: string): Record<string, unknown> {
  * than dropped. An undefined field counts as absent. `where` is its path for
  * its fields' errors ("" at the top), `self` its name in its own.
  */
-function fields<T>(v: unknown, where: string, part: Part, partial = false, self = where): T {
+export function fields<T>(v: unknown, where: string, part: Part, partial = false, self = where): T {
   const at = (k: string) => (where ? `${where}.${k}` : k);
   const o = record(v, self);
   const out: Record<string, unknown> = {};
@@ -595,7 +597,7 @@ function fields<T>(v: unknown, where: string, part: Part, partial = false, self 
   return out as T;
 }
 
-const list =
+export const list =
   <T>(each: Check<T>): Check<T[]> =>
   (v, where) =>
     Array.isArray(v) ? v.map((x, i) => each(x, `${where}[${i}]`)) : fail(where, "is not a list");
@@ -723,14 +725,25 @@ const V1_CHECKS = {
 };
 /** Version 1's landscape: what a file written before tool windows holds, and nothing more. */
 const LANDSCAPE_V1: Part = { checks: V1_CHECKS, required: ["v", "workspaces", "areas", "stacks", "ghosts"] };
+const V2_CHECKS = {
+  ...V1_CHECKS,
+  v: version(2),
+  tools: (v: unknown, where: string) => entries(v, where, toolWindow),
+  cards: (v: unknown, where: string) => entries(v, where, card),
+};
+/** Version 2's landscape: what a file written before wires holds, and nothing more. */
+const LANDSCAPE_V2: Part = { checks: V2_CHECKS, required: [...LANDSCAPE_V1.required, "tools", "cards"] };
+/**
+ * `wires` is one field here, whatever it holds: its inside is shared/wires.ts's to read, entry by entry, so nothing in
+ * it can get the layout moved aside as a file that isn't a landscape. It isn't required for the same reason.
+ */
 const LANDSCAPE: Part = {
   checks: {
-    ...V1_CHECKS,
+    ...V2_CHECKS,
     v: version(LANDSCAPE_VERSION),
-    tools: (v, where) => entries(v, where, toolWindow),
-    cards: (v, where) => entries(v, where, card),
-  } satisfies Record<keyof Landscape, Check<unknown>>,
-  required: [...LANDSCAPE_V1.required, "tools", "cards"],
+    wires: (v) => v,
+  } satisfies Record<keyof Landscape | "wires", Check<unknown>>,
+  required: LANDSCAPE_V2.required,
 };
 
 /**
@@ -746,16 +759,21 @@ export const LANDSCAPE_FORMAT: Record<string, { fields: string[]; required: stri
 );
 
 /**
- * A landscape read from disk, checked whole: throws LandscapeShapeError naming the first field that's wrong. A
- * version 1 file is checked as version 1 (a field only a later version has makes it wrong) and read as this version's
- * with no tool windows or cards: every placement it holds is kept as it is.
+ * A landscape read from disk, checked whole: throws LandscapeShapeError naming the first field that's wrong. A file of
+ * an earlier version is checked as that version (a field only a later one has makes it wrong) and read as this
+ * version's with what that version didn't have empty: every placement it holds is kept as it is. The wire book stays
+ * out of what this returns: the store reads it apart (parseWireBook), since a wire isn't layout and a change to one
+ * mustn't look like a change to the layout.
  */
 export function parseLandscape(v: unknown): Landscape {
-  if (versionOf(v) === 1) {
+  const stored = versionOf(v);
+  if (stored === 1) {
     const old = fields<Omit<Landscape, "v" | "tools" | "cards">>(v, "", LANDSCAPE_V1, false, "the landscape");
     return { ...old, v: LANDSCAPE_VERSION, tools: {}, cards: {} };
   }
-  return fields(v, "", LANDSCAPE, false, "the landscape");
+  if (stored === 2) return { ...fields<Omit<Landscape, "v">>(v, "", LANDSCAPE_V2, false, "the landscape"), v: LANDSCAPE_VERSION };
+  const { wires: _book, ...layout } = fields<Landscape & { wires?: unknown }>(v, "", LANDSCAPE, false, "the landscape");
+  return layout;
 }
 
 // ---- patches ----------------------------------------------------------------------------

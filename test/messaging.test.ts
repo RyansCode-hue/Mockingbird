@@ -3,10 +3,12 @@ import * as fs from "fs";
 import * as net from "net";
 import * as os from "os";
 import * as path from "path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Messaging, mcpLaunch } from "../src/main/messaging";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
+import { claudeMcpConfig, codexMcpSettings } from "../src/main/agents";
 import type { SessionInfo } from "../src/shared/types";
 import { HOUSE_READ_TOOLS, HOUSE_TOOL_NAMES, HOUSE_WRITE_TOOLS } from "../src/shared/team/house";
+import { askAs, askRaw, startServer, tokenFor } from "./mcpClient";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, title: id, ticketTitle: null, repoPath: `/code/${id}`, branch: `${id}-branch`, taskGroup: "5038/api", status: "idle", agent: "claude", cwd: `/w/${id}`, kind: "work", ...over }) as SessionInfo;
@@ -25,20 +27,10 @@ const logged: any[] = [];
 const askedFor: string[] = [];
 let submit = true;
 let relay: Messaging;
-const launch = mcpLaunch("front");
-const sock = launch.env.MOCKINGBIRD_SOCK;
+const sock = mcpLaunch("front").env.MOCKINGBIRD_SOCK;
 
-/** One request over the socket, the way the MCP server sends it. */
-function ask(req: object): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const c = net.createConnection(sock);
-    let buf = "";
-    c.on("data", (d) => (buf += d));
-    c.on("end", () => resolve(JSON.parse(buf)));
-    c.on("error", reject);
-    c.end(JSON.stringify(req));
-  });
-}
+/** One request over the socket, the way the MCP server sends it for session `from`. */
+const ask = (req: { op: string; from: string; args?: Record<string, unknown> }): Promise<any> => askAs(sock, req);
 
 beforeAll(async () => {
   const fakeSessions = {
@@ -135,6 +127,7 @@ describe("room requests", () => {
 
 describe("MCP server script", () => {
   it("speaks JSON-RPC over stdio and relays tool calls", async () => {
+    const launch = mcpLaunch("front");
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env } });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
@@ -154,6 +147,7 @@ describe("MCP server script", () => {
     expect(byId[2].result.tools.map((t: any) => t.name)).toEqual([
       "list_sessions",
       "send_message",
+      "list_links",
       ...HOUSE_TOOL_NAMES,
       "list_room_artifacts",
       "read_room_artifact",
@@ -180,7 +174,8 @@ describe("MCP server script", () => {
     expect(byId[7].result).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/team rooms aren't running/) }] });
   });
   it("offers a room model only the ask_code_reader tool", async () => {
-    const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SESSION: "collab-r1.fable" } });
+    const launch = mcpLaunch("collab-r1.fable");
+    const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env } });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
     p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
@@ -190,7 +185,8 @@ describe("MCP server script", () => {
   });
   it("offers a room model the tools its launch names", async () => {
     const list = async (tools: string) => {
-      const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SESSION: "collab-r1.opus", MOCKINGBIRD_TOOLS: tools } });
+      const launch = mcpLaunch("collab-r1.opus", tools.split(","));
+      const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env } });
       let out = "";
       p.stdout.on("data", (d) => (out += d));
       p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
@@ -210,6 +206,7 @@ describe("MCP server script", () => {
         const server = net.createServer({ allowHalfOpen: true }, (c) => c.on("data", () => {}).on("end", () => c.end(JSON.stringify({ result: `app run ${n}` }))));
         server.listen(appSock, () => resolve(server));
       });
+    const launch = mcpLaunch("front");
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SOCK: appSock } });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
@@ -235,6 +232,7 @@ describe("MCP server script", () => {
     }
   });
   it("explains itself when the app isn't running", async () => {
+    const launch = mcpLaunch("front");
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SOCK: "/tmp/mb-no-such.sock" } });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
@@ -242,5 +240,249 @@ describe("MCP server script", () => {
     await new Promise((r) => setTimeout(r, 800));
     p.kill();
     expect(JSON.parse(out.trim()).result.content[0].text).toMatch(/Mockingbird is not reachable/);
+  });
+});
+
+describe("who's calling", () => {
+  const NO_ANSWER = /has no valid token.*Restart this workspace/;
+  afterEach(() => {
+    vi.restoreAllMocks();
+    relay.setRoomHandler(async () => ({ error: "no room handler in this test" }));
+  });
+
+  it("gives no answer to a request without a token, whoever its `from` says it is", async () => {
+    const sent = delivered.length;
+    for (const req of [
+      { op: "list_sessions", from: "front" },
+      { op: "send_message", from: "front", args: { to: "back", message: "as front" } },
+      { op: "list_links", from: "front" },
+      { op: "claim_house_ticket", from: "front", args: { n: 1 } },
+      { op: "read_room_artifact", from: "front", args: { id: "x" } },
+    ]) {
+      expect((await askRaw(sock, JSON.stringify(req))).error, req.op).toMatch(NO_ANSWER);
+    }
+    expect(delivered.length).toBe(sent);
+  });
+
+  it("gives no answer to a token it doesn't know, or to one that isn't a string", async () => {
+    for (const token of ["f".repeat(64), "", 7, null, { a: 1 }, ["x"]]) {
+      expect((await askRaw(sock, JSON.stringify({ op: "list_sessions", token, from: "front" }))).error, JSON.stringify(token)).toMatch(NO_ANSWER);
+    }
+  });
+
+  it("never reaches a room's handler from a forged collab tag", async () => {
+    const handler = vi.fn(async () => ({ result: "answered" }));
+    relay.setRoomHandler(handler);
+    expect((await askRaw(sock, JSON.stringify({ op: "approve_permission", from: "collab-r1.fable", args: { tool_name: "Bash", input: {} } }))).error).toMatch(NO_ANSWER);
+    expect(handler).not.toHaveBeenCalled();
+    // a session's own token can't be turned into a room model's by naming one
+    expect((await askRaw(sock, JSON.stringify({ op: "ask_code_reader", from: "collab-r1.fable", token: tokenFor("front"), args: { question: "q" } }))).error).toMatch(/Unknown tool/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("takes a room model's seat from its token, not from what it says", async () => {
+    const handler = vi.fn(async () => ({ result: "answered" }));
+    relay.setRoomHandler(handler);
+    await askRaw(sock, JSON.stringify({ op: "ask_code_reader", from: "collab-other.seat", token: tokenFor("collab-r1.fable"), args: { question: "q", from: "collab-other.seat" } }));
+    expect(handler).toHaveBeenCalledWith("r1", "fable", "ask_code_reader", { question: "q", from: "collab-other.seat" });
+  });
+
+  it("goes by the token when `from` names someone else: the send is labelled and logged as the token's session", async () => {
+    const r = await askRaw(sock, JSON.stringify({ op: "send_message", from: "other", token: tokenFor("front"), args: { to: "back", message: "whose?" } }));
+    expect(r.result).toMatch(/^Delivered to "back"/);
+    expect(delivered.at(-1)!.text).toMatch(/^\[Message from Mockingbird session "Filter orgs" \(id front,/);
+    expect(logged.at(-1)).toMatchObject({ from: "front", to: "back" });
+    expect((await askRaw(sock, JSON.stringify({ op: "list_sessions", from: "other", token: tokenFor("front") }))).result.you.id).toBe("front");
+  });
+
+  it("ignores a `from` in a tool's arguments", async () => {
+    const r = await ask({ op: "send_message", from: "front", args: { from: "other", to: "back", message: "args" } });
+    expect(r.result).toMatch(/^Delivered/);
+    expect(delivered.at(-1)!.text).toMatch(/^\[Message from Mockingbird session "Filter orgs" \(id front,/);
+    expect(logged.at(-1)).toMatchObject({ from: "front" });
+    expect((await ask({ op: "list_sessions", from: "front", args: { from: "other" } })).result.you.id).toBe("front");
+  });
+
+  it("stops answering a launch's token once it's retired, and leaves no file behind", async () => {
+    const launch = mcpLaunch("front");
+    const file = launch.env.MOCKINGBIRD_TOKEN_FILE;
+    const token = fs.readFileSync(file, "utf8");
+    expect((await askRaw(sock, JSON.stringify({ op: "list_sessions", token }))).result.you.id).toBe("front");
+    retireMcpLaunch(launch);
+    expect(fs.existsSync(file)).toBe(false);
+    expect((await askRaw(sock, JSON.stringify({ op: "list_sessions", token }))).error).toMatch(NO_ANSWER);
+    retireMcpLaunch(launch); // twice is fine: a kill and its pty's exit both do it
+  });
+
+  it("keeps another launch of the same session working when one is retired", async () => {
+    const one = mcpLaunch("front");
+    const two = mcpLaunch("front");
+    const token = fs.readFileSync(two.env.MOCKINGBIRD_TOKEN_FILE, "utf8");
+    retireMcpLaunch(one);
+    expect((await askRaw(sock, JSON.stringify({ op: "list_sessions", token }))).result.you.id).toBe("front");
+    retireMcpLaunch(two);
+  });
+
+  it("refuses what isn't a JSON object, and never says back what it was sent", async () => {
+    // JSON.parse's own message quotes the first few characters of what it was given
+    const SECRET = "0123456789abcdef".repeat(4);
+    for (const body of [`{"op":"list_sessions","token":"${SECRET}"`, `x${SECRET}`, `"${SECRET}`, "null", "[]", "5", ""]) {
+      const r = await askRaw(sock, body);
+      expect(r.error, body).toMatch(/^Bad request/);
+      expect(JSON.stringify(r), body).not.toContain(SECRET.slice(0, 6));
+    }
+  });
+
+  it("logs a refusal without the token, and not on every request", async () => {
+    const SECRET = "d".repeat(64);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    (relay as any).lastNoToken = 0;
+    for (let i = 0; i < 3; i++) await askRaw(sock, JSON.stringify({ op: "list_sessions", token: SECRET }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/refused a request with no valid token \("list_sessions"\)/);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET);
+  });
+
+  it("carries only a path to the token in a launch, which is what ends up in an agent's argv", () => {
+    const launch = mcpLaunch("front");
+    const file = launch.env.MOCKINGBIRD_TOKEN_FILE;
+    const token = fs.readFileSync(file, "utf8");
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(path.dirname(file)).toBe(path.join(os.homedir(), ".mockingbird", "mcp-tokens"));
+    expect(path.basename(file)).not.toContain(token);
+    expect(JSON.stringify(launch)).not.toContain(token);
+    expect(claudeMcpConfig(launch)).toContain(file);
+    expect(claudeMcpConfig(launch)).not.toContain(token);
+    expect(codexMcpSettings(launch).join(" ")).toContain(file);
+    expect(codexMcpSettings(launch).join(" ")).not.toContain(token);
+    retireMcpLaunch(launch);
+  });
+
+  it("keeps tokens in an owner-only folder, each owner-only", () => {
+    const dir = path.join(os.homedir(), ".mockingbird", "mcp-tokens");
+    fs.chmodSync(dir, 0o755); // a folder from before, or a looser umask
+    const launch = mcpLaunch("front");
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(launch.env.MOCKINGBIRD_TOKEN_FILE).mode & 0o777).toBe(0o600);
+    retireMcpLaunch(launch);
+  });
+});
+
+describe("the real MCP server's token", () => {
+  const asRoot = process.getuid?.() === 0;
+
+  it("is read once at its start and its file removed, and every call goes as that launch's session", async () => {
+    const launch = mcpLaunch("back");
+    const file = launch.env.MOCKINGBIRD_TOKEN_FILE;
+    const token = fs.readFileSync(file, "utf8");
+    const server = startServer(launch);
+    try {
+      await server.request("initialize", { protocolVersion: "2025-06-18" });
+      expect(fs.existsSync(file)).toBe(false);
+      expect(JSON.parse((await server.call("list_sessions")).content[0].text).you.id).toBe("back");
+      const sent = await server.call("send_message", { to: "front", message: "from the real server", from: "other" });
+      expect(sent.isError).toBe(false);
+      expect(delivered.at(-1)!.text).toMatch(/\(id back, codex/);
+      expect(server.stderr()).not.toContain(token);
+    } finally {
+      await server.stop();
+      retireMcpLaunch(launch);
+    }
+  });
+
+  it("isn't there for a server started a second time from the same launch: its tools are listed and each call says to restart", async () => {
+    const launch = mcpLaunch("front");
+    const first = startServer(launch);
+    await first.request("initialize", { protocolVersion: "2025-06-18" });
+    await first.stop();
+    const again = startServer(launch);
+    try {
+      expect((await again.request("tools/list")).result.tools.map((t: any) => t.name)).toContain("send_message");
+      const r = await again.call("list_sessions");
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toMatch(/has no valid token.*Restart this workspace/);
+    } finally {
+      await again.stop();
+      retireMcpLaunch(launch);
+    }
+  });
+
+  it("stops working for a server from before a relaunch, which is told to restart", async () => {
+    const launch = mcpLaunch("front");
+    const server = startServer(launch);
+    try {
+      expect((await server.call("list_sessions")).isError).toBe(false);
+      retireMcpLaunch(launch);
+      const r = await server.call("list_sessions");
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toMatch(/Restart this workspace/);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("can't be read from a file that isn't one: a link isn't followed, a pipe doesn't hang it, and the reason is given", async () => {
+    const launch = mcpLaunch("front");
+    const file = launch.env.MOCKINGBIRD_TOKEN_FILE;
+    const real = `${file}.real`;
+    fs.renameSync(file, real);
+    fs.symlinkSync(real, file);
+    const linked = startServer(launch);
+    try {
+      const r = await linked.call("list_sessions");
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toMatch(/couldn't be read: (ELOOP|EMLINK)/);
+      expect(fs.existsSync(real)).toBe(true);
+    } finally {
+      await linked.stop();
+    }
+    fs.rmSync(file);
+    fs.rmSync(real);
+    const fifo = spawn("/usr/bin/mkfifo", [file]);
+    await new Promise((res) => fifo.on("exit", res));
+    const piped = startServer(launch);
+    try {
+      expect((await piped.call("list_sessions")).content[0].text).toMatch(/couldn't be read: ENOTFILE/);
+    } finally {
+      await piped.stop();
+      retireMcpLaunch(launch);
+    }
+  });
+
+  it.skipIf(asRoot)("says it couldn't read a token file it isn't allowed to, as a sandbox would have it", async () => {
+    const launch = mcpLaunch("front");
+    const file = launch.env.MOCKINGBIRD_TOKEN_FILE;
+    fs.chmodSync(file, 0o000);
+    const server = startServer(launch);
+    try {
+      const r = await server.call("list_sessions");
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toMatch(/couldn't be read: EACCES/);
+      expect(server.stderr()).toMatch(/couldn't read its token file \(EACCES\)/);
+    } finally {
+      await server.stop();
+      retireMcpLaunch(launch);
+    }
+  });
+
+  it("is never in what the app logs or the message log", async () => {
+    const said: string[] = [];
+    for (const level of ["log", "warn", "error", "info"] as const) vi.spyOn(console, level).mockImplementation((...a: unknown[]) => void said.push(JSON.stringify(a)));
+    const launch = mcpLaunch("other");
+    const token = fs.readFileSync(launch.env.MOCKINGBIRD_TOKEN_FILE, "utf8");
+    const server = startServer(launch);
+    try {
+      await server.call("send_message", { to: "back", message: "logged" });
+      await server.call("send_message", { to: "nope", message: "refused" });
+      await server.call("nonsense");
+      await askRaw(sock, `{"op":"list_sessions","token":"${token}"`);
+      expect(said.join("\n")).not.toContain(token);
+      expect(JSON.stringify(logged)).not.toContain(token);
+      expect(JSON.stringify(delivered)).not.toContain(token);
+    } finally {
+      await server.stop();
+      retireMcpLaunch(launch);
+      vi.restoreAllMocks();
+    }
   });
 });

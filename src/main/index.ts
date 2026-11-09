@@ -22,7 +22,7 @@ import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, res
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
-import { Messaging } from "./messaging";
+import { Messaging, removeUnreadMcpTokens } from "./messaging";
 import { setupStatus } from "./setup";
 import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
 import { CouncilTickets } from "./collabTickets";
@@ -32,6 +32,7 @@ import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, reorderWorkItem, adoRequest, setWorkItemTags, projectTags } from "./ado";
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
+import { WireService } from "./wires";
 import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
@@ -134,7 +135,7 @@ const appWindow = (): BrowserWindow | null => (mainWindow && !mainWindow.isDestr
 const toWindow = (channel: string, ...args: unknown[]) => appWindow()?.webContents.send(channel, ...args);
 
 // the landscape (docs/landscape.md): where workspaces and areas sit
-const landscape = new LandscapeStore({ file: path.join(MB_DIR, "landscape.json"), emit: (change) => toWindow("landscape:changed", change), log: logError });
+const landscape = new LandscapeStore({ file: path.join(MB_DIR, "landscape.json"), emit: (change) => toWindow("landscape:changed", change), emitWires: (change) => toWindow("wires:changed", change), log: logError });
 
 // Team rooms (docs/team-rooms.md): identity, rooms and the WebRTC transport
 configureWebRtc(app);
@@ -642,6 +643,7 @@ app.whenReady().then(() => {
   );
   messaging.start();
   messaging.setRoomHandler((roomId, seat, op, args) => collab.handleRoomRequest(roomId, seat, op, args));
+  messaging.setWires(wires);
   // team rooms: team chat
   teamRoom.start(team.transport, messaging);
   const beforeTeamRoom = sessions.onChanged;
@@ -714,6 +716,7 @@ const quit = new QuitSequence({
   steps: [
     { name: "saving scrollback", run: () => sessions.saveScrollback(true) },
     { name: "saving the landscape", run: () => landscape.flush() },
+    { name: "removing unread tool tokens", run: () => removeUnreadMcpTokens() },
     { name: "stopping team rooms", run: () => stopTeam() },
     { name: "stopping phone alerts", run: () => phone?.stop() },
     // whatever debug session outlasted the services' bounded stop: its adapter's process group ends now
@@ -775,6 +778,7 @@ handle("sessions:kill", (id, forget) => {
     dropSnapshots(at, s.id).catch((err) => logError(`drop snapshots ${id}`, err));
   }
   if (forget) void takeover?.sessionForgotten(String(id)); // team rooms: take-over — its room backup goes too (failures shown in the sidebar)
+  if (forget) wires.sessionForgotten(String(id));
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
@@ -1345,6 +1349,21 @@ handle("ado:comment:add", (id, text) => addComment(store, id, text));
 // ---- the landscape: patches from a window, merged and sent on to every window ----
 handle("landscape:get", () => landscape.get());
 handle("landscape:update", (patch) => landscape.update(patch));
+
+// ---- wires: typed links between workspaces, kept beside the layout (docs/landscape-wires.md) ----
+const wires = new WireService({
+  store: landscape,
+  sessions,
+  roomOf: (id) => livePanes.roomOfSession(id),
+  takenOver: (id) => takeover?.takenOverRefusal(id, "wiring it") ?? null,
+  log: logError,
+});
+handle("wires:get", () => wires.get());
+handle("wires:add", (from, to, type, settings) => wires.add(from, to, type, settings));
+handle("wires:set", (id, settings) => wires.set(id, settings));
+handle("wires:remove", (id) => wires.remove(id));
+handle("wires:restore", (id) => wires.restore(id));
+handle("wires:rekey", (old, next) => wires.rekey(old, next));
 
 // ---- ticket pipeline: each ticket's stage, PRs, feedback and drafted comments ----
 const pipeline = new PipelineStore(path.join(MB_DIR, "pipeline.json"));

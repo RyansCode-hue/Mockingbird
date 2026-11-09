@@ -48,8 +48,8 @@ export function isSecretFileName(name: string): boolean {
  */
 export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 
-/** Credentials outside any repository, and this install's own team keys and invite tokens. */
-export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**"];
+/** Credentials outside any repository, this install's own team keys and invite tokens, and each launch's MCP token until its server reads it. */
+export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**", "~/.mockingbird/mcp-tokens/**"];
 
 /**
  * Personal data in home: Messages' history and attachments, and Mail's store

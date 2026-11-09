@@ -1,0 +1,501 @@
+import { LandscapeShapeError, fail, fields, isObj, list, name, num, own, put, str, type Check, type Part } from "./landscape";
+import { isRemotePaneId, parseRemoteId } from "./team/livePanes";
+import { TICKET_STAGES, type TicketStage } from "./types";
+
+/**
+ * Typed links between workspaces (docs/landscape.md, Connections; docs/landscape-wires.md). The wire book is stored in
+ * landscape.json beside the layout, and read apart from it: `wv` versions its inside, so a later wire type or field
+ * never needs LANDSCAPE_VERSION raised. An older build keeps what it can't parse verbatim and acts on none of it.
+ */
+
+/** The book's own format. A change an older build must not misread raises this; an older build leaves a newer book as it is. */
+export const WIRE_VERSION = 1;
+
+export const WIRE_TYPES = ["handoff", "context", "feedback", "worktree"] as const;
+export type WireType = (typeof WIRE_TYPES)[number];
+export const WIRE_WHENS = ["finished", "manual"] as const;
+export type WireWhen = (typeof WIRE_WHENS)[number];
+export const WIRE_GATES = ["ask", "automatic"] as const;
+export type WireGate = (typeof WIRE_GATES)[number];
+export const WIRE_VERDICTS = ["approve", "changes"] as const;
+export type WireVerdict = (typeof WIRE_VERDICTS)[number];
+export const DELIVERY_STATES = ["queued", "pasting", "sent", "placed", "unconfirmed", "failed"] as const;
+export type DeliveryState = (typeof DELIVERY_STATES)[number];
+
+/** A feedback wire's rounds until a person says otherwise. */
+export const DEFAULT_ROUNDS = 3;
+
+export interface WireRounds {
+  limit: number;
+  used: number;
+}
+/** What's waiting at a gate. */
+export interface WirePending {
+  id: string;
+  body: string;
+  at: number;
+  verdict?: WireVerdict;
+  flags: string[];
+}
+/** What became of the pending with the same id. */
+export interface WireDelivery {
+  id: string;
+  state: DeliveryState;
+  at: number;
+  why?: string;
+}
+export interface Wire {
+  /** Session ids, never a teammate's. A worktree wire runs from an agent to a terminal. */
+  from: string;
+  to: string;
+  type: WireType;
+  /** All of What flows: "{summary}", "{diff}", or a prompt. */
+  template?: string;
+  /** What {files} reads, set by a person, relative to `from`'s folder. */
+  files?: string[];
+  when: WireWhen;
+  gate: WireGate;
+  /** Feedback wires only, and every feedback wire. */
+  rounds?: WireRounds;
+  pending?: WirePending;
+  delivery?: WireDelivery;
+  createdAt: number;
+}
+export interface SourceNote {
+  summary?: { text: string; at: number; conversation?: string };
+  verdict?: WireVerdict;
+  /** Automatic sends in a row reaching this session. */
+  hops: number;
+  stage?: TicketStage;
+}
+export interface WireBook {
+  wv: typeof WIRE_VERSION;
+  /** By wire id. */
+  links: Record<string, Wire>;
+  /** By session id. */
+  notes: Record<string, SourceNote>;
+}
+
+export const emptyWireBook = (): WireBook => ({ wv: WIRE_VERSION, links: {}, notes: {} });
+
+// ---- reading the stored book ------------------------------------------------------------
+
+const oneOf =
+  <T extends string>(allowed: readonly T[]): Check<T> =>
+  (v, where) =>
+    allowed.includes(v as T) ? (v as T) : fail(where, `is not one of ${allowed.join(", ")}`);
+const whole =
+  (min: number): Check<number> =>
+  (v, where) => {
+    const n = num(v, where);
+    return Number.isInteger(n) && n >= min ? n : fail(where, `is not a whole number of at least ${min}`);
+  };
+
+const ROUNDS: Part = { checks: { limit: whole(1), used: whole(0) } satisfies Record<keyof WireRounds, Check<unknown>>, required: ["limit", "used"] };
+const PENDING: Part = {
+  checks: { id: name, body: str, at: num, verdict: oneOf(WIRE_VERDICTS), flags: list(str) } satisfies Record<keyof WirePending, Check<unknown>>,
+  required: ["id", "body", "at", "flags"],
+};
+const DELIVERY: Part = {
+  checks: { id: name, state: oneOf(DELIVERY_STATES), at: num, why: str } satisfies Record<keyof WireDelivery, Check<unknown>>,
+  required: ["id", "state", "at"],
+};
+const WIRE: Part = {
+  checks: {
+    from: name,
+    to: name,
+    type: oneOf(WIRE_TYPES),
+    template: str,
+    files: list(name),
+    when: oneOf(WIRE_WHENS),
+    gate: oneOf(WIRE_GATES),
+    rounds: (v, where) => fields(v, where, ROUNDS),
+    pending: (v, where) => fields(v, where, PENDING),
+    delivery: (v, where) => fields(v, where, DELIVERY),
+    createdAt: num,
+  } satisfies Record<keyof Wire, Check<unknown>>,
+  required: ["from", "to", "type", "when", "gate", "createdAt"],
+};
+const SUMMARY: Part = {
+  checks: { text: str, at: num, conversation: name } satisfies Record<keyof NonNullable<SourceNote["summary"]>, Check<unknown>>,
+  required: ["text", "at"],
+};
+const NOTE: Part = {
+  checks: {
+    summary: (v, where) => fields(v, where, SUMMARY),
+    verdict: oneOf(WIRE_VERDICTS),
+    hops: whole(0),
+    stage: oneOf(TICKET_STAGES.map((s) => s.id)),
+  } satisfies Record<keyof SourceNote, Check<unknown>>,
+  required: ["hops"],
+};
+/** The book's own fields, for the pin. Its links and notes are read entry by entry, so one bad entry costs only itself. */
+const BOOK: Part = { checks: { wv: whole(1), links: (v) => v, notes: (v) => v } satisfies Record<keyof WireBook, Check<unknown>>, required: ["wv", "links", "notes"] };
+
+/**
+ * The stored book as this version checks it. A test pins it under WIRE_VERSION, so the format can't change without
+ * the version being raised, or the change being one an older build keeps as an entry it can't parse.
+ */
+export const WIRE_FORMAT: Record<string, { fields: string[]; required: string[] }> = Object.fromEntries(
+  Object.entries({ book: BOOK, wire: WIRE, rounds: ROUNDS, pending: PENDING, delivery: DELIVERY, note: NOTE, summary: SUMMARY }).map(([k, p]) => [
+    k,
+    { fields: Object.keys(p.checks).sort(), required: [...p.required].sort() },
+  ])
+);
+
+const wire: Check<Wire> = (v, where) => {
+  const w = fields<Wire>(v, where, WIRE);
+  if (w.from === w.to) fail(where, "runs from a session to itself");
+  if (w.type === "feedback" && !w.rounds) fail(`${where}.rounds`, "is missing");
+  if (w.type !== "feedback" && w.rounds) fail(where, "has rounds, which only a feedback wire counts");
+  return w;
+};
+const note: Check<SourceNote> = (v, where) => fields(v, where, NOTE);
+
+/**
+ * What's wrong with the wire book, for a banner:
+ * - entry, note, field: one part of it can't be parsed here; that part is kept verbatim and does nothing;
+ * - book, newer: none of it can be used; all of it is kept verbatim;
+ * - missing: a file of this version with no book at all, read as an empty one;
+ * - aside: the file wasn't a landscape and was moved aside, wires with it.
+ */
+export interface WireProblem {
+  kind: "entry" | "note" | "field" | "book" | "newer" | "missing" | "aside";
+  message: string;
+  /** The wire, session or field an entry problem is about. */
+  id?: string;
+}
+
+/** What's kept verbatim from a book this version can otherwise read. */
+export interface KeptEntries {
+  links: Record<string, unknown>;
+  notes: Record<string, unknown>;
+  fields: Record<string, unknown>;
+}
+export type WireBookRead =
+  | { status: "ok"; book: WireBook; kept: KeptEntries; problems: WireProblem[] }
+  | { status: "newer" | "bad"; raw: unknown; problems: WireProblem[] };
+
+export const freshWireRead = (book: WireBook = emptyWireBook()): WireBookRead => ({ status: "ok", book, kept: { links: {}, notes: {}, fields: {} }, problems: [] });
+
+/**
+ * A stored book, tolerantly. An entry that can't be parsed is kept verbatim, does nothing and is reported, and what
+ * else the book holds still works. A book that isn't one, or a newer one, is kept whole and can't be used: the
+ * refusal says why, so it's never read as "no wires". Nothing here can throw for what the file holds, so nothing in the
+ * book can get the layout beside it moved aside. Absent (a file from before wires) is an empty book.
+ */
+export function parseWireBook(raw: unknown): WireBookRead {
+  if (raw === undefined) return freshWireRead();
+  const bad = (why: string): WireBookRead => ({
+    status: "bad",
+    raw,
+    problems: [{ kind: "book", message: `The wires in landscape.json can't be read by this Mockingbird (${why}). They're left as they are, and do nothing.` }],
+  });
+  if (!isObj(raw)) return bad("they aren't an object");
+  const wv = raw.wv;
+  if (typeof wv !== "number" || !Number.isInteger(wv) || wv < 1) return bad(`their wv is ${JSON.stringify(wv)}`);
+  if (wv > WIRE_VERSION) {
+    return {
+      status: "newer",
+      raw,
+      problems: [{ kind: "newer", message: `The wires in landscape.json were written by a newer Mockingbird (wire format ${wv}). They're left as they are, and do nothing until this Mockingbird is updated.` }],
+    };
+  }
+  if (!isObj(raw.links)) return bad("links isn't an object");
+  if (!isObj(raw.notes)) return bad("notes isn't an object");
+  const read = freshWireRead() as Extract<WireBookRead, { status: "ok" }>;
+  const each = <T,>(from: Record<string, unknown>, check: Check<T>, where: string, into: Record<string, T>, kept: Record<string, unknown>, problem: (id: string, why: string) => WireProblem) => {
+    for (const [id, entry] of Object.entries(from)) {
+      try {
+        if (!id) fail(where, "has an empty key");
+        put(into, id, check(entry, `${where}[${JSON.stringify(id)}]`));
+      } catch (err) {
+        if (!(err instanceof LandscapeShapeError)) throw err;
+        put(kept, id, entry);
+        read.problems.push(problem(id, err.message));
+      }
+    }
+  };
+  each(raw.links, wire, "links", read.book.links, read.kept.links, (id, why) => ({ kind: "entry", id, message: `Wire ${JSON.stringify(id)} in landscape.json can't be read by this Mockingbird (${why}). It's kept as it is, and does nothing.` }));
+  each(raw.notes, note, "notes", read.book.notes, read.kept.notes, (id, why) => ({ kind: "note", id, message: `A wire note in landscape.json can't be read by this Mockingbird (${why}). It's kept as it is, and does nothing.` }));
+  for (const [k, v] of Object.entries(raw)) {
+    if (Object.hasOwn(BOOK.checks, k)) continue;
+    put(read.kept.fields, k, v);
+    read.problems.push({ kind: "field", id: k, message: `The wires in landscape.json have a field this Mockingbird doesn't know (${k}). It's kept as it is, and does nothing.` });
+  }
+  return read;
+}
+
+/** The book as it goes back in the file: what couldn't be parsed exactly as it was read. */
+export function storedWireBook(r: WireBookRead): unknown {
+  if (r.status !== "ok") return r.raw;
+  return { ...r.kept.fields, wv: r.book.wv, links: { ...r.book.links, ...r.kept.links }, notes: { ...r.book.notes, ...r.kept.notes } };
+}
+
+// ---- what a window and the tools are told ------------------------------------------------
+
+/**
+ * `wires:get`'s answer. `book` is what can be used, without what couldn't be parsed. When none of it can be used it's
+ * null and `refused` says why: there's no way to read that as "no wires". `wiresRev` counts the book's changes since
+ * the app started, apart from the layout's `rev`, so a wire changing leaves a layout Undo in place.
+ */
+export interface WireState {
+  book: WireBook | null;
+  refused: string | null;
+  wiresRev: number;
+  problems: WireProblem[];
+}
+
+/** A wire that went with its session, with what was waiting at its gate, for the note saying so. */
+export interface DroppedWire {
+  id: string;
+  wire: Wire;
+}
+
+/** `wires:changed`, sent to every window: the state whole, and the wires a forgotten session took with it. */
+export interface WireChange extends WireState {
+  dropped?: DroppedWire[];
+}
+
+/** A `wires:*` change's answer: it's done and saved, or it isn't and nothing changed. */
+export type WireReply = { state: WireState; id?: string } | { refused: string };
+
+// ---- the rules on making and using a wire -------------------------------------------------
+
+/** One end of a wire as the rules see it: a session of this Mac's, running or closed. */
+export interface WireEnd {
+  id: string;
+  title: string;
+  kind: "agent" | "terminal";
+  debrief: boolean;
+  /** The team room it's in. */
+  room: string | null;
+  /** Why it can't be wired: a teammate took it over. */
+  takenOver: string | null;
+  where: "running" | "dead" | "closed";
+  /** Whether it's on the landscape: running, or closed with a ghost. Closed with no place, it's only in the Closed sessions list. */
+  placed: boolean;
+  /** Its folder as the filesystem knows it (symlinks resolved). */
+  folder: string;
+  /** Its agent's hooks never reported, so its status can't be trusted. */
+  hooksSilent: boolean;
+}
+
+export interface WireContext {
+  /** A session of this Mac's, or null. */
+  end(id: string): WireEnd | null;
+  links: Readonly<Record<string, Wire>>;
+  /** The wire being checked, when it's one that exists: rules across wires leave it out. */
+  self?: string;
+}
+
+const others = (ctx: WireContext): Wire[] => Object.entries(ctx.links).flatMap(([id, w]) => (id === ctx.self ? [] : [w]));
+
+/** Whether handoffs lead from `start` to `goal`. */
+function handoffsLead(links: readonly Wire[], start: string, goal: string): boolean {
+  const seen = new Set<string>();
+  const walk = (at: string): boolean => {
+    if (at === goal) return true;
+    if (seen.has(at)) return false;
+    seen.add(at);
+    return links.some((w) => w.type === "handoff" && w.from === at && walk(w.to));
+  };
+  return walk(start);
+}
+
+/** Why this wire can't sit beside the others (ctx.links but ctx.self): what's about the book, not its two ends. */
+export function linkRefusal(from: string, to: string, type: WireType, ctx: WireContext): string | null {
+  if (from === to) return "A workspace can't be wired to itself.";
+  const rest = others(ctx);
+  if (type === "feedback" && rest.some((w) => w.type === "feedback" && ((w.from === from && w.to === to) || (w.from === to && w.to === from)))) {
+    return "These two have a feedback wire already: a second would start a fresh count of rounds.";
+  }
+  if (rest.some((w) => w.type === type && w.from === from && w.to === to)) return `There's a ${type} wire between these two already.`;
+  if (type === "handoff" && handoffsLead(rest, to, from)) return "That would make a cycle of handoffs: a loop needs a feedback wire, so its rounds can stop it.";
+  return null;
+}
+
+/**
+ * Why a wire of `type` from `from` to `to` can't be made or used now, or null. Checked in main at every use as well as
+ * when it's made, since a session moves in and out of a room, is taken over and is taken back: a wire that's refused
+ * now goes blocked with this as its reason, and comes back when it no longer holds.
+ */
+export function wireRefusal(from: string, to: string, type: WireType, ctx: WireContext): string | null {
+  if (from === to) return linkRefusal(from, to, type, ctx);
+  for (const id of [from, to]) if (isRemotePaneId(id) || parseRemoteId(id)) return "That's a teammate's session: wires across Macs come later.";
+  const a = ctx.end(from);
+  if (!a) return `This Mac has no session "${from}".`;
+  const b = ctx.end(to);
+  if (!b) return `This Mac has no session "${to}".`;
+  for (const e of [a, b]) if (e.debrief) return `“${e.title}” is a debrief interview with you, and takes no wires.`;
+  for (const e of [a, b]) if (e.takenOver) return e.takenOver;
+  if (a.room !== b.room) return "Both ends have to be in the same team room, or neither in one: a wire across the line would carry a room's text out of its guardrails, or private output onto teammates' screens.";
+
+  if (type === "worktree") {
+    if (a.kind !== "agent" || b.kind !== "terminal") return "A shared worktree wire runs from an agent to a terminal.";
+    if (a.folder !== b.folder) return `“${b.title}” runs in another folder: a shared worktree wire needs the agent's own.`;
+  } else {
+    // a message typed into a terminal would run as a command, and a terminal has no conversation to read
+    for (const e of [a, b]) if (e.kind === "terminal") return `“${e.title}” is a terminal: only a shared worktree wire can reach one.`;
+  }
+  return linkRefusal(from, to, type, ctx);
+}
+
+/** A new wire of `type`, its gate asking and, for one that carries a result, set to go when its source says it's finished. */
+export function newWire(from: string, to: string, type: WireType, at: number): Wire {
+  const carries = type === "handoff" || type === "feedback";
+  return { from, to, type, when: carries ? "finished" : "manual", gate: "ask", ...(type === "feedback" ? { rounds: { limit: DEFAULT_ROUNDS, used: 0 } } : {}), createdAt: at };
+}
+
+// ---- a wire's settings ------------------------------------------------------------------
+
+/**
+ * What a person can set on a wire. Null clears a field. Nothing else on a wire is settable from a window: the counter,
+ * what's waiting and what's been delivered change only through what those are for.
+ */
+export interface WireSettings {
+  template?: string | null;
+  files?: string[] | null;
+  when?: WireWhen;
+  gate?: WireGate;
+  limit?: number;
+}
+
+const orCleared =
+  <T,>(each: Check<T>): Check<T | null> =>
+  (v, where) =>
+    v === null ? null : each(v, where);
+/** A path inside the source's folder as far as its spelling goes; reading it checks the rest. */
+const insideFile: Check<string> = (v, where) => {
+  const f = name(v, where);
+  return f.startsWith("/") || f.startsWith("~") || f.split("/").includes("..") ? fail(where, `(${JSON.stringify(f)}) isn't a path inside the source's folder`) : f;
+};
+const SETTINGS: Part = {
+  checks: { template: orCleared(str), files: orCleared(list(insideFile)), when: oneOf(WIRE_WHENS), gate: oneOf(WIRE_GATES), limit: whole(1) } satisfies Record<keyof WireSettings, Check<unknown>>,
+  required: [],
+};
+
+/** Settings from another process, checked: throws LandscapeShapeError naming what's wrong, so a field that isn't settable can't be set. */
+export function parseWireSettings(v: unknown): WireSettings {
+  return fields(v, "", SETTINGS, true, "the settings");
+}
+
+/** Why these settings can't go on this wire, or null. A team room's area never has automatic gates. */
+export function settingsRefusal(w: Pick<Wire, "from" | "to" | "type">, s: WireSettings, ctx: Pick<WireContext, "end">): string | null {
+  const carries = w.type === "handoff" || w.type === "feedback";
+  if (s.limit !== undefined && w.type !== "feedback") return "Only a feedback wire counts rounds.";
+  if (!carries) {
+    if (s.template !== undefined || s.files !== undefined) return `A ${w.type} wire doesn't carry anything to set: only a handoff or feedback wire has What flows.`;
+    if (s.when !== undefined) return `A ${w.type} wire doesn't go when anything finishes: only a handoff or feedback wire has When.`;
+    if (s.gate === "automatic") return `A ${w.type} wire has no gate to make automatic.`;
+  }
+  if (s.gate === "automatic") {
+    const a = ctx.end(w.from);
+    const b = ctx.end(w.to);
+    if (!a || !b) return "Automatic needs both ends to be sessions of this Mac's.";
+    if (a.room || b.room) return "Automatic is off in a team room's area: its gates always ask.";
+  }
+  return null;
+}
+
+/** `w` with settings on it: the limit moves, what's been counted stays. */
+export function withSettings(w: Wire, s: WireSettings): Wire {
+  const next: Wire = { ...w };
+  if (s.template !== undefined) {
+    if (s.template === null) delete next.template;
+    else next.template = s.template;
+  }
+  if (s.files !== undefined) {
+    if (s.files === null) delete next.files;
+    else next.files = s.files;
+  }
+  if (s.when !== undefined) next.when = s.when;
+  if (s.gate !== undefined) next.gate = s.gate;
+  if (s.limit !== undefined && w.rounds) next.rounds = { ...w.rounds, limit: s.limit };
+  return next;
+}
+
+// ---- changes to the book ----------------------------------------------------------------
+
+/** The book without session `id`: its wires, both directions, and its note. Nothing changes when it has neither. */
+export function withoutSession(book: WireBook, id: string): { book: WireBook; dropped: DroppedWire[] } {
+  const dropped = Object.entries(book.links).flatMap(([k, w]) => (w.from === id || w.to === id ? [{ id: k, wire: w }] : []));
+  if (!dropped.length && !Object.hasOwn(book.notes, id)) return { book, dropped };
+  const links: Record<string, Wire> = {};
+  for (const [k, w] of Object.entries(book.links)) if (w.from !== id && w.to !== id) put(links, k, w);
+  const notes: Record<string, SourceNote> = {};
+  for (const [k, n] of Object.entries(book.notes)) if (k !== id) put(notes, k, n);
+  return { book: { ...book, links, notes }, dropped };
+}
+
+/** The book with session `old`'s wires and note moved to `next`, counters and what's waiting included. A note `next` has of its own stays. */
+export function rekeyedBook(book: WireBook, old: string, next: string): WireBook {
+  const links: Record<string, Wire> = {};
+  for (const [k, w] of Object.entries(book.links)) put(links, k, w.from === old ? { ...w, from: next } : w.to === old ? { ...w, to: next } : w);
+  const notes: Record<string, SourceNote> = {};
+  for (const [k, n] of Object.entries(book.notes)) if (k !== old) put(notes, k, n);
+  const moved = own(book.notes, old);
+  if (moved && !own(notes, next)) put(notes, next, moved);
+  return { ...book, links, notes };
+}
+
+// ---- what a wire shows ------------------------------------------------------------------
+
+export type GateState = "idle" | "ready" | "sending" | "sent" | "blocked";
+
+export interface Gate {
+  state: GateState;
+  /** Why it's blocked, or what went wrong last time when it's ready again. */
+  why?: string;
+  /** The gate in force: a wire set automatic asks once either end is in a team room. */
+  gate: WireGate;
+  /** What's waiting, when something is. */
+  pendingId?: string;
+  /** Sent, but left in the other end's prompt for a person to submit. */
+  placed?: boolean;
+  /** It may have reached the other end: a person says, by sending again or marking it sent. */
+  unconfirmed?: boolean;
+  /** A feedback wire with no rounds left. */
+  atLimit?: boolean;
+}
+
+export interface GateContext extends WireContext {
+  notes: Readonly<Record<string, SourceNote>>;
+  /** Why the book can't be saved now: nothing is sent on a change that couldn't be written first. */
+  fileRefusal: string | null;
+}
+
+/**
+ * What wire `id` shows now. Blocked isn't stored: it's worked out here, from the rules, the wire's counters and how
+ * its ends are, so it clears by itself when its reason does. In flight is a fact whatever else has changed.
+ */
+export function gateOf(id: string, w: Wire, ctx: GateContext): Gate {
+  const here: GateContext = { ...ctx, self: id };
+  const a = ctx.end(w.from);
+  const b = ctx.end(w.to);
+  const inRoom = !!a?.room || !!b?.room;
+  const gate: WireGate = w.gate === "automatic" && !inRoom ? "automatic" : "ask";
+  const atLimit = !!w.rounds && w.rounds.used >= w.rounds.limit;
+  const base: Pick<Gate, "gate" | "atLimit"> = { gate, ...(atLimit ? { atLimit } : {}) };
+  const blocked = (why: string, more: Partial<Gate> = {}): Gate => ({ ...base, state: "blocked", why, ...more });
+
+  const delivery = w.delivery && (!w.pending || w.delivery.id === w.pending.id) ? w.delivery : null;
+  if (delivery?.state === "queued" || delivery?.state === "pasting") return { ...base, state: "sending", ...(w.pending ? { pendingId: w.pending.id } : {}) };
+
+  if (ctx.fileRefusal) return blocked(ctx.fileRefusal);
+  const refused = wireRefusal(w.from, w.to, w.type, here);
+  if (refused) return blocked(refused);
+  for (const e of [a!, b!]) if (e.where === "closed" && !e.placed) return blocked(`“${e.title}” is closed and not on the landscape: reopen it from Closed sessions.`);
+  if (w.type === "context" || w.type === "worktree") return { ...base, state: "idle" };
+
+  if (delivery?.state === "unconfirmed") return blocked(delivery.why ?? `It may have reached “${b!.title}”.`, { unconfirmed: true, ...(w.pending ? { pendingId: w.pending.id } : {}) });
+  if (w.type === "handoff" && own(ctx.notes, w.from)?.verdict === "changes" && others(here).some((x) => x.type === "feedback" && x.from === w.from)) return blocked("needs approve");
+  if (w.pending) {
+    if (atLimit) return blocked(`At the limit: ${w.rounds!.used} of ${w.rounds!.limit} rounds.`, { pendingId: w.pending.id });
+    if (b!.hooksSilent) return blocked(`“${b!.title}”: its hooks aren't reporting, so a message might never go.`, { pendingId: w.pending.id });
+    return { ...base, state: "ready", pendingId: w.pending.id, ...(delivery?.state === "failed" && delivery.why ? { why: delivery.why } : {}) };
+  }
+  if (delivery?.state === "sent") return { ...base, state: "sent" };
+  if (delivery?.state === "placed") return { ...base, state: "sent", placed: true };
+  return { ...base, state: "idle" };
+}

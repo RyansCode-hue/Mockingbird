@@ -6,7 +6,8 @@ import { fileURLToPath } from "url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { guarded } from "../src/main/handlers";
 import { LANDSCAPE_SAVE_MS, LandscapeStore } from "../src/main/landscape";
-import { emptyLandscape, type LandscapeChange } from "../src/shared/landscape";
+import { PATCH_RECORDS, emptyLandscape, parsePatch, type LandscapeChange } from "../src/shared/landscape";
+import { newWire, WIRE_VERSION, type WireBook, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
 import { tempDir } from "./helpers";
 
 const placement = (x: number) => ({ x, y: 0, w: 800, h: 600 });
@@ -18,9 +19,10 @@ function setup(name = "landscape") {
   const dir = tempDir(name);
   const file = path.join(dir, "landscape.json");
   const changes: LandscapeChange[] = [];
+  const wireChanges: WireChange[] = [];
   const logged: string[] = [];
-  const open = () => new LandscapeStore({ file, emit: (c) => changes.push(c), log: (context, err) => logged.push(`${context}: ${err instanceof Error ? err.message : String(err)}`) });
-  return { dir, file, changes, logged, open, store: open() };
+  const open = () => new LandscapeStore({ file, emit: (c) => changes.push(c), emitWires: (c) => wireChanges.push(c), log: (context, err) => logged.push(`${context}: ${err instanceof Error ? err.message : String(err)}`) });
+  return { dir, file, changes, wireChanges, logged, open, store: open() };
 }
 const onDisk = (file: string) => JSON.parse(fs.readFileSync(file, "utf8"));
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -61,7 +63,7 @@ describe("the landscape store", () => {
     // placed again from the dock: a window is replaced whole, taking the scope and place it's given
     store.update({ tools: { w2: { tool: "search", docked: false, session: "s2", area: "5101", placement: { x: 1280, y: 0, w: 420, h: 600 } } } });
     store.flush();
-    expect(onDisk(file).v).toBe(2);
+    expect(onDisk(file).v).toBe(3);
     const again = open().get().landscape;
     expect(again.tools).toEqual({
       w1: { tool: "run", docked: false, session: "s1", area: "5101", placement: { x: 820, y: 0, w: 440, h: 600 } },
@@ -402,7 +404,7 @@ describe("a landscape file that can't be used", () => {
   it("is left as it is when a newer Mockingbird wrote it, and changes aren't saved over it", () => {
     vi.useFakeTimers();
     const { file, open, logged } = setup();
-    const newer = JSON.stringify({ v: 3, everything: "else" });
+    const newer = JSON.stringify({ v: 4, everything: "else" });
     fs.writeFileSync(file, newer);
     const store = open();
     const [p] = store.get().problems;
@@ -435,5 +437,319 @@ describe("a landscape file that can't be used", () => {
     vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
     expect(store.get().problems.map((p) => p.kind)).toEqual(["corrupt", "save"]);
     expect(store.get().problems[0]).toEqual(moved);
+  });
+});
+
+describe("the wire book in the landscape's file", () => {
+  const WIRE = newWire("a", "b", "handoff", 1);
+  const withWire = (book: WireBook) => ({ book: { ...book, links: { ...book.links, w1: WIRE } } });
+  const v2 = { v: 2, workspaces: { a: placement(8) }, areas: { "5101": AREA }, stacks: {}, ghosts: {}, tools: {}, cards: {} };
+  const v3 = (wires: unknown) => ({ ...v2, v: 3, wires });
+  const added = (r: WireReply) => {
+    if ("refused" in r) throw new Error(r.refused);
+    return r.state;
+  };
+  const refusedBy = (r: WireReply) => ("refused" in r ? r.refused : `not refused: ${JSON.stringify(r)}`);
+  const noBook = (s: WireState) => {
+    expect(s.book).toBeNull();
+    expect(s.refused).toBeTruthy();
+  };
+
+  it("starts empty with no file, and asks nothing of the disk to say so", () => {
+    const { store, file } = setup();
+    expect(store.wires()).toEqual({ book: { wv: WIRE_VERSION, links: {}, notes: {} }, refused: null, wiresRev: 0, problems: [] });
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it("reads a version 2 file as one with no wires, with nothing to report, and saves it as version 3", () => {
+    vi.useFakeTimers();
+    const { file, open } = setup();
+    fs.writeFileSync(file, JSON.stringify(v2));
+    const store = open();
+    expect(store.get().landscape.workspaces.a).toEqual(placement(8));
+    expect(store.get().problems).toEqual([]);
+    expect(store.wires()).toMatchObject({ book: { links: {} }, refused: null, problems: [] });
+    expect(onDisk(file).v).toBe(2); // reading writes nothing
+    store.update({ tourDone: true });
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
+    expect(onDisk(file)).toMatchObject({ v: 3, workspaces: { a: placement(8) }, wires: { wv: WIRE_VERSION, links: {}, notes: {} } });
+  });
+
+  it("reads a version 1 file the same way", () => {
+    const { file, open } = setup();
+    const { tools: _t, cards: _c, ...v1 } = { ...v2, v: 1 };
+    fs.writeFileSync(file, JSON.stringify(v1));
+    const store = open();
+    expect(store.get().landscape).toMatchObject({ v: 3, workspaces: { a: placement(8) }, tools: {}, cards: {} });
+    expect(store.wires()).toMatchObject({ book: { links: {} }, refused: null, problems: [] });
+  });
+
+  it("moves aside a version 2 file holding wires, as a field that version never had", () => {
+    const { file, open } = setup();
+    fs.writeFileSync(file, JSON.stringify({ ...v2, wires: { wv: 1, links: {}, notes: {} } }));
+    expect(open().get().problems[0]).toMatchObject({ kind: "corrupt", message: expect.stringMatching(/wires/) });
+  });
+
+  it("keeps the book out of the layout, in memory and in what a window is told", () => {
+    const { store, file, open } = setup();
+    fs.writeFileSync(file, JSON.stringify(v3({ wv: 1, links: { w1: WIRE }, notes: {} })));
+    const again = open();
+    expect(again.get().landscape).not.toHaveProperty("wires");
+    expect(store.get().landscape).not.toHaveProperty("wires");
+  });
+
+  it("writes a wire change at once, before it's said to have happened, and the next run reads it", () => {
+    vi.useFakeTimers();
+    const { store, open, file, wireChanges } = setup();
+    const state = added(store.editWires(withWire));
+    // no timer has run: a wire is saved or it didn't happen
+    expect(onDisk(file).wires.links.w1).toEqual(WIRE);
+    expect(state.book!.links.w1).toEqual(WIRE);
+    expect(state.wiresRev).toBe(1);
+    expect(wireChanges).toEqual([state]);
+    expect(open().wires().book!.links.w1).toEqual(WIRE);
+  });
+
+  it("leaves rev alone on a wire change, so a layout Undo survives it, and sends no landscape change", () => {
+    const { store, changes } = setup();
+    store.update({ workspaces: { a: placement(0) } });
+    const rev = store.get().rev;
+    const sent = changes.length;
+    added(store.editWires(withWire));
+    added(store.editWires((b) => ({ book: { ...b, links: {} } })));
+    expect(store.get().rev).toBe(rev);
+    expect(changes.length).toBe(sent);
+    expect(store.wires().wiresRev).toBe(2);
+  });
+
+  it("leaves wiresRev alone on a layout change, and sends no wire change", () => {
+    const { store, wireChanges } = setup();
+    added(store.editWires(withWire));
+    const sent = wireChanges.length;
+    store.update({ workspaces: { a: placement(0) } });
+    store.flush();
+    expect(store.wires().wiresRev).toBe(1);
+    expect(wireChanges.length).toBe(sent);
+  });
+
+  it("changes, writes and sends nothing when an edit changes nothing or refuses", () => {
+    const { store, file, wireChanges } = setup();
+    expect(store.editWires((book) => ({ book }))).toEqual({ state: store.wires() });
+    expect(store.editWires(() => ({ refused: "no" }))).toEqual({ refused: "no" });
+    expect(fs.existsSync(file)).toBe(false);
+    expect(wireChanges).toEqual([]);
+    expect(store.wires().wiresRev).toBe(0);
+  });
+
+  it("saves the layout's waiting changes with a wire's, and writes the wire with the layout's", () => {
+    vi.useFakeTimers();
+    const { store, file } = setup();
+    store.update({ workspaces: { a: placement(0) } });
+    added(store.editWires(withWire));
+    expect(onDisk(file).workspaces.a).toEqual(placement(0));
+    store.update({ workspaces: { b: placement(900) } });
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
+    expect(onDisk(file)).toMatchObject({ workspaces: { b: placement(900) }, wires: { links: { w1: WIRE } } });
+  });
+
+  it("refuses a window's patch naming wires, changing nothing", () => {
+    const { store } = setup();
+    expect(() => parsePatch({ wires: { wv: 1, links: {}, notes: {} } })).toThrow(/doesn't know \(wires\)/);
+    expect(() => store.update({ wires: { links: { w1: WIRE } } })).toThrow(/doesn't know \(wires\)/);
+    expect(store.wires().book!.links).toEqual({});
+  });
+
+  it("gives Undo nothing of the book to walk, as no patch record holds it", () => {
+    expect(PATCH_RECORDS).not.toContain("wires");
+  });
+
+  it("names no group or place in a wire, so a rename or a reopen leaves the book alone", () => {
+    const { store, wireChanges } = setup();
+    store.update({ areas: { "5101": AREA } });
+    added(store.editWires(withWire));
+    const sent = wireChanges.length;
+    store.groupRenamed("5101", "5102", ["a"]);
+    store.sessionReopened({ id: "a", taskGroup: "5102" });
+    store.flush();
+    expect(store.get().landscape.areas["5102"]).toBeTruthy();
+    expect(store.wires().book!.links.w1).toEqual(WIRE);
+    expect(wireChanges.length).toBe(sent);
+  });
+
+  it("keeps one bad wire entry verbatim and inert, reports it, and leaves the layout alone", () => {
+    vi.useFakeTimers();
+    const { file, open, logged } = setup();
+    const bad = { from: "a", to: "b", type: "sees", at: "a later build's" };
+    fs.writeFileSync(file, JSON.stringify(v3({ wv: 1, links: { good: WIRE, bad }, notes: {} })));
+    const store = open();
+    expect(store.get().problems).toEqual([]);
+    expect(store.get().landscape.workspaces.a).toEqual(placement(8));
+    const state = store.wires();
+    expect(Object.keys(state.book!.links)).toEqual(["good"]);
+    expect(state.refused).toBeNull();
+    expect(state.problems).toEqual([expect.objectContaining({ kind: "entry", id: "bad" })]);
+    expect(logged.join("\n")).toMatch(/Wire "bad"/);
+    // through a layout save and a wire change it stays exactly as it was
+    store.update({ workspaces: { b: placement(900) } });
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
+    expect(onDisk(file).wires.links.bad).toEqual(bad);
+    added(store.editWires(withWire));
+    expect(onDisk(file).wires.links).toEqual({ good: WIRE, bad, w1: WIRE });
+    expect(fs.readdirSync(path.dirname(file)).filter((f) => f.includes(".bad-"))).toEqual([]);
+  });
+
+  it("leaves a newer book alone through layout saves, and refuses it, saying so", () => {
+    vi.useFakeTimers();
+    const { file, open } = setup();
+    const newer = { wv: WIRE_VERSION + 1, links: { x: { anything: true } }, more: [1, 2] };
+    fs.writeFileSync(file, JSON.stringify(v3(newer)));
+    const store = open();
+    noBook(store.wires());
+    expect(store.wires().refused).toMatch(/newer Mockingbird \(wire format 2\)/);
+    expect(refusedBy(store.editWires(withWire))).toMatch(/newer Mockingbird/);
+    expect(store.get().problems).toEqual([]);
+    store.update({ workspaces: { b: placement(900) } });
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
+    expect(onDisk(file)).toMatchObject({ workspaces: { b: placement(900) }, wires: newer });
+  });
+
+  it("keeps a book that isn't one whole through layout saves, and refuses it, leaving the layout alone", () => {
+    vi.useFakeTimers();
+    const { file, open } = setup();
+    fs.writeFileSync(file, JSON.stringify(v3("not a book")));
+    const store = open();
+    expect(store.get().landscape.workspaces.a).toEqual(placement(8));
+    expect(store.get().problems).toEqual([]);
+    noBook(store.wires());
+    expect(store.wires().refused).toMatch(/can't be read by this Mockingbird/);
+    store.update({ workspaces: { b: placement(900) } });
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
+    expect(onDisk(file).wires).toBe("not a book");
+  });
+
+  it("says when a file of this version has no book at all, and carries on with an empty one", () => {
+    const { file, open } = setup();
+    const { wires: _w, ...none } = v3(null) as Record<string, unknown>;
+    fs.writeFileSync(file, JSON.stringify(none));
+    const state = open().wires();
+    expect(state.book).toMatchObject({ links: {} });
+    expect(state.problems).toEqual([expect.objectContaining({ kind: "missing" })]);
+  });
+
+  it.skipIf(asRoot)("refuses while the file can't be read, never answering no wires, and comes back when it can", () => {
+    const { file, open, wireChanges } = setup();
+    fs.writeFileSync(file, JSON.stringify(v3({ wv: 1, links: { w1: WIRE }, notes: {} })));
+    fs.chmodSync(file, 0o000);
+    const store = open();
+    try {
+      noBook(store.wires());
+      expect(store.wires().refused).toMatch(/can't be read or changed right now.*EACCES/);
+      expect(refusedBy(store.editWires(withWire))).toMatch(/EACCES/);
+      expect(store.wiresWriteRefusal()).toMatch(/EACCES/);
+      store.flush();
+      expect(wireChanges).toEqual([]);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
+    // the next call reads it again: the book's back, and windows hear of it
+    const back = store.wires();
+    expect(back.refused).toBeNull();
+    expect(back.book!.links.w1).toEqual(WIRE);
+    expect(wireChanges.at(-1)).toMatchObject({ refused: null, book: { links: { w1: WIRE } } });
+    expect(onDisk(file).wires.links.w1).toEqual(WIRE);
+  });
+
+  it("refuses a file a newer Mockingbird wrote, as it does a book", () => {
+    const { file, open } = setup();
+    const newer = JSON.stringify({ v: 4, wires: { wv: 1, links: { w1: WIRE }, notes: {} } });
+    fs.writeFileSync(file, newer);
+    const store = open();
+    noBook(store.wires());
+    expect(store.wires().refused).toMatch(/newer Mockingbird \(landscape version 4\)/);
+    expect(refusedBy(store.editWires(withWire))).toMatch(/newer Mockingbird/);
+    store.flush();
+    expect(fs.readFileSync(file, "utf8")).toBe(newer);
+  });
+
+  it.skipIf(asRoot)("refuses a file that's corrupt and can't be moved aside, which nothing may write", () => {
+    const { dir, file, open } = setup();
+    fs.writeFileSync(file, "not json");
+    fs.chmodSync(dir, 0o555);
+    try {
+      const store = open();
+      noBook(store.wires());
+      expect(refusedBy(store.editWires(withWire))).toMatch(/couldn't be moved aside/);
+      expect(store.wires().refused).toMatch(/couldn't be moved aside/);
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+    expect(fs.readFileSync(file, "utf8")).toBe("not json");
+  });
+
+  it("says the wires went aside with a corrupt file, so an empty book isn't read as none ever being there", () => {
+    const { file, open } = setup();
+    fs.writeFileSync(file, "not json");
+    const store = open();
+    const state = store.wires();
+    expect(store.get().problems[0].message).toMatch(/moved to .* the layout and its wires start over/);
+    expect(state.book).toMatchObject({ links: {} });
+    expect(state.problems).toEqual([expect.objectContaining({ kind: "aside", message: expect.stringMatching(/layout and its wires start over/) })]);
+    // and it starts over: a wire can be made
+    added(store.editWires(withWire));
+    expect(onDisk(file).wires.links.w1).toEqual(WIRE);
+  });
+
+  it.skipIf(asRoot)("refuses a change to a read-only file but still reads it, and says why", () => {
+    const { store, file, wireChanges } = setup();
+    added(store.editWires(withWire));
+    const sent = wireChanges.length;
+    fs.chmodSync(file, 0o444);
+    try {
+      expect(store.wires().book!.links.w1).toEqual(WIRE);
+      expect(store.wiresWriteRefusal()).toMatch(/read-only/);
+      expect(refusedBy(store.editWires((b) => ({ book: { ...b, links: {} } })))).toMatch(/read-only/);
+      expect(store.wires().book!.links.w1).toEqual(WIRE);
+      expect(onDisk(file).wires.links.w1).toEqual(WIRE);
+      expect(wireChanges.length).toBe(sent);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
+  });
+
+  it.skipIf(asRoot)("leaves the book as it was, and says so, when a change can't be written", () => {
+    const { dir, store, file, wireChanges, changes } = setup();
+    added(store.editWires(withWire));
+    const sentWires = wireChanges.length;
+    const sent = changes.length;
+    fs.chmodSync(dir, 0o555);
+    try {
+      expect(refusedBy(store.editWires((b) => ({ book: { ...b, links: {} } })))).toMatch(/couldn't be saved .* so nothing changed/);
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+    expect(store.wires().book!.links.w1).toEqual(WIRE);
+    expect(onDisk(file).wires.links.w1).toEqual(WIRE);
+    expect(wireChanges.length).toBe(sentWires);
+    expect(store.wires().wiresRev).toBe(1);
+    // it's the wire's refusal: no layout was waiting, so the layout has no problem to report
+    expect(store.get().problems).toEqual([]);
+    expect(changes.length).toBe(sent);
+  });
+
+  it("carries on when a window can't be told of a wire change: it's made and saved, and the failure logged", () => {
+    const dir = tempDir("landscape");
+    const file = path.join(dir, "landscape.json");
+    const logged: string[] = [];
+    const store = new LandscapeStore({
+      file,
+      emit: () => {},
+      emitWires: () => {
+        throw new Error("no window");
+      },
+      log: (context, err) => logged.push(`${context}: ${(err as Error).message}`),
+    });
+    added(store.editWires(withWire));
+    expect(onDisk(file).wires.links.w1).toEqual(WIRE);
+    expect(logged.join()).toMatch(/couldn't send wire revision 1.*no window/);
   });
 });

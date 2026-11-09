@@ -1,0 +1,408 @@
+import { describe, expect, it } from "vitest";
+import { LANDSCAPE_VERSION } from "../src/shared/landscape";
+import {
+  DEFAULT_ROUNDS,
+  WIRE_FORMAT,
+  WIRE_VERSION,
+  emptyWireBook,
+  freshWireRead,
+  gateOf,
+  linkRefusal,
+  newWire,
+  parseWireBook,
+  parseWireSettings,
+  rekeyedBook,
+  settingsRefusal,
+  storedWireBook,
+  wireRefusal,
+  withSettings,
+  withoutSession,
+  type GateContext,
+  type SourceNote,
+  type Wire,
+  type WireBook,
+  type WireBookRead,
+  type WireEnd,
+  type WireType,
+} from "../src/shared/wires";
+
+const end = (id: string, over: Partial<WireEnd> = {}): WireEnd => ({ id, title: id, kind: "agent", debrief: false, room: null, takenOver: null, where: "running", placed: true, folder: `/w/${id}`, hooksSilent: false, ...over });
+
+function ctxOf(ends: WireEnd[], links: Record<string, Wire> = {}, notes: Record<string, SourceNote> = {}, more: Partial<GateContext> = {}): GateContext {
+  const byId = new Map(ends.map((e) => [e.id, e]));
+  return { end: (id) => byId.get(id) ?? null, links, notes, fileRefusal: null, ...more };
+}
+const wire = (from: string, to: string, type: WireType = "handoff", over: Partial<Wire> = {}): Wire => ({ ...newWire(from, to, type, 1), ...over });
+const AB = [end("a"), end("b")];
+const okRead = (r: WireBookRead) => r as Extract<WireBookRead, { status: "ok" }>;
+
+describe("wireRefusal", () => {
+  it("allows two agents of this Mac's, outside any room, every type but the terminal's", () => {
+    for (const type of ["handoff", "context", "feedback"] as const) expect(wireRefusal("a", "b", type, ctxOf(AB)), type).toBeNull();
+  });
+  it("refuses a workspace wired to itself", () => {
+    expect(wireRefusal("a", "a", "handoff", ctxOf(AB))).toMatch(/to itself/);
+  });
+  it.each([
+    ["from", "r~1234", "b"],
+    ["to", "a", "r~1234"],
+    ["from, as messaging names it", "s1@abcd1234", "b"],
+    ["to, as messaging names it", "a", "s1@abcd1234"],
+  ])("refuses a teammate's session at %s, even when something answers for its id", (_where, from, to) => {
+    const ctx = ctxOf([...AB, end("r~1234"), end("s1@abcd1234")]);
+    expect(wireRefusal(from, to, "handoff", ctx)).toMatch(/teammate's session: wires across Macs come later/);
+  });
+  it("refuses a session this Mac doesn't have, at either end", () => {
+    expect(wireRefusal("gone", "b", "handoff", ctxOf(AB))).toMatch(/no session "gone"/);
+    expect(wireRefusal("a", "gone", "handoff", ctxOf(AB))).toMatch(/no session "gone"/);
+  });
+  it("refuses a debrief at either end", () => {
+    const ctx = ctxOf([end("a"), end("d", { debrief: true })]);
+    expect(wireRefusal("a", "d", "context", ctx)).toMatch(/debrief/);
+    expect(wireRefusal("d", "a", "context", ctx)).toMatch(/debrief/);
+  });
+  it("refuses a session taken over, at either end, saying where it continues", () => {
+    const ctx = ctxOf([end("a"), end("t", { takenOver: "“t” continues on Nick's laptop" })]);
+    expect(wireRefusal("a", "t", "handoff", ctx)).toMatch(/continues on Nick's laptop/);
+    expect(wireRefusal("t", "a", "handoff", ctx)).toMatch(/continues on Nick's laptop/);
+  });
+  it("wants both ends in one room or neither", () => {
+    const inRoom = end("r", { room: "R1" });
+    const inOther = end("o", { room: "R2" });
+    expect(wireRefusal("r", "a", "handoff", ctxOf([inRoom, end("a")]))).toMatch(/same team room/);
+    expect(wireRefusal("a", "r", "context", ctxOf([inRoom, end("a")]))).toMatch(/same team room/);
+    expect(wireRefusal("r", "o", "handoff", ctxOf([inRoom, inOther]))).toMatch(/same team room/);
+    expect(wireRefusal("r", "r2", "handoff", ctxOf([inRoom, end("r2", { room: "R1" })]))).toBeNull();
+  });
+  it("keeps a terminal off every wire but a shared worktree's", () => {
+    const ctx = ctxOf([end("a"), end("t", { kind: "terminal" })]);
+    for (const type of ["handoff", "feedback", "context"] as const) {
+      expect(wireRefusal("a", "t", type, ctx), `${type} to it`).toMatch(/is a terminal/);
+      expect(wireRefusal("t", "a", type, ctx), `${type} from it`).toMatch(/is a terminal/);
+    }
+  });
+  it("wants a shared worktree wire from an agent to a terminal in the same folder", () => {
+    const same = ctxOf([end("a", { folder: "/w/x" }), end("t", { kind: "terminal", folder: "/w/x" })]);
+    expect(wireRefusal("a", "t", "worktree", same)).toBeNull();
+    expect(wireRefusal("t", "a", "worktree", same)).toMatch(/from an agent to a terminal/);
+    expect(wireRefusal("a", "b", "worktree", ctxOf(AB))).toMatch(/from an agent to a terminal/);
+    expect(wireRefusal("a", "t", "worktree", ctxOf([end("a", { folder: "/w/x" }), end("t", { kind: "terminal", folder: "/w/y" })]))).toMatch(/another folder/);
+  });
+  it("allows one feedback wire per pair, in either direction, so a second can't start a fresh count", () => {
+    const ctx = ctxOf(AB, { f: wire("a", "b", "feedback") });
+    expect(wireRefusal("a", "b", "feedback", ctx)).toMatch(/feedback wire already/);
+    expect(wireRefusal("b", "a", "feedback", ctx)).toMatch(/feedback wire already/);
+  });
+  it("refuses the same wire twice, but not a different type between the same two", () => {
+    const ctx = ctxOf(AB, { h: wire("a", "b") });
+    expect(wireRefusal("a", "b", "handoff", ctx)).toMatch(/already/);
+    expect(wireRefusal("a", "b", "context", ctx)).toBeNull();
+    expect(wireRefusal("b", "a", "context", ctx)).toBeNull();
+  });
+  it("refuses a cycle of handoffs, direct or along a chain", () => {
+    const ends = [...AB, end("c")];
+    expect(wireRefusal("b", "a", "handoff", ctxOf(ends, { x: wire("a", "b") }))).toMatch(/cycle/);
+    expect(wireRefusal("c", "a", "handoff", ctxOf(ends, { x: wire("a", "b"), y: wire("b", "c") }))).toMatch(/cycle/);
+  });
+  it("allows a loop through a feedback wire, since its rounds stop it", () => {
+    expect(wireRefusal("b", "a", "feedback", ctxOf(AB, { x: wire("a", "b") }))).toBeNull();
+    expect(wireRefusal("a", "b", "handoff", ctxOf(AB, { f: wire("b", "a", "feedback") }))).toBeNull();
+  });
+  it("doesn't count a wire against itself when it's the one being checked", () => {
+    const links = { h: wire("a", "b"), f: wire("a", "b", "feedback") };
+    expect(wireRefusal("a", "b", "handoff", ctxOf(AB, links, {}, { self: "h" }))).toBeNull();
+    expect(wireRefusal("a", "b", "feedback", ctxOf(AB, links, {}, { self: "f" }))).toBeNull();
+    expect(linkRefusal("a", "b", "handoff", ctxOf(AB, links))).toMatch(/already/);
+  });
+  it("names a wire's end by its title", () => {
+    expect(wireRefusal("a", "t", "handoff", ctxOf([end("a"), end("t", { kind: "terminal", title: "dev server" })]))).toMatch(/“dev server”/);
+  });
+});
+
+describe("a new wire", () => {
+  it("asks at its gate whatever its type", () => {
+    for (const type of ["handoff", "context", "feedback", "worktree"] as const) expect(newWire("a", "t", type, 5).gate, type).toBe("ask");
+  });
+  it("goes when its source finishes only if it carries something", () => {
+    expect(newWire("a", "b", "handoff", 5).when).toBe("finished");
+    expect(newWire("a", "b", "feedback", 5).when).toBe("finished");
+    expect(newWire("a", "b", "context", 5).when).toBe("manual");
+    expect(newWire("a", "b", "worktree", 5).when).toBe("manual");
+  });
+  it("counts rounds only on a feedback wire, from the default limit", () => {
+    expect(newWire("a", "b", "feedback", 5).rounds).toEqual({ limit: DEFAULT_ROUNDS, used: 0 });
+    expect(newWire("a", "b", "handoff", 5).rounds).toBeUndefined();
+  });
+});
+
+describe("a wire's settings", () => {
+  it("can't name anything that isn't settable", () => {
+    for (const field of ["pending", "delivery", "rounds", "used", "from", "to", "type", "createdAt", "wv"]) {
+      expect(() => parseWireSettings({ [field]: 1 }), field).toThrow(/doesn't know/);
+    }
+  });
+  it("checks what it does name", () => {
+    expect(parseWireSettings({ template: "{summary}", files: ["src/a.ts"], when: "manual", gate: "ask", limit: 5 })).toEqual({ template: "{summary}", files: ["src/a.ts"], when: "manual", gate: "ask", limit: 5 });
+    expect(() => parseWireSettings({ when: "soon" })).toThrow(/when/);
+    expect(() => parseWireSettings({ gate: "open" })).toThrow(/gate/);
+    expect(() => parseWireSettings({ limit: 0 })).toThrow(/limit/);
+    expect(() => parseWireSettings({ limit: 1.5 })).toThrow(/limit/);
+    expect(() => parseWireSettings(null)).toThrow();
+  });
+  it.each(["/etc/passwd", "~/.ssh/id_rsa", "../secrets", "a/../../b", ""])("refuses a file outside the source's folder by its spelling: %j", (f) => {
+    expect(() => parseWireSettings({ files: [f] })).toThrow();
+  });
+  it("allows automatic only on what carries something, with both ends outside rooms", () => {
+    const ctx = ctxOf(AB);
+    expect(settingsRefusal(wire("a", "b"), { gate: "automatic" }, ctx)).toBeNull();
+    expect(settingsRefusal(wire("a", "b", "feedback"), { gate: "automatic" }, ctx)).toBeNull();
+    expect(settingsRefusal(wire("a", "b", "context"), { gate: "automatic" }, ctx)).toMatch(/no gate/);
+    expect(settingsRefusal(wire("a", "b", "worktree"), { gate: "automatic" }, ctx)).toMatch(/no gate/);
+    const rooms = ctxOf([end("a", { room: "R" }), end("b", { room: "R" })]);
+    expect(settingsRefusal(wire("a", "b"), { gate: "automatic" }, rooms)).toMatch(/team room/);
+    expect(settingsRefusal(wire("a", "gone"), { gate: "automatic" }, ctx)).toMatch(/both ends/);
+    expect(settingsRefusal(wire("a", "b"), { gate: "ask" }, rooms)).toBeNull();
+  });
+  it("keeps What flows and When to the wires that have them, and a limit to a feedback wire", () => {
+    const ctx = ctxOf(AB);
+    for (const type of ["context", "worktree"] as const) {
+      expect(settingsRefusal(wire("a", "b", type), { template: "x" }, ctx), type).toMatch(/What flows/);
+      expect(settingsRefusal(wire("a", "b", type), { files: ["x"] }, ctx), type).toMatch(/What flows/);
+      expect(settingsRefusal(wire("a", "b", type), { when: "finished" }, ctx), type).toMatch(/When/);
+    }
+    expect(settingsRefusal(wire("a", "b"), { limit: 5 }, ctx)).toMatch(/feedback/);
+    expect(settingsRefusal(wire("a", "b", "feedback"), { limit: 5 }, ctx)).toBeNull();
+  });
+  it("moves the limit and leaves what's been counted, and null clears a field", () => {
+    const w = withSettings(wire("a", "b", "feedback", { rounds: { limit: 3, used: 2 }, template: "t", files: ["f"] }), { limit: 5, template: null, files: null, when: "manual", gate: "automatic" });
+    expect(w.rounds).toEqual({ limit: 5, used: 2 });
+    expect(w).not.toHaveProperty("template");
+    expect(w).not.toHaveProperty("files");
+    expect(w).toMatchObject({ when: "manual", gate: "automatic" });
+  });
+});
+
+describe("reading a stored book", () => {
+  const good = { from: "a", to: "b", type: "handoff", when: "finished", gate: "ask", createdAt: 1 };
+  const stored = (links: Record<string, unknown> = {}, notes: Record<string, unknown> = {}, more: Record<string, unknown> = {}) => ({ wv: 1, links, notes, ...more });
+
+  it("reads absent as an empty book, with nothing to report", () => {
+    expect(parseWireBook(undefined)).toEqual(freshWireRead());
+  });
+  it("reads a good book whole, and writes it back the same", () => {
+    const full = stored(
+      {
+        h: { ...good, template: "{summary}", files: ["x"], pending: { id: "p", body: "b", at: 2, verdict: "approve", flags: ["f"] }, delivery: { id: "p", state: "failed", at: 3, why: "w" } },
+        f: { ...good, type: "feedback", rounds: { limit: 3, used: 1 } },
+      },
+      { a: { hops: 1, verdict: "changes", stage: "coding", summary: { text: "t", at: 4, conversation: "c" } } }
+    );
+    const r = parseWireBook(full);
+    expect(r.status).toBe("ok");
+    expect(r.problems).toEqual([]);
+    expect(storedWireBook(r)).toEqual(full);
+  });
+  it.each([
+    ["an unknown type", { ...good, type: "sees" }],
+    ["an unknown field", { ...good, colour: "red" }],
+    ["no createdAt", { from: "a", to: "b", type: "handoff", when: "finished", gate: "ask" }],
+    ["an empty end", { ...good, from: "" }],
+    ["a session to itself", { ...good, to: "a" }],
+    ["a feedback wire with no rounds", { ...good, type: "feedback" }],
+    ["rounds on a handoff", { ...good, rounds: { limit: 3, used: 0 } }],
+    ["a bad pending", { ...good, pending: { id: "p" } }],
+    ["a bad delivery state", { ...good, delivery: { id: "p", state: "lost", at: 1 } }],
+    ["negative rounds", { ...good, type: "feedback", rounds: { limit: 3, used: -1 } }],
+    ["no object at all", "wire"],
+    ["null", null],
+  ])("keeps a wire with %s verbatim and inert, and the rest works", (_what, bad) => {
+    const raw = stored({ good, bad });
+    const r = okRead(parseWireBook(raw));
+    expect(Object.keys(r.book.links)).toEqual(["good"]);
+    expect(r.kept.links).toEqual({ bad });
+    expect(r.problems).toEqual([{ kind: "entry", id: "bad", message: expect.stringMatching(/Wire "bad" .* kept as it is, and does nothing/) }]);
+    expect(storedWireBook(r)).toEqual(raw);
+  });
+  it("keeps a bad note verbatim and inert", () => {
+    const raw = stored({}, { s1: { hops: "many" }, s2: { hops: 1 } });
+    const r = okRead(parseWireBook(raw));
+    expect(r.book.notes).toEqual({ s2: { hops: 1 } });
+    expect(r.problems).toEqual([expect.objectContaining({ kind: "note", id: "s1" })]);
+    expect(storedWireBook(r)).toEqual(raw);
+  });
+  it("keeps a field it doesn't know, at the book's level, and says so", () => {
+    const raw = stored({ good }, {}, { future: { a: 1 } });
+    const r = okRead(parseWireBook(raw));
+    expect(r.problems).toEqual([expect.objectContaining({ kind: "field", id: "future" })]);
+    expect(storedWireBook(r)).toEqual(raw);
+  });
+  it("keeps entries named __proto__ as entries, polluting nothing", () => {
+    const raw = JSON.parse(`{"wv":1,"links":{"__proto__":{"from":"a","to":"b","type":"handoff","when":"finished","gate":"ask","createdAt":1},"bad":{"__proto__":{"x":1}}},"notes":{"__proto__":{"hops":1}}}`);
+    const r = okRead(parseWireBook(raw));
+    expect(Object.keys(r.book.links)).toEqual(["__proto__"]);
+    expect(({} as any).from).toBeUndefined();
+    expect(Object.getPrototypeOf(r.book.links)).toBe(Object.prototype);
+    expect(JSON.parse(JSON.stringify(storedWireBook(r)))).toEqual(raw);
+  });
+  it("leaves a newer book alone, whole, and uses none of it", () => {
+    const raw = { wv: WIRE_VERSION + 1, links: { x: { anything: true } }, somethingNew: 1 };
+    const r = parseWireBook(raw);
+    expect(r.status).toBe("newer");
+    expect(r.problems).toEqual([expect.objectContaining({ kind: "newer", message: expect.stringMatching(/newer Mockingbird \(wire format 2\)/) })]);
+    expect(storedWireBook(r)).toBe(raw);
+  });
+  it.each([
+    ["not an object", 5],
+    ["a list", []],
+    ["null", null],
+    ["no wv", { links: {}, notes: {} }],
+    ["a wv that isn't a whole number", { wv: 1.5, links: {}, notes: {} }],
+    ["a wv of 0", { wv: 0, links: {}, notes: {} }],
+    ["a wv in a string", { wv: "1", links: {}, notes: {} }],
+    ["links that aren't a record", { wv: 1, links: [], notes: {} }],
+    ["no notes", { wv: 1, links: {} }],
+  ])("keeps a book that's %s whole, and uses none of it", (_what, raw) => {
+    const r = parseWireBook(raw);
+    expect(r.status).toBe("bad");
+    expect(r.problems).toEqual([expect.objectContaining({ kind: "book" })]);
+    expect(storedWireBook(r)).toBe(raw);
+  });
+});
+
+/**
+ * The book's stored format, version by version. A field added or made required changes what an older Mockingbird can
+ * read: it needs WIRE_VERSION raised and the new format pinned here, or to be an entry an older build keeps verbatim.
+ */
+const FORMATS: Record<number, typeof WIRE_FORMAT> = {
+  1: {
+    book: { fields: ["links", "notes", "wv"], required: ["links", "notes", "wv"] },
+    wire: { fields: ["createdAt", "delivery", "files", "from", "gate", "pending", "rounds", "template", "to", "type", "when"], required: ["createdAt", "from", "gate", "to", "type", "when"] },
+    rounds: { fields: ["limit", "used"], required: ["limit", "used"] },
+    pending: { fields: ["at", "body", "flags", "id", "verdict"], required: ["at", "body", "flags", "id"] },
+    delivery: { fields: ["at", "id", "state", "why"], required: ["at", "id", "state"] },
+    note: { fields: ["hops", "stage", "summary", "verdict"], required: ["hops"] },
+    summary: { fields: ["at", "conversation", "text"], required: ["at", "text"] },
+  },
+};
+
+describe("the stored format", () => {
+  it("is the one pinned for its WIRE_VERSION", () => {
+    expect(WIRE_FORMAT, `the wire book's format isn't the one pinned for WIRE_VERSION ${WIRE_VERSION}`).toEqual(FORMATS[WIRE_VERSION]);
+  });
+  it("sits in a landscape of version 3 or later", () => {
+    expect(LANDSCAPE_VERSION).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("changes to the book", () => {
+  const book = (links: Record<string, Wire>, notes: Record<string, SourceNote> = {}): WireBook => ({ ...emptyWireBook(), links, notes });
+
+  it("drops a session's wires, both ways, and its note, naming what went", () => {
+    const b = book({ out: wire("a", "b"), in: wire("c", "a"), rest: wire("b", "c") }, { a: { hops: 1 }, b: { hops: 2 } });
+    const { book: next, dropped } = withoutSession(b, "a");
+    expect(Object.keys(next.links)).toEqual(["rest"]);
+    expect(Object.keys(next.notes)).toEqual(["b"]);
+    expect(dropped.map((d) => d.id).sort()).toEqual(["in", "out"]);
+  });
+  it("hands back the same book when a session has nothing in it", () => {
+    const b = book({ rest: wire("b", "c") });
+    expect(withoutSession(b, "a").book).toBe(b);
+  });
+  it("moves a session's wires and note, keeping what they've counted and hold", () => {
+    const f = wire("a", "b", "feedback", { rounds: { limit: 3, used: 2 }, pending: { id: "p", body: "b", at: 1, flags: [] } });
+    const next = rekeyedBook(book({ f, in: wire("c", "a"), rest: wire("b", "c") }, { a: { hops: 2 } }), "a", "n");
+    expect(next.links.f).toEqual({ ...f, from: "n" });
+    expect(next.links.in).toMatchObject({ from: "c", to: "n" });
+    expect(next.links.rest).toMatchObject({ from: "b", to: "c" });
+    expect(next.notes).toEqual({ n: { hops: 2 } });
+  });
+  it("leaves the new session its own note", () => {
+    expect(rekeyedBook(book({}, { a: { hops: 2 }, n: { hops: 0 } }), "a", "n").notes).toEqual({ n: { hops: 0 } });
+  });
+});
+
+describe("gateOf", () => {
+  const pending = { id: "p1", body: "go", at: 1, flags: [] };
+  const gate = (w: Wire, ctx = ctxOf(AB)) => gateOf("w", w, ctx);
+
+  it("is idle with nothing waiting", () => {
+    expect(gate(wire("a", "b"))).toEqual({ state: "idle", gate: "ask" });
+  });
+  it("is ready with something waiting, naming it", () => {
+    expect(gate(wire("a", "b", "handoff", { pending }))).toEqual({ state: "ready", gate: "ask", pendingId: "p1" });
+  });
+  it.each(["queued", "pasting"] as const)("is sending while %s, whatever else has changed", (state) => {
+    const w = wire("a", "b", "handoff", { pending, delivery: { id: "p1", state, at: 1 } });
+    expect(gate(w).state).toBe("sending");
+    expect(gate(w, ctxOf([end("a")], {}, {}, { fileRefusal: "read-only" })).state).toBe("sending");
+  });
+  it("is sent once delivered, and says when it was left in the prompt", () => {
+    expect(gate(wire("a", "b", "handoff", { delivery: { id: "p1", state: "sent", at: 1 } }))).toEqual({ state: "sent", gate: "ask" });
+    expect(gate(wire("a", "b", "handoff", { delivery: { id: "p1", state: "placed", at: 1 } }))).toEqual({ state: "sent", gate: "ask", placed: true });
+  });
+  it("is ready for a newer pending than the one delivered", () => {
+    expect(gate(wire("a", "b", "handoff", { pending, delivery: { id: "p0", state: "sent", at: 1 } })).state).toBe("ready");
+  });
+  it("is ready again after a failure, saying what went wrong", () => {
+    expect(gate(wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "failed", at: 1, why: "it exited" } }))).toMatchObject({ state: "ready", why: "it exited" });
+  });
+  it("is blocked and unconfirmed when it may have gone, so a person says", () => {
+    expect(gate(wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "unconfirmed", at: 1 } }))).toMatchObject({ state: "blocked", unconfirmed: true, pendingId: "p1", why: expect.stringMatching(/may have reached “b”/) });
+  });
+  it("is blocked when the book can't be saved", () => {
+    expect(gate(wire("a", "b", "handoff", { pending }), ctxOf(AB, {}, {}, { fileRefusal: "landscape.json is read-only" }))).toMatchObject({ state: "blocked", why: "landscape.json is read-only" });
+  });
+  it("is blocked by whatever refuses a wire now, and clears when that does", () => {
+    const w = wire("a", "b", "handoff", { pending });
+    expect(gate(w, ctxOf([end("a")]))).toMatchObject({ state: "blocked", why: expect.stringMatching(/no session "b"/) });
+    expect(gate(w, ctxOf([end("a", { room: "R" }), end("b")]))).toMatchObject({ state: "blocked", why: expect.stringMatching(/same team room/) });
+    expect(gate(w, ctxOf([end("a"), end("b", { takenOver: "Nick continues it" })]))).toMatchObject({ state: "blocked", why: "Nick continues it" });
+    expect(gate(w).state).toBe("ready");
+  });
+  it("doesn't refuse a wire for being itself", () => {
+    const w = wire("a", "b");
+    expect(gate(w, ctxOf(AB, { w })).state).toBe("idle");
+  });
+  it("is blocked when an end is closed with no place, and not when it has a ghost or merely stopped", () => {
+    const w = wire("a", "b", "handoff", { pending });
+    expect(gate(w, ctxOf([end("a"), end("b", { where: "closed", placed: false })]))).toMatchObject({ state: "blocked", why: expect.stringMatching(/not on the landscape/) });
+    expect(gate(w, ctxOf([end("a", { where: "closed", placed: false }), end("b")])).state).toBe("blocked");
+    expect(gate(w, ctxOf([end("a"), end("b", { where: "closed", placed: true })])).state).toBe("ready");
+    expect(gate(w, ctxOf([end("a"), end("b", { where: "dead" })])).state).toBe("ready");
+  });
+  it("never lights a context or worktree wire, but blocks it the same", () => {
+    const t = end("t", { kind: "terminal", folder: "/w/a" });
+    expect(gate(wire("a", "b", "context", { pending })).state).toBe("idle");
+    expect(gate(wire("a", "t", "worktree"), ctxOf([end("a"), t])).state).toBe("idle");
+    expect(gate(wire("a", "b", "context"), ctxOf([end("a", { room: "R" }), end("b")])).state).toBe("blocked");
+  });
+  it("blocks a handoff with “needs approve” once a feedback wire out has come back with changes, and only then", () => {
+    const h = wire("a", "b");
+    const links = { w: h, f: wire("a", "c", "feedback") };
+    const ends = [...AB, end("c")];
+    expect(gateOf("w", h, ctxOf(ends, links, { a: { hops: 0, verdict: "changes" } }))).toMatchObject({ state: "blocked", why: "needs approve" });
+    expect(gateOf("w", h, ctxOf(ends, links, { a: { hops: 0, verdict: "approve" } })).state).toBe("idle");
+    expect(gateOf("w", h, ctxOf(ends, links)).state).toBe("idle");
+    // with no feedback wire out, a stray verdict blocks nothing
+    expect(gateOf("w", h, ctxOf(AB, { w: h }, { a: { hops: 0, verdict: "changes" } })).state).toBe("idle");
+    // the feedback wire itself goes on: changes is what it's for
+    expect(gateOf("f", links.f, ctxOf(ends, links, { a: { hops: 0, verdict: "changes" } })).state).toBe("idle");
+  });
+  it("stops at the limit once something's waiting, and only shows the limit until then", () => {
+    const at = { limit: 3, used: 3 };
+    expect(gate(wire("a", "b", "feedback", { rounds: at, pending }))).toMatchObject({ state: "blocked", atLimit: true, pendingId: "p1", why: expect.stringMatching(/At the limit: 3 of 3/) });
+    expect(gate(wire("a", "b", "feedback", { rounds: at }))).toEqual({ state: "idle", gate: "ask", atLimit: true });
+    expect(gate(wire("a", "b", "feedback", { rounds: { limit: 3, used: 2 }, pending })).state).toBe("ready");
+  });
+  it("is blocked when the far end's hooks aren't reporting, since a message might never go", () => {
+    const w = wire("a", "b", "handoff", { pending });
+    expect(gate(w, ctxOf([end("a"), end("b", { hooksSilent: true })]))).toMatchObject({ state: "blocked", why: expect.stringMatching(/hooks aren't reporting/) });
+    expect(gate(w, ctxOf([end("a", { hooksSilent: true }), end("b")])).state).toBe("ready");
+  });
+  it("asks at an automatic gate once either end is in a room, and keeps it automatic otherwise", () => {
+    const w = wire("a", "b", "handoff", { gate: "automatic" });
+    expect(gate(w).gate).toBe("automatic");
+    expect(gate(w, ctxOf([end("a", { room: "R" }), end("b", { room: "R" })])).gate).toBe("ask");
+    expect(gate(w, ctxOf([end("a", { room: "R" }), end("b")])).gate).toBe("ask");
+  });
+});

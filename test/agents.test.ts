@@ -28,7 +28,7 @@ describe("Claude launch", () => {
     expect(args.slice(0, 7)).toEqual(["--continue", "--model", "opus", "--effort", "high", "--add-dir", path.join(os.homedir(), "shared")]);
     const cfg = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
     expect(cfg.mcpServers.mockingbird).toEqual({ type: "stdio", ...mcp });
-    expect(args[args.indexOf("--allowedTools") + 1]).toBe("mcp__mockingbird__list_sessions,mcp__mockingbird__send_message");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe("mcp__mockingbird__list_sessions,mcp__mockingbird__send_message,mcp__mockingbird__list_links");
   });
   it("resumes a specific conversation by id", () => {
     expect(agentFor("claude").launchArgs({ ...base, resumeSessionId: "uuid-1" }, { mcp }).slice(0, 2)).toEqual(["--resume", "uuid-1"]);

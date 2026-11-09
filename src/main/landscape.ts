@@ -16,6 +16,7 @@ import {
   type LandscapeState,
 } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
+import { freshWireRead, parseWireBook, storedWireBook, type DroppedWire, type WireBook, type WireBookRead, type WireChange, type WireProblem, type WireReply, type WireState } from "../shared/wires";
 import { isMissing, writeFileAtomic } from "./fileOps";
 
 /** How long changes gather before they're written: a drag's patches land in one write. */
@@ -26,12 +27,16 @@ export interface LandscapeStoreOptions {
   file: string;
   /** Sends `landscape:changed` to every window. */
   emit: (change: LandscapeChange) => void;
+  /** Sends `wires:changed` to every window. */
+  emitWires?: (change: WireChange) => void;
   log: (context: string, err: unknown) => void;
   saveMs?: number;
 }
 
 interface Loaded {
   landscape: Landscape;
+  /** The wire book beside it: same file, but not the layout. */
+  wires: WireBookRead;
   /** What reading the file found wrong. */
   problem: LandscapeProblem | null;
   /** The file is left as it is: changes stay in memory. */
@@ -66,12 +71,20 @@ interface Loaded {
  *
  * The file is read on first use, not at startup, so a second copy of the app
  * that only hands over to the first never moves it.
+ *
+ * The wire book (shared/wires.ts) lives in the same file and goes out in the same atomic write, but it isn't the layout:
+ * its changes have their own count and channel and leave `rev` alone, since a layout Undo ends when `rev` moves. A wire
+ * change is written at once and only then takes effect: nothing about a wire is held back in memory. While a stand-in
+ * or a read-only file holds the place of the layout, the book can't be read or changed, and says so, so "can't tell"
+ * is never answered as "no wires". What's wrong inside the book is the book's: it never gets the layout moved aside,
+ * and a save of the layout writes it back as it was read.
  */
 export class LandscapeStore {
   private loaded: Loaded | null = null;
   private droppedProblem: LandscapeProblem | null = null;
   private saveProblem: LandscapeProblem | null = null;
   private rev = 0;
+  private wiresRev = 0;
   private dirty = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly saveMs: number;
@@ -111,6 +124,56 @@ export class LandscapeStore {
     }
     this.tell({ rev: this.rev, patch, problems: this.problems() });
     return this.state(l);
+  }
+
+  /** The wire book as it stands, read from the file first if need be; `book` is null, and `refused` says why, when it can't be used. */
+  wires(): WireState {
+    return this.wireState(this.load());
+  }
+
+  /**
+   * Why the book can't be saved now, or null. The file having been made read-only counts, though a rename would go
+   * through: a rename doesn't ask the file. Whoever's about to act on a wire asks first, so nothing is sent on a change
+   * that won't be written.
+   */
+  wiresWriteRefusal(): string | null {
+    const l = this.load();
+    const refused = this.wiresRefusal(l);
+    if (refused) return refused;
+    try {
+      fs.accessSync(this.o.file, fs.constants.W_OK);
+    } catch (err) {
+      if (!isMissing(err)) return `Wires can't be changed: ${this.o.file} is read-only (${(err as Error).message}).`;
+    }
+    return null;
+  }
+
+  /**
+   * Change the wire book. `edit` answers the new book (the same one for no change) or a refusal. A change is written
+   * before it takes effect: when it can't be, the book stays as it was and the answer says so. Every window hears of
+   * one that's made, with `dropped` naming the wires that went with a forgotten session.
+   */
+  editWires(edit: (book: WireBook) => { book: WireBook; dropped?: DroppedWire[] } | { refused: string }): WireReply {
+    const refused = this.wiresWriteRefusal();
+    if (refused) return { refused };
+    const l = this.loaded!;
+    const read = l.wires as Extract<WireBookRead, { status: "ok" }>;
+    const r = edit(read.book);
+    if ("refused" in r) return r;
+    if (r.book === read.book) return { state: this.wireState(l) };
+    l.wires = { ...read, book: r.book };
+    try {
+      this.write(l);
+    } catch (err) {
+      l.wires = read;
+      this.o.log(`landscape: couldn't save ${this.o.file}`, err);
+      return { refused: `The wire couldn't be saved to ${this.o.file} (${(err as Error).message}), so nothing changed.` };
+    }
+    this.saved();
+    this.wiresRev++;
+    const state = this.wireState(l);
+    this.tellWires({ ...state, ...(r.dropped?.length ? { dropped: r.dropped } : {}) });
+    return { state };
   }
 
   /**
@@ -160,6 +223,27 @@ export class LandscapeStore {
     return [this.loaded?.problem, this.droppedProblem, this.saveProblem].filter((p): p is LandscapeProblem => !!p);
   }
 
+  private wireState(l: Loaded): WireState {
+    const refused = this.wiresRefusal(l);
+    const aside: WireProblem[] = l.problem?.movedTo ? [{ kind: "aside", message: l.problem.message }] : [];
+    return { book: refused || l.wires.status !== "ok" ? null : l.wires.book, refused, wiresRev: this.wiresRev, problems: [...aside, ...l.wires.problems] };
+  }
+
+  /** Why the book can't be used at all: the file isn't there to read, or nothing may be written to it, or the book in it can't be read here. */
+  private wiresRefusal(l: Loaded): string | null {
+    if (l.standIn) return `Wires can't be read or changed right now. ${l.problem!.message}`;
+    if (l.readOnly) return `Wires can't be read or changed. ${l.problem!.message}`;
+    return l.wires.status === "ok" ? null : l.wires.problems[0].message;
+  }
+
+  private tellWires(change: WireChange): void {
+    try {
+      this.o.emitWires?.(change);
+    } catch (err) {
+      this.o.log(`landscape: couldn't send wire revision ${change.wiresRev} to the windows`, err);
+    }
+  }
+
   /** Send a change to the windows. Failing to is logged, not thrown: the change is made and its save due either way. */
   private tell(change: LandscapeChange): void {
     try {
@@ -178,7 +262,7 @@ export class LandscapeStore {
   /** Write the landscape. A failure is logged, reported to the windows as a `save` problem until a save works, and returned. */
   private save(l: Loaded): Error | null {
     try {
-      writeFileAtomic(this.o.file, JSON.stringify(l.landscape, null, 2));
+      this.write(l);
     } catch (err) {
       this.o.log(`landscape: couldn't save ${this.o.file}`, err);
       const message = `The layout couldn't be saved to ${this.o.file} (${(err as Error).message}). Changes are kept, and saved again with the next one and on quit.`;
@@ -187,12 +271,22 @@ export class LandscapeStore {
       if (changed) this.tell({ rev: this.rev, patch: null, problems: this.problems() });
       return err as Error;
     }
+    this.saved();
+    return null;
+  }
+
+  /** The layout and the wire book, in one atomic write. Throws when it can't be written. */
+  private write(l: Loaded): void {
+    writeFileAtomic(this.o.file, JSON.stringify({ ...l.landscape, wires: storedWireBook(l.wires) }, null, 2));
+  }
+
+  /** The file holds everything now: nothing is unsaved, and a problem saving is over. */
+  private saved(): void {
     this.dirty = false;
     if (this.saveProblem) {
       this.saveProblem = null;
       this.tell({ rev: this.rev, patch: null, problems: this.problems() });
     }
-    return null;
   }
 
   /**
@@ -219,6 +313,8 @@ export class LandscapeStore {
       if (dropped) this.droppedProblem = { kind: "dropped", message: `${this.o.file} could be read again, and its layout is back. Dropped: ${what}.`, file: this.o.file };
       this.rev++;
       this.tell({ rev: this.rev, patch: null, landscape: next.landscape, problems: this.problems() });
+      this.wiresRev++;
+      this.tellWires(this.wireState(next));
     }
     return next;
   }
@@ -226,7 +322,7 @@ export class LandscapeStore {
   /** The file as it is now: a landscape, a fresh one when there's no file, or a stand-in when reading it failed. */
   private read(): Loaded {
     const file = this.o.file;
-    const fresh = (problem: LandscapeProblem | null, readOnly = false): Loaded => ({ landscape: emptyLandscape(), problem, readOnly, standIn: false, standInChanges: 0 });
+    const fresh = (problem: LandscapeProblem | null, readOnly = false): Loaded => ({ landscape: emptyLandscape(), wires: freshWireRead(), problem, readOnly, standIn: false, standInChanges: 0 });
     let text: string;
     try {
       text = fs.readFileSync(file, "utf8");
@@ -234,7 +330,7 @@ export class LandscapeStore {
       if (isMissing(err)) return fresh(null);
       // an I/O failure says nothing about what the file holds: it's left alone, and nothing is saved over it
       const message = `${file} couldn't be read (${(err as Error).message}). It's left as it is and read again with the next change; until then the layout is an empty stand-in, and changes to it aren't saved.`;
-      return { landscape: emptyLandscape(), problem: { kind: "unreadable", message, file, readOnly: true }, readOnly: true, standIn: true, standInChanges: 0 };
+      return { landscape: emptyLandscape(), wires: freshWireRead(), problem: { kind: "unreadable", message, file, readOnly: true }, readOnly: true, standIn: true, standInChanges: 0 };
     }
     let parsed: unknown;
     try {
@@ -244,16 +340,26 @@ export class LandscapeStore {
     }
     const v = versionOf(parsed);
     if (v !== null && v > LANDSCAPE_VERSION) {
-      const message = `${file} was written by a newer Mockingbird (landscape version ${v}). It's left as it is, and layout changes aren't saved until this Mockingbird is updated.`;
+      const message = `${file} was written by a newer Mockingbird (landscape version ${v}). It's left as it is, and changes to the layout and wires aren't saved until this Mockingbird is updated.`;
       this.o.log("landscape", new Error(message));
       return fresh({ kind: "newer", message, file, readOnly: true }, true);
     }
     try {
-      return { landscape: parseLandscape(parsed), problem: null, readOnly: false, standIn: false, standInChanges: 0 };
+      return { landscape: parseLandscape(parsed), wires: this.readWires(parsed, v), problem: null, readOnly: false, standIn: false, standInChanges: 0 };
     } catch (err) {
       if (!(err instanceof LandscapeShapeError)) throw err;
       return this.setAside(`isn't a landscape (${err.message})`, err, fresh);
     }
+  }
+
+  /** The book in a file that reads as a landscape: what's wrong with it is logged here, and kept for the banner. */
+  private readWires(parsed: unknown, v: number | null): WireBookRead {
+    const raw = (parsed as { wires?: unknown }).wires;
+    const read = parseWireBook(raw);
+    // this version always writes one, so a file of this version without one was edited: read as none, said once
+    if (raw === undefined && v === LANDSCAPE_VERSION) read.problems.push({ kind: "missing", message: `${this.o.file} has no wires in it, though this version always saves them. It's read as having none.` });
+    for (const p of read.problems) this.o.log("landscape", new Error(p.message));
+    return read;
   }
 
   /** Move a file that isn't a landscape out of the way, so the next save can't overwrite it; when it won't move, nothing is written this run. */
@@ -263,11 +369,11 @@ export class LandscapeStore {
     try {
       fs.renameSync(file, movedTo);
     } catch (moveErr) {
-      const message = `${file} ${why} and couldn't be moved aside (${(moveErr as Error).message}). It's left as it is, and layout changes aren't saved until it's fixed or removed.`;
+      const message = `${file} ${why} and couldn't be moved aside (${(moveErr as Error).message}). It's left as it is, and changes to the layout and wires aren't saved until it's fixed or removed.`;
       this.o.log("landscape", new Error(message, { cause: err }));
       return fresh({ kind: "corrupt", message, file, readOnly: true }, true);
     }
-    const message = `${file} ${why}. It was moved to ${movedTo}, and the layout starts over.`;
+    const message = `${file} ${why}. It was moved to ${movedTo}, and the layout and its wires start over.`;
     this.o.log("landscape", new Error(message, { cause: err }));
     return fresh({ kind: "corrupt", message, file, movedTo });
   }

@@ -23,7 +23,7 @@ export function guarded<A extends unknown[]>(channel: string, fn: (...args: A) =
 }
 
 /** A folder as the filesystem knows it: symlinks resolved, no trailing slash. */
-function canonical(p: string): string {
+export function canonical(p: string): string {
   try {
     return fs.realpathSync(p);
   } catch {

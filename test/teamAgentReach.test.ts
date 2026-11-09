@@ -1,5 +1,4 @@
 import * as fs from "fs";
-import * as net from "net";
 import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { tempDir } from "./helpers";
@@ -10,6 +9,7 @@ import { TeamRoom } from "../src/main/team/teamRoom";
 import "../src/main/team/takeover"; // the take-over events
 import { signGrant } from "../src/main/team/takeoverGrants";
 import { Messaging, mcpLaunch, remoteSessionId } from "../src/main/messaging";
+import { askAs } from "./mcpClient";
 import { DEFAULT_SETTINGS, type AgentMessage, type NewSessionRequest, type SessionInfo, type Settings } from "../src/shared/types";
 
 /**
@@ -102,16 +102,7 @@ function side(m: LoopbackMember, dir: string, listen = false) {
 }
 
 /** One request over the socket, the way the MCP server sends it. */
-function ask(req: object): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const c = net.createConnection(sock);
-    let buf = "";
-    c.on("data", (d) => (buf += d));
-    c.on("end", () => resolve(JSON.parse(buf)));
-    c.on("error", reject);
-    c.end(JSON.stringify(req));
-  });
-}
+const ask = (req: { op: string; from: string; args?: Record<string, unknown> }): Promise<any> => askAs(sock, req);
 
 let roomId: string;
 let ryan: Side;

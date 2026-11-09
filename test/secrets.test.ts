@@ -78,3 +78,20 @@ describe("the secret file list", () => {
     expect(git(repo, "status", "--porcelain").split("\n")).toEqual(["A  .env", "A  src/app.ts"]);
   });
 });
+
+describe("the MCP servers' token folder", () => {
+  it("is denied to room agents' file tools, and to a Codex room's sandbox, by path", async () => {
+    const { HOME_SECRETS, roomSecretReads } = await import("../src/main/secrets");
+    expect(HOME_SECRETS).toContain("~/.mockingbird/mcp-tokens/**");
+    expect(roomSecretReads("/no/such/worktracker").rules).toContain("Read(~/.mockingbird/mcp-tokens/**)");
+    const { codexRoomPermissions } = await import("../src/main/codexRoomSandbox");
+    const { config } = codexRoomPermissions({ workTrackerPath: "/no/such/worktracker", git: null, hooks: [] } as any);
+    expect(config.join(" ")).toContain('"~/.mockingbird/mcp-tokens"="deny"');
+  });
+  it("is one of this Mac's credential stores, so a room artifact added from it is asked about", async () => {
+    const os = await import("os");
+    const path = await import("path");
+    const { homeSecretPlace } = await import("../src/main/secrets");
+    expect(homeSecretPlace(path.join(os.homedir(), ".mockingbird", "mcp-tokens", "abc"))).toBe("~/.mockingbird/mcp-tokens/**");
+  });
+});

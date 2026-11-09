@@ -93,7 +93,7 @@ const claude: AgentAdapter = {
     // --mcp-config adds to the user's own servers; the allow rule spares a
     // permission prompt on every message
     if (ctx.mcp) {
-      const tools = [...new Set<string>([MCP_TOOL.listSessions, MCP_TOOL.sendMessage, ...(ctx.allowTools ?? [])])];
+      const tools = [...new Set<string>([MCP_TOOL.listSessions, MCP_TOOL.sendMessage, MCP_TOOL.listLinks, ...(ctx.allowTools ?? [])])];
       args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", tools.map(claudeToolName).join(","));
     }
     if (ctx.denyReads?.length) args.push("--disallowedTools", ...ctx.denyReads);

@@ -596,14 +596,14 @@ describe("a stored landscape", () => {
 
   it("is refused whole, naming the first field that's wrong", () => {
     expect(() => parseLandscape(null)).toThrow(/the landscape is not an object/);
-    expect(() => parseLandscape({ ...base(), v: 3 })).toThrow(/^v is 3, not 2$/);
+    expect(() => parseLandscape({ ...base(), v: 4 })).toThrow(/^v is 4, not 3$/);
     expect(() => parseLandscape({ ...base(), areas: { "5101": { x: 0, y: 0, w: 1, h: 1 } } })).toThrow(/areas\["5101"\]\.repos is missing/);
     expect(() => parseLandscape({ v: 1, workspaces: {}, areas: {}, stacks: {} })).toThrow(/ghosts is missing/);
     expect(() => parseLandscape({ v: 2, workspaces: {}, areas: {}, stacks: {}, ghosts: {} })).toThrow(/tools is missing/);
   });
 
   it("is refused with a field this version doesn't know, rather than losing it on the next save", () => {
-    expect(() => parseLandscape({ ...base(), wires: {} })).toThrow(/the landscape has a field this version doesn't know \(wires\)/);
+    expect(() => parseLandscape({ ...base(), v: 2, wires: {} })).toThrow(/the landscape has a field this version doesn't know \(wires\)/);
     expect(() => parseLandscape({ ...base(), areas: { "5101": { ...base().areas["5101"], budget: 5 } } })).toThrow(/budget/);
   });
 
@@ -633,6 +633,21 @@ const FORMATS: Record<number, typeof LANDSCAPE_FORMAT> = {
   },
   2: {
     landscape: { fields: ["areas", "cards", "ghosts", "migratedAt", "stacks", "tools", "tourDone", "v", "workspaces"], required: ["areas", "cards", "ghosts", "stacks", "tools", "v", "workspaces"] },
+    placement: { fields: ["h", "w", "x", "y"], required: ["h", "w", "x", "y"] },
+    area: { fields: ["autoCreate", "collapsed", "h", "locked", "repos", "w", "x", "y"], required: ["h", "repos", "w", "x", "y"] },
+    repo: { fields: ["base", "path"], required: ["base", "path"] },
+    stack: { fields: ["active", "placement"], required: ["active", "placement"] },
+    ghost: {
+      fields: ["agent", "branch", "closedAt", "conversation", "cwd", "group", "placement", "repoPath", "summary", "ticketId", "title", "worktreeRemoved"],
+      required: ["agent", "closedAt", "cwd", "group", "placement", "repoPath", "title"],
+    },
+    conversation: { fields: ["agent", "id"], required: ["agent", "id"] },
+    tool: { fields: ["area", "docked", "placement", "session", "tool"], required: ["docked", "tool"] },
+    card: { fields: ["area", "artifact", "placement", "shelf"], required: ["area", "artifact", "shelf"] },
+  },
+  // `wires` is one field here: its inside is WIRE_FORMAT's, pinned under `wv` (test/wires.test.ts)
+  3: {
+    landscape: { fields: ["areas", "cards", "ghosts", "migratedAt", "stacks", "tools", "tourDone", "v", "wires", "workspaces"], required: ["areas", "cards", "ghosts", "stacks", "tools", "v", "workspaces"] },
     placement: { fields: ["h", "w", "x", "y"], required: ["h", "w", "x", "y"] },
     area: { fields: ["autoCreate", "collapsed", "h", "locked", "repos", "w", "x", "y"], required: ["h", "repos", "w", "x", "y"] },
     repo: { fields: ["base", "path"], required: ["base", "path"] },

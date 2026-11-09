@@ -8314,3 +8314,79 @@ if (params.has("reset")) {
 }
 // the grid's layout prefs as they were before the app ran: what checks that the landscape leaves them alone compare with
 w.__mbPrefsAtLoad = Object.fromEntries(Object.values(LEGACY_PREF_KEYS).map((k) => [k, localStorage.getItem(k)]));
+
+// ---- wires: an empty book, changed by main's own rules, on this file's live sessions. Nothing here reaches a pane ----
+import { emptyWireBook, newWire, parseWireSettings, settingsRefusal, wireRefusal, withSettings, withoutSession, rekeyedBook, type WireBook, type WireContext, type WireReply, type WireSettings, type WireState, type WireType } from "../shared/wires";
+let wireBook: WireBook = emptyWireBook();
+let wiresRev = 0;
+const removedWires = new Map<string, WireBook["links"][string]>();
+const wireState = (): WireState => clone({ book: wireBook, refused: null, wiresRev, problems: [] });
+const wireContext = (): WireContext => ({
+  links: wireBook.links,
+  end: (id) => {
+    const s = sessions.find((x) => x.id === id);
+    return s ? { id, title: s.ticketTitle ?? s.title, kind: s.shell ? "terminal" : "agent", debrief: !!s.debrief, room: null, takenOver: null, where: s.status === "dead" ? "dead" : "running", placed: true, folder: s.cwd, hooksSilent: !!s.hooksSilent } : null;
+  },
+});
+const wireChanged = (book: WireBook, id?: string): WireReply => {
+  wireBook = book;
+  wiresRev++;
+  emit("onWiresChanged", wireState());
+  return { state: wireState(), ...(id ? { id } : {}) };
+};
+const wireSettings = (raw: unknown): WireSettings | { refused: string } => {
+  try {
+    return parseWireSettings(raw);
+  } catch (e) {
+    return { refused: (e as Error).message };
+  }
+};
+Object.assign(api, {
+  wiresGet: async () => wireState(),
+  wiresAdd: async (from: string, to: string, type: WireType, raw: unknown = {}): Promise<WireReply> => {
+    const s = wireSettings(raw);
+    if ("refused" in s) return { refused: s.refused as string };
+    const refused = wireRefusal(from, to, type, wireContext()) ?? settingsRefusal({ from, to, type }, s as WireSettings, wireContext());
+    if (refused) return { refused };
+    const id = Math.random().toString(16).slice(2, 10);
+    return wireChanged({ ...wireBook, links: { ...wireBook.links, [id]: withSettings(newWire(from, to, type, Date.now()), s as WireSettings) } }, id);
+  },
+  wiresSet: async (id: string, raw: unknown): Promise<WireReply> => {
+    const s = wireSettings(raw);
+    if ("refused" in s) return { refused: s.refused as string };
+    const w = wireBook.links[id];
+    if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
+    const refused = settingsRefusal(w, s as WireSettings, wireContext());
+    return refused ? { refused } : wireChanged({ ...wireBook, links: { ...wireBook.links, [id]: withSettings(w, s as WireSettings) } });
+  },
+  wiresRemove: async (id: string): Promise<WireReply> => {
+    const w = wireBook.links[id];
+    if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
+    removedWires.set(id, w);
+    const { [id]: _gone, ...links } = wireBook.links;
+    return wireChanged({ ...wireBook, links }, id);
+  },
+  wiresRestore: async (id: string): Promise<WireReply> => {
+    const w = removedWires.get(id);
+    if (!w) return { refused: "That wire can't be restored any more." };
+    const refused = wireRefusal(w.from, w.to, w.type, wireContext());
+    if (refused) return { refused };
+    removedWires.delete(id);
+    return wireChanged({ ...wireBook, links: { ...wireBook.links, [id]: w } }, id);
+  },
+  wiresRekey: async (old: string, next: string): Promise<WireReply> => wireChanged(rekeyedBook(wireBook, old, next)),
+});
+// a forgotten session's wires go with it, as main drops them at sessions:kill
+const killSessionBeforeWires = api.killSession;
+api.killSession = (id: string, forget?: boolean) => {
+  const r = killSessionBeforeWires(id, forget);
+  if (forget) {
+    const { book, dropped } = withoutSession(wireBook, id);
+    if (book !== wireBook) {
+      wireBook = book;
+      wiresRev++;
+      emit("onWiresChanged", { ...wireState(), dropped: clone(dropped) });
+    }
+  }
+  return r;
+};

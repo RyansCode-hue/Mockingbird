@@ -11,7 +11,7 @@ import { currentBranch, git } from "./git";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
-import { mcpLaunch } from "./messaging";
+import { mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
 import { compactBlocker } from "../shared/contextBudget";
@@ -157,6 +157,8 @@ export interface LaunchTarget {
 }
 
 interface LiveSession {
+  /** Its MCP server's launch, whose token goes when this pty does; terminals have none. */
+  mcp?: McpLaunch;
   info: SessionInfo;
   proc: pty.IPty;
   buffer: string;
@@ -488,23 +490,25 @@ export class SessionManager {
       ...(room?.inline ? { inline: true } : {}),
     };
     const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext) => [this.resolveBin(a), ...a.launchArgs(r, ctx)].map(quote).join(" ");
-    if (!req.shell) {
-      claudeArgs = ["-ilc", `exec ${commandFor(agent, req, { mcp: mcpLaunch(id), ...roomCtx })}`];
-    } else if (req.shellResume) {
-      // a terminal that had an agent running in it: bring the conversation
-      // back, and leave the user at the shell prompt when they quit it. It
-      // gets no messaging tools: terminals are outside agent messaging, since
-      // a message typed in once the agent has quit would run as a command.
-      const a = agentFor(req.shellResume.agent);
-      claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id }, roomCtx)}; exec /bin/zsh -il`];
-    }
     // the agent this pty runs: an agent pane's, or the one a terminal brings back
     const runs = req.shell ? req.shellResume?.agent : req.agent ?? "claude";
     let proc: pty.IPty;
     this.refuseWhileQuitting(); // shutdown may have begun while this launch was being prepared
     // a teammate may have taken the session over meanwhile: stopping it then found nothing live to stop
     if (req.reuseId) this.mayRun(req.reuseId);
+    // this launch's messaging tools and the token they're known by, which go with the launch if it fails from here on
+    const mcp = req.shell ? undefined : mcpLaunch(id);
     try {
+      if (mcp) {
+        claudeArgs = ["-ilc", `exec ${commandFor(agent, req, { mcp, ...roomCtx })}`];
+      } else if (req.shellResume) {
+        // a terminal that had an agent running in it: bring the conversation
+        // back, and leave the user at the shell prompt when they quit it. It
+        // gets no messaging tools: terminals are outside agent messaging, since
+        // a message typed in once the agent has quit would run as a command.
+        const a = agentFor(req.shellResume.agent);
+        claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id }, roomCtx)}; exec /bin/zsh -il`];
+      }
       proc = pty.spawn("/bin/zsh", claudeArgs, {
         name: PTY_TERM,
         cols: 120,
@@ -525,6 +529,7 @@ export class SessionManager {
         } as Record<string, string>,
       });
     } catch (err) {
+      retireMcpLaunch(mcp);
       throw new Error(
         `Failed to launch ${req.shell ? "a terminal" : `"${this.resolveBin(agent)}"`} in ${cwd}: ${err instanceof Error ? err.message : err}. ` +
           `If it isn't found, set its full path in Settings → ${agentLabel(req.agent).toLowerCase()} binary.`
@@ -568,6 +573,7 @@ export class SessionManager {
     // keeps running, unreachable, still pumping data under the same id
     const prior = this.live.get(info.id);
     if (prior) {
+      retireMcpLaunch(prior.mcp);
       try {
         prior.proc.kill();
       } catch {
@@ -602,6 +608,7 @@ export class SessionManager {
       kickoff: false,
       startTimer: null,
       compactSentAt: null,
+      mcp,
     };
     sess.total = sess.buffer.length;
     this.live.set(info.id, sess);
@@ -625,6 +632,7 @@ export class SessionManager {
     proc.onExit(({ exitCode }) => {
       this.running.delete(proc);
       exited();
+      retireMcpLaunch(mcp); // this launch's own: a dying pty can't touch its replacement's
       if (this.quitting || this.live.get(info.id) !== sess) return;
       info.exitCode = exitCode;
       this.setStatus(info.id, "dead");
@@ -1222,6 +1230,7 @@ export class SessionManager {
     if (forget && this.relaunching.has(id)) throw new Error(`${BEING_RELAUNCHED}: forget it once it has opened`);
     const s = this.live.get(id);
     if (s) {
+      retireMcpLaunch(s.mcp); // now, not at its exit: the same id may run again before this pty has gone
       try {
         s.proc.kill();
       } catch {
