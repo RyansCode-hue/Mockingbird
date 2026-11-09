@@ -15,6 +15,8 @@ const inset = (b: Box, by: number): Box => ({ x: b.x + by, y: b.y + by, w: b.w -
 
 /** Keys closer together than this are typing. */
 const TYPING_MS = 1000;
+/** A terminal on the landscape (not a peek's, nor the bottom panel's). */
+const LANDSCAPE_TERM = ".ls-world .xterm";
 
 /** What `selector` matches on screen, as one box; null when none of it is. */
 function chromeBox(selector: string): Box | null {
@@ -31,8 +33,11 @@ function chromeBox(selector: string): Box | null {
  * the selection bar does. It sits under dialogs and the palette, which can open over it and give the keyboard back.
  *
  * It holds the keyboard while it's up, so nothing typed can reach a terminal behind it: Tab stays in the card, a press
- * on the dim keeps it there, and focus sent elsewhere comes back. When it closes, the keyboard goes back to what had it
- * (useDialogFocus), or `onClosed` finds it a home when that has gone. Esc skips it.
+ * on the dim keeps it there, and focus sent elsewhere comes back. A terminal on the landscape asked for the keyboard
+ * meanwhile (a jump to its session, from the palette over it too) is told to `onKeysAsked` and doesn't get it yet. When
+ * it closes, the keyboard goes back to what had it (useDialogFocus, never armed: the tour came up on its own), but come
+ * up over a terminal on the landscape it gives none back: `onClosed` gives that terminal (or the one asked for since)
+ * the keyboard once it takes keys. Esc skips it.
  *
  * Come up as someone is typing (in a terminal or a field, or any key a moment before), it doesn't take what they type:
  * the card itself has the keyboard, with no button to press, and Tab, Enter, Space and Esc do nothing until the keys
@@ -46,6 +51,7 @@ export function LandscapeTour({
   onNext,
   onSkip,
   onClosed,
+  onKeysAsked,
 }: {
   steps: readonly TourStep[];
   /** The step shown. */
@@ -56,8 +62,11 @@ export function LandscapeTour({
   onNext: () => void;
   onSkip: () => void;
   onClosed: () => void;
+  onKeysAsked: (terminal: Element) => void;
 }) {
-  useDialogFocus();
+  // read as it renders, while what had the keyboard still has it
+  const overTerm = useRef(!!document.activeElement?.closest(LANDSCAPE_TERM));
+  useDialogFocus({ rearms: false, handsBack: () => !overTerm.current });
   // read as it renders, while what had the keyboard still has it
   const typing = useRef(ownsKeys(document.activeElement) || fromKeyboard() ? performance.now() + TYPING_MS : 0);
   /** Keys still coming as they were when it came up: each one keeps it so for another second. */
@@ -72,8 +81,8 @@ export function LandscapeTour({
   const card = useRef<HTMLDivElement | null>(null);
   const presence = usePresence<HTMLDivElement>("menu", { also: card });
   const primary = useRef<HTMLButtonElement>(null);
-  const now = useRef({ target: step.target, worldBox, onSkip, onClosed });
-  now.current = { target: step.target, worldBox, onSkip, onClosed };
+  const now = useRef({ target: step.target, worldBox, onSkip, onClosed, onKeysAsked });
+  now.current = { target: step.target, worldBox, onSkip, onClosed, onKeysAsked };
 
   const place = () => {
     const c = card.current;
@@ -110,7 +119,11 @@ export function LandscapeTour({
     (typing.current ? card : primary).current?.focus({ preventScroll: true });
     // the card, never a button: an Enter or a Space on the way would press it
     const back = (e: FocusEvent) => {
-      if (card.current?.contains(e.target as Node) || document.querySelector(OVER_TOUR)) return;
+      const t = e.target as Element;
+      if (card.current?.contains(t)) return;
+      // a terminal on the landscape waits for the tour to end, even asked from the palette over it
+      if (t.closest?.(LANDSCAPE_TERM)) now.current.onKeysAsked(t);
+      else if (document.querySelector(OVER_TOUR)) return;
       card.current?.focus({ preventScroll: true });
     };
     // on the window, so it holds however the keyboard came to be nowhere (a dialog over the tour that closed with it)

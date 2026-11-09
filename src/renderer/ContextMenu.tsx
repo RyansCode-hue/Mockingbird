@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { MoreIcon } from "./Icons";
 import { fromKeyboard, usePresence } from "./motion";
-import { useOpener } from "./Modal";
+import { giveBack, keyboardClaimed, useOpener } from "./Modal";
+import { isArmed } from "./keyArm";
 
 /**
  * One action, said once and shown two ways: as a labelled icon button (an
@@ -114,10 +115,10 @@ function run(a: Action, close: () => void) {
 }
 
 /** The menu itself, in a portal over everything. Use it through useContextMenu or MoreButton. */
-function ContextMenuView({ state, setState, label, back }: { state: MenuState; setState: (s: MenuState | null) => void; label?: string; back: HTMLElement | null }) {
+function ContextMenuView({ state, setState, label, back, backArmed }: { state: MenuState; setState: (s: MenuState | null) => void; label?: string; back: HTMLElement | null; backArmed: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   // a dialog opened from a row gives the keyboard back to what had it before the menu, the row being gone
-  useOpener(back);
+  useOpener(back, backArmed);
   // it grows from the pointer's corner; opened from the keyboard, it's simply there
   const presence = usePresence<HTMLDivElement>("menu", { instant: fromKeyboard, also: ref });
   const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
@@ -236,20 +237,24 @@ function ContextMenuView({ state, setState, label, back }: { state: MenuState; s
 export function useContextMenu(label?: string) {
   const [state, setState] = useState<MenuState | null>(null);
   const back = useRef<HTMLElement | null>(null);
+  /** Whether the user had armed what had the keyboard as the menu opened (keyArm.ts): it's armed again when left. */
+  const backArmed = useRef(false);
   const set = (s: MenuState | null) => {
     setState(s);
     if (!s) {
       const el = back.current;
+      const armed = new Set(el && backArmed.current ? [el] : []);
       back.current = null;
-      // unless what the row did took focus (a dialog), or another menu opened
+      // unless what the row did took focus (a dialog) or is placing it (keyboardMoves), or another menu opened
       requestAnimationFrame(() => {
         const now = document.activeElement;
-        if (el?.isConnected && (!now || now === document.body) && !document.querySelector(".mb-ctx:not(.mb-ghost)")) el.focus({ preventScroll: true });
+        if (el?.isConnected && (!now || now === document.body) && !keyboardClaimed() && !document.querySelector(".mb-ctx:not(.mb-ghost)")) giveBack(el, armed);
       });
     }
   };
   const openAt = (at: { x: number; y: number }, items: MenuEntry[]) => {
     back.current = document.activeElement as HTMLElement | null;
+    backArmed.current = isArmed(back.current);
     setState(openMenu(at, items));
   };
   return {
@@ -270,7 +275,7 @@ export function useContextMenu(label?: string) {
         openAt(fromKeys ? { x: r.left + 8, y: r.bottom } : { x: e.clientX, y: e.clientY }, list);
       },
     }),
-    menu: state && <ContextMenuView state={state} setState={set} label={label} back={back.current} />,
+    menu: state && <ContextMenuView state={state} setState={set} label={label} back={back.current} backArmed={backArmed.current} />,
   };
 }
 

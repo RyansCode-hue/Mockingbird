@@ -95,12 +95,13 @@ import { AreaSwitcher } from "./AreaTree";
 import { menuHeading, tidyMenu, useContextMenu, type MenuEntry } from "./ContextMenu";
 import { AreaBar, SeveralBar, WorkspaceBar, type BarPlace } from "./SelectionBar";
 import { AREA_NAME_PX, areaStatus, barAnchor, escapeClears, readBarExtended, saveBarExtended, severalBarItems, type BarChrome, type BarTarget } from "./selectionBarModel";
-import { focusTerm, lendTerm, screenText, scrollTerm } from "./TerminalPane";
+import { focusTerm, lendTerm, screenText, scrollTerm, termHasKeys } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
 import { OVERLAYS, OVER_TOUR, escapeLeavesFullscreen, ownsKeys } from "./keys";
-import { useKeyboardHome } from "./Modal";
+import { keyboardClaimed, useKeyboardHome } from "./Modal";
+import { armFocus, armOnPress, isArmed, typed } from "./keyArm";
 import { LandscapeEmpty } from "./LandscapeEmpty";
 import { LandscapeTour } from "./LandscapeTour";
 import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
@@ -114,6 +115,8 @@ export const CAMERA_PREF = "mb.landscape.camera";
  * middle of it still puts the camera back, and saves the camera it came from as this window's, not the tour's.
  */
 export const TOUR_CAMERA_PREF = "mb.landscape.tourCamera";
+/** The landscape has been on screen in this window: once it has, it's mounted again armed only by its tab clicked. */
+let landscapeShownBefore = false;
 const CAMERA_SAVE_MS = 250;
 const ARROWS: Record<string, Direction> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
 /**
@@ -626,6 +629,11 @@ export function Landscape({
   };
   /** The tour is up (set as it renders, below). */
   const tourUpNow = useRef(false);
+  /**
+   * While it's up: a jump took the view elsewhere (`jumped`), and the session whose terminal was asked for the keyboard
+   * since (`asked`: a jump to it), which is where the keyboard goes when the tour ends.
+   */
+  const tourJump = useRef<{ jumped: boolean; asked: string | null }>({ jumped: false, asked: null });
   /** Where the tour moved the camera from and to, kept while it's up (TOUR_CAMERA_PREF). */
   const tourMoved = () => tourCameraFrom(readPref<unknown>(TOUR_CAMERA_PREF, null));
   /** The camera is where the tour put it, or on its way there. */
@@ -817,20 +825,26 @@ export function Landscape({
   useEffect(() => {
     if ((selected || selectedArea) && pickedNow.current.length) setPicked([]);
   }, [selected, selectedArea]);
-  /** The keyboard to the landscape: the surface, or in focus the focused workspace's frame (so Esc reaches it). */
-  const surface = () => (focusNow.current ? overlay.current : viewport.current)?.focus({ preventScroll: true });
+  /** What takes the landscape's keys: the surface, or in focus the focused workspace's frame (so Esc reaches it). */
+  const surfaceEl = () => (focusNow.current ? overlay.current : viewport.current);
+  /**
+   * The keyboard to the landscape, disarmed (keyArm.ts): what's typed there does nothing until the user arms it. Every
+   * move of the keyboard here that isn't the user's own command (a band change, a terminal that took no keys, a reveal).
+   */
+  const surface = () => surfaceEl()?.focus({ preventScroll: true });
+  // focus, its own terminal and leaving it, are always the user's commands (Enter, ⌘E, ⌘Esc, a double-click, Focus)
   const enterFocus = (t: Tile) => {
     stopHover();
     setPeek(null);
     setFocusKey(t.key);
     select(t);
     // your own terminal takes the keyboard; a teammate's waits for a click, as it does in the grid
-    setTimeout(() => (!isRemote(t.front) && t.front.status !== "dead" ? focusTerm(t.front.id) : overlay.current?.focus({ preventScroll: true })), 50);
+    setTimeout(() => (!isRemote(t.front) && t.front.status !== "dead" ? focusTerm(t.front.id) : armFocus(overlay.current)), 50);
   };
   const leaveFocus = () => {
     setFocusKey(null);
     // the terminal's element moves back into its workspace on the next render; the keyboard comes back here
-    setTimeout(() => viewport.current?.focus({ preventScroll: true }), 0);
+    setTimeout(() => armFocus(viewport.current), 0);
   };
   const selectRef = useRef(select);
   selectRef.current = select;
@@ -880,6 +894,14 @@ export function Landscape({
     if (!reveal) return;
     // taken up: the owner lets go of it, so this landscape mounted again (another tab and back) doesn't repeat it
     asks.current.onHandled(reveal.n);
+    // A jump during the tour (⌘K, the side bar, a notification) takes the view: the tour's camera no longer goes back
+    // when it ends (a later step moves from here), and the terminal that had the keyboard as it came up doesn't get it.
+    if (tourUpNow.current) {
+      writePref(TOUR_CAMERA_PREF, null);
+      tourJump.current.jumped = true;
+      // a jump placing the keyboard (keyboardMoves) is for its session's terminal, which the tour holds it from till then
+      if (keyboardClaimed()) tourJump.current.asked = reveal.id;
+    }
     revealFocus.current = !!reveal.focus;
     revealOpts.current = { keys: !!reveal.keys, avoid: reveal.avoid ?? null };
     const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
@@ -945,14 +967,16 @@ export function Landscape({
       else setFocusKey(null);
     }
     if (!seen) flyTo(centreOn(cam.current, t.rect, room));
-    if (keys && !leaving) surface();
+    // Go there: the user's command to go to the landscape
+    if (keys && !leaving) armFocus(surfaceEl());
   }, [reveal?.n, layout]);
 
+  // after Go there's join request, answered
   const keysGiven = useRef(keysTo);
   useEffect(() => {
     if (keysGiven.current === keysTo) return;
     keysGiven.current = keysTo;
-    surface();
+    armFocus(surfaceEl());
   }, [keysTo]);
 
   // a tool window just opened or placed again comes into view, with its workspace when both fit
@@ -1086,7 +1110,7 @@ export function Landscape({
     if (a.disabled) say(a.title ?? `${a.label} can't be done now`);
     else a.onPick();
   };
-  // the surface's own keys: only while it has the keyboard itself
+  // the surface's own keys: only while it has the keyboard itself, and what's typed only while the user armed it
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.target !== viewport.current || focusNow.current) return;
     const cmd = e.metaKey && !e.ctrlKey && !e.altKey;
@@ -1094,6 +1118,7 @@ export function Landscape({
       e.preventDefault();
       e.stopPropagation();
     };
+    if (typed(e) && !isArmed(viewport.current)) return handled();
     if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) {
       handled();
       if (!space.current) grab("ready");
@@ -1140,24 +1165,29 @@ export function Landscape({
       clearSelection();
     }
   };
-  // A window opening on the landscape, or its tab just clicked, gives it the keyboard, so `?` and the letters work
-  // without a click first. Keys with the keyboard nowhere do nothing: a terminal or a field that went while being typed
-  // in leaves it there, and what's typed on is no shortcut. What closes over the app gives the keyboard back to the
-  // landscape (or focus) when nothing that had it is left.
+  // The window opening on the landscape, or its tab just clicked, gives it the keyboard armed, so `?` and the letters
+  // work without a click first: the user chose it, and nothing was being typed elsewhere. Mounted any other way (a
+  // jump from another tab), it has the keyboard only if nothing else does, and disarmed. Keys with the keyboard nowhere
+  // do nothing. What closes over the app gives the keyboard back to the landscape (or focus), disarmed, when nothing
+  // that had it is left.
   useEffect(() => {
     const a = document.activeElement;
-    if (!a || a === document.body || a.closest(".topbar .tabs")) viewport.current?.focus({ preventScroll: true });
+    const chosen = !!a?.closest(".topbar .tabs") || !landscapeShownBefore;
+    landscapeShownBefore = true;
+    if (a && a !== document.body && !a.closest(".topbar .tabs")) return;
+    if (chosen) armFocus(viewport.current);
+    else viewport.current?.focus({ preventScroll: true });
   }, []);
-  useKeyboardHome(() => (focusNow.current ? overlay.current : viewport.current));
+  useKeyboardHome(surfaceEl);
 
-  // A peek's keys, wherever the keyboard is but a text field, a menu or a dialog: Space keeps it open, and closes it
-  // once kept; Esc closes it; Enter focuses a kept-open one's workspace.
+  // A peek's keys, while the landscape is armed or the peek itself has the keyboard (never a terminal elsewhere, never
+  // with the keyboard nowhere), and no menu or dialog is open: Space keeps it open, and closes it once kept; Esc closes
+  // it; Enter focuses a kept-open one's workspace.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const p = peekNow.current;
       if (!p || e.metaKey || e.ctrlKey || e.altKey || (e.key !== " " && e.key !== "Escape" && !(e.key === "Enter" && p.pinned))) return;
-      const t = e.target instanceof Element ? e.target : null;
-      if (t?.closest("input, textarea:not(.xterm-helper-textarea), select, [contenteditable]") || document.querySelector(OVERLAYS)) return;
+      if (!(isArmed(viewport.current) || document.activeElement?.closest(".ls-peek")) || document.querySelector(OVERLAYS)) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.key === "Escape") setPeek(null);
@@ -1240,6 +1270,8 @@ export function Landscape({
       if (document.querySelector(OVER_TOUR)) return false;
       const a = document.activeElement;
       tourTerm.current = a?.closest(".ls-world .xterm") ? (a.closest<HTMLElement>(".ls-node")?.dataset.front ?? null) : null;
+      tourJump.current = { jumped: false, asked: null };
+      tourHold.current?.();
       setTourUp(true);
       stopHover();
       closePeek();
@@ -1281,25 +1313,61 @@ export function Landscape({
     writePref(TOUR_CAMERA_PREF, null);
     tour.onEnd();
   };
+  /** A terminal on the landscape asked for the keyboard while the tour holds it (a jump to its session). */
+  const tourKeysAsked = (el: Element) => {
+    const id = el.closest<HTMLElement>(".ls-world .ls-node")?.dataset.front;
+    if (id) tourJump.current.asked = id;
+  };
+  /** Ends the hold on the keyboard after the tour (tourClosed), while it's on. */
+  const tourHold = useRef<(() => void) | null>(null);
+  useEffect(() => () => tourHold.current?.(), []);
   /**
-   * The tour has gone. A terminal that had the keyboard has it back if it's there and takes keys. If the tour's camera
-   * took it out of the band that does, the landscape holds the keyboard until the camera is back and the band has
-   * followed, then it's the terminal's, unless something has taken the keyboard meanwhile.
+   * The tour has gone. The terminal that had the keyboard as it came up gets it back, or the one a jump during it asked
+   * for it; a jump that asked for none leaves it nowhere, as does a view the terminal takes no keys in and isn't on its
+   * way back to. While the camera is on its way (the tour's took it out of the band where terminals take keys), the
+   * tour's hold stays on: what's typed meanwhile is swallowed, each key holding it a while longer, as the card does. A
+   * press, or the keyboard going anywhere, ends it; past the cap the keyboard is left nowhere, said in the log. None of it
+   * ever arms the landscape (keyArm.ts).
    */
   const tourClosed = () => {
-    const a = document.activeElement;
-    if (!a || a === document.body || (a.closest(".ls-world .xterm") && !takesKeys(bandNow.current))) surface();
-    const id = tourTerm.current;
+    const { jumped, asked } = tourJump.current;
+    const id = asked ?? (jumped ? null : tourTerm.current);
     tourTerm.current = null;
-    if (!id || document.activeElement !== viewport.current) return;
-    const until = Date.now() + TOUR_KEYS_BACK_MS;
+    tourJump.current = { jumped: false, asked: null };
+    if (!id || !layoutNow.current.tiles.some((t) => t.members.some((m) => m.id === id))) return;
+    const coming = () => takesKeys(bandNow.current) || !!flight.current || !!bandWait.current;
+    const give = () => {
+      if (takesKeys(bandNow.current) && !bandWait.current && !flight.current) focusTerm(id);
+      return termHasKeys(id);
+    };
+    if (give() || !coming()) return;
+    let until = performance.now() + TOUR_KEYS_BACK_MS;
+    const onKey = (e: KeyboardEvent) => {
+      until = performance.now() + TOUR_KEYS_BACK_MS;
+      if (!typed(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const stop = () => {
+      clearInterval(wait);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", stop, true);
+      document.removeEventListener("focusin", stop, true);
+      if (tourHold.current === stop) tourHold.current = null;
+    };
     const wait = setInterval(() => {
-      if (document.activeElement !== viewport.current || Date.now() > until) return clearInterval(wait);
-      if (!takesKeys(bandNow.current) || bandWait.current || flight.current) return;
-      focusTerm(id);
-      // its terminal is attached once the band has rested there: until then the keyboard stays, and it's asked again
-      if (document.activeElement?.closest(".xterm")) clearInterval(wait);
+      if (give() || !coming()) return stop();
+      if (performance.now() < until) return;
+      stop();
+      if (document.activeElement === viewport.current) viewport.current?.blur();
+      console.warn(`[mockingbird] the tour couldn't give ${id}'s terminal its keyboard back within ${TOUR_KEYS_BACK_MS} ms of the last key: it's left nowhere`);
     }, 50);
+    tourHold.current?.();
+    tourHold.current = stop;
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", stop, true);
+    // the keyboard given anywhere (its terminal included, by give) ends the hold
+    document.addEventListener("focusin", stop, true);
   };
 
   // ---- gestures: the marquee, and moving a workspace or an area ----
@@ -1692,7 +1760,10 @@ export function Landscape({
       grab(space.current ? "ready" : "");
     };
     const onDown = (e: PointerEvent) => {
-      if (inFocus(e.target)) return;
+      // A press on the landscape arms it (keyArm.ts): at once if it has the keyboard, or as the press gives it it. A
+      // press that gives the keyboard to something of its own (a terminal, a button) arms nothing.
+      if (inFocus(e.target)) return armOnPress(overlay.current);
+      armOnPress(viewport.current);
       stopHover();
       // a press takes the camera from a flight, and ends a gesture still going (its release never came)
       stopFlyRef.current();
@@ -1732,7 +1803,8 @@ export function Landscape({
         if (!tile) return;
         if (e.shiftKey) return selRefs.current.pickTiles(toggled(tile.key));
         selectRef.current(tile);
-        setTimeout(() => (tile.front.status !== "dead" && takesKeys(bandNow.current) ? focusTerm(tile.front.id) : surface()), 0);
+        // the press's own: the landscape keeps the keyboard armed
+        setTimeout(() => (tile.front.status !== "dead" && takesKeys(bandNow.current) ? focusTerm(tile.front.id) : armFocus(viewport.current)), 0);
         return;
       }
       if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -2231,7 +2303,14 @@ export function Landscape({
             ref={overlay}
             className="ls-focus"
             onKeyDown={(e) => {
-              if (e.key !== "Escape" || e.metaKey || !escapeLeavesFullscreen(e.target as Element, !!document.querySelector(OVERLAYS))) return;
+              if (!typed(e)) return;
+              // on the frame itself, what's typed counts only while the user armed it (keyArm.ts)
+              if (e.target === overlay.current && !isArmed(overlay.current)) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
+              if (e.key !== "Escape" || !escapeLeavesFullscreen(e.target as Element, !!document.querySelector(OVERLAYS))) return;
               e.preventDefault();
               e.stopPropagation();
               leaveFocus();
@@ -2258,6 +2337,7 @@ export function Landscape({
           onNext={() => (tourStep === tourList.length - 1 ? endTour() : setTourAt(tourStep + 1))}
           onSkip={endTour}
           onClosed={tourClosed}
+          onKeysAsked={tourKeysAsked}
         />
       )}
     </div>

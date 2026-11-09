@@ -1655,3 +1655,9 @@ export function focusTerm(id: string): void {
   if (e?.lent) return e.lent();
   e?.term.focus();
 }
+
+/** A session's terminal has the keyboard. */
+export function termHasKeys(id: string): boolean {
+  const a = document.activeElement;
+  return !!a && !!terms.get(id)?.term.element?.contains(a);
+}

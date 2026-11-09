@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { TerminalPane, agentPanelOf, disposeTerm, focusTerm, followOwners, applyTermTheme, hideAgentPanel, resyncTerm, type PaneDensity, type PaneResize } from "./TerminalPane";
+import { TerminalPane, agentPanelOf, disposeTerm, focusTerm, followOwners, applyTermTheme, hideAgentPanel, resyncTerm, termHasKeys, type PaneDensity, type PaneResize } from "./TerminalPane";
 import { EditorDock, ExplorerTree } from "./FilePanel";
 import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
 import { QuickOpen } from "./QuickOpen";
+import { keyboardMoves } from "./Modal";
 import { EMPTY_EDITOR, closeTab, openTab, tabKey, updateTab } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
@@ -1006,7 +1007,11 @@ function App() {
       if (sub) setWsTabs((p) => ({ ...p, [`${topOf(s)}/${sub}`]: s.id })); // front its workspace tab
     }
     setFocused(s.id);
-    setTimeout(() => focusTerm(s.id), 50);
+    // The keyboard goes to its terminal, at once when that's already there: a palette or menu closing as it's picked
+    // gives none back to what had it meanwhile, or a key typed straight after would land in the session left.
+    keyboardMoves();
+    focusTerm(s.id);
+    if (!termHasKeys(s.id)) setTimeout(() => focusTerm(s.id), 50);
   };
   const jumpTo = (id: string) => {
     const s = sessions.find((x) => x.id === id);

@@ -290,6 +290,72 @@ describe.skipIf(!local)("keys after a terminal goes", () => {
   }, 120_000);
 });
 
+describe.skipIf(!local)("the landscape's typed keys act only once the user arms it", () => {
+  const nothingRan = { tour: false, others: [], changes: [], selected: true, focus: false, sheet: false, dialog: false, menu: false, palette: false };
+  for (const [how, motion] of [
+    ["esc", "off"],
+    ["skip", "full"],
+  ] as const)
+    it(`runs nothing typed straight after the tour ends (${how}) as its camera comes back, and sends it to no other session`, async () => {
+      const a = await run("a", `case=tour&how=${how}&motion=${motion}&lsCamera=0,0,1&needsMany`, "1024x768");
+      expect(a.before).toBe(true);
+      expect(a.tourUp).toEqual({ tour: true, terminalsTakeKeys: false });
+      // the tour's end gives the landscape no keyboard: it's nowhere until s1's terminal takes it
+      expect(a.atEnd).toBe("body");
+      expect(a.after).toMatchObject(nothingRan);
+      expect(a.typedAfter).toEqual(["s1"]);
+    }, 120_000);
+
+  it("ends the tour's hold on the keyboard at a press, and gives the terminal nothing after it", async () => {
+    const a = await run("a", "case=tour&how=click&lsCamera=0,0,1&needsMany", "1024x768");
+    expect(a.tourUp).toEqual({ tour: true, terminalsTakeKeys: false });
+    expect(a.afterClick).toEqual({ spacer: true, atPress: "body", keyboard: "body", s1HadKeys: [] });
+  }, 120_000);
+
+  it("keeps a peek's Space and Enter out of a terminal elsewhere being typed in", async () => {
+    const a = await run("a", "case=peekLog&lsCamera=0,0,0.5");
+    expect(a.before).toBe(true);
+    expect(a.peek).toEqual({ of: "ws:5101/api", pinned: false });
+    // every key typed reached the log's terminal, Space and both Enters included
+    expect(a.after).toEqual({ peek: { of: "ws:5101/api", pinned: false }, focus: false, sessionWrites: [], inLog: true, logData: "h x\ryes\r" });
+  }, 120_000);
+
+  it("keeps a peek's Space and Enter from acting with the keyboard nowhere", async () => {
+    const a = await run("a", "case=peekGone&lsCamera=0,0,0.5");
+    expect(a.before).toBe(true);
+    expect(a.peek).toEqual({ of: "ws:5101/api", pinned: false });
+    expect(a.after).toEqual({ peek: { of: "ws:5101/api", pinned: false }, focus: false, sessionWrites: [], inLog: false, logData: "" });
+  }, 120_000);
+
+  it("leaves the view where ⌘K went during the tour, and gives the terminal left nothing typed after", async () => {
+    const a = await run("a", "case=jumpInTour&lsCamera=0,0,1");
+    expect(a.before).toBe(true);
+    expect(a.tourUp).toBe(true);
+    expect(a.jumped).toEqual({ selected: "s4", tour: true });
+    expect(a.after).toMatchObject({ tour: false, selected: "s4", cameraBack: false, toS1: 0 });
+  }, 120_000);
+
+  it("gives the session left nothing typed straight after ⌘K's Enter on another", async () => {
+    const a = await run("a", "case=jumpKeys&lsCamera=0,0,1");
+    expect(a.before).toBe(true);
+    expect(a.after).toEqual({ s1HadKeys: [], toS1: 0, last: "s4", selected: "s4" });
+  }, 120_000);
+
+  it("takes nothing typed while it has the keyboard by code, until a press arms it", async () => {
+    const a = await run("a", "case=press&needsMany");
+    const none = { moved: false, focus: false, sheet: false, dialog: false, menu: false, palette: false };
+    expect(a.byCode).toEqual({ keyboard: "landscape", ...none });
+    expect(a.afterPalette).toEqual({ keyboard: "landscape", ...none });
+    expect(a.byPress).toEqual({ keyboard: "landscape", moved: true });
+    expect(a.afterPalette2).toEqual({ sheet: true });
+  }, 120_000);
+
+  it("takes nothing typed on after a zoom out moves the keyboard from a terminal to it", async () => {
+    const a = await run("a", "case=zoomOut&lsCamera=0,0,1&needsMany");
+    expect(a.afterZoom).toEqual({ inS1: true, terminalsTakeKeys: false, keyboard: "landscape", moved: false });
+  }, 120_000);
+});
+
 describe.skipIf(!local)("the empty landscape", () => {
   it("offers what exists, and right-click works everywhere it says", async () => {
     const e = await run("e", "lsOnly=nothing");

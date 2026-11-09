@@ -2933,8 +2933,117 @@ Design O, with Artifacts as a window, and N's workspace header.
   - **Found, not fixed:** a peek's keys (Space, Enter on a kept one) act
     wherever the keyboard is but a field, a terminal's included (S3): with a
     peek open under a resting pointer, Space and Enter typed on after a
-    terminal goes would keep and focus it. At 640 px wide the minimap overlaps
-    the zoom HUD. Help's guide still describes the grid (S8b's switch).
+    terminal goes would keep and focus it (fixed in round 2: H2). At 640 px
+    wide the minimap overlaps the zoom HUD. Help's guide still describes the
+    grid (S8b's switch).
+- **S8a review fixes (round 2) — As built:**
+  - **The arming rule (`src/renderer/keyArm.ts`). Every key handler on the
+    landscape goes through it, and every later one must.** A key without ⌘
+    or Ctrl (`typed`: letters, `?`, Enter, Space, Esc, Tab, ⌥ keys, a peek's
+    keys) acts on the landscape only while the landscape is *armed*
+    (`isArmed`). The keyboard landing on it isn't enough: it lands there on
+    its own too, and what's typed on then was meant for somewhere else, often
+    another session's prompt.
+    - **Armed only by an act of the user aimed at it:** a press on the canvas,
+      a card or the landscape's own chrome (`armOnPress`, from the viewport's
+      pointerdown: at once if it has the keyboard, or as the press's own focus
+      move gives it it; a press that gives a terminal or a button the keyboard
+      arms nothing); a command that leaves a terminal for it or goes to it
+      (⌘E, ⌘Esc, Esc out of focus, Go there, `armFocus`); the window opening
+      on it, or its tab clicked; and the user leaving what they opened from it
+      while it was armed. "Leaving" means Esc, `?` (the sheet's own key) or a
+      press (Cancel, ×, outside it). Then `useDialogFocus` and the context
+      menu give the keyboard back armed. A dialog submitted with Enter, or a
+      palette row run with it, gives it back disarmed: keys may still be
+      coming for what it made.
+    - **Disarmed whenever the keyboard goes anywhere else**, however that
+      happens (`focusin` elsewhere, focus falling to the page), and nothing
+      but the acts above arms it again. So a hand-back after a terminal,
+      field, dialog or menu went, a band change (`commitBand`, `offKeys`), a
+      reveal, the tour ending, or anything else that moves the keyboard by
+      code leaves it disarmed. The tour never arms (`useDialogFocus({ rearms:
+      false })`).
+    - **A disarmed landscape swallows typed keys**, Tab included, so a burst
+      can't walk onto a button and press it with the Enter after. ⌘ and Ctrl
+      chords still work (⌘0, ⌘1, ⌘K, ⌘E), and ⌥⇥ is the window's, from
+      anywhere. Focus's frame (`.ls-focus`) is a surface too: Esc on the
+      frame itself leaves focus only while it's armed.
+    - **A new key handler:** if it acts on a typed key, it asks
+      `isArmed(surface)`. A peek's keys also act while the peek itself has
+      the keyboard. Code that gives the landscape the keyboard for the user's
+      own command calls `armFocus`; anything else calls `focus()` and leaves
+      it disarmed. Preview audits that stand in for a press use `armFocus` in
+      their setup (`giveLandscape`); the tests of the rule itself press for
+      real.
+  - **H1, the tour's hand-back:** the tour's end never gives the landscape
+    the keyboard. Come up over a terminal on the landscape, it hands nothing
+    back itself (`handsBack`); `tourClosed` gives that terminal its keyboard
+    once it takes keys. Until then, while the camera is on its way back to
+    where terminals take keys, the tour's hold stays on: keys typed meanwhile
+    are swallowed, each one holding it a while longer, as the card does. A
+    press, or the keyboard going anywhere, ends the hold, and the terminal
+    then gets nothing. Past the cap (`TOUR_KEYS_BACK_MS` after the last key)
+    the keyboard is left nowhere, said in the log. With no way back (a view
+    terminals take no keys in, and no flight or band change coming), it's
+    left nowhere at once.
+  - **H2, a peek's keys:** Space, Esc and Enter act only while the landscape
+    is armed or the peek itself has the keyboard: never in a terminal
+    elsewhere (the bottom panel's log included), never with the keyboard
+    nowhere.
+  - **M1, ⌘K during the tour:** a jump during the tour (any reveal: ⌘K, the
+    side bar, a notification) clears the tour's camera pref. The tour's end
+    doesn't fly back over it (a later step moves from where the jump went),
+    and the terminal that had the keyboard as the tour came up gets nothing.
+    A jump that places the keyboard (`keyboardMoves`) names its session as
+    the one to get it after the tour, if its terminal takes keys by then. A
+    terminal on the landscape asked for the keyboard while the tour is up,
+    from the palette over it too, is held off and named the same way
+    (`onKeysAsked`).
+  - **L1, a palette or menu row that moves the keyboard itself:**
+    `jumpToSession` says so (`keyboardMoves`, until the frame after). The
+    palette or menu closing as it's picked then gives nothing back to what
+    had the keyboard. The session's terminal is focused at once if it's
+    there, else 50 ms later as before. Meanwhile the keyboard is nowhere, so
+    a key typed straight after Enter goes nowhere, never into the session
+    left.
+  - **Tests:** =a in the first-run audit, every case driven by real keys and
+    presses:
+    - the tour ended by Esc, by Skip (motion on) and by a press as the camera
+      comes back, at 1024×768;
+    - a peek over the log terminal being typed in, and over a field removed
+      mid-typing;
+    - ⌘K during the tour, and keys straight after ⌘K's Enter;
+    - the landscape given the keyboard by code (keys do nothing, the palette
+      left gives it back disarmed), then armed by a press (N works, the
+      palette left with Esc gives it back armed);
+    - a trackpad zoom out of a terminal (N does nothing).
+
+    Each "nothing reached s1" has a positive control: a key typed once things
+    settle reaches the right session. The log terminal's input guard holds
+    back keys it can't attribute (`dropped-unattributed`); the peek test
+    counts those as reaching it.
+  - **Checked by reverting**, each taken out on its own with its test
+    failing:
+    - H1's three layers, together (the state before the fix) and one at a
+      time: the tour giving the landscape no keyboard, the hold swallowing
+      what's typed, and a press ending the hold;
+    - the arming check;
+    - focus falling to the page disarming, and focus going elsewhere
+      disarming;
+    - a press arming;
+    - leaving a palette re-arming;
+    - H2's peek check;
+    - M1's jump;
+    - L1's `keyboardMoves`.
+  - **Not tested:** the hold's cap and its log line (no fixture keeps the
+    camera coming back for longer than the cap); a terminal asked for during
+    the tour taking the keyboard after it (in the tour's zoomed-out step the
+    jump's terminal isn't attached, so the hand-back finds no way back and
+    leaves the keyboard nowhere, which is what's tested); a disarmed focus
+    frame swallowing Esc.
+  - **Found, not fixed:** with the keyboard nowhere (the page's body), Tab
+    still moves it to the window's first control and Enter presses it. That's
+    the browser's own, outside the landscape.
 
 ## Risks
 
@@ -2943,7 +3052,8 @@ Design O, with Artifacts as a window, and N's workspace header.
 - **Many live terminals.** Mitigated by the zoom bands, attaching only
   on-screen workspaces, and WebGL; measured in S3.
 - **Shortcut conflicts.** Single-letter keys (N, M, T, ?) work only while the
-  landscape has focus, never in a terminal.
+  landscape has focus and the user armed it (keyArm.ts, S8a review round 2),
+  never in a terminal.
 - **Electron gestures.** Pinch arrives as ctrl+wheel, and trackpad scroll as
   wheel with fractional deltas; the camera handles both, as `wheelLines`
   already does for scrolling.

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { useLiftOut } from "./lift";
+import { armFocus, isArmed, userLeft } from "./keyArm";
 
 /**
  * Said on `document` as a dialog opens, so what floats over the app can get out of its way. `handBack` names who gets
@@ -17,9 +18,14 @@ export interface DialogOpened {
  * Where the keyboard goes back to for each thing open over the app (a dialog, the palette, a menu), oldest first: what
  * had it as that opened, then what those before it had. Something opened from a palette row or a menu row has that row
  * as its opener, and the row goes with its palette or menu a moment later: the keyboard goes back past it, to what
- * had it before the palette or the menu opened.
+ * had it before the palette or the menu opened. `armed`: those of them the user had armed (keyArm.ts), armed again
+ * when the keyboard goes back to them.
  */
-const openers: { chain: readonly Element[] }[] = [];
+interface Opener {
+  chain: readonly Element[];
+  armed: ReadonlySet<Element>;
+}
+const openers: Opener[] = [];
 /** The keyboard's place when nothing that had it is left (the landscape, while it's on screen). */
 let home: (() => HTMLElement | null) | null = null;
 
@@ -29,16 +35,33 @@ function placeFor(chain: readonly Element[]): HTMLElement | null {
   return home?.() ?? null;
 }
 
+/** The keyboard back to `to`: armed again if the user had armed it when what's closing opened from it, and left it. */
+export function giveBack(to: HTMLElement, armedThen: ReadonlySet<Element>): void {
+  if (armedThen.has(to) && userLeft()) armFocus(to);
+  else to.focus({ preventScroll: true });
+}
+
+/**
+ * What was just picked places the keyboard itself (a jump to a session's terminal): what closes as it's picked gives
+ * none back meanwhile, or a key typed straight after would land where the keyboard was. Until the frame after.
+ */
+let claimed = 0;
+export function keyboardMoves(): void {
+  const n = ++claimed;
+  requestAnimationFrame(() => setTimeout(() => n === claimed && (claimed = 0), 0));
+}
+export const keyboardClaimed = (): boolean => claimed > 0;
+
 /**
  * While what's open (a menu) has the keyboard, it's where what opens from it goes back past: `back` is what had the
- * keyboard as it opened.
+ * keyboard as it opened, `backArmed` whether the user had armed it.
  */
-export function useOpener(back: Element | null): void {
+export function useOpener(back: Element | null, backArmed = false): void {
   useEffect(() => {
-    const entry = { chain: back ? [back] : [] };
+    const entry: Opener = { chain: back ? [back] : [], armed: new Set(back && backArmed ? [back] : []) };
     openers.push(entry);
     return () => void openers.splice(openers.indexOf(entry), 1);
-  }, [back]);
+  }, [back, backArmed]);
 }
 
 /** `get` is where the keyboard goes when what opened over the app closes and nothing that had it before is left. */
@@ -56,14 +79,24 @@ export function useKeyboardHome(get: () => HTMLElement | null): void {
 
 /**
  * What opens over the app: says so (DIALOG_OPENED), and gives focus back to what had it when it closes, if nothing has
- * taken it since; past what has gone, to what had it before (`openers`). Returns where that is now, for passing on.
+ * taken it since and what was picked isn't placing it (`keyboardMoves`); past what has gone, to what had it before
+ * (`openers`). What the user had armed is armed again (keyArm.ts), unless `rearms` is false: the tour, which comes up
+ * on its own. `handsBack` can keep it from giving the keyboard to a place its owner hands back to itself. Returns where
+ * the keyboard goes back to now, for passing on.
  */
-export function useDialogFocus(): () => HTMLElement | null {
+export function useDialogFocus(opts: { rearms?: boolean; handsBack?: (to: HTMLElement) => boolean } = {}): () => HTMLElement | null {
   // read as it renders: the palette or menu it was opened from is still there
   const chain = useRef<Element[] | null>(null);
-  if (!chain.current) chain.current = [document.activeElement, ...[...openers].reverse().flatMap((o) => o.chain)].filter((e): e is Element => !!e);
+  const armedThen = useRef<Set<Element> | null>(null);
+  if (!chain.current) {
+    const had = document.activeElement;
+    chain.current = [had, ...[...openers].reverse().flatMap((o) => o.chain)].filter((e): e is Element => !!e);
+    armedThen.current = opts.rearms === false ? new Set() : new Set([...(had && isArmed(had) ? [had] : []), ...openers.flatMap((o) => [...o.armed])]);
+  }
+  const handsBack = useRef(opts.handsBack);
+  handsBack.current = opts.handsBack;
   useEffect(() => {
-    const entry = { chain: chain.current! };
+    const entry: Opener = { chain: chain.current!, armed: armedThen.current! };
     openers.push(entry);
     document.dispatchEvent(
       new CustomEvent<DialogOpened>(DIALOG_OPENED, {
@@ -78,7 +111,9 @@ export function useDialogFocus(): () => HTMLElement | null {
     return () => {
       openers.splice(openers.indexOf(entry), 1);
       const lost = !document.activeElement || document.activeElement === document.body;
-      if (lost) placeFor(chain.current!)?.focus({ preventScroll: true });
+      if (!lost || keyboardClaimed()) return;
+      const to = placeFor(chain.current!);
+      if (to && (handsBack.current?.(to) ?? true)) giveBack(to, entry.armed);
     };
   }, []);
   return () => placeFor(chain.current!);

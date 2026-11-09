@@ -32,6 +32,7 @@
  * dismissed, on a second prompt, finished, and a teammate's tab on a prompt.
  */
 import type { SessionInfo } from "../shared/types";
+import { armFocus } from "../renderer/keyArm";
 
 export interface NeedsAuditEnv {
   sessions: () => SessionInfo[];
@@ -211,7 +212,7 @@ async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promi
   await closeTray();
 
   // N and ⇧N on the landscape: the view goes to each item in turn, the keyboard staying with the landscape
-  vp().focus();
+  armFocus(vp());
   const steps: unknown[] = [];
   for (const shift of [false, false, false, false, true]) {
     const cam = camera();
@@ -251,7 +252,7 @@ async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promi
   out.inField = { before, ws: selectedWs(), area: selectedArea(), typed: filter.value };
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, "");
   filter.dispatchEvent(new Event("input", { bubbles: true }));
-  vp().focus();
+  armFocus(vp());
   vp().dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true, bubbles: true, cancelable: true }));
   await sleep(800);
   (node("s1")?.querySelector<HTMLElement>(".ls-head") ?? node("s1"))!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerId: 7 }));
@@ -267,7 +268,7 @@ async function trayPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promi
     keyboard: keyboard(),
     wrote: env.calls.slice(w0).filter((c) => c.fn === "sessionWrite" && c.args[0] === "s1").map((c) => String(c.args[1])),
   };
-  vp().focus();
+  armFocus(vp());
 
   // Dismiss: off the list and the counts, the keyboard still in the tray (N moves on); a double click's second
   // Dismiss, landing on the item that slid up, is let go; Undo lists it again
@@ -344,12 +345,12 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
     // ⌘E leaves focus, the keyboard back on the landscape
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "e", metaKey: true, bubbles: true, cancelable: true }));
     await sleep(400);
-    vp().focus();
+    armFocus(vp());
     return r;
   };
   // Go there on the permission prompt: the tray goes, the workspace is selected, the keyboard on the landscape (a
   // single letter answers Codex's prompt); Enter then gives its terminal the keyboard
-  vp().focus();
+  armFocus(vp());
   await openTray();
   out.goTitle = actBtn("s:s2", "go")?.title ?? null;
   act("s:s2", "go");
@@ -402,7 +403,7 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   vp().dispatchEvent(new KeyboardEvent("keydown", { key: "0", metaKey: true, bubbles: true, cancelable: true }));
   await sleep(900);
   out.cardsBand = [...vp().classList].find((c) => c.startsWith("ls-band-"))?.slice(8) ?? null;
-  vp().focus();
+  armFocus(vp());
   await openTray();
   act("s:s2", "go");
   await sleep(800);
@@ -410,7 +411,7 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   out.goCardsEnter = await enterAndBack("s2");
 
   // Go there on the join request: its room's area, and the admin's prompt for it
-  vp().focus();
+  armFocus(vp());
   await openTray();
   const join = tray().items.find((i) => i.kind === "join")?.id ?? "";
   act(join, "go");
@@ -421,7 +422,7 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   // the tray and what had the keyboard before the prompt are long gone: it's the landscape's
   out.goJoinAfter = { prompt: !!document.querySelector(".join-ask"), keyboard: keyboard() };
   // an area selected (by N, by Go there) lets go of several picked workspaces: one selection at a time
-  vp().focus();
+  armFocus(vp());
   for (const id of ["s1", "s8"]) {
     (node(id)?.querySelector<HTMLElement>(".ls-head") ?? node(id))!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerId: 3, shiftKey: true }));
     await sleep(150);
@@ -582,7 +583,7 @@ async function aroundDismissPart(out: Record<string, unknown>): Promise<void> {
   const bar = () => ({ needs: height(".ny-btn"), bottom: (() => { const b = box(document.querySelector(".ny-btn")); return b ? b.y + b.h : null; })(), neighbour: height(".topbar > button.primary") });
   const ids = () => tray().items.map((i) => i.id!);
   out.barWithCount = bar();
-  vp().focus();
+  armFocus(vp());
   await openTray();
   const all = ids();
   out.all = all;

@@ -43,6 +43,8 @@ import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type A
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
 import { recordConsole, runNeedsAudit } from "./needsYouAudit";
 import { runFirstRunAudit } from "./firstRunAudit";
+// the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
+import { armFocus } from "../renderer/keyArm";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
@@ -2954,7 +2956,7 @@ if (lsKey)
     setTimeout(() => {
       const meta = lsKey.startsWith("cmd-");
       const v = document.querySelector<HTMLElement>(".ls-viewport");
-      v?.focus();
+      armFocus(v);
       v?.dispatchEvent(new KeyboardEvent("keydown", { key: meta ? lsKey.slice(4) : lsKey, metaKey: meta, bubbles: true, cancelable: true }));
     }, 750)
   );
@@ -3005,7 +3007,7 @@ if (lsSelect)
         const r = on.getBoundingClientRect();
         press(r.left + 8, r.top + 8, on);
       } else if (kind === "pick") {
-        viewport.focus();
+        armFocus(viewport);
         viewport.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
         // one Shift-click a moment, as a person makes them: each adds to what the one before left
         what.split(",").forEach((id, i) =>
@@ -3534,9 +3536,11 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     pointer(vp(), "pointermove", { clientX: p.clientX - 140, clientY: p.clientY - 90 });
     pointer(vp(), "pointerup", { clientX: p.clientX - 140, clientY: p.clientY - 90, button });
   };
-  // a press on a workspace's header (a card's anywhere): it's selected, and the landscape keeps the keyboard
+  // a press on a workspace's header (a card's anywhere): it's selected, and the landscape keeps the keyboard, armed, as
+  // the press's own focus move (which a dispatched pointerdown doesn't make) gives it
   const pick = async (id: string) => {
     pointer(node(id)!.querySelector(".ls-head") ?? node(id)!, "pointerdown", { button: 0 });
+    armFocus(vp());
     await sleep(150);
   };
   // its row in the area tree (the Sessions view while the landscape shows), its area opened first when it's closed
@@ -3583,7 +3587,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       // a wheel over a workspace that isn't selected moves the landscape too
       wheel(node("s8")!.querySelector(".term-holder")!, { deltaY: 90 });
       const afterWheelOver = camera();
-      vp().focus();
+      armFocus(vp());
       key(vp(), " ");
       drag(node("s4")!.querySelector(".term-holder")!, 0);
       keyUp(vp(), " ");
@@ -3600,7 +3604,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const afterPinch = under(pinched);
       vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: r.left + p.x, clientY: r.top + p.y, deltaY: 200, metaKey: true }));
       const cmdScrolled = camera();
-      vp().focus();
+      armFocus(vp());
       key(vp(), "0", { metaKey: true });
       const fitted = camera();
       // long enough for the cards band to take over, so coming back attaches terminals again
@@ -3649,7 +3653,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
 
       // focus on your own workspace: it reflows to the window, and back to its placement
       await pick("s1");
-      vp().focus();
+      armFocus(vp());
       mark = resizes().length;
       key(vp(), "Enter");
       await sleep(400);
@@ -3674,6 +3678,8 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       await sleep(300);
       const viaCmdE = inFocus();
       pointer(document.querySelector(".ls-focus .ls-head")!, "pointerdown", { button: 0 });
+      // the press's own focus move: the focus frame has the keyboard, armed
+      armFocus(document.querySelector<HTMLElement>(".ls-focus"));
       await sleep(100);
       key(document.activeElement ?? document.body, "Escape");
       await sleep(300);
@@ -3697,7 +3703,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       // a stack's tab switched in focus: the member leaving the front goes back to the stack's size, and the one
       // coming in fills the window until focus ends
       await pick("s2");
-      vp().focus();
+      armFocus(vp());
       mark = resizes().length;
       key(vp(), "Enter");
       await sleep(500);
@@ -3743,7 +3749,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
 
       // ⌥→ from s1: the nearest workspace to its right, brought to the middle
       await pick("s1");
-      vp().focus();
+      armFocus(vp());
       const cam2 = camera();
       key(vp(), "ArrowRight", { altKey: true });
       await sleep(200);
@@ -4239,7 +4245,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       await sleep(400);
 
       // never while Space is held to pan
-      vp().focus();
+      armFocus(vp());
       key(vp(), " ");
       over(node("s1")!.querySelector(".ls-term")!);
       await sleep(REST);
@@ -5468,7 +5474,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         esc();
         await sleep(200);
         const afterFirst = { menu: !!document.querySelector(".mb-ctx"), bar: !!selbar(), selected: !!document.querySelector(`${areaEl("5102")}.selected`) };
-        vp().focus();
+        armFocus(vp());
         esc(vp());
         await sleep(200);
         const afterSecond = { bar: !!selbar(), selected: !!document.querySelector(".ls-area.selected") };
@@ -5505,6 +5511,8 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(500);
         const inFocus = { focus: !!document.querySelector(".ls-focus .ls-node"), bar: !!selbar() };
         pointer(document.querySelector(".ls-focus .ls-head")!, "pointerdown", { button: 0 });
+        // the press's own focus move: the focus frame has the keyboard, armed
+        armFocus(document.querySelector<HTMLElement>(".ls-focus"));
         await sleep(100);
         esc();
         await sleep(400);
@@ -5524,7 +5532,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
 
         // three selected with Shift: their bar, its right-click and the one on a picked card, and Move to area ▾
         await fitView();
-        vp().focus();
+        armFocus(vp());
         esc(vp());
         await sleep(200);
         const cleared = { bar: barNow()?.name ?? null, selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-front") ?? null, active: document.activeElement?.className ?? null };
@@ -5564,7 +5572,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
           setGroup: callsSince(moveMark, "setGroup"),
           note: noteText(),
         };
-        vp().focus();
+        armFocus(vp());
         esc(vp());
         await sleep(200);
 
@@ -5709,7 +5717,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(PEEK_HOVER_MS + 300);
         const peekOpen = !!document.querySelector(".ls-peek");
         const bar = barNow()?.name ?? null;
-        vp().focus();
+        armFocus(vp());
         esc(vp());
         await sleep(300);
         const first = { peek: !!document.querySelector(".ls-peek"), bar: barNow()?.name ?? null };
@@ -5813,7 +5821,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(300);
         await ctxPick("Collapse to a pill");
         await sleep(400);
-        vp().focus();
+        armFocus(vp());
         esc(vp());
         await sleep(300);
         const before = { selected: selectedArea(), collapsed: !!landscape.areas["5101"]?.collapsed };
@@ -5832,7 +5840,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         pointer(term!, "pointerup", { button: 0, shiftKey: true, ...at(term!, 0.5, 0.5) });
         await sleep(300);
         out.shiftOnTerm = { bar: barNow()?.name ?? null };
-        vp().focus();
+        armFocus(vp());
         esc(vp());
         await sleep(300);
 
@@ -5850,7 +5858,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
           pointer(node("s8")!.querySelector(".ls-head") ?? node("s8")!, "pointerdown", { button: 0, shiftKey: true });
           await sleep(300);
           above[`two@${z}`] = clearOf("5101");
-          vp().focus();
+          armFocus(vp());
           esc(vp());
           await sleep(300);
         }
@@ -5862,7 +5870,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(600);
         const changes = barBtn("tool:changes");
         out.gitFail = { label: changes ? [...changes.childNodes].map((n) => n.textContent?.trim() ?? "").filter(Boolean).join(" ") : null, title: changes?.title ?? null };
-        vp().focus();
+        armFocus(vp());
         esc(vp());
         await sleep(300);
 
@@ -5896,7 +5904,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
 
       if (part === "g") {
         const shiftPick = async (ids: string[]) => {
-          vp().focus();
+          armFocus(vp());
           esc(vp());
           await sleep(200);
           await fitView();
@@ -5998,7 +6006,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
 
         // s8 (its worktree read slowly, ?gitSlow) and s6 closing; while s8 is read, y1 closed on its own: its dialog
         // (?gitFail) stays until it's answered, s8's asked after it, then s6
-        vp().focus();
+        armFocus(vp());
         esc(vp());
         await sleep(200);
         await fitView();
@@ -6258,7 +6266,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         }
         await sleep(300);
         out.picked = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node.picked")].map((n) => n.dataset.front);
-        vp().focus();
+        armFocus(vp());
         let mark = calls.length;
         key(vp(), "g", { metaKey: true });
         await sleep(900);
@@ -6285,7 +6293,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         // T on the selected area tidies it; the note's Undo puts every place back
         const placesBefore = JSON.stringify(landscape.workspaces);
         await selectAreaAt("5101");
-        vp().focus();
+        armFocus(vp());
         mark = calls.length;
         key(vp(), "t");
         await sleep(800);
@@ -6525,7 +6533,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
           await sleep(250);
         }
         await sleep(400);
-        vp().focus();
+        armFocus(vp());
         key(vp(), "g", { metaKey: true });
         await sleep(500);
         const n = document.querySelector<HTMLElement>(".ls-note")?.getBoundingClientRect();
