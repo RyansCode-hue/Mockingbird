@@ -93,7 +93,7 @@ async function run<T>(part: string, query = "", size = "1400x900"): Promise<T> {
   const id = `mb-landscape-bar-audit-${part}`;
   const json: string | null = await pageResult({
     size,
-    query: `labs=landscape&motion=off&landscapeBarAudit=${part}${query ? `&${query}` : ""}`,
+    query: `motion=off&landscapeBarAudit=${part}${query ? `&${query}` : ""}`,
     outDir: path.join(tempDir(id), "out"),
     read: `document.getElementById(${JSON.stringify(id)})?.textContent ?? null`,
   });

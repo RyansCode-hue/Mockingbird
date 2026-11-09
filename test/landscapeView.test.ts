@@ -14,6 +14,7 @@ import {
   inView,
   migrationPatch,
   migrationStep,
+  partialMigration,
   nearestInDirection,
   newer,
   panBy,
@@ -747,5 +748,16 @@ describe("reading the grid's layout in on first use", () => {
     expect(after.workspaces).toEqual(m.workspaces);
     expect(after.ghosts).toEqual(cur.ghosts);
     expect(migrationStep({ landscape: after, rev: 1, problems: [] }, all)).toEqual({ kind: "done" });
+  });
+});
+
+describe("what a migration read in without", () => {
+  it("is nothing when it read everything there", () => {
+    expect(partialMigration([], [])).toBeNull();
+  });
+
+  it("names prefs it couldn't read and prefs not in the grid's shape, and says every session is placed all the same", () => {
+    const said = partialMigration(["mb.trees"], ["mb.shown isn't a list"]);
+    expect(said).toMatch(/^mb\.trees couldn't be read; mb\.shown isn't a list\. Every session is on the landscape/);
   });
 });

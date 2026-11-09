@@ -5,7 +5,7 @@ import { D } from "../src/renderer/motion";
 import { tempDir } from "./helpers";
 
 // Motion, played in the UI preview in real headless Chrome: local only (CI runners have no desktop); the script
-// passes a mock keychain. ?motionAudit (src/preview/stub.ts) minimizes a workspace into its folder and restores
+// passes a mock keychain. ?motionAudit with ?labs=off (src/preview/stub.ts) minimizes a workspace into its folder and restores
 // it, opens and closes a dialog, and shows and dismisses a toast, finishing each animation instead of waiting on
 // real time, and reports the end states: tests read those, never frames caught in flight.
 const chrome = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -31,7 +31,7 @@ type Audit = {
 async function audit(motion: "full" | "reduce"): Promise<Audit> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
-  const json: string | null = await pageResult({ size: "1400x900", query: `motion=${motion}&motionAudit`, outDir: path.join(tempDir("motion"), "out"), read: `document.getElementById("mb-motion-audit")?.textContent ?? null` });
+  const json: string | null = await pageResult({ size: "1400x900", query: `labs=off&motion=${motion}&motionAudit`, outDir: path.join(tempDir("motion"), "out"), read: `document.getElementById("mb-motion-audit")?.textContent ?? null` });
   if (!json) throw new Error("the preview didn't finish its motion audit");
   return JSON.parse(json);
 }
@@ -118,7 +118,7 @@ type Moments = {
 async function moments(motion: "full" | "reduce" | "off"): Promise<Moments> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
-  const json: string | null = await pageResult({ size: "1400x900", query: `motion=${motion}&motionMoments`, outDir: path.join(tempDir("moments"), "out"), read: `document.getElementById("mb-motion-moments")?.textContent ?? null` });
+  const json: string | null = await pageResult({ size: "3200x2400", query: `motion=${motion}&motionMoments`, outDir: path.join(tempDir("moments"), "out"), read: `document.getElementById("mb-motion-moments")?.textContent ?? null` });
   if (!json) throw new Error("the preview didn't finish playing the motion moments");
   const m: Moments = JSON.parse(json);
   expect(m.error).toBeUndefined();
@@ -152,7 +152,7 @@ function landed(m: Moments) {
 }
 
 describe.skipIf(!local)("the interface's motion, round two", () => {
-  it("springs bars only on a real change, turns presence, slides a teammate's message in, and pulses a pane that changed hands", async () => {
+  it("springs bars only on a real change, turns presence, slides a teammate's message in, and pulses a workspace that changed hands", async () => {
     const m = await moments("full");
     expect(m.mode).toBe("full");
     landed(m);
@@ -194,7 +194,7 @@ describe.skipIf(!local)("the interface's motion, round two", () => {
   }, 120_000);
 });
 
-// ?motionAudit with ?labs=landscape (src/preview/stub.ts) goes to an area from the area tree, finishes the flight's
+// ?motionAudit (src/preview/stub.ts) goes to an area from the area tree, finishes the flight's
 // clock animation rather than waiting on it, and reads where the camera ended; then flies again and stops it with
 // the wheel.
 type Flight = {
@@ -206,7 +206,7 @@ type Flight = {
 async function flight(motion: "full" | "reduce"): Promise<Flight> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
-  const json: string | null = await pageResult({ size: "1400x900", query: `labs=landscape&motion=${motion}&motionAudit`, outDir: path.join(tempDir("fly"), "out"), read: `document.getElementById("mb-landscape-fly-audit")?.textContent ?? null` });
+  const json: string | null = await pageResult({ size: "1400x900", query: `motion=${motion}&motionAudit`, outDir: path.join(tempDir("fly"), "out"), read: `document.getElementById("mb-landscape-fly-audit")?.textContent ?? null` });
   if (!json) throw new Error("the preview didn't finish its flight audit");
   return JSON.parse(json);
 }

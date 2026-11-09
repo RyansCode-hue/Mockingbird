@@ -345,13 +345,13 @@ export interface Settings {
    * full screen.
    */
   roomSessionsInline?: boolean;
-  /** Settings → Labs: features still being built, each off until turned on. */
+  /** Settings → Labs: features still being built. */
   labs?: LabsFlags;
 }
 
 /** Settings → Labs. */
 export interface LabsFlags {
-  /** The Sessions tab shows the landscape (docs/landscape.md) instead of the grid. */
+  /** False: the Sessions tab shows the grid instead of the landscape (docs/landscape.md), which is on unless it's turned off. */
   landscape?: boolean;
 }
 

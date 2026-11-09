@@ -3415,10 +3415,11 @@ Design O, with Artifacts as a window, and N's workspace header.
     need re-reading against it.
 - **As built, the switch · the audit.** Every control, shortcut, menu, drag and
   pref of the grid and the Sessions view, read from the code and driven in the
-  preview before anything was deleted. *Kept* works as it did; *moved* has its
+  preview. *Kept* works as it did; *moved* has its
   home there; *fixed* was missing and was added here, tested in
   `test/uiLandscapeSwitch.test.ts` and `test/landscapeArrange.test.ts`;
-  *decided* was dropped on purpose by `landscape.md`.
+  *decided* was dropped on purpose by `landscape.md`; *dropped* was Ryan's call
+  once the audit found it had no home.
 
   | The grid or Sessions view | On the landscape | |
   | --- | --- | --- |
@@ -3445,12 +3446,12 @@ Design O, with Artifacts as a window, and N's workspace header.
   | Group's name, its Share, its room's Follow | The area's header | moved |
   | Notes (`statusNote`) said off the Sessions tab | In the status bar | fixed: only the group bar drew them |
   | Showing N of M | Gone: everything's on the landscape | decided |
-  | Layout popover: snap templates | None | **open: needs a design** |
-  | Arrange in N columns, ⌘⌃1–4 | Tidy, with no column count | **open: needs a design** |
-  | Auto: fit panes to the window | Tidy packs; nothing fits a window | **open: needs a design** |
+  | Layout popover: snap templates | None | dropped, Ryan's decision |
+  | Arrange in N columns, ⌘⌃1–4 | None; Tidy packs an area | dropped, Ryan's decision |
+  | Auto: fit panes to the window | None | dropped, Ryan's decision |
   | **A pane** | | |
   | Header: rename, mute, ⋯, undo, repaint, diff, handoff, brief, review, close | The workspace's header and ⋯ | moved |
-  | Double-click a pane edge to even out | Workspace edges resize, no even-out | **open: needs a design** |
+  | Double-click a pane edge to even out | None; workspace edges resize | dropped, Ryan's decision |
   | Drag its header to move, its edge to resize | The same on a workspace | moved |
   | Drop onto a pane as a tab; tab dragged out | ⌘G Stack; a tab dragged out (`planUnstack`) | moved |
   | Inline rename | Rename… | moved |
@@ -3467,11 +3468,48 @@ Design O, with Artifacts as a window, and N's workspace header.
   | ⌥⇥, ⌘J, the editor dock, the presets, every dialog | Unchanged | kept |
   | Import's opened sessions | The first is brought into view | fixed: it wrote `mb.shown` and `mb.activeGroup` |
   | Per-group remembered panes (`mb.groupLayouts`, `mb.trees`) | Each workspace's own place; read once by the migration | decided |
-  | `mb.shown`, `mb.pinned`, `mb.activeGroup`, `mb.wsTabs`, `mb.wsOpen`, `mb.sideView`, `mb.cols`, `mb.layout`, `mb.zones` | Read by the migration, listed in `LEGACY_PREF_KEYS` | see the switch's next commit |
+  | `mb.shown`, `mb.trees`, `mb.pinned`, `mb.activeGroup`, `mb.wsTabs`, `mb.cols`, `mb.layout`, `mb.zones` | Read by the migration (`LEGACY_PREF_KEYS`); written only while the grid shows | kept |
+  | `mb.wsOpen`, `mb.collapsed`, `mb.sideView` | Not carried; written only while the grid shows | decided |
 
-  **Open before the grid goes:** the Layout popover's templates, Arrange in N
-  columns with ⌘⌃1–4, Auto, and even-out have no home beyond Tidy, and depend on
-  `layoutTree.ts` (`TEMPLATES`, `arrange`, `evenGrid`, `equalize`).
+- **As built, on by default.** `settings.labs.landscape` is on unless it's
+  false, so someone who turned it off keeps the grid, and Settings → Labs still
+  turns it off. `?labs=off` is the same in the preview; each interface's tests
+  run on it (`uiTerminal`, `uiTyping`, `uiContextWarning`, `uiPhoneAlerts`,
+  `uiLayout`, `uiTicketStart`).
+  - **The migration runs once for everyone**, gated as before (`migrationStep`:
+    every list loaded, no problem with the file, no `migratedAt`). Someone who
+    had the landscape on has `migratedAt`, so it never runs for them again.
+  - **Partial or unreadable prefs are said.** `readLegacyPrefs` tells a pref
+    that's there and can't be read from one that isn't there, where `readPref`
+    would give the same default for both. Those, and prefs not in the grid's
+    shape (`m.ignored`), go in a banner, *Part of your grid's layout wasn't read
+    in*. Every session still gets a place from its group; only where it sits
+    depends on the prefs. Storage that can't be read at all names every key.
+  - **The grid's keys aren't written while the landscape shows**, not even
+    their defaults (`usePersisted`'s `save`): the file a downgrade reads is the
+    file the grid left, spoiled or not. `test/uiLandscape.test.ts` compares them
+    exactly. Nothing on disk changes format.
+  - **What was keyed on the grid or `shown`:**
+
+    | Behaviour | On the landscape | Checked by |
+    | --- | --- | --- |
+    | Terminals attached | On screen in the live and read-only bands, or selected | `uiLandscapeZoom` |
+    | Pty sizes | From the placement, or the window in focus; held off screen (`holdSize`); never from pan or zoom | `uiLandscape`, `uiTerminal` |
+    | What teammates stream, and what's "seen" | `lsSeen` (`sessionsOnScreen`) goes to `teamLiveView` | `uiLandscapeAreas`, `uiLandscapeAreaEdges` |
+    | Notifications, phone alerts | Main process, keyed on the window's focus and the session's own state, never on `shown` | read |
+    | Status bar | Counts areas, whatever the tree's filter leaves; its words about Follow fit either interface | `uiLandscapeSwitch`, `uiStatusBar` |
+    | Take-over, Take it back | Read from `useTakeover`, never `shown` | `uiLandscapeTools` |
+    | Follow | Watches the selection (`followFocus`), and brings what they're in into view | `uiStatusBar`, `uiLandscapeTools` |
+    | Re-reads | `refresh`, on what main sends, never on `shown` | read |
+    | `⌘\\`, ⌘K's row for the tree | Went by the grid's last side bar view; now by the side bar alone | `uiLandscapeSwitch` |
+
+  - **Found, not fixed:** at DPR 1 a landscape terminal leaves its holder's right
+    edge blank: its columns come from the font's advance (7.5px here) and xterm
+    draws at a whole 7px, so 140 columns take 980px of 1056. `uiTerminal` checks
+    size against the placement for that reason, and Retina isn't affected. A
+    workspace's body takes the mouse only at 100%, as S3 decided, which includes
+    a typing ask's Allow and Deny; below 35% it's a card, with no ask on it, and
+    Needs you doesn't list typing asks.
 
 ## Risks
 

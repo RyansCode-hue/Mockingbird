@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AREA_GAP,
   AREA_HEADER,
@@ -18,6 +18,7 @@ import { LEGACY_PREF_KEYS, migrateLayout, type LegacyPrefs } from "../src/shared
 import type { SessionInfo } from "../src/shared/types";
 import { remotePaneId, type RoomSessionTag } from "../src/shared/team/livePanes";
 import { cellKeyFor } from "../src/renderer/appModel";
+import { readLegacyPrefs } from "../src/renderer/useLandscape";
 import { layoutToRemember, switchTo } from "../src/renderer/gridModel";
 import { insertBeside, reconcile, resizePane, type LayoutNode } from "../src/renderer/layoutTree";
 import { readPref, writePref, type PrefStore } from "../src/renderer/prefs";
@@ -122,6 +123,33 @@ function checkInvariants(l: Landscape, sessions: SessionInfo[]): void {
     else expect(contains(own(l.areas, areaKeyOf(s)), p), `${s.id} isn't inside its area`).toBe(true);
   }
 }
+
+describe("the grid's prefs, read from localStorage", () => {
+  const store = (kv: Record<string, string>) => ({ getItem: (k: string) => kv[k] ?? null, setItem: () => expect.unreachable("the migration never writes") });
+
+  it("are each parsed, and what isn't there is left undefined and unnamed", () => {
+    const { prefs, unreadable } = readLegacyPrefs(store({ "mb.shown": '["a"]', "mb.cols": "2" }));
+    expect(prefs).toEqual({ shown: ["a"], cols: 2 });
+    expect(unreadable).toEqual([]);
+  });
+
+  it("name one that's there and can't be read, unlike one that isn't there, and read the rest", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { prefs, unreadable } = readLegacyPrefs(store({ "mb.shown": '["a"]', "mb.trees": "{not json" }));
+    expect(prefs).toEqual({ shown: ["a"] });
+    expect(unreadable).toEqual(["mb.trees"]);
+    vi.restoreAllMocks();
+  });
+
+  it("name every one when storage itself can't be read, rather than reading as an empty grid", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const broken = { getItem: () => { throw new Error("storage is off"); }, setItem: () => undefined };
+    const { prefs, unreadable } = readLegacyPrefs(broken);
+    expect(prefs).toEqual({});
+    expect(unreadable).toEqual(Object.values(LEGACY_PREF_KEYS));
+    vi.restoreAllMocks();
+  });
+});
 
 describe("migrating one group", () => {
   const sessions = [sess("a", "5101"), sess("b", "5101", { repoPath: "/Users/you/Code/attune" }), sess("c", "5101", { repoPath: null })];

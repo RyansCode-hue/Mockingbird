@@ -218,17 +218,21 @@ function App() {
   /** Likewise for reads of which closed sessions' folders are gone (readGone). */
   const [goneFails, setGoneFails] = useState(0);
   const listLoaded = (which: "live" | "resumable") => setListsLoaded((p) => (p[which] ? p : { ...p, [which]: true }));
-  const [shown, setShown] = usePersisted<string[]>("mb.shown", []);
-  const [focused, setFocused] = useState<string | null>(null);
-  // Settings → Labs. Until settings are read, the flag as this window last saw it, so the Sessions tab doesn't
-  // draw the grid only to swap it for the landscape (each fitting every terminal) a moment later
-  const [labs, setLabsNow] = useState<LabsFlags>(() => ({ landscape: readPref<unknown>(LABS_LANDSCAPE_PREF, false) === true }));
+  // Settings → Labs. Until settings are read, the flag as this window last saw it, so the Sessions tab doesn't draw one
+  // interface only to swap it for the other (each fitting every terminal) a moment later
+  const [labs, setLabsNow] = useState<LabsFlags>(() => ({ landscape: readPref<unknown>(LABS_LANDSCAPE_PREF, true) === true }));
   const setLabs = (next: LabsFlags) => {
     setLabsNow(next);
-    // kept only once it differs from the default, so a window that never turns it on stores nothing new
-    if ((readPref<unknown>(LABS_LANDSCAPE_PREF, false) === true) !== (next.landscape === true)) writePref(LABS_LANDSCAPE_PREF, next.landscape === true);
+    // kept only once it differs from the default, so a window that never turns it off stores nothing new
+    if ((readPref<unknown>(LABS_LANDSCAPE_PREF, true) === true) !== (next.landscape !== false)) writePref(LABS_LANDSCAPE_PREF, next.landscape !== false);
   };
-  const landscapeOn = labs.landscape === true;
+  const landscapeOn = labs.landscape !== false;
+  // what the grid remembers is read as it left it, and saved only while the grid is what shows: the landscape never
+  // changes what the grid, or a downgrade, comes back to
+  const gridSaves = !landscapeOn;
+  const [savedShown, setShown] = usePersisted<string[]>("mb.shown", [], gridSaves);
+  const shown = useMemo(() => (Array.isArray(savedShown) ? savedShown : []), [savedShown]);
+  const [focused, setFocused] = useState<string | null>(null);
   // the sessions on the landscape's screen (Landscape's onSeen): what teammates stream here while it shows, as the
   // grid's panes are without it
   const [lsSeen, setLsSeen] = useState<string[]>([]);
@@ -256,12 +260,13 @@ function App() {
   };
   const [zoomed, setZoomed] = useState<string | null>(null);
   // pinned panes stay on screen when the grid switches groups
-  const [pinned, setPinned] = usePersisted<string[]>("mb.pinned", []);
+  const [savedPinned, setPinned] = usePersisted<string[]>("mb.pinned", [], gridSaves);
+  const pinned = useMemo(() => (Array.isArray(savedPinned) ? savedPinned : []), [savedPinned]);
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   // the group the grid was last switched to (see activeGroupOf)
-  const [lastGroup, setLastGroup] = usePersisted<string | null>("mb.activeGroup", null);
+  const [lastGroup, setLastGroup] = usePersisted<string | null>("mb.activeGroup", null, gridSaves);
   // where each pane sits, per group: a split tree (layoutTree.ts) whose leaves are cell keys
-  const [trees, setTrees] = usePersisted<Record<string, LayoutNode>>("mb.trees", {});
+  const [trees, setTrees] = usePersisted<Record<string, LayoutNode>>("mb.trees", {}, gridSaves);
   const [legacyLayout] = useState(readLegacyLayout);
   // the ticket pipeline opened from the grid (group bar, palette)
   const pipelines = usePipelines();
@@ -386,14 +391,17 @@ function App() {
   }, [sideCollapsed]);
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(readPref<string[]>("mb.collapsed", [])));
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    const saved = readPref<unknown>("mb.collapsed", []);
+    return new Set(Array.isArray(saved) ? saved : []);
+  });
   useEffect(() => {
-    writePref("mb.collapsed", [...collapsed]);
-  }, [collapsed]);
+    if (gridSaves) writePref("mb.collapsed", [...collapsed]);
+  }, [collapsed, gridSaves]);
   // per-group memory of which sessions were visible, so switching back restores the subset
-  const [groupLayouts, setGroupLayouts] = usePersisted<Record<string, string[]>>("mb.groupLayouts", {});
+  const [groupLayouts, setGroupLayouts] = usePersisted<Record<string, string[]>>("mb.groupLayouts", {}, gridSaves);
   // active tab per workspace (sub-group) pane, keyed "top/sub" — persisted
-  const [wsTabs, setWsTabs] = usePersisted<Record<string, string>>("mb.wsTabs", {});
+  const [wsTabs, setWsTabs] = usePersisted<Record<string, string>>("mb.wsTabs", {}, gridSaves);
   const [closeDlg, setCloseDlg] = useState<{ session: SessionInfo; wt: WorktreeStateInfo | { error: string } } | null>(null);
   const [groupDlg, setGroupDlg] = useState<SessionInfo | null>(null);
   // team rooms: which groups are shared, and the share / join dialogs
@@ -548,7 +556,7 @@ function App() {
       setUpdatedTo(false);
     }
   };
-  const [sideView, setSideView] = usePersisted<SideView>("mb.sideView", "sessions");
+  const [sideView, setSideView] = usePersisted<SideView>("mb.sideView", "sessions", gridSaves);
   const [sideW, setSideW] = usePersisted<number>("mb.sideW", 264);
   const [editor, setEditor] = useState(EMPTY_EDITOR);
   const [search, setSearch] = useState<SearchState>(() => ({ q: "", ...readPref("mb.search", { scope: "conversations", regex: false, matchCase: false }) }));
@@ -721,7 +729,7 @@ function App() {
   useEffect(() => {
     window.mb.getSettings().then(async (s: Settings | { error: string }) => {
       if (isErr(s)) {
-        // the grid, as Labs flags are off until settings say otherwise
+        // the landscape, as flags are their defaults until settings say otherwise
         setLabsNow({});
         return readFailed("settings", s);
       }
@@ -1094,7 +1102,7 @@ function App() {
   const workSessions = useMemo(() => sessions.filter((s) => !s.debrief), [sessions]);
   const debriefSessions = useMemo(() => sessions.filter((s) => s.debrief), [sessions]);
 
-  // ---- the landscape (Settings → Labs): the Sessions tab's surface instead of the grid ----
+  // ---- the landscape (Settings → Labs): the Sessions tab's surface, or the grid with it off ----
   const landscapeStore = useLandscape(landscapeOn);
   const liveOwn = useMemo(() => sessions.filter((s) => !isRemote(s)), [sessions]);
   const liveRemote = useMemo(() => sessions.filter(isRemote), [sessions]);
@@ -1414,7 +1422,7 @@ function App() {
 
   // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
   // the rest are open exactly while the workspace is in the grid.
-  const [wsOpen, setWsOpen] = usePersisted<Record<string, boolean>>("mb.wsOpen", {});
+  const [wsOpen, setWsOpen] = usePersisted<Record<string, boolean>>("mb.wsOpen", {}, gridSaves);
   // the session list's rows and headings ([data-flip]) slide to their new places when sessions arrive, leave,
   // move group or re-sort — never as the filter is typed, or a group or workspace folds open or shut
   const sessionList = useRef<HTMLDivElement>(null);
@@ -1843,7 +1851,7 @@ function App() {
     // the landscape's area tree to the rail and back (design M); the area switcher stands in for it meanwhile
     if (cmd && !e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "\\" && tab === "sessions" && landscapeOn) {
       handled();
-      if (sideCollapsed || sideView !== "sessions") showView("sessions");
+      if (sideCollapsed) showView("sessions");
       else setSideCollapsed(true);
       return;
     }
@@ -4347,7 +4355,7 @@ function App() {
           <span className="sb-info">
             {(() => {
               const theirs = workSessions.filter(isRemote).length;
-              return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {groupCount} groups</span>;
+              return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {landscapeOn && landscapeLayout ? plural(landscapeLayout.areas.filter((a) => a.key !== LOOSE_GROUP).length, "area") : `${groupCount} groups`}</span>;
             })()}
             <span>⌘K commands</span>
             <span className="help-link" onClick={() => setModal("help")}>? help</span>
@@ -4373,7 +4381,7 @@ function App() {
             ...(landscapeOn ? [{ label: "Shortcuts — every key on the landscape", kbd: "?", run: () => setKeysOpen(true) }] : []),
             // the landscape: each area to fly to
             ...(landscapeOn ? (landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => goToArea(a.key) })) : []),
-            ...(landscapeOn ? [{ label: sideCollapsed || sideView !== "sessions" ? "Show the area tree" : "Hide the area tree", kbd: "⌘\\", run: () => (sideCollapsed || sideView !== "sessions" ? showView("sessions") : setSideCollapsed(true)) }] : []),
+            ...(landscapeOn ? [{ label: sideCollapsed ? "Show the area tree" : "Hide the area tree", kbd: "⌘\\", run: () => (sideCollapsed ? showView("sessions") : setSideCollapsed(true)) }] : []),
             // the landscape: every ghost at once (Previous's restore all), while there are any
             ...(landscapeOn
               ? ghostsActions(ghostRows(null, "the landscape"))

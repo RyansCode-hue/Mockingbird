@@ -35,11 +35,11 @@ export function writePref(key: string, value: unknown, store?: PrefStore): boole
   }
 }
 
-/** useState kept under `key`: read once when the view mounts, saved on every change. */
-export function usePersisted<T>(key: string, initial: T | (() => T)): [T, Dispatch<SetStateAction<T>>] {
+/** useState kept under `key`: read once when the view mounts, saved on every change while `save` holds. */
+export function usePersisted<T>(key: string, initial: T | (() => T), save = true): [T, Dispatch<SetStateAction<T>>] {
   const [value, setValue] = useState<T>(() => readPref(key, typeof initial === "function" ? (initial as () => T)() : initial));
   useEffect(() => {
-    writePref(key, value);
-  }, [key, value]);
+    if (save) writePref(key, value);
+  }, [key, value, save]);
   return [value, setValue];
 }

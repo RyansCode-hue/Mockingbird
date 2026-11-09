@@ -39,6 +39,11 @@ describe.skipIf(!local)("Start session on a House card", () => {
     expect(a.after.house.claim).toEqual({ by: "You", branch: BRANCH });
   }, 120_000);
 
+  it("starts it on screen on the grid too", async () => {
+    const a = await audit("labs=off&motion=off&houseStartAudit");
+    expect(a.after).toMatchObject({ pop: null, board: false, shown: true });
+  }, 120_000);
+
   it("starts from the ticket's own Start session button", async () => {
     const a = await audit("motion=off&houseStartAudit=detail");
     expect(a.detailButton).toBe("Start session");

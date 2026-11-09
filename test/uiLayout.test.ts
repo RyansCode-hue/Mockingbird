@@ -29,11 +29,12 @@ const collisions = (over: Box[], under: Box[]) =>
 describe.skipIf(!local)("the interface's layout", () => {
   // ?paneControls shows every row's actions at once, as a hover shows one row's
   const rowParts = [".sess-item .sr-acts", ".sess-item .nm", ".sess-item .name > .br", ".sess-item .name button:not(.lbtn)"];
-  for (const [where, query] of [
-    ["the Sessions view", "paneControls"],
-    ["a room in the Team view", "view=room&paneControls"],
-  ] as const) {
-    for (const size of ["1500x900", "1000x700"]) {
+  for (const size of ["1500x900", "1000x700"]) {
+    for (const [where, query] of [
+      ["a room in the Team view", "view=room&paneControls"],
+      ["the grid's Sessions view", "labs=off&paneControls"],
+      ["a room in the grid's Team view", "labs=off&view=room&paneControls"],
+    ] as const) {
       it(`keeps a row's actions on its title line, clear of its name and the lines and buttons under it: ${where}, ${size}`, async () => {
         const { boxes } = await render(size, query, rowParts);
         const [acts, names, lines, buttons] = rowParts.map((s) => boxes[s] ?? []);
@@ -44,6 +45,15 @@ describe.skipIf(!local)("the interface's layout", () => {
         for (const a of acts.filter(shown)) expect(names.some((n) => Math.abs(n.y + n.h / 2 - (a.y + a.h / 2)) < 4)).toBe(true);
       }, 90_000);
     }
+
+      it(`keeps an area tree row's name clear of what's beside it, all inside the side bar: ${size}`, async () => {
+        const parts = [".sidebar", ".area-tree .lt-t", ".area-tree .lt-tag", ".area-tree .lt-badge", ".area-tree .lt-chev"];
+        const { boxes } = await render(size, "", parts);
+        const [[side], names, ...beside] = parts.map((s) => boxes[s] ?? []);
+        expect(names.filter(shown).length).toBeGreaterThan(5);
+        expect(collisions(names, beside.flat())).toEqual([]);
+        for (const b of [...names, ...beside.flat()].filter(shown)) expect(b.x + b.w, b.text).toBeLessThanOrEqual(side.x + side.w + 0.5);
+      }, 90_000);
   }
 
   const councilControls = [".collab-inspector-wrap", ".collab-head .seg", ".collab-panel-toggle", ".collab-controls button", ".collab-bar textarea"];
@@ -112,15 +122,17 @@ describe.skipIf(!local)("the interface's layout", () => {
     expect(foot.y + foot.h).toBeLessThanOrEqual(700);
   }, 90_000);
 
-  it("keeps the room composer's # completion inside the sidebar", async () => {
-    const parts = [".sidebar", ".rc-suggest", ".rc-sug"];
-    const { boxes } = await render("1500x900", "view=room&composer=%23spec", parts);
-    const [side] = boxes[".sidebar"];
-    const [pop] = boxes[".rc-suggest"] ?? [];
-    expect(pop && shown(pop)).toBe(true);
-    expect(pop.x + pop.w).toBeLessThanOrEqual(side.x + side.w);
-    for (const row of boxes[".rc-sug"]) expect(row.x + row.w).toBeLessThanOrEqual(pop.x + pop.w);
-  }, 90_000);
+  for (const [where, query] of [["the Team view", "view=room&chat=R5101aaaaaaaaaaaaaaaaa"], ["the grid's Team view", "labs=off&view=room"]]) {
+    it(`keeps the room composer's # completion inside the sidebar: ${where}`, async () => {
+      const parts = [".sidebar", ".rc-suggest", ".rc-sug"];
+      const { boxes } = await render("1500x900", `${query}&composer=%23spec`, parts);
+      const [side] = boxes[".sidebar"];
+      const [pop] = boxes[".rc-suggest"] ?? [];
+      expect(pop && shown(pop)).toBe(true);
+      expect(pop.x + pop.w).toBeLessThanOrEqual(side.x + side.w);
+      for (const row of boxes[".rc-sug"]) expect(row.x + row.w).toBeLessThanOrEqual(pop.x + pop.w);
+    }, 90_000);
+  }
 
   it("shows the version being built", async () => {
     const { html } = await render("1200x800", "");

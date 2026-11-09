@@ -23,6 +23,8 @@ export interface SwitchAuditEnv {
   setLiveProblems: (problems: string[]) => void;
   /** Nobody's online in any room. */
   roomsEmpty: () => void;
+  /** How many areas the file has. */
+  areaCount: () => number;
   waitFor: (selector: string, then: (el: HTMLElement) => void, tries?: number) => void;
 }
 
@@ -235,6 +237,7 @@ async function palettePart(out: Record<string, unknown>) {
   const none = await palette();
   await paletteClose();
   out.none = { room: roomRows(none), grid: gridRows(none), numbered: numbered(none) };
+  out.treeRow = none.find((r) => r.label.includes("the area tree"))?.label ?? null;
   // a session in a room's area, then one in an area that's no room
   await selectWs("s1");
   const room = await palette();
@@ -253,6 +256,19 @@ async function palettePart(out: Record<string, unknown>) {
 }
 
 async function notesPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
+  const counted = () => document.querySelector(".statusbar")?.textContent?.match(/(\d+) areas?/)?.[1] ?? null;
+  out.areas = { said: counted(), file: env.areaCount() };
+  // the tree's filter narrows the tree, not what the status bar counts
+  const find = document.querySelector<HTMLInputElement>('.area-tree input[aria-label="Find a workspace"]');
+  if (find) {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(find, "Org dropdowns");
+    find.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(200);
+    out.areasFiltered = counted();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(find, "");
+    find.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(200);
+  }
   // Ask for status: said where the view is
   node(".ls-area[data-area='5102'] .ls-ah button[data-tip^='Ask every agent']")?.click();
   await sleep(300);

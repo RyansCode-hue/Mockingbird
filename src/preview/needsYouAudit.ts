@@ -1,5 +1,5 @@
 /**
- * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s (with ?labs=landscape&motion=off): S7's Needs you and card badges, worked as a person
+ * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s (with ?motion=off): S7's Needs you and card badges, worked as a person
  * would in the UI preview, into <script id="mb-landscape-needs-audit"> for test/uiLandscapeNeeds.test.ts. Keys and the
  * mouse are pressed for real where the test's Chrome driver is there to press them (scripts/ui-preview.mjs's pageResult
  * takes them from window.__mbKeys), so they go wherever the browser sends them; without it (a person's browser) they're

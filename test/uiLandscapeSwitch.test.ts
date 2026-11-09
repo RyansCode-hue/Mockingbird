@@ -14,7 +14,7 @@ async function run(part: string, extra = ""): Promise<any> {
   const { pageResult } = await import("../scripts/ui-preview.mjs");
   const json: string | null = await pageResult({
     size: "1400x900",
-    query: `labs=landscape&motion=off&landscapeSwitchAudit=${part}${extra}`,
+    query: `motion=off&landscapeSwitchAudit=${part}${extra}`,
     outDir: path.join(tempDir(`switch-${part}`), "out"),
     read: `document.getElementById("mb-landscape-switch-audit")?.textContent ?? null`,
   });
@@ -76,8 +76,10 @@ describe.skipIf(!local)("a stack's and a workspace's tabs, on the landscape", ()
 
 describe.skipIf(!local)("⌘K on the landscape", () => {
   it("offers Focus, its room rows for the selected area, and nothing of the grid's: no pin, no columns, no pane numbers", async () => {
-    const a = await run("palette");
+    // whatever side bar view the grid last left, the tree shows, and ⌘K's row says it hides it
+    const a = await run("palette", "&staleSideView=scm");
     expect(a.none).toEqual({ room: [], grid: [], numbered: [] });
+    expect(a.treeRow).toBe("Hide the area tree");
     expect(a.room).toEqual({ room: [expect.stringMatching(/^Invite a teammate to #5101/), expect.stringMatching(/^House board — #5101/)], grid: [], numbered: [], focus: "⌘E" });
     expect(a.focused).toEqual({ front: "s1" });
     expect(a.plain).toEqual([expect.stringMatching(/^Share #5102 .* as a team room$/)]);
@@ -89,6 +91,9 @@ describe.skipIf(!local)("⌘K on the landscape", () => {
 describe.skipIf(!local)("what the grid's Sessions view and group bar said", () => {
   it("is said on the landscape: Ask for status, a note off it, room problems, a room nobody's online in, the Team view's stack", async () => {
     const a = await run("notes", "&lsCamera=0,0,0.5");
+    // the status bar counts areas, whatever the tree's filter leaves showing
+    expect(a.areas).toEqual({ said: String(a.areas.file), file: 3 });
+    expect(a.areasFiltered).toBe("3");
     expect(a.asked).toMatch(/^Asked \d+ sessions?/);
     expect(a.offLandscape).toMatch(/^Reopened \d+ of \d+/);
     expect(a.problems).toEqual(["Couldn't publish “Org dropdowns” to the room: the record is too large"]);

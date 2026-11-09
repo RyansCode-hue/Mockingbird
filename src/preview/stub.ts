@@ -210,8 +210,9 @@ const board: AdoBoard = {
 };
 
 let settings: Settings = { ...DEFAULT_SETTINGS, setupDone: true, teamName: "You", signalingUrl: "https://mockingbird-signaling.you.workers.dev", presets: [{ id: "p-review", name: "Review on dev", launch: "claude", repoPath: REPO, branch: { mode: "new", pattern: "review-{date}", base: "dev" }, useWorktree: true, kickoff: "Review the latest changes on dev for bugs and missing tests." }] };
-// ?labs=landscape: Settings → Labs → Landscape is on, so the Sessions tab shows the landscape
-if (new URLSearchParams(location.search).get("labs")?.split(",").includes("landscape")) settings.labs = { landscape: true };
+// ?labs=off: Settings → Labs → Landscape is off, so the Sessions tab shows the grid
+if (new URLSearchParams(location.search).get("labs") === "off") settings.labs = { landscape: false };
+const onGrid = settings.labs?.landscape === false;
 // ?phone=…: phone alerts set up (the status they report is below, by the audit log)
 {
   const q = new URLSearchParams(location.search).get("phone");
@@ -984,7 +985,7 @@ buffers[SAM_PANE] = `${C.dim}codex${C.reset}\r\n› Cover the last-org endpoint'
 buffers[remotePaneId(NICK, "n7")] = `${C.bold}> Carry on with the donor entity: add the gift aid flag${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Update(src/donors/entity.ts)\r\n`;
 buffers[NICK_PANE] = `${C.bold}> Write the donor CSV export (UTF-8 BOM, one row per gift)${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Write(src/donors/exportCsv.ts)\r\n  ⎿  Wrote 64 lines\r\n\r\n${C.amber}✻${C.reset} Running the export tests… ${C.dim}(18s · esc to interrupt)${C.reset}\r\n`;
 
-// ?landscapeMany=<n> (with ?labs=landscape): the landscape holds n workspaces of yours and nothing else, in areas of
+// ?landscapeMany=<n>: the landscape holds n workspaces of yours and nothing else, in areas of
 // six: agents with a screenful of transcript each and terminals with test output, a third of them working, whose
 // spinner lines redraw a few times a second as Claude Code's do. For what many terminals cost (?landscapePerf) and
 // which of them get an xterm where.
@@ -2567,7 +2568,9 @@ const section = params.get("section");
 const theme = params.get("theme");
 const shown = params.get("shown");
 if (tab) set("mb.tab", tab);
-if (view) set("mb.sideView", view);
+if (view && onGrid) set("mb.sideView", view);
+// ?staleSideView=scm: the side bar view the grid last left, which means nothing on the landscape
+if (params.get("staleSideView")) set("mb.sideView", params.get("staleSideView"));
 if (section) {
   set("mb.tab", "settings");
   set("mb.setSection", section);
@@ -2579,8 +2582,11 @@ const motionQ = params.get("motion") ?? (params.has("shot") || params.has("measu
 if (motionQ === "off") (window as unknown as { __mbMotion?: string }).__mbMotion = "off";
 else if (motionQ === "reduce" || motionQ === "full" || motionQ === "os") set("mb.motion", motionQ);
 if (shown) set("mb.shown", shown.split(","));
-// the window's hint of the Labs flag (main.tsx), as a window that had it on keeps it
-if (settings.labs?.landscape) set("mb.labs.landscape", true);
+// ?lsBadPref=<key,…>: those of the grid's prefs aren't JSON; ?lsOddPref=<key,…>: they're JSON, not in the grid's shape
+for (const key of params.get("lsBadPref")?.split(",") ?? []) localStorage.setItem(key, "{not json");
+for (const key of params.get("lsOddPref")?.split(",") ?? []) localStorage.setItem(key, "5");
+// the window's hint of the Labs flag (main.tsx), as a window that had it off keeps it
+if (onGrid) set("mb.labs.landscape", false);
 // the landscape: ?lsCamera=x,y,zoom puts the camera there (else it fits everything); ?lsFocus=<id> selects that
 // session's workspace and presses Enter on the landscape, which fills the window with it
 const lsCamera = params.get("lsCamera")?.split(",").map(Number);
@@ -2623,13 +2629,37 @@ if (params.get("chat")) set("mb.roomChat.room", params.get("chat") === "list" ? 
 // the House board and New session in a room are opened from the Team view's rooms: it opens on the room list
 // (and, for ?chatMenu, on the first room) unless ?view says otherwise
 const houseKeys = ["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent", "houseProblems", "houseBoardAudit", "houseDrag", "houseStart", "houseStartAudit"];
-if (!view && (houseKeys.some((k) => params.has(k)) || params.get("new") === "room")) {
-  set("mb.sideView", "room");
-  if (!params.get("chat")) set("mb.roomChat.room", "");
+const ctxOn = params.get("ctx");
+const teamViewOn = !onGrid && (view === "room" || (!view && (houseKeys.some((k) => params.has(k)) || params.get("new") === "room" || params.has("chatMenu") || !!ctxOn)));
+if (onGrid && !view) {
+  if (houseKeys.some((k) => params.has(k)) || params.get("new") === "room") {
+    set("mb.sideView", "room");
+    if (!params.get("chat")) set("mb.roomChat.room", "");
+  }
+  if (params.has("chatMenu")) {
+    set("mb.sideView", "room");
+    if (!params.get("chat")) set("mb.roomChat.room", "R5101aaaaaaaaaaaaaaaaa");
+  }
+  if (ctxOn) {
+    set("mb.sideView", "room");
+    if (!params.get("chat")) set("mb.roomChat.room", ctxOn === "row" ? "" : "R5101aaaaaaaaaaaaaaaaa");
+  }
 }
-if (!view && params.has("chatMenu")) {
-  set("mb.sideView", "room");
-  if (!params.get("chat")) set("mb.roomChat.room", "R5101aaaaaaaaaaaaaaaaa");
+// ?view=room: the Team view, by the Connected line, and on a room when one's asked for, by its name in the room list;
+// ?view=scm (explorer, search, run): that tool's window, by its button on the rail
+if (teamViewOn) {
+  const chatQ = params.get("chat");
+  const room = chatQ && chatQ !== "list" ? chatQ : params.has("chatMenu") || (ctxOn && ctxOn !== "row") ? "R5101aaaaaaaaaaaaaaaaa" : null;
+  const t = setInterval(() => {
+    if (!document.querySelector(".side-back")) return document.querySelector<HTMLElement>(".connected-line")?.click();
+    if (room) {
+      const card = document.querySelectorAll(".room-card")[team.rooms.findIndex((r) => r.id === room)];
+      if (!card) return;
+      card.querySelector<HTMLElement>(".room-name")?.click();
+    }
+    clearInterval(t);
+  }, 100);
+  setTimeout(() => clearInterval(t), 8000);
 }
 // ?ctx=row|pane|tab|artifact|member opens that element's right-click menu: the first teammate's session row in the Team
 // view (=row), the first pane's header, the first workspace tab, the first artifact (with view=room), the room's second member (=member); ?ctxKeys
@@ -2640,11 +2670,8 @@ if (params.has("paneControls")) {
   show.textContent = ".pane .pane-header .controls, .sess-item .sr-acts, .sess-item .sr-acts > * { display: inline-flex !important; }";
   document.head.appendChild(show);
 }
-const ctxOn = params.get("ctx");
 if (ctxOn) {
-  if (!view) set("mb.sideView", "room");
-  if (!view && !params.get("chat")) set("mb.roomChat.room", ctxOn === "row" ? "" : "R5101aaaaaaaaaaaaaaaaa");
-  const target = { row: ".room-sess-body .sess-item.remote", pane: ".pane-header", tab: ".ws-tab", artifact: ".art-row", member: ".rc-members .rc-member + .rc-member" }[ctxOn] ?? ctxOn;
+  const target = { row: ".room-sess-body .sess-item.remote", pane: onGrid ? ".pane-header" : ".ls-head", tab: onGrid ? ".ws-tab" : ".ls-tab", artifact: ".art-row", member: ".rc-members .rc-member + .rc-member" }[ctxOn] ?? ctxOn;
   let tries = 0;
   const t = setInterval(() => {
     const el = document.querySelector(target) as HTMLElement | null;
@@ -2817,7 +2844,7 @@ else if (params.has("new")) {
 }
 // team rooms: ?joinRequest=later puts the admin's join prompt off (Later), leaving the request in Settings → Team
 if (params.get("joinRequest") === "later") setTimeout(() => click('.join-ask button[title^="Answer later"]'), 600);
-// S7: ?needsTray opens the Needs you tray (with ?labs=landscape; ?joinRequest=later to list Lee's request in it too);
+// S7: ?needsTray opens the Needs you tray (?joinRequest=later to list Lee's request in it too);
 // ?needsStep=<n> then presses N on the landscape n times (a negative n, ⇧N), the tray kept open; ?needsTrayStep=<n>
 // presses it in the tray instead, so the view keeps the item clear of the tray (?lsFit fits the landscape first)
 if (params.has("needsTray") || params.has("needsStep") || params.has("needsTrayStep")) {
@@ -2861,6 +2888,10 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
     if (el) then(el);
   }, 100);
 };
+if (!onGrid) {
+  const label = { explorer: "Files", scm: "Changes", search: "Search", run: "Run & debug" }[view ?? ""];
+  if (label) waitFor(`.ab-btn[aria-label="${label}"]`, (el) => setTimeout(() => el.click(), 900));
+}
 // a sync failing after the window has read them: main pushes the failure as well as answering with it
 if (badgeFails.has("meters")) setTimeout(() => emit("onMetersChanged", err(METERS_FAIL)), 1000);
 // S8: ?keysSheet opens the shortcuts sheet (from »'s menu when its button is folded), ?newMenu the top bar's + New, and
@@ -2927,6 +2958,7 @@ if (params.has("landscapeSwitchAudit")) {
         live.problems = problems;
         emit("onTeamLive", clone(live));
       },
+      areaCount: () => Object.keys(landscape.areas).length,
       roomsEmpty: () => {
         for (const r of team.rooms) r.online = [];
         teamChanged();
@@ -3130,9 +3162,9 @@ if (composerText) waitFor(".rc-bar textarea", (el) => setTimeout(() => typeArea(
 // its folder and restoring it, a dialog, a toast — finishing every animation rather than waiting on real time, then
 // writes what's left into <script id="mb-motion-audit"> for test/uiMotion.test.ts (real time: pageResult): the folder's state after each
 // step, the panes in the grid, copies left behind, animations left holding a frame, View Transitions started, and
-// the longest animation that ran. With ?labs=landscape it plays the landscape's flight instead (?landscapeFlyAudit).
-const flyAudit = params.has("landscapeFlyAudit") || (params.has("motionAudit") && !!settings.labs?.landscape);
-if (params.has("motionAudit") && !settings.labs?.landscape) {
+// the longest animation that ran. With ?labs=off, the grid's; else it plays the landscape's flight (?landscapeFlyAudit).
+const flyAudit = params.has("landscapeFlyAudit") || (params.has("motionAudit") && !onGrid);
+if (params.has("motionAudit") && onGrid) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const finite = () => document.getAnimations().filter((a) => Number.isFinite(a.effect?.getComputedTiming().activeDuration ?? Infinity));
   // the longest one-shot animation (the waiting pulse repeats, and is checked on its own)
@@ -3226,8 +3258,7 @@ if (params.has("motionAudit") && !settings.labs?.landscape) {
 // every animation started (what it moved, which properties, how long), finishes them rather than waiting, and writes
 // what it saw into <script id="mb-motion-moments"> for test/uiMotion.test.ts.
 if (params.has("motionMoments")) {
-  set("mb.shown", ["s1", "s4", SAM_PANE]);
-  set("mb.sideView", "sessions");
+  if (!lsCamera) set("mb.landscape.camera", { x: 0, y: 0, zoom: 1 });
   set("mb.roomChat.room", ROOM_5101);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const what = (el: Element): string => {
@@ -3237,8 +3268,8 @@ if (params.has("motionMoments")) {
     if (el.matches(".rc-initials")) return `dot:${el.closest("[data-member]")?.getAttribute("data-member")}`;
     if (el.matches("[data-member]")) return `member:${el.getAttribute("data-member")}`;
     if (el.matches("[data-entry]")) return `chat:${el.getAttribute("data-entry")}`;
-    if (el.matches("[data-handover]")) return `note:${el.closest(".pane")?.getAttribute("data-cell")}`;
-    if (el.matches(".pane")) return `pane:${el.getAttribute("data-cell")}`;
+    if (el.matches("[data-handover]")) return `note:${el.closest<HTMLElement>(".ls-node")?.dataset.front}`;
+    if (el.matches(".pane")) return `pane:${el.closest<HTMLElement>(".ls-node")?.dataset.front}`;
     if (el.closest(".term-holder")) return "terminal";
     return el.className?.toString() || el.tagName;
   };
@@ -3285,14 +3316,18 @@ if (params.has("motionMoments")) {
     emit("onTeamLive", JSON.parse(JSON.stringify(live)));
   };
   const claude5h = () => usage.claude!.limits[0];
-  // Sam's session shows as the "api" workspace's tab
-  const samBadge = () => document.querySelector(".grid .team-owner:not(.mb-ghost)");
-  waitFor(".grid > [data-cell=s1] .xterm", async () => {
+  const samBadge = () => document.querySelector(`.ls-world [data-front="${CSS.escape(SAM_PANE)}"] .team-owner:not(.mb-ghost)`);
+  waitFor('.ls-world [data-front="s1"] .xterm', async () => {
     const out: Record<string, unknown> = {};
     try {
       await sleep(400);
+      // Sam's is a tab of a stack: in front, its header has his badge
+      const samTab = document.querySelector<HTMLElement>(`.ls-world .ls-tab[data-sid="${CSS.escape(SAM_PANE)}"]`);
+      samTab?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      samTab?.click();
+      await sleep(400);
       // ---- bars ----
-      document.querySelector(".grid > [data-cell=s1]")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      document.querySelector('.ls-world [data-front="s1"] .ls-head')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       await sleep(100);
       (document.querySelector(".statusbar .usage") as HTMLElement).click();
       await sleep(400);
@@ -3374,7 +3409,7 @@ if (params.has("motionMoments")) {
       emit("onTeamLive", JSON.parse(JSON.stringify(live)));
       await sleep(100);
       await settle();
-      out.handedOver = { started: started.slice(mark), note: !!document.querySelector(".grid > [data-cell=s1] [data-handover]"), ...left() };
+      out.handedOver = { started: started.slice(mark), note: !!document.querySelector('.ls-world [data-front="s1"] [data-handover]'), ...left() };
       // s4 continues one of Nick's sessions, taken over here just now
       mark = started.length;
       const nicks = takeoverView.sessions.find((v) => !v.self && !v.takenOver)!;
@@ -3407,17 +3442,23 @@ if (params.has("motionMoments")) {
 // wrong after each step: a terminal not at its holder's size, a pty not told its terminal's size, a size sent from a
 // holder with no area; and the pty sizes each step sent. The pty sizes are as main has them: a relaunched session's new pty starts at 120×32.
 if (params.has("termAudit")) {
+  if (!lsCamera && !onGrid) set("mb.landscape.camera", { x: 0, y: 0, zoom: 1 });
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Entry = import("../renderer/cachedTerm").SizedTerm;
   const terms = () => w.__mbTerms as Map<string, Entry> | undefined;
   const pty: Record<string, string> = {};
   const sent: { id: string; size: string }[] = [];
   const problems: string[] = [];
+  const held: { id: string; cols: number; rows: number }[] = [];
   const realResize = api.sessionResize;
   api.sessionResize = async (id: string, cols: number, rows: number) => {
-    const holder = terms()?.get(id)?.term.element?.parentElement;
+    const entry = terms()?.get(id);
+    const holder = entry?.term.element?.parentElement;
     const area = holder?.isConnected && holder.getClientRects().length ? holder.clientWidth * holder.clientHeight : 0;
-    if (!area) problems.push(`${id} was sized ${cols}×${rows} from a holder with no area`);
+    // a workspace off screen is held at its placement's size (holdSize), with no holder to measure
+    if (!area && onGrid) problems.push(`${id} was sized ${cols}×${rows} from a holder with no area`);
+    // a workspace off screen is held at its placement's size (holdSize), with no holder to measure: checked once a cell's measured
+    else if (!area) held.push({ id, cols, rows });
     pty[id] = `${cols}×${rows}`;
     sent.push({ id, size: pty[id] });
     return realResize(id, cols, rows);
@@ -3429,11 +3470,22 @@ if (params.has("termAudit")) {
     }
     await sleep(250);
   };
+  // a workspace's terminal is sized from its placement, or the window in focus, never from what its holder measures
+  const placedSize = (id: string, inFocus: boolean) => {
+    const cell = [...(terms()?.values() ?? [])].map((e) => measuredCell(e.term)).find(Boolean);
+    const stack = stackKeyOf(sessions.find((x) => x.id === id)!);
+    const box = inFocus ? { w: document.querySelector(".ls-viewport")!.clientWidth, h: document.querySelector(".ls-viewport")!.clientHeight } : stack ? landscape.stacks[stack]?.placement : landscape.workspaces[id];
+    return cell && box ? colsRows(box.w, box.h, cell.w, cell.h) : null;
+  };
   const check = (step: string) => {
+    for (const h of held.splice(0)) {
+      const want = placedSize(h.id, false);
+      if (!want || want.cols !== h.cols || want.rows !== h.rows) problems.push(`${step}: ${h.id} was sized ${h.cols}×${h.rows} with no holder, and its placement holds ${want ? `${want.cols}×${want.rows}` : "nothing"}`);
+    }
     for (const [id, e] of terms() ?? []) {
       if (!e.term.element?.isConnected || !sessions.some((s) => s.id === id)) continue;
       const size = `${e.term.cols}×${e.term.rows}`;
-      const fits = fitSize(e);
+      const fits = onGrid ? fitSize(e) : placedSize(id, !!e.term.element.closest(".ls-focus"));
       if (!fits || `${fits.cols}×${fits.rows}` !== size) problems.push(`${step}: ${id} is ${size} in a holder that fits ${fits ? `${fits.cols}×${fits.rows}` : "nothing"}`);
       if (pty[id] !== size) problems.push(`${step}: ${id}'s pty is ${pty[id] ?? "unsized"} under a ${size} terminal`);
     }
@@ -3453,7 +3505,26 @@ if (params.has("termAudit")) {
     sessionsChanged();
   };
   const buffer = (id: string) => terms()?.get(id)?.term.buffer.active;
-  waitFor(".grid > [data-cell=s1] .xterm", async () => {
+  const vp = () => document.querySelector<HTMLElement>(".ls-viewport")!;
+  const head = (id: string) => document.querySelector(`.ls-world [data-front="${CSS.escape(id)}"] .ls-head`);
+  // selected and at 100%: it's in view, the mouse and the keyboard are its
+  const reach = async (id: string) => {
+    if (onGrid) return;
+    press(document.querySelector(`.area-tree .lt-ws[data-sid="${CSS.escape(id)}"]`), `${id}'s row`);
+    await sleep(400);
+    await settle();
+    vp().focus();
+    vp().dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true, bubbles: true, cancelable: true }));
+    await sleep(300);
+    await settle();
+  };
+  const repaint = async (id: string) => {
+    if (onGrid) return press(document.querySelector(`.pane[data-cell=${id}] [data-action=repaint]`), `${id}'s Repaint`);
+    press(document.querySelector(`.ls-world [data-front="${CSS.escape(id)}"] .ls-more`), `${id}'s ⋯`);
+    await sleep(200);
+    press([...document.querySelectorAll(".mb-ctx button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === "Repaint"), `${id}'s Repaint`);
+  };
+  waitFor(onGrid ? ".grid > [data-cell=s1] .xterm" : '.ls-world [data-front="s1"] .xterm', async () => {
     const out: Record<string, unknown> = {};
     try {
       for (const id of ["s1", "s2", "s3", "s4", "s5", "s8"]) say(id, Array.from({ length: 3000 }, (_, i) => `${id} history ${i}\r\n`).join(""));
@@ -3464,11 +3535,26 @@ if (params.has("termAudit")) {
       }, 20);
       await settle();
       check("start");
-      const steps: [string, () => void][] = [
-        ["side bar hidden", () => key("b")],
-        ["side bar shown", () => key("b")],
+      const collapse = (area: string) => void api.landscapeUpdate({ areas: { [area]: { collapsed: !landscape.areas[area].collapsed } } });
+      const otherTab = () => {
+        const tab = document.querySelector('.ls-world [data-ws="ws:5101/api"] .ls-tab:not(.on)');
+        tab?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+        press(tab, "a stack's other tab");
+      };
+      const banners: [string, () => void][] = [
+        ["waiting banner shown", () => setSession("s1", { status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: Date.now() })],
+        ["waiting banner gone", () => setSession("s1", { status: "working", waitingReason: null, waitingSince: null })],
+        ["stall banner shown", () => setSession("s1", { stalledSince: Date.now() - 5 * min, hooksSilent: true })],
+        ["stall banner gone", () => setSession("s1", { stalledSince: null, hooksSilent: false })],
+      ];
+      const panels: [string, () => void][] = [
+        ["side bar hidden", () => key(onGrid ? "b" : "\\")],
+        ["side bar shown", () => key(onGrid ? "b" : "\\")],
         ["bottom panel shown", () => key("j")],
         ["bottom panel hidden", () => key("j")],
+      ];
+      const steps: [string, () => void | Promise<void>][] = onGrid ? [
+        ...panels,
         ["fullscreen", () => press(document.querySelector(".pane[data-cell=s1] [data-action=zoom]"), "Full button")],
         ["back to the grid", () => press(document.querySelector("[data-action=zoom]"), "Grid button")],
         ["group switched", () => press(row(".sidebar .group-label", "#5102"), "group #5102")],
@@ -3478,17 +3564,38 @@ if (params.has("termAudit")) {
         ["pane opened", () => press(row(".sidebar .sess-item", "Release notes"), "Release notes row")],
         ["workspace tab switched", () => press(document.querySelector(".ws-tab:not(.on)"), "workspace tab")],
         ["workspace tab switched back", () => press(document.querySelector(".ws-tab:not(.on)"), "workspace tab")],
-        ["waiting banner shown", () => setSession("s1", { status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: Date.now() })],
-        ["waiting banner gone", () => setSession("s1", { status: "working", waitingReason: null, waitingSince: null })],
-        ["stall banner shown", () => setSession("s1", { stalledSince: Date.now() - 5 * min, hooksSilent: true })],
-        ["stall banner gone", () => setSession("s1", { stalledSince: null, hooksSilent: false })],
+        ...banners,
+      ] : [
+        ...panels,
+        ["focus", async () => {
+          head("s1")?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+          await sleep(100);
+          vp().focus();
+          vp().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+        }],
+        ["back from focus", () => void document.querySelector(".ls-focus")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", metaKey: true, bubbles: true, cancelable: true }))],
+        ["another area gone to", () => press(row(".area-tree .lt-head", "#5102"), "area #5102")],
+        ["back to the area", () => reach("s1")],
+        ["area collapsed", () => collapse("5101")],
+        ["area opened", async () => {
+          collapse("5101");
+          await sleep(300);
+          await reach("s1");
+        }],
+        ["another workspace gone to", () => press(row(".area-tree .lt-ws", "Release notes"), "Release notes row")],
+        ["stack's tab switched", async () => {
+          await reach("s2");
+          otherTab();
+        }],
+        ["stack's tab switched back", otherTab],
+        ...banners,
       ];
       const done: string[] = [];
       const resized: Record<string, string[]> = {};
       for (const [step, act] of steps) {
         const mark = sent.length;
-        act();
-        await sleep(400); // a folder or group click waits out a double-click
+        await act();
+        await sleep(400); // a row's click waits out a double-click
         await settle();
         check(step);
         done.push(step);
@@ -3499,22 +3606,25 @@ if (params.has("termAudit")) {
       clearInterval(stream);
       await sleep(100);
       // Repaint on the normal screen: an inline session's history is its scrollback
+      await reach("s1");
       const before = { lines: buffer("s1")?.length ?? 0, first: buffer("s1")?.getLine(0)?.translateToString(true) };
       let mark = sent.length;
-      press(document.querySelector(".pane[data-cell=s1] [data-action=repaint]"), "s1's Repaint");
+      await repaint("s1");
       await sleep(300);
       const s1 = terms()?.get("s1")?.term;
       out.repaint = { before, after: { lines: buffer("s1")?.length ?? 0, first: buffer("s1")?.getLine(0)?.translateToString(true) }, size: s1 ? `${s1.cols}×${s1.rows}` : null, sent: sent.slice(mark).filter((r) => r.id === "s1").map((r) => r.size) };
       // Repaint on the alternate screen, with the program's mouse tracking on
+      await reach("s4");
       say("s4", "\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[Ha full-screen program");
       await sleep(100);
       const s4 = terms()?.get("s4")?.term;
       const modes = () => ({ screen: s4?.buffer.active.type, mouse: s4?.modes.mouseTrackingMode });
       const altBefore = modes();
-      press(document.querySelector(".pane[data-cell=s4] [data-action=repaint]"), "s4's Repaint");
+      await repaint("s4");
       await sleep(300);
       out.repaintAlt = { before: altBefore, after: modes() };
       // the process dies, and is relaunched under the same id: main starts the new pty at 120×32
+      await reach("s1");
       const old = terms()?.get("s1")?.term;
       setSession("s1", { status: "dead", exitCode: 1 });
       await sleep(400);
@@ -3537,7 +3647,7 @@ if (params.has("termAudit")) {
     document.body.appendChild(tag);
   });
 }
-// ?landscapeAudit (with ?labs=landscape) works the landscape as a person would and writes what each step did into
+// ?landscapeAudit works the landscape as a person would and writes what each step did into
 // <script id="mb-landscape-audit"> for test/uiLandscape.test.ts: every own workspace's terminal and pty against
 // colsRows of its placement with the terminal's measured cell; the pty sizes sent while it's panned (wheel, Space-
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
@@ -4989,7 +5099,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     report("mb-landscape-area-edges-audit", out);
   });
 
-  // ?landscapeFlyAudit, or ?motionAudit with ?labs=landscape (with ?motion=full or reduce): going to an area from the tree flies the camera there; the
+  // ?landscapeFlyAudit, or ?motionAudit (with ?motion=full or reduce): going to an area from the tree flies the camera there; the
   // flight's clock animation finished (as the motion audit finishes every animation, never reading a frame in flight)
   // ends it where it was going; a wheel during one stops it where it is; under reduce it's there at once. Into
   // <script id="mb-landscape-fly-audit">.
@@ -7362,7 +7472,8 @@ if (params.has("landscapePerf")) {
 // scroll offsets agreeing), its rows within its holder's content box, nothing scrollable below it. It writes what was
 // wrong into <script id="mb-scroll-audit"> for test/uiTerminal.test.ts.
 if (params.has("scrollAudit")) {
-  set("mb.shown", ["s1", "s4", NICK_PANE]);
+  if (onGrid) set("mb.shown", ["s1", "s4", NICK_PANE]);
+  else if (!lsCamera) set("mb.landscape.camera", { x: 0, y: 0, zoom: 1 });
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Core = { _bufferService: { isUserScrolling: boolean }; viewport?: { _currentRowHeight?: number; syncScrollArea?: unknown; _innerRefresh?: unknown }; _renderService: { dimensions: { css: { cell: { height: number } } } } };
   type Term = import("@xterm/xterm").Terminal & { _core: Core };
@@ -7424,7 +7535,35 @@ if (params.has("scrollAudit")) {
       if (below > 1) problems.push(`${step}: ${id}'s pane has ${below}px to scroll below its terminal`);
     }
   };
-  waitFor(".grid > [data-cell=s1] .xterm", async () => {
+  const vp = () => document.querySelector<HTMLElement>(".ls-viewport")!;
+  const nodeOf = (id: string) => document.querySelector<HTMLElement>(onGrid ? `.pane[data-cell="${CSS.escape(id)}"]` : `.ls-world [data-front="${CSS.escape(id)}"]`);
+  // selected, and the landscape at 100%, which is where a wheel over a terminal is the terminal's
+  const pickAt100 = async (id: string) => {
+    if (onGrid) return;
+    press(document.querySelector(`.area-tree .lt-ws[data-sid="${CSS.escape(id)}"]`), `${id}'s row`);
+    await sleep(400);
+    await settle();
+    vp().focus();
+    vp().dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true, bubbles: true, cancelable: true }));
+    await sleep(300);
+    await settle();
+  };
+  const homeView = async () => {
+    if (onGrid) {
+      press(row(".sidebar .group-label", "#5101"), "group #5101");
+      await sleep(400);
+      return settle();
+    }
+    await pickAt100("s1");
+    press(row(".area-tree .lt-head", "#5101"), "area #5101");
+    await sleep(400);
+    await settle();
+    vp().focus();
+    vp().dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true, bubbles: true, cancelable: true }));
+    await sleep(300);
+    await settle();
+  };
+  waitFor(onGrid ? ".grid > [data-cell=s1] .xterm" : '.ls-world [data-front="s1"] .xterm', async () => {
     const out: Record<string, unknown> = {};
     const done: string[] = [];
     try {
@@ -7435,8 +7574,8 @@ if (params.has("scrollAudit")) {
       out.shown = shownTerms().map(([id]) => id);
       check("start");
       done.push("start");
-      // output while the group is hidden; shown again while its programs are idle
-      press(row(".sidebar .group-label", "#5102"), "group #5102");
+      // output while what's on screen is another group's or area; back while its programs are idle
+      press(row(onGrid ? ".sidebar .group-label" : ".area-tree .lt-head", "#5102"), "#5102");
       await sleep(400);
       await settle();
       for (let i = 0; i < 10; i++) {
@@ -7444,17 +7583,16 @@ if (params.has("scrollAudit")) {
         await sleep(30);
       }
       await settle();
-      press(row(".sidebar .group-label", "#5101"), "group #5101");
-      await sleep(400);
-      await settle();
-      check("group shown again, idle");
+      await homeView();
+      check("back on screen, idle");
       lines(40, "after");
       await settle();
-      check("output after the group came back");
-      done.push("group switch");
+      check("output after it came back");
+      done.push("off screen and back");
       // the teammate's screen widens while their copy here is scrolled up: it re-fits at a smaller font and stays
       // where it was; then their screen narrows again, and the copy follows its output at the larger font
       const nick = live.remote.find((s) => s.id === NICK_PANE)!;
+      await pickAt100(NICK_PANE);
       const copy = terms()!.get(NICK_PANE)!.term;
       copy.element!.querySelector(".xterm-screen")!.dispatchEvent(new WheelEvent("wheel", { deltaY: -400, deltaMode: 0, bubbles: true, cancelable: true }));
       await settle();
@@ -7464,7 +7602,7 @@ if (params.has("scrollAudit")) {
       lines(20, "small font");
       await settle();
       check("teammate's copy at a smaller font, scrolled up", [NICK_PANE]);
-      const copyLatest = document.querySelector(`.pane[data-cell="${CSS.escape(NICK_PANE)}"] .scroll-toast.jump`);
+      const copyLatest = nodeOf(NICK_PANE)?.querySelector(".scroll-toast.jump");
       if (copyLatest) press(copyLatest, "the copy's Jump to latest");
       else copy.scrollToBottom(); // its problem is noted: the rest still runs
       nick.room = { ...nick.room!, cols: 110, rows: 30 };
@@ -7476,7 +7614,7 @@ if (params.has("scrollAudit")) {
       done.push("teammate's screen grew");
       // the side bar hidden and shown: every pane re-fits, the teammate's copy at another font
       for (const step of ["side bar hidden", "side bar shown"]) {
-        window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", metaKey: true, bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: onGrid ? "b" : "\\", metaKey: true, bubbles: true }));
         lines(10, step);
         await settle();
         check(step);
@@ -7510,6 +7648,7 @@ if (params.has("scrollAudit")) {
       }
       done.push("inline frame");
       // the user scrolls a pane up; output goes on; it stays, until Jump to latest
+      await pickAt100("s1");
       const s1 = terms()!.get("s1")!.term;
       s1.element!.querySelector(".xterm-screen")!.dispatchEvent(new WheelEvent("wheel", { deltaY: -600, deltaMode: 0, bubbles: true, cancelable: true }));
       await settle();
@@ -7518,7 +7657,7 @@ if (params.has("scrollAudit")) {
       await settle();
       check("output while the user is scrolled up", ["s1"]);
       if (s1.buffer.active.getLine(s1.buffer.active.viewportY)?.translateToString(true) !== top) problems.push("output while the user is scrolled up: s1's view moved from where they put it");
-      const toLatest = document.querySelector(".pane[data-cell=s1] .scroll-toast.jump");
+      const toLatest = nodeOf("s1")?.querySelector(".scroll-toast.jump");
       if (toLatest) press(toLatest, "s1's Jump to latest");
       else s1.scrollToBottom(); // its problem is noted: the rest still runs
       await settle();
@@ -7527,7 +7666,12 @@ if (params.has("scrollAudit")) {
       await settle();
       check("output after Jump to latest");
       done.push("scrolled up, then back");
-      press(document.querySelector(".pane[data-cell=s1] [data-action=repaint]"), "s1's Repaint");
+      if (onGrid) press(nodeOf("s1")?.querySelector("[data-action=repaint]"), "s1's Repaint");
+      else {
+        press(nodeOf("s1")?.querySelector(".ls-more"), "s1's ⋯");
+        await sleep(200);
+        press([...document.querySelectorAll(".mb-ctx button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === "Repaint"), "s1's Repaint");
+      }
       await sleep(300);
       await settle();
       check("Repaint");
@@ -7587,7 +7731,9 @@ if (whatsNewQ !== null && whatsNewQ !== "updated") {
 // the crashed s6, whose cold conversation asks before resuming — Cancel leaves it, Continue resumes it.
 if (params.get("ctxAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const chip = () => document.querySelector(".ctx-chip") as HTMLElement | null;
+  // the session's chip: every workspace past its limit has one on the landscape
+  const chipOf = params.get("ctxAudit") === "waiting" ? "s2" : "s5";
+  const chip = () => document.querySelector(onGrid ? ".ctx-chip" : `.ls-world [data-front="${chipOf}"] .ctx-chip`) as HTMLElement | null;
   const pop = () => document.querySelector(".ctx-pop") as HTMLElement | null;
   const button = (root: Element | null, text: string) => [...(root?.querySelectorAll("button") ?? [])].find((b) => b.textContent === text) as HTMLButtonElement | undefined;
   const count = (fn: string) => calls.filter((c) => c.fn === fn).length;
@@ -7599,8 +7745,12 @@ if (params.get("ctxAudit")) {
     const out: Record<string, unknown> = {};
     const mode = params.get("ctxAudit");
     if (mode === "resume") {
-      await until(() => !!document.querySelector(".pane.st-dead .dead-body"), 5000);
-      const resume = () => (document.querySelector(".pane.st-dead .dead-body button.outline.strong") as HTMLElement | null)?.click();
+      // its body's Resume in focus (?lsFocus=s6), or its card's on the landscape: the same check first
+      const within = onGrid ? ".pane.st-dead" : params.has("lsFocus") ? '.ls-focus [data-front="s6"]' : '.ls-world [data-front="s6"]';
+      const resumeButton = () => [...document.querySelectorAll<HTMLElement>(`${within} button`)].find((b) => b.textContent?.trim().startsWith("Resume"));
+      await until(() => !!resumeButton(), 5000);
+      out.inBody = !!resumeButton()?.closest(".dead-body");
+      const resume = () => resumeButton()?.click();
       resume();
       out.asked = await until(() => !!document.querySelector(".cost-dlg"), 3000);
       out.say = document.querySelector(".cost-dlg .cost-say")?.textContent ?? null;
@@ -7614,18 +7764,39 @@ if (params.get("ctxAudit")) {
       await until(() => count("resumeSession") > 0, 3000);
       out.afterContinue = { dialog: !!document.querySelector(".cost-dlg"), resumed: count("resumeSession") };
     } else if (mode === "takenOver") {
-      // y1, which Nick took over, and then s1: what its pane header, its context warning, ⌘K and the Changes tool's
-      // Second opinion (with ?view=scm) offer for each, and which are off saying why
-      const paneOf = (title: string) => [...document.querySelectorAll<HTMLElement>(".pane")].find((p) => p.querySelector(".pane-header")?.textContent?.includes(title)) ?? null;
+      // y1, which Nick took over, and then s1: what its ⋯, its context warning, ⌘K and the Changes tool's Second opinion
+      // (with ?view=scm) offer for each, and which are off saying why
+      const IDS: Record<string, string> = { "Donor entity model": "y1", "Org dropdowns remember the last org": "s1" };
+      const paneOf = (title: string) => document.querySelector<HTMLElement>(onGrid ? `.pane[data-cell="${IDS[title]}"]` : `.ls-world [data-front="${IDS[title]}"]`);
       const Y1 = "Donor entity model";
       const S1 = "Org dropdowns remember the last org";
+      const reach = async (title: string) => {
+        if (onGrid) {
+          paneOf(title)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+          return sleep(300);
+        }
+        (document.querySelector(`.area-tree .lt-ws[data-sid="${IDS[title]}"]`) as HTMLElement | null)?.click();
+        await sleep(600);
+      };
       const controls = async (title: string) => {
-        const read = () =>
-          [...(paneOf(title)?.querySelectorAll<HTMLButtonElement>(".pane-header button") ?? [])]
-            .map((b) => ({ t: b.textContent?.trim() ?? "", off: b.disabled, why: b.disabled ? b.title : null }))
-            .filter((b) => b.t === "Undo" || b.t === "Codex");
-        await until(() => read().length > 0, 5000);
-        return read();
+        if (onGrid) {
+          const read = () =>
+            [...(paneOf(title)?.querySelectorAll<HTMLButtonElement>(".pane-header button") ?? [])]
+              .map((b) => ({ t: b.textContent?.trim() ?? "", off: b.disabled, why: b.disabled ? b.title : null }))
+              .filter((b) => b.t === "Undo" || b.t === "Codex");
+          await until(() => read().length > 0, 5000);
+          return read();
+        }
+        await reach(title);
+        await until(() => !!paneOf(title)?.querySelector(".ls-more"), 5000);
+        paneOf(title)?.querySelector<HTMLElement>(".ls-more")?.click();
+        await until(() => !!document.querySelector(".mb-ctx"), 2000);
+        const rows = [...document.querySelectorAll<HTMLButtonElement>(".mb-ctx button")]
+          .map((b) => ({ t: b.querySelector(".mb-ctx-t")?.textContent?.trim() ?? "", off: b.disabled || b.getAttribute("aria-disabled") === "true", why: b.disabled || b.getAttribute("aria-disabled") === "true" ? b.title : null }))
+          .filter((b) => b.t.startsWith("Undo") || b.t.startsWith("Continue in Codex"));
+        document.querySelector(".mb-ctx")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        await sleep(250);
+        return rows;
       };
       const review = () => {
         const b = document.querySelector<HTMLButtonElement>(".sc-review");
@@ -7641,8 +7812,7 @@ if (params.get("ctxAudit")) {
       await sleep(300);
       // ⌘K with each focused: its Undo and Continue entries, and why one's off
       const palette = async (title: string) => {
-        paneOf(title)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
-        await sleep(300);
+        await reach(title);
         document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
         if (!(await until(() => !!document.querySelector(".palette"), 2000))) return [{ label: "⌘K opened no palette", off: null }];
         const rows = [...document.querySelectorAll(".palette .results .row")].map((r) => ({ label: r.querySelector(".lab")?.textContent ?? "", off: r.classList.contains("off") ? (r.querySelector(".state")?.textContent ?? "") : null }));
@@ -7667,22 +7837,30 @@ if (params.get("ctxAudit")) {
         return rows.filter((r) => /^(Undo a turn|Continue in)/.test(r.label));
       };
       const y1Palette = await palette(Y1);
+      // the Changes tool's window, for the workspace selected; each workspace has its own
+      const changes = () => {
+        if (!onGrid) document.querySelector<HTMLElement>('.ab-btn[aria-label="Changes"]')?.click();
+      };
+      changes();
       await until(() => !!review(), 3000);
       const y1Review = review();
-      // s1, jumped to from ⌘K (the side bar shows Changes): its group's panes come up with it
+      changes();
+      await until(() => onGrid || !review(), 3000);
+      // s1, jumped to from ⌘K: it comes into view, selected
       document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
       await until(() => !!document.querySelector(".palette"), 2000);
       [...document.querySelectorAll<HTMLElement>(".palette .results .row")].find((r) => r.querySelector(".lab")?.textContent === S1)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
       await sleep(800);
       out.controls = { y1: y1Controls, s1: await controls(S1) };
       out.palette = { y1: y1Palette, s1: await palette(S1) };
+      changes();
       await until(() => review()?.off === false, 3000);
       out.review = { y1: y1Review, s1: review() };
     } else {
       out.shown = await until(() => !!chip(), 5000);
       out.tone = chip()?.classList.contains("firm") ? "firm" : chip()?.classList.contains("heads") ? "heads" : null;
       out.chip = chip()?.textContent ?? null;
-      out.inHeader = !!chip()?.closest(".pane-header");
+      out.inHeader = !!chip()?.closest(onGrid ? ".pane-header" : ".ls-head");
       out.popBeforeClick = !!pop();
       chip()?.click();
       await until(() => !!pop(), 2000);
@@ -7805,13 +7983,11 @@ if (params.has("statusAudit")) {
 // teammate's copy of a Claude session and Codex (s3) wrap them at the pane's width themselves, cutting the path
 // mid-word; a shell (s4) leaves the wrapping to the terminal — then selects them and copies, as a native selection's
 // release (copy-on-select) and as ⌘C. It writes what each copy put on the clipboard into
-// <script id="mb-copy-audit"> for test/uiTerminal.test.ts. With ?labs=landscape it does the same in landscape
-// workspaces at 100%, where terminals draw with WebGL (each one's renderer is said), the path long enough to wrap
-// their wider screens; s3, a stack's tab behind s2, is left out.
-const copyInLandscape = params.has("copyAudit") && !!settings.labs?.landscape;
-if (copyInLandscape && !lsCamera) set("mb.landscape.camera", { x: 0, y: 0, zoom: 1 });
+// <script id="mb-copy-audit"> for test/uiLandscapeZoom.test.ts, in workspaces at 100%, where terminals draw with WebGL
+// (each one's renderer is said), the path long enough to wrap their wider screens.
 if (params.has("copyAudit")) {
-  set("mb.shown", ["s1", "s3", "s4", NICK_PANE]);
+  if (onGrid) set("mb.shown", ["s1", "s3", "s4", NICK_PANE]);
+  else if (!lsCamera) set("mb.landscape.camera", { x: 0, y: 0, zoom: 1 });
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const terms = () => w.__mbTerms as Map<string, { term: import("@xterm/xterm").Terminal }> | undefined;
   const say = (id: string, text: string) => {
@@ -7820,7 +7996,7 @@ if (params.has("copyAudit")) {
   };
   const written: string[] = [];
   Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async (text: string) => void written.push(text) });
-  const PATH = `/private/tmp/claude-501/-Users-alex-Code-backoffice/1234abcd-5678-90ef-aaaa-bbbbccccdddd/scratchpad/${copyInLandscape ? "landscape-checks/a-folder-deep-enough-for-a-wide-workspace/" : ""}add-portal-users-keys.sh`;
+  const PATH = `/private/tmp/claude-501/-Users-alex-Code-backoffice/1234abcd-5678-90ef-aaaa-bbbbccccdddd/scratchpad/${onGrid ? "" : "landscape-checks/a-folder-deep-enough-for-a-wide-workspace/"}add-portal-users-keys.sh`;
   const SENTENCE = "That script reads every portal user from the database, generates a key pair for each one that doesn't have one yet, and writes the public half back so the next login picks it up.";
   // an agent's rows: the box two columns in, a word longer than it cut at its edge
   const agentRows = (text: string, cols: number) => {
@@ -7838,14 +8014,21 @@ if (params.has("copyAudit")) {
     }
     return rows.map((r) => `  ${r}`);
   };
-  waitFor(copyInLandscape ? '.ls-world [data-front="s1"] .xterm' : ".grid > [data-cell=s1] .xterm", async () => {
+  waitFor(onGrid ? ".grid > [data-cell=s1] .xterm" : '.ls-world [data-front="s1"] .xterm', async () => {
     const out: Record<string, unknown> = {};
     try {
       await sleep(800);
       const copies: Record<string, { cols: number; mouse: string; renderer: string; rows: number[]; onSelect: string[]; copyEvent: string[] }> = {};
-      for (const id of copyInLandscape ? ["s1", NICK_PANE, "s4"] : ["s1", NICK_PANE, "s3", "s4"]) {
-        if (copyInLandscape) {
-          // selected, so its terminal is attached wherever its workspace is
+      for (const id of ["s1", NICK_PANE, "s3", "s4"]) {
+        // a tab behind its stack's front one comes to the front
+        const tab = onGrid ? null : document.querySelector<HTMLElement>(`.ls-world .ls-tab[data-sid="${CSS.escape(id)}"]:not(.on)`);
+        if (tab) {
+          tab.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+          tab.click();
+          await sleep(500);
+        }
+        // selected, so its terminal is attached wherever its workspace is
+        if (!onGrid) {
           document.querySelector(`.ls-world [data-front="${CSS.escape(id)}"] .ls-head`)?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
           await sleep(500);
         }
@@ -8336,7 +8519,7 @@ if (params.has("houseStartAudit")) {
       starts: starts(),
       house: { claim: houseTickets[146].claim ? { by: houseTickets[146].claim!.by, branch: houseTickets[146].claim!.branch } : null, history: (houseHistory[146] ?? []).map((e) => e.kind) },
       session: sessions.filter((x) => x.title.startsWith("#146")).map((x) => ({ title: x.title, group: x.taskGroup, agent: x.agent })),
-      shown: !!document.querySelector(".pane .pane-title, .pane-header") && [...document.querySelectorAll(".pane-header")].some((h) => h.textContent?.includes("#146")),
+      shown: [...document.querySelectorAll(onGrid ? ".pane-header" : ".ls-world .ls-node.selected")].some((n) => n.textContent?.includes("#146")),
     };
     const tag = document.createElement("script");
     tag.type = "application/json";
@@ -8444,7 +8627,7 @@ if (params.has("reset")) {
   history.replaceState(null, "", `${location.pathname}${params.size ? `?${params}` : ""}`);
 }
 // the grid's layout prefs as they were before the app ran: what checks that the landscape leaves them alone compare with
-w.__mbPrefsAtLoad = Object.fromEntries(Object.values(LEGACY_PREF_KEYS).map((k) => [k, localStorage.getItem(k)]));
+w.__mbPrefsAtLoad = Object.fromEntries([...Object.values(LEGACY_PREF_KEYS), "mb.wsOpen", "mb.collapsed", "mb.sideView"].map((k) => [k, localStorage.getItem(k)]));
 
 // ---- wires: an empty book, changed by main's own rules (shared/wires.ts), on this file's sessions. Nothing here reaches a pane ----
 import {

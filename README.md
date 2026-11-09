@@ -143,10 +143,10 @@ renders a screen with `?measure=<selector>` and returns the page with where thos
 elements sit (`test/uiLayout.test.ts` checks that row actions, the Council's
 inspector and its controls don't overlap; local only, like the screenshot test).
 
-Context warnings: `?shown=s5` has a heads-up (75%) on an idle pane, `?shown=s2,s1` a firm one (90%) on a pane
-asking for permission; `?ctxPop` opens the first chip's popover, `?ctxBrief` goes on to Fresh session with a
-brief, and `?shown=s6&ctxResume` shows the cost check before a cold resume. `?ctxAudit=idle|waiting|resume`
-clicks through them for `test/uiContextWarning.test.ts`.
+Context warnings: `?lsCamera=2000,0,0.6` has s5's heads-up (75%) on an idle workspace, `?lsCamera=0,0,0.6` s2's
+firm one (90%), asking for permission; `?ctxPop` opens the first chip's popover, `?ctxBrief` goes on to Fresh
+session with a brief, and `?lsFocus=s6&ctxResume` shows the cost check before a cold resume.
+`?ctxAudit=idle|waiting|resume` clicks through them for `test/uiContextWarning.test.ts`.
 
 Motion: `?motion=off|reduce|full` picks how much moves; screenshots and
 `?measure` default to off, so they never catch a box mid-animation.

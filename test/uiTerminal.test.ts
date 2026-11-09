@@ -5,8 +5,8 @@ import { tempDir } from "./helpers";
 
 // Terminals' sizes through everything that moves or re-fits them, in the UI preview in real headless Chrome: local
 // only (CI runners have no desktop); the script passes a mock keychain. ?termAudit (src/preview/stub.ts) fills the
-// panes with history, streams output, does each action, finishes its animations, and reports what was wrong after
-// it; then Repaints and relaunches a pane in place. Tests read that report, never frames caught in flight.
+// workspaces with history, streams output, does each action, finishes its animations, and reports what was wrong after
+// it; then Repaints and relaunches a workspace in place. Tests read that report, never frames caught in flight.
 const chrome = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const local = !process.env.CI && fs.existsSync(chrome);
 
@@ -22,20 +22,23 @@ type Audit = {
   error?: string;
 };
 
-async function audit(motion: "full" | "off"): Promise<Audit> {
+/** The interface a test runs on: the landscape, or the grid with Settings → Labs → Landscape off. */
+const INTERFACES = [["the landscape", ""], ["the grid", "labs=off&"]] as const;
+
+async function audit(motion: "full" | "off", on: string): Promise<Audit> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
-  const json: string | null = await pageResult({ size: "1400x900", query: `motion=${motion}&termAudit`, outDir: path.join(tempDir("term"), "out"), read: `document.getElementById("mb-term-audit")?.textContent ?? null` });
+  const json: string | null = await pageResult({ size: "1400x900", query: `${on}motion=${motion}&termAudit`, outDir: path.join(tempDir("term"), "out"), read: `document.getElementById("mb-term-audit")?.textContent ?? null` });
   if (!json) throw new Error("the preview didn't finish its terminal audit");
   return JSON.parse(json);
 }
 
 type ScrollAudit = { steps: string[]; shown: string[]; internals: boolean; problems: string[]; mode: string; error?: string };
 
-async function scrollAudit(motion: "full" | "off"): Promise<ScrollAudit> {
+async function scrollAudit(motion: "full" | "off", on: string): Promise<ScrollAudit> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
-  const json: string | null = await pageResult({ size: "1400x900", query: `motion=${motion}&scrollAudit`, outDir: path.join(tempDir("scroll"), "out"), read: `document.getElementById("mb-scroll-audit")?.textContent ?? null` });
+  const json: string | null = await pageResult({ size: on ? "1400x900" : "3200x2000", query: `${on}motion=${motion}&scrollAudit`, outDir: path.join(tempDir("scroll"), "out"), read: `document.getElementById("mb-scroll-audit")?.textContent ?? null` });
   if (!json) throw new Error("the preview didn't finish its scroll audit");
   return JSON.parse(json);
 }
@@ -46,11 +49,12 @@ type CopyAudit = {
   error?: string;
 };
 
-describe.skipIf(!local)("copying a pane's selection", () => {
+// the landscape's is in uiLandscapeZoom.test.ts, with the renderer it draws with
+describe.skipIf(!local)("copying a pane's selection, on the grid", () => {
   it("gives an agent's long command and sentence back whole, on release and with ⌘C, and a shell's as before", async () => {
     // @ts-expect-error — a plain .mjs build script, no type declarations
     const { pageResult } = await import("../scripts/ui-preview.mjs");
-    const json: string | null = await pageResult({ size: "1400x900", query: "copyAudit", outDir: path.join(tempDir("copy"), "out"), read: `document.getElementById("mb-copy-audit")?.textContent ?? null` });
+    const json: string | null = await pageResult({ size: "1400x900", query: "labs=off&copyAudit", outDir: path.join(tempDir("copy"), "out"), read: `document.getElementById("mb-copy-audit")?.textContent ?? null` });
     if (!json) throw new Error("the preview didn't finish its copy audit");
     const a: CopyAudit = JSON.parse(json);
     expect(a.error).toBeUndefined();
@@ -69,24 +73,24 @@ describe.skipIf(!local)("copying a pane's selection", () => {
 });
 
 describe.skipIf(!local)("terminals following their output", () => {
-  for (const motion of ["full", "off"] as const) {
-    it(`stay at the bottom through every action unless the user scrolled up, with nothing to scroll below the program's last line: motion ${motion}`, async () => {
-      const a = await scrollAudit(motion);
+  for (const [where, on] of INTERFACES) for (const motion of ["full", "off"] as const) {
+    it(`stay at the bottom through every action unless the user scrolled up, with nothing to scroll below the program's last line: ${where}, motion ${motion}`, async () => {
+      const a = await scrollAudit(motion, on);
       expect(a.error).toBeUndefined();
       expect(a.mode).toBe(motion);
       expect(a.shown).toEqual(expect.arrayContaining(["s1", "s4", expect.stringMatching(/^r~/)]));
       // the viewport internals cachedTerm.ts resyncs (an xterm upgrade that renames them fails here)
       expect(a.internals).toBe(true);
-      expect(a.steps).toEqual(["start", "group switch", "teammate's screen grew", "side bar hidden", "side bar shown", "bottom panel shown", "bottom panel hidden", "inline frame", "scrolled up, then back", "Repaint"]);
+      expect(a.steps).toEqual(["start", "off screen and back", "teammate's screen grew", "side bar hidden", "side bar shown", "bottom panel shown", "bottom panel hidden", "inline frame", "scrolled up, then back", "Repaint"]);
       expect(a.problems).toEqual([]);
     }, 120_000);
   }
 });
 
 describe.skipIf(!local)("terminals in the interface", () => {
-  for (const motion of ["full", "off"] as const) {
-    it(`fit their holders and give their ptys that size after every action, never measuring a holder with no area: motion ${motion}`, async () => {
-      const a = await audit(motion);
+  for (const [where, on] of INTERFACES) for (const motion of ["full", "off"] as const) {
+    it(`fit their holders and give their ptys that size after every action, never measuring a holder with no area: ${where}, motion ${motion}`, async () => {
+      const a = await audit(motion, on);
       expect(a.error).toBeUndefined();
       expect(a.mode).toBe(motion);
       expect(a.steps).toHaveLength(17);

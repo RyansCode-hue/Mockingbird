@@ -949,14 +949,14 @@ export function SettingsView({
         {section === "labs" && (
           <>
             <h2>Labs</h2>
-            <p className="set-lede">Features still being built. They're off until you turn them on, and may change before they're finished.</p>
+            <p className="set-lede">Features still being built. They may change before they're finished.</p>
             <SetRow
               title="Landscape"
-              note="The Sessions tab shows your sessions on a surface you pan and zoom, instead of the grid. The first time, your grid's layout is read in; turning this off brings the grid back as it was."
+              note="The Sessions tab shows your sessions on a surface you pan and zoom, your grid's layout read in the first time. Turned off, it shows the grid as you left it."
             >
               <Toggle
                 label="Landscape"
-                on={s.labs?.landscape === true}
+                on={s.labs?.landscape !== false}
                 onChange={async (v) => {
                   const labs = { ...s.labs, landscape: v };
                   if (await upd({ labs })) onLabs(labs);

@@ -74,7 +74,8 @@ describe.skipIf(!local)("the UI preview's landscape", () => {
 
   it("starts over with a banner's problem under ?landscape=corrupt", async () => {
     const { got } = await probe("landscape=corrupt");
-    expect(got.landscape.areas).toEqual({});
+    // the fixture's ghosts are gone with the file: the window reads the groups in again
+    expect(got.landscape.ghosts).toEqual({});
     expect(got.problems).toEqual([expect.objectContaining({ kind: "corrupt", movedTo: expect.stringMatching(/landscape\.json\.bad-\d+$/) })]);
   });
 });

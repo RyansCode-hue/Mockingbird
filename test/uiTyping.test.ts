@@ -12,22 +12,32 @@ const local = !process.env.CI && fs.existsSync(chrome);
 const NICK_PANE = "r~0f1e2d3c4b5a~n1";
 const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ");
 
-async function dom(query: string, size = "1500x900"): Promise<string> {
+async function dom(query: string, size: string): Promise<string> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageDom } = await import("../scripts/ui-preview.mjs");
   return pageDom({ size, query, outDir: path.join(tempDir("typing"), "out") });
 }
 
 /** Run `read` in the page until it gives something other than null. */
-async function result(query: string, read: string): Promise<string> {
+async function result(query: string, read: string, size: string): Promise<string> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
-  return pageResult({ size: "1500x900", query, outDir: path.join(tempDir("typing"), "out"), read });
+  return pageResult({ size, query, outDir: path.join(tempDir("typing"), "out"), read });
 }
 
-describe.skipIf(!local)("typing into teammates' sessions, in the window", () => {
+/**
+ * Each interface's way to have those sessions drawn. The landscape: at 100%, where a workspace's body takes the mouse,
+ * in a window big enough for them all, and at s8 for a small window; the grid: its panes, with Settings → Labs →
+ * Landscape off.
+ */
+const INTERFACES = [
+  { where: "the landscape", size: "3200x2400", at: (_ids: string) => "lsCamera=0,0,1", narrow: "lsCamera=1000,1500,1" },
+  { where: "the grid", size: "1500x900", at: (ids: string) => `labs=off&shown=${ids}`, narrow: `labs=off&shown=s1,s8,s4,${NICK_PANE}` },
+] as const;
+
+for (const on of INTERFACES) describe.skipIf(!local)(`typing into teammates' sessions, on ${on.where}`, () => {
   it("asks the owner on the pane, and shows who can type with a way to stop it", async () => {
-    const html = await dom(`shown=s1,s8,${NICK_PANE}&typingAsk&typingRefused`);
+    const html = await dom(`${on.at(`s1,s8,${NICK_PANE}`)}&typingAsk&typingRefused`, on.size);
     const t = text(html);
     expect(t).toContain("Nick wants to type in “Release notes for #5101” Allow for this session Allow for 15 min Deny");
     // docked as a strip over the top of s8's terminal (the first of its pane notes), never a modal
@@ -35,8 +45,12 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     expect(html).not.toMatch(/class="modal/);
     expect(html).toMatch(/class="chip typist"[^>]*>Nick can type · 12 min<button class="typist-x" aria-label="Stop Nick Smith typing">/);
     // s1, which Nick may type into, is outlined; s8, where he only asks, and his own session here aren't
-    const panes = [...html.matchAll(/<div class="(pane [^"]*)"[^>]*>[^]*?<span class="title"[^>]*>([^<]*)</g)].map((m) => [m[2], m[1].includes("typing-on")]);
-    expect(Object.fromEntries(panes)).toMatchObject({ "Org dropdowns remember the last org": true, "Release notes for #5101": false, "Donor export: CSV writer": false });
+    const panes = JSON.parse(await result(`${on.at(`s1,s8,${NICK_PANE}`)}&typingAsk&typingRefused`, `(() => {
+      const ids = ["s1", "s8", ${JSON.stringify(NICK_PANE)}];
+      const pane = (id) => document.querySelector(\`.ls-world [data-front="\${CSS.escape(id)}"] .pane, .pane[data-cell="\${CSS.escape(id)}"]\`);
+      return ids.every(pane) && document.querySelector(".typing-ask") ? JSON.stringify(ids.map((id) => pane(id).classList.contains("typing-on"))) : null;
+    })()`, on.size));
+    expect(panes).toEqual([true, false, false]);
     // the teammate's side: view-only, with Ask to type, and why the keys just typed didn't go
     expect(t).toContain("View only · Ask to type");
     expect(t).toContain("Nick Smith hasn't allowed typing Ask to type");
@@ -54,7 +68,7 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
       const chips = [...document.querySelectorAll(".chip.typist")].map((c) => c.textContent);
       return chips.length === 2 && !document.querySelector(".typing-ask") ? JSON.stringify(chips) : null;
     })()`;
-    expect(JSON.parse(await result(`shown=s1,s8&typingAsk`, read)).sort()).toEqual(["Nick can type · 12 min✕", "Nick can type · 15 min✕"]);
+    expect(JSON.parse(await result(`${on.at("s1,s8")}&typingAsk`, read, on.size)).sort()).toEqual(["Nick can type · 12 min✕", "Nick can type · 15 min✕"]);
   }, 90_000);
 
   it("shows the strip over the terminal: no re-fit, no pty resize", async () => {
@@ -79,7 +93,7 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
         docked: Math.abs(sb.top - head.top) < 1.5, overTerminal: sb.top < h.bottom && sb.bottom > h.top, fullWidth: sb.width >= h.width - 4,
       });
     })().catch((e) => (window.__done = JSON.stringify({ error: String(e) }))), window.__done ?? null)`;
-    const r = JSON.parse(await result(`shown=s1,s8`, read));
+    const r = JSON.parse(await result(on.at("s1,s8"), read, on.size));
     expect(r.after).toEqual({ cols: r.before.cols, rows: r.before.rows, h: r.before.h });
     expect(r.resizes).toBe(0);
     expect(r).toMatchObject({ docked: true, overTerminal: true, fullWidth: true });
@@ -96,13 +110,13 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
       }
       return document.querySelector(".chip.typist") ? null : document.querySelector(".pane.typing-on") ? "outlined still" : "gone";
     })()`;
-    expect(await result(`shown=s1`, read)).toBe("gone");
+    expect(await result(on.at("s1"), read, on.size)).toBe("gone");
   }, 90_000);
 
   it("keeps the prompt's buttons inside a narrow pane", async () => {
     // @ts-expect-error — a plain .mjs build script, no type declarations
     const { pageDom } = await import("../scripts/ui-preview.mjs");
-    const html: string = await pageDom({ size: "900x700", query: `shown=s1,s8,s4,${NICK_PANE}&typingAsk&measure=${encodeURIComponent(".typing-ask button")}&measure=${encodeURIComponent(".pane")}`, outDir: path.join(tempDir("typing"), "out") });
+    const html: string = await pageDom({ size: "900x700", query: `${on.narrow}&typingAsk&measure=${encodeURIComponent(".typing-ask button")}&measure=${encodeURIComponent(".pane")}`, outDir: path.join(tempDir("typing"), "out") });
     const boxes = JSON.parse(html.match(/<script type="application\/json" id="mb-measure">([\s\S]*?)<\/script>/)![1]);
     const buttons: { x: number; y: number; w: number; h: number }[] = boxes[".typing-ask button"];
     expect(buttons).toHaveLength(3);
@@ -114,7 +128,7 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
   }, 90_000);
 
   it("lists recent remote activity in Settings → Team", async () => {
-    const t = text(await dom("section=team", "1100x2600"));
+    const t = text(await dom(`${on.at("s1")}&section=team`, "1100x2600"));
     expect(t).toContain("Recent remote activity");
     expect(t).toContain("You let Nick Smith type in “Org dropdowns remember the last org”");
     expect(t).toContain("Refused Nick Smith's typing in “API: last org per user” (2 writes, 2 bytes): its agent was asking for permission");

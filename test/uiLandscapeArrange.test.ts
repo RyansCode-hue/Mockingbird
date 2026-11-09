@@ -19,7 +19,7 @@ async function run<T>(part: string): Promise<T> {
   const { pageResult } = await import("../scripts/ui-preview.mjs");
   const json: string | null = await pageResult({
     size: "1400x900",
-    query: `labs=landscape&motion=off&lsCamera=0,0,0.5&landscapeArrangeAudit=${part}`,
+    query: `motion=off&lsCamera=0,0,0.5&landscapeArrangeAudit=${part}`,
     outDir: path.join(tempDir(id), "out"),
     read: `document.getElementById(${JSON.stringify(id)})?.textContent ?? null`,
   });

@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isErr, type SessionInfo } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import { LEGACY_PREF_KEYS, migrateLayout, type LegacyPrefs } from "../shared/landscapeMigrate";
-import { afterChange, flagOnly, migrationPatch, migrationStep, newer, type ListsLoaded, type MigrationStep } from "./landscapeModel";
-import { readPref } from "./prefs";
+import { afterChange, flagOnly, migrationPatch, migrationStep, newer, partialMigration, type ListsLoaded, type MigrationStep } from "./landscapeModel";
+import type { PrefStore } from "./prefs";
 import { settled } from "./settled";
 import { isRemotePaneId } from "../shared/team/livePanes";
 
@@ -103,15 +103,29 @@ export function useLandscape(on: boolean): LandscapeStore {
   return { state, error, update, save, reload, revNow };
 }
 
-/** The grid's layout prefs as the grid left them in localStorage, each parsed; the keys stay as they are. */
-export function readLegacyPrefs(): LegacyPrefs {
-  const out: LegacyPrefs = {};
-  for (const [field, key] of Object.entries(LEGACY_PREF_KEYS) as [keyof LegacyPrefs, string][]) out[field] = readPref<unknown>(key, undefined);
-  return out;
+/**
+ * The grid's layout prefs as the grid left them in localStorage, each parsed; the keys stay as they are. A pref that's
+ * there and can't be read isn't the same as one that isn't there: `unreadable` names those, for the migration to say.
+ */
+export function readLegacyPrefs(store?: PrefStore): { prefs: LegacyPrefs; unreadable: string[] } {
+  const prefs: LegacyPrefs = {};
+  const unreadable: string[] = [];
+  for (const [field, key] of Object.entries(LEGACY_PREF_KEYS) as [keyof LegacyPrefs, string][]) {
+    try {
+      const v = (store ?? localStorage).getItem(key);
+      if (v != null) prefs[field] = JSON.parse(v);
+    } catch (err) {
+      console.warn(`[mockingbird] reading the grid's layout into the landscape, couldn't read ${key}:`, err);
+      unreadable.push(key);
+    }
+  }
+  return { prefs, unreadable };
 }
 
 export interface Migrating {
   step: MigrationStep;
+  /** What of the grid's layout was read in without: a pref that couldn't be read or wasn't in the grid's shape. */
+  partial: string | null;
   /** Why the last attempt failed; it's tried again with retry(). */
   failed: string | null;
   retry: () => void;
@@ -149,6 +163,7 @@ export function useLandscapeMigration(o: {
   const step: MigrationStep = o.on ? migrationStep(o.store.state, lists) : { kind: "wait", why: "the landscape is off" };
   const remoteFailed = step.kind === "wait" && !lists.remote && o.remoteError ? o.remoteError : null;
   const [failed, setFailed] = useState<string | null>(null);
+  const [partial, setPartial] = useState<string | null>(null);
   const [tries, setTries] = useState(0);
   const started = useRef(-1);
   useEffect(() => {
@@ -156,7 +171,9 @@ export function useLandscapeMigration(o: {
     started.current = tries;
     let patch: LandscapePatch;
     try {
-      const m = migrateLayout(readLegacyPrefs(), [...o.live, ...o.resumable, ...o.remote], { closed: new Set(o.resumable.map((s) => s.id)) });
+      const { prefs, unreadable } = readLegacyPrefs();
+      const m = migrateLayout(prefs, [...o.live, ...o.resumable, ...o.remote], { closed: new Set(o.resumable.map((s) => s.id)) });
+      setPartial(partialMigration(unreadable, m.ignored));
       if (m.ignored.length) console.warn("[mockingbird] reading the grid's layout into the landscape, left out prefs not in the grid's shape:", m.ignored);
       // read in without teammates' sessions, theirs name no session yet without being stale
       const later = skipRemote && !o.lists.remote ? m.stale.filter(isRemotePaneId) : [];
@@ -176,5 +193,5 @@ export function useLandscapeMigration(o: {
     setTries((n) => n + 1);
   }, []);
   const withoutRemote = useCallback(() => setSkipRemote(true), []);
-  return { step, failed, retry, remoteFailed, retryRemote: o.retryRemote, withoutRemote };
+  return { step, partial, failed, retry, remoteFailed, retryRemote: o.retryRemote, withoutRemote };
 }

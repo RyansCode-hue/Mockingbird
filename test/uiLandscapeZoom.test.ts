@@ -51,7 +51,7 @@ interface ZoomAudit {
 // one run of each audit, read by the tests below that check its parts
 const zoomAudits = new Map<string, Promise<ZoomAudit>>();
 const zoomAudit = (extra = "") => {
-  if (!zoomAudits.has(extra)) zoomAudits.set(extra, page<ZoomAudit>(`labs=landscape&landscapeMany=30&landscapeZoomAudit${extra}`, "mb-landscape-zoom-audit", `ls-zoom${extra.replace(/\W/g, "-")}`));
+  if (!zoomAudits.has(extra)) zoomAudits.set(extra, page<ZoomAudit>(`landscapeMany=30&landscapeZoomAudit${extra}`, "mb-landscape-zoom-audit", `ls-zoom${extra.replace(/\W/g, "-")}`));
   return zoomAudits.get(extra)!;
 };
 
@@ -162,10 +162,10 @@ describe.skipIf(!local)("the landscape's semantic zoom", () => {
 
   it("copies a WebGL terminal's selection on release and with ⌘C, the agent's own wrapping undone", async () => {
     type Copy = { cols: number; mouse: string; renderer: string; rows: number[]; onSelect: string[]; copyEvent: string[] };
-    const a = await page<{ copies: Record<string, Copy>; expected: { agent: string[]; shell: string[] }; error?: string }>("labs=landscape&copyAudit", "mb-copy-audit", "ls-copy");
+    const a = await page<{ copies: Record<string, Copy>; expected: { agent: string[]; shell: string[] }; error?: string }>("copyAudit", "mb-copy-audit", "ls-copy");
     expect(a.error).toBeUndefined();
     const ids = Object.keys(a.copies);
-    expect(ids).toEqual(["s1", expect.stringMatching(/^r~/), "s4"]);
+    expect(ids).toEqual(["s1", expect.stringMatching(/^r~/), "s3", "s4"]);
     for (const id of ids) {
       const c = a.copies[id];
       expect(c.renderer, id).toBe("webgl");
@@ -212,7 +212,7 @@ interface PeekAudit {
 
 const peekAudits = new Map<string, Promise<PeekAudit>>();
 const peekAudit = (motion: "full" | "reduce") => {
-  if (!peekAudits.has(motion)) peekAudits.set(motion, page<PeekAudit>(`labs=landscape&motion=${motion}&landscapePeekAudit`, "mb-landscape-peek-audit", `ls-peek-${motion}`));
+  if (!peekAudits.has(motion)) peekAudits.set(motion, page<PeekAudit>(`motion=${motion}&landscapePeekAudit`, "mb-landscape-peek-audit", `ls-peek-${motion}`));
   return peekAudits.get(motion)!;
 };
 
@@ -301,7 +301,7 @@ describe.skipIf(!local)("a teammate's workspace on the landscape", () => {
       resized: string[];
       error?: string;
     };
-    const a = await page<Remote>("labs=landscape&landscapeRemoteAudit", "mb-landscape-remote-audit", "ls-remote");
+    const a = await page<Remote>("landscapeRemoteAudit", "mb-landscape-remote-audit", "ls-remote");
     expect(a.error).toBeUndefined();
     // made by its card, never attached: at its owner's size from the first byte
     expect(Object.keys(a.atFit.sizes).length).toBeGreaterThan(0);
@@ -320,7 +320,7 @@ describe.skipIf(!local)("a teammate's workspace on the landscape", () => {
 describe.skipIf(!local)("Restart all on the landscape", () => {
   it("gives the restarted sessions new terminals, and their cards follow them", async () => {
     type Restart = { restart: { label: string | null; restarted: boolean; newTerm: boolean; lineBefore: string | null; lineAfter: string | null }; error?: string };
-    const a = await page<Restart>("labs=landscape&landscapeRestartAudit", "mb-landscape-restart-audit", "ls-restart");
+    const a = await page<Restart>("landscapeRestartAudit", "mb-landscape-restart-audit", "ls-restart");
     expect(a.error).toBeUndefined();
     expect(a.restart).toMatchObject({ restarted: true, newTerm: true, lineAfter: "⏺ After the restart: the tag list is memoized" });
     expect(a.restart.lineBefore).toContain("tag list");

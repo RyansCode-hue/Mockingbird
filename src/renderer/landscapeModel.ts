@@ -957,6 +957,16 @@ export function migrationStep(state: LandscapeState | null, lists: ListsLoaded):
   return { kind: "run" };
 }
 
+/**
+ * What a migration read in without, in words: prefs it couldn't read (`unreadable`, by key) and prefs not in the grid's
+ * shape (`ignored`, each with why). Null when it read everything that was there. Sessions don't depend on them: every
+ * one still gets a place, in its group's area.
+ */
+export function partialMigration(unreadable: readonly string[], ignored: readonly string[]): string | null {
+  const parts = [...unreadable.map((key) => `${key} couldn't be read`), ...ignored];
+  return parts.length ? `${parts.join("; ")}. Every session is on the landscape, in its group's area: what those prefs would have placed is where there was room.` : null;
+}
+
 /** A migrated landscape as the patch that puts it in: placements, areas, stacks and migratedAt; whatever else is there stays. */
 export function migrationPatch(m: Landscape): LandscapePatch {
   return { workspaces: m.workspaces, areas: m.areas, stacks: m.stacks, migratedAt: m.migratedAt ?? new Date().toISOString() };

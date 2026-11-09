@@ -3,7 +3,7 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 
-// The landscape (Settings → Labs) in the UI preview, in real headless Chrome: local only (CI runners have no
+// The landscape in the UI preview, in real headless Chrome: local only (CI runners have no
 // desktop); the script passes a mock keychain. ?landscapeAudit (src/preview/stub.ts) pans, zooms, types, moves a
 // placement and focuses, and reports what each step did once it settles; never frames caught in flight.
 const chrome = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -44,7 +44,7 @@ async function page<T>(query: string, read: string, name: string): Promise<T> {
 
 describe.skipIf(!local)("the landscape", () => {
   it("sizes each terminal from its placement, never from pan or zoom, reflows your own in focus and only scales a teammate's", async () => {
-    const a = await page<Audit>("labs=landscape&landscapeAudit", `document.getElementById("mb-landscape-audit")?.textContent ?? null`, "ls-audit");
+    const a = await page<Audit>("landscapeAudit", `document.getElementById("mb-landscape-audit")?.textContent ?? null`, "ls-audit");
     expect(a.error).toBeUndefined();
 
     // panning (wheel, over a workspace that isn't selected, Space-drag, middle-drag) and zooming (pinch, ⌘-scroll,
@@ -118,7 +118,7 @@ describe.skipIf(!local)("the landscape", () => {
       dblclick: { focused: boolean };
       error?: string;
     }
-    const at = (zoom: number) => page<Mouse>(`labs=landscape&lsCamera=0,0,${zoom}&landscapeMouseAudit`, `document.getElementById("mb-landscape-mouse-audit")?.textContent ?? null`, `ls-mouse-${zoom}`);
+    const at = (zoom: number) => page<Mouse>(`lsCamera=0,0,${zoom}&landscapeMouseAudit`, `document.getElementById("mb-landscape-mouse-audit")?.textContent ?? null`, `ls-mouse-${zoom}`);
     for (const zoom of [0.5, 1.5]) {
       const m = await at(zoom);
       expect(m.error).toBeUndefined();
@@ -140,7 +140,7 @@ describe.skipIf(!local)("the landscape", () => {
     expect(m.dblclick).toEqual({ focused: false });
   }, 180_000);
 
-  it("is there only with the Labs flag on, and never reads landscape.json with it off: the grid renders as before", async () => {
+  it("is on by default, and never reads landscape.json with the Labs flag off: the grid renders as before", async () => {
     const read = `(() => {
       const start = (window.__lsStart ??= Date.now());
       if (!document.querySelector(".grid .xterm, .ls-world .ls-node") && Date.now() - start < 20000) return null;
@@ -154,9 +154,9 @@ describe.skipIf(!local)("the landscape", () => {
         read: window.__mbCalls.filter((c) => c.fn.startsWith("landscape")).map((c) => c.fn),
       });
     })()`;
-    const off = await page<Record<string, unknown>>("", read, "ls-off");
+    const off = await page<Record<string, unknown>>("labs=off", read, "ls-off");
     expect(off).toEqual({ grid: ["s1", "ws:5101/api", "s4"], gridTerms: 3, landscape: false, workspaces: 0, layoutButton: true, read: [] });
-    const on = await page<Record<string, unknown>>("labs=landscape", read, "ls-on");
+    const on = await page<Record<string, unknown>>("", read, "ls-on");
     expect(on).toMatchObject({ grid: [], gridTerms: 0, landscape: true, layoutButton: false });
     expect(on.workspaces).toBeGreaterThan(8);
     expect(on.read).toContain("landscapeGet");
@@ -207,16 +207,15 @@ describe.skipIf(!local)("the landscape", () => {
       })();
       return window.__lsResult ?? null;
     })()`;
-    const r = await page<Record<string, unknown>>("labs=landscape", read, "ls-flip");
+    const r = await page<Record<string, unknown>>("", read, "ls-flip");
     expect(r).toMatchObject({ wasOn: "true", wasOff: "false", saved: [{ labs: { landscape: false } }, { labs: { landscape: true } }], grid: ["s1", "ws:5101/api", "s4"], landscape: true, hint: "true" });
-    // the landscape writes none of the grid's prefs, from the page's load on: only the empty defaults the app writes at
-    // start for one that isn't there, grid or not
+    // the landscape writes none of the grid's prefs, from the page's load on, not even the defaults of one that isn't there
+    expect(r.whileOn).toEqual(r.atLoad);
     const set = (p: unknown) => Object.fromEntries(Object.entries(p as Record<string, string | null>).flatMap(([k, v]) => (v === null || ["null", "[]", "{}"].includes(v) ? [] : [[k, JSON.parse(v)]])));
-    expect(set(r.whileOn)).toEqual(set(r.atLoad));
     expect(r.afterOn).toEqual(r.afterOff);
     // and the grid, back, keeps them as it does with the landscape never shown
     const gridOnly = await page<Record<string, string | null>>(
-      "",
+      "labs=off",
       `(() => {
         const start = (window.__lsStart ??= Date.now());
         if (!document.querySelector(".grid .xterm") || Date.now() - start < 3000) return null;
@@ -226,6 +225,47 @@ describe.skipIf(!local)("the landscape", () => {
     );
     expect(r.afterOff).toEqual(gridOnly);
   }, 180_000);
+
+  it("says what of the grid's layout it couldn't read, puts every session on the landscape all the same, and leaves those prefs as they were", async () => {
+    const read = `(() => {
+      const start = (window.__lsStart ??= Date.now());
+      if (Date.now() - start < 3000) return null;
+      const m = window.__mbCalls.filter((c) => c.fn === "landscapeUpdate").map((c) => c.args[0]).filter((p) => p.migratedAt);
+      return JSON.stringify({
+        migrations: m.length,
+        workspaces: Object.keys(m[0]?.workspaces ?? {}).sort(),
+        banners: [...document.querySelectorAll(".ls-banner")].map((b) => [b.querySelector(".t").textContent, b.querySelector(".m").textContent]),
+        unchanged: Object.entries(window.__mbPrefsAtLoad).filter(([k, v]) => localStorage.getItem(k) !== v).map(([k]) => k),
+        drawn: document.querySelectorAll(".ls-world .ls-node").length,
+        trees: localStorage.getItem("mb.trees"),
+      });
+    })()`;
+    type Partial = { migrations: number; workspaces: string[]; banners: [string, string][]; unchanged: string[]; drawn: number; trees: string | null };
+    const whole = await page<Partial>("landscape=fresh", read, "ls-whole");
+    expect(whole.banners).toEqual([]);
+
+    // not JSON: named, and the migration goes on without it
+    const bad = await page<Partial>("landscape=fresh&lsBadPref=mb.trees", read, "ls-bad-pref");
+    expect(bad.migrations).toBe(1);
+    expect(bad.banners).toEqual([["Part of your grid's layout wasn't read in", expect.stringMatching(/^mb\.trees couldn't be read\. Every session is on the landscape/)]]);
+    expect(bad.workspaces).toEqual(whole.workspaces);
+    expect(bad.drawn).toBeGreaterThan(8);
+    expect(bad.unchanged).toEqual([]);
+    expect(bad.trees).toBe("{not json");
+
+    // JSON not in the grid's shape: named too, with why
+    const odd = await page<Partial>("landscape=fresh&lsOddPref=mb.shown", read, "ls-odd-pref");
+    expect(odd.banners).toEqual([["Part of your grid's layout wasn't read in", expect.stringContaining("mb.shown")]]);
+    expect(odd.workspaces).toEqual(whole.workspaces);
+    expect(odd.unchanged).toEqual([]);
+
+    // all of them: still every session, and it says which
+    const keys = "mb.shown,mb.trees,mb.pinned,mb.groupLayouts,mb.activeGroup,mb.wsTabs,mb.cols,mb.layout,mb.zones";
+    const all = await page<Partial>(`landscape=fresh&lsBadPref=${keys}`, read, "ls-all-bad");
+    expect(all.banners[0][1]).toContain("mb.shown couldn't be read; mb.trees couldn't be read");
+    expect(all.drawn).toBeGreaterThan(8);
+    expect(all.workspaces.length).toBeGreaterThan(4);
+  }, 240_000);
 
   it("reads the grid's layout in the first time, once, and shows a stand-in's read problem as a banner without reading it in", async () => {
     const read = `(() => {
@@ -239,7 +279,7 @@ describe.skipIf(!local)("the landscape", () => {
         banners: [...document.querySelectorAll(".ls-banner .t")].map((e) => e.textContent),
       });
     })()`;
-    const fresh = await page<{ migrations: { areas: string[]; workspaces: string[]; stacks: string[] }[]; others: number; workspaces: number; banners: string[] }>("labs=landscape&landscape=fresh", read, "ls-fresh");
+    const fresh = await page<{ migrations: { areas: string[]; workspaces: string[]; stacks: string[] }[]; others: number; workspaces: number; banners: string[] }>("landscape=fresh", read, "ls-fresh");
     expect(fresh.migrations).toHaveLength(1);
     expect(fresh.migrations[0].areas).toEqual(["5101", "5102", "5110"]);
     expect(fresh.migrations[0].stacks).toEqual(["5101/api"]);
@@ -251,15 +291,20 @@ describe.skipIf(!local)("the landscape", () => {
     expect(fresh.workspaces).toBeGreaterThan(8);
     expect(fresh.banners).toEqual([]);
 
-    const unreadable = await page<{ migrations: unknown[]; others: number; workspaces: number; banners: string[] }>("labs=landscape&landscape=unreadable", read, "ls-unreadable");
+    const unreadable = await page<{ migrations: unknown[]; others: number; workspaces: number; banners: string[] }>("landscape=unreadable", read, "ls-unreadable");
     expect(unreadable.migrations).toEqual([]);
     // shown, placed where there's room, and nothing saved over the file meanwhile
     expect(unreadable.others).toBe(0);
     expect(unreadable.workspaces).toBeGreaterThan(8);
     expect(unreadable.banners).toEqual(["The layout file can't be read", "Your grid's layout isn't read in yet"]);
 
+    // a layout already read in, as someone who had the landscape on has: never read in again
+    const already = await page<{ migrations: unknown[]; banners: string[] }>("", read, "ls-already");
+    expect(already.migrations).toEqual([]);
+    expect(already.banners).toEqual([]);
+
     // a corrupt file moved aside: the layout really starts over, so the grid's is read in, and only the reset is said
-    const corrupt = await page<{ migrations: unknown[]; others: number; workspaces: number; banners: string[] }>("labs=landscape&landscape=corrupt", read, "ls-corrupt");
+    const corrupt = await page<{ migrations: unknown[]; others: number; workspaces: number; banners: string[] }>("landscape=corrupt", read, "ls-corrupt");
     expect(corrupt.migrations).toHaveLength(1);
     expect(corrupt.banners).toEqual(["The layout was reset"]);
   }, 120_000);
@@ -302,7 +347,7 @@ describe.skipIf(!local)("the landscape", () => {
     })()`;
     type Reread = { before: { title: string; actions: string[] }[]; reread: number; after: string[]; migrations: number; fileLayout: string[] | false; s1: boolean };
     // asked again every so often (shortened here): it comes back once it can be read, and the stand-in's change is dropped, said so
-    const timer = await page<Reread>("labs=landscape&landscape=unreadable&lsRereadMs=300&lsCamera=0,0,0.5", read(true), "ls-reread");
+    const timer = await page<Reread>("landscape=unreadable&lsRereadMs=300&lsCamera=0,0,0.5", read(true), "ls-reread");
     expect(timer.before).toEqual([
       { title: "The layout file can't be read", actions: ["Read it again"] },
       { title: "Your grid's layout isn't read in yet", actions: [] },
@@ -312,7 +357,7 @@ describe.skipIf(!local)("the landscape", () => {
     // the file's layout, already read in, shown as it was saved
     expect(timer).toMatchObject({ migrations: 0, fileLayout: ["5101", "5102", "5110"], s1: true });
     // Read it again: at once, and with nothing changed meanwhile nothing is dropped
-    const button = await page<Reread>("labs=landscape&landscape=unreadable&lsCamera=0,0,0.5", read(false), "ls-read-again");
+    const button = await page<Reread>("landscape=unreadable&lsCamera=0,0,0.5", read(false), "ls-read-again");
     expect(button.reread).toBe(0);
     expect(button).toMatchObject({ after: [], migrations: 0, fileLayout: ["5101", "5102", "5110"], s1: true });
   }, 180_000);
@@ -351,7 +396,7 @@ describe.skipIf(!local)("the landscape", () => {
     // the grid showed Nick's session (the stub's remotePaneId(NICK, "n1")), so its layout names it
     const nick = "r~0f1e2d3c4b5a~n1";
     const shownNick = `shown=s1,s2,s3,s4,${nick}`;
-    const tried = await page<Team>(`labs=landscape&landscape=fresh&teamLiveFail&${shownNick}`, read("Try again"), "ls-team-retry");
+    const tried = await page<Team>(`landscape=fresh&teamLiveFail&${shownNick}`, read("Try again"), "ls-team-retry");
     expect(tried.waiting.banners).toEqual([{ title: "Teammates' sessions didn't load", actions: ["Try again", "Continue without teammates' sessions"] }]);
     expect(tried.waiting.migrations).toBe(0);
     expect(tried.waiting.loading).toMatch(/waiting for teammates' sessions/);
@@ -360,7 +405,7 @@ describe.skipIf(!local)("the landscape", () => {
     expect(tried.later.banners).toEqual([]);
     expect(tried.placedLater).toEqual([]);
 
-    const without = await page<Team>(`labs=landscape&landscape=fresh&teamLiveFail=always&${shownNick}`, read("Continue without teammates' sessions"), "ls-team-without");
+    const without = await page<Team>(`landscape=fresh&teamLiveFail=always&${shownNick}`, read("Continue without teammates' sessions"), "ls-team-without");
     expect(without.waiting.migrations).toBe(0);
     expect(without.later).toEqual({ remote: [], banners: [] });
     // the grid's places for them aren't counted as gone: they're placed where there's room once they come

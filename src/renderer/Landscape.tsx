@@ -2440,6 +2440,7 @@ export function LandscapeBanners({ problems, error, onReload, migration }: { pro
           ],
         }]
       : []),
+    ...(migration.partial ? [{ key: `partial:${migration.partial}`, tone: "info" as const, title: "Part of your grid's layout wasn't read in", text: migration.partial }] : []),
     ...(migration.failed ? [{ key: `migration:${migration.failed}`, tone: "bad" as const, title: "Your grid's layout wasn't read in", text: `${migration.failed}. Workspaces are placed where there's room meanwhile, and those places aren't saved until it's read in.`, actions: [{ label: "Try again", run: migration.retry }] }] : []),
     ...(step.kind === "blocked" ? [{ key: `blocked:${step.why}`, tone: "info" as const, title: "Your grid's layout isn't read in yet", text: "Not while the layout file has the problem above: workspaces are placed where there's room meanwhile, and their places aren't saved." }] : []),
   ];

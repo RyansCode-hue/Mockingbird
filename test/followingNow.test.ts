@@ -13,13 +13,13 @@ const html = (el: ReturnType<typeof createElement>) => renderToStaticMarkup(el).
 describe("Following a teammate, said once in the status bar", () => {
   it("says whom, its words in a part of their own that can be cut, the whole on hover, and Stop beside them", () => {
     const out = html(createElement(FollowingNow, { follow: follow({ id: "nick", name: "Nick Smith", view: nick }) }));
-    expect(out).toMatch(/^<span class="team-follow on" title="Following Nick\. Your grid mirrors what Nick Smith shows\. Changing your grid stops it\.">/);
+    expect(out).toMatch(/^<span class="team-follow on" title="Following Nick\. What Nick Smith is in comes into view here\. Going elsewhere yourself stops it\.">/);
     expect(out).toContain('<span class="tf-who">Following Nick</span><button class="gb-btn">Stop</button>');
   });
   it("says it's waiting while they show nothing shared", () => {
     const out = html(createElement(FollowingNow, { follow: follow({ id: "nick", name: "Nick Smith", view: undefined }) }));
     expect(out).toContain('<span class="tf-who">Following Nick — waiting for a shared session</span>');
-    expect(out).toContain('title="Following Nick — waiting for a shared session. Your grid mirrors');
+    expect(out).toContain('title="Following Nick — waiting for a shared session. What Nick Smith is in');
   });
   it("is nothing while no one is followed, and a room's bar offers Follow only then", () => {
     expect(html(createElement(FollowingNow, { follow: follow(null) }))).toBe("");

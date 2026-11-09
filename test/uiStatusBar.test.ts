@@ -48,7 +48,7 @@ describe.skipIf(!local)("the status bar while following a teammate", () => {
         for (const m of [a.following, a.waiting]) {
           expect(m.stop, say(m)).toBe(true);
           // cut or not, its full words are on hover
-          expect(m.title, say(m)).toMatch(new RegExp(`^${m.words}\\. Your grid mirrors what Nick Smith shows`));
+          expect(m.title, say(m)).toMatch(new RegExp(`^${m.words}\\. What Nick Smith is in comes into view`));
         }
         expect(a.following.words).toBe("Following Nick");
         expect(a.waiting.words).toBe("Following Nick — waiting for a shared session");

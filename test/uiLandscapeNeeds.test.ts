@@ -163,7 +163,7 @@ async function run<T>(part: string, query: string, size = "1440x900"): Promise<T
   const { pageResult } = await import("../scripts/ui-preview.mjs");
   const json: string | null = await pageResult({
     size,
-    query: `labs=landscape&motion=off&landscapeNeedsAudit=${part}&${query}`,
+    query: `motion=off&landscapeNeedsAudit=${part}&${query}`,
     outDir: path.join(tempDir(`needs-${part}`), "out"),
     read: `document.getElementById("mb-landscape-needs-audit")?.textContent ?? null`,
   });

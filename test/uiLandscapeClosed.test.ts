@@ -18,7 +18,7 @@ async function run<T>(audit: string, part: string, extra = "", size = "1400x900"
   const param = audit === "closed" ? "landscapeClosedAudit" : "landscapeFixAudit";
   const json: string | null = await pageResult({
     size,
-    query: `labs=landscape&motion=off&${param}=${part}${extra}`,
+    query: `motion=off&${param}=${part}${extra}`,
     outDir: path.join(tempDir(id), "out"),
     read: `document.getElementById(${JSON.stringify(id)})?.textContent ?? null`,
   });

@@ -44,7 +44,7 @@ async function audit(): Promise<Audit> {
   const { pageResult } = await import("../scripts/ui-preview.mjs");
   const json: string | null = await pageResult({
     size: "1400x900",
-    query: "labs=landscape&motion=off&claim&liveViewFail&setGroupFail=s4&landscapeAreaEdgesAudit",
+    query: "motion=off&claim&liveViewFail&setGroupFail=s4&landscapeAreaEdgesAudit",
     outDir: path.join(tempDir("ls-area-edges"), "out"),
     read: `document.getElementById("mb-landscape-area-edges-audit")?.textContent ?? null`,
   });

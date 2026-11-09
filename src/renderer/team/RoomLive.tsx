@@ -92,9 +92,9 @@ export interface Follow {
 const OWN_CHANGE_MS = 600;
 
 /**
- * Follow a teammate: the grid mirrors the room sessions they show and the one
- * they're in, until you stop or change the grid yourself (show, hide or move
- * a pane, switch groups). Clicking into a pane to type doesn't stop it.
+ * Follow a teammate: the room session they're in comes into view (on the grid,
+ * the ones they show too), until you stop or go elsewhere yourself. Clicking
+ * into a pane to type doesn't stop it.
  */
 export function useFollow(o: {
   views: MemberView[];
@@ -181,7 +181,7 @@ export function FollowingNow({ follow }: { follow: Follow }) {
   const who = firstName(follow.leader.name);
   const said = away ? `Following ${who} — waiting for a shared session` : `Following ${who}`;
   return (
-    <span className="team-follow on" title={`${said}. Your grid mirrors what ${follow.leader.name} shows. Changing your grid stops it.`}>
+    <span className="team-follow on" title={`${said}. What ${follow.leader.name} is in comes into view here. Going elsewhere yourself stops it.`}>
       <ReadIcon />
       <span className="tf-who">{said}</span>
       <button className="gb-btn" onClick={follow.stop}>
@@ -200,7 +200,7 @@ export function FollowButtons({ follow }: { follow: Follow }) {
   return (
     <span className="team-follow">
       {follow.candidates.map((v) => (
-        <button key={v.member} className="gb-btn" title={`Mirror ${v.name}'s grid: the shared sessions they show, and the one they're in`} onClick={() => follow.follow(v.member)}>
+        <button key={v.member} className="gb-btn" title={`Follow ${v.name}: the shared session they're in comes into view, as they move`} onClick={() => follow.follow(v.member)}>
           <ReadIcon />
           <span className="gb-t">Follow</span> {firstName(v.name)}
         </button>
