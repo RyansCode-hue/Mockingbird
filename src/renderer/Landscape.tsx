@@ -865,10 +865,11 @@ export function Landscape({
       // a stack's tab behind another comes to the front first, so the workspace shown (its terminal, its focus) is its
       if (fronting.current === p) return;
       fronting.current = p;
-      void asks.current.onPatch({ stacks: { [t.stack]: { active: p.id, placement: t.rect } } }, "the stack's front tab").then((error) => {
-        if (!error || pendingReveal.current !== p) return;
+      void asks.current.onPatch({ stacks: { [t.stack]: { active: p.id, placement: t.rect } } }, "the stack's front tab").then((r) => {
+        if (!("error" in r) || pendingReveal.current !== p) return;
         pendingReveal.current = null;
-        say(`The stack couldn't bring that tab to the front: ${error}`);
+        fronting.current = null;
+        say(`The stack couldn't bring that tab to the front: ${r.error}`);
       });
       return;
     }

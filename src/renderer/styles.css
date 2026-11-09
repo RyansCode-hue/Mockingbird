@@ -3531,12 +3531,13 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-card-tab.closed { color: var(--text-4); }
 /* short of width the badges give way first, whole; then the words, each ending in an ellipsis rather than mid-glyph */
 .ls-card-status, .ls-card-owner { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* the badges (diff, PR, cost) end the foot's line, the cost at the right (design D). One line tall, wrapping: a badge
-   that doesn't fit beside those before it moves to a line the row never shows, the last first. The empty first item
-   (::before) lets the first badge go the same way, so none is ever cut. The foot's gap before the group is taken back
-   (margin-left) and kept by ::before instead, so a group showing no badge leaves its room to the words */
+/* the badges (diff, PR, cost) end the foot's line, the cost at the right (design D). They take only the room the words
+   leave (a basis of 0: any share of a shortfall, however small, would end a word in an ellipsis). One line tall,
+   wrapping: a badge that doesn't fit beside those before it moves to a line the row never shows, the last first. The
+   empty first item (::before) lets the first badge go the same way, so none is ever cut. The foot's gap before the
+   group is taken back (margin-left) and kept by ::before instead, so a group showing no badge leaves its room to the words */
 .ls-badges {
-  flex: 1 1000 auto; min-width: 0; margin-left: calc(-7 * var(--u)); display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center;
+  flex: 1 1 0; min-width: 0; margin-left: calc(-7 * var(--u)); display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center;
   column-gap: calc(8 * var(--u)); height: calc(14 * var(--u)); overflow: hidden;
 }
 .ls-badges::before { content: ""; width: calc(7 * var(--u)); height: calc(14 * var(--u)); margin-right: calc(-8 * var(--u)); }

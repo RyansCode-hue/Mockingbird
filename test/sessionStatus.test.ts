@@ -17,6 +17,7 @@ vi.mock("node-pty", () => ({
 
 const { SessionManager, finishedAtAfter } = await import("../src/main/sessions");
 const { installHooks, watchEvents } = await import("../src/main/hooks");
+const { sessionItem } = await import("../src/renderer/needsYouModel");
 
 const script = path.join(os.homedir(), ".mockingbird", "hook.sh");
 const pane = (m: InstanceType<typeof SessionManager>, id: string) => (m as any).live.get(id);
@@ -118,6 +119,41 @@ describe("a pane's status from its agent's hooks", () => {
     await hook("SessionStart", s.id, { source: "clear" });
     await until("the mark to clear", () => info().finishedAt === null);
     expect(info().status).toBe("idle");
+  });
+
+  it("isn't finished when reopened: its record's last turn stays behind, until a turn ends in it", async () => {
+    const m = manager();
+    const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "Data Migration" });
+    const item = () => sessionItem(pane(m, s.id).info, "5101", "Data Migration");
+    await hook("SessionStart", s.id, { source: "startup" });
+    await hook("UserPromptSubmit", s.id, { prompt: "go" });
+    await hook("Stop", s.id);
+    await until("the turn's end to be marked", () => !!pane(m, s.id).info.finishedAt);
+    m.kill(s.id);
+    // closed, its record keeps how it stood: what its ghost and the Closed sessions list are read from
+    expect(m.resumable().find((r) => r.id === s.id)).toMatchObject({ status: "idle", finishedAt: expect.any(Number) });
+    const again = await m.relaunch(s.id);
+    expect(again?.finishedAt ?? null).toBeNull();
+    expect(item()).toBeNull();
+    await hook("SessionStart", s.id, { source: "resume" });
+    await until("the pane to go idle", () => pane(m, s.id).info.status === "idle");
+    expect(item()).toBeNull();
+    await hook("UserPromptSubmit", s.id, { prompt: "go on" });
+    await hook("Stop", s.id);
+    await until("the turn's end to be marked", () => !!pane(m, s.id).info.finishedAt);
+    expect(item()?.kind).toBe("finished");
+  });
+
+  it("isn't finished when a terminal is reopened either, which starts out idle", async () => {
+    const m = manager();
+    const s = await m.create({ repoPath: null, useWorktree: false, shell: true, title: "test runner" });
+    await hook("SessionStart", s.id, { source: "startup" });
+    await hook("Stop", s.id);
+    await until("the turn's end to be marked", () => !!pane(m, s.id).info.finishedAt);
+    m.kill(s.id);
+    const again = await m.relaunch(s.id);
+    expect(again?.status).toBe("idle");
+    expect(sessionItem(again!, "5101", "test runner")).toBeNull();
   });
 
   it("marks each prompt's own time while it waits, a second prompt worded like the first moving it on", async () => {

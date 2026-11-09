@@ -568,6 +568,7 @@ function App() {
         return setMetersError(r.error);
       }
       metersSaid.current = null;
+      readCleared("the token meters");
       setMeters(r);
       setMetersError(null);
     };

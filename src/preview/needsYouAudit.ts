@@ -1,5 +1,5 @@
 /**
- * ?landscapeNeedsAudit=a|g|b|c|d (with ?labs=landscape&motion=off): S7's Needs you and card badges, worked as a person
+ * ?landscapeNeedsAudit=a|g|b|c|d|e (with ?labs=landscape&motion=off): S7's Needs you and card badges, worked as a person
  * would in the UI preview, into <script id="mb-landscape-needs-audit"> for test/uiLandscapeNeeds.test.ts. Keys are
  * pressed for real where the test's Chrome driver is there to press them (scripts/ui-preview.mjs's pageResult takes
  * them from window.__mbKeys), so they go wherever the browser sends a key; without it (a person's browser) they're
@@ -10,14 +10,19 @@
  * in the tray, a double click's second Dismiss let go, Undo, and the item back when its state changes; a copy a
  * teammate took over leaving it; the areas' counts in the tree, a collapsed area's pill and the switcher; Esc giving
  * the keyboard back to the button.
- * =g (with ?joinRequest=later): Go there on a permission prompt, on a stack's tab behind another, at the cards' zoom,
- * on a join request and from another tab; the keyboard on the landscape after it, and Enter giving it to the terminal.
+ * =g (with ?joinRequest=later): Go there on a permission prompt, N and Go there on a stack's tab behind another, at the
+ * cards' zoom, on a join request and from another tab; the keyboard on the landscape after it, and Enter giving it to
+ * the terminal.
  * =b: the badges as drawn at the camera's zoom (?lsCamera, or ?lsFit for the fit), each card's or workspace's, with
  * their boxes against their workspace's and their area's and each row's against its card; then s1's diff source
  * failing, which its badge then says rather than its old value. With ?badgeFail=… it reports what the failing sources
- * show, and what was said in the console.
+ * show, what was said in the console, and the meters' note going once they're read. ?deadFront exits s2, the front
+ * tab of a stack, so its card has its actions and its other tabs' names both.
  * =c (with ?joinRequest=later): the tray's place with seven items, grown while open and opened again.
  * =d: the top bar's buttons on one line, and the button's contrast (run it at 860 px wide, and with ?theme=light).
+ * =e (with ?closedAsLeft&lsClosed=s3&joinRequest=later): closed sessions whose records still say idle with a turn's end
+ * or waiting on a prompt, as ghosts, in the Closed sessions list and as a stack's closed tab: the tray and the counts
+ * without them; then g1 reopened, not listed, until a turn ends in it.
  */
 import type { SessionInfo } from "../shared/types";
 
@@ -151,6 +156,7 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
       else if (part === "g") await goPart(env, out);
       else if (part === "c") await placePart(env, out);
       else if (part === "d") await barPart(out);
+      else if (part === "e") await closedPart(env, out);
       else await badgePart(env, out);
     } catch (err) {
       out.error = String((err as Error)?.stack ?? err);
@@ -309,16 +315,43 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   out.goPermission = { open: tray().open, ws: selectedWs(), keyboard: keyboard(), terminal: document.activeElement === term("s2")?.textarea };
   out.goPermissionEnter = await enterAndBack("s2");
 
-  // a stack's tab behind another: brought to the front first
+  // a stack's tab behind another: N brings it to the front, the keyboard kept on the landscape, and N on round to the
+  // first tab brings that back
   const sStack = env.sessions().find((s) => s.id === "s3")!;
   const stack = env.sessions().filter((s) => s.taskGroup === sStack.taskGroup).map((s) => s.id);
   env.setSession("s3", { status: "waiting", waitingReason: "Codex needs your permission to use shell", waitingSince: Date.now() - 60_000, waitingAt: Date.now() - 60_000 });
   await sleep(400);
+  const nTo = async (id: string) => {
+    for (let i = 0; i < 6 && selectedWs() !== id; i++) {
+      await press("n");
+      await sleep(600);
+    }
+  };
+  const nBefore = stackFront(stack);
+  const nowFront = () => stackFront(stack) ?? "s2";
+  const onScreen = () => overlaps(box(node(nowFront())), box(vp()));
+  /** The stack off screen, so reaching its tab has to bring it into view. */
+  const nFar = async () => {
+    const at = box(node(nowFront()));
+    if (at) vp().dispatchEvent(new WheelEvent("wheel", { deltaX: at.x + 3000, deltaY: 0, bubbles: true, cancelable: true }));
+    await sleep(300);
+  };
+  await nTo("s8");
+  await nFar();
+  const farBefore = onScreen();
+  await nTo("s3");
+  out.nStack = { before: nBefore, front: stackFront(stack), ws: selectedWs(), keyboard: keyboard(), farBefore, onScreen: onScreen(), note: document.querySelector(".ls-note")?.textContent ?? null };
+  await nTo("s2");
+  out.nStackBack = { front: stackFront(stack), ws: selectedWs(), keyboard: keyboard() };
+
+  // Go there on it, off screen again: brought to the front first, then into view
+  await nFar();
   out.stackBefore = stackFront(stack);
+  out.stackFar = onScreen();
   await openTray();
   act("s:s3", "go");
   await sleep(1000);
-  out.goStack = { front: stackFront(stack), ws: selectedWs(), keyboard: keyboard() };
+  out.goStack = { front: stackFront(stack), ws: selectedWs(), keyboard: keyboard(), onScreen: onScreen(), note: document.querySelector(".ls-note")?.textContent ?? null };
   out.goStackEnter = await enterAndBack("s3");
   env.setSession("s3", { status: sStack.status, waitingReason: null, waitingSince: null, waitingAt: null });
   await sleep(300);
@@ -421,10 +454,55 @@ async function barPart(out: Record<string, unknown>): Promise<void> {
   }
 }
 
+async function closedPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const ghostEl = (id: string) => document.querySelector<HTMLElement>(`.ls-world .ls-ghost[data-front="${CSS.escape(id)}"]`);
+  const mb = (window as unknown as { mb: { landscapeUpdate: (p: unknown, what: string) => Promise<unknown> } }).mb;
+  /** The pill's count with 5102 (where g1's ghost is) collapsed, and each area's on the switcher. */
+  const collapsed = async () => {
+    await mb.landscapeUpdate({ areas: { "5102": { collapsed: true } } }, "audit: 5102 collapsed");
+    await sleep(500);
+    const pill = document.querySelector<HTMLElement>('.ls-area-pill[data-area="5102"]');
+    const r = { pill: pill ? pill.querySelector(".w")?.textContent ?? null : "no pill" };
+    await mb.landscapeUpdate({ areas: { "5102": { collapsed: false } } }, "audit: 5102 opened");
+    await sleep(500);
+    return r;
+  };
+  const counts = async () => {
+    await openTray();
+    const ids = tray().items.map((i) => i.id);
+    await closeTray();
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true, bubbles: true, cancelable: true }));
+    await sleep(400);
+    const switcher = Object.fromEntries([...document.querySelectorAll<HTMLElement>(".ls-switcher .ls-sw")].map((b) => [b.dataset.area, b.querySelector(".w")?.textContent ?? null]));
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true, bubbles: true, cancelable: true }));
+    await sleep(300);
+    return { ids, button: button(), tree: treeBadges(), switcher, ...(await collapsed()) };
+  };
+  // all of them there to be left out: ghosts, the Closed sessions list and a stack's closed tab
+  out.ghosts = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-ghost")].map((g) => g.dataset.front ?? null).sort();
+  out.closedList = document.querySelector(".lt-closed-n")?.textContent ?? null;
+  out.closedTabs = [...document.querySelectorAll<HTMLElement>(".ls-tab.closed")].map((t) => t.dataset.closed ?? null);
+  out.before = await counts();
+
+  // g1 reopened from its ghost: running, and not finished, as no turn has ended in it
+  ghostEl("g1")!.querySelector<HTMLButtonElement>('[data-act="reopen"]')!.click();
+  await sleep(900);
+  out.reopened = { live: env.sessions().some((s) => s.id === "g1"), ghost: !!ghostEl("g1"), node: !!node("g1"), ...(await counts()) };
+  // a turn ends in it: now it is
+  env.setSession("g1", { status: "idle", finishedAt: Date.now() });
+  await sleep(500);
+  out.turnEnded = await counts();
+}
+
 async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
-  if (new URLSearchParams(location.search).has("lsFit")) {
+  const q = new URLSearchParams(location.search);
+  if (q.has("lsFit")) {
     vp().dispatchEvent(new KeyboardEvent("keydown", { key: "0", metaKey: true, bubbles: true, cancelable: true }));
     await sleep(900);
+  }
+  if (q.has("deadFront")) {
+    env.setSession("s2", { status: "dead", exitCode: 1, waitingReason: null, waitingSince: null, waitingAt: null });
+    await sleep(700);
   }
   const band = [...vp().classList].find((c) => c.startsWith("ls-band-"))?.slice(8) ?? null;
   const areaOf = (id: string) => {
@@ -457,6 +535,20 @@ async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Prom
       const footShown = !body || inFirstColumn(foot);
       for (const b of badges) if (!footShown) b.shown = b.whole = false;
       const head = box(n.querySelector(".ls-card-head"));
+      // a stack's other tabs' names: the same, in the column over the body
+      const mid = box(n.querySelector(".ls-card-mid"));
+      const tabs = box(n.querySelector(".ls-card-tabs"));
+      const tabsShown = !!tabs && !!mid && tabs.x < mid.x + mid.w - 0.5;
+      // a foot's word narrower than its text, by however little: it ends in an ellipsis. Measured against a copy free to
+      // be its own width, as a fraction of a pixel is enough
+      const wordsCut = [...n.querySelectorAll<HTMLElement>(".ls-card-foot > .ls-card-status, .ls-card-foot > .ls-card-owner")].some((word) => {
+        const free = word.cloneNode(true) as HTMLElement;
+        free.style.cssText = "position:absolute;visibility:hidden;flex:none;overflow:visible;width:auto;max-width:none";
+        word.parentElement!.appendChild(free);
+        const whole = free.getBoundingClientRect().width;
+        free.remove();
+        return word.getBoundingClientRect().width < whole - 0.001;
+      });
       const acts = [...n.querySelectorAll<HTMLElement>(".ls-card-acts button")].map((b) => ({ label: b.textContent, whole: within(box(b), nodeBox) }));
       const diffCell = n.querySelector<HTMLElement>(".ls-foot .ls-diff");
       return {
@@ -475,6 +567,8 @@ async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Prom
                 whole: !footShown || (within(foot, body) && within(foot, nodeBox) && [...n.querySelectorAll(".ls-card-foot > :not(.ls-badges)")].every((p) => { const pb = box(p); return !pb || pb.w === 0 || within(pb, foot); })),
               },
               did: did ? { shown: didShown, whole: !didShown || (within(didBox, body) && within(didBox, nodeBox)) } : null,
+              tabs: tabs ? { shown: tabsShown, whole: !tabsShown || (within(tabs, mid) && within(tabs, nodeBox)) } : null,
+              wordsCut,
               acts,
             }
           : null,
@@ -506,4 +600,14 @@ async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Prom
   // read once per folder: the cards on s1's folder asked once for each change, not once each
   stale.asked = env.calls.filter((c) => c.fn === "branchStat").length;
   out.stale = stale;
+
+  // the meters read again after failing: their note goes from the status bar and the cost badge has its value
+  if (env.badgeFails.has("meters")) {
+    const note = () => [...document.querySelectorAll<HTMLElement>(".statusbar .update-note.bad")].map((n) => n.title).filter((t) => t.includes("token meters"));
+    const failing = note();
+    env.badgeFails.delete("meters");
+    env.emit("onMetersChanged", await (window as unknown as { mb: { metersGet: () => Promise<unknown> } }).mb.metersGet());
+    await sleep(500);
+    out.metersBack = { failing, after: note(), cost: node("s1")?.querySelector('[data-badge="cost"]')?.textContent ?? null };
+  }
 }

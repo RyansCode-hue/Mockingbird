@@ -125,6 +125,10 @@ for (const id of lsClosedQ) {
   sessions = sessions.filter((x) => x !== s);
   previous = [...previous, { ...s, status: "dead" }];
 }
+// ?closedAsLeft: the closed sessions as main keeps them, a pane's record staying as it was when it closed: g2 and o2 on a
+// prompt nobody answered, the others idle with their last turn's end on record
+if (new URLSearchParams(location.search).has("closedAsLeft"))
+  previous = previous.map((s): SessionInfo => (["g2", "o2"].includes(s.id) ? { ...s, status: "waiting", waitingReason: "Claude needs your permission to use Edit", waitingSince: now - 40 * min, waitingAt: now - 40 * min } : { ...s, status: "idle", finishedAt: now - 30 * min }));
 
 const C = { dim: "\x1b[2m", reset: "\x1b[0m", bold: "\x1b[1m", amber: "\x1b[38;5;214m", teal: "\x1b[38;5;43m", red: "\x1b[31m", green: "\x1b[32m" };
 const buffers: Record<string, string> = {
@@ -1419,7 +1423,8 @@ const api: Record<string, (...a: any[]) => any> = {
     }
     const p = previous.find((x) => x.id === id) ?? byId(id);
     if (!p) return null;
-    const next: SessionInfo = { ...p, status: "idle", exitCode: undefined, createdAt: Date.now() };
+    // what main's create() starts it with: nothing of how its record last stood
+    const next: SessionInfo = { ...p, status: "idle", exitCode: undefined, createdAt: Date.now(), finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null };
     sessions = [...sessions.filter((s) => s.id !== id), next];
     sessionsChanged();
     // main's LandscapeStore.sessionReopened: a place outside its own area goes
@@ -2747,7 +2752,7 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
     if (el) then(el);
   }, 100);
 };
-// S7: ?landscapeNeedsAudit=a|b works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
+// S7: ?landscapeNeedsAudit=a|g|b|c|d|e works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
   recordConsole();
   const setSession = (id: string, over: Partial<SessionInfo>) => {

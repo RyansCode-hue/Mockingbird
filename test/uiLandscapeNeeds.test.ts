@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
+import { LOOSE_GROUP } from "../src/shared/landscape";
 import { tempDir } from "./helpers";
 
 // Needs you and the cards' badges (S7) in the UI preview, in real headless Chrome: local only (CI runners have no
@@ -44,8 +45,11 @@ interface GoAudit {
   goTitle: string | null;
   goPermission: { open: boolean; ws: string | null; keyboard: string; terminal: boolean };
   goPermissionEnter: { terminal: boolean; focus: boolean };
+  nStack: { before: string | null; front: string | null; ws: string | null; keyboard: string; farBefore: boolean; onScreen: boolean; note: string | null };
+  nStackBack: { front: string | null; ws: string | null; keyboard: string };
   stackBefore: string | null;
-  goStack: { front: string | null; ws: string | null; keyboard: string };
+  stackFar: boolean;
+  goStack: { front: string | null; ws: string | null; keyboard: string; onScreen: boolean; note: string | null };
   goStackEnter: { terminal: boolean; focus: boolean };
   cardsBand: string | null;
   goCards: { ws: string | null; keyboard: string };
@@ -63,7 +67,7 @@ type Ws = {
   rowInCard: boolean;
   rowInFoot: boolean;
   badges: Badge[];
-  rows: { head: boolean; foot: { shown: boolean; whole: boolean }; did: { shown: boolean; whole: boolean } | null; acts: { label: string | null; whole: boolean }[] } | null;
+  rows: { head: boolean; foot: { shown: boolean; whole: boolean }; did: { shown: boolean; whole: boolean } | null; tabs: { shown: boolean; whole: boolean } | null; wordsCut: boolean; acts: { label: string | null; whole: boolean }[] } | null;
   line: string | null;
   did: { text: string | null; title: string; failed: boolean; inCard: boolean; inArea: boolean } | null;
   diffCell: { text: string | null; title: string; failed: boolean; inNode: boolean; inArea: boolean } | null;
@@ -73,6 +77,17 @@ interface BadgeAudit {
   workspaces: Ws[];
   said: string[];
   stale: { before: { text: string | null; title: string } | null; after: { text: string | null; title: string } | null; said: string[]; again: { text: string | null; title: string } | null; asked: number };
+  metersBack?: { failing: string[]; after: string[]; cost: string | null };
+  error?: string;
+}
+type Counts = { ids: string[]; button: Button; tree: Record<string, string | null>; switcher: Record<string, string | null>; pill: string | null };
+interface ClosedAudit {
+  ghosts: string[];
+  closedList: string | null;
+  closedTabs: string[];
+  before: Counts;
+  reopened: Counts & { live: boolean; ghost: boolean; node: boolean };
+  turnEnded: Counts;
   error?: string;
 }
 type Place = { items: number; underButton: boolean; coversButton: boolean; inWindow: boolean; scrolls: boolean; lastBorder: string | null };
@@ -119,6 +134,9 @@ function expectContained(workspaces: Ws[]) {
     if (w.rows) {
       expect({ id: w.id, head: w.rows.head, footWhole: w.rows.foot.whole }).toEqual({ id: w.id, head: true, footWhole: true });
       if (w.rows.did) expect({ id: w.id, didWhole: w.rows.did.whole }).toEqual({ id: w.id, didWhole: true });
+      if (w.rows.tabs) expect({ id: w.id, tabsWhole: w.rows.tabs.whole }).toEqual({ id: w.id, tabsWhole: true });
+      // the badges give way first: none shows while a word beside it is cut
+      if (w.badges.some((b) => b.shown)) expect({ id: w.id, wordsCut: w.rows.wordsCut }).toEqual({ id: w.id, wordsCut: false });
       for (const a of w.rows.acts) expect({ id: w.id, act: a.label, whole: a.whole }).toEqual({ id: w.id, act: a.label, whole: true });
     }
     if (w.did) expect({ id: w.id, did: [w.did.inCard, w.did.inArea] }).toEqual({ id: w.id, did: [true, true] });
@@ -205,9 +223,13 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     // selected and on the landscape's keyboard, never the terminal's; Enter then gives its terminal the keyboard
     expect(g.goPermission).toEqual({ open: false, ws: "s2", keyboard: "landscape", terminal: false });
     expect(g.goPermissionEnter).toEqual({ terminal: true, focus: true });
-    // a stack's tab behind another comes to the front, so the terminal Enter gives the keyboard to is its
+    // a stack's tab behind another comes to the front, by N or Go there, and into view from off screen, so the terminal
+    // Enter gives the keyboard to is its; nothing said, as nothing failed
+    expect(g.nStack).toEqual({ before: "s2", front: "s3", ws: "s3", keyboard: "landscape", farBefore: false, onScreen: true, note: null });
+    expect(g.nStackBack).toEqual({ front: "s2", ws: "s2", keyboard: "landscape" });
     expect(g.stackBefore).toBe("s2");
-    expect(g.goStack).toEqual({ front: "s3", ws: "s3", keyboard: "landscape" });
+    expect(g.stackFar).toBe(false);
+    expect(g.goStack).toEqual({ front: "s3", ws: "s3", keyboard: "landscape", onScreen: true, note: null });
     expect(g.goStackEnter).toEqual({ terminal: true, focus: true });
     // at the cards' zoom, the same: Enter fills the window with it, its terminal live
     expect(g.cardsBand).toBe("cards");
@@ -253,8 +275,8 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(b.stale.asked).toBeLessThanOrEqual(3 * 3);
   });
 
-  it("keeps every row whole at 1024×768's fit (11%) and at 10%: no badge or line cut, the actions fully shown", async () => {
-    for (const [query, size] of [["lsFit", "1024x768"], ["lsCamera=-400,-500,0.1", "1440x900"]] as const) {
+  it("keeps every row whole at 1024×768's fit (11%), at 10% and at the wide fit, a stack's card's too: no badge or line cut, the actions fully shown", async () => {
+    for (const [query, size] of [["lsFit", "1024x768"], ["lsCamera=-400,-500,0.1", "1440x900"], ["lsFit", "1440x900"]] as const) {
       const b = await run<BadgeAudit>("b", query, size);
       expect(b.error).toBeUndefined();
       expect(b.band).toBe("cards");
@@ -262,7 +284,41 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
       // the exited cards still show both their actions
       const dead = b.workspaces.filter((w) => w.rows?.acts.length);
       expect(dead.map((w) => [w.id, w.rows!.acts.map((x) => x.label)])).toEqual(expect.arrayContaining([["s6", ["Resume", "Close & clean up"]]]));
+      // the stack's card keeps its other tabs' names over what it did
+      expect(b.workspaces.find((w) => w.id === "s2")!.rows!.tabs).toEqual({ shown: true, whole: true });
+      // and exited, its actions over those, every row still whole
+      const front = await run<BadgeAudit>("b", `deadFront&${query}`, size);
+      expect(front.error).toBeUndefined();
+      expectContained(front.workspaces);
+      expect(front.workspaces.find((w) => w.id === "s2")!.rows!.acts).toEqual([{ label: "Resume", whole: true }, { label: "Close & clean up", whole: true }]);
     }
+  });
+
+  it("leaves closed sessions out of the tray and the counts, whatever their records say, and a reopened one until a turn ends in it", async () => {
+    const e = await run<ClosedAudit>("e", "closedAsLeft&lsClosed=s3&joinRequest=later&lsCamera=0,0,0.5");
+    expect(e.error).toBeUndefined();
+    // all there: ghosts (loose, and in 5101 and 5102), the Closed sessions list (o1, o2) and the stack's closed tab
+    expect(e.ghosts).toEqual(["g1", "g2", "p1"]);
+    expect(e.closedList).toBe("(2)");
+    expect(e.closedTabs).toEqual(["s3"]);
+    // the same three items and counts as with none of them; g2 on an unanswered prompt, the others with a turn's end on record
+    expect(e.before.ids).toEqual(["s:s2", expect.stringMatching(/^join:/), "s:s8"]);
+    expect(e.before.button.count).toBe("3");
+    expect(e.before.tree).toMatchObject({ "5101": "3", "5102": null, "5110": null, [LOOSE_GROUP]: null });
+    expect(e.before.switcher).toMatchObject({ "5101": "3", "5102": null, "5110": null, [LOOSE_GROUP]: null });
+    expect(e.before.pill).toBeNull();
+    // reopened, it runs where its ghost was, and it isn't "finished": no turn has ended in it
+    expect(e.reopened).toMatchObject({ live: true, ghost: false, node: true });
+    expect(e.reopened.ids).toEqual(e.before.ids);
+    expect(e.reopened.button.count).toBe("3");
+    expect(e.reopened.tree).toMatchObject({ "5101": "3", "5102": null });
+    expect(e.reopened.pill).toBeNull();
+    // a turn ends in it: listed, and counted in its area
+    expect(e.turnEnded.ids).toEqual(["s:s2", expect.stringMatching(/^join:/), "s:g1", "s:s8"]);
+    expect(e.turnEnded.button.count).toBe("4");
+    expect(e.turnEnded.tree).toMatchObject({ "5101": "3", "5102": "1" });
+    expect(e.turnEnded.switcher).toMatchObject({ "5101": "3", "5102": "1" });
+    expect(e.turnEnded.pill).toBe("1");
   });
 
   it("draws them inside at the fit's zoom and as the workspace footer's diff at 50% and 100%", async () => {
@@ -307,6 +363,8 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     );
     // each said once, not once for each card or each read
     expect(b.said.filter((m) => m.includes("Couldn't read the ticket pipelines"))).toHaveLength(1);
+    // the meters' note has its own slot on the status bar, and goes once they're read, the badge with its value
+    expect(b.metersBack).toEqual({ failing: ["Couldn't read the token meters: transcripts:sync: SQLITE_BUSY: database is locked"], after: [], cost: "22M · 14%" });
   });
 
   it("keeps the tray under its button at 1024×768 however long it grows, scrolling its items, opened again or not", async () => {
