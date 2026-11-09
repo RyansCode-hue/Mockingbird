@@ -116,6 +116,8 @@ import { StatusDot } from "./StatusDot";
 import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
 // the landscape (Settings → Labs)
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type MovesFailed, type NoteAction } from "./Landscape";
+import { emptyStateOf, nothingToTour } from "./landscapeFirstRun";
+import { LandscapeTopBar, type TopTab } from "./TopBar";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
 import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, planTidy, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, withoutGone, type CardView, type GoToAsk, type GroupMove, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
@@ -2794,6 +2796,40 @@ function App() {
     });
   }, [landscapeLayout, workSessions, visible, teamStatus, needs.byArea]);
 
+  // ---- first run: the migration tour, the empty landscape's place, the shortcuts sheet and + New ----
+  const noteOf = (what: string) => readNotes.shown[what] ?? readNotes.dismissed[what] ?? null;
+  const lsEmpty = emptyStateOf({
+    layout: landscapeLayout ?? { areas: [], tiles: [], ghosts: [], windows: [], cards: [] },
+    problems: landscapeState?.problems ?? [],
+    standIn: readProblem(landscapeState),
+    storeError: landscapeStore.error,
+    migrationFailed: migration.failed,
+    lists: {
+      live: { read: listsLoaded.live, error: noteOf("the session list"), retry: () => void refresh() },
+      closed: { read: listsLoaded.resumable, error: noteOf(CLOSED_READ), retry: () => void readClosed() },
+      remote: { read: roomLive.state !== null, error: roomLive.error, retry: roomLive.retry },
+    },
+    closed: closedList.length,
+  });
+  // the tour is for a landscape read in whole: nothing unread could make it look like a fresh install, or the reverse
+  const tourSettled = !!landscapeLayout && migration.step.kind === "done" && !readProblem(landscapeState) && knownSessions !== null && !landscapeState?.landscape.tourDone;
+  const [tourEnded, setTourEnded] = useState(false);
+  const tourDue = tourSettled && !tourEnded && !nothingToTour(landscapeLayout);
+  const endTour = () => {
+    setTourEnded(true);
+    void landscapeStore.update({ tourDone: true }, "that the tour has been seen").then((error) => error && lsSay(`The tour may show again next time: ${error}`));
+  };
+  // Nothing to show a tour on means nothing was migrated: what's made from here on isn't what the tour is about, so
+  // there's none later either.
+  const noTour = tourSettled && nothingToTour(landscapeLayout);
+  useEffect(() => {
+    if (noTour) void landscapeStore.update({ tourDone: true }, "that there's nothing to tour");
+  }, [noTour]);
+  const [keysOpen, setKeysOpen] = useState(false);
+  const [newAsk, setNewAsk] = useState(0);
+  /** The top bar's + New: the create menu at the view's centre on the landscape; anywhere else, there's no view to place it in, so New session's dialog. */
+  const newFromBar = () => (landscapeOnScreen.current ? setNewAsk((n) => n + 1) : setModal("new"));
+
   const landscapeMain = () => (
     <>
       <LandscapeBanners
@@ -2844,6 +2880,11 @@ function App() {
           needs={needs.byArea}
           onNeeds={stepNeeds}
           keysTo={landscapeKeys}
+          emptyState={lsEmpty}
+          onJoinRoom={() => setJoinDlg(true)}
+          onShortcuts={() => setKeysOpen((o) => !o)}
+          newAsk={newAsk}
+          tour={{ due: tourDue, onEnd: endTour }}
         />
         </BadgeContext.Provider>
         {dockColumn()}
@@ -3373,33 +3414,59 @@ function App() {
     onJoinRoom: () => setJoinDlg(true),
   };
 
+  const brand = (
+    <span className="brand">
+      <span className="mark">🪶</span>
+      <span className="name">Mockingbird</span>
+      {appVersion && <WhatsNew version={appVersion} updated={updatedTo} open={whatsNewOpen} onOpen={() => setWhatsNewOpen(true)} onClose={closeWhatsNew} />}
+    </span>
+  );
+  const shownTabs = (["sessions", "dashboard", "worktracker", "collaborate", "settings"] as const).filter((t) => shownTab(t) || tab === t);
+  const debriefWaits = debriefSessions.some((s) => s.status === "waiting");
+  const asksSay = `${plural(asksWaiting, "request")} from models waiting on you`;
+  const tabBadge = (t: Tab) =>
+    t === "worktracker" && debriefWaits ? (
+      <span className="dot sm waiting" style={{ marginLeft: 6 }} />
+    ) : t === "collaborate" && asksWaiting > 0 ? (
+      <span className="tab-badge" title={asksSay}>
+        {asksWaiting}
+      </span>
+    ) : null;
+  const topTabs: TopTab[] = shownTabs.map((t) => ({
+    id: t,
+    label: t === "sessions" ? "Landscape" : TAB_LABELS[t],
+    badge: tabBadge(t),
+    badgeSays: t === "worktracker" && debriefWaits ? "a debrief is waiting on you" : t === "collaborate" && asksWaiting > 0 ? asksSay : null,
+  }));
+
   return (
     <div className="app">
+      {landscapeOn ? (
+        <LandscapeTopBar
+          brand={brand}
+          tabs={topTabs}
+          tab={tab}
+          onTab={setTab}
+          needs={<NeedsYou state={needs} current={needsAt >= 0 ? needs.items[needsAt].id : null} actionsFor={needsActionsFor} areaTitle={areaTitle} onStep={stepNeeds} />}
+          needsCount={needs.items.length}
+          keysOpen={keysOpen}
+          onKeysOpen={setKeysOpen}
+          onNew={newFromBar}
+        />
+      ) : (
       <div className="topbar">
-        <span className="brand">
-          <span className="mark">🪶</span>
-          <span className="name">Mockingbird</span>
-          {appVersion && <WhatsNew version={appVersion} updated={updatedTo} open={whatsNewOpen} onOpen={() => setWhatsNewOpen(true)} onClose={closeWhatsNew} />}
-        </span>
+        {brand}
         <span className="tabs">
-          {(["sessions", "dashboard", "worktracker", "collaborate", "settings"] as const).filter((t) => shownTab(t) || tab === t).map((t) => (
+          {shownTabs.map((t) => (
             <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>
               {TAB_LABELS[t]}
-              {t === "worktracker" && debriefSessions.some((s) => s.status === "waiting") && (
-                <span className="dot sm waiting" style={{ marginLeft: 6 }} />
-              )}
-              {t === "collaborate" && asksWaiting > 0 && (
-                <span className="tab-badge" title={`${plural(asksWaiting, "request")} from models waiting on you`}>
-                  {asksWaiting}
-                </span>
-              )}
+              {tabBadge(t)}
             </button>
           ))}
         </span>
         <span className="spacer" />
         {tab === "sessions" && (
           <>
-            {!landscapeOn && (
             <span className="lay-wrap">
               <button
                 className="outline"
@@ -3440,16 +3507,14 @@ function App() {
                 </Popover>
               )}
             </span>
-            )}
             <button className="outline" onClick={() => setModal("import")}>Import</button>
           </>
         )}
-        {/* S7: beside New/Import until S8 redoes the top bar */}
-        {landscapeOn && <NeedsYou state={needs} current={needsAt >= 0 ? needs.items[needsAt].id : null} actionsFor={needsActionsFor} areaTitle={areaTitle} onStep={stepNeeds} />}
         <button className="primary" onClick={() => setModal("new")}>
           New/Import Session <span className="kbd">⌘N</span>
         </button>
       </div>
+      )}
 
       <div className="body">
         <ViewErrorBoundary resetKey={tab}>
@@ -4165,7 +4230,8 @@ function App() {
             { label: "Agent message log — what sessions told each other", run: () => setMsgLogFor({}) },
             { label: "Weekly rollup — time per ticket and outcomes", run: () => setRollupOpen(true) },
             { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
-            { label: landscapeOn ? "Sessions landscape" : "Sessions grid", run: () => setTab("sessions") },
+            { label: landscapeOn ? "Landscape" : "Sessions grid", run: () => setTab("sessions") },
+            ...(landscapeOn ? [{ label: "Shortcuts — every key on the landscape", kbd: "?", run: () => setKeysOpen(true) }] : []),
             // the landscape: each area to fly to
             ...(landscapeOn ? (landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => goToArea(a.key) })) : []),
             ...(landscapeOn ? [{ label: sideCollapsed || sideView !== "sessions" ? "Show the area tree" : "Hide the area tree", kbd: "⌘\\", run: () => (sideCollapsed || sideView !== "sessions" ? showView("sessions") : setSideCollapsed(true)) }] : []),

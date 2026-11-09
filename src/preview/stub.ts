@@ -42,6 +42,7 @@ import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type A
 // the landscape
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
 import { recordConsole, runNeedsAudit } from "./needsYouAudit";
+import { runFirstRunAudit } from "./firstRunAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
@@ -1161,6 +1162,33 @@ let landscapeProblems: LandscapeProblem[] =
       ? [{ kind: "unreadable", message: `${LANDSCAPE_FILE} couldn't be read (EMFILE: too many open files). It's left as it is and read again with the next change; until then the layout is an empty stand-in, and changes to it aren't saved.`, file: LANDSCAPE_FILE, readOnly: true }]
       : [];
 if (landscapeProblems.length || landscapeQ === "fresh") landscape = emptyLandscape();
+// ?lsOnly=nothing|ghosts|closed|windows|docked|area: no session running, and only that: nothing at all (with ?landscape=fresh,
+// a fresh install), two loose ghosts, two closed sessions with no place (the Closed list), a placed tool window, a docked
+// one, or an area with nothing in it
+const lsOnly = new URLSearchParams(location.search).get("lsOnly");
+if (lsOnly) {
+  const closed = previous.filter((p) => p.id === "p1" || p.id === "o1").map((p): SessionInfo => ({ ...p, taskGroup: null }));
+  sessions = [];
+  live.remote = [];
+  previous = lsOnly === "ghosts" || lsOnly === "closed" ? closed : [];
+  if (landscapeQ !== "fresh") {
+    landscape = emptyLandscape();
+    landscape.migratedAt = new Date(now - 2 * 24 * 60 * min).toISOString();
+  }
+  const M = presetSize("agent");
+  // far from the origin, so they're in view only if the first fit went by them
+  if (lsOnly === "ghosts") closed.forEach((p, i) => (landscape.workspaces[p.id] = { x: 6000 + i * (M.w + GAP), y: 4000, ...M }));
+  if (lsOnly === "windows") landscape.tools.t1 = { tool: "files", docked: false, placement: { x: 6000, y: 4000, w: 360, h: 640 } };
+  if (lsOnly === "docked") landscape.tools.t1 = { tool: "files", docked: true };
+  if (lsOnly === "area") landscape.areas.spare = { x: 6000, y: 4000, w: 900, h: 600, repos: [] };
+}
+// the tour is S8's own to show: a fixture has seen it unless ?lsTour says otherwise (with ?landscape=fresh, the real first run)
+landscape.tourDone = new URLSearchParams(location.search).has("lsTour") ? undefined : true;
+if (landscape.tourDone === undefined) delete landscape.tourDone;
+// ?lsListFail=<n>: the first n reads of the session list fail, as main's would
+let listReadFails = Number(new URLSearchParams(location.search).get("lsListFail") ?? 0);
+// ?lsTourSaveFails: saving that the tour has been seen is refused, as main's would be with the disk full
+const tourSaveFails = new URLSearchParams(location.search).has("lsTourSaveFails");
 // ?lsPersist: the landscape kept in sessionStorage, read back through the file's own checks (parseLandscape) when the
 // page reloads, as main reads landscape.json when the app starts again
 const LS_KEPT = "mb.preview.landscape";
@@ -1313,7 +1341,13 @@ let renameLag = 0;
 
 const api: Record<string, (...a: any[]) => any> = {
   // sessions and the grid
-  listSessions: async () => sessions.map((s) => ({ ...s })),
+  listSessions: async () => {
+    if (listReadFails > 0) {
+      listReadFails--;
+      return err("sessions.json couldn't be read: EMFILE, too many open files");
+    }
+    return sessions.map((s) => ({ ...s }));
+  },
   // as main's resumable(): the closed ones it keeps, never one running now
   resumableSessions: async () => {
     // ?lsClosedReadFails=<n>: the first n reads fail, as main's would with its store unreadable
@@ -1744,6 +1778,7 @@ const api: Record<string, (...a: any[]) => any> = {
   landscapeUpdate: async (raw: unknown): Promise<LandscapeState | { error: string }> => {
     let patch: LandscapePatch;
     let next: Landscape;
+    if (tourSaveFails && (raw as LandscapePatch).tourDone !== undefined) return err("ENOSPC: no space left on device");
     try {
       patch = parsePatch(structuredClone(raw));
       next = applyPatch(landscape, patch);
@@ -2806,6 +2841,20 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
 };
 // a sync failing after the window has read them: main pushes the failure as well as answering with it
 if (badgeFails.has("meters")) setTimeout(() => emit("onMetersChanged", err(METERS_FAIL)), 1000);
+// S8: ?keysSheet opens the shortcuts sheet, ?newMenu the top bar's + New, and ?lsTourStep=<n> presses the tour's Next n times
+if (params.has("keysSheet")) setTimeout(() => click(".tb-keys"), 1000);
+if (params.has("newMenu")) setTimeout(() => click(".topbar > button.primary"), 1000);
+if (params.has("lsTourStep")) for (let i = 0; i < Number(params.get("lsTourStep")); i++) setTimeout(() => click('.ls-tour-card [data-act="next"]'), 1000 + i * 200);
+// S8: ?landscapeFirstRunAudit=k|t|e|b works the shortcuts sheet, the tour, the empty landscape and the top bar (firstRunAudit.ts) for test/uiLandscapeFirstRun.test.ts
+if (params.has("landscapeFirstRunAudit")) {
+  recordConsole();
+  const patchLandscape = (patch: LandscapePatch) => {
+    landscape = applyPatch(landscape, parsePatch(structuredClone(patch)));
+    landscapeRev++;
+    emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, landscape, problems: landscapeProblems }));
+  };
+  runFirstRunAudit({ sessions: () => sessions, calls, stored: () => landscape, patch: patchLandscape, waitFor }, params.get("landscapeFirstRunAudit") || "k");
+}
 // S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
   recordConsole();
@@ -2990,7 +3039,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray"))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu"))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {
@@ -4843,12 +4892,12 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       await sleep(600);
       const focused = !!document.querySelector(".ls-focus");
       await tab("Dashboard");
-      await tab("Sessions");
+      await tab("Landscape");
       const refocused = !!document.querySelector(".ls-focus");
       tools("5102", "Collapse")?.click();
       await sleep(400);
       await tab("Dashboard");
-      await tab("Sessions");
+      await tab("Landscape");
       out.revealOnce = { focused, refocused, collapsed: landscape.areas["5102"]?.collapsed === true };
       document.querySelector<HTMLElement>(`.ls-area-pill[data-area="5102"]`)?.click();
       await sleep(500);
@@ -5066,7 +5115,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const before = shot();
       const storedBefore = JSON.stringify(landscape.tools);
       await topTab("Dashboard");
-      await topTab("Sessions");
+      await topTab("Landscape");
       await sleep(500);
       out.remount = { before, after: shot(), storedSame: JSON.stringify(landscape.tools) === storedBefore };
 
@@ -5571,7 +5620,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         const extended = { bar: barNow(), stored: localStorage.getItem("mb.landscape.barExtended") };
         // another tab and back, the area selected again: still on two rows
         await topTab("Dashboard");
-        await topTab("Sessions");
+        await topTab("Landscape");
         await sleep(500);
         await fitView();
         await selectAreaAt("5101");

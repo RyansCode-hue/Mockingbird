@@ -122,39 +122,70 @@ export async function pageDom({ size = "1400x900", query = "", outDir } = {}) {
  * ratio (2 for a Retina screen's raster costs).
  */
 /** The keys a page can ask to have pressed (window.__mbKeys), as Chrome's input names them. */
+const letter = (c, shift = false) => ({ key: shift ? c.toUpperCase() : c, code: `Key${c.toUpperCase()}`, keyCode: c.toUpperCase().charCodeAt(0), text: shift ? c.toUpperCase() : c });
 const KEYS = {
-  n: { key: "n", code: "KeyN", keyCode: 78, text: "n" },
-  N: { key: "N", code: "KeyN", keyCode: 78, text: "N" },
-  e: { key: "e", code: "KeyE", keyCode: 69, text: "e" },
-  k: { key: "k", code: "KeyK", keyCode: 75, text: "k" },
-  p: { key: "p", code: "KeyP", keyCode: 80, text: "p" },
+  ...Object.fromEntries([..."abcdefghijklmnopqrstuvwxyz"].flatMap((c) => [[c, letter(c)], [c.toUpperCase(), letter(c, true)]])),
+  0: { key: "0", code: "Digit0", keyCode: 48, text: "0" },
+  1: { key: "1", code: "Digit1", keyCode: 49, text: "1" },
+  "=": { key: "=", code: "Equal", keyCode: 187, text: "=" },
+  "-": { key: "-", code: "Minus", keyCode: 189, text: "-" },
+  "?": { key: "?", code: "Slash", keyCode: 191, text: "?" },
+  "\\": { key: "\\", code: "Backslash", keyCode: 220, text: "\\" },
+  " ": { key: " ", code: "Space", keyCode: 32, text: " " },
+  Tab: { key: "Tab", code: "Tab", keyCode: 9 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
   Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
   Escape: { key: "Escape", code: "Escape", keyCode: 27 },
 };
 
 /**
- * Press, for real, the keys and the mouse the page asked for: it pushes { key, shift?, meta? } or
- * { mouse: { x, y, clickCount } } (clickCount 2: a double click's second) onto window.__mbKeys, and window.__mbKeysDone
- * counts the ones done. They reach whatever has the keyboard or is under the pointer, as a person's would, which an
- * event dispatched at an element can't show.
+ * Press, for real, the keys and the mouse the page asked for: it pushes { key, shift?, meta?, alt?, ctrl?, hold? } (hold:
+ * "down" or "up", only that half of the press), { mouse: { x, y, clickCount, button?, shift? } } (clickCount 2: a double
+ * click's second), { move: { x, y } }, { wheel: { x, y, dx, dy, meta?, ctrl? } } or { drag: { x0, y0, x1, y1 } } onto
+ * window.__mbKeys, and window.__mbKeysDone counts the ones done. They reach whatever has the keyboard or is under the
+ * pointer, as a person's would, which an event dispatched at an element can't show.
  */
 async function pressAsked(ask) {
   const asked = await ask("Runtime.evaluate", { expression: "JSON.stringify((window.__mbKeys || []).splice(0))", returnByValue: true });
   const keys = JSON.parse(asked?.result?.value ?? "[]");
   for (const k of keys) {
+    const mods = (o) => (o.alt ? 1 : 0) | (o.ctrl ? 2 : 0) | (o.meta ? 4 : 0) | (o.shift ? 8 : 0);
     if (k.mouse) {
-      const { x, y, clickCount } = k.mouse;
-      await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-      await ask("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount });
-      await ask("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount });
+      const { x, y, clickCount, button = "left" } = k.mouse;
+      const held = button === "right" ? 2 : button === "middle" ? 4 : 1;
+      const modifiers = mods(k.mouse);
+      await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers });
+      await ask("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, buttons: held, clickCount, modifiers });
+      await ask("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, buttons: 0, clickCount, modifiers });
+      continue;
+    }
+    if (k.move) {
+      await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x: k.move.x, y: k.move.y });
+      continue;
+    }
+    if (k.wheel) {
+      const { x, y, dx = 0, dy = 0 } = k.wheel;
+      await ask("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: dx, deltaY: dy, modifiers: mods(k.wheel) });
+      continue;
+    }
+    if (k.drag) {
+      const { x0, y0, x1, y1 } = k.drag;
+      await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0, y: y0 });
+      await ask("Input.dispatchMouseEvent", { type: "mousePressed", x: x0, y: y0, button: "left", buttons: 1, clickCount: 1 });
+      for (const f of [0.25, 0.5, 0.75, 1]) await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0 + (x1 - x0) * f, y: y0 + (y1 - y0) * f, button: "left", buttons: 1 });
+      await ask("Input.dispatchMouseEvent", { type: "mouseReleased", x: x1, y: y1, button: "left", buttons: 0, clickCount: 1 });
       continue;
     }
     const d = KEYS[k.key];
     if (!d) throw new Error(`the page asked for a key this driver doesn't press: ${k.key}`);
-    const modifiers = (k.shift ? 8 : 0) | (k.meta ? 4 : 0);
+    const modifiers = mods(k);
+    const typed = d.text && !k.meta && !k.ctrl && !k.alt;
     const base = { modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, nativeVirtualKeyCode: d.keyCode };
-    await ask("Input.dispatchKeyEvent", { type: d.text && !k.meta ? "keyDown" : "rawKeyDown", ...base, ...(d.text && !k.meta ? { text: d.text, unmodifiedText: d.text } : {}) });
-    await ask("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    if (k.hold !== "up") await ask("Input.dispatchKeyEvent", { type: typed ? "keyDown" : "rawKeyDown", ...base, ...(typed ? { text: d.text, unmodifiedText: d.text } : {}) });
+    if (k.hold !== "down") await ask("Input.dispatchKeyEvent", { type: "keyUp", ...base });
   }
   if (keys.length) await ask("Runtime.evaluate", { expression: `window.__mbKeysDone = (window.__mbKeysDone || 0) + ${keys.length}` });
 }

@@ -178,7 +178,7 @@ describe.skipIf(!local)("the landscape", () => {
           const was = sw.getAttribute("aria-checked");
           sw.click();
           await sleep(300);
-          tab("Sessions").click();
+          (tab("Sessions") ?? tab("Landscape")).click();
           return was;
         };
         await until(() => document.querySelector(".ls-world .ls-node"));

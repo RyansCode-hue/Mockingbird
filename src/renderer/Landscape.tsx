@@ -11,6 +11,7 @@ import {
   accentOf,
   accentsOf,
   areaAt,
+  areaShown,
   areaCamera,
   areaCounts,
   areaInView,
@@ -25,6 +26,7 @@ import {
   centredAt,
   contentRects,
   fitBelow,
+  fitRects,
   flightAt,
   fromMinimap,
   inView,
@@ -92,12 +94,15 @@ import { AreaFrame } from "./AreaFrame";
 import { AreaSwitcher } from "./AreaTree";
 import { menuHeading, tidyMenu, useContextMenu, type MenuEntry } from "./ContextMenu";
 import { AreaBar, SeveralBar, WorkspaceBar, type BarPlace } from "./SelectionBar";
-import { AREA_NAME_PX, areaStatus, escapeClears, readBarExtended, saveBarExtended, severalBarItems, type BarChrome, type BarTarget } from "./selectionBarModel";
+import { AREA_NAME_PX, areaStatus, barAnchor, escapeClears, readBarExtended, saveBarExtended, severalBarItems, type BarChrome, type BarTarget } from "./selectionBarModel";
 import { focusTerm, lendTerm, screenText, scrollTerm } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
-import { OVERLAYS, escapeLeavesFullscreen, ownsKeys } from "./keys";
+import { OVERLAYS, OVER_TOUR, escapeLeavesFullscreen, ownsKeys } from "./keys";
+import { LandscapeEmpty } from "./LandscapeEmpty";
+import { LandscapeTour } from "./LandscapeTour";
+import { PROBLEM_TITLE, nothingDrawn, tourAreaOf, tourCamera, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
 
@@ -131,6 +136,14 @@ export interface AreaHooks {
   /** The kinds of workspace a right-click on empty landscape makes, placed at `at` (landscape px), in area `area` when it's in one. */
   create: (area: string | null, at: Point) => ModelAction[];
 }
+
+/** As much of a key event as the surface's keys read: React's, on the surface, or the window's, with the keyboard nowhere. */
+type SurfaceKey = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "preventDefault" | "stopPropagation">;
+
+/** How often a tour that's due looks again for what's open over the app (What's new after an update) having closed. */
+const TOUR_WAIT_MS = 400;
+/** How long after the tour a terminal that had the keyboard is waited for, while the camera goes back and the band follows it. */
+const TOUR_KEYS_BACK_MS = 2000;
 
 /** A gesture's plan that can be carried out. */
 export type ReadyPlan = Exclude<AreaPlan, { refused: string }>;
@@ -290,6 +303,11 @@ export function Landscape({
   needs,
   onNeeds,
   keysTo = 0,
+  emptyState,
+  onJoinRoom,
+  onShortcuts,
+  newAsk = 0,
+  tour,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -358,6 +376,16 @@ export function Landscape({
   onNeeds?: (dir: 1 | -1) => void;
   /** Going up gives the landscape the keyboard: a prompt shown from the Needs you tray has closed, the tray long gone. */
   keysTo?: number;
+  /** What's known of a landscape with nothing drawn on it (emptyStateOf). */
+  emptyState: EmptyState;
+  /** The dialog to join a teammate's room. */
+  onJoinRoom: () => void;
+  /** `?`: the shortcuts sheet, opened or closed. */
+  onShortcuts: () => void;
+  /** Going up opens the create menu at the view's centre (the top bar's + New). */
+  newAsk?: number;
+  /** The migration tour: due (shown once nothing else is open over the app, and not behind focus), and its end, however it came. */
+  tour: { due: boolean; onEnd: () => void };
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -710,15 +738,16 @@ export function Landscape({
   topNow.current = switcher ? SWITCHER_STRIP : 0;
   const fit = useCallback(() => {
     stopFlyRef.current();
-    const rects = contentRects(layoutNow.current);
+    const rects = fitRects(layoutNow.current);
     if (rects.length && vpNow.current.w) apply(fitBelow(rects, vpNow.current, topNow.current));
   }, []);
   // a window that has never shown the landscape starts with everything in view
+  const anythingToFit = fitRects(layout).length > 0;
   useEffect(() => {
-    if (placed.current || !vp || !layout.tiles.length) return;
+    if (placed.current || !vp || !anythingToFit) return;
     placed.current = true;
     fit();
-  }, [vp, layout.tiles.length]);
+  }, [vp, anythingToFit]);
 
   // workspaces and areas added, moved, resized, collapsed or opened: what's on screen, their type's scale, and drops
   // the layout now has where they were dropped
@@ -1041,7 +1070,9 @@ export function Landscape({
   };
   // the surface's own keys: only while it has the keyboard itself
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.target !== viewport.current || focusNow.current) return;
+    if (e.target === viewport.current && !focusNow.current) surfaceKey(e);
+  };
+  const surfaceKey = (e: SurfaceKey) => {
     const cmd = e.metaKey && !e.ctrlKey && !e.altKey;
     const handled = () => {
       e.preventDefault();
@@ -1085,11 +1116,30 @@ export function Landscape({
     } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "n" && onNeeds) {
       handled();
       onNeeds(e.shiftKey ? -1 : 1);
+    } else if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      handled();
+      onShortcuts();
     } else if (e.key === "Escape" && !e.metaKey && escapeClears({ selected: !!(pickedNow.current.length || selected || selectedArea), peek: !!peekNow.current, overlay: !!document.querySelector(OVERLAYS) })) {
       handled();
       clearSelection();
     }
   };
+  const surfaceKeyNow = useRef(surfaceKey);
+  surfaceKeyNow.current = surfaceKey;
+  // With the keyboard nowhere (what had it has gone: a palette clicked away, a dialog closed with what opened it) keys
+  // have no other taker, so they're the landscape's, and so is the keyboard from here on. A window opening on the
+  // landscape, or its tab just clicked, starts with it too, so `?` and the letters work without a click first.
+  useEffect(() => {
+    const a = document.activeElement;
+    if (!a || a === document.body || a.closest(".topbar .tabs")) viewport.current?.focus({ preventScroll: true });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target !== document.body || document.querySelector(OVERLAYS)) return;
+      (focusNow.current ? overlay.current : viewport.current)?.focus({ preventScroll: true });
+      if (!focusNow.current) surfaceKeyNow.current(e);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // A peek's keys, wherever the keyboard is but a text field, a menu or a dialog: Space keeps it open, and closes it
   // once kept; Esc closes it; Enter focuses a kept-open one's workspace.
@@ -1141,6 +1191,96 @@ export function Landscape({
       window.removeEventListener("keyup", offSpace, true);
     };
   }, []);
+
+  // ---- first run: + New's menu, and the migration tour ----
+  const newGiven = useRef(newAsk);
+  useEffect(() => {
+    if (newGiven.current === newAsk) return;
+    newGiven.current = newAsk;
+    const box = viewport.current?.getBoundingClientRect();
+    if (!box) return;
+    const at = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    const r = viewport.current!.getBoundingClientRect();
+    const p = toLandscape(cam.current, { x: at.x - r.left, y: at.y - r.top });
+    ctx.openAt(at, menuOf(areaHooks.create(areaAt(layoutNow.current.areas, p)?.key ?? null, p)));
+  }, [newAsk]);
+  /** A create-menu row run for a workspace placed at the view's centre: a tile of the empty landscape. */
+  const runTile = (row: string) => {
+    const v = vpNow.current;
+    runRow(areaHooks.create(null, toLandscape(cam.current, { x: v.w / 2, y: v.h / 2 })), row);
+  };
+
+  // Due, the tour comes up once nothing else is open over the app (What's new after an update, the setup wizard): those
+  // hold Esc, and it goes under them. It waits out focus, whose overlay covers what it points at, and picks up there.
+  const tourWanted = tour.due && hasSize && !focusTile;
+  /** The session whose terminal had the keyboard as the tour came up. */
+  const tourTerm = useRef<string | null>(null);
+  const [tourUp, setTourUp] = useState(false);
+  const [tourAt, setTourAt] = useState(0);
+  useEffect(() => {
+    if (!tourWanted) return setTourUp(false);
+    const ready = () => {
+      if (document.querySelector(OVER_TOUR)) return false;
+      const a = document.activeElement;
+      tourTerm.current = a?.closest(".ls-world .xterm") ? (a.closest<HTMLElement>(".ls-node")?.dataset.front ?? null) : null;
+      setTourUp(true);
+      stopHover();
+      closePeek();
+      return true;
+    };
+    if (ready()) return;
+    const t = setInterval(() => ready() && clearInterval(t), TOUR_WAIT_MS);
+    return () => clearInterval(t);
+  }, [tourWanted]);
+  const tourArea = useRef<string | null>(null);
+  if (tourUp && !layout.areas.some((a) => a.key === tourArea.current)) tourArea.current = tourAreaOf(layout, cam.current, vpNow.current);
+  const tourList = tourUp ? tourSteps(layout, tourArea.current) : null;
+  const tourStep = tourList ? Math.min(tourAt, tourList.length - 1) : 0;
+  /** What a step on the landscape spotlights, as the camera has it now, in the view's px with what's drawn above it. */
+  const tourPlace = (t: Exclude<TourTarget, { kind: "chrome" }>): { rect: Rect; box: Box } | null => {
+    if (t.kind === "place") return { rect: t.rect, box: barAnchor(t.rect, cam.current, "none") };
+    const a = layoutNow.current.areas.find((x) => x.key === t.key);
+    if (!a) return null;
+    return { rect: areaShown(a), box: barAnchor(areaShown(a), cam.current, a.rect.collapsed ? "pill" : bandNow.current === "cards" ? "areaName" : "areaHeader") };
+  };
+  /** Where the tour moved the camera from and to: it's put back at the end, unless something has moved it since. */
+  const tourMoved = useRef<{ from: Camera; to: Camera } | null>(null);
+  const tourTarget = tourList?.[tourStep].target;
+  const tourTargetKey = tourTarget && (tourTarget.kind === "chrome" ? null : tourTarget.kind === "area" ? `area:${tourTarget.key}` : `at:${tourTarget.rect.x},${tourTarget.rect.y}`);
+  useEffect(() => {
+    if (!tourTarget || tourTarget.kind === "chrome" || !vpNow.current.w) return;
+    const at = tourPlace(tourTarget);
+    const to = at && tourCamera(at.rect, at.box, vpNow.current, topNow.current);
+    if (!to) return;
+    tourMoved.current = { from: tourMoved.current?.from ?? cam.current, to };
+    placed.current = true;
+    flyTo(to);
+  }, [tourTargetKey]);
+  const endTour = () => {
+    const moved = tourMoved.current;
+    tourMoved.current = null;
+    if (moved && cam.current.x === moved.to.x && cam.current.y === moved.to.y && cam.current.zoom === moved.to.zoom) flyTo(moved.from);
+    tour.onEnd();
+  };
+  /**
+   * The tour has gone. A terminal that had the keyboard has it back if it's there and takes keys. If the tour's camera
+   * took it out of the band that does, the landscape holds the keyboard until the camera is back and the band has
+   * followed, then it's the terminal's, unless something has taken the keyboard meanwhile.
+   */
+  const tourClosed = () => {
+    const a = document.activeElement;
+    if (!a || a === document.body || (a.closest(".ls-world .xterm") && !takesKeys(bandNow.current))) surface();
+    const id = tourTerm.current;
+    tourTerm.current = null;
+    if (!id || document.activeElement !== viewport.current) return;
+    const until = Date.now() + TOUR_KEYS_BACK_MS;
+    const wait = setInterval(() => {
+      if (document.activeElement !== viewport.current || Date.now() > until) return clearInterval(wait);
+      if (!takesKeys(bandNow.current) || bandWait.current || flight.current) return;
+      clearInterval(wait);
+      focusTerm(id);
+    }, 50);
+  };
 
   // ---- gestures: the marquee, and moving a workspace or an area ----
   /** A client point in landscape px. */
@@ -2012,12 +2152,7 @@ export function Landscape({
             onKeys={surface}
           />
         )}
-        {!layout.tiles.length && (
-          <div className="ls-empty">
-            <div>No sessions on the landscape yet</div>
-            <div className="dim">New sessions land in their group's area.</div>
-          </div>
-        )}
+        {emptyState.kind !== "drawn" && <LandscapeEmpty state={emptyState} onTile={runTile} onJoinRoom={onJoinRoom} treeHidden={switcher} onShowTree={onShowTree} />}
         {switcher && (
           <LiveSwitcher
             stops={stops}
@@ -2053,7 +2188,7 @@ export function Landscape({
             )}
           </div>
         )}
-        <CameraHud listeners={listeners.current} cam={cam} onFit={fit} onZoom={zoomTo} />
+        {!nothingDrawn(layout) && <CameraHud listeners={listeners.current} cam={cam} onFit={fit} onZoom={zoomTo} />}
         {ctx.menu}
         <Minimap
           layout={layout}
@@ -2085,17 +2220,27 @@ export function Landscape({
           </div>
         )}
       </div>
+      {tourList && (
+        <LandscapeTour
+          steps={tourList}
+          at={tourStep}
+          listeners={listeners.current}
+          worldBox={(t) => {
+            const v = viewport.current?.getBoundingClientRect();
+            const pill = t.kind === "area" ? world.current?.querySelector(`.ls-area-pill[data-area="${CSS.escape(t.key)}"]`)?.getBoundingClientRect() : null;
+            const at = tourPlace(t);
+            if (!v || !at) return null;
+            const within = { x: v.left, y: v.top, w: v.width, h: v.height };
+            return { box: pill ? { x: pill.left, y: pill.top, w: pill.width, h: pill.height } : { ...at.box, x: at.box.x + v.left, y: at.box.y + v.top }, within };
+          }}
+          onNext={() => (tourStep === tourList.length - 1 ? endTour() : setTourAt(tourStep + 1))}
+          onSkip={endTour}
+          onClosed={tourClosed}
+        />
+      )}
     </div>
   );
 }
-
-const PROBLEM_TITLE: Record<LandscapeProblem["kind"], string> = {
-  corrupt: "The layout was reset",
-  unreadable: "The layout file can't be read",
-  newer: "A newer Mockingbird's layout",
-  save: "The layout isn't saved",
-  dropped: "Layout changes were dropped",
-};
 
 /**
  * What's wrong with the layout, over the landscape: landscape.json's problems as the main process reports

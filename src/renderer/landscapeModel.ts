@@ -873,6 +873,12 @@ export const areaShown = (a: AreaView): Rect => (a.rect.collapsed ? { x: a.rect.
 /** Everything a fit shows: the areas (a collapsed one's pill) and the workspaces and ghosts drawn. */
 export const contentRects = (r: ResolvedLayout): Rect[] => [...r.areas.map(areaShown), ...[...r.tiles, ...r.ghosts].filter((t) => !t.hidden).map((t) => t.rect)];
 
+/** What a fit goes by: contentRects or, when tool windows and artifact cards are all that's drawn, those, so they're brought into view too. */
+export function fitRects(r: ResolvedLayout): Rect[] {
+  const rects = contentRects(r);
+  return rects.length ? rects : [...r.windows, ...r.cards].filter((x) => !x.hidden).map((x) => x.rect);
+}
+
 // ---- keeping a window's landscape in step -------------------------------------------------------
 
 /**

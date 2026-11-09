@@ -63,13 +63,18 @@ const within = (a: Box | null, b: Box | null) => !!a && !!b && a.x >= b.x - 0.5 
 const overlaps = (a: Box | null, b: Box | null) => !!a && !!b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 // ---- keys and the mouse: pressed for real by the driver when it's there ----
-type Asked = { key: string; shift?: boolean; meta?: boolean } | { mouse: { x: number; y: number; clickCount: number } };
+export type Asked =
+  | { key: string; shift?: boolean; meta?: boolean; alt?: boolean; ctrl?: boolean; hold?: "down" | "up" }
+  | { mouse: { x: number; y: number; clickCount: number; button?: "left" | "right" | "middle"; shift?: boolean } }
+  | { move: { x: number; y: number } }
+  | { wheel: { x: number; y: number; dx?: number; dy?: number; meta?: boolean; ctrl?: boolean } }
+  | { drag: { x0: number; y0: number; x1: number; y1: number } };
 type W = Window & { __mbKeys?: Asked[]; __mbKeysDone?: number };
 const w = window as W;
 let asked = 0;
 let driver: boolean | null = null;
 /** Ask the driver for `these`, one straight after another; false when there's no driver. */
-async function drive(these: Asked[]): Promise<boolean> {
+export async function drive(these: Asked[]): Promise<boolean> {
   if (driver === false) return false;
   (w.__mbKeys ??= []).push(...these);
   const want = (asked += these.length);

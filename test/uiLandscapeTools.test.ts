@@ -218,7 +218,7 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     expect(r.chat.zoomedOut).toEqual({ band: "cards", partly: true, viewing: false, reads: 0 });
 
     // a mention notification: its room's area, flown to, with the room's Chat opened in it
-    expect(r.notified).toEqual({ before: 0, after: 1, windowShown: true, areaShown: true, tab: "Sessions" });
+    expect(r.notified).toEqual({ before: 0, after: 1, windowShown: true, areaShown: true, tab: "Landscape" });
 
     // the keys and the rail do what the selection's menu offers, no more: an exited session's Search only, none of a
     // teammate's; the rail says why

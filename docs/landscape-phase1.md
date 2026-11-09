@@ -2617,6 +2617,219 @@ Design O, with Artifacts as a window, and N's workspace header.
     `MB_E2E_APP=1`;
   - an e2e test that starts the real app with legacy prefs and checks the
     migrated landscape.
+- **S8a — As built** (the first half; the switch, S8b, turns the flag on and
+  deletes the grid). Everything here is in the landscape's branch, behind the
+  Labs flag:
+  - **The migration tour** (`LandscapeTour.tsx`; its rules, pure, in
+    `landscapeFirstRun.ts`):
+    - **Its steps are data:** the first is built for what's there
+      (`tourSteps`), the rest are one entry each in `TOUR_LATER`, each with
+      its title, body, what the "Next:" line calls it, and its target. Step 3
+      is the tool windows for now; the wires slices replace it.
+      1. **Your groups are now areas:** the open area on screen with the most
+         in it (`tourAreaOf`). With no area drawn, "Your sessions are now
+         workspaces", on the first loose workspace or ghost.
+      2. **Zoom out to see it all, focus to work:** the zoom's buttons
+         (`.ls-hud`).
+      3. **Your sidebar's tools are windows now:** the rail's buttons.
+      4. **What needs you is in one place:** the Needs you button, whether or
+         not anything waits. Done, with nothing to skip.
+    - **When it's due** (`tourSettled` in `main.tsx`): the migration is done,
+      nothing stands in for the file (`readProblem`), every session list has
+      been read (`knownSessions`), and `tourDone` isn't set. Nothing to tour
+      (`nothingToTour`: no area, workspace or ghost) settles it the other way:
+      `tourDone` is saved, so a fresh install gets the empty landscape and no
+      tour about "your groups" once it has a workspace. A placed tool window
+      or a Closed list alone counts as nothing to tour. A file that couldn't
+      be read, a list that failed and teammates' sessions not read settle
+      nothing either way.
+    - **How it ends:** Next through to Done, Skip the tour, or Esc: `tourDone`
+      through `landscapeStore.update`, so it survives a restart
+      (`?lsPersist`). A save that fails says so over the landscape and on the
+      banner ("The tour may show again next time") and it's gone for this run
+      (`tourEnded`).
+    - **When it comes up:** once nothing else is open over the app
+      (`OVER_TOUR`, looked for every 400 ms): What's new after an update, the
+      setup wizard, a dialog, a popover, the Needs you tray. Those hold Esc,
+      so it never takes one from under them. It waits out focus, whose overlay
+      covers what it points at, and picks up at the same step. A peek closes
+      as it comes up.
+    - **The spotlight:** a full-window layer at z-index 45, under dialogs
+      (50), the palette (60) and menus (90), which can open over it. The ring
+      is a hole in the dim, made with its own box-shadow, so what it shows is
+      live. It follows the camera with a listener, as the selection bar does,
+      never by a render. The dim is the app's background at 68%, so it dims
+      towards the background in both themes. A target on the landscape is kept
+      inside the view, one in the chrome inside the window (the rail's ring
+      stops 2 px short of the window's edge so its outline shows).
+    - **Off screen:** `tourCamera` moves the camera only when the target isn't
+      wholly in view or is under 160 px wide on screen (`fitBelow`, so with
+      the switcher's strip left clear). The camera goes back at the end,
+      unless something moved it since (`tourMoved`).
+    - **The card** (`tourCardAt`): beside the target on the side with the most
+      room for it, a right-hand side favoured 1.5×, as design G has it; its
+      foot level with the target's when it's beside it. A target too big to go
+      beside has it over its lower right corner. It's clear of the top bar,
+      and its height is capped with the window's.
+    - **The keyboard:** it holds it from the moment it's up, so nothing typed
+      reaches a terminal behind it: Tab goes round the card's buttons, a press
+      on the dim doesn't take focus, focus sent elsewhere comes back
+      (`focusin`), and keys on the body come back too. `OVERLAYS` includes it,
+      so ⌘E, a peek's keys and the selection's Esc hold off. ⌘K, ⌘N and ⌘P
+      still open their dialogs over it, and they give it the keyboard back.
+      When it goes, what had the keyboard has it again (`useDialogFocus`); a
+      terminal the tour's camera took out of a band that takes keys gets it
+      once the camera is back and the band has followed, up to 2 s, the
+      landscape holding it meanwhile (`tourTerm`).
+    - **Motion:** the card enters and leaves as a menu does (`usePresence`);
+      nothing else animates of its own. A flight is the one going-to-an-area
+      uses, with the ring following it.
+  - **The shortcuts sheet** (`TopBar.tsx`'s `ShortcutsSheet`; its rows in
+    `landscapeShortcuts.ts`): `?` on the landscape, "? Shortcuts" in the top
+    bar, a row in ⌘K. An `AnchoredPopover` under its button, the rows
+    scrolling between its head and foot in a window too short for them; at
+    1024×768 it needs no scrolling. It says so as a dialog does
+    (`useDialogFocus`, so the Needs you tray goes) and goes when one opens
+    (`DIALOG_OPENED`), handing back what had the keyboard. `?` in it closes
+    it; Esc gives the keyboard back to the landscape after `?` and to the
+    button after a click.
+    - **Honest as far as is practical:** every row has an `id`, and
+      `test/uiLandscapeFirstRun.test.ts` fails unless
+      `?landscapeFirstRunAudit=k` drove that id and saw it work, with real key
+      presses, wheel events and drags through the Chrome driver. A new row
+      with no step fails; a handler taken away fails. The driver gained every
+      letter, the keys these use, Alt and Ctrl, a held key, right-clicks, the
+      wheel and drags.
+    - **Rows not on the board:** ⇧N, ⌘= / ⌘-, ⌘\, ⌥⇥, the four tool windows'
+      keys, ⌘P, ⌘J, ⌘N, Shift-click, ⌘Z after a Tidy, Esc. **On the board,
+      dropped:** Connect, Add next step, along the pipeline (no wires yet),
+      and double-click for a new workspace (only right-click makes one).
+      **Changed:** "Esc" as the way back from focus is ⌘E · ⌘Esc: a focused
+      terminal has the keyboard and takes a plain Esc.
+    - **`?` and the letters** go through `surfaceKey`: only while the
+      landscape itself has the keyboard, never in a terminal or a text field.
+      They also take keys with the keyboard nowhere (`e.target ===
+      document.body`), which closes S7's open question about the ways out of
+      the palette that leave it on the body: nothing else wants those keys,
+      and the landscape takes the keyboard from there. A window opening on the
+      landscape, or its tab being clicked, gives it the keyboard, so `?` works
+      with no click first.
+  - **The empty landscape** (`LandscapeEmpty.tsx`; `emptyStateOf` and
+    `EMPTY_TILES` in `landscapeFirstRun.ts`):
+    - **Four states, never guessed:** `drawn` (nothing to say), `empty`,
+      `broken` (something couldn't be read, and it says what, with Try again
+      where that's a list) and `reading` (said after 300 ms). A file that only
+      stands in, a store error, a read-in that failed, and any session list
+      not read keep it from saying "An empty landscape". A corrupt file moved
+      aside is really empty, but it's headed "The layout was reset" and points
+      at the banner.
+    - **The cases decided:** only ghosts, only a placed tool window or
+      artifact card, or only an empty area: not empty, no panel, and the
+      camera's first fit goes by them (`fitRects`), so they're in view. Only a
+      docked window: empty, since it's beside the landscape. Only a Closed
+      list: empty, with a line saying how many are in the side bar's Closed
+      list, and "Show it" when the side bar is hidden.
+    - **Tiles** are data, each naming the create menu's row it runs
+      (`runTile`, `actionOf`), placed at the view's centre: a flow that's
+      still "coming" there can't be a tile (a test checks). Start from a
+      ticket says "From your ADO board" (the picker has no House tickets), New
+      workspace "Claude, Codex, terminal". Pipeline template isn't there: its
+      row is "coming". A press on a tile or link leaves the keyboard on the
+      landscape.
+    - **Right-click anywhere** is true: the panel takes no presses but its
+      buttons', and a right-click on those reaches the landscape's
+      `onContextMenu` too. The zoom's buttons aren't drawn with nothing to
+      zoom, so nothing is in the way. Seven places are right-clicked in the
+      test.
+    - **"Join a room…"** is a link to the dialog itself, with ⌘K named on
+      hover. There's no Team tab; the Team view is reached from the Connected
+      line, which only shows once you have a room.
+  - **The top bar** (`TopBar.tsx`'s `LandscapeTopBar`): the brand and What's
+    new, the tabs ("Landscape" for Sessions), Needs you, "? Shortcuts" and +
+    New, on every tab. Today's Import is in + New's menu (and the dialog's
+    Import, and ⌘K); ⌘N still goes straight to the dialog; Layout is the
+    grid's. The WorkTracker dot and Council's badge stay on their tabs.
+    - **+ New:** on the landscape the create menu at the view's centre
+      (`newAsk`), the area's when the centre is in one, and what it makes goes
+      there or the nearest free place (`placeAt`). On another tab, or while
+      the landscape isn't laid out, New session's dialog.
+    - **Narrow windows:** what doesn't fit folds behind "» n more" (`foldBar`,
+      measured before anything is painted), the shortcuts button first, then
+      tabs from the right; the open tab, the brand, Needs you and + New stay.
+      It's a menu rather than the selection bar's second row, since the bar is
+      one line tall. A folded tab's badge shows on », in its tooltip and on
+      its row. `?` with the button folded opens the sheet under ». Nothing
+      folds at 860.
+  - **Preview:**
+    - `?lsTour` (the tour not yet seen; with `?landscape=fresh`, the real
+      first run), `?lsTourStep=<n>` (Next pressed n times),
+      `?lsOnly=nothing|ghosts|closed|windows|docked|area`, `?lsListFail=<n>`,
+      `?lsTourSaveFails`, `?keysSheet`, `?newMenu`;
+    - `?landscapeFirstRunAudit=k|t|u|e|b` (`src/preview/firstRunAudit.ts`),
+      whose keys and mouse are real ones: =k drives every row; =t walks the
+      tour (`&do=done|skip|esc`, `?lsPersist` reloads to see it stay gone); =u
+      has it against a terminal, a dialog, the palette, focus and the tray; =e
+      reads the empty landscape's place, right-clicks all over it and runs its
+      tiles; =b measures the top bar at the window's width
+      (`&case=tab|fold|sheet`).
+  - **Tests:**
+    - `test/landscapeFirstRun.test.ts`: `emptyStateOf`'s every state and what
+      beats what, the tiles against the create menu, the steps and their
+      "Next:" line, `tourAreaOf`, `tourCamera`, `tourCardAt` at four window
+      sizes, `ringAround`, `fitRects`, the rows naming nothing this build
+      lacks and including what the board did;
+    - `test/uiLandscapeFirstRun.test.ts` drives the audit in Chrome: every
+      row, the tour's steps at 1440×900 and 1024×768, in light and dark where
+      it matters, off screen with motion off and on, ending each way and
+      staying gone after a reload, against unread and unreadable state, its
+      save failing, a terminal, a dialog, the palette, focus and the tray; the
+      empty landscape's cases and its broken ones; the top bar at 1440, 1024,
+      860 and 640. Headless Chrome's window size counts 87 px of its own, so a
+      "1024x768" run's page is 681 tall, shorter than the real thing; the
+      sheet's test asks for 1024x855 to read a page of 768.
+  - **Decisions for Ryan:**
+    - **"Start from a ticket"** says "From your ADO board" where the board
+      says "House or ADO": the dialog's picker has only ADO tickets. House
+      tickets start from a room's Board.
+    - **Three tiles in a row** (the board has four in two rows): a two-column
+      grid would leave a hole. They wrap in a narrow view.
+    - **Only a Closed list** counts as empty, with a line naming the list;
+      **only ghosts, windows, cards or an empty area** don't; only a docked
+      window does. A Closed list alone gets no tour, even after those sessions
+      are reopened.
+    - **The broken and "reading" panels** have no board: the empty landscape's
+      title and text styles, with Try again.
+    - **The tour with no area** ("Your sessions are now workspaces") has no
+      board.
+    - **+ New on another tab** opens New session's dialog: there's no view to
+      place a menu's workspace in. Going to the landscape first is the other
+      way.
+    - **? Shortcuts shows on every tab**, as Needs you does, though its keys
+      are the landscape's.
+    - **» is a menu**, not a second row; **? Shortcuts folds first**.
+    - **Left out of the top bar:** design D's "5h · 41%" (the status bar has
+      it) and "Go to… ⌘K" (the sheet has it).
+    - **Step 2 spotlights the zoom's buttons**, not a workspace: they're
+      always there and moving nothing shows them; focus is in its words.
+    - **The dim covers the whole window**, the top bar included (the board
+      leaves the top bar bright), so the rail and Needs you can be spotlighted
+      the same way.
+    - **Sheet rows beyond the board** make it 26 rows; it fits a 768-tall
+      window, and it could lose ⌘J and ⌘P if that's long.
+    - **No replay:** nothing shows the tour again once it's seen.
+  - **Found, not fixed:**
+    - ⌘/'s help still describes the grid (`HelpGuide.tsx`);
+    - the minimap can sit over the zoom's buttons in a window about 640 wide;
+    - an end-to-end test starting the real app from legacy prefs meets the
+      tour: `tourDone` isn't set there, as for anyone migrating, so it has to
+      end it or set it.
+  - **Not verified:**
+    - keys through the real app's macOS menu: there's no
+      `Menu.setApplicationMenu`, so Electron's default menu has ⌘0, ⌘= and ⌘-
+      as View roles, which the Chrome driver can't reach;
+    - a real trackpad pinch (⌃-wheel and ⌘-wheel are simulated);
+    - `?` on a keyboard other than US;
+    - any of this in the real app: all of it ran in the preview.
 
 ## Risks
 

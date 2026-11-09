@@ -304,7 +304,7 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(g.pickThenArea).toEqual({ pickedBefore: 2, picked: 0, area: "5101" });
     // from focus on another workspace: focus ends, and the keyboard isn't left on the overlay that went with it
     expect(g.goFromFocus).toEqual({ inFocus: true, focus: false, ws: "s8", keyboard: "landscape" });
-    expect(g.goFromTab).toEqual({ tab: "Sessions", ws: "s8", keyboard: "landscape" });
+    expect(g.goFromTab).toEqual({ tab: "Landscape", ws: "s8", keyboard: "landscape" });
   });
 
   it("draws the cards' badges inside their cards and areas at 15%, with what each source says, read once per folder", async () => {
