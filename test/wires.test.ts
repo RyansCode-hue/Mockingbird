@@ -7,11 +7,17 @@ import {
   emptyWireBook,
   freshWireRead,
   gateOf,
+  keptNaming,
   linkRefusal,
   newWire,
   parseWireBook,
   parseWireSettings,
+  readableKept,
   rekeyedBook,
+  rekeyRefusal,
+  restoredWire,
+  restoreRefusal,
+  ROOM_LINE,
   settingsRefusal,
   storedWireBook,
   wireRefusal,
@@ -73,6 +79,20 @@ describe("wireRefusal", () => {
     expect(wireRefusal("a", "r", "context", ctxOf([inRoom, end("a")]))).toMatch(/same team room/);
     expect(wireRefusal("r", "o", "handoff", ctxOf([inRoom, inOther]))).toMatch(/same team room/);
     expect(wireRefusal("r", "r2", "handoff", ctxOf([inRoom, end("r2", { room: "R1" })]))).toBeNull();
+  });
+  it("says only that a room's line is crossed, whatever else holds at the far end, so nothing of it is named", () => {
+    const far = end("r", { room: "R1", title: "Private plan", debrief: true, takenOver: "“Private plan” continues on Nick's laptop", kind: "terminal" });
+    expect(wireRefusal("a", "r", "handoff", ctxOf([end("a"), far]))).toBe(ROOM_LINE);
+    expect(wireRefusal("r", "a", "context", ctxOf([end("a"), far]))).toBe(ROOM_LINE);
+    expect(ROOM_LINE).not.toMatch(/Private plan/);
+  });
+  it("counts a kept wire whose ends and type can be read as there already, but not against itself", () => {
+    const kept = { k: { from: "a", to: "b", type: "feedback" as const }, h: { from: "b", to: "c", type: "handoff" as const } };
+    const ends = [...AB, end("c")];
+    expect(wireRefusal("b", "a", "feedback", ctxOf(ends, {}, {}, { kept }))).toMatch(/feedback wire already/);
+    expect(wireRefusal("b", "c", "handoff", ctxOf(ends, {}, {}, { kept }))).toMatch(/handoff wire between these two already/);
+    expect(wireRefusal("c", "a", "handoff", ctxOf(ends, { x: wire("a", "b") }, {}, { kept }))).toMatch(/cycle/);
+    expect(wireRefusal("b", "a", "feedback", ctxOf(ends, {}, {}, { kept, self: "k" }))).toBeNull();
   });
   it("keeps a terminal off every wire but a shared worktree's", () => {
     const ctx = ctxOf([end("a"), end("t", { kind: "terminal" })]);
@@ -183,6 +203,13 @@ describe("a wire's settings", () => {
 });
 
 describe("reading a stored book", () => {
+  it("writes back a live entry, not a kept one under the same key", () => {
+    const r = okRead(parseWireBook({ wv: 1, links: { w: { from: "a", to: "b", type: "sees" } }, notes: { a: "x" } }));
+    const live = wire("a", "b");
+    const stored = storedWireBook({ ...r, book: { ...r.book, links: { w: live }, notes: { a: { hops: 1 } } } }) as { links: Record<string, unknown>; notes: Record<string, unknown> };
+    expect(stored.links.w).toBe(live);
+    expect(stored.notes.a).toEqual({ hops: 1 });
+  });
   const good = { from: "a", to: "b", type: "handoff", when: "finished", gate: "ask", createdAt: 1 };
   const stored = (links: Record<string, unknown> = {}, notes: Record<string, unknown> = {}, more: Record<string, unknown> = {}) => ({ wv: 1, links, notes, ...more });
 
@@ -294,8 +321,58 @@ describe("the stored format", () => {
   });
 });
 
+describe("kept entries' ends", () => {
+  const kept = { links: { ok: { from: "a", to: "b", type: "context", gate: "sometimes" }, type: { from: "a", to: "b", type: "sees" }, ends: { from: 1, to: "b", type: "context" }, junk: "x", other: { from: "c", to: "a" } }, notes: { a: "x", b: "y" } };
+  it("are read where they can be: both ends strings and a type this version knows", () => {
+    expect(readableKept(kept)).toEqual({ ok: { from: "a", to: "b", type: "context" } });
+  });
+  it("name the kept entries a session is in, at either end, and its note", () => {
+    expect(keptNaming(kept, "a")).toEqual({ links: ["ok", "type", "other"], notes: ["a"] });
+    expect(keptNaming(kept, "c")).toEqual({ links: ["other"], notes: [] });
+    expect(keptNaming(kept, "z")).toEqual({ links: [], notes: [] });
+  });
+});
+
 describe("changes to the book", () => {
   const book = (links: Record<string, Wire>, notes: Record<string, SourceNote> = {}): WireBook => ({ ...emptyWireBook(), links, notes });
+
+  describe("a rekey's refusal", () => {
+    const ends = [end("old", { where: "closed" }), end("a"), end("c"), end("t", { kind: "terminal" }), end("d", { debrief: true }), end("r", { room: "R1" })];
+    const check = (b: WireBook, next: string, more: Partial<GateContext> = {}) => rekeyRefusal(b, rekeyedBook(b, "old", next), "old", next, ctxOf(ends, {}, {}, more));
+    it("allows a move the rules allow, and one that's blocked the same before and after", () => {
+      expect(check(book({ w: wire("old", "a") }), "c")).toBeNull();
+      const blocked = [end("old", { where: "closed" }), end("a", { room: "R1" }), end("c")];
+      const b = book({ w: wire("old", "a") });
+      expect(rekeyRefusal(b, rekeyedBook(b, "old", "c"), "old", "c", ctxOf(blocked))).toBeNull();
+    });
+    it("refuses one the rules would newly refuse: onto a debrief, across a room's line, onto its other end", () => {
+      expect(check(book({ w: wire("old", "a") }), "d")).toMatch(/debrief interview/);
+      expect(check(book({ w: wire("old", "a") }), "r")).toBe(ROOM_LINE);
+      expect(check(book({ w: wire("old", "a") }), "a")).toMatch(/to itself/);
+    });
+    it("refuses another kind of workspace, a missing one, one sending, and what a kept wire already is", () => {
+      expect(check(book({ w: wire("old", "a") }), "t")).toMatch(/same kind of workspace/);
+      expect(check(book({ w: wire("old", "a") }), "nope")).toMatch(/no session "nope"/);
+      expect(check(book({ w: wire("old", "a", "handoff", { delivery: { id: "p", state: "queued", at: 1 } }) }), "c")).toMatch(/sending right now/);
+      expect(check(book({ w: wire("old", "a", "feedback") }), "c", { kept: { k: { from: "a", to: "c", type: "feedback" } } })).toMatch(/feedback wire already/);
+    });
+  });
+
+  it("brings back a wire that was sending as unconfirmed, and any other as it was", () => {
+    for (const state of ["queued", "pasting"] as const) {
+      expect(restoredWire(wire("a", "b", "handoff", { delivery: { id: "p", state, at: 3 } })).delivery).toEqual({ id: "p", state: "unconfirmed", at: 3, why: expect.stringMatching(/may have reached the other end/) });
+    }
+    const sent = wire("a", "b", "handoff", { delivery: { id: "p", state: "sent", at: 3 } });
+    expect(restoredWire(sent)).toBe(sent);
+    const none = wire("a", "b");
+    expect(restoredWire(none)).toBe(none);
+  });
+  it("won't restore over a wire under the same id, or what the rules refuse now", () => {
+    const b = book({ w: wire("a", "b") });
+    expect(restoreRefusal(b, "w", wire("a", "b", "context"), ctxOf(AB))).toBe("That wire is there already.");
+    expect(restoreRefusal(b, "x", wire("a", "b"), ctxOf(AB))).toMatch(/already/);
+    expect(restoreRefusal(b, "x", wire("a", "b", "context"), ctxOf(AB))).toBeNull();
+  });
 
   it("drops a session's wires, both ways, and its note, naming what went", () => {
     const b = book({ out: wire("a", "b"), in: wire("c", "a"), rest: wire("b", "c") }, { a: { hops: 1 }, b: { hops: 2 } });

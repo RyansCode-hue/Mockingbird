@@ -226,10 +226,32 @@ export function parseWireBook(raw: unknown): WireBookRead {
   return read;
 }
 
-/** The book as it goes back in the file: what couldn't be parsed exactly as it was read. */
+/**
+ * The book as it goes back in the file: what couldn't be parsed exactly as it was read. A live entry under a key that's
+ * also kept is the one written (the store drops the kept copy when that happens, and says so).
+ */
 export function storedWireBook(r: WireBookRead): unknown {
   if (r.status !== "ok") return r.raw;
-  return { ...r.kept.fields, wv: r.book.wv, links: { ...r.book.links, ...r.kept.links }, notes: { ...r.book.notes, ...r.kept.notes } };
+  return { ...r.kept.fields, wv: r.book.wv, links: { ...r.kept.links, ...r.book.links }, notes: { ...r.kept.notes, ...r.book.notes } };
+}
+
+/** The ends and type of a kept wire, where they can be read though the entry as a whole can't. */
+export type KeptWire = Pick<Wire, "from" | "to" | "type">;
+
+/** The kept wires whose ends and type can be read: what the rules count as already there. */
+export function readableKept(kept: Pick<KeptEntries, "links">): Record<string, KeptWire> {
+  const out: Record<string, KeptWire> = {};
+  for (const [id, raw] of Object.entries(kept.links)) {
+    if (!isObj(raw) || typeof raw.from !== "string" || typeof raw.to !== "string" || !WIRE_TYPES.includes(raw.type as WireType)) continue;
+    put(out, id, { from: raw.from, to: raw.to, type: raw.type as WireType });
+  }
+  return out;
+}
+
+/** The kept entries that name session `id`: a wire with it at either end, and its note. They go with it when it's forgotten. */
+export function keptNaming(kept: Pick<KeptEntries, "links" | "notes">, id: string): { links: string[]; notes: string[] } {
+  const links = Object.entries(kept.links).flatMap(([k, raw]) => (isObj(raw) && (raw.from === id || raw.to === id) ? [k] : []));
+  return { links, notes: Object.hasOwn(kept.notes, id) ? [id] : [] };
 }
 
 // ---- what a window and the tools are told ------------------------------------------------
@@ -285,14 +307,24 @@ export interface WireContext {
   /** A session of this Mac's, or null. */
   end(id: string): WireEnd | null;
   links: Readonly<Record<string, Wire>>;
+  /** Kept wires whose ends and type can be read (readableKept): making or moving a wire counts them as there. */
+  kept?: Readonly<Record<string, KeptWire>>;
   /** The wire being checked, when it's one that exists: rules across wires leave it out. */
   self?: string;
 }
 
 const others = (ctx: WireContext): Wire[] => Object.entries(ctx.links).flatMap(([id, w]) => (id === ctx.self ? [] : [w]));
+/** Every other wire a new or moved one mustn't duplicate or loop with, the kept ones included. */
+const rivals = (ctx: WireContext): KeptWire[] => [...others(ctx), ...Object.entries(ctx.kept ?? {}).flatMap(([id, w]) => (id === ctx.self ? [] : [w]))];
+
+/** Why a wire is refused when its ends are on either side of a team room's line. It names neither end. */
+export const ROOM_LINE =
+  "Both ends have to be in the same team room, or neither in one: a wire across the line would carry a room's text out of its guardrails, or private output onto teammates' screens.";
+
+export const isSending = (w: Pick<Wire, "delivery">): boolean => w.delivery?.state === "queued" || w.delivery?.state === "pasting";
 
 /** Whether handoffs lead from `start` to `goal`. */
-function handoffsLead(links: readonly Wire[], start: string, goal: string): boolean {
+function handoffsLead(links: readonly KeptWire[], start: string, goal: string): boolean {
   const seen = new Set<string>();
   const walk = (at: string): boolean => {
     if (at === goal) return true;
@@ -306,7 +338,7 @@ function handoffsLead(links: readonly Wire[], start: string, goal: string): bool
 /** Why this wire can't sit beside the others (ctx.links but ctx.self): what's about the book, not its two ends. */
 export function linkRefusal(from: string, to: string, type: WireType, ctx: WireContext): string | null {
   if (from === to) return "A workspace can't be wired to itself.";
-  const rest = others(ctx);
+  const rest = rivals(ctx);
   if (type === "feedback" && rest.some((w) => w.type === "feedback" && ((w.from === from && w.to === to) || (w.from === to && w.to === from)))) {
     return "These two have a feedback wire already: a second would start a fresh count of rounds.";
   }
@@ -327,9 +359,10 @@ export function wireRefusal(from: string, to: string, type: WireType, ctx: WireC
   if (!a) return `This Mac has no session "${from}".`;
   const b = ctx.end(to);
   if (!b) return `This Mac has no session "${to}".`;
+  // first, so no refusal across the line names what's on the other side
+  if (a.room !== b.room) return ROOM_LINE;
   for (const e of [a, b]) if (e.debrief) return `“${e.title}” is a debrief interview with you, and takes no wires.`;
   for (const e of [a, b]) if (e.takenOver) return e.takenOver;
-  if (a.room !== b.room) return "Both ends have to be in the same team room, or neither in one: a wire across the line would carry a room's text out of its guardrails, or private output onto teammates' screens.";
 
   if (type === "worktree") {
     if (a.kind !== "agent" || b.kind !== "terminal") return "A shared worktree wire runs from an agent to a terminal.";
@@ -398,6 +431,9 @@ export function settingsRefusal(w: Pick<Wire, "from" | "to" | "type">, s: WireSe
   return null;
 }
 
+/** Whether two wires are the same, field for field: a change that makes no difference isn't one. */
+export const sameWire = (a: Wire, b: Wire): boolean => JSON.stringify(a) === JSON.stringify(b);
+
 /** `w` with settings on it: the limit moves, what's been counted stays. */
 export function withSettings(w: Wire, s: WireSettings): Wire {
   const next: Wire = { ...w };
@@ -426,6 +462,47 @@ export function withoutSession(book: WireBook, id: string): { book: WireBook; dr
   const notes: Record<string, SourceNote> = {};
   for (const [k, n] of Object.entries(book.notes)) if (k !== id) put(notes, k, n);
   return { book: { ...book, links, notes }, dropped };
+}
+
+/**
+ * Why session `old`'s wires can't move to `next` (Start fresh) as `moved` (rekeyedBook) has them: all move or none.
+ * A wire refused only for where it is now (a room, a take-over) moves and stays blocked, since moving it changes
+ * nothing about why. One that moving would newly refuse doesn't: a handoff can't be moved onto a debrief, or across a
+ * room's line, any more than it can be made there.
+ */
+export function rekeyRefusal(book: WireBook, moved: WireBook, old: string, next: string, ctx: Pick<WireContext, "end" | "kept">): string | null {
+  const to = ctx.end(next);
+  if (!to) return `This Mac has no session "${next}".`;
+  const from = ctx.end(old);
+  if (from?.takenOver) return from.takenOver;
+  if (to.takenOver) return to.takenOver;
+  for (const [id, w] of Object.entries(book.links)) {
+    if (w.from !== old && w.to !== old) continue;
+    if (from && from.kind !== to.kind) return `“${to.title}” isn't the same kind of workspace as “${from.title}”, so its wires can't move there.`;
+    if (isSending(w)) return "One of these wires is sending right now: try again once it's gone.";
+    const now = moved.links[id];
+    const dup = linkRefusal(now.from, now.to, now.type, { ...ctx, links: moved.links, self: id });
+    if (dup) return dup;
+    const after = wireRefusal(now.from, now.to, now.type, { ...ctx, links: moved.links, self: id });
+    if (after && after !== wireRefusal(w.from, w.to, w.type, { ...ctx, links: book.links, self: id })) return after;
+  }
+  return null;
+}
+
+/** Why removed wire `w` can't go back under `id` now: it's there already, or the rules on making it refuse it now. */
+export function restoreRefusal(book: WireBook, id: string, w: Wire, ctx: Pick<WireContext, "end" | "kept">): string | null {
+  if (Object.hasOwn(book.links, id)) return "That wire is there already.";
+  return wireRefusal(w.from, w.to, w.type, { ...ctx, links: book.links });
+}
+
+/**
+ * A removed wire as Undo puts it back. A message on its way when the wire was removed may or may not have reached the
+ * other end, and nothing is following it any more, so it comes back unconfirmed for a person to settle (Send again, or
+ * Mark sent), never as still sending and never sent again by itself.
+ */
+export function restoredWire(w: Wire): Wire {
+  if (!isSending(w)) return w;
+  return { ...w, delivery: { ...w.delivery!, state: "unconfirmed", why: "It was being sent when its wire was removed, so it may have reached the other end." } };
 }
 
 /** The book with session `old`'s wires and note moved to `next`, counters and what's waiting included. A note `next` has of its own stays. */

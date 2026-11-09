@@ -107,12 +107,14 @@ memory, keyed to the identity it stands for. `mcpLaunch(id, tools?)` mints one i
 `MOCKINGBIRD_TOKEN_FILE` in the env. A mint that fails throws ("couldn't give this
 agent its tools"), so the agent doesn't start without its tools. `mcp.js` opens the
 file with `O_NOFOLLOW | O_NONBLOCK`, checks with `fstat` that it's a regular file,
-reads it, unlinks it, and sends `token`, never `from`. `dispatch` takes the identity
-from the token alone. A `collab-` identity goes to `roomHandler` only when its
-token says so, and `args.from` is passed through as an argument, never as identity.
-A request with no live token gets one fixed answer: restart this workspace. That's
-logged at most once a minute, with the op and never the token. A request that isn't
-JSON is answered without echoing what it held.
+reads it, leaves it, and sends `token`, never `from`. The file stays for the
+launch's life, so every server the agent starts from that launch reads the same
+token (review fixes 1, below). `dispatch` takes the identity from the token alone. A
+`collab-` identity goes to `roomHandler` only when its token says so, and
+`args.from` is passed through as an argument, never as identity. A request with no
+live token is refused, saying why; what it says about itself is used only to tell
+the user which pane lost its tools. A request that isn't JSON is answered without
+echoing what it held.
 
 A token goes with its launch (`retireMcpLaunch`), not after a set time:
 - in `create`: when the spawn fails, when an earlier pty under the same id is
@@ -121,10 +123,10 @@ A token goes with its launch (`retireMcpLaunch`), not after a set time:
 - in `kill`: at once, since the same id may run again before the pty has gone;
 - in a Council turn (`cliTurnRunner`): in its `finally`.
 
-Retiring removes the file if no server read it. `Messaging.start` sweeps what an
-earlier run left (a crash), past the single-instance lock. The quit runs a step,
-"removing unread tool tokens". The mint comes after the take-over and quitting
-checks in `create`, so a refused launch mints nothing.
+Retiring removes the file. `Messaging.start` sweeps what an earlier run left (a
+crash), past the single-instance lock. The quit runs a step, "removing tool tokens",
+that removes every file left. The mint comes after the take-over and quitting checks
+in `create`, so a refused launch mints nothing.
 
 **The file.** `LANDSCAPE_VERSION` is 3. `wires` is one unchecked field in the
 landscape's format and is never required. `parseLandscape` reads v1 and v2 as v3
@@ -229,9 +231,9 @@ itself out. It works out:
 - A chmodded-read-only `landscape.json` never stopped the layout's saves:
   `writeFileAtomic` renames over it and keeps the mode. Wire changes refuse it; the
   layout's behaviour is unchanged.
-- A restarted MCP server (`/mcp` reconnect) used to keep working. Now every call
-  says to restart the workspace. That's loud, not silent, but it's the hand check
-  that matters.
+- A restarted MCP server (`/mcp` reconnect) used to keep working. W1 first removed
+  the file at the first read, so a second start had no token; review fixes 1 keeps
+  the file for the launch's life, so it works again (section 4).
 
 **Tests:**
 - `test/wires.test.ts`: the rules, `gateOf`, the tolerant parse, the `WIRE_FORMAT`
@@ -249,20 +251,87 @@ itself out. It works out:
   and the start's sweep.
 - `teamLiveApp.e2e`'s room tools now go through a token too.
 
-Every fix was reverted in turn (35 of them) and its test failed.
+35 of W1's fixes were each reverted in turn and their tests failed. That list
+missed three that had no test: `unusedId`'s check of kept ids, restore's "there
+already", and the 50-wire restore cap. Review fixes 1 adds tests for them and
+mutation-checks them with its own fixes (below).
 
 **Checked here:** `ps -ww` shows `--mcp-config`'s value for a same-uid process.
 Node 22.22.3's `net.Socket` offers no peer pid or credentials: `_getpeername` only,
 and no `remoteAddress` on a unix socket.
 
 **Still to check by hand, with real CLIs:**
-- whether Claude or Codex ever starts the stdio server more than once per launch
-  (a health check, a subagent, a crash restart): each later start has no token;
-- `/mcp` reconnect showing the restart message;
+- `/mcp` reconnect, and a sub-agent's server, working while the launch runs (the
+  tests start the real script a second and third time, but not from a real CLI);
 - Codex's room sandbox denying an agent's commands the token folder while its MCP
-  server reads it;
+  server reads it. If the sandbox covers the server too, every call says the file
+  couldn't be read, and main logs it and tells the user;
 - Claude room sessions' `Read(~/.mockingbird/mcp-tokens/**)` deny not reaching the
-  server.
+  server. It covers Claude's file tools only: its Bash can read the folder.
+
+#### W1 review fixes 1 as built
+
+- **The token file stays for the launch's life (H1).** `mcp.js` reads it without
+  removing it, so a second or third start from one launch (a sub-agent's, `/mcp`
+  reconnect) answers as that pane. Retire (close, exit, replace, failed spawn,
+  Council turn end), the start's sweep and quit remove it, as before. The cost is
+  in section 4: a same-uid process outside a sandbox can read a live launch's token
+  for as long as the launch runs.
+- **A server without a valid token still reaches main (M1).** It sends `lost`, its
+  reason (no file, empty, gone with its launch, or unreadable with the errno, as a
+  sandbox would have it), and `claimed`, the pane it was started for. Both are hints
+  for telling the user, never identity: with a live token they're ignored, and
+  without one nothing is answered. Main logs one line to `main.log` per pane launch
+  per minute ("A tool server for "Builder" (id) lost its Mockingbird tools: …"), one
+  a minute for all naming no agent pane here, and tells the user once per pane launch
+  by a notification (`toolsLostNotice`, under the usual notification rules; clicking
+  it shows the pane). The agent's refusal says why and that the user has heard. It
+  doesn't say to restart, since that doesn't help a launch that has ended or a
+  sandboxed server. An in-pane notice would need `TerminalPane.tsx`, S8b's.
+- **A live entry beats a kept one under the same key (M2).** `storedWireBook` writes
+  the live one, and `editWires` drops the kept copy and its problem, logging each.
+  Tested across a restart.
+- **Rekey refuses what it newly breaks (L1).** `rekeyRefusal` (now in
+  `shared/wires.ts`, used by main and the stub) refuses a moved wire that
+  `wireRefusal` rejects when it didn't before the move: onto a debrief, across a
+  room's line, onto its other end. One blocked the same before and after still moves.
+- **Restore of a wire removed mid-send (L2)** brings it back `unconfirmed` (W3's
+  state for "may have reached B"), never `queued` or `pasting` with nothing
+  following it.
+- **Across a room's line, `list_links` names only the far end's id (L3):** `other`
+  is `{ id, outside: "outside this room" }` (or "in a team room" from a private
+  session), and `why` is `ROOM_LINE`. `wireRefusal` checks the room line right after
+  both ends exist, before debrief and take-over, so no refusal across it names the
+  other side.
+- **"missing" clears once a save has written a book (L4)**, a wire's or the
+  layout's, and the windows hear of it.
+- **Kept entries (L5).** Forget drops those naming the session, wire or note,
+  logged. Kept wires whose ends and type can be read count as already there for
+  duplicates, feedback pairs and handoff cycles (`readableKept`).
+- **Comments and section 4 (L6):** a Codex room's sandbox denies the token folder to
+  the agent's commands; Claude's deny rules cover only Claude's file tools.
+- **Tests that were missing (L7):** `unusedId` skipping a kept id (`newId` lets a
+  test pick ids), restore's "there already", the 50-wire cap.
+- **The stub matches main (L8):** `wiresRekey` goes through `rekeyRefusal`, a
+  `wiresSet` that changes nothing isn't counted, restore uses `restoreRefusal` and
+  `restoredWire`, closed sessions count as ends, and `killSession` drops wires only
+  once the kill has gone through. `test/uiWiresStub.test.ts` drives it in headless
+  Chrome. The stub's kill never fails, so the "only on success" half is by reading.
+- **A pane that can't be saved (create).** `onExit` is registered as soon as the pty
+  runs, so a throw from `store.upsertSession` can't leave a pty with nothing handling
+  its end. On that throw the records are restored, the pane is dropped, its token
+  retired and its pty killed as `kill()` kills one (its exit still awaited at quit),
+  and the error says so.
+- `removeUnreadMcpTokens` is `removeMcpTokenFiles`, as it removes every file.
+- Informational lines (`lost its Mockingbird tools`, kept entries dropped) go to the
+  log as text, not as an `Error` with a stack.
+- A wire removed again under an id it had before goes to the back of the restore
+  queue, rather than keeping its first removal's place and going first.
+
+Every fix was reverted in turn and its test failed: 33 of W1's (the two whose code
+changed are replaced by the H1 and M1 ones) and 35 of these, the stub's run in
+headless Chrome. One more only the app test reaches: without main's `log` hook,
+`wiresApp.e2e` fails waiting for the line in `main.log`.
 
 ### W2 · Tools and finishing (main, no UI). Size M
 - `src/main/wireTools.ts` (`finish_step`, `read_context`, `read_terminal`, routed
@@ -833,10 +902,10 @@ corrupt plans file loses proposals only.
 | Area merged, renamed, deleted | Nothing to do: no wire names a group or a place | `renameAreaPatch` untouched |
 | Moved in or out of a room | The room rule is checked at every use, so it goes blocked with why, then back | Section 4 |
 | Undo, Tidy | Move places only; wires redraw | `undoOf`, `planTidy` |
-| Removing a wire | Its own Undo in the note restores the record, counter included | `wires:restore` |
+| Removing a wire | Its own Undo in the note restores the record, counter included. One removed while sending comes back unconfirmed | `wires:restore`, `restoredWire` |
 | Partial write | Can't happen: temp file then rename | `fileOps.ts:14` |
 | Whole file corrupt | Goes aside with the layout (`src/main/landscape.ts:260`), wires with it, as the banner says. No wire means nothing sends | Fails closed |
-| One bad wire entry | Kept verbatim and inert, with a banner; the layout isn't touched. `fields()`'s strictness (`src/shared/landscape.ts:591`) would otherwise move the whole file aside | `parseWireBook` |
+| One bad wire entry | Kept verbatim and inert, with a banner; the layout isn't touched. `fields()`'s strictness (`src/shared/landscape.ts:591`) would otherwise move the whole file aside. Its ends and type, where they can be read, count against duplicates; a live entry saved under its key replaces it, logged; Forget takes it when it names the session | `parseWireBook`, `readableKept` |
 | File unreadable (stand-in) | `wires:*` and the tools refuse saying it can't be read, never "no links" | S1's rule |
 | File read-only | Same. `flush()` returns silently when read-only (`src/main/landscape.ts:150`), so W3 checks first and doesn't send | Double-send rule |
 | Two windows | One app window (`toWindow`, `index.ts:134`) and a single-instance lock (`:117`). Main owns the state and every action is idempotent, so more windows would be fine | |
@@ -1038,22 +1107,35 @@ forge another's `finish_step`, approving its own review, or send as someone else
   `~/.mockingbird/mcp-tokens/<random>` (0600). `McpLaunch.env` carries only the
   path, since that env sits in the agents' argv (`agents.ts:97`, `:226`) where `ps`
   shows it (*inferred*).
-- `mcp.js` reads the file once at start and unlinks it, then sends the token.
-- `dispatch` takes identity from the token alone and ignores `from`. No token, no
-  answer. That covers `collab-` tags too, which today can be forged to reach
-  `roomHandler`.
-- A relaunch rotates it. The folder joins `HOME_SECRETS` (`secrets.ts:52`), so room
-  deny rules and Codex's sandbox cover it during the window before it's read.
+- `mcp.js` reads the file at each start, and leaves it: the file stays for the
+  launch's life, so every server the agent starts from that launch (a sub-agent's,
+  `/mcp` reconnect) sends the same token. Retire (close, exit, replace, failed spawn,
+  Council turn end), the start's sweep and quit remove it.
+- `dispatch` takes identity from the token alone and ignores `from`. No valid token,
+  no answer. That covers `collab-` tags too, which today can be forged to reach
+  `roomHandler`. A server without one still sends main its reason and the pane it was
+  started for, as a hint for telling the user, never as identity.
+- A relaunch rotates it. The folder joins `HOME_SECRETS` (`secrets.ts:52`), so a
+  Codex room session's sandbox denies it to the agent's commands. A Claude room
+  session's deny rules (`roomSecretReads`) cover only Claude's file tools: its Bash
+  can still read the folder.
 
-**What this doesn't do.** Same-uid code can read a sibling's token in that startup
-window, and reach transcripts and `~/.mockingbird` directly. The OS gives no peer
-identity through Node's `net` (*inferred*). The boundary is the agent's own
-permissions and, in a room, its sandbox. Wire scope is a rule on the tool, not a
-wall, and this file shouldn't be read as saying otherwise.
+**What this doesn't do.** A same-uid process outside a sandbox can read a live
+launch's token from its file for as long as the launch runs, and reach transcripts
+and `~/.mockingbird` directly. Inside a Codex room sandbox the folder is denied. The
+OS gives no peer identity through Node's `net` (checked in W1). The boundary is the
+agent's own permissions and, in a room, its sandbox. Wire scope is a rule on the
+tool, not a wall, and this file shouldn't be read as saying otherwise.
 
-**A restarted MCP server** (`/mcp` reconnect) has no token and is told to restart
-the workspace. *Inferred:* neither CLI restarts a healthy stdio server by itself. W1
-checks by hand with both.
+*Later:* identify the caller by its peer pid (`LOCAL_PEERPID` on macOS, through a
+small native addon since Node doesn't expose it) and check it descends from the
+pane's pty. That would make a token read by another process useless to it.
+
+**A restarted MCP server** (`/mcp` reconnect, a sub-agent's) reads the same file and
+works while its launch runs. One started after its launch has ended, or kept from
+the file by a sandbox, has every call refused saying why. Main logs it (`main.log`,
+once a minute per pane launch) and tells the user once per pane launch. The refusal
+doesn't tell the agent to restart, since that helps neither case.
 
 **Enforced in main:** every tool resolves from the token's session.
 `read_context(from)` needs a context wire from `from` to the caller, `list_links`
@@ -1452,7 +1534,8 @@ Other risks:
   "If this fails at 2am" as a review question.
 
 Not verified, to check by hand in the slice named:
-- Claude and Codex restarting a stdio MCP server, and `/mcp` reconnect (W1).
+- `/mcp` reconnect and a sub-agent's server with real CLIs (W1). With the token file
+  kept for the launch's life, either works while the launch runs.
 - `ps` showing argv for same-user processes, and Node's `net` offering no peer pid (W1).
 - That Codex's sandbox denies an agent's commands the token folder while its MCP
   server, which must read it, runs outside the sandbox (W1, with a real room session).

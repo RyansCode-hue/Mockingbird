@@ -22,7 +22,7 @@ import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, res
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
-import { Messaging, removeUnreadMcpTokens } from "./messaging";
+import { Messaging, removeMcpTokenFiles } from "./messaging";
 import { setupStatus } from "./setup";
 import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
 import { CouncilTickets } from "./collabTickets";
@@ -41,7 +41,7 @@ import { CLAUDE_PROJECTS, CODEX_SESSIONS, claudeTranscriptOf, codexRolloutOf } f
 import { handoffKickoff, handoffPrompt, replyOfConversation, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
-import { shouldNotify } from "./notifications";
+import { shouldNotify, toolsLostNotice } from "./notifications";
 import { composeRollup, weekBounds } from "./rollup";
 import { fmtElapsed } from "../shared/format";
 import { MessageLog } from "./messageLog";
@@ -639,6 +639,16 @@ app.whenReady().then(() => {
         logError("message log", err);
       }
       toWindow("messages:changed", m);
+    },
+    {
+      log: logError,
+      // Messaging calls this once per pane launch; it shows under the notification settings every pane's notices follow
+      onToolsLost: ({ session, why }) => {
+        if (!shouldNotify({ settings: store.settings, session, kind: "other", now: new Date() })) return;
+        const n = new Notification(toolsLostNotice({ title: session.ticketTitle ?? session.title, why }));
+        n.on("click", () => focusPane(session.id));
+        n.show();
+      },
     }
   );
   messaging.start();
@@ -716,7 +726,7 @@ const quit = new QuitSequence({
   steps: [
     { name: "saving scrollback", run: () => sessions.saveScrollback(true) },
     { name: "saving the landscape", run: () => landscape.flush() },
-    { name: "removing unread tool tokens", run: () => removeUnreadMcpTokens() },
+    { name: "removing tool tokens", run: () => removeMcpTokenFiles() },
     { name: "stopping team rooms", run: () => stopTeam() },
     { name: "stopping phone alerts", run: () => phone?.stop() },
     // whatever debug session outlasted the services' bounded stop: its adapter's process group ends now

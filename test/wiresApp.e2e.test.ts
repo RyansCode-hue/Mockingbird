@@ -80,15 +80,18 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         expect(listed.you.id).toBe(builder.id);
         expect(listed.sessions.map((s: any) => [s.id, s.agent])).toEqual([[reviewer.id, "codex"]]);
         expect(parsed(await codex.call("list_sessions")).you.id).toBe(reviewer.id);
-        expect(fs.existsSync(claudeLaunch.env.MOCKINGBIRD_TOKEN_FILE)).toBe(false);
+        expect(fs.readFileSync(claudeLaunch.env.MOCKINGBIRD_TOKEN_FILE, "utf8")).toBe(claudeToken);
         expect((await claude.call("send_message", { to: reviewer.id, message: "hello" })).content[0].text).toMatch(/^Delivered to "Reviewer"/);
         // nothing else gets an answer: not a forged `from`, and not a server without a token
-        expect((await askRaw(sockOf(home), JSON.stringify({ op: "list_sessions", from: builder.id }))).error).toMatch(/no valid token/);
-        const second = startServer(claudeLaunch);
-        try {
-          expect((await second.call("list_sessions")).content[0].text).toMatch(/Restart this workspace/);
-        } finally {
-          await second.stop();
+        expect((await askRaw(sockOf(home), JSON.stringify({ op: "list_sessions", from: builder.id }))).error).toMatch(/^Mockingbird doesn't recognise this tool server/);
+        // a second and a third server from the same launch (a sub-agent's, a reconnect) answer as it too
+        for (let i = 0; i < 2; i++) {
+          const again = startServer(claudeLaunch);
+          try {
+            expect(parsed(await again.call("list_sessions")).you.id).toBe(builder.id);
+          } finally {
+            await again.stop();
+          }
         }
 
         // no wires yet, and the tool says so
@@ -115,7 +118,15 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         expect(again.env.MOCKINGBIRD_TOKEN_FILE).not.toBe(claudeLaunch.env.MOCKINGBIRD_TOKEN_FILE);
         const old = await claude.call("list_sessions");
         expect(old.isError).toBe(true);
-        expect(old.content[0].text).toMatch(/Restart this workspace/);
+        expect(old.content[0].text).toMatch(/: its token is from a launch that has ended/);
+        // one started from the ended launch is refused, saying its file has gone, and main.log names the pane
+        const late = startServer(claudeLaunch);
+        try {
+          expect((await late.call("list_sessions")).content[0].text).toMatch(/: its token file is gone/);
+        } finally {
+          await late.stop();
+        }
+        await untilTrue("the lost tools logged", async () => /messaging: A tool server for "Builder" \(.+\) lost its Mockingbird tools: its token is from a launch that has ended/.test(mainLog(app)));
         const fresh = startServer(again);
         try {
           expect(parsed(await fresh.call("list_links")).links[0]).toMatchObject({ wire: made.id, direction: "out" });

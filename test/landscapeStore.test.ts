@@ -636,6 +636,47 @@ describe("the wire book in the landscape's file", () => {
     expect(state.problems).toEqual([expect.objectContaining({ kind: "missing" })]);
   });
 
+  it.each(["a wire's", "the layout's"])("stops saying the book was missing once %s save has written one", (by) => {
+    vi.useFakeTimers();
+    const { file, open, wireChanges } = setup();
+    const { wires: _w, ...none } = v3(null) as Record<string, unknown>;
+    fs.writeFileSync(file, JSON.stringify(none));
+    const store = open();
+    expect(store.wires().problems).toEqual([expect.objectContaining({ kind: "missing" })]);
+    const rev = store.wires().wiresRev;
+    if (by === "a wire's") added(store.editWires(withWire));
+    else {
+      store.update({ workspaces: { b: placement(900) } });
+      vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
+    }
+    expect(onDisk(file).wires).toMatchObject({ wv: WIRE_VERSION });
+    expect(store.wires().problems).toEqual([]);
+    expect(store.wires().wiresRev).toBe(rev + 1);
+    expect(wireChanges.at(-1)).toMatchObject({ problems: [] });
+    expect(open().wires().problems).toEqual([]);
+  });
+
+  it("saves a live entry over a kept one under the same key, says so, and reads it back after a restart", () => {
+    const { file, open, logged } = setup();
+    const bad = { from: "a", to: "b", type: "sees" };
+    fs.writeFileSync(file, JSON.stringify(v3({ wv: 1, links: { w1: bad, other: bad }, notes: { a: "not a note" } })));
+    const store = open();
+    expect(store.wires().problems.map((p) => p.id).sort()).toEqual(["a", "other", "w1"]);
+    added(store.editWires((book) => ({ book: { ...book, links: { ...book.links, w1: WIRE }, notes: { a: { hops: 1 } } } })));
+    expect(onDisk(file).wires).toMatchObject({ links: { w1: WIRE, other: bad }, notes: { a: { hops: 1 } } });
+    expect(store.wires().problems.map((p) => p.id)).toEqual(["other"]);
+    expect(logged).toEqual(
+      expect.arrayContaining([
+        `landscape: A wire in landscape.json that couldn't be read ("w1") was replaced by a new one under the same key, which is what's saved now.`,
+        `landscape: A wire note in landscape.json that couldn't be read ("a") was replaced by a new one under the same key, which is what's saved now.`,
+      ])
+    );
+    const again = open().wires();
+    expect(again.book!.links.w1).toEqual(WIRE);
+    expect(again.book!.notes.a).toEqual({ hops: 1 });
+    expect(again.problems.map((p) => p.id)).toEqual(["other"]);
+  });
+
   it.skipIf(asRoot)("refuses while the file can't be read, never answering no wires, and comes back when it can", () => {
     const { file, open, wireChanges } = setup();
     fs.writeFileSync(file, JSON.stringify(v3({ wv: 1, links: { w1: WIRE }, notes: {} })));

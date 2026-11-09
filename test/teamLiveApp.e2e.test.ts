@@ -73,9 +73,9 @@ const FAKE_CLAUDE = `#!/bin/bash
 conv="e2e-$MOCKINGBIRD_SESSION"
 if [ "$1" = "--resume" ]; then conv="$2"; fi
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code stand-in)"; exit 0; fi
-# takes this launch's token from where its MCP server would, so the test can call tools as this session
+# reads this launch's token where its MCP server would, leaving it as the server does, so the test can call tools as this session
 token_file=$(printf '%s' "$*" | sed -n 's/.*"MOCKINGBIRD_TOKEN_FILE":"\\([^"]*\\)".*/\\1/p')
-if [ -n "$token_file" ]; then mkdir -p "$HOME/e2e-tokens" && mv -f "$token_file" "$HOME/e2e-tokens/$MOCKINGBIRD_SESSION"; fi
+if [ -n "$token_file" ]; then mkdir -p "$HOME/e2e-tokens" && cp "$token_file" "$HOME/e2e-tokens/$MOCKINGBIRD_SESSION"; fi
 echo "fake-claude started: $* (inline=\${CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN:-no})"
 cwd=$(pwd -P)
 dir="$HOME/.claude/projects/$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"

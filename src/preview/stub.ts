@@ -8315,52 +8315,93 @@ if (params.has("reset")) {
 // the grid's layout prefs as they were before the app ran: what checks that the landscape leaves them alone compare with
 w.__mbPrefsAtLoad = Object.fromEntries(Object.values(LEGACY_PREF_KEYS).map((k) => [k, localStorage.getItem(k)]));
 
-// ---- wires: an empty book, changed by main's own rules, on this file's live sessions. Nothing here reaches a pane ----
-import { emptyWireBook, newWire, parseWireSettings, settingsRefusal, wireRefusal, withSettings, withoutSession, rekeyedBook, type WireBook, type WireContext, type WireReply, type WireSettings, type WireState, type WireType } from "../shared/wires";
+// ---- wires: an empty book, changed by main's own rules (shared/wires.ts), on this file's sessions. Nothing here reaches a pane ----
+import {
+  emptyWireBook,
+  newWire,
+  parseWireSettings,
+  rekeyedBook,
+  rekeyRefusal,
+  restoredWire,
+  restoreRefusal,
+  sameWire,
+  settingsRefusal,
+  wireRefusal,
+  withSettings,
+  withoutSession,
+  type Wire,
+  type WireBook,
+  type WireContext,
+  type WireReply,
+  type WireSettings,
+  type WireState,
+  type WireType,
+} from "../shared/wires";
 let wireBook: WireBook = emptyWireBook();
 let wiresRev = 0;
-const removedWires = new Map<string, WireBook["links"][string]>();
+const removedWires = new Map<string, Wire>();
 const wireState = (): WireState => clone({ book: wireBook, refused: null, wiresRev, problems: [] });
-const wireContext = (): WireContext => ({
-  links: wireBook.links,
+/** The rules' view of this file's sessions: running ones, and closed ones (previous) as main's resumable. */
+const wireEnds = (): Pick<WireContext, "end"> => ({
   end: (id) => {
-    const s = sessions.find((x) => x.id === id);
-    return s ? { id, title: s.ticketTitle ?? s.title, kind: s.shell ? "terminal" : "agent", debrief: !!s.debrief, room: null, takenOver: null, where: s.status === "dead" ? "dead" : "running", placed: true, folder: s.cwd, hooksSilent: !!s.hooksSilent } : null;
+    const s = sessions.find((x) => x.id === id) ?? previous.find((x) => x.id === id);
+    if (!s) return null;
+    const running = sessions.includes(s as SessionInfo);
+    return {
+      id,
+      title: s.ticketTitle ?? s.title,
+      kind: s.shell ? "terminal" : "agent",
+      debrief: !!s.debrief,
+      room: s.room?.roomId ?? null,
+      takenOver: null,
+      where: !running ? "closed" : s.status === "dead" ? "dead" : "running",
+      placed: running || Object.hasOwn(landscape.ghosts, id),
+      folder: s.cwd,
+      hooksSilent: !!s.hooksSilent,
+    };
   },
 });
+/** A change made, as main makes one: counted and sent only when the book is different. */
 const wireChanged = (book: WireBook, id?: string): WireReply => {
-  wireBook = book;
-  wiresRev++;
-  emit("onWiresChanged", wireState());
+  if (book !== wireBook) {
+    wireBook = book;
+    wiresRev++;
+    emit("onWiresChanged", wireState());
+  }
   return { state: wireState(), ...(id ? { id } : {}) };
 };
-const wireSettings = (raw: unknown): WireSettings | { refused: string } => {
+const wireSettings = (raw: unknown): { settings: WireSettings } | { refused: string } => {
   try {
-    return parseWireSettings(raw);
+    return { settings: parseWireSettings(raw) };
   } catch (e) {
     return { refused: (e as Error).message };
   }
 };
+const withLink = (id: string, w: Wire): WireBook => ({ ...wireBook, links: { ...wireBook.links, [id]: w } });
 Object.assign(api, {
   wiresGet: async () => wireState(),
   wiresAdd: async (from: string, to: string, type: WireType, raw: unknown = {}): Promise<WireReply> => {
     const s = wireSettings(raw);
-    if ("refused" in s) return { refused: s.refused as string };
-    const refused = wireRefusal(from, to, type, wireContext()) ?? settingsRefusal({ from, to, type }, s as WireSettings, wireContext());
+    if ("refused" in s) return s;
+    const ctx = { ...wireEnds(), links: wireBook.links };
+    const refused = wireRefusal(from, to, type, ctx) ?? settingsRefusal({ from, to, type }, s.settings, ctx);
     if (refused) return { refused };
-    const id = Math.random().toString(16).slice(2, 10);
-    return wireChanged({ ...wireBook, links: { ...wireBook.links, [id]: withSettings(newWire(from, to, type, Date.now()), s as WireSettings) } }, id);
+    let id = Math.random().toString(16).slice(2, 10);
+    while (Object.hasOwn(wireBook.links, id)) id = Math.random().toString(16).slice(2, 10);
+    return wireChanged(withLink(id, withSettings(newWire(from, to, type, Date.now()), s.settings)), id);
   },
   wiresSet: async (id: string, raw: unknown): Promise<WireReply> => {
     const s = wireSettings(raw);
-    if ("refused" in s) return { refused: s.refused as string };
-    const w = wireBook.links[id];
+    if ("refused" in s) return s;
+    const w = Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined;
     if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
-    const refused = settingsRefusal(w, s as WireSettings, wireContext());
-    return refused ? { refused } : wireChanged({ ...wireBook, links: { ...wireBook.links, [id]: withSettings(w, s as WireSettings) } });
+    const refused = settingsRefusal(w, s.settings, wireEnds());
+    if (refused) return { refused };
+    const next = withSettings(w, s.settings);
+    return wireChanged(sameWire(next, w) ? wireBook : withLink(id, next));
   },
   wiresRemove: async (id: string): Promise<WireReply> => {
-    const w = wireBook.links[id];
+    const w = Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined;
     if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
     removedWires.set(id, w);
     const { [id]: _gone, ...links } = wireBook.links;
@@ -8369,18 +8410,23 @@ Object.assign(api, {
   wiresRestore: async (id: string): Promise<WireReply> => {
     const w = removedWires.get(id);
     if (!w) return { refused: "That wire can't be restored any more." };
-    const refused = wireRefusal(w.from, w.to, w.type, wireContext());
+    const refused = restoreRefusal(wireBook, id, w, wireEnds());
     if (refused) return { refused };
     removedWires.delete(id);
-    return wireChanged({ ...wireBook, links: { ...wireBook.links, [id]: w } }, id);
+    return wireChanged(withLink(id, restoredWire(w)), id);
   },
-  wiresRekey: async (old: string, next: string): Promise<WireReply> => wireChanged(rekeyedBook(wireBook, old, next)),
+  wiresRekey: async (old: string, next: string): Promise<WireReply> => {
+    if (old === next || (!Object.hasOwn(wireBook.notes, old) && !Object.values(wireBook.links).some((w) => w.from === old || w.to === old))) return wireChanged(wireBook);
+    const moved = rekeyedBook(wireBook, old, next);
+    const refused = rekeyRefusal(wireBook, moved, old, next, wireEnds());
+    return refused ? { refused } : wireChanged(moved);
+  },
 });
-// a forgotten session's wires go with it, as main drops them at sessions:kill
+// a forgotten session's wires go with it, as main drops them at sessions:kill once the kill has gone through
 const killSessionBeforeWires = api.killSession;
-api.killSession = (id: string, forget?: boolean) => {
-  const r = killSessionBeforeWires(id, forget);
-  if (forget) {
+api.killSession = async (id: string, forget?: boolean) => {
+  const r = await killSessionBeforeWires(id, forget);
+  if (forget && !(r && typeof r === "object" && "error" in r)) {
     const { book, dropped } = withoutSession(wireBook, id);
     if (book !== wireBook) {
       wireBook = book;

@@ -48,7 +48,11 @@ export function isSecretFileName(name: string): boolean {
  */
 export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 
-/** Credentials outside any repository, this install's own team keys and invite tokens, and each launch's MCP token until its server reads it. */
+/**
+ * Credentials outside any repository, this install's own team keys and invite tokens, and each running launch's MCP
+ * token. A Codex room session's sandbox denies these to the agent's commands; a Claude room session's deny rules
+ * (roomSecretReads) cover only Claude's file tools, so its Bash can still read them.
+ */
 export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**", "~/.mockingbird/mcp-tokens/**"];
 
 /**

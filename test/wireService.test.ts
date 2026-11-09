@@ -6,7 +6,7 @@ import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { WireService } from "../src/main/wires";
 import type { SessionInfo } from "../src/shared/types";
-import { newWire, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
+import { newWire, ROOM_LINE, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
 import { askAs, askRaw, startServer } from "./mcpClient";
 import { tempDir } from "./helpers";
 
@@ -15,12 +15,16 @@ const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
 
 const asRoot = process.getuid?.() === 0;
 
-function setup(opts: { rooms?: Record<string, string>; takenOver?: Record<string, string> } = {}) {
+/** A landscape.json of this version holding `wires` as its book. */
+const v3File = (wires: unknown) => JSON.stringify({ v: 3, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {}, wires });
+
+function setup(opts: { rooms?: Record<string, string>; takenOver?: Record<string, string>; wires?: unknown; newId?: () => string } = {}) {
   const dir = tempDir("wires");
   const file = path.join(dir, "landscape.json");
+  if (opts.wires !== undefined) fs.writeFileSync(file, v3File(opts.wires));
   const changes: WireChange[] = [];
   const logged: string[] = [];
-  const log = (context: string, err: unknown) => void logged.push(`${context}: ${(err as Error).message}`);
+  const log = (context: string, err: unknown) => void logged.push(`${context}: ${err instanceof Error ? err.message : String(err)}`);
   const store = new LandscapeStore({ file, emit: () => {}, emitWires: (c) => changes.push(c), log });
   const running = [session("a"), session("b"), session("c"), session("term", { shell: true, cwd: "/w/a" }), session("brief", { debrief: true }), session("gone", { status: "dead" })];
   const closed = [session("old"), session("ghost")];
@@ -32,6 +36,7 @@ function setup(opts: { rooms?: Record<string, string>; takenOver?: Record<string
     roomOf: (id) => rooms[id] ?? null,
     takenOver: (id) => takenOver[id] ?? null,
     log,
+    ...(opts.newId ? { newId: opts.newId } : {}),
   });
   store.update({ ghosts: { ghost: { title: "ghost", agent: "claude", cwd: "/w/ghost", repoPath: null, placement: { x: 0, y: 0, w: 8, h: 8 }, group: "5038", closedAt: "2026-11-01T00:00:00.000Z" } } });
   store.flush();
@@ -99,8 +104,10 @@ describe("making a wire", () => {
     expect(refusal(service.add("a", "b", "handoff"))).toMatch(/same team room/);
     rooms.a = "R1";
     expect(made(service.add("a", "b", "handoff")).id).toBeTruthy();
-    takenOver.c = "“c” continues on Nick's laptop";
-    expect(refusal(service.add("a", "c", "context"))).toMatch(/continues on Nick's laptop/);
+    takenOver.b = takenOver.c = "it continues on Nick's laptop";
+    expect(refusal(service.add("b", "a", "context"))).toMatch(/continues on Nick's laptop/);
+    // across the line the room rule comes first, so nothing about the far end is said
+    expect(refusal(service.add("a", "c", "context"))).toBe(ROOM_LINE);
   });
 });
 
@@ -177,6 +184,84 @@ describe("removing and restoring a wire", () => {
   });
   it("says when there's nothing to remove", () => {
     expect(refusal(setup().service.remove("nope"))).toMatch(/no wire "nope"/);
+  });
+  it("won't restore over a wire made since under the same id", () => {
+    const ids = ["w1", "w1", "w2"];
+    const { service } = setup({ newId: () => ids.shift()! });
+    expect(made(service.add("a", "b", "handoff")).id).toBe("w1");
+    service.remove("w1");
+    expect(made(service.add("a", "c", "context")).id).toBe("w1");
+    expect(refusal(service.restore("w1"))).toBe("That wire is there already.");
+    expect(service.get().book!.links.w1).toMatchObject({ to: "c" });
+  });
+  it("keeps the last 50 removed to restore, and no more", () => {
+    const { service } = setup();
+    const ids: string[] = [];
+    for (let i = 0; i < 51; i++) {
+      ids.push(made(service.add("a", "b", "context")).id);
+      service.remove(ids[i]);
+    }
+    expect(refusal(service.restore(ids[0]))).toMatch(/can't be restored any more/);
+    expect(made(service.restore(ids[1]) as any).state.book!.links[ids[1]]).toBeTruthy();
+  });
+  it("counts a wire removed again under an id it had before as the latest removed", () => {
+    const next = ["x", ...Array.from({ length: 49 }, (_, i) => `y${i}`), "x", "z"];
+    const { service } = setup({ newId: () => next.shift()! });
+    for (let i = 0; i < 52; i++) service.remove(made(service.add("a", "b", "context")).id);
+    expect(made(service.restore("x") as any).state.book!.links.x).toBeTruthy();
+    expect(refusal(service.restore("y0"))).toMatch(/can't be restored any more/);
+  });
+  it("brings back a wire removed while its message was on the way as unconfirmed, for a person to settle", () => {
+    const { service, store } = setup();
+    const { id } = made(service.add("a", "b", "handoff"));
+    const sent = made(service.add("a", "c", "handoff")).id;
+    const deliver = (k: string, state: "pasting" | "sent") =>
+      store.editWires((book) => ({ book: { ...book, links: { ...book.links, [k]: { ...book.links[k], delivery: { id: "p", state, at: 1 } } } } }));
+    deliver(id, "pasting");
+    deliver(sent, "sent");
+    service.remove(id);
+    service.remove(sent);
+    expect(made(service.restore(id) as any).state.book!.links[id].delivery).toEqual({ id: "p", state: "unconfirmed", at: 1, why: "It was being sent when its wire was removed, so it may have reached the other end." });
+    expect(made(service.restore(sent) as any).state.book!.links[sent].delivery).toEqual({ id: "p", state: "sent", at: 1 });
+  });
+});
+
+describe("kept entries", () => {
+  /** A book with entries this version can't read: two whose ends and type it can, one it can't at all, and a note. */
+  const KEPT = {
+    wv: 1,
+    links: { odd: { from: "old", to: "a", type: "handoff", gate: "sometimes" }, fb: { from: "a", to: "b", type: "feedback", gate: "sometimes" }, junk: "not a wire" },
+    notes: { old: "not a note" },
+  };
+  it("count as wires already there where their ends and type can be read", () => {
+    const { service } = setup({ wires: KEPT });
+    expect(service.get().problems.map((p) => p.id).sort()).toEqual(["fb", "junk", "odd", "old"]);
+    expect(refusal(service.add("b", "a", "feedback"))).toMatch(/feedback wire already/);
+    expect(refusal(service.add("old", "a", "handoff"))).toMatch(/handoff wire between these two already/);
+    expect(refusal(service.add("a", "old", "handoff"))).toMatch(/cycle of handoffs/);
+    expect(made(service.add("a", "c", "handoff")).id).toBeTruthy();
+  });
+  it("never give their key to a new wire", () => {
+    const ids = ["odd", "junk", "fresh"];
+    const { service, file } = setup({ wires: KEPT, newId: () => ids.shift()! });
+    expect(made(service.add("a", "c", "context")).id).toBe("fresh");
+    expect(onDisk(file).wires.links).toMatchObject({ odd: KEPT.links.odd, junk: "not a wire", fresh: { from: "a", to: "c" } });
+  });
+  it("go with a session that's forgotten when they name it, logged, and stay gone after a restart", () => {
+    const { service, file, logged, changes } = setup({ wires: KEPT });
+    service.sessionForgotten("old");
+    expect(Object.keys(onDisk(file).wires.links).sort()).toEqual(["fb", "junk"]);
+    expect(onDisk(file).wires.notes).toEqual({});
+    expect(service.get().problems.map((p) => p.id).sort()).toEqual(["fb", "junk"]);
+    expect(changes.at(-1)!.problems.map((p) => p.id).sort()).toEqual(["fb", "junk"]);
+    expect(logged).toEqual(
+      expect.arrayContaining([
+        'landscape: A wire in landscape.json that couldn\'t be read ("odd") named session old, which was forgotten, and went with it.',
+        'landscape: A wire note in landscape.json that couldn\'t be read ("old") named session old, which was forgotten, and went with it.',
+      ])
+    );
+    const again = new LandscapeStore({ file, emit: () => {}, log: () => {} });
+    expect(again.wires().problems.map((p) => p.id).sort()).toEqual(["fb", "junk"]);
   });
 });
 
@@ -262,6 +347,20 @@ describe("Start fresh's rekey", () => {
     rooms.a = "R1";
     expect(made(service.rekey("old", "c") as any).state.book!.links[id].from).toBe("c");
   });
+  it("refuses a move the rules would newly refuse: onto a debrief, or across a room's line", () => {
+    const { service, rooms } = setup();
+    made(service.add("old", "a", "handoff"));
+    const before = service.get().book;
+    expect(refusal(service.rekey("old", "brief"))).toMatch(/debrief interview/);
+    rooms.c = "R1";
+    expect(refusal(service.rekey("old", "c"))).toBe(ROOM_LINE);
+    expect(service.get().book).toEqual(before);
+  });
+  it("counts a kept wire it can read as there already", () => {
+    const { service } = setup({ wires: { wv: 1, links: { odd: { from: "a", to: "c", type: "feedback", gate: "sometimes" } }, notes: {} } });
+    made(service.add("old", "a", "feedback"));
+    expect(refusal(service.rekey("old", "c"))).toMatch(/feedback wire already/);
+  });
   it("refuses a session taken over, as it stays where it is", () => {
     const { service, takenOver } = setup();
     made(service.add("old", "a", "handoff"));
@@ -328,6 +427,23 @@ describe("list_links", () => {
     ]);
     expect(r.result).not.toHaveProperty("note");
   });
+  it("names nothing across a room's line but the far end's id, from either side", () => {
+    const { service, rooms, running } = setup();
+    running.find((s) => s.id === "b")!.ticketTitle = "Private plan";
+    const ab = made(service.add("a", "b", "handoff")).id;
+    const ac = made(service.add("a", "c", "context")).id;
+    rooms.b = "R1";
+    const mine = (service.linksFor(session("a")) as { result: any }).result.links;
+    expect(mine.find((l: any) => l.wire === ab)).toEqual({ wire: ab, direction: "out", type: "handoff", other: { id: "b", outside: "in a team room" }, state: "blocked", why: ROOM_LINE });
+    expect(mine.find((l: any) => l.wire === ac).other).toEqual({ id: "c", title: "c", where: "running" });
+    expect(JSON.stringify(mine)).not.toContain("Private plan");
+    const theirs = (service.linksFor(session("b", { ticketTitle: "Private plan" })) as { result: any }).result.links;
+    expect(theirs).toEqual([{ wire: ab, direction: "in", type: "handoff", other: { id: "a", outside: "outside this room" }, state: "blocked", why: ROOM_LINE }]);
+    rooms.a = "R2";
+    expect((service.linksFor(session("a")) as { result: any }).result.links.find((l: any) => l.wire === ab).other).toEqual({ id: "b", outside: "outside this room" });
+    rooms.a = "R1";
+    expect((service.linksFor(session("a")) as { result: any }).result.links.find((l: any) => l.wire === ab).other).toEqual({ id: "b", title: "Private plan", where: "running" });
+  });
   it("names a wire's state and why, and an end that's closed", () => {
     const { service, rooms } = setup();
     const { id } = made(service.add("a", "ghost", "handoff"));
@@ -391,7 +507,7 @@ describe("list_links through the real MCP server", () => {
       retireMcpLaunch(launch);
     }
     expect((await askAs(sock, { from: "c", op: "list_links" })).result.links.map((l: any) => l.wire)).toEqual([bc]);
-    expect((await askRaw(sock, JSON.stringify({ op: "list_links", from: "a" }))).error).toMatch(/no valid token/);
+    expect((await askRaw(sock, JSON.stringify({ op: "list_links", from: "a" }))).error).toMatch(/^Mockingbird doesn.t recognise this tool server/);
   });
   it("has no tool that writes a wire", async () => {
     const launch = mcpLaunch("a");

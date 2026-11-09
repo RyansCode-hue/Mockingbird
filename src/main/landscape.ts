@@ -16,8 +16,20 @@ import {
   type LandscapeState,
 } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
-import { freshWireRead, parseWireBook, storedWireBook, type DroppedWire, type WireBook, type WireBookRead, type WireChange, type WireProblem, type WireReply, type WireState } from "../shared/wires";
+import { freshWireRead, parseWireBook, storedWireBook, type DroppedWire, type KeptEntries, type WireBook, type WireBookRead, type WireChange, type WireProblem, type WireReply, type WireState } from "../shared/wires";
 import { isMissing, writeFileAtomic } from "./fileOps";
+
+/**
+ * What a wire edit answers: the book it leaves (the same one for no change), the wires that went with a forgotten
+ * session, and kept entries it drops (keys of `kept.links` and `kept.notes`), with why for the log.
+ */
+export interface WireEdit {
+  book: WireBook;
+  dropped?: DroppedWire[];
+  dropKept?: { links: string[]; notes: string[]; why: string };
+}
+
+type OkRead = Extract<WireBookRead, { status: "ok" }>;
 
 /** How long changes gather before they're written: a drag's patches land in one write. */
 export const LANDSCAPE_SAVE_MS = 300;
@@ -153,15 +165,16 @@ export class LandscapeStore {
    * before it takes effect: when it can't be, the book stays as it was and the answer says so. Every window hears of
    * one that's made, with `dropped` naming the wires that went with a forgotten session.
    */
-  editWires(edit: (book: WireBook) => { book: WireBook; dropped?: DroppedWire[] } | { refused: string }): WireReply {
+  editWires(edit: (book: WireBook, kept: Readonly<KeptEntries>) => WireEdit | { refused: string }): WireReply {
     const refused = this.wiresWriteRefusal();
     if (refused) return { refused };
     const l = this.loaded!;
-    const read = l.wires as Extract<WireBookRead, { status: "ok" }>;
-    const r = edit(read.book);
+    const read = l.wires as OkRead;
+    const r = edit(read.book, read.kept);
     if ("refused" in r) return r;
-    if (r.book === read.book) return { state: this.wireState(l) };
-    l.wires = { ...read, book: r.book };
+    const { droppedKept, ...next } = withKeptDropped({ ...read, book: r.book }, r.dropKept);
+    if (r.book === read.book && next.kept === read.kept) return { state: this.wireState(l) };
+    l.wires = next;
     try {
       this.write(l);
     } catch (err) {
@@ -169,7 +182,8 @@ export class LandscapeStore {
       this.o.log(`landscape: couldn't save ${this.o.file}`, err);
       return { refused: `The wire couldn't be saved to ${this.o.file} (${(err as Error).message}), so nothing changed.` };
     }
-    this.saved();
+    for (const line of droppedKept) this.o.log("landscape", line);
+    this.saved(l);
     this.wiresRev++;
     const state = this.wireState(l);
     this.tellWires({ ...state, ...(r.dropped?.length ? { dropped: r.dropped } : {}) });
@@ -271,7 +285,10 @@ export class LandscapeStore {
       if (changed) this.tell({ rev: this.rev, patch: null, problems: this.problems() });
       return err as Error;
     }
-    this.saved();
+    if (this.saved(l)) {
+      this.wiresRev++;
+      this.tellWires(this.wireState(l));
+    }
     return null;
   }
 
@@ -280,13 +297,22 @@ export class LandscapeStore {
     writeFileAtomic(this.o.file, JSON.stringify({ ...l.landscape, wires: storedWireBook(l.wires) }, null, 2));
   }
 
-  /** The file holds everything now: nothing is unsaved, and a problem saving is over. */
-  private saved(): void {
+  /**
+   * The file holds everything now: nothing is unsaved, a problem saving is over, and it has a wire book, so a "missing"
+   * one is over too. Answers whether that changed what the wires report.
+   */
+  private saved(l: Loaded): boolean {
+    let missingOver = false;
+    if (l.wires.problems.some((p) => p.kind === "missing")) {
+      l.wires = { ...l.wires, problems: l.wires.problems.filter((p) => p.kind !== "missing") };
+      missingOver = true;
+    }
     this.dirty = false;
     if (this.saveProblem) {
       this.saveProblem = null;
       this.tell({ rev: this.rev, patch: null, problems: this.problems() });
     }
+    return missingOver;
   }
 
   /**
@@ -377,4 +403,35 @@ export class LandscapeStore {
     this.o.log("landscape", new Error(message, { cause: err }));
     return fresh({ kind: "corrupt", message, file, movedTo });
   }
+}
+
+/**
+ * `read` with kept entries gone: those `drop` names, and any whose key the book now holds as a live entry. A kept copy
+ * under a live key would otherwise be what's written, and the live one lost with the next start. Each one dropped is
+ * named in `droppedKept`, for the log, and its problem goes with it.
+ */
+function withKeptDropped(read: OkRead, drop: WireEdit["dropKept"]): OkRead & { droppedKept: string[] } {
+  const lines: string[] = [];
+  const gone = { links: new Set<string>(), notes: new Set<string>() };
+  for (const part of ["links", "notes"] as const) {
+    const what = part === "links" ? "A wire" : "A wire note";
+    for (const k of drop?.[part] ?? []) {
+      if (!Object.hasOwn(read.kept[part], k) || gone[part].has(k)) continue;
+      gone[part].add(k);
+      lines.push(`${what} in landscape.json that couldn't be read (${JSON.stringify(k)}) ${drop!.why}.`);
+    }
+    for (const k of Object.keys(read.book[part])) {
+      if (!Object.hasOwn(read.kept[part], k) || gone[part].has(k)) continue;
+      gone[part].add(k);
+      lines.push(`${what} in landscape.json that couldn't be read (${JSON.stringify(k)}) was replaced by a new one under the same key, which is what's saved now.`);
+    }
+  }
+  if (!gone.links.size && !gone.notes.size) return { ...read, droppedKept: [] };
+  const without = (r: Record<string, unknown>, keys: Set<string>) => Object.fromEntries(Object.entries(r).filter(([k]) => !keys.has(k)));
+  return {
+    ...read,
+    kept: { ...read.kept, links: without(read.kept.links, gone.links), notes: without(read.kept.notes, gone.notes) },
+    problems: read.problems.filter((p) => !(p.id !== undefined && ((p.kind === "entry" && gone.links.has(p.id)) || (p.kind === "note" && gone.notes.has(p.id))))),
+    droppedKept: lines,
+  };
 }

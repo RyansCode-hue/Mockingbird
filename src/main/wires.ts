@@ -4,7 +4,33 @@ import type { Reply } from "./messaging";
 import { canonical } from "./handlers";
 import { LandscapeShapeError, own, put } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
-import { gateOf, linkRefusal, newWire, parseWireSettings, rekeyedBook, settingsRefusal, WIRE_TYPES, wireRefusal, withoutSession, withSettings, type GateContext, type Wire, type WireBook, type WireEnd, type WireReply, type WireSettings, type WireState, type WireType } from "../shared/wires";
+import {
+  gateOf,
+  keptNaming,
+  newWire,
+  parseWireSettings,
+  readableKept,
+  rekeyedBook,
+  rekeyRefusal,
+  restoredWire,
+  restoreRefusal,
+  ROOM_LINE,
+  sameWire,
+  settingsRefusal,
+  WIRE_TYPES,
+  wireRefusal,
+  withoutSession,
+  withSettings,
+  type GateContext,
+  type KeptEntries,
+  type Wire,
+  type WireBook,
+  type WireEnd,
+  type WireReply,
+  type WireSettings,
+  type WireState,
+  type WireType,
+} from "../shared/wires";
 
 /** Wires removed this run that their Undo can still restore; older ones have gone for good. */
 const RESTORABLE = 50;
@@ -18,6 +44,8 @@ export interface WireServiceOptions {
   /** Why a session can't be wired because a teammate took it over; null when none did. */
   takenOver: (id: string) => string | null;
   log: (context: string, err: unknown) => void;
+  /** A new wire id; random unless a test says otherwise. */
+  newId?: () => string;
 }
 
 /**
@@ -43,11 +71,12 @@ export class WireService {
     const to = String(toRaw ?? "");
     const settings = this.settingsFrom(settingsRaw ?? {});
     if ("refused" in settings) return settings;
-    const id = this.unusedId();
-    const reply = this.o.store.editWires((book) => {
-      const ctx = this.context(book);
+    let id = "";
+    const reply = this.o.store.editWires((book, kept) => {
+      const ctx = this.context(book, kept);
       const refused = wireRefusal(from, to, type, ctx) ?? settingsRefusal({ from, to, type }, settings.settings, ctx);
       if (refused) return { refused };
+      id = this.unusedId(book, kept);
       const links = { ...book.links };
       put(links, id, withSettings(newWire(from, to, type, Date.now()), settings.settings));
       return { book: { ...book, links } };
@@ -66,7 +95,7 @@ export class WireService {
       const refused = settingsRefusal(w, settings.settings, this.context(book));
       if (refused) return { refused };
       const next = withSettings(w, settings.settings);
-      if (JSON.stringify(next) === JSON.stringify(w)) return { book };
+      if (sameWire(next, w)) return { book };
       const links = { ...book.links };
       put(links, id, next);
       return { book: { ...book, links } };
@@ -85,6 +114,7 @@ export class WireService {
       return { book: { ...book, links } };
     });
     if ("refused" in reply) return reply;
+    this.removed.delete(id); // a newer removal under the same id goes to the back of the queue
     this.removed.set(id, taken!);
     for (const k of this.removed.keys()) {
       if (this.removed.size <= RESTORABLE) break;
@@ -93,17 +123,19 @@ export class WireService {
     return { ...reply, id };
   }
 
-  /** Put a removed wire back as it was, counters included, unless the rules on making one now refuse it. */
+  /**
+   * Put a removed wire back as it was, counters included, unless the rules on making one now refuse it. One removed
+   * while its message was on the way comes back unconfirmed (restoredWire).
+   */
   restore(idRaw: unknown): WireReply {
     const id = String(idRaw ?? "");
     const w = this.removed.get(id);
     if (!w) return { refused: "That wire can't be restored any more." };
-    const reply = this.o.store.editWires((book) => {
-      if (Object.hasOwn(book.links, id)) return { refused: "That wire is there already." };
-      const refused = wireRefusal(w.from, w.to, w.type, this.context(book));
+    const reply = this.o.store.editWires((book, kept) => {
+      const refused = restoreRefusal(book, id, w, this.context(book, kept));
       if (refused) return { refused };
       const links = { ...book.links };
-      put(links, id, w);
+      put(links, id, restoredWire(w));
       return { book: { ...book, links } };
     });
     if ("refused" in reply) return reply;
@@ -113,27 +145,28 @@ export class WireService {
 
   /**
    * Move session `old`'s wires and note to `next` (Start fresh, before the ghost is forgotten), counters and what's
-   * waiting included. All or none. What the rules say about the wires as they are isn't asked: one that's blocked moves
-   * and stays blocked, as moving it changes nothing about why.
+   * waiting included. All or none, by rekeyRefusal: a wire blocked where it is moves and stays blocked, and one that
+   * moving would newly refuse keeps them all where they are.
    */
   rekey(oldRaw: unknown, nextRaw: unknown): WireReply {
     const old = String(oldRaw ?? "");
     const next = String(nextRaw ?? "");
-    return this.o.store.editWires((book) => {
+    return this.o.store.editWires((book, kept) => {
       if (old === next || (!Object.hasOwn(book.notes, old) && !Object.values(book.links).some((w) => w.from === old || w.to === old))) return { book };
       const moved = rekeyedBook(book, old, next);
-      const refused = this.rekeyRefusal(book, moved, old, next);
+      const refused = rekeyRefusal(book, moved, old, next, this.context(moved, kept));
       return refused ? { refused } : { book: moved };
     });
   }
 
   /**
    * Session `id` was forgotten: its wires and note go with it, and the windows are told which went, for the note saying
-   * so. When the book can't be changed now they stay, logged, and show as blocked with their end gone until they're
-   * removed by hand: the session has gone whichever.
+   * so. Kept entries that name it go too: their ends can be read though the rest of them can't. When the book can't be
+   * changed now they stay, logged, and show as blocked with their end gone until they're removed by hand: the session
+   * has gone whichever.
    */
   sessionForgotten(id: string): void {
-    const r = this.o.store.editWires((book) => withoutSession(book, id));
+    const r = this.o.store.editWires((book, kept) => ({ ...withoutSession(book, id), dropKept: { ...keptNaming(kept, id), why: `named session ${id}, which was forgotten, and went with it` } }));
     if ("refused" in r) this.o.log(`wires: couldn't drop the wires of forgotten session ${id}`, new Error(r.refused));
   }
 
@@ -145,19 +178,22 @@ export class WireService {
     const state = this.o.store.wires();
     if (!state.book) return { error: state.refused ?? "Wires can't be read right now." };
     const ctx = this.context(state.book);
+    const mine = ctx.end(me.id);
     const links = Object.entries(state.book.links)
       .filter(([, w]) => w.from === me.id || w.to === me.id)
       .map(([id, w]) => {
         const gate = gateOf(id, w, ctx);
         const otherId = w.from === me.id ? w.to : w.from;
         const other = ctx.end(otherId);
+        // across a room's line, nothing about the far end crosses it but its id
+        const across = !!other && !!mine && other.room !== mine.room;
         return {
           wire: id,
           direction: w.from === me.id ? "out" : "in",
           type: w.type,
-          other: other ? { id: otherId, title: other.title, where: other.where } : { id: otherId, gone: true },
+          other: !other ? { id: otherId, gone: true } : across ? { id: otherId, outside: mine!.room ? "outside this room" : "in a team room" } : { id: otherId, title: other.title, where: other.where },
           state: gate.state,
-          ...(gate.why ? { why: gate.why } : {}),
+          ...(across ? { why: ROOM_LINE } : gate.why ? { why: gate.why } : {}),
         };
       });
     const incomplete = state.problems.map((p) => p.message);
@@ -179,36 +215,19 @@ export class WireService {
     }
   }
 
-  /** A wire id nothing in the book has, a kept entry's included: a new one must never land on what's kept verbatim. */
-  private unusedId(): string {
-    const { book, problems } = this.o.store.wires();
+  /** A wire id nothing in the book has, a kept entry's included: a new one mustn't take the key of what's kept verbatim. */
+  private unusedId(book: WireBook, kept: Readonly<KeptEntries>): string {
     for (;;) {
-      const id = randomUUID().slice(0, 8);
-      if (!(book && Object.hasOwn(book.links, id)) && !problems.some((p) => p.id === id)) return id;
+      const id = (this.o.newId ?? (() => randomUUID().slice(0, 8)))();
+      if (!Object.hasOwn(book.links, id) && !Object.hasOwn(kept.links, id)) return id;
     }
   }
 
-  /** Why `moved`, the book with `old`'s wires on `next`, can't stand. */
-  private rekeyRefusal(book: WireBook, moved: WireBook, old: string, next: string): string | null {
-    const ctx = this.context(moved);
-    const to = ctx.end(next);
-    if (!to) return `This Mac has no session "${next}".`;
-    const from = ctx.end(old);
-    if (from?.takenOver) return from.takenOver;
-    if (to.takenOver) return to.takenOver;
-    for (const [id, w] of Object.entries(book.links)) {
-      if (w.from !== old && w.to !== old) continue;
-      if (from && from.kind !== to.kind) return `“${to.title}” isn't the same kind of workspace as “${from.title}”, so its wires can't move there.`;
-      if (w.delivery?.state === "queued" || w.delivery?.state === "pasting") return "One of these wires is sending right now: try again once it's gone.";
-      const now = moved.links[id];
-      const refused = linkRefusal(now.from, now.to, now.type, { ...ctx, self: id });
-      if (refused) return refused;
-    }
-    return null;
-  }
-
-  /** The rules' view of the sessions now. Each end is worked out once per check: its folder takes a look at the disk. */
-  private context(book: WireBook): GateContext {
+  /**
+   * The rules' view of the sessions now. Each end is worked out once per check: its folder takes a look at the disk.
+   * With `kept`, making or moving a wire counts the kept wires whose ends and type can be read as already there.
+   */
+  private context(book: WireBook, kept?: Readonly<KeptEntries>): GateContext {
     const running = new Map(this.o.sessions.list().map((s) => [s.id, s]));
     const closed = new Map(this.o.sessions.resumable().map((s) => [s.id, s]));
     const ghosts = this.o.store.get().landscape.ghosts;
@@ -234,6 +253,6 @@ export class WireService {
       ends.set(id, made);
       return made;
     };
-    return { end, links: book.links, notes: book.notes, fileRefusal: this.o.store.wiresWriteRefusal() };
+    return { end, links: book.links, notes: book.notes, ...(kept ? { kept: readableKept(kept) } : {}), fileRefusal: this.o.store.wiresWriteRefusal() };
   }
 }

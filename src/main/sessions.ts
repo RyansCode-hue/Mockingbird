@@ -537,6 +537,17 @@ export class SessionManager {
     }
     let exited!: () => void;
     this.running.set(proc, new Promise<void>((resolve) => (exited = resolve)));
+    // its end is handled from the moment it runs, whatever happens below: the pty, and its token, always go with it.
+    // Once it's no longer the live session for its id, its end touches nothing else (its replacement's).
+    let started: LiveSession | undefined;
+    proc.onExit(({ exitCode }) => {
+      this.running.delete(proc);
+      exited();
+      retireMcpLaunch(mcp);
+      if (this.quitting || !started || this.live.get(started.info.id) !== started) return;
+      started.info.exitCode = exitCode;
+      this.setStatus(started.info.id, "dead");
+    });
 
     const info: SessionInfo = {
       id,
@@ -611,11 +622,27 @@ export class SessionManager {
       mcp,
     };
     sess.total = sess.buffer.length;
+    started = sess;
     this.live.set(info.id, sess);
-    this.store.upsertSession(info);
+    const records = [...this.store.state.sessions];
+    try {
+      this.store.upsertSession(info);
+    } catch (err) {
+      // one that can't be saved isn't left running unrecorded: it's stopped as kill() stops one, its exit still awaited
+      // at quit, and the records are as they were
+      this.store.state.sessions = records;
+      this.live.delete(info.id);
+      retireMcpLaunch(mcp);
+      try {
+        proc.kill();
+      } catch {
+        /* already dead */
+      }
+      this.emitChanged();
+      throw new Error(`${req.shell ? "The terminal" : `“${info.title}”`} couldn't be saved (${err instanceof Error ? err.message : err}), so it was stopped`, { cause: err });
+    }
 
-    // both callbacks outlive kill(): ignore them once this pty is no longer the
-    // live session for that id, or a dying pty marks its replacement dead
+    // outlives kill(), as onExit does: ignored once this pty is no longer the live session for that id
     proc.onData((data) => {
       if (this.quitting || this.live.get(info.id) !== sess) return;
       sess.buffer = (sess.buffer + data).slice(-BUFFER_MAX);
@@ -629,15 +656,6 @@ export class SessionManager {
       this.wc?.send("session:data", info.id, data);
       this.tell("output", this.outputListeners, info.id, data, sess.total, sess.epoch);
     });
-    proc.onExit(({ exitCode }) => {
-      this.running.delete(proc);
-      exited();
-      retireMcpLaunch(mcp); // this launch's own: a dying pty can't touch its replacement's
-      if (this.quitting || this.live.get(info.id) !== sess) return;
-      info.exitCode = exitCode;
-      this.setStatus(info.id, "dead");
-    });
-
     // kickoff prompt (e.g. the ADO ticket) — sent once claude has had time to boot
     if (req.initialPrompt && !req.shell && !agent.promptInArgs) {
       const prompt = req.initialPrompt;

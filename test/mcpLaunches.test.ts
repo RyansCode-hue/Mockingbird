@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Messaging, mcpLaunch, removeUnreadMcpTokens, retireMcpLaunch, type McpLaunch } from "../src/main/messaging";
+import { Messaging, mcpLaunch, removeMcpTokenFiles, retireMcpLaunch, type McpLaunch } from "../src/main/messaging";
 import { SessionManager } from "../src/main/sessions";
 import { cliTurnRunner } from "../src/main/collab";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type SessionInfo, type Settings } from "../src/shared/types";
@@ -35,6 +35,10 @@ const roomHandler = vi.fn(async (_room: string, _seat: string, op: string, args:
 
 let sessions: SessionManager;
 let relay: Messaging;
+/** What the store holds, as SessionManager sees it; a save fails while `saveFails` is set, after the change, as the real store's does. */
+let records: { sessions: SessionInfo[] };
+let saveFails: (() => void) | null = null;
+const REFUSED = /^Mockingbird doesn't recognise this tool server/;
 
 /** The launch a pty's command line carries, for the agent's real MCP server, as each CLI would read it from its arguments. */
 function launchIn(p: FakePty): McpLaunch {
@@ -56,21 +60,21 @@ const start = (req: Partial<NewSessionRequest> = {}) => sessions.create({ repoPa
 beforeAll(async () => {
   const wt = tempDir("wt");
   const settings: Settings = { ...DEFAULT_SETTINGS, claudeBin: "/bin/echo", codexBin: "/bin/echo", workTrackerPath: wt };
-  const saved: SessionInfo[] = [];
   const store = {
     settings,
-    state: { sessions: saved },
+    state: { sessions: [] as SessionInfo[] },
     upsertSession(i: SessionInfo) {
-      const k = saved.findIndex((x) => x.id === i.id);
-      if (k >= 0) saved[k] = structuredClone(i);
-      else saved.push(structuredClone(i));
+      const k = this.state.sessions.findIndex((x) => x.id === i.id);
+      if (k >= 0) this.state.sessions[k] = structuredClone(i);
+      else this.state.sessions.push(structuredClone(i));
+      saveFails?.();
     },
     removeSession(id: string) {
-      const k = saved.findIndex((x) => x.id === id);
-      if (k >= 0) saved.splice(k, 1);
+      this.state.sessions = this.state.sessions.filter((x) => x.id !== id);
     },
     save() {},
   };
+  records = store.state;
   sessions = new SessionManager(store as any);
   sessions.scrollbackDir = path.join(wt, "scrollback");
   relay = new Messaging(sessions, () => true, () => {});
@@ -94,11 +98,12 @@ describe("a pane's launch", () => {
     const server = startServer(launch);
     try {
       expect(JSON.parse((await server.call("list_sessions")).content[0].text).you.id).toBe(s.id);
-      expect(fs.existsSync(launch.env.MOCKINGBIRD_TOKEN_FILE)).toBe(false);
+      expect(fs.readFileSync(launch.env.MOCKINGBIRD_TOKEN_FILE, "utf8")).toBe(token);
     } finally {
       await server.stop();
       sessions.kill(s.id, true);
     }
+    expect(fs.existsSync(launch.env.MOCKINGBIRD_TOKEN_FILE)).toBe(false);
   });
 
   it("gets a token that stops when it's restarted, and a new one that works", async () => {
@@ -112,9 +117,19 @@ describe("a pane's launch", () => {
     expect(second).not.toBe(first);
     const after = tokenIn(second);
     expect(after).not.toBe(before);
-    expect((await calledWith(before)).error).toMatch(/no valid token/);
+    expect((await calledWith(before)).error).toMatch(REFUSED);
     expect((await calledWith(after)).result.you.id).toBe(s.id);
     expect(fs.existsSync(file)).toBe(false);
+    // the real script: started again from the old launch it's refused, saying why; the new launch's works, every time
+    const stale = startServer(launchIn(first));
+    const fresh = [startServer(launchIn(second)), startServer(launchIn(second))];
+    try {
+      expect((await stale.call("list_sessions")).content[0].text).toMatch(/: its token file is gone/);
+      for (const f of fresh) expect(JSON.parse((await f.call("list_sessions")).content[0].text).you.id).toBe(s.id);
+    } finally {
+      await stale.stop();
+      for (const f of fresh) await f.stop();
+    }
     sessions.kill(s.id, true);
   });
 
@@ -123,14 +138,14 @@ describe("a pane's launch", () => {
     const first = ptys.at(-1)!;
     const one = tokenIn(first);
     sessions.kill(s.id, false);
-    expect((await calledWith(one)).error).toMatch(/no valid token/);
+    expect((await calledWith(one)).error).toMatch(REFUSED);
     await sessions.relaunch(s.id);
     const second = ptys.at(-1)!;
     const two = tokenIn(second);
     expect((await calledWith(two)).result.you.id).toBe(s.id);
     second.exit(0);
     await new Promise((r) => setImmediate(r));
-    expect((await calledWith(two)).error).toMatch(/no valid token/);
+    expect((await calledWith(two)).error).toMatch(REFUSED);
     const r = await sessions.resume(s.id);
     expect(r).not.toHaveProperty("refused");
     const three = tokenIn(ptys.at(-1)!);
@@ -146,7 +161,7 @@ describe("a pane's launch", () => {
     sessions.kill(s.id, false);
     expect(p.killed).toBe(true);
     expect(fs.existsSync(file)).toBe(false);
-    expect((await calledWith(token)).error).toMatch(/no valid token/);
+    expect((await calledWith(token)).error).toMatch(REFUSED);
     sessions.kill(s.id, true);
   });
 
@@ -157,7 +172,7 @@ describe("a pane's launch", () => {
     const token = fs.readFileSync(file, "utf8");
     p.exit(1);
     expect(fs.existsSync(file)).toBe(false);
-    expect((await calledWith(token)).error).toMatch(/no valid token/);
+    expect((await calledWith(token)).error).toMatch(REFUSED);
     sessions.kill(s.id, true);
   });
 
@@ -178,7 +193,7 @@ describe("a pane's launch", () => {
     await sessions.create({ repoPath: null, useWorktree: false, agent: "claude", title: "pane", reuseId: s.id });
     const after = tokenIn(ptys.at(-1)!);
     expect(first.killed).toBe(true);
-    expect((await calledWith(before)).error).toMatch(/no valid token/);
+    expect((await calledWith(before)).error).toMatch(REFUSED);
     expect((await calledWith(after)).result.you.id).toBe(s.id);
     sessions.kill(s.id, true);
   });
@@ -212,6 +227,38 @@ describe("a pane's launch", () => {
       sessions.relaunchGuard = null;
     }
     expect(tokenFiles()).toEqual(files);
+    sessions.kill(s.id, true);
+  });
+
+  it("that can't be saved is stopped with its token, and the records and panes are as they were", async () => {
+    const s = await start();
+    const before = structuredClone(records.sessions);
+    const files = tokenFiles();
+    let token = "";
+    saveFails = () => {
+      token = tokenIn(ptys.at(-1)!);
+      throw new Error("disk full");
+    };
+    try {
+      await expect(start({ title: "unsaved" })).rejects.toThrow(/^“unsaved” couldn't be saved \(disk full\), so it was stopped$/);
+      // replacing a pane that's running: the old one has gone, as it would for any replacement, and its record stays
+      await expect(sessions.create({ repoPath: null, useWorktree: false, agent: "claude", title: "pane", reuseId: s.id })).rejects.toThrow(/couldn't be saved/);
+    } finally {
+      saveFails = null;
+    }
+    const [unsaved, replacement] = ptys.slice(-2);
+    expect(unsaved.killed && replacement.killed).toBe(true);
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect((await calledWith(token)).error).toMatch(REFUSED);
+    expect(tokenFiles().length).toBe(files.length - 1); // the replaced pane's went with it
+    expect(records.sessions).toEqual(before);
+    expect(sessions.list().map((x) => x.title)).not.toContain("unsaved");
+    expect(sessions.list().find((x) => x.id === s.id)).toBeUndefined();
+    // their exits, later, touch nothing
+    unsaved.exit(1);
+    replacement.exit(1);
+    await new Promise((r) => setImmediate(r));
+    expect(records.sessions).toEqual(before);
     sessions.kill(s.id, true);
   });
 
@@ -257,11 +304,17 @@ const retireAllStrays = () => {
 };
 
 describe("quitting", () => {
-  it("removes whatever tokens no server has read", () => {
+  it("removes every token file left, whether a server has read it or not", async () => {
     const launch = mcpLaunch("a");
-    removeUnreadMcpTokens();
+    const read = mcpLaunch("b");
+    const server = startServer(read);
+    await server.request("initialize", { protocolVersion: "2025-06-18" });
+    await server.stop();
+    removeMcpTokenFiles();
     expect(fs.existsSync(launch.env.MOCKINGBIRD_TOKEN_FILE)).toBe(false);
+    expect(fs.existsSync(read.env.MOCKINGBIRD_TOKEN_FILE)).toBe(false);
     expect(tokenFiles()).toEqual([]);
+    retireMcpLaunch(read);
     retireMcpLaunch(launch);
   });
 });
@@ -350,7 +403,7 @@ describe("a Council turn's launch", () => {
     expect(s.answer.content[0].text).toBe('answered ask_code_reader {"question":"where?","from":"collab-other.seat"}');
     expect(roomHandler).toHaveBeenCalledWith("r1", "s", "ask_code_reader", { question: "where?", from: "collab-other.seat" });
     expect(tokenFiles()).toEqual([]);
-    expect((await askRaw(sock, JSON.stringify({ op: "ask_code_reader", token: s.token, args: { question: "after" } }))).error).toMatch(/no valid token/);
+    expect((await askRaw(sock, JSON.stringify({ op: "ask_code_reader", token: s.token, args: { question: "after" } }))).error).toMatch(REFUSED);
     expect(s.argv.join(" ")).not.toContain(s.token);
   });
 

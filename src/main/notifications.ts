@@ -38,3 +38,8 @@ export function shouldNotify(o: { settings: Settings; session?: Pick<SessionInfo
 export function roomWaitingNotice(o: { owner: string; title: string; reason: string | null }): { title: string; body: string } {
   return { title: `Needs input · ${o.owner}'s session`, body: `${o.title} · ${o.reason ?? "waiting on you"}` };
 }
+
+/** An agent pane whose tool server Mockingbird doesn't recognise (messaging.ts): which pane, and why, said once a launch. */
+export function toolsLostNotice(o: { title: string; why: string }): { title: string; body: string } {
+  return { title: `${o.title} lost its Mockingbird tools`, body: `${o.why.charAt(0).toUpperCase()}${o.why.slice(1)}. Messages and wires won't work from that agent.` };
+}

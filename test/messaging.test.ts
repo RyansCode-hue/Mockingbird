@@ -4,7 +4,7 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
+import { Messaging, mcpLaunch, retireMcpLaunch, type ToolsLost } from "../src/main/messaging";
 import { claudeMcpConfig, codexMcpSettings } from "../src/main/agents";
 import type { SessionInfo } from "../src/shared/types";
 import { HOUSE_READ_TOOLS, HOUSE_TOOL_NAMES, HOUSE_WRITE_TOOLS } from "../src/shared/team/house";
@@ -27,6 +27,21 @@ const logged: any[] = [];
 const askedFor: string[] = [];
 let submit = true;
 let relay: Messaging;
+/** What the relay logs (main.log in the app), and the panes it tells the user lost their tools. */
+const mainLog: string[] = [];
+const toldLost: ToolsLost[] = [];
+let launches = 1000;
+/** Runs `fn` with pane `id` on a launch of its own (its createdAt), so what's logged or told once a launch starts afresh. */
+async function asNewLaunch<T>(id: string, fn: (s: SessionInfo) => Promise<T>): Promise<T> {
+  const s = live.find((x) => x.id === id)!;
+  const was = s.createdAt;
+  s.createdAt = ++launches;
+  try {
+    return await fn(s);
+  } finally {
+    s.createdAt = was;
+  }
+}
 const sock = mcpLaunch("front").env.MOCKINGBIRD_SOCK;
 
 /** One request over the socket, the way the MCP server sends it for session `from`. */
@@ -44,7 +59,11 @@ beforeAll(async () => {
     fakeSessions as any,
     (target) => (askedFor.push(target.id), submit),
     (a, b) => loops.push(`${a.id}->${b.id}`),
-    (m) => logged.push(m)
+    (m) => logged.push(m),
+    {
+      log: (context, err) => void mainLog.push(`${context}: ${err instanceof Error ? err.message : String(err)}`),
+      onToolsLost: (e) => void toldLost.push(e),
+    }
   );
   relay.start();
   for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise((r) => setTimeout(r, 20));
@@ -244,7 +263,8 @@ describe("MCP server script", () => {
 });
 
 describe("who's calling", () => {
-  const NO_ANSWER = /has no valid token.*Restart this workspace/;
+  const NO_ANSWER = /^Mockingbird doesn't recognise this tool server, so its tools can't be used from here: /;
+  const ENDED = /: its token is from a launch that has ended/;
   afterEach(() => {
     vi.restoreAllMocks();
     relay.setRoomHandler(async () => ({ error: "no room handler in this test" }));
@@ -310,7 +330,9 @@ describe("who's calling", () => {
     expect((await askRaw(sock, JSON.stringify({ op: "list_sessions", token }))).result.you.id).toBe("front");
     retireMcpLaunch(launch);
     expect(fs.existsSync(file)).toBe(false);
-    expect((await askRaw(sock, JSON.stringify({ op: "list_sessions", token }))).error).toMatch(NO_ANSWER);
+    const r = await askRaw(sock, JSON.stringify({ op: "list_sessions", token }));
+    expect(r.error).toMatch(NO_ANSWER);
+    expect(r.error).toMatch(ENDED);
     retireMcpLaunch(launch); // twice is fine: a kill and its pty's exit both do it
   });
 
@@ -333,14 +355,62 @@ describe("who's calling", () => {
     }
   });
 
-  it("logs a refusal without the token, and not on every request", async () => {
+  it("logs a refusal once a minute for each pane launch it names, and once for all that name none here, never with the token", async () => {
     const SECRET = "d".repeat(64);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    (relay as any).lastNoToken = 0;
-    for (let i = 0; i < 3; i++) await askRaw(sock, JSON.stringify({ op: "list_sessions", token: SECRET }));
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toMatch(/refused a request with no valid token \("list_sessions"\)/);
-    expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET);
+    const later = Date.now() + 10 * 60_000; // past anything logged before in this file
+    const now = vi.spyOn(Date, "now").mockReturnValue(later);
+    const before = mainLog.length;
+    try {
+      for (const claimed of ["front", "front", "back", undefined, "nobody", "term", "front"]) {
+        await askRaw(sock, JSON.stringify({ op: "list_sessions", token: SECRET, ...(claimed ? { claimed } : {}) }));
+      }
+      expect(mainLog.slice(before)).toEqual([
+        expect.stringMatching(/^messaging: A tool server for "Filter orgs" \(front\) lost its Mockingbird tools: its token is from a launch that has ended .*\(asked for "list_sessions"\)$/),
+        expect.stringMatching(/^messaging: A tool server for "back" \(back\) lost its Mockingbird tools: /),
+        expect.stringMatching(/^messaging: A tool server naming no pane lost its Mockingbird tools: /),
+      ]);
+      now.mockReturnValue(later + 61_000);
+      await askRaw(sock, JSON.stringify({ op: "send_message", token: SECRET, claimed: "front" }));
+      await askRaw(sock, JSON.stringify({ op: "list_sessions", claimed: "nobody\nat all" }));
+      expect(mainLog.slice(before + 3)).toEqual([
+        expect.stringMatching(/^messaging: A tool server for "Filter orgs" \(front\) lost .*\(asked for "send_message"\)$/),
+        'messaging: A tool server naming "nobody at all", which isn\'t an agent pane here, lost its Mockingbird tools: it sent no token (asked for "list_sessions")',
+      ]);
+      expect(JSON.stringify(mainLog)).not.toContain(SECRET);
+    } finally {
+      // the rate's clock was moved on: the rest of the file starts afresh
+      (relay as any).lostLogged.clear();
+    }
+  });
+
+  it("tells the user once a launch which agent pane lost its tools, and why, from what its server says", async () => {
+    const GONE = "its token file is gone, as it is once the launch it was made for has ended (its workspace was closed or restarted)";
+    const before = toldLost.length;
+    await asNewLaunch("front", async () => {
+      for (let i = 0; i < 3; i++) {
+        const r = await askRaw(sock, JSON.stringify({ op: "list_sessions", claimed: "front", lost: GONE }));
+        expect(r.error).toBe(
+          `Mockingbird doesn't recognise this tool server, so its tools can't be used from here: ${GONE}. They work for an agent Mockingbird started in a workspace, for as long as that launch runs. Mockingbird has logged this for the user; tell them if you need these tools.`
+        );
+        expect(r.error).not.toMatch(/restart this/i);
+      }
+      // not for a terminal, a pane that isn't here, or none
+      for (const claimed of ["term", "nobody", "", 7]) await askRaw(sock, JSON.stringify({ op: "list_sessions", claimed, lost: GONE }));
+    });
+    expect(toldLost.slice(before)).toEqual([{ session: expect.objectContaining({ id: "front" }), why: GONE }]);
+    // the same pane's next launch is told again; what a server says is kept to one short line
+    await asNewLaunch("front", () => askRaw(sock, JSON.stringify({ op: "list_sessions", claimed: "front", lost: `couldn't\nread ${"x".repeat(400)}` })));
+    expect(toldLost.slice(before + 1).map((e) => [e.session.id, e.why])).toEqual([["front", expect.stringMatching(/^couldn't read x+/)]]);
+    expect(toldLost.at(-1)!.why.length).toBeLessThanOrEqual(300);
+  });
+
+  it("never takes who's calling from what a refused request claims", async () => {
+    const sent = delivered.length;
+    const r = await askRaw(sock, JSON.stringify({ op: "send_message", claimed: "front", from: "front", lost: "made up", args: { to: "back", message: "as front?" } }));
+    expect(r.error).toMatch(NO_ANSWER);
+    expect(delivered.length).toBe(sent);
+    // and beside a live token, a claim naming someone else changes nothing
+    expect((await askRaw(sock, JSON.stringify({ op: "list_sessions", token: tokenFor("back"), claimed: "front", lost: "made up" }))).result.you.id).toBe("back");
   });
 
   it("carries only a path to the token in a launch, which is what ends up in an agent's argv", () => {
@@ -371,14 +441,14 @@ describe("who's calling", () => {
 describe("the real MCP server's token", () => {
   const asRoot = process.getuid?.() === 0;
 
-  it("is read once at its start and its file removed, and every call goes as that launch's session", async () => {
+  it("is read at its start from a file kept while the launch runs, and every call goes as that launch's session", async () => {
     const launch = mcpLaunch("back");
     const file = launch.env.MOCKINGBIRD_TOKEN_FILE;
     const token = fs.readFileSync(file, "utf8");
     const server = startServer(launch);
     try {
       await server.request("initialize", { protocolVersion: "2025-06-18" });
-      expect(fs.existsSync(file)).toBe(false);
+      expect(fs.readFileSync(file, "utf8")).toBe(token);
       expect(JSON.parse((await server.call("list_sessions")).content[0].text).you.id).toBe("back");
       const sent = await server.call("send_message", { to: "front", message: "from the real server", from: "other" });
       expect(sent.isError).toBe(false);
@@ -390,34 +460,58 @@ describe("the real MCP server's token", () => {
     }
   });
 
-  it("isn't there for a server started a second time from the same launch: its tools are listed and each call says to restart", async () => {
+  it("works for every server started from the same launch, a second and a third, and for none once the launch has ended", async () => {
     const launch = mcpLaunch("front");
     const first = startServer(launch);
     await first.request("initialize", { protocolVersion: "2025-06-18" });
     await first.stop();
-    const again = startServer(launch);
+    const second = startServer(launch);
+    const third = startServer(launch);
     try {
-      expect((await again.request("tools/list")).result.tools.map((t: any) => t.name)).toContain("send_message");
-      const r = await again.call("list_sessions");
-      expect(r.isError).toBe(true);
-      expect(r.content[0].text).toMatch(/has no valid token.*Restart this workspace/);
+      expect(JSON.parse((await second.call("list_sessions")).content[0].text).you.id).toBe("front");
+      expect(JSON.parse((await third.call("list_sessions")).content[0].text).you.id).toBe("front");
     } finally {
-      await again.stop();
+      await second.stop();
+      await third.stop();
       retireMcpLaunch(launch);
     }
+    const before = { log: mainLog.length, told: toldLost.length };
+    await asNewLaunch("front", async () => {
+      const after = startServer(launch);
+      try {
+        expect((await after.request("tools/list")).result.tools.map((t: any) => t.name)).toContain("send_message");
+        const r = await after.call("list_sessions");
+        expect(r.isError).toBe(true);
+        expect(r.content[0].text).toMatch(/: its token file is gone, as it is once the launch it was made for has ended/);
+        expect(r.content[0].text).not.toMatch(/restart this/i);
+        expect(after.stderr()).toMatch(/^mockingbird: its token file is gone/m);
+      } finally {
+        await after.stop();
+      }
+    });
+    expect(mainLog.slice(before.log)).toEqual([expect.stringMatching(/^messaging: A tool server for "Filter orgs" \(front\) lost its Mockingbird tools: its token file is gone/)]);
+    expect(toldLost.slice(before.told).map((e) => e.session.id)).toEqual(["front"]);
   });
 
-  it("stops working for a server from before a relaunch, which is told to restart", async () => {
-    const launch = mcpLaunch("front");
-    const server = startServer(launch);
+  it("stops working for a server from before a relaunch, while the relaunch's own works", async () => {
+    const one = mcpLaunch("front");
+    const old = startServer(one);
     try {
-      expect((await server.call("list_sessions")).isError).toBe(false);
-      retireMcpLaunch(launch);
-      const r = await server.call("list_sessions");
-      expect(r.isError).toBe(true);
-      expect(r.content[0].text).toMatch(/Restart this workspace/);
+      expect((await old.call("list_sessions")).isError).toBe(false);
+      retireMcpLaunch(one);
+      const two = mcpLaunch("front");
+      const fresh = startServer(two);
+      try {
+        const r = await old.call("list_sessions");
+        expect(r.isError).toBe(true);
+        expect(r.content[0].text).toMatch(/: its token is from a launch that has ended/);
+        expect(JSON.parse((await fresh.call("list_sessions")).content[0].text).you.id).toBe("front");
+      } finally {
+        await fresh.stop();
+        retireMcpLaunch(two);
+      }
     } finally {
-      await server.stop();
+      await old.stop();
     }
   });
 
@@ -431,7 +525,7 @@ describe("the real MCP server's token", () => {
     try {
       const r = await linked.call("list_sessions");
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toMatch(/couldn't be read: (ELOOP|EMLINK)/);
+      expect(r.content[0].text).toMatch(/its token file couldn't be read \((ELOOP|EMLINK)\)/);
       expect(fs.existsSync(real)).toBe(true);
     } finally {
       await linked.stop();
@@ -442,7 +536,7 @@ describe("the real MCP server's token", () => {
     await new Promise((res) => fifo.on("exit", res));
     const piped = startServer(launch);
     try {
-      expect((await piped.call("list_sessions")).content[0].text).toMatch(/couldn't be read: ENOTFILE/);
+      expect((await piped.call("list_sessions")).content[0].text).toMatch(/its token file couldn't be read \(ENOTFILE\)/);
     } finally {
       await piped.stop();
       retireMcpLaunch(launch);
@@ -457,8 +551,8 @@ describe("the real MCP server's token", () => {
     try {
       const r = await server.call("list_sessions");
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toMatch(/couldn't be read: EACCES/);
-      expect(server.stderr()).toMatch(/couldn't read its token file \(EACCES\)/);
+      expect(r.content[0].text).toMatch(/its token file couldn't be read \(EACCES\), as happens when a sandbox keeps the server from it/);
+      expect(server.stderr()).toMatch(/^mockingbird: its token file couldn't be read \(EACCES\)/m);
     } finally {
       await server.stop();
       retireMcpLaunch(launch);
@@ -477,6 +571,7 @@ describe("the real MCP server's token", () => {
       await server.call("nonsense");
       await askRaw(sock, `{"op":"list_sessions","token":"${token}"`);
       expect(said.join("\n")).not.toContain(token);
+      expect(mainLog.join("\n")).not.toContain(token);
       expect(JSON.stringify(logged)).not.toContain(token);
       expect(JSON.stringify(delivered)).not.toContain(token);
     } finally {

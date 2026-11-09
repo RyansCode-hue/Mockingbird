@@ -6,9 +6,9 @@ const hashOf = (token: string): string => createHash("sha256").update(token).dig
 
 /**
  * Who's calling on the agents' socket. Each launch of the MCP server gets a token of its own, handed over in a 0600
- * file whose path is all that travels in the launch's argv and environment. The server reads the file once and removes
- * it; main holds only each token's hash and the identity it stands for, in memory, so a new run of the app knows none
- * of the last run's.
+ * file whose path is all that travels in the launch's argv and environment. The file stays for the launch's life, since
+ * an agent may start its server more than once (a sub-agent's, a reconnect); main holds only each token's hash and the
+ * identity it stands for, in memory, so a new run of the app knows none of the last run's.
  *
  * A launch's token goes when the launch does (retire), not by time: an agent can sit on a trust dialog for as long as
  * it likes before it starts its servers. What a crash leaves behind goes when the next run starts (sweep).
@@ -16,6 +16,8 @@ const hashOf = (token: string): string => createHash("sha256").update(token).dig
 export class McpTokens {
   private readonly identities = new Map<string, string>();
   private readonly hashes = new Map<string, string>();
+  /** Where a file that can't be listed or removed is said: main.log once the app's relay is made. */
+  log: (context: string, err: unknown) => unknown = (context, err) => console.warn(`${context}: ${(err as Error).message}`);
 
   constructor(private readonly dir: string) {}
 
@@ -41,7 +43,7 @@ export class McpTokens {
     return typeof token === "string" && token ? (this.identities.get(hashOf(token)) ?? null) : null;
   }
 
-  /** This launch is over: its token stops working, and its file goes if its server never read it. Safe to repeat. */
+  /** This launch is over: its token stops working, and its file goes. Safe to repeat. */
   retire(file: string): void {
     const hash = this.hashes.get(file);
     if (hash) this.identities.delete(hash);
@@ -57,8 +59,8 @@ export class McpTokens {
     }
   }
 
-  /** Remove every file left, quitting: the agents' servers that haven't started by now never will. */
-  removeUnread(): void {
+  /** Remove every file left, quitting: every launch ends with the app. */
+  removeAll(): void {
     for (const name of this.names()) this.remove(path.join(this.dir, name));
   }
 
@@ -66,7 +68,7 @@ export class McpTokens {
     try {
       return fs.readdirSync(this.dir);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`messaging: can't list ${this.dir}, so unread tool tokens there stay: ${(err as Error).message}`);
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") this.log(`messaging: can't list ${this.dir}, so tool tokens left there stay`, err);
       return [];
     }
   }
@@ -75,7 +77,7 @@ export class McpTokens {
     try {
       fs.rmSync(file, { force: true });
     } catch (err) {
-      console.warn(`messaging: can't remove ${file}, a tool token nothing reads now: ${(err as Error).message}`);
+      this.log(`messaging: can't remove ${file}, a tool token nothing uses now`, err);
     }
   }
 }

@@ -5,7 +5,7 @@ import { mcpLaunch, type McpLaunch } from "../src/main/messaging";
 
 const held = new Map<string, string>();
 
-/** A live token standing for session `id`, read and removed from its file as the MCP server does. */
+/** A live token standing for session `id`, read from its file, which then goes: no server is started from it. */
 export function tokenFor(id: string): string {
   let token = held.get(id);
   if (!token) {

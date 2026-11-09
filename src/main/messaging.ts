@@ -8,7 +8,7 @@ import { writeGenerated } from "./fileOps";
 import { HOUSE_TOOL_SCHEMAS, isHouseTool } from "./team/houseTools";
 import { houseToolCall } from "./team/houseService";
 import { ARTIFACT_TOOL } from "../shared/team/artifacts";
-import { named, quoted } from "../shared/team/agentText";
+import { named, oneLine, quoted } from "../shared/team/agentText";
 import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
 import { isTeamChangesTool, TEAM_CHANGES_TOOL_SCHEMAS, teamChangesToolCall } from "./team/teamChanges";
 import { parseRemoteId, remoteSessionId } from "../shared/team/livePanes";
@@ -16,15 +16,21 @@ import { McpTokens } from "./mcpTokens";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
-/** Every launch's token, until its server has read it. In HOME_SECRETS: it's denied to room agents, and their sandbox, by path. */
+/**
+ * Every launch's token, for as long as the launch runs. In HOME_SECRETS: a Codex room session's sandbox denies it to
+ * the agent's commands; a Claude room session's deny rules cover only Claude's file tools, not its shell.
+ */
 const TOKENS_DIR = path.join(MB_DIR, "mcp-tokens");
 const tokens = new McpTokens(TOKENS_DIR);
 
-/** What a tool call answers from a server main doesn't know, whichever side finds that out. */
-const NO_TOKEN =
-  "Mockingbird doesn't recognise this tool server: it has no valid token. A server gets its token once, when its workspace starts, " +
-  "so one that was restarted (an /mcp reconnect, say) has none, and one from before a relaunch has lost its. " +
-  "Restart this workspace in Mockingbird to get its tools back.";
+/**
+ * What an agent is told when its tool server has no valid token: why, and that the user has heard. It suggests no
+ * restart: a server whose launch has ended gets nothing from starting again, and one a sandbox keeps from its token
+ * file can't read it the next time either.
+ */
+const noTokenText = (why: string): string =>
+  `Mockingbird doesn't recognise this tool server, so its tools can't be used from here: ${why}. ` +
+  "They work for an agent Mockingbird started in a workspace, for as long as that launch runs. Mockingbird has logged this for the user; tell them if you need these tools.";
 
 /** Messages allowed between one pair of sessions per window, in either direction. */
 const PAIR_LIMIT = 8;
@@ -70,28 +76,28 @@ const SOCK = process.env.MOCKINGBIRD_SOCK;
 // Picks which tools are listed. It says nothing to the app about who's calling: only the token does.
 const FROM = process.env.MOCKINGBIRD_SESSION;
 
-// The token is read once, here, and its file removed, so nothing else finds it there. A server started a second time
-// finds no file, and every call says so.
-const NO_TOKEN = ${JSON.stringify(NO_TOKEN)};
-let tokenProblem = NO_TOKEN;
+// The token is read here, from a file Mockingbird keeps for as long as this server's launch runs: every server the
+// agent starts from that launch (a sub-agent's, a reconnect) reads the same one. The file goes when the launch ends.
+// Without a token, calls still reach Mockingbird, saying why there's none, so the user hears of it; they get no answer.
+let lost = null;
 function readToken(file) {
-  if (!file) return null;
+  if (!file) {
+    lost = "it was started without a token file";
+    return null;
+  }
   let fd;
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     if (!fs.fstatSync(fd).isFile()) throw Object.assign(new Error("not a file"), { code: "ENOTFILE" });
     const token = fs.readFileSync(fd, "utf8").trim();
-    try {
-      fs.unlinkSync(file);
-    } catch (e) {
-      process.stderr.write("mockingbird: couldn't remove its token file (" + (e.code || "unknown") + ")\n");
-    }
+    if (!token) lost = "its token file is empty";
     return token || null;
   } catch (e) {
-    if (e.code !== "ENOENT") {
-      tokenProblem = NO_TOKEN + " (Its token file couldn't be read: " + (e.code || "unknown") + ".)";
-      process.stderr.write("mockingbird: couldn't read its token file (" + (e.code || "unknown") + ")\n");
-    }
+    lost =
+      e.code === "ENOENT"
+        ? "its token file is gone, as it is once the launch it was made for has ended (its workspace was closed or restarted)"
+        : "its token file couldn't be read (" + (e.code || "unknown") + "), as happens when a sandbox keeps the server from it";
+    process.stderr.write("mockingbird: " + lost + "\n");
     return null;
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
@@ -178,7 +184,6 @@ const SESSION_TOOLS = [
 function ask(req) {
   return new Promise((resolve) => {
     if (!SOCK || !FROM) return resolve({ error: "This session was not started by Mockingbird, so it cannot message other sessions." });
-    if (!TOKEN) return resolve({ error: tokenProblem });
     const c = net.createConnection(SOCK);
     let buf = "";
     c.on("data", (d) => (buf += d));
@@ -190,7 +195,8 @@ function ask(req) {
       }
     });
     c.on("error", (e) => resolve({ error: "Mockingbird is not reachable (" + (e.code || e.message) + ") — is the app running?" }));
-    c.end(JSON.stringify({ ...req, token: TOKEN }));
+    // claimed: the pane this server says it's for, a hint for telling the user when its token isn't valid; never who's calling
+    c.end(JSON.stringify({ ...req, token: TOKEN, claimed: FROM, ...(lost ? { lost } : {}) }));
   });
 }
 
@@ -242,13 +248,13 @@ export function mcpLaunch(sessionId: string, tools?: string[]): McpLaunch {
   };
 }
 
-/** This launch is over: its token stops working, and its file goes if its server never read it. Safe to repeat. */
+/** This launch is over: its token stops working, and its file goes. Safe to repeat. */
 export function retireMcpLaunch(mcp: McpLaunch | undefined): void {
   if (mcp) tokens.retire(mcp.env.MOCKINGBIRD_TOKEN_FILE);
 }
 
-/** Quitting: no server starts from here on, so no token file is left to outlive the run. */
-export const removeUnreadMcpTokens = (): void => tokens.removeUnread();
+/** Quitting: no server starts from here on, so no launch's token file is left to outlive the run. */
+export const removeMcpTokenFiles = (): void => tokens.removeAll();
 
 export type Reply = { result: unknown } | { error: string };
 
@@ -305,6 +311,22 @@ export interface RemoteSendResult {
   owner: string;
 }
 
+/**
+ * An agent's tool server reached Mockingbird without a valid token. `session` is the agent pane its request says it's
+ * for: a hint for telling the user, never who's calling.
+ */
+export interface ToolsLost {
+  session: SessionInfo;
+  why: string;
+}
+
+export interface MessagingHooks {
+  /** main.log (logError), for what goes wrong here that no caller hears about. */
+  log?: (context: string, err: unknown) => unknown;
+  /** An agent's tool server has no valid token, logged already: the user is told once per pane launch. */
+  onToolsLost?: (e: ToolsLost) => void;
+}
+
 /** What the `list_links` tool answers from (src/main/wires.ts). */
 export interface WireLinks {
   linksFor(me: SessionInfo): Reply;
@@ -337,7 +359,9 @@ export class Messaging {
   private roomHandler: RoomRequestHandler | null = null;
   private remote: RemoteAgents | null = null;
   private wires: WireLinks | null = null;
-  private lastNoToken = 0;
+  /** When each pane launch's lost tools were last logged ("unknown" for a request naming no pane here), and which have been told. */
+  private lostLogged = new Map<string, number>();
+  private lostTold = new Set<string>();
 
   /** Collaborate registers here; until then room tools report that they're unavailable. */
   setRoomHandler(h: RoomRequestHandler): void {
@@ -361,8 +385,17 @@ export class Messaging {
     /** Raised when two sessions hit the pair limit, so the user hears about a loop. */
     private onLoopLimit: (from: Party, to: Party) => void,
     /** Every send, delivered or refused, for the message log. */
-    private onMessage: (m: AgentMessage) => void = () => {}
-  ) {}
+    private onMessage: (m: AgentMessage) => void = () => {},
+    private hooks: MessagingHooks = {}
+  ) {
+    // the tokens are the module's: whichever relay the app starts is where their problems are logged
+    if (hooks.log) tokens.log = hooks.log;
+  }
+
+  private log(context: string, err: unknown): void {
+    if (this.hooks.log) this.hooks.log(context, err);
+    else console.warn(`${context}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   start(): void {
     tokens.sweep();
@@ -422,21 +455,43 @@ export class Messaging {
     const op = String(req.op ?? "");
     const args = isObject(req.args) ? req.args : {};
     const identity = tokens.identity(req.token);
-    if (!identity) return this.noToken(op);
+    if (!identity) return this.noToken(op, req);
     const m = /^collab-([^.]+)\.(.+)$/.exec(identity);
     if (!m) return this.handle({ op, from: identity, args });
     if (!this.roomHandler) return { error: "Council isn't ready yet — try again in a moment." };
     return this.roomHandler(m[1], m[2], op, args);
   }
 
-  /** Refused, and logged at most once a minute: whatever's asking may keep asking. The token itself is never logged. */
-  private noToken(op: string): Reply {
+  /**
+   * Refused, saying why. Logged at most once a minute for each pane launch the request names (and once a minute for
+   * all that name none here), since whatever's asking may keep asking; the user is told once per pane launch. What the
+   * request says about itself is only used to say which pane lost its tools. The token itself is never logged.
+   */
+  private noToken(op: string, req: Record<string, unknown>): Reply {
+    const why =
+      typeof req.lost === "string" && oneLine(req.lost)
+        ? oneLine(req.lost, 300)
+        : req.token === undefined || req.token === null
+          ? "it sent no token"
+          : "its token is from a launch that has ended (its workspace was closed or restarted, or Mockingbird was)";
+    const claimed = typeof req.claimed === "string" ? oneLine(req.claimed, 80) : "";
+    const session = claimed ? (this.sessions.list().find((s) => s.id === claimed && !s.shell) ?? null) : null;
+    const key = session ? `${session.id}@${session.createdAt}` : "unknown";
     const now = Date.now();
-    if (now - this.lastNoToken >= NO_TOKEN_LOG_MS) {
-      this.lastNoToken = now;
-      console.warn(`messaging: refused a request with no valid token (${JSON.stringify(op.slice(0, 60))})`);
+    if (now - (this.lostLogged.get(key) ?? -Infinity) >= NO_TOKEN_LOG_MS) {
+      this.lostLogged.set(key, now);
+      const who = session ? `for ${quoted(titleOf(session))} (${session.id})` : claimed ? `naming ${quoted(claimed)}, which isn't an agent pane here,` : "naming no pane";
+      this.log("messaging", `A tool server ${who} lost its Mockingbird tools: ${why} (asked for ${JSON.stringify(oneLine(op, 60))})`);
     }
-    return { error: NO_TOKEN };
+    if (session && !this.lostTold.has(key)) {
+      this.lostTold.add(key);
+      try {
+        this.hooks.onToolsLost?.({ session, why });
+      } catch (err) {
+        this.log("messaging: telling the user a pane lost its tools", err);
+      }
+    }
+    return { error: noTokenText(why) };
   }
 
   private async handle(req: { op?: string; from?: string; args?: Record<string, unknown> }): Promise<Reply> {
