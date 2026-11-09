@@ -17,6 +17,7 @@ import {
   CELL_ESTIMATE,
   GAP,
   LOOSE_GROUP,
+  MAX_EXTENT,
   areaKeyOf,
   boundsOf,
   emptyLandscape,
@@ -77,6 +78,13 @@ export interface Migration {
 const NOMINAL_GRID: Extent = { w: 1600, h: 1000 };
 /** How wide a row of areas gets before the next area starts a new row. */
 const ROW_WIDTH = 3600;
+/**
+ * The most a group's tree is drawn across or down, its padding and header aside: the file refuses an area past
+ * MAX_EXTENT, and one made here past it would fail every launch's read-in. Kept a header's height short of it.
+ */
+const TREE_MAX = MAX_EXTENT - 2 * AREA_PAD - 2 * AREA_HEADER;
+/** How many M workspaces across a group placed without a tree is: two, or about √n for many, so the area stays roughly square. */
+export const acrossFor = (n: number): number => (n <= 1 ? 1 : Math.max(2, Math.ceil(Math.sqrt(n))));
 
 /** One thing the grid drew in a cell: a session, or a sub-group's sessions as tabs. */
 interface Tile {
@@ -120,11 +128,13 @@ function trackSizes(fractions: number[], total: number, needs: { from: number; t
  * corner at 0, 0): the tree's fractions times the area's size, on the grid,
  * every pane at least preset S. The area is as many M workspaces wide, and
  * tall, as the tree had panes side by side, and stacked (M agents, or M
- * terminals for a tree of only terminals); a share too small to hold S widens
- * its tracks. A pane whose share collapsed to nothing (a hand-edited pref)
- * gets no rectangle here, so the caller places it.
+ * terminals for a tree of only terminals), up to TREE_MAX; a share too small to
+ * hold S widens its tracks. A pane whose share collapsed to nothing (a
+ * hand-edited pref) gets no rectangle here, so the caller places it. Null for
+ * a tree too big to draw inside MAX_EXTENT even at S (hundreds of panes
+ * across): the caller places its panes as if there were none.
  */
-function treeRects(tree: LayoutNode, kindOfKey: (key: string) => WorkspaceKind, cell: Cell): { rects: Map<string, Rect>; w: number; h: number } {
+function treeRects(tree: LayoutNode, kindOfKey: (key: string) => WorkspaceKind, cell: Cell): { rects: Map<string, Rect>; w: number; h: number } | null {
   // toGrid keeps panes in a plain object, where a pane keyed "__proto__" would be lost: it reads the tree under
   // stand-in names, which no session id has (a NUL in them)
   const keys = keysOf(tree);
@@ -137,8 +147,11 @@ function treeRects(tree: LayoutNode, kindOfKey: (key: string) => WorkspaceKind, 
     const [r0, c0, r1, c1] = a.split("/").map((n) => Number(n) - 1);
     return { key, r0, c0, r1, c1, min: presetSize(kindOfKey(key), "S", cell) };
   });
-  const cols = trackSizes(g.cols, across(tree, "row") * (m.w + GAP), spans.map((s) => ({ from: s.c0, to: s.c1, need: s.min.w + GAP })));
-  const rows = trackSizes(g.rows, across(tree, "col") * (m.h + GAP), spans.map((s) => ({ from: s.r0, to: s.r1, need: s.min.h + GAP })));
+  // each track is rounded up to the grid after: up to 8 px more apiece
+  const cap = (tracks: number) => TREE_MAX - 8 * tracks;
+  const cols = trackSizes(g.cols, Math.min(across(tree, "row") * (m.w + GAP), cap(g.cols.length)), spans.map((s) => ({ from: s.c0, to: s.c1, need: s.min.w + GAP })));
+  const rows = trackSizes(g.rows, Math.min(across(tree, "col") * (m.h + GAP), cap(g.rows.length)), spans.map((s) => ({ from: s.r0, to: s.r1, need: s.min.h + GAP })));
+  if (sum(cols) > TREE_MAX || sum(rows) > TREE_MAX) return null;
   const edge = (sizes: number[], i: number) => sum(sizes.slice(0, i));
   const rects = new Map<string, Rect>();
   for (const s of spans) {
@@ -224,13 +237,16 @@ export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo
     const tree = keys.length ? reconcile(saved ?? legacyTree(read.legacy, g, keys, NOMINAL_GRID), keys, NOMINAL_GRID) : null;
 
     const m = presetSize("agent", "M", cell);
-    // without a tree, two M agents across, or one for a lone workspace
-    let frame: Rect = { x: 0, y: 0, w: 2 * AREA_PAD + Math.min(Math.max(mine.length, 1), 2) * (m.w + GAP) - GAP, h: AREA_HEADER + AREA_PAD };
+    const wide = (n: number) => 2 * AREA_PAD + acrossFor(n) * (m.w + GAP) - GAP;
+    // without a tree, M agents in rows of acrossFor
+    let frame: Rect = { x: 0, y: 0, w: wide(mine.length), h: AREA_HEADER + AREA_PAD };
     let at = new Map<string, Rect>();
-    if (tree) {
-      const r = treeRects(tree, (k) => tileKind(tiles.get(k)!), cell);
+    const r = tree && treeRects(tree, (k) => tileKind(tiles.get(k)!), cell);
+    if (r) {
       at = r.rects;
-      frame = { x: 0, y: 0, w: r.w, h: r.h };
+      // what the tree leaves out goes below it, in rows of at least the tree's width
+      const rest = mine.length - at.size;
+      frame = { x: 0, y: 0, w: rest > 4 ? Math.max(r.w, wide(rest)) : r.w, h: r.h };
     }
     for (const t of mine) {
       if (at.has(t.key)) continue;

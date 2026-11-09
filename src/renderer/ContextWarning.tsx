@@ -379,7 +379,7 @@ export function BriefDialog({ session, onClose, onStarted }: { session: SessionI
       {error && <div className="err">{error}</div>}
       <label className="check-line" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11, display: "flex" }}>
         <input type="checkbox" checked={closeOld} onChange={(e) => setCloseOld(e.target.checked)} />
-        Close this session (it stays under Previous, so it can be resumed)
+        Close this session (it leaves a ghost card where it was, so it can be resumed)
       </label>
       <div className="row">
         <button className="outline" onClick={onClose}>

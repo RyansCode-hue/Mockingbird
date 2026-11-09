@@ -64,11 +64,9 @@ export function roomOfGroup(status: TeamStatus | { error: string } | null, group
 }
 
 /**
- * The Sessions view's one line for the team rooms, where their groups used to
- * be listed: how many of teammates' sessions run and who's online. It opens
- * the Team view — the only room's, or the room list.
+ * The area tree's one line for the team rooms, under it: how many of teammates' sessions run and who's online. It
+ * goes to the only room's area and opens its chat, or with several lists the rooms.
  */
-/** `landscape`: on the landscape, where it goes to the one room's area and chat, or with several to their list. */
 export function ConnectedLine({ summary, onOpen, problem = null }: { summary: ConnectedSummary; onOpen: () => void; problem?: string | null }) {
   // a teammate connecting or leaving turns the presence dot (the line's ::before)
   const sub = useRef<HTMLSpanElement>(null);
@@ -827,7 +825,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
       </SetRow>
 
       <div className="set-sub">Teammates</div>
-      {st && !st.peers.length && <div className="set-note">No teammates yet. Share a group from its row in the sidebar (⇪), or join a room with a code.</div>}
+      {st && !st.peers.length && <div className="set-note">No teammates yet. Share an area from its ⋯ menu (Share as a team room…), or join a room with a code.</div>}
       {st?.peers.map((p) => (
         <SetRow key={p.id} title={p.name} note={`${p.detail ? `${p.detail} · ` : ""}${p.id.replace(/(.{4})(?=.)/g, "$1 ")}`}>
           <span className={`team-link ${p.state}`}>{LINK_LABEL[p.state]}</span>

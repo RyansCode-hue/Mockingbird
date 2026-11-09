@@ -112,7 +112,7 @@ export function AreaHeader(
       )}
       {p.room && (
         <>
-          <RoomChatChip room={p.room} onOpen={p.onChat} area />
+          <RoomChatChip room={p.room} onOpen={p.onChat} />
           <button type="button" className="ls-ah-btn" data-tip="House board — the room's Radley House tickets and who has each" onClick={() => p.onBoard(p.room!.id)}>
             Board
           </button>

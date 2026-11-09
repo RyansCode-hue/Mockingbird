@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
+import { presetSize } from "../src/shared/landscape";
 
 // The landscape in the UI preview, in real headless Chrome: local only (CI runners have no
 // desktop); the script passes a mock keychain. ?landscapeAudit (src/preview/stub.ts) pans, zooms, types, moves a
@@ -155,6 +156,64 @@ describe.skipIf(!local)("the landscape", () => {
     expect(on.read).toBe(true);
     expect(on.changed).toEqual([]);
   }, 120_000);
+
+  it("saves nothing moved while reading the grid's layout in has failed, says so, and reads it in whole on Try again", async () => {
+    const read = `(() => {
+      const t = (window.__t ??= {});
+      const banner = () => [...document.querySelectorAll(".ls-banner")].find((b) => b.querySelector(".t")?.textContent === "Your grid's layout wasn't read in");
+      const updates = () => window.__mbCalls.filter((c) => c.fn === "landscapeUpdate").map((c) => c.args[0]);
+      const more = document.querySelector('.ls-world .ls-node[data-front="s1"] .ls-more');
+      if (!t.failed) {
+        if (!banner() || !more) return null;
+        t.failed = banner().querySelector(".m").textContent;
+        t.before = updates().length;
+        more.click();
+        return null;
+      }
+      if (!t.sized) {
+        const row = [...document.querySelectorAll(".mb-ctx button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === "Size L");
+        if (!row) return null;
+        row.click();
+        t.sized = true;
+        return null;
+      }
+      if (!t.said) {
+        const note = document.querySelector(".ls-note")?.textContent ?? "";
+        if (!/isn't read in yet/.test(note)) return null;
+        t.said = note;
+        t.savedWhileFailed = updates().slice(t.before).length;
+        [...banner().querySelectorAll("button")].find((b) => b.textContent === "Try again").click();
+        return null;
+      }
+      if (banner()) return null;
+      return (window.__got ??= window.mb.landscapeGet().then((s) => (t.after = { migrated: !!s.landscape.migratedAt, s1: s.landscape.workspaces.s1 }))), t.after
+        ? JSON.stringify({ ...t, readIns: updates().filter((p) => p.migratedAt).length })
+        : null;
+    })()`;
+    const r = await page<{ failed: string; said: string; savedWhileFailed: number; after: { migrated: boolean; s1: { w: number; h: number } }; readIns: number }>("landscape=fresh&lsReadInFails&motion=off", read, "ls-read-in-fails");
+    expect(r.failed).toMatch(/^It couldn't be saved: ENOSPC: .*nothing moved, resized or arranged is saved until it's read in\.$/);
+    expect(r.said).toMatch(/not saved, your grid's layout isn't read in yet/);
+    expect(r.savedWhileFailed).toBe(0);
+    // read in on the second try, s1 at the size the grid's layout gives it, not the L asked for meanwhile
+    expect(r.readIns).toBe(2);
+    expect(r.after.migrated).toBe(true);
+    expect([r.after.s1.w, r.after.s1.h]).not.toEqual([presetSize("agent", "L").w, presetSize("agent", "L").h]);
+  }, 90_000);
+
+  it("offers a stack's ✕ in the Team view off, saying why, while the layout hasn't loaded", async () => {
+    const read = `(() => {
+      if (!window.__t) {
+        const line = document.querySelector(".connected-line");
+        if (!line) return null;
+        window.__t = true;
+        line.click();
+        return null;
+      }
+      const x = document.querySelector('.room-sess-body .sub-label[data-ws="5101/api"] button.danger');
+      return x ? JSON.stringify({ disabled: x.disabled, title: x.title }) : null;
+    })()`;
+    expect(await page<{ disabled: boolean; title: string }>("lsHold&motion=off", read, "ls-hold-unstack")).toEqual({ disabled: true, title: "Not yet: the layout hasn't loaded yet" });
+  }, 90_000);
 
   it("opens Settings on General when the section it remembers has gone", async () => {
     const read = `(() => document.querySelector(".set-nav button.on, .set-nav button[aria-current]")?.textContent ?? null)()`;

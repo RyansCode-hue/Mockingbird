@@ -4,7 +4,7 @@ import type { TeamRoomSummary } from "../../shared/team/types";
 
 /**
  * Team rooms' sessions as words: the second line of a room session's row, a
- * room header's presence, and the Sessions view's "Connected sessions" line.
+ * room chat's presence, and the area tree's Connected line.
  * Plain logic, kept apart from the components so it's tested without a DOM.
  */
 
@@ -54,7 +54,7 @@ export function roomPresence(room: TeamRoomSummary): string {
   return `Shared room · ${room.signaling === "online" ? who : room.signaling === "connecting" ? "connecting…" : "can't reach the server"}`;
 }
 
-/** The Sessions view's line for the rooms — how many of teammates' sessions run, who's online — and where clicking it goes. */
+/** The area tree's Connected line — how many of teammates' sessions run, who's online — and where clicking it goes. */
 export interface ConnectedSummary {
   /** Teammates' room sessions running now, across rooms. */
   live: number;

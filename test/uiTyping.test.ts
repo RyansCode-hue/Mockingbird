@@ -142,3 +142,141 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     expect(t).toContain("Refused Nick Smith's typing in “API: last org per user” (2 writes, 2 bytes): its agent was asking for permission");
   }, 90_000);
 });
+
+/** Nick's ask to type in s8 (?typingAsk), from wherever the view is: a card at 11%, read-only at 50%, live at 100%. */
+describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
+  const ZOOMS = [0.11, 0.5, 1];
+  const S8 = `document.querySelector('.ls-world [data-front="s8"]')`;
+  const PCT = `document.querySelector(".ls-hud-btn.pct")?.textContent`;
+
+  /** What `read` leaves in window.__t once the ask is gone, with the live state's answer and the calls that gave it. */
+  const answered = `(window.__live ??= window.mb.teamLive().then((l) => (window.__t.live = { asks: (l.own.s8.typingAsks ?? []).length, typists: (l.own.s8.typists ?? []).map((g) => g.name) })), window.__t.live ? JSON.stringify({ ...window.__t, calls: window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").map((c) => c.args) }) : null)`;
+
+  for (const zoom of ZOOMS)
+    it(`at ${zoom * 100}%: the notification brings it in at 100%, its strip in view, and Allow there answers it`, async () => {
+      const read = `(() => {
+        const allow = () => [...(${S8}?.querySelectorAll(".typing-ask button") ?? [])].find((b) => b.textContent === "Allow for this session");
+        if (!window.__t) {
+          if (!${S8} || !${PCT}) return null;
+          window.__t = { before: ${PCT}, badge: ${S8}.querySelector(".ls-badge.b-ask")?.textContent ?? null, strip: !!${S8}.querySelector(".typing-ask") };
+          window.__mbEmit("onUiCommand", "focus-session", "s8");
+          return null;
+        }
+        if (!window.__t.at) {
+          if (${PCT} !== "100%" || !allow()) return null;
+          const r = allow().getBoundingClientRect(), v = document.querySelector(".ls-viewport").getBoundingClientRect();
+          window.__t.at = { pct: ${PCT}, inView: r.left >= v.left && r.right <= v.right && r.top >= v.top && r.bottom <= v.bottom };
+          allow().click();
+          return null;
+        }
+        if (${S8}?.querySelector(".typing-ask")) return null;
+        return ${answered};
+      })()`;
+      const r = JSON.parse(await result(`motion=off&lsCamera=0,0,${zoom}&typingAsk`, read, SIZE));
+      expect(r.before).toBe(`${Math.round(zoom * 100)}%`);
+      // a card has no strip: its badge says so instead
+      expect(r.badge).toBe(zoom < 0.35 ? "Nick asks to type" : null);
+      expect(r.strip).toBe(zoom >= 0.35);
+      expect(r.at).toEqual({ pct: "100%", inView: true });
+      expect(r.live).toEqual({ asks: 0, typists: ["Nick Smith"] });
+      expect(r.calls).toEqual([["s8", "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "session"]]);
+    }, 90_000);
+
+  for (const zoom of ZOOMS)
+    it(`at ${zoom * 100}%: Needs you lists it with the prompts, and its Allow answers it as the strip's does`, async () => {
+      const read = `(() => {
+        if (!window.__t) {
+          const btn = document.querySelector(".ny-btn");
+          if (!btn || !${S8} || !${PCT}) return null;
+          window.__t = { pct: ${PCT} };
+          btn.click();
+          return null;
+        }
+        if (!window.__t.item) {
+          const item = document.querySelector(".ny-item.k-typing");
+          if (!item) return null;
+          window.__t.item = {
+            text: item.querySelector(".ny-text").textContent,
+            kind: item.querySelector(".ny-kind").textContent,
+            acts: [...item.querySelectorAll("button")].map((b) => b.dataset.action),
+            kinds: [...document.querySelectorAll(".ny-item")].map((i) => [...i.classList].find((c) => c.startsWith("k-")).slice(2)),
+          };
+          item.querySelector('[data-action="allow"]').click();
+          return null;
+        }
+        if (document.querySelector(".ny-item.k-typing")) return null;
+        return ${answered};
+      })()`;
+      const r = JSON.parse(await result(`motion=off&lsCamera=0,0,${zoom}&typingAsk`, read, SIZE));
+      expect(r.pct).toBe(`${Math.round(zoom * 100)}%`);
+      expect(r.item.text).toMatch(/^Nick wants to type in /);
+      expect(r.item.kind).toMatch(/^Wants to type · /);
+      expect(r.item.acts).toEqual(["allow", "deny", "go", "dismiss"]);
+      // ranked with what holds someone up: no join request or finished session before it
+      const at = r.item.kinds.indexOf("typing");
+      expect(r.item.kinds.slice(0, at).every((k: string) => k === "permission" || k === "question" || k === "typing")).toBe(true);
+      expect(r.live).toEqual({ asks: 0, typists: ["Nick Smith"] });
+      expect(r.calls).toEqual([["s8", "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "session"]]);
+    }, 90_000);
+
+  it("Go there from Needs you, from a card, lands at 100% with the strip in view; Deny there says no", async () => {
+    const read = `(() => {
+      if (!window.__t) {
+        const btn = document.querySelector(".ny-btn");
+        if (!btn || !${S8}) return null;
+        window.__t = {};
+        btn.click();
+        return null;
+      }
+      if (!window.__t.went) {
+        const go = document.querySelector('.ny-item.k-typing [data-action="go"]');
+        if (!go) return null;
+        window.__t.went = true;
+        go.click();
+        return null;
+      }
+      if (!window.__t.at) {
+        const deny = [...(${S8}?.querySelectorAll(".typing-ask button") ?? [])].find((b) => b.textContent === "Deny");
+        if (${PCT} !== "100%" || !deny) return null;
+        const r = deny.getBoundingClientRect(), v = document.querySelector(".ls-viewport").getBoundingClientRect();
+        window.__t.at = { pct: ${PCT}, inView: r.left >= v.left && r.right <= v.right && r.top >= v.top && r.bottom <= v.bottom, tray: !!document.querySelector(".ny-tray") };
+        deny.click();
+        return null;
+      }
+      if (${S8}?.querySelector(".typing-ask")) return null;
+      return ${answered};
+    })()`;
+    const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.11&typingAsk", read, SIZE));
+    expect(r.at).toEqual({ pct: "100%", inView: true, tray: false });
+    expect(r.live).toEqual({ asks: 0, typists: [] });
+    expect(r.calls).toEqual([["s8", "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "deny"]]);
+  }, 90_000);
+
+  for (const zoom of [0.11, 0.5])
+    it(`at ${zoom * 100}%: resting on the workspace opens no peek over the ask (one with no ask still peeks)`, async () => {
+      const read = `(() => {
+        window.__t ??= Date.now();
+        if (Date.now() - window.__t < 2500) return null;
+        return JSON.stringify(!!document.querySelector(".ls-peek"));
+      })()`;
+      expect(await result(`motion=off&lsCamera=0,0,${zoom}&typingAsk&lsPeek=s8`, read, SIZE)).toBe("false");
+      expect(await result(`motion=off&lsCamera=0,0,${zoom}&typingAsk&lsPeek=s2`, read, SIZE)).toBe("true");
+    }, 90_000);
+
+  it("puts away a peek kept open over the workspace once a teammate asks to type in it", async () => {
+    const read = `(() => {
+      if (!window.__t) {
+        if (!document.querySelector(".ls-peek.pinned")) return null;
+        window.__t = { pinned: true };
+        void window.mb.teamLive().then((state) => {
+          state.own.s8.typingAsks = [{ member: "0f1e2d3c4b5a69788796a5b4c3d2e1f0", name: "Nick Smith", at: Date.now() }];
+          window.__mbEmit("onTeamLive", state);
+        });
+        return null;
+      }
+      if (document.querySelector(".ls-peek")) return null;
+      return JSON.stringify({ ...window.__t, strip: !!${S8}?.querySelector(".typing-ask") });
+    })()`;
+    expect(JSON.parse(await result("motion=off&lsCamera=0,0,0.5&lsPeek=s8,pin", read, SIZE))).toEqual({ pinned: true, strip: true });
+  }, 90_000);
+});

@@ -4,6 +4,7 @@ import {
   AREA_HEADER,
   AREA_PAD,
   GAP,
+  MAX_EXTENT,
   areaKeyOf,
   kindOf,
   overlaps,
@@ -14,7 +15,7 @@ import {
   type Landscape,
   type Rect,
 } from "../src/shared/landscape";
-import { LEGACY_PREF_KEYS, migrateLayout, type LegacyPrefs } from "../src/shared/landscapeMigrate";
+import { LEGACY_PREF_KEYS, acrossFor, migrateLayout, type LegacyPrefs } from "../src/shared/landscapeMigrate";
 import type { SessionInfo } from "../src/shared/types";
 import { remotePaneId, type RoomSessionTag } from "../src/shared/team/livePanes";
 import { readLegacyPrefs } from "../src/renderer/useLandscape";
@@ -121,6 +122,45 @@ function checkInvariants(l: Landscape, sessions: SessionInfo[]): void {
     else expect(contains(own(l.areas, areaKeyOf(s)), p), `${s.id} isn't inside its area`).toBe(true);
   }
 }
+
+describe("a group bigger than one area the file accepts", () => {
+  const within = (l: Landscape) => Object.values(l.areas).every((a) => a.w <= MAX_EXTENT && a.h <= MAX_EXTENT);
+  const many = (n: number) => Array.from({ length: n }, (_, i) => sess(`w${i}`, "5101"));
+
+  it("lays hundreds of never-arranged workspaces out about √n across, roughly square, inside MAX_EXTENT", () => {
+    // 209 was the first count two across made too tall for the file
+    for (const n of [209, 400]) {
+      const { l } = migrate({}, many(n));
+      expect(within(l)).toBe(true);
+      expect(new Set(Object.values(l.workspaces).map((p) => p.x)).size).toBe(acrossFor(n));
+      const a = l.areas["5101"];
+      expect(a.w / a.h).toBeGreaterThan(0.5);
+      expect(a.w / a.h).toBeLessThan(3);
+    }
+  });
+
+  it("draws a tree of 92 or more panes across inside MAX_EXTENT, in its order along one row", () => {
+    // 92 was the first M couldn't fit; the second is about the most S can
+    for (const n of [92, Math.floor((0.97 * MAX_EXTENT) / (S.w + GAP + 8))]) {
+      const sessions = many(n);
+      const keys = sessions.map((s) => s.id);
+      const { l } = migrate({ shown: keys, activeGroup: "5101", trees: { "5101": row(keys) } }, sessions);
+      expect(within(l)).toBe(true);
+      const ps = keys.map((k) => l.workspaces[k]);
+      expect(new Set(ps.map((p) => p.y)).size).toBe(1);
+      expect(ps.every((p, i) => i === 0 || p.x > ps[i - 1].x)).toBe(true);
+    }
+  });
+
+  it("places a tree too wide to draw even at preset S as if the grid had none, inside MAX_EXTENT", () => {
+    const n = Math.ceil(MAX_EXTENT / (S.w + GAP)) + 10;
+    const sessions = many(n);
+    const keys = sessions.map((s) => s.id);
+    const { l } = migrate({ shown: keys, activeGroup: "5101", trees: { "5101": row(keys) } }, sessions);
+    expect(within(l)).toBe(true);
+    expect(new Set(Object.values(l.workspaces).map((p) => p.x)).size).toBe(acrossFor(n));
+  });
+});
 
 describe("the grid's prefs, read from localStorage", () => {
   const store = (kv: Record<string, string>) => ({ getItem: (k: string) => kv[k] ?? null, setItem: () => expect.unreachable("the migration never writes") });

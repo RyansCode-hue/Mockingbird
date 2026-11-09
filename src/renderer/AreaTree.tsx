@@ -66,7 +66,7 @@ export interface TreeArea {
 }
 
 /**
- * The area tree (designs L and M): the Sessions view while the landscape shows. Each area with its waiting count
+ * The area tree (designs L and M): the Sessions view. Each area with its waiting count
  * (or how many workspaces it has), a room's with who's online, and its workspaces and stacks under it; the filter
  * finds a workspace. A press on an area flies there, on a workspace selects it and flies to it (its row and its
  * workspace are one selection, so ↑↓ move both), a double-click or Enter focuses it, and right-click is its menu.
@@ -100,7 +100,7 @@ export function AreaTree({
   /** A workspace row's right-click: its workspace's actions (its ⋯'s). */
   menuFor: (s: SessionInfo) => MenuEntry[];
   areaMenu: (key: string) => MenuEntry[] | null;
-  /** Under the tree: Previous and the Connected line. */
+  /** Under the tree: the Closed sessions list and the Connected line. */
   footer: React.ReactNode;
 }) {
   const [closed, setClosed] = usePersisted<string[]>("mb.areaTree.closed", [LOOSE_GROUP]);

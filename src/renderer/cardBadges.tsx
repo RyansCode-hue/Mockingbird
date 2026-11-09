@@ -4,10 +4,13 @@ import { agoShort, plural } from "../shared/format";
 import { onFolderChanged } from "./folderWatch";
 import { settled } from "./settled";
 import { usePipelinesRead, type PipelinesRead } from "./TicketPipeline";
+import { typingAsksOf } from "./needsYouModel";
+import { firstName, listNames } from "./team/connectedModel";
 
 /**
- * A workspace's badges on the landscape (docs/landscape.md, Card badges): its diff against its area repo's base, its
- * ticket's pull request, its cost and tokens, and "what it did", the first line of its agent's latest message. Each
+ * A workspace's badges on the landscape (docs/landscape.md, Card badges): a teammate asking to type in it, its diff
+ * against its area repo's base, its ticket's pull request, its cost and tokens, and "what it did", the first line of
+ * its agent's latest message. Each
  * reads one source, and a source that fails shows "—", with the reason on hover and in the console, never the value
  * it had before: a badge that can't be read again doesn't go on saying what it last read.
  */
@@ -20,7 +23,7 @@ export type Read<T> = { state: "loading" } | { state: "ok"; value: T } | { state
 
 /** A badge as drawn: its text (for the diff, its added and removed counts apart), what hovering says, and whether its source failed. */
 export interface Badge {
-  key: "diff" | "pr" | "cost";
+  key: "ask" | "diff" | "pr" | "cost";
   text: string;
   title: string;
   failed?: boolean;
@@ -29,8 +32,23 @@ export interface Badge {
 }
 
 /** A failed badge says which it is ("diff —"): a row of bare dashes wouldn't say what's missing. */
-const LABEL: Record<Badge["key"], string> = { diff: "diff", pr: "PR", cost: "cost" };
+const LABEL: Record<Badge["key"], string> = { ask: "ask", diff: "diff", pr: "PR", cost: "cost" };
 const failedBadge = (key: Badge["key"], title: string): Badge => ({ key, text: `${LABEL[key]} ${FAILED}`, failed: true, title });
+
+/**
+ * The ask badge: teammates waiting to type in this session of this install's ("Nick asks to type"), in amber, as
+ * anything that needs you is; first in the row, so it's the last to give way. None without an ask.
+ */
+export function askBadge(s: SessionInfo): Badge | null {
+  const asks = typingAsksOf(s);
+  if (!asks.length) return null;
+  const names = asks.map((a) => firstName(a.name));
+  return {
+    key: "ask",
+    text: asks.length === 1 ? `${names[0]} asks to type` : `${asks.length} ask to type`,
+    title: `${listNames(names)} ${asks.length === 1 ? "wants" : "want"} to type in it: answer in Needs you, or bring it into view (it comes in at 100%) and use the strip on it`,
+  };
+}
 
 /**
  * The diff badge: "+214 −38" since the worktree forked from its base; "diff —" when it couldn't be read; none
@@ -312,7 +330,7 @@ export function useCardBadges(s: SessionInfo, area: string, meter: SessionMeter 
   const did = useDid(s, true);
   const pipelines = usePipelinesRead();
   const own = !s.room?.remote;
-  const badges = [diffBadge(diff), prBadge(s, pipelines), own ? costBadge(s, meter, env.metersError) : null].filter((b): b is Badge => !!b);
+  const badges = [askBadge(s), diffBadge(diff), prBadge(s, pipelines), own ? costBadge(s, meter, env.metersError) : null].filter((b): b is Badge => !!b);
   return { badges, did: didLine(did) };
 }
 

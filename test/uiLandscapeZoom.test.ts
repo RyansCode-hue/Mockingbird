@@ -326,3 +326,96 @@ describe.skipIf(!local)("Restart all on the landscape", () => {
     expect(a.restart.lineBefore).toContain("tag list");
   }, 120_000);
 });
+
+describe.skipIf(!local)("buttons drawn over a terminal, below 100%", () => {
+  /** Run `read` in the page until it gives something other than null. */
+  const run = async (query: string, read: string, name: string): Promise<string> => {
+    // @ts-expect-error — a plain .mjs build script, no type declarations
+    const { pageResult } = await import("../scripts/ui-preview.mjs");
+    return pageResult({ size: "1400x900", query, outDir: path.join(tempDir(name), "out"), read });
+  };
+  // the zoom the world is drawn at, and whether its terminals take the mouse
+  const where = `zoom: Math.round(new DOMMatrix(getComputedStyle(document.querySelector(".ls-world")).transform).a * 100) / 100, mouseOff: !!document.querySelector(".ls-viewport.ls-mouse-off")`;
+
+  // s6 has exited; resuming it re-reads a big cold conversation, so its Resume asks first: the question showing is
+  // the click having reached the button. Its row in the area tree brings it on screen at the zoom it's at.
+  const resume = `(() => {
+    if (!window.__r) {
+      const row = document.querySelector('.area-tree .lt-ws[data-sid="s6"]');
+      if (!row || !document.querySelector(".ls-viewport")) return null;
+      window.__r = 1;
+      row.click();
+      return null;
+    }
+    if (window.__r === 1) {
+      const node = document.querySelector('.ls-world .ls-node[data-front="s6"]');
+      const btn = node && [...node.querySelectorAll("button")].find((b) => b.textContent === "Resume" && b.getClientRects().length);
+      if (!btn) return null;
+      const r = btn.getBoundingClientRect();
+      if (r.right < 0 || r.bottom < 0 || r.left > innerWidth || r.top > innerHeight) return null;
+      window.__r = 2;
+      window.__on = btn.closest(".ls-card-acts") ? "card" : btn.closest(".ls-term .dead-body") ? "terminal" : "elsewhere";
+      window.__at = Date.now();
+      btn.click();
+      return null;
+    }
+    const asked = document.querySelector(".modal.cost-dlg h3")?.textContent ?? null;
+    if (!asked && Date.now() - window.__at < 1500) return null;
+    return JSON.stringify({ on: window.__on, asked: !!asked, ${where} });
+  })()`;
+  for (const [zoom, on] of [[0.8, "terminal"], [0.5, "terminal"], [0.2, "card"]] as const) {
+    it(`take an exited session's Resume at ${zoom * 100}%, on its ${on}`, async () => {
+      expect(JSON.parse(await run(`lsCamera=0,0,${zoom}&motion=off`, resume, "ls-resume-below"))).toEqual({ on, asked: true, zoom, mouseOff: true });
+    }, 90_000);
+  }
+
+  // s1 scrolled up from its output at 100%, where its terminal takes the wheel, then zoomed out with ⌘− (each a
+  // fifth less): its Jump to latest takes it back to the bottom and goes
+  const jump = (steps: number) => `(() => {
+    const t = window.__mbTerms?.get("s1")?.term;
+    const node = document.querySelector('.ls-world .ls-node[data-front="s1"]');
+    const vp = document.querySelector(".ls-viewport");
+    const btn = node?.querySelector(".ls-term .scroll-toast.jump");
+    if (!window.__j) {
+      const row = document.querySelector('.area-tree .lt-ws[data-sid="s1"]');
+      if (!t || !row || !node?.querySelector(".ls-term .xterm")) return null;
+      window.__j = 1;
+      window.__mbEmit("onSessionData", "s1", Array.from({ length: 120 }, (_, i) => "output " + i + "\\r\\n").join(""));
+      row.click();
+      return null;
+    }
+    if (window.__j === 1) {
+      if (t.buffer.active.baseY < 60 || !node.classList.contains("selected")) return null;
+      window.__j = 2;
+      window.__at = Date.now();
+      t.element.querySelector(".xterm-screen").dispatchEvent(new WheelEvent("wheel", { deltaY: -600, deltaMode: 0, bubbles: true, cancelable: true }));
+      return null;
+    }
+    if (window.__j === 2) {
+      if (!btn) return Date.now() - window.__at < 5000 ? null : JSON.stringify({ stuck: "not scrolled up at 100%" });
+      window.__j = 3;
+      window.__at = Date.now();
+      vp.focus();
+      for (let i = 0; i < ${steps}; i++) vp.dispatchEvent(new KeyboardEvent("keydown", { key: "-", metaKey: true, bubbles: true, cancelable: true }));
+      return null;
+    }
+    if (window.__j === 3) {
+      if (Date.now() - window.__at < 600) return null;
+      if (!btn) return JSON.stringify({ stuck: "Jump to latest went as it zoomed out" });
+      window.__j = 4;
+      window.__at = Date.now();
+      window.__zoomed = { ${where} };
+      btn.click();
+      return null;
+    }
+    const b = t.buffer.active;
+    const back = b.viewportY === b.baseY && !btn;
+    if (!back && Date.now() - window.__at < 1500) return null;
+    return JSON.stringify({ back, ...window.__zoomed });
+  })()`;
+  for (const [steps, zoom] of [[1, 0.8], [3, 0.51]] as const) {
+    it(`take Jump to latest at ${Math.round(zoom * 100)}%`, async () => {
+      expect(JSON.parse(await run(`lsCamera=0,0,1&motion=off`, jump(steps), "ls-jump-below"))).toEqual({ back: true, zoom, mouseOff: true });
+    }, 90_000);
+  }
+});

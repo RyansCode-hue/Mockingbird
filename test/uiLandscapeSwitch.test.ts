@@ -126,6 +126,19 @@ describe.skipIf(!local)("what goes on from a workspace", () => {
   }, 90_000);
 });
 
+describe.skipIf(!local)("a stack's tabs, right-clicked", () => {
+  it("act on the tab clicked: a back tab's Rename… and Close… are its own session's, never the front one's", async () => {
+    const a = await run("tabs", "&lsCamera=0,0,0.5");
+    expect(a.front).toBe("s2");
+    expect(a.renameBack).toBe("API tests");
+    expect(a.renameFront).toBe("API: last org per user");
+    // a closed session's work is asked about or it's closed: either way it's s3, and s2 is untouched
+    expect(a.close.dialog === null ? a.close.named.length > 0 : /API tests/.test(a.close.dialog)).toBe(true);
+    expect(a.close.named.filter((n: string) => n.endsWith(":s2"))).toEqual([]);
+    expect(a.frontAfter).toBe("s2");
+  }, 90_000);
+});
+
 describe.skipIf(!local)("a Search window, on the landscape", () => {
   it("keeps the options it last set for the next one", async () => {
     // at 100%, where a window shows its body rather than its compact card

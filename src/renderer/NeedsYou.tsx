@@ -70,7 +70,7 @@ export function useNeedsYou(
 }
 
 /** The dot before an item's kind: amber while something waits on you, grey for what's only done. */
-const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", join: "waiting", finished: "idle" };
+const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", join: "waiting", finished: "idle" };
 
 /**
  * A click in the tray this soon after a Dismiss is a double click's second, landing on whatever slid up under the
@@ -84,8 +84,8 @@ const stepOf = (e: React.KeyboardEvent): 1 | -1 | null => (e.metaKey || e.ctrlKe
 
 /**
  * The Needs you button in the top bar and the tray it drops down (design D, "Inbox"): every item with its kind and
- * area, how long it has waited, what it is, and its actions (needsActions: Go there and Dismiss, through the one
- * model). The item the view is on (N's place) is lit and kept in the list's view. N and ⇧N work in the tray as they do
+ * area, how long it has waited, what it is, and its actions (needsActions: a typing ask's Allow and Deny, Go there
+ * and Dismiss, through the one model). The item the view is on (N's place) is lit and kept in the list's view. N and ⇧N work in the tray as they do
  * on the landscape, and keep it open; the view keeps the item clear of the tray. They work on the button too, which
  * has the keyboard after Esc. The last Dismiss can be undone from its foot. A dialog opening puts the tray away.
  */
@@ -171,7 +171,7 @@ export function NeedsYou({
         aria-expanded={open}
         title={
           n
-            ? `${needsLabel(n)}: permission prompts, questions, join requests and finished sessions (N goes to the next on the landscape)`
+            ? `${needsLabel(n)}: permission prompts, questions, teammates asking to type, join requests and finished sessions (N goes to the next on the landscape)`
             : state.joinError
               ? `Couldn't read the rooms' join requests: ${state.joinError}`
               : "Nothing needs you right now"

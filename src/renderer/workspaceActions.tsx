@@ -415,12 +415,21 @@ export interface NeedsEnv {
   /** "Answer it in its terminal" and such: what Go there leads to, its tooltip. */
   goTitle: string;
   dismiss: () => void;
+  /** A typing ask's answers, the strip's own (Allow while the session runs, Deny), and the teammate's first name. */
+  answer?: { allow: Can; deny: Can; who: string } | null;
 }
 
-/** A Needs you item's actions, in the tray's order: Go there, then Dismiss (until its state changes). */
+/** A Needs you item's actions, in the tray's order: a typing ask's Allow and Deny, Go there, then Dismiss (until its state changes). */
 export function needsActions(env: NeedsEnv): ModelAction[] {
+  const a = env.answer;
   return [
-    { section: "needs", key: "go", label: "Go there", primary: true, title: env.goTitle, ...can(env.go) },
+    ...(a
+      ? ([
+          { section: "needs", key: "allow", label: "Allow", primary: true, title: `Let ${a.who} type in this session until you take it back, as Allow for this session on its workspace does`, ...can(a.allow) },
+          { section: "needs", key: "deny", label: "Deny", title: `Tell ${a.who} no: they can ask again in a minute`, ...can(a.deny) },
+        ] satisfies ModelAction[])
+      : []),
+    { section: "needs", key: "go", label: "Go there", primary: !a, title: env.goTitle, ...can(env.go) },
     { section: "needs", key: "dismiss", label: "Dismiss", title: "Take it off the list until its state changes", onPick: env.dismiss },
   ];
 }

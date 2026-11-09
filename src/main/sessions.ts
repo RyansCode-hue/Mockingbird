@@ -1112,7 +1112,7 @@ export class SessionManager {
     if (!asking && this.resuming.has(id)) return BEING_RESUMED;
     if (this.relaunching.has(id)) return BEING_RELAUNCHED;
     const pane = this.live.get(id);
-    if (!pane) return "It isn't an exited pane here: reopen it from Previous";
+    if (!pane) return "It isn't an exited pane here: reopen it from its ghost card or Closed sessions";
     if (pane.info.status !== "dead") return "It's running already";
     const refusal = this.relaunchGuard?.(id);
     if (refusal) return refusal;

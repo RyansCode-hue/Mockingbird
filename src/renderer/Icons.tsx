@@ -83,7 +83,7 @@ export const DockerIcon = () => (
   </Icon>
 );
 
-/** Two stacked terminal windows: the Sessions view. */
+/** Two stacked terminal windows: the Sessions view, the area tree. */
 export const SessionsIcon = () => (
   <Icon>
     <rect x="1.75" y="2.25" width="10" height="8" rx="1.5" />

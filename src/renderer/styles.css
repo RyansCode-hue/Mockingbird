@@ -2595,7 +2595,7 @@ button.lbtn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset
 .room-sess-body .sess-item.focused .sr-acts,
 .room-sess-body .sess-item.focused:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) > :not(.on) { display: inline-flex; }
 
-/* ---- the Sessions view's line for the team rooms ---- */
+/* ---- the area tree's line for the team rooms (the Connected line) ---- */
 button.connected-line {
   display: flex; align-items: center; gap: 7px; width: 100%; margin: 14px 0 4px; padding: 7px 9px;
   border: 1px solid var(--line-med); border-radius: 6px; background: var(--fill-subtle);
@@ -2653,7 +2653,6 @@ button.gb-btn {
 button.gb-btn:hover { border-color: var(--line-btn-hover); color: var(--text-1); background: var(--fill-subtle); }
 button.gb-btn .ico { margin: 0; vertical-align: 0; color: var(--text-3); }
 button.gb-btn:hover .ico { color: var(--text-1); }
-button.gb-btn.teal { color: var(--teal-text); border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
 
 /* a room artifact's actions sit over the row's right end while it's hovered or focused */
 .art-row .art-acts.lbar {
@@ -2822,7 +2821,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .tk-usage.none { color: var(--text-4); }
 .ctx-pop-note { margin-top: 8px; font: 400 10.5px var(--ui); color: var(--text-4); white-space: normal; }
 
-/* ---- the landscape (Settings → Labs; Landscape.tsx): a surface panned and zoomed. Its world is one layer moved
+/* ---- the landscape (Landscape.tsx): a surface panned and zoomed. Its world is one layer moved
    by a CSS transform, so neither changes any layout; the viewport clips rather than scrolls, so a terminal taking
    the keyboard can't scroll the world out from under the camera ---- */
 :root { --ls-dot: rgba(255, 255, 255, .075); }
@@ -3083,7 +3082,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .lsm-leave { margin-left: auto; padding: 3px 6px !important; }
 .ls-members .role-notice, .ls-members .room-warn { margin: 2px 8px; }
 
-/* the area tree (designs L and M): the Sessions view while the landscape shows */
+/* the area tree (designs L and M): the Sessions view */
 .area-tree { flex: 1; display: flex; flex-direction: column; min-height: 0; font: 400 12.5px var(--ui); }
 .lt-find { display: flex; align-items: center; gap: 6px; padding: 12px 10px 8px; flex-shrink: 0; }
 .lt-find .filter { flex: 1; min-width: 0; height: 28px; margin: 0; box-sizing: border-box; padding: 0 9px; border-radius: 6px; font-size: 12px; }
@@ -3319,6 +3318,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-badge .add, .ls-foot .ls-diff .add { color: var(--git-add); }
 .ls-badge .del, .ls-foot .ls-diff .del { color: var(--red); }
 .ls-badge.failed, .ls-foot .ls-diff.failed .v { color: var(--text-4); }
+.ls-badge.b-ask { color: var(--amber-text); font-family: var(--ui); }
 
 /* S5: the workspace header's chips and ⋯ and its footer (design N): the pane header's chips, the rail's cells in a line */
 .ls-chips { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; flex: 0 1 auto; }

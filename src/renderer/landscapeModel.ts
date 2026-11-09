@@ -125,6 +125,19 @@ export function fitBelow(rects: readonly Rect[], viewport: Size, top: number): C
 /** The camera at its zoom with `r` centred in the viewport. */
 export const centreOn = (cam: Camera, r: Rect, viewport: Size): Camera => ({ x: r.x + r.w / 2 - viewport.w / (2 * cam.zoom), y: r.y + r.h / 2 - viewport.h / (2 * cam.zoom), zoom: cam.zoom });
 
+/**
+ * The camera at 100%, where a workspace's body is drawn and its typing ask can be answered: `r` centred, or, larger
+ * than the view, shown from its top left, where its header and the ask's strip are.
+ */
+export function answerOn(r: Rect, viewport: Size, margin = 24): Camera {
+  const c = centreOn({ x: 0, y: 0, zoom: 1 }, r, viewport);
+  return {
+    x: r.w + 2 * margin > viewport.w ? r.x - margin : c.x,
+    y: r.h + 2 * margin > viewport.h ? r.y - margin : c.y,
+    zoom: 1,
+  };
+}
+
 /** Whether `r` is wholly in view. */
 export function inView(cam: Camera, r: Rect, viewport: Size): boolean {
   const v = { x: cam.x, y: cam.y, w: viewport.w / cam.zoom, h: viewport.h / cam.zoom };
@@ -305,7 +318,8 @@ export interface ScreenBox {
 }
 /**
  * Bring a session's workspace into view: `focus` fills the window with it, `keys` gives the landscape the keyboard once
- * it's there, `avoid` is a box to keep it clear of. `n` tells one ask from the next.
+ * it's there, `avoid` is a box to keep it clear of, `answer` brings it in at 100% (a teammate waits to type in it, and
+ * its strip's buttons take a click only where its body is drawn). `n` tells one ask from the next.
  */
 export interface RevealAsk {
   id: string;
@@ -313,6 +327,7 @@ export interface RevealAsk {
   focus?: boolean;
   keys?: boolean;
   avoid?: ScreenBox | null;
+  answer?: boolean;
 }
 /** Go to an area (fit it in view), clear of `avoid`. */
 export interface GoToAsk {

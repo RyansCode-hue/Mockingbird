@@ -1330,7 +1330,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
 
   // ---- views ---------------------------------------------------------------------------------------
 
-  /** What this window shows (its grid) and which pane it's in. */
+  /** What this window shows (the workspaces on the landscape's screen) and which one it's in. */
   setView(view: { shown?: unknown; focused?: unknown }): void {
     const shown = Array.isArray(view?.shown) ? view.shown.filter((x): x is string => typeof x === "string").slice(0, MAX_VIEW_KEYS) : [];
     const focused = typeof view?.focused === "string" ? view.focused : null;

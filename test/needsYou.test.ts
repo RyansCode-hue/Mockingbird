@@ -129,6 +129,31 @@ describe("what needs you", () => {
     const counts = needsByArea(items());
     expect(Object.fromEntries(counts)).toEqual({ "5101": 3, "5102": 1, [LOOSE_GROUP]: 1 });
   });
+
+  it("lists a teammate's ask to type in one of this install's sessions with the prompts, one item per teammate asking", () => {
+    const ask = (member: string, name: string, at: number) => ({ member, name, at });
+    const sessions = [
+      ...fixture(),
+      sess("shared", { status: "working", title: "Release notes for #5101", room: roomTag({ typingAsks: [ask("nick", "Nick Smith", NOW - 2 * MIN), ask("sam", "Sam Lee", NOW - 30 * MIN)] }) }),
+      // a teammate's copy and a copy a teammate took over have nothing to answer here
+      sess("theirs2", { room: roomTag({ remote: true, typingAsks: [ask("nick", "Nick Smith", NOW)] }) }),
+      sess("took2", { room: roomTag({ typingAsks: [ask("nick", "Nick Smith", NOW)], takenOver: { by: "nick", byName: "Nick Smith", at: NOW } }) }),
+    ];
+    const got = items(sessions);
+    expect(got.map((i) => [i.kind, i.id])).toEqual([
+      ["question", "s:ask"],
+      ["typing", "type:shared:nick"],
+      ["permission", "s:perm"],
+      ["typing", "type:shared:sam"],
+      ["join", "join:R5101:lee:" + (NOW - 3 * MIN)],
+      ["finished", "s:done2"],
+      ["finished", "s:done"],
+    ]);
+    expect(got.find((i) => i.id === "type:shared:nick")).toMatchObject({ text: "Nick wants to type in Release notes for #5101", session: "shared", typing: { member: "nick", name: "Nick Smith" }, at: NOW - 2 * MIN, area: "5101" });
+    // asked again is a new item: a Dismiss holds only for the ask it was given to
+    const again = items(sessions.map((s) => (s.id === "shared" ? { ...s, room: roomTag({ typingAsks: [ask("nick", "Nick Smith", NOW)] }) } : s)));
+    expect(again.find((i) => i.id === "type:shared:nick")!.sig).not.toBe(got.find((i) => i.id === "type:shared:nick")!.sig);
+  });
 });
 
 describe("N and ⇧N", () => {
@@ -227,7 +252,7 @@ describe("Dismiss", () => {
   });
 
   it("keeps the list short: the newest few hundred, none older than a few days", () => {
-    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, text: "", code: null });
+    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, typing: null, text: "", code: null });
     let d = dismiss([], item(0), NOW - DISMISS_KEEP_MS - 1);
     d = dismiss(d, item(1), NOW);
     expect(d.map((x) => x.sig)).toEqual(["s:1|f|1"]); // the old one let go
@@ -240,7 +265,7 @@ describe("Dismiss", () => {
   });
 
   it("keeps a dismissal however old while its state is still current, so an unrelated Dismiss brings nothing back", () => {
-    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, text: "", code: null });
+    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, typing: null, text: "", code: null });
     const current = [item(0).sig, item(1).sig];
     let d = dismiss([], item(0), NOW - DISMISS_KEEP_MS - 1);
     d = dismiss(d, item(1), NOW, current);
@@ -307,5 +332,26 @@ describe("Go there", () => {
     expect(gone[0]).toMatchObject({ key: "go", disabled: true, title: "That session isn't running any more" });
     gone[0].onPick();
     expect(go).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers a typing ask from its row: Allow and Deny first, off with the reason where Go there would be", () => {
+    const allow = vi.fn();
+    const deny = vi.fn();
+    const rows = needsActions({ go: () => {}, goTitle: "Bring it into view at 100%", dismiss: vi.fn(), answer: { who: "Nick", allow, deny } });
+    expect(rows.map((r) => [r.key, r.label, !!r.primary])).toEqual([
+      ["allow", "Allow", true],
+      ["deny", "Deny", false],
+      ["go", "Go there", false],
+      ["dismiss", "Dismiss", false],
+    ]);
+    rows[0].onPick();
+    rows[1].onPick();
+    expect([allow.mock.calls.length, deny.mock.calls.length]).toEqual([1, 1]);
+    const off = needsActions({ go: { no: "That session isn't running any more" }, goTitle: "", dismiss: vi.fn(), answer: { who: "Nick", allow: { no: "That session isn't running any more" }, deny: { no: "That session isn't running any more" } } });
+    expect(off.slice(0, 3).map((r) => [r.key, r.disabled, r.title])).toEqual([
+      ["allow", true, "That session isn't running any more"],
+      ["deny", true, "That session isn't running any more"],
+      ["go", true, "That session isn't running any more"],
+    ]);
   });
 });

@@ -14,7 +14,7 @@ import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, clearGateTicks, clearsGates, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
-import { bottomLine, fitSize, followsBottom, measuredCell } from "../renderer/cachedTerm";
+import { bottomLine, followsBottom, measuredCell } from "../renderer/cachedTerm";
 import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
 import type { SuggestProblem } from "../shared/suggestions";
 import { changedTags, parseCardRules, type TagChange } from "../shared/cardRules";
@@ -966,7 +966,7 @@ const live: LivePanesState = {
     }),
   ],
   own: {
-    // Nick may type in s1 for a few more minutes; ?typingAsk: he's asking to type in s8 (shown with ?shown=s8,…)
+    // Nick may type in s1 for a few more minutes; ?typingAsk: he's asking to type in s8
     s1: roomTag({ sessionId: "s1", lookers: [{ id: NICK, name: "Nick Smith", focused: true }], typists: [{ member: NICK, name: "Nick Smith", until: now + 12 * min, at: now - 3 * min }] }),
     s2: roomTag({ sessionId: "s2" }),
     s3: roomTag({ sessionId: "s3", guards: { secrets: false, coauthors: true } }),
@@ -1124,6 +1124,8 @@ let landscapeRev = 0;
 // =fresh: there's no landscape.json yet, so the grid's layout is read in the first time the landscape is shown
 const LANDSCAPE_FILE = "/Users/you/.mockingbird/landscape.json";
 const landscapeQ = new URLSearchParams(location.search).get("landscape");
+const lsReadInFails = new URLSearchParams(location.search).has("lsReadInFails");
+let readInRefused = false;
 let standIn = landscapeQ === "unreadable";
 let standInChanges = 0;
 /** The file read again while only a stand-in is held, as LandscapeStore.load does; `pending` are changes in hand made against the stand-in. */
@@ -1779,6 +1781,11 @@ const api: Record<string, (...a: any[]) => any> = {
   // read as main reads it: IPC hands main a structured clone, which keeps NaN and undefined where JSON wouldn't,
   // so a patch main refuses answers { error } here too, and one that changes nothing isn't a revision
   landscapeUpdate: async (raw: unknown): Promise<LandscapeState | { error: string }> => {
+    // ?lsReadInFails (with ?landscape=fresh): the first read-in of the grid's layout can't be saved, as a full disk would
+    if (lsReadInFails && !readInRefused && raw && typeof raw === "object" && "migratedAt" in raw) {
+      readInRefused = true;
+      return err("ENOSPC: no space left on device, write '~/.mockingbird/landscape.json'");
+    }
     let patch: LandscapePatch;
     let next: Landscape;
     if (tourSaveFails && (raw as LandscapePatch).tourDone !== undefined) return err("ENOSPC: no space left on device");
@@ -3387,8 +3394,10 @@ if (params.has("motionMoments")) {
 // history and output streaming, then
 // a Repaint on the normal screen and on the alternate one, and a pane relaunched in place. It finishes animations
 // rather than waiting on them, and writes into <script id="mb-term-audit"> for test/uiTerminal.test.ts what was
-// wrong after each step: a terminal not at its holder's size, a pty not told its terminal's size, a size sent from a
-// holder with no area; and the pty sizes each step sent. The pty sizes are as main has them: a relaunched session's new pty starts at 120×32.
+// wrong after each step: a terminal not at its placement's size, one that overflows its holder or leaves more of it
+// empty than a cell and the renderer's rounding account for, a pty not told its terminal's size, a size sent for a
+// workspace off screen (no holder to measure) that isn't its placement's; and the pty sizes each step sent. The pty
+// sizes are as main has them: a relaunched session's new pty starts at 120×32.
 if (params.has("termAudit")) {
   if (!lsCamera) set("mb.landscape.camera", { x: 0, y: 0, zoom: 1 });
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -3403,7 +3412,6 @@ if (params.has("termAudit")) {
     const entry = terms()?.get(id);
     const holder = entry?.term.element?.parentElement;
     const area = holder?.isConnected && holder.getClientRects().length ? holder.clientWidth * holder.clientHeight : 0;
-    // a workspace off screen is held at its placement's size (holdSize), with no holder to measure
     // a workspace off screen is held at its placement's size (holdSize), with no holder to measure: checked once a cell's measured
     if (!area) held.push({ id, cols, rows });
     pty[id] = `${cols}×${rows}`;
@@ -3424,6 +3432,24 @@ if (params.has("termAudit")) {
     const box = inFocus ? { w: document.querySelector(".ls-viewport")!.clientWidth, h: document.querySelector(".ls-viewport")!.clientHeight } : stack ? landscape.stacks[stack]?.placement : landscape.workspaces[id];
     return cell && box ? colsRows(box.w, box.h, cell.w, cell.h) : null;
   };
+  // how a terminal sits in its holder, in layout pixels (zoom scales both alike). The pty is sized by the font's cell
+  // (fontCell), which the WebGL renderer floors to device pixels: at 1× each of its cells is drawn narrower, so a
+  // terminal leaves up to cols × that difference of its holder empty on the right, on top of the part of a cell
+  // the holder's width doesn't divide into
+  const fitOf = (e: Entry) => {
+    const holder = e.term.element?.parentElement;
+    const screen = e.term.element?.querySelector<HTMLElement>(".xterm-screen");
+    const drawn = (e.term as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } } })._core?._renderService?.dimensions?.css?.cell;
+    const font = measuredCell(e.term);
+    if (!holder || !screen || !holder.getClientRects().length || holder.classList.contains("fixed") || !drawn?.width || !font) return null;
+    const cs = getComputedStyle(holder);
+    const w = holder.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const h = holder.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const lossW = e.term.cols * Math.max(0, font.w - drawn.width);
+    const lossH = e.term.rows * Math.max(0, font.h - drawn.height);
+    return { w, h, sw: screen.offsetWidth, sh: screen.offsetHeight, allowW: font.w + lossW + 1, allowH: font.h + lossH + 1, lossW };
+  };
+  const fit = { checked: 0, dpr: window.devicePixelRatio, rounding: 0 };
   const check = (step: string) => {
     for (const h of held.splice(0)) {
       const want = placedSize(h.id, false);
@@ -3435,6 +3461,12 @@ if (params.has("termAudit")) {
       const fits = placedSize(id, !!e.term.element.closest(".ls-focus"));
       if (!fits || `${fits.cols}×${fits.rows}` !== size) problems.push(`${step}: ${id} is ${size} in a holder that fits ${fits ? `${fits.cols}×${fits.rows}` : "nothing"}`);
       if (pty[id] !== size) problems.push(`${step}: ${id}'s pty is ${pty[id] ?? "unsized"} under a ${size} terminal`);
+      const f = fitOf(e);
+      if (!f) continue;
+      fit.checked++;
+      fit.rounding = Math.max(fit.rounding, Math.round(f.lossW));
+      if (f.sw > f.w + 1 || f.sh > f.h + 1) problems.push(`${step}: ${id} is drawn ${f.sw}×${f.sh} in a ${f.w}×${f.h} holder: it overflows`);
+      if (f.w - f.sw > f.allowW || f.h - f.sh > f.allowH) problems.push(`${step}: ${id} is drawn ${f.sw}×${f.sh} in a ${f.w}×${f.h} holder: more of it empty than a cell and the renderer's rounding`);
     }
   };
   const key = (k: string) => window.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: true, bubbles: true }));
@@ -3572,6 +3604,7 @@ if (params.has("termAudit")) {
       out.error = String(err);
     }
     out.problems = problems;
+    out.fit = fit;
     out.mode = document.documentElement.dataset.motion;
     const tag = document.createElement("script");
     tag.type = "application/json";

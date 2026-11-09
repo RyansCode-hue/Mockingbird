@@ -1599,7 +1599,7 @@ Design O, with Artifacts as a window, and N's workspace header.
       Resume is one call to main once the cost is agreed (`sessions:resume`,
       `SessionManager.resume`): refused, with nothing undone and saying why,
       for a pane that isn't an exited one here ("It isn't an exited pane
-      here: reopen it from Previous"), one running ("It's running
+      here: reopen it from its ghost card or Closed sessions"), one running ("It's running
       already"), one being resumed already ("It's being resumed already":
       main keeps the ids under way until each relaunches or fails and
       refuses to relaunch or restart them meanwhile; one stays among this
@@ -3507,14 +3507,17 @@ Design O, with Artifacts as a window, and N's workspace header.
     | Re-reads | `refresh`, on what main sends, never on `shown` | read |
     | `⌘\\`, ⌘K's row for the tree | Went by the grid's last side bar view; now by the side bar alone | `uiLandscapeSwitch` |
 
-  - **Found, not fixed:** at DPR 1 a landscape terminal leaves its holder's right
-    edge blank: its columns come from the font's advance (7.5px here) and xterm
-    draws at a whole 7px, so 140 columns take 980px of 1056. `uiTerminal` checks
-    size against the placement for that reason, and Retina isn't affected.
-    Below 35% a workspace is a card, with no typing ask on it, and Needs you
-    doesn't list typing asks; between 35% and 75% resting the pointer on a
-    workspace opens its peek over it, covering the ask's buttons until it's
-    put away.
+  - **At DPR 1 a landscape terminal leaves a strip of its holder blank** on the
+    right, by design rather than sub-pixel: the pty's columns come from the
+    font's advance (`fontCell`, 7.53px here) and the WebGL renderer floors its
+    cell to whole device pixels (7px at 1×), so 140 columns draw 980px wide in
+    a 1056px holder. Sizing by the renderer's cell instead would change a pty's
+    size whenever a terminal moved between WebGL and the DOM renderer.
+    `uiTerminal` checks each terminal against its holder as well as its
+    placement (`fit`): never overflowing, and never more of it empty than a
+    cell plus that rounding (cols × the difference), which it reports; at 2×
+    there's none to speak of. The typing ask that cards and the peek hid is
+    fixed (below).
 - **As built, the grid deleted.** `layoutTree.ts`, `gridModel.ts`,
   `gridMotion.ts` and `GridPreview.tsx` are gone, with main.tsx's shown,
   pinned, zoomed, groupLayouts, trees, wsTabs, collapsed and side bar view
@@ -3564,7 +3567,48 @@ Design O, with Artifacts as a window, and N's workspace header.
   - **Found by them and fixed:** below 100% the landscape swallowed clicks on
     the buttons drawn over a terminal (a typing ask's Allow and Deny, Resume,
     Jump to latest), so an owner who came to an ask from its notification
-    couldn't answer it. `test/uiTyping.test.ts` answers one at 80%.
+    couldn't answer it. `test/uiTyping.test.ts` answers one at 80%;
+    `test/uiLandscapeZoom.test.ts` clicks an exited session's Resume at 80%,
+    50% and on its card at 20%, and Jump to latest at 80% and 51%.
+- **As built, review fixes 1.**
+  - **A teammate's ask to type is in Needs you** (`typing`, "Nick wants to type
+    in …", ranked 0 with the prompts; own sessions only). Its **Allow** (for
+    this session) and **Deny** call `decideTyping`, the main-process call the
+    strip's buttons make (`teamDecideTyping`), and a refusal is said with the
+    teammate's name; the item stays until main says the ask is gone. Its **Go
+    there** (`RevealAsk.answer`) lands where the ask can be answered: at 100%,
+    centred on the workspace or, when it's bigger than the window, with its
+    top left (where the strip is) in view (`answerOn`), whenever it's off
+    screen or below 100%, as from its notification. A card says "Nick asks to type"
+    (`askBadge`, first of its badges). `uiTyping` answers one at 11%, 50% and
+    100%, from the notification and from the tray.
+  - **The peek** doesn't open over a workspace with an ask pending, and one
+    kept open is put away once an ask arrives (`peekGone`).
+  - **A stack's back tab, right-clicked**, gets that session's menu (rename,
+    close, resume, take over act on it), and a closed tab's ghost menu
+    (`uiLandscapeSwitch`'s "a stack's tabs, right-clicked").
+  - **The migration's extent.** Workspaces in no tree are laid about √n across
+    (`acrossFor`), not in one row, and a tree's tracks are capped so it fits
+    under `MAX_EXTENT` with its area's padding and header (`TREE_MAX`); a tree
+    that still can't fit falls back to rows. `landscapeMigrate.test.ts` tries
+    a group at the limit.
+  - **Moves while the read-in has failed aren't saved** (`lsSaves`): every
+    landscape change goes through one save that refuses while the migration
+    has failed (`NOT_READ_IN`), so retrying it can't put back what was moved,
+    and the banner says nothing moved is saved until it's read in. The
+    preview's `?lsReadInFails` fails the first write.
+  - **Nothing waits silently on the layout:** carrying a plan, unstacking, a
+    new tab and a stack join made by New tab… say "the layout hasn't loaded
+    yet" when it hasn't (`LAYOUT_LOADING`), and the Team view's stack ✕ is off
+    with that as its reason; only the ✕ can be reached in the preview, and
+    `uiLandscape` tests it.
+  - **`landscapeMigrateApp.e2e`** moves a placement on its second start and
+    checks on the third, once `.ls-viewport` has settled, that the placement
+    and `migratedAt` are as left: a layout read in again would put it back.
+  - **Leftovers:** the Brief dialog, a refused resume, the Team view's empty
+    state and several comments no longer name Previous, the grid or the
+    Sessions view's rows; the chat chip's group-bar form and an unnameable
+    "ungrouped" rename went, and the rename dialog says Rename area.
 
 ## Risks
 

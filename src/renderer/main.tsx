@@ -34,7 +34,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -82,13 +82,14 @@ import { StatusDot } from "./StatusDot";
 import { emptyStateOf, nothingToTour } from "./landscapeFirstRun";
 import { LandscapeTopBar, type TopTab } from "./TopBar";
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type NoteAction } from "./Landscape";
-import { useLandscape, useLandscapeMigration } from "./useLandscape";
+import { useLandscape, useLandscapeMigration, type LandscapeSave } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
 import { accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
-import { currentIndex, goCan, selectionAfter, stepItem, targetOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
+import { currentIndex, goCan, selectionAfter, stepItem, targetOf, typingAsksOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
+import { decideTyping } from "./team/Typing";
 import { BadgeContext } from "./cardBadges";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
@@ -130,6 +131,10 @@ const CLOSED_READ = "the previous sessions";
 const GONE_READ = "which closed sessions' folders are gone";
 /** The longest wait before a failed read of the closed sessions is tried again. */
 const CLOSED_RETRY_MAX_MS = 30_000;
+/** Why something done to the landscape waits: what it plans against hasn't arrived from main yet. */
+const LAYOUT_LOADING = "the layout hasn't loaded yet";
+/** Why a change to the landscape isn't saved while the grid's layout isn't read in: reading it in would put it back. */
+const NOT_READ_IN = "your grid's layout isn't read in yet, and reading it in would put this back: Try again in its banner first";
 /** Words that follow others in a sentence ("in 5101"), with their space; none, nothing. */
 const spaced = (words: string): string => (words ? ` ${words}` : "");
 
@@ -319,10 +324,9 @@ function App() {
   const [laterConsents, setLaterConsents] = useState<string[]>([]);
   // team rooms: the House board — the room whose board is open
   const [boardDlg, setBoardDlg] = useState<string | null>(null);
-  // group/workspace renames use a dialog: inline editing broke because the same
-  // edit field rendered in two places (sidebar + workspace tab strip) and the
-  // second mount stole focus from the first, instantly closing it. Sessions use
-  // it too when renamed from somewhere their sidebar row may not be showing.
+  // area, stack and session renames use a dialog rather than a field in place: a name shows in several places at
+  // once (the area tree, the landscape's headers and tabs), and a second edit field mounted for it takes the focus
+  // from the first, closing it
   const [renameDlg, setRenameDlg] = useState<{ kind: "group" | "sub" | "session"; key: string; initial: string } | null>(null);
 
   const applyRename = async (v: string) => {
@@ -340,13 +344,7 @@ function App() {
         ? sanitizeSegment(v)
         : groupKey(topOfKey(renameDlg.key), v);
     if (!next) return;
-    if (renameDlg.key === "ungrouped") {
-      // "ungrouped" is the absence of a group, not a stored one: naming it groups its sessions
-      for (const m of groupUngrouped(workSessions, next)) {
-        if (failed("Couldn't name the group", await window.mb.setGroup(m.id, m.group))) return refresh();
-      }
-      await migrateGroupKeys(renameDlg.key, next);
-    } else if (next !== renameDlg.key) {
+    if (next !== renameDlg.key) {
       const pending: PendingRename = { from: renameDlg.key, to: next };
       setLsRenames((r) => [...r.filter((x) => x.from !== pending.from), pending]);
       if (failed("Couldn't rename the group", await window.mb.renameGroup(renameDlg.key, next))) {
@@ -510,7 +508,7 @@ function App() {
     if (!area.rect.collapsed) return void (showTool("chat", null, key) || teamViewOn(roomId));
     // collapsed: opened first, and its Chat placed once the layout has it open (the effect below)
     setRoomChatAfterOpen({ key, roomId });
-    void landscapeStore.update({ areas: { [key]: { collapsed: false } } }, `${areaTitle(key)} opened`).then((error) => {
+    void lsSaves.update({ areas: { [key]: { collapsed: false } } }, `${areaTitle(key)} opened`).then((error) => {
       if (!error) return;
       setRoomChatAfterOpen(null);
       lsSay(`${areaTitle(key)} couldn't be opened (${error}): its room's chat is in the side bar`);
@@ -742,6 +740,19 @@ function App() {
     remoteError: roomLive.error,
     retryRemote: roomLive.retry,
   });
+  // While reading the grid's layout in has failed, what's done on the landscape isn't saved: reading it in, on a retry
+  // or the next launch, would put those places back. Each save is refused and said, as the banner says; reading it in
+  // saves through the store itself. (A file that can't be read is a stand-in main never saves, and says so.)
+  const readInFailed = useRef(false);
+  readInFailed.current = !!migration.failed;
+  const lsSaves = useMemo(() => {
+    const save = (patch: LandscapePatch, what: string): Promise<LandscapeSave> => (readInFailed.current ? Promise.resolve({ error: NOT_READ_IN }) : landscapeStore.save(patch, what));
+    const update = async (patch: LandscapePatch, what: string): Promise<string | null> => {
+      const r = await save(patch, what);
+      return "error" in r ? r.error : null;
+    };
+    return { save, update };
+  }, [landscapeStore.save]);
   const landscapeState = landscapeStore.state;
   // shown once the grid's layout is read in, or once it can't be: a layout made up before that would be redrawn
   // (and every terminal resized) when the migration lands
@@ -809,7 +820,11 @@ function App() {
    * Bring a session's workspace into view on the landscape (in front, if it's a stack's tab), and with `focus` fill the
    * window with it; `keys` gives the landscape the keyboard once it's there, `avoid` is a box on screen to keep it clear of.
    */
-  const revealWorkspace = (id: string, focus = false, o: { keys?: boolean; avoid?: ScreenBox | null } = {}) => setReveal({ id, n: ++asked.current, focus, ...o });
+  const revealWorkspace = (id: string, focus = false, o: { keys?: boolean; avoid?: ScreenBox | null } = {}) => {
+    // a teammate waiting to type in it: it comes in at 100%, where its strip's Allow and Deny take a click
+    const s = sessions.find((x) => x.id === id);
+    setReveal({ id, n: ++asked.current, focus, answer: !!s && typingAsksOf(s).length > 0, ...o });
+  };
   // going to an area on the landscape: the area tree, the switcher, ⌘K
   const [goTo, setGoTo] = useState<GoToAsk | null>(null);
   const goToArea = (area: string, avoid: ScreenBox | null = null) => {
@@ -1170,7 +1185,7 @@ function App() {
   /** A change to the landscape; what stopped it is said over the landscape. */
   const lsChange = async (patch: LandscapePatch | null, what: string) => {
     if (!patch) return;
-    const error = await landscapeStore.update(patch, what);
+    const error = await lsSaves.update(patch, what);
     if (error) lsSay(`${what}: not saved, ${error}`);
   };
   // a menu's pick (or a dialog's) acts on the landscape as it is then, not as it was when the menu opened
@@ -1525,13 +1540,16 @@ function App() {
       lsSay(plan.refused);
       return false;
     }
-    if (!before) return false;
-    return !!(await carryPlan(plan, what, { before, send: landscapeStore.save, moves: runMoves, say: lsSay }));
+    if (!before) {
+      lsSay(`Not done, ${what}: ${LAYOUT_LOADING}`);
+      return false;
+    }
+    return !!(await carryPlan(plan, what, { before, send: lsSaves.save, moves: runMoves, say: lsSay }));
   };
   /** Stack `stack`'s tabs of this Mac's each a workspace of its own (Unstack, the Team view's ✕). */
   const unstackStack = (stack: string) => {
     const layout = layoutNow.current;
-    if (!layout) return;
+    if (!layout) return lsSay(`Can't unstack ${splitGroupKey(stack).sub ?? stack}: ${LAYOUT_LOADING}`);
     void carry(planUnstackAll(layout, stack, areaTitle), `unstacking ${splitGroupKey(stack).sub ?? stack}`).then(() => refresh());
   };
   /** New session's dialog for another session in one card with `s`: a tab of its stack, or the stack that starts with it. */
@@ -1542,8 +1560,9 @@ function App() {
     if (t?.stack) return () => newSessionIn(t.stack!);
     if (!t || t.area === LOOSE_GROUP) return { no: "It's in no area: a stack is part of an area" };
     if (s.status === "dead") return { no: "Its session has exited: resume it first" };
-    if (layout?.areas.find((a) => a.key === t.area)?.rect.locked) return { no: `${areaTitle(t.area)} is locked: unlock it to stack its workspaces` };
-    return () => l && layout && startWorkspaceFrom(s, `${t.area}/${newStackName(l, layout, t.area)}`);
+    if (!l || !layout) return { no: `Not yet: ${LAYOUT_LOADING}` };
+    if (layout.areas.find((a) => a.key === t.area)?.rect.locked) return { no: `${areaTitle(t.area)} is locked: unlock it to stack its workspaces` };
+    return () => startWorkspaceFrom(s, `${t.area}/${newStackName(l, layout, t.area)}`);
   };
   /** What a workspace's actions need (workspaceActions.tsx): `t` is its tile on the landscape, null off it. */
   const wsEnv = (s: SessionInfo, t: Tile | null): WorkspaceEnv => {
@@ -1590,8 +1609,8 @@ function App() {
     };
   };
   const tileOfSession = (id: string) => landscapeLayout?.tiles.find((t) => t.members.some((m) => m.id === id)) ?? null;
-  /** A landscape workspace's actions: its front session's, with its size. */
-  const actionsFor = (t: Tile): ModelAction[] => workspaceActions(t.front, wsEnv(t.front, t));
+  /** A landscape workspace's actions: its front session's (or `s`'s, a tab of its stack), with its size. */
+  const actionsFor = (t: Tile, s: SessionInfo = t.front): ModelAction[] => workspaceActions(s, wsEnv(s, t));
 
   // ---- closed sessions (S6b): ghosts where they were on the landscape, and the Closed sessions list ----
   /** Say what happened to closed sessions: over the landscape when it's shown, else in a dialog (it's still being read in). */
@@ -1783,7 +1802,7 @@ function App() {
     if ("refused" in plan) return lsSay(plan.refused);
     if (!plan.patch) return lsSay(`${title} is tidy already`);
     const back = undoOf(now.landscape, plan.patch);
-    void landscapeStore.save(plan.patch, `tidying ${title}`).then((r) => {
+    void lsSaves.save(plan.patch, `tidying ${title}`).then((r) => {
       if ("error" in r) return lsSay(`Tidying ${title}: not saved, ${r.error}`);
       const undo = () => {
         if (landscapeStore.revNow() !== r.rev) return lsSay(`Can't undo tidying ${title}: the landscape has changed since`);
@@ -1855,7 +1874,7 @@ function App() {
     const l = landscapeState?.landscape;
     const a = l ? own(l.areas, key) : undefined;
     const room = roomOfGroup(teamStatus, key);
-    const flag = (fields: { collapsed: boolean } | { locked: boolean }, what: string) => void landscapeStore.update({ areas: { [key]: fields } }, what);
+    const flag = (fields: { collapsed: boolean } | { locked: boolean }, what: string) => void lsChange({ areas: { [key]: fields } }, what);
     // removing an area takes its tool windows and artifact cards with it (those there when it's picked); its artifacts
     // on this Mac stay, under its key
     const extras = (): LandscapePatch => {
@@ -1885,7 +1904,7 @@ function App() {
       share: () => shareDialog(key, title),
       newSession: () => newSessionIn(key),
       ask: () => askGroupStatus(key),
-      remove: () => void landscapeStore.update({ areas: { [key]: null }, ...extras() }, `removing ${title}`),
+      remove: () => void lsChange({ areas: { [key]: null }, ...extras() }, `removing ${title}`),
       chatIcon: <TeamRoomIcon />,
     });
   };
@@ -2047,20 +2066,39 @@ function App() {
     if (!next) return lsSay(needs.joinError ? `Couldn't read the rooms' join requests: ${needs.joinError}` : "Nothing needs you right now");
     toNeeds(next, { go: false, avoid });
   };
-  /** An item's actions (needsActions): Go there and Dismiss, Go there off saying why when it can't be gone to. */
-  const needsActionsFor = (item: NeedsItem, close: () => void): ModelAction[] =>
-    needsActions({
-      go: goCan(targetOf(item, sessions), () => {
+  /**
+   * A typing ask answered from the tray: the same main-process call, and checks, as its strip's buttons; what goes
+   * wrong is said, and the item stays listed until main says the ask is gone.
+   */
+  const answerTyping = (sessionId: string, ask: { member: string; name: string }, choice: "session" | "deny") =>
+    void decideTyping(sessionId, ask.member, choice).then((error) => error && lsSay(`Couldn't answer ${firstName(ask.name)}: ${error}`));
+  /** An item's actions (needsActions): a typing ask's answers, Go there and Dismiss, Go there off saying why when it can't be gone to. */
+  const needsActionsFor = (item: NeedsItem, close: () => void): ModelAction[] => {
+    const target = targetOf(item, sessions);
+    const ask = item.typing;
+    return needsActions({
+      go: goCan(target, () => {
         close();
         toNeeds(item, { go: true, avoid: null });
       }),
       goTitle: item.join
         ? "Fly to the room's area and show the request: accept or decline it there"
-        : item.kind === "finished"
-          ? "Bring it into view and select it: Enter or a click on its terminal to type there"
-          : "Bring it into view and select it, the keyboard kept off its prompt (a single letter can answer one): Enter or a click on its terminal to answer it",
+        : ask
+          ? "Bring it into view at 100%, where its strip has Allow for this session, Allow for 15 min and Deny"
+          : item.kind === "finished"
+            ? "Bring it into view and select it: Enter or a click on its terminal to type there"
+            : "Bring it into view and select it, the keyboard kept off its prompt (a single letter can answer one): Enter or a click on its terminal to answer it",
       dismiss: () => needs.dismiss(item),
+      answer:
+        ask && item.session
+          ? {
+              who: firstName(ask.name),
+              allow: goCan(target, () => answerTyping(item.session!, ask, "session")),
+              deny: goCan(target, () => answerTyping(item.session!, ask, "deny")),
+            }
+          : null,
     });
+  };
   /** The base branch a card's diff is measured against: its area's entry for the session's repo (null: the repository's own). */
   const badgeEnv = useMemo(
     () => ({
@@ -2162,7 +2200,7 @@ function App() {
           onCloseMany={(ids) => setCloseMany(sessions.filter((s) => ids.includes(s.id)))}
           onTab={(t, id) => {
             setFocused(id);
-            if (t.stack) void landscapeStore.update({ stacks: { [t.stack]: { active: id, placement: t.rect } } }, "the stack's front tab");
+            if (t.stack) void lsChange({ stacks: { [t.stack]: { active: id, placement: t.rect } } }, "the stack's front tab");
           }}
           reveal={reveal}
           goTo={goTo}
@@ -2173,7 +2211,7 @@ function App() {
           meters={meters?.sessions}
           termKey={termKey}
           body={landscapeBody}
-          onPatch={landscapeStore.save}
+          onPatch={lsSaves.save}
           revNow={landscapeStore.revNow}
           onMoves={runMoves}
           askAreaName={askAreaName}
@@ -2267,6 +2305,7 @@ function App() {
     const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
     if (lone && pendingWs) {
       if (layoutNow.current) await carry(planJoinStack(layoutNow.current, lone.id, s.id, pendingWs.key), "making them a stack");
+      else lsSay(`${titleOf(s)} isn't stacked with ${titleOf(lone)}: ${LAYOUT_LOADING}. Select both and press ⌘G once it has`);
     }
     refresh();
     jumpToSession(s);
@@ -2572,16 +2611,19 @@ function App() {
                 >
                   ✎
                 </button>
-                <button
-                  className="danger"
-                  title="Unstack its tabs — the sessions stay in the group"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    unstackStack(wsKey);
-                  }}
-                >
-                  ✕
-                </button>
+                {((no) => (
+                  <button
+                    className="danger"
+                    disabled={!!no}
+                    title={no ?? "Unstack its tabs — the sessions stay in the group"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      unstackStack(wsKey);
+                    }}
+                  >
+                    ✕
+                  </button>
+                ))(landscapeLayout ? unstackRefusal(landscapeLayout, wsKey, areaTitle) : `Not yet: ${LAYOUT_LOADING}`)}
               </div>
             )}
             {open && subList.map(sessionRow)}
@@ -3263,7 +3305,7 @@ function App() {
       )}
       {renameDlg && (
         <RenameDialog
-          title={renameDlg.kind === "session" ? "Rename session" : renameDlg.kind === "sub" ? "Rename stack" : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}
+          title={renameDlg.kind === "session" ? "Rename session" : renameDlg.kind === "sub" ? "Rename stack" : "Rename area"}
           initial={renameDlg.initial}
           onSave={applyRename}
           onClose={() => setRenameDlg(null)}

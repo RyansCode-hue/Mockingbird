@@ -19,6 +19,7 @@ import {
   attaches,
   cameraFrom,
   cameraForOpened,
+  answerOn,
   centreOn,
   compactPlaces,
   ghostDrawnHeight,
@@ -69,7 +70,6 @@ import {
   worldTransform,
   zoomAbout,
   type AreaCounts,
-  type AreaPlan,
   type AreaView,
   type Band,
   type CardView,
@@ -109,6 +109,7 @@ import { LandscapeTour } from "./LandscapeTour";
 import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
+import { typingAsksOf } from "./needsYouModel";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
 export const CAMERA_PREF = "mb.landscape.camera";
@@ -357,7 +358,8 @@ export function Landscape({
   /** The area tree isn't showing: the side bar is hidden, or shows Team rooms in its place. */
   treeHidden: boolean;
   /** A workspace's actions (its front session's): what its chips, ⋯ and right-click offer, in every band. */
-  actionsFor: (t: Tile) => ModelAction[];
+  /** A workspace's actions: its front session's, or `s`'s, one of its stack's tabs (a right-click on that tab). */
+  actionsFor: (t: Tile, s?: SessionInfo) => ModelAction[];
   /** Something to say over the landscape, as a gesture's refusal is said (a resize or a tool window refused); a new `n` says it again. */
   notice: LandscapeNote | null;
   /**
@@ -857,16 +859,20 @@ export function Landscape({
     if (focusKey && !focusTile) setFocusKey(null);
   }, [focusKey, focusTile]);
   const peekTile = peek ? layout.tiles.find((t) => t.key === peek.key) : undefined;
-  // its workspace left or exited, its stack brought another tab to the front, or its session got a new terminal
-  const peekGone = !!peek && (!peekTile || peekTile.front.status === "dead" || peekTile.front.id !== peek.front || termKey(peek.front) !== peek.gen);
+  // its workspace left or exited, its stack brought another tab to the front, its session got a new terminal, or a
+  // teammate asks to type in it (the peek draws only the terminal, over the ask's strip and the card's badge)
+  const peekGone = !!peek && (!peekTile || peekTile.front.status === "dead" || peekTile.front.id !== peek.front || termKey(peek.front) !== peek.gen || typingAsksOf(peekTile.front).length > 0);
   useEffect(() => {
     if (peekGone) setPeek(null);
   }, [peekGone]);
 
-  /** Open a workspace's peek: below 75%, not in focus, and never for one that has exited (it has no live terminal). */
+  /**
+   * Open a workspace's peek: below 75%, not in focus, and never for one that has exited (it has no live terminal) or
+   * one a teammate asks to type in, whose strip (and card badge) the peek would cover.
+   */
   const openPeek = (key: string) => {
     const t = layoutNow.current.tiles.find((x) => x.key === key);
-    if (!t || takesKeys(bandNow.current) || focusNow.current || t.front.status === "dead" || !vpNow.current.w) return;
+    if (!t || takesKeys(bandNow.current) || focusNow.current || t.front.status === "dead" || typingAsksOf(t.front).length || !vpNow.current.w) return;
     const front = t.front.id;
     setPeek({ key, front, gen: termKey(front), pinned: false, box: peekBox(cam.current, vpNow.current, t.rect), snap: attaches(bandNow.current) ? screenText(front) : null });
   };
@@ -878,8 +884,11 @@ export function Landscape({
   const pendingReveal = useRef<PendingReveal | null>(null);
   /** The pending reveal ends in focus. */
   const revealFocus = useRef(false);
-  /** The pending reveal gives the landscape the keyboard once there (Go there), and keeps clear of a box on screen (the tray). */
-  const revealOpts = useRef<{ keys: boolean; avoid: ScreenBox | null }>({ keys: false, avoid: null });
+  /**
+   * The pending reveal gives the landscape the keyboard once there (Go there), keeps clear of a box on screen (the
+   * tray), and lands at 100% where a typing ask can be answered.
+   */
+  const revealOpts = useRef<{ keys: boolean; avoid: ScreenBox | null; answer: boolean }>({ keys: false, avoid: null, answer: false });
   /** The reveal whose stack tab was asked to the front, waiting for the layout to have it there. */
   const fronting = useRef<PendingReveal | null>(null);
   /** The view's size to bring something into view in: the part of it clear of `avoid`. */
@@ -905,7 +914,7 @@ export function Landscape({
       if (keyboardClaimed()) tourJump.current.asked = reveal.id;
     }
     revealFocus.current = !!reveal.focus;
-    revealOpts.current = { keys: !!reveal.keys, avoid: reveal.avoid ?? null };
+    revealOpts.current = { keys: !!reveal.keys, avoid: reveal.avoid ?? null, answer: !!reveal.answer };
     const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
     revealStamp.current = inputStamp();
     if (revealTimer.current) clearTimeout(revealTimer.current);
@@ -977,7 +986,8 @@ export function Landscape({
       if (keys) leaveFocus();
       else setFocusKey(null);
     }
-    if (!seen) flyTo(centreOn(cam.current, t.rect, room));
+    if (revealOpts.current.answer && (!seen || !mouseAt(cam.current.zoom))) flyTo(answerOn(t.rect, room));
+    else if (!seen) flyTo(centreOn(cam.current, t.rect, room));
     // Go there: the user's command to go to the landscape
     if (keys && !leaving) armFocus(surfaceEl());
   }, [reveal?.n, layout]);
@@ -2110,9 +2120,15 @@ export function Landscape({
       const tile = (inFocus ? layout.tiles.find((x) => x.key === focusNow.current) : null) ?? layout.tiles.find((x) => x.key === el.dataset.ws);
       if (!tile) return;
       e.preventDefault();
-      if (!inFocus && pickedNow.current.includes(tile.key)) return ctx.openAt({ x: e.clientX, y: e.clientY }, pickedMenu());
+      // a stack's tab is its own session's: its rename, close, resume and take-over, not the front one's
+      const closedTab = t.closest<HTMLElement>(".ls-tab.closed[data-closed]");
+      const closed = closedTab && tile.closed?.find((m) => m.id === closedTab.dataset.closed);
+      if (closed) return ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(ghostActions(closed)));
+      const tab = t.closest<HTMLElement>(".ls-tab[data-sid]");
+      const of = tab ? tile.members.find((m) => m.id === tab.dataset.sid) : undefined;
+      if (!inFocus && !of && pickedNow.current.includes(tile.key)) return ctx.openAt({ x: e.clientX, y: e.clientY }, pickedMenu());
       select(tile);
-      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(tileActions(tile)));
+      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(of && of.id !== tile.front.id ? actionsFor(tile, of) : tileActions(tile)));
       return;
     }
     if (t.closest(".ls-window, .ls-acard, .ls-hud, .ls-minimap, .ls-switcher, .ls-peek, .ls-selbar, .ls-banners, .ls-focus, .ls-note")) return;
@@ -2444,7 +2460,7 @@ export function LandscapeBanners({ problems, error, onReload, migration }: { pro
         }]
       : []),
     ...(migration.partial ? [{ key: `partial:${migration.partial}`, tone: "info" as const, title: "Part of your grid's layout wasn't read in", text: migration.partial }] : []),
-    ...(migration.failed ? [{ key: `migration:${migration.failed}`, tone: "bad" as const, title: "Your grid's layout wasn't read in", text: `${migration.failed}. Workspaces are placed where there's room meanwhile, and those places aren't saved until it's read in.`, actions: [{ label: "Try again", run: migration.retry }] }] : []),
+    ...(migration.failed ? [{ key: `migration:${migration.failed}`, tone: "bad" as const, title: "Your grid's layout wasn't read in", text: `${migration.failed}. Workspaces are placed where there's room meanwhile, and nothing moved, resized or arranged is saved until it's read in.`, actions: [{ label: "Try again", run: migration.retry }] }] : []),
     ...(step.kind === "blocked" ? [{ key: `blocked:${step.why}`, tone: "info" as const, title: "Your grid's layout isn't read in yet", text: "Not while the layout file has the problem above: workspaces are placed where there's room meanwhile, and their places aren't saved." }] : []),
   ];
   const shown = rows.filter((r) => !hidden.has(r.key));

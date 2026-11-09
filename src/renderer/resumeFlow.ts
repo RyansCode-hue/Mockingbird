@@ -9,12 +9,12 @@ export interface ResumeSteps {
   /**
    * Main's resume (sessions:resume): its check, then its dead pty let go and the session relaunched, nothing waited on
    * between the check and letting go. `{ refused }` before anything is undone (a conversation held outside the pane
-   * included); `{ error }` after (it's in Previous).
+   * included); `{ error }` after (it's among the closed sessions: a ghost card, or in Closed sessions).
    */
   resume: () => Promise<SessionInfo | { refused: string } | { error: string }>;
   /** Let go of its terminal in the window. */
   dispose: () => void;
-  /** Reread the sessions: a relaunch that failed after its pty went leaves it in Previous, shown only by a reread. */
+  /** Reread the sessions: a relaunch that failed after its pty went leaves it closed, shown only by a reread. */
   refresh: () => Promise<unknown>;
   say: (text: string) => void;
 }

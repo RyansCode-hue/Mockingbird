@@ -109,14 +109,21 @@ describe.skipIf(!appE2E)("the real app started over the grid's layout", () => {
       // what the grid left is as it left it: a downgrade comes back to it
       await new Promise((r) => setTimeout(r, 1500));
       expect(await prefsOf(app, keys)).toEqual(Object.fromEntries(keys.map((k) => [k, JSON.stringify(prefs[k])])));
+
+      // a place changed after the read-in, as a drag would: a second read-in would put it back where the grid had it
+      const moved = { ...a1, y: a1.y + 8000 };
+      expect(await app.evaluate(`window.mb.landscapeUpdate(${JSON.stringify({ workspaces: { [made.a1]: moved } })})`)).not.toHaveProperty("error");
+      await new Promise((r) => setTimeout(r, 1000));
       await quit(app);
 
-      // started again: never read in twice
+      // started again: never read in twice, once the window has drawn and its lists have had time to load
       const again = await launchApp("Legacy", "", { home, keepState: true });
       try {
-        await untilTrue("the landscape read", async () => !!(await landscapeOf(again)).landscape.migratedAt, 30_000);
-        expect((await landscapeOf(again)).landscape.migratedAt).toBe(l.migratedAt);
-        expect((await landscapeOf(again)).landscape.workspaces[made.a1]).toEqual(a1);
+        await untilTrue("the window's landscape again", async () => await again.evaluate<boolean>(`!!document.querySelector(".ls-viewport") && document.querySelectorAll(".ls-world .ls-area").length === 2`), 30_000);
+        await new Promise((r) => setTimeout(r, 3000));
+        const l2 = (await landscapeOf(again)).landscape;
+        expect(l2.migratedAt).toBe(l.migratedAt);
+        expect(l2.workspaces[made.a1]).toEqual(moved);
         expect(await prefsOf(again, keys)).toEqual(Object.fromEntries(keys.map((k) => [k, JSON.stringify(prefs[k])])));
       } finally {
         await quit(again);

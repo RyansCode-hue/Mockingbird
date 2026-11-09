@@ -43,7 +43,7 @@ export interface SessionInfo {
   waitingSince: number | null; // ts of the waiting transition
   waitingAt?: number | null; // ts of the latest prompt's event while waiting: a second prompt, worded alike or not, moves it
   queuedCount?: number; // broadcasts queued for this session (live only)
-  debrief?: boolean; // morning brief / wrap-up — lives on the WorkTracker tab, not the grid
+  debrief?: boolean; // morning brief / wrap-up — lives on the WorkTracker tab, not the landscape
   shell?: boolean; // plain terminal (no claude) — excluded from broadcasts/re-reads
   agent?: AgentKind; // absent on sessions persisted before Codex support — those are Claude
   /** The agent conversation last seen running in this pane (from its hook events) — what a relaunch resumes. */

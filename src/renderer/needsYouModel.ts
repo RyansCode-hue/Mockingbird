@@ -1,19 +1,22 @@
 import type { SessionInfo } from "../shared/types";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
+import type { TypingAsk } from "../shared/team/livePanes";
 import { permissionTool, shortReason } from "../shared/phoneAlerts";
 import { takenOverWhy, type Can } from "./workspaceActions";
+import { firstName } from "./team/connectedModel";
 
 /**
- * The Needs you tray (docs/landscape.md, Finding what needs you): what's waiting on you, as items. Phase 1 has three
- * kinds: a session waiting on you (amber: a permission prompt, or a question it asked), a room's join request this
- * install answers as the admin, and a session whose turn ended and that has been idle since. Everything here is
- * worked out from what the window already has (sessions, the team status), so the tray, the badges and N agree.
+ * The Needs you tray (docs/landscape.md, Finding what needs you): what's waiting on you, as items. Phase 1 has four
+ * kinds: a session waiting on you (amber: a permission prompt, or a question it asked), a teammate asking to type
+ * into one of this install's room sessions, a room's join request this install answers as the admin, and a session
+ * whose turn ended and that has been idle since. Everything here is worked out from what the window already has
+ * (sessions, the team status), so the tray, the badges and N agree.
  */
 
-export type NeedsKind = "permission" | "question" | "join" | "finished";
+export type NeedsKind = "permission" | "question" | "typing" | "join" | "finished";
 
 export interface NeedsItem {
-  /** The same while it's the same thing waiting: "s:<session id>", or "join:<room>:<member>:<asked at>". */
+  /** The same while it's the same thing waiting: "s:<session id>", "type:<session id>:<member>", or "join:<room>:<member>:<asked at>". */
   id: string;
   /** Its state: a Dismiss holds until this changes. */
   sig: string;
@@ -26,6 +29,8 @@ export interface NeedsItem {
   session: string | null;
   /** A join request's item: its room, and the request as the admin's prompt keys it. */
   join: { roomId: string; key: string } | null;
+  /** A typing ask's item: the teammate asking, answered as the ask's strip on the workspace answers it. */
+  typing: { member: string; name: string } | null;
   /** What it says: "API: last org per user wants to use Bash". */
   text: string;
   /** The code-like part of `text` to set apart (the tool), or null. */
@@ -33,13 +38,13 @@ export interface NeedsItem {
 }
 
 /** Its kind as the tray's line says it, before the area. */
-export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", join: "Join request", finished: "Finished" };
+export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", join: "Join request", finished: "Finished" };
 
 /**
- * Which kinds come first: what holds an agent or a person up (a prompt, a question, someone at the room's door)
- * before what's only done; newest first within a kind.
+ * Which kinds come first: what holds an agent or a person up (a prompt, a question, a teammate waiting to type,
+ * someone at the room's door) before what's only done; newest first within a kind.
  */
-const RANK: Record<NeedsKind, number> = { permission: 0, question: 0, join: 1, finished: 2 };
+const RANK: Record<NeedsKind, number> = { permission: 0, question: 0, typing: 0, join: 1, finished: 2 };
 
 /** A join request's key, as the admin's prompt (main.tsx's joinKey) and Later name it. */
 export const joinKeyOf = (r: Pick<JoinRequestSummary, "roomId" | "id" | "at">): string => `${r.roomId}:${r.id}:${r.at}`;
@@ -57,6 +62,31 @@ export function notMine(s: SessionInfo): string | null {
   return null;
 }
 
+/**
+ * The teammates asking to type into session `s`, waiting on this install's answer: only ever one of its own room
+ * sessions (a teammate's copy, or one a teammate took over, has none to answer here).
+ */
+export function typingAsksOf(s: SessionInfo): TypingAsk[] {
+  if (!s.room || notMine(s)) return [];
+  return s.room.typingAsks ?? [];
+}
+
+/** Session `s`'s typing asks as items, one per teammate asking. */
+export function typingItems(s: SessionInfo, area: string, title: string): NeedsItem[] {
+  return typingAsksOf(s).map((a) => ({
+    id: `type:${s.id}:${a.member}`,
+    sig: `type:${s.id}:${a.member}|${a.at}`,
+    kind: "typing",
+    at: a.at,
+    area,
+    session: s.id,
+    join: null,
+    typing: { member: a.member, name: a.name },
+    text: `${firstName(a.name)} wants to type in ${title}`,
+    code: null,
+  }));
+}
+
 /** A session's item, or null when it has none: waiting on you, or idle since its turn ended (`finishedAt`). */
 export function sessionItem(s: SessionInfo, area: string, title: string): NeedsItem | null {
   if (notMine(s)) return null;
@@ -72,12 +102,13 @@ export function sessionItem(s: SessionInfo, area: string, title: string): NeedsI
       area,
       session: s.id,
       join: null,
+      typing: null,
       text: tool ? `${title} wants to use ${tool}` : `${title}: ${shortReason(s.waitingReason)}`,
       code: tool,
     };
   }
   if (s.status === "idle" && s.finishedAt) {
-    return { id: `s:${s.id}`, sig: `s:${s.id}|f|${s.finishedAt}`, kind: "finished", at: s.finishedAt, area, session: s.id, join: null, text: `${title} is done and idle`, code: null };
+    return { id: `s:${s.id}`, sig: `s:${s.id}|f|${s.finishedAt}`, kind: "finished", at: s.finishedAt, area, session: s.id, join: null, typing: null, text: `${title} is done and idle`, code: null };
   }
   return null;
 }
@@ -93,14 +124,15 @@ export function joinItem(request: JoinRequestSummary, room: TeamRoomSummary): Ne
     area: room.groupKey,
     session: null,
     join: { roomId: room.id, key },
+    typing: null,
     text: `${request.name} wants to join ${room.name}`,
     code: null,
   };
 }
 
 /**
- * Everything that needs you, in the tray's order (and N's): sessions waiting on you, then join requests, then
- * finished sessions, newest first within each. `asks` are the requests this install answers as a room's admin
+ * Everything that needs you, in the tray's order (and N's): sessions waiting on you and teammates asking to type,
+ * then join requests, then finished sessions, newest first within each. `asks` are the requests this install answers as a room's admin
  * (JoinRequests.tsx's adminRequests: the admin's prompt and Members ▾ read the same list); `areaOf` is the area a
  * session's workspace is in on the landscape.
  */
@@ -109,6 +141,7 @@ export function needsItems(sessions: readonly SessionInfo[], asks: readonly { re
   for (const s of sessions) {
     const item = sessionItem(s, areaOf(s), titleOf(s));
     if (item) out.push(item);
+    out.push(...typingItems(s, areaOf(s), titleOf(s)));
   }
   for (const a of asks) if (a.request.role === "admin" && a.request.state === "waiting") out.push(joinItem(a.request, a.room));
   return out.sort((a, b) => RANK[a.kind] - RANK[b.kind] || b.at - a.at || a.id.localeCompare(b.id));

@@ -8,7 +8,8 @@
  * room rows following the selected area. =notes: Ask for status said over the landscape, a note said off it in the status
  * bar, problems with room sessions, the tree's rooms, the Team view's stack row. =handoff, =review, =import: what they
  * make, beside what it goes on from (the first free spot elsewhere) and brought into view. =search: a Search window's
- * Match case, set and then read by the next Search window.
+ * Match case, set and then read by the next Search window. =tabs (with ?lsCamera at a zoom that draws headers): a
+ * right-click on a stack's back tab and on its front one, each tab's Rename… and Close….
  */
 import type { Landscape, LandscapeState, Rect } from "../shared/landscape";
 import { AREA_PAD, GAP } from "../shared/landscape";
@@ -401,6 +402,32 @@ async function searchPart(out: Record<string, unknown>) {
   out.next = state();
 }
 
+/** A right-click on a stack's tab is that tab's session's: s3, behind s2 in 5101/api, renamed and closed as itself. */
+async function tabsPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
+  const tab = (id: string) => node(`.ls-tab[data-sid="${id}"]`);
+  out.front = node(".ls-tab.on")?.dataset.sid ?? null;
+  const renameFrom = async (id: string) => {
+    await rightClick(tab(id));
+    await ctxPick("Rename…");
+    const value = document.querySelector<HTMLInputElement>(".modal input")?.value ?? null;
+    await cancelDialog();
+    return value;
+  };
+  out.renameBack = await renameFrom("s3");
+  out.renameFront = await renameFrom("s2");
+  await rightClick(tab("s3"));
+  out.backRows = ctxRows();
+  const before = env.calls.length;
+  await ctxPick("Close…");
+  await sleep(600);
+  out.close = {
+    dialog: dialogTitle(),
+    named: env.calls.slice(before).flatMap((c) => (typeof c.args[0] === "string" && /^s[23]$/.test(c.args[0]) ? [`${c.fn}:${c.args[0]}`] : [])),
+  };
+  await cancelDialog();
+  out.frontAfter = node(".ls-tab.on")?.dataset.sid ?? null;
+}
+
 export function runSwitchAudit(env: SwitchAuditEnv, part: string): void {
   env.waitFor(".ls-world .ls-node", async () => {
     const out: Record<string, unknown> = {};
@@ -414,6 +441,7 @@ export function runSwitchAudit(env: SwitchAuditEnv, part: string): void {
       else if (part === "review") await reviewPart(env, out);
       else if (part === "import") await importPart(env, out);
       else if (part === "search") await searchPart(out);
+      else if (part === "tabs") await tabsPart(env, out);
       else throw new Error(`no part ${part}`);
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);

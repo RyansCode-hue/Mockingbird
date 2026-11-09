@@ -18,6 +18,8 @@ type Audit = {
   repaint: { before: { lines: number; first: string }; after: { lines: number; first: string }; size: string; sent: string[] };
   repaintAlt: { before: { screen: string; mouse: string }; after: { screen: string; mouse: string } };
   relaunch: { newTerminal: boolean; sent: string[] };
+  /** The holder checks made, the screen's pixel ratio, and the most of a holder the renderer's rounding left empty. */
+  fit: { checked: number; dpr: number; rounding: number };
   mode: string;
   error?: string;
 };
@@ -57,12 +59,17 @@ describe.skipIf(!local)("terminals following their output", () => {
 
 describe.skipIf(!local)("terminals in the interface", () => {
   for (const motion of ["full", "off"] as const) {
-    it(`take their workspaces' sizes and give their ptys that size after every action, never measuring a holder with no area: motion ${motion}`, async () => {
+    it(`take their placements' sizes, fit inside their holders and give their ptys that size after every action, one off screen held at its placement's: motion ${motion}`, async () => {
       const a = await audit(motion);
       expect(a.error).toBeUndefined();
       expect(a.mode).toBe(motion);
       expect(a.steps).toHaveLength(17);
       expect(a.problems).toEqual([]);
+      // every step's terminals were checked against their holders, not only against the placement's arithmetic
+      expect(a.fit.checked).toBeGreaterThan(17);
+      // at 1× the WebGL renderer draws each cell a little narrower than the font's (7 px for 7.53): the empty strip it
+      // leaves on the right is that rounding, cols × 0.53 px or so, never more; at 2× there's none to speak of
+      if (a.fit.dpr === 1) expect(a.fit.rounding).toBeLessThan(160);
 
       // a pane's status banners float over its terminal: showing or clearing one re-fits nothing, so the agent
       // isn't resized into redrawing its screen

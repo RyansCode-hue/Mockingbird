@@ -170,14 +170,18 @@ together so work and context flow between them.
   there). `N` and ⇧N move the view to the next or previous item.
 
   Phase 1 (built, S7) lists permission prompts and questions an agent asked,
-  room join requests you answer as admin, and sessions that finished and are
-  idle, in that order, newest first within each. "Finished" there means the
+  a teammate's ask to type in one of your sessions, room join requests you
+  answer as admin, and sessions that finished and are idle, in that order,
+  newest first within each. "Finished" there means the
   agent's turn ended (the Stop hook) and it has been idle since; it goes when
   the session works, waits or starts again. Teammates' sessions, copies a
   teammate took over and morning briefs aren't listed. Each item has **Go
   there** (the workspace focused with its terminal's keyboard, or the room's
   area and the admin's prompt) and **Dismiss** (off the list until its state
-  changes). Allowing or denying stays in the terminal. `N` / ⇧N select the
+  changes). Allowing or denying a prompt stays in the terminal; an ask to type
+  also has **Allow** (for this session) and **Deny**, the call its strip's
+  buttons make, and its Go there lands at 100% with the strip in view.
+  `N` / ⇧N select the
   next or previous item's workspace (or its room's area) and bring it into
   view, leaving the keyboard on the landscape; they work only while the
   landscape has the keyboard. How it's built:

@@ -27,7 +27,8 @@ function useNow(ms: number): number {
 
 const minutesLeft = (until: number, now: number) => `${Math.max(1, Math.ceil((until - now) / 60_000))} min`;
 
-async function decide(sessionId: string, member: string, choice: "session" | "minutes" | "deny" | "revoke"): Promise<string | null> {
+/** Answer a teammate's ask to type, or take typing back, through the main process's checks; its error, or null. */
+export async function decideTyping(sessionId: string, member: string, choice: "session" | "minutes" | "deny" | "revoke"): Promise<string | null> {
   const r = await settled(window.mb.teamDecideTyping(sessionId, member, choice), "Couldn't answer");
   return isErr(r) ? r.error : null;
 }
@@ -46,7 +47,7 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
   const title = session.ticketTitle ?? session.title;
   const answer = async (a: TypingAsk, choice: "session" | "minutes" | "deny") => {
     setBusy(a.member);
-    setError((await decide(session.id, a.member, choice)) ?? "");
+    setError((await decideTyping(session.id, a.member, choice)) ?? "");
     setBusy("");
   };
   return (
@@ -101,7 +102,7 @@ export function Typists({ session, room }: { session: SessionInfo; room: RoomSes
             aria-label={`Stop ${g.name} typing`}
             onClick={(e) => {
               e.stopPropagation();
-              void decide(session.id, g.member, "revoke");
+              void decideTyping(session.id, g.member, "revoke");
             }}
           >
             ✕
