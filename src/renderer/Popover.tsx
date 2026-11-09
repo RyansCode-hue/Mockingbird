@@ -12,7 +12,9 @@ import { useLiftOut } from "./lift";
  * opened it). It's named for screen readers and takes the keyboard as it opens; `onKeyDown` hears keys pressed in it.
  * `align` "end" lines its right edge up with the element's (a button at the window's right end); its left by default.
  * `below` keeps it under the element however tall it grows, its height capped at the window's bottom (its content
- * scrolls), and placed again whenever its size changes; otherwise a tall one flips above, as a menu does.
+ * scrolls), and placed again whenever its size changes; otherwise a tall one flips above, as a menu does. `anchor` can
+ * be a function, read whenever it's placed, for an element that's swapped for another while it's open; `placeKey`
+ * changing places it again.
  */
 export function AnchoredPopover({
   anchor,
@@ -23,8 +25,9 @@ export function AnchoredPopover({
   align = "start",
   below = false,
   onKeyDown,
+  placeKey,
 }: {
-  anchor: HTMLElement;
+  anchor: HTMLElement | (() => HTMLElement | null);
   className: string;
   label: string;
   onClose: (how: "escape" | "outside" | "away") => void;
@@ -32,8 +35,13 @@ export function AnchoredPopover({
   align?: "start" | "end";
   below?: boolean;
   onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void;
+  placeKey?: string;
 }) {
   useEscape(() => onClose("escape"));
+  const anchorNow = useRef(anchor);
+  anchorNow.current = anchor;
+  const anchorEl = () => (typeof anchorNow.current === "function" ? anchorNow.current() : anchorNow.current);
+  const fixed = typeof anchor === "function" ? null : anchor;
   const box = useRef<HTMLDivElement | null>(null);
   const presence = usePresence<HTMLDivElement>("menu", { also: box });
   const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
@@ -43,7 +51,10 @@ export function AnchoredPopover({
     const el = box.current;
     if (!el) return;
     const place = () => {
-      const r = anchor.getBoundingClientRect();
+      const a = anchorEl();
+      // one that has left the page has no place: it stays where it was
+      if (!a?.isConnected) return;
+      const r = a.getBoundingClientRect();
       const x = align === "end" ? r.right - el.offsetWidth : r.left;
       const view = { width: window.innerWidth, height: window.innerHeight };
       const at = placeMenu({ x, y: r.bottom + 4 }, { width: el.offsetWidth, height: below ? 0 : el.scrollHeight }, view);
@@ -55,12 +66,12 @@ export function AnchoredPopover({
     const ro = new ResizeObserver(place);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [anchor, align, below]);
+  }, [fixed, align, below, placeKey]);
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
     const outside = (e: Event) => {
       const t = e.target as Node;
-      if (!box.current?.contains(t) && !anchor.contains(t)) close.current("outside");
+      if (!box.current?.contains(t) && !anchorEl()?.contains(t)) close.current("outside");
     };
     const away = () => close.current("away");
     // pointerdown too: a press the landscape takes (a pan, a scaled terminal, the minimap) calls preventDefault on it,
@@ -77,7 +88,7 @@ export function AnchoredPopover({
       window.removeEventListener("resize", away);
       window.removeEventListener("blur", away);
     };
-  }, [anchor]);
+  }, [fixed]);
   return createPortal(
     <div
       ref={presence}

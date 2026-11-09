@@ -7,7 +7,8 @@
  * =k: every row of the shortcuts sheet driven (`driven`, by the row's id), and `?` refused in a terminal and a text field.
  * =t (with ?lsTour): the tour's steps (`steps`: the ring, the target and the card at each), its keyboard, and how it ends:
  * &do=skip|esc|next|done. Reloads with ?lsPersist to say whether it comes back.
- * =u: the tour against what else is going on, by &case=terminal|dialog|palette|focus|tray.
+ * =u: the tour against what else is going on, by &case=terminal|typing|dropped|keys|field|ring|undo|dialog|palette|focus|tray.
+ * =c: the camera the tour moves, by &case=esc|skip|tab|restart|goto (cameraPart).
  * =e (with ?lsOnly=…): what's in the empty landscape's place, right-clicks all over it, its tiles and its links.
  * =b: the top bar's boxes at this window's width, + New's menu and its »; &case=tab for + New on another tab, &case=fold
  * for what folds, &case=sheet for the sheet at this size and beside the tray and the palette.
@@ -23,6 +24,8 @@ export interface FirstRunEnv {
   stored: () => Stored;
   /** Change landscape.json as main would, and tell the window. */
   patch: (p: LandscapePatch) => void;
+  /** A live session changed as main would say (`over`), or gone from the list (null): closed elsewhere, a pane dropped. */
+  setSession: (id: string, over: Partial<SessionInfo> | null) => void;
   waitFor: (selector: string, then: (el: HTMLElement) => void, tries?: number) => void;
 }
 
@@ -102,15 +105,50 @@ const fit = async () => {
 };
 const card = (front: string) => q(`.ls-world .ls-node[data-front="${front}"]`);
 
+/** A row's printed keys one by one ("⌘0 / ⌘1": ⌘0 and ⌘1), every one of which its step has to drive. */
+const tokensOf = (id: string): string[] =>
+  (SHORTCUTS.flatMap((s) => s.rows).find((r) => r.id === id)?.keys ?? "")
+    .split(/\s*(?:·|\/|, then)\s*/)
+    .filter(Boolean);
+const MODS: Record<string, "meta" | "shift" | "alt" | "ctrl"> = { "⌘": "meta", "⇧": "shift", "⌥": "alt", "⌃": "ctrl" };
+const NAMED: Record<string, string> = { Esc: "Escape", Enter: "Enter", "⇥": "Tab" };
+/** The key press a printed key means: "⇧⌘F" is F with Shift and Command; null when it isn't one key. */
+function keyOf(token: string): { key: string; meta?: boolean; shift?: boolean; alt?: boolean; ctrl?: boolean } | null {
+  const o: { meta?: boolean; shift?: boolean; alt?: boolean; ctrl?: boolean } = {};
+  let rest = token;
+  while (rest && MODS[rest[0]]) {
+    o[MODS[rest[0]]] = true;
+    rest = rest.slice(1);
+  }
+  const key = NAMED[rest] ?? (rest.length === 1 ? (/[A-Za-z]/.test(rest) ? (o.shift ? rest.toUpperCase() : rest.toLowerCase()) : rest) : null);
+  return key ? { key, ...o } : null;
+}
+
 /** Every row's proof, by its id: true once its key has done what the row says. */
 async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<void> {
   const driven: Record<string, boolean> = {};
   const why: Record<string, string> = {};
+  const used: Record<string, Set<string>> = {};
+  const mark = (id: string, token: string) => {
+    if (!tokensOf(id).includes(token)) throw new Error(`the sheet's ${id} row doesn't print ${token} (it prints ${tokensOf(id).join(", ")})`);
+    (used[id] ??= new Set()).add(token);
+  };
+  /** Press what row `id` prints as `token`: a row's keys are pressed only as it prints them. */
+  const pressAs = async (id: string, token: string) => {
+    mark(id, token);
+    const k = keyOf(token);
+    if (!k) throw new Error(`${token} isn't a key press`);
+    await press(k.key, k);
+  };
+  /** A gesture row `id` prints as `token` ("right-click"), which the step does with the mouse. */
+  const doing = (id: string, token: string) => mark(id, token);
   const row = async (id: string, prove: () => Promise<boolean | string>) => {
     try {
       const r = await prove();
-      driven[id] = r === true;
+      const missed = tokensOf(id).filter((t) => !used[id]?.has(t));
+      driven[id] = r === true && !missed.length;
       if (r !== true) why[id] = typeof r === "string" ? r : "it didn't";
+      else if (missed.length) why[id] = `it prints ${missed.join(", ")}, which nothing pressed`;
     } catch (err) {
       driven[id] = false;
       why[id] = String(err);
@@ -133,6 +171,7 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await sleep(150);
     if (!q(".ls-keys")) return "? opened nothing";
     out.sheetRows = qs(".ls-keys-row").map((r) => r.dataset.row);
+    out.sheetKeys = Object.fromEntries(qs(".ls-keys-row").map((r) => [r.dataset.row, r.querySelector("kbd")?.textContent ?? ""]));
     out.sheetSections = qs(".ls-keys-sec h4").map((h) => h.textContent);
     out.sheetBox = box(q(".ls-keys"));
     out.keysBtn = box(q(".tb-keys"));
@@ -162,9 +201,11 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await giveLandscape();
     const p = barePoint();
     const a = camera();
+    doing("pan", "Space-drag");
     await act([{ key: " ", hold: "down" }, { drag: { x0: p.x, y0: p.y, x1: p.x + 60, y1: p.y + 40 } }, { key: " ", hold: "up" }]);
     await sleep(120);
     const b = camera();
+    doing("pan", "two fingers");
     await act([{ wheel: { x: p.x, y: p.y, dx: 30, dy: 30 } }]);
     await sleep(120);
     const c = camera();
@@ -174,9 +215,12 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await giveLandscape();
     const p = barePoint();
     const a = zoomNow();
+    doing("zoom", "⌘ scroll");
     await act([{ wheel: { x: p.x, y: p.y, dy: -120, meta: true } }]);
     await sleep(120);
     const b = zoomNow();
+    // a pinch reaches the page as a wheel with Control held
+    doing("zoom", "pinch");
     await act([{ wheel: { x: p.x, y: p.y, dy: -20, ctrl: true } }]);
     await sleep(120);
     const c = zoomNow();
@@ -185,27 +229,27 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   await row("zoomKeys", async () => {
     await giveLandscape();
     const a = zoomNow();
-    await press("=", { meta: true });
+    await pressAs("zoomKeys", "⌘=");
     await sleep(80);
     const b = zoomNow();
-    await press("-", { meta: true });
+    await pressAs("zoomKeys", "⌘-");
     await sleep(80);
     const c = zoomNow();
     return b > a && c < b ? true : `${a} ${b} ${c}`;
   });
   await row("fit", async () => {
     await giveLandscape();
-    await press("1", { meta: true });
+    await pressAs("fit", "⌘1");
     await sleep(120);
     const at100 = zoomNow();
-    await press("0", { meta: true });
+    await pressAs("fit", "⌘0");
     await sleep(120);
     const fitted = zoomNow();
     return at100 === 1 && fitted < 1 ? true : `${at100} ${fitted}`;
   });
   await row("goTo", async () => {
     await giveLandscape();
-    await press("k", { meta: true });
+    await pressAs("goTo", "⌘K");
     await sleep(200);
     const rows = qs(".palette .row .lab").map((l) => l.textContent ?? "");
     const area = rows.some((l) => l.startsWith("Go to 5101") || /^Go to .*its area on the landscape/.test(l));
@@ -216,6 +260,7 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   await row("nearest", async () => {
     await selectFirst();
     const a = selected();
+    doing("nearest", "⌥ arrows");
     await press("ArrowRight", { alt: true });
     await sleep(150);
     const b = selected();
@@ -228,23 +273,23 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await giveLandscape();
     const shown = () => !q(".sidebar")?.classList.contains("collapsed");
     const a = shown();
-    await press("\\", { meta: true });
+    await pressAs("tree", "⌘\\");
     await sleep(150);
     const b = shown();
-    await press("\\", { meta: true });
+    await pressAs("tree", "⌘\\");
     await sleep(150);
     return a && !b && shown() ? true : `${a} ${b} ${shown()}`;
   });
   await row("focus", async () => {
     await selectFirst();
-    await press("Enter");
+    await pressAs("focus", "Enter");
     await sleep(250);
     const byEnter = !!q(".ls-focus");
     await press("e", { meta: true });
     await sleep(250);
     const left = !q(".ls-focus");
     await giveLandscape();
-    await press("e", { meta: true });
+    await pressAs("focus", "⌘E");
     await sleep(250);
     const byE = !!q(".ls-focus");
     out.focusKeyboard = keyboard();
@@ -252,44 +297,55 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   });
   await row("back", async () => {
     if (!q(".ls-focus")) return "not in focus";
-    await press("Escape", { meta: true });
+    await pressAs("back", "⌘Esc");
     await sleep(250);
     const byEsc = !q(".ls-focus");
     await giveLandscape();
     await press("e", { meta: true });
     await sleep(250);
     const again = !!q(".ls-focus");
-    await press("e", { meta: true });
+    await pressAs("back", "⌘E");
     await sleep(250);
     return byEsc && again && !q(".ls-focus") ? true : `⌘Esc ${byEsc}, ⌘E ${again}`;
   });
   await row("needs", async () => {
+    // three or more listed (?needsMany), so going back can't land where going on would
     await fit();
-    await press("n");
+    const seen: (string | null)[] = [];
+    for (let i = 0; i < 3; i++) {
+      await pressAs("needs", "N");
+      await sleep(350);
+      seen.push(selected());
+    }
+    await pressAs("needs", "⇧N");
     await sleep(350);
-    const a = selected();
-    await press("n");
-    await sleep(350);
-    const b = selected();
-    await press("N", { shift: true });
-    await sleep(350);
-    const c = selected();
-    return !!a && !!b && a !== b && c === a ? true : `${a} ${b} ${c}`;
+    const back = selected();
+    const [a, b, c] = seen;
+    return !!a && !!b && !!c && new Set(seen).size === 3 && back === b ? true : `N ${seen.join(" → ")}, ⇧N ${back}`;
   });
   await row("waiting", async () => {
+    // from nothing selected, so the selection it ends with is its own doing
     await fit();
+    await press("Escape");
+    await sleep(150);
+    const none = selected();
+    await pressAs("waiting", "⌥⇥");
+    await sleep(350);
+    const a = selected();
     await press("Tab", { alt: true });
     await sleep(350);
-    const s = selected();
-    const waits = env.sessions().find((x) => x.id === s)?.status === "waiting";
-    return waits ? true : `selected ${s}`;
+    const b = selected();
+    const waits = (id: string | null) => env.sessions().find((x) => x.id === id)?.status === "waiting";
+    return none === null && waits(a) && waits(b) && a !== b ? true : `from ${none}: ${a} then ${b}`;
   });
   await row("peek", async () => {
     await fit();
     const p = middle(card("s4") ?? card("s5")!);
+    doing("peek", "hover");
     await act([{ move: { x: p.x, y: p.y } }]);
     await sleep(800);
     const opened = !!q(".ls-peek");
+    doing("peek", "Space holds");
     await press(" ");
     await sleep(120);
     const held = !!q(".ls-peek.pinned");
@@ -300,28 +356,28 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await act([{ move: b }]);
     return opened && held && shut ? true : `opened ${opened}, held ${held}, shut ${shut}`;
   });
-  const windowKey = (tool: string, key: string, o: { shift?: boolean; meta?: boolean; ctrl?: boolean }) => async () => {
+  const windowKey = (id: string, tool: string, token: string) => async () => {
     await selectFirst();
     const a = count(tool);
-    await press(key, o);
+    await pressAs(id, token);
     await sleep(300);
     const b = count(tool);
     await giveLandscape();
-    await press(key, o);
+    await pressAs(id, token);
     await sleep(300);
-    return b === a + 1 && count(tool) === a ? true : `${a} → ${b} → ${count(tool)}`;
+    return b === a + 1 && count(tool) === a ? true : `${token}: ${a} → ${b} → ${count(tool)}`;
   };
   await row("files", async () => {
-    const byB = await windowKey("files", "b", { meta: true })();
-    const byE = await windowKey("files", "e", { meta: true, shift: true })();
-    return byB === true && byE === true ? true : `⌘B ${byB}, ⇧⌘E ${byE}`;
+    const byB = await windowKey("files", "files", "⌘B")();
+    const byE = await windowKey("files", "files", "⇧⌘E")();
+    return byB === true && byE === true ? true : `${byB}, ${byE}`;
   });
-  await row("changes", windowKey("changes", "g", { ctrl: true, shift: true }));
-  await row("search", windowKey("search", "f", { meta: true, shift: true }));
-  await row("run", windowKey("run", "d", { meta: true, shift: true }));
+  await row("changes", windowKey("changes", "changes", "⌃⇧G"));
+  await row("search", windowKey("search", "search", "⇧⌘F"));
+  await row("run", windowKey("run", "run", "⇧⌘D"));
   await row("file", async () => {
     await selectFirst();
-    await press("p", { meta: true });
+    await pressAs("file", "⌘P");
     await sleep(200);
     const open = !!q(".palette.qo");
     await afterEsc();
@@ -330,16 +386,17 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   await row("panel", async () => {
     await giveLandscape();
     const a = !!q(".bp");
-    await press("j", { meta: true });
+    await pressAs("panel", "⌘J");
     await sleep(200);
     const b = !!q(".bp");
-    await press("j", { meta: true });
+    await pressAs("panel", "⌘J");
     await sleep(200);
     return a !== b && !!q(".bp") === a ? true : `${a} ${b}`;
   });
   await row("newHere", async () => {
     await fit();
     const p = barePoint();
+    doing("newHere", "right-click");
     await rightAt(p.x, p.y);
     await sleep(200);
     const rows = menuRows();
@@ -349,7 +406,7 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   });
   await row("newDialog", async () => {
     await giveLandscape();
-    await press("n", { meta: true });
+    await pressAs("newDialog", "⌘N");
     await sleep(250);
     const open = q(".modal.ns h3")?.textContent ?? q(".modal h3")?.textContent ?? null;
     await afterEsc();
@@ -359,6 +416,7 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await fit();
     await press("Escape");
     await sleep(120);
+    doing("several", "⇧-click");
     await clickOn(card("s4")!, { shift: true });
     await sleep(100);
     await clickOn(card("s5")!, { shift: true });
@@ -369,6 +427,7 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await sleep(120);
     const r = vp().getBoundingClientRect();
     const p = barePoint();
+    doing("several", "marquee");
     await act([{ drag: { x0: p.x, y0: p.y, x1: r.right - 20, y1: r.bottom - 20 } }]);
     await sleep(200);
     const marquee = picked();
@@ -376,8 +435,9 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   });
   await row("makeArea", async () => {
     if (!picked()) return "nothing picked";
+    doing("makeArea", "marquee");
     await giveLandscape();
-    await press("m");
+    await pressAs("makeArea", "M");
     await sleep(250);
     const asks = !!q(".modal input");
     await afterEsc();
@@ -386,14 +446,14 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   await row("clear", async () => {
     await giveLandscape();
     const was = picked();
-    await press("Escape");
+    await pressAs("clear", "Esc");
     await sleep(150);
     return was > 0 && picked() === 0 ? true : `${was} → ${picked()}`;
   });
   await row("tidy", async () => {
     await selectFirst();
     const before = JSON.stringify(env.stored().workspaces);
-    await press("t");
+    await pressAs("tidy", "T");
     await sleep(350);
     const noted = !!q(".ls-note-act");
     const after = JSON.stringify(env.stored().workspaces);
@@ -403,7 +463,7 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   await row("undoTidy", async () => {
     if (!q(".ls-note-act")) return "no Tidy to undo";
     await giveLandscape();
-    await press("z", { meta: true });
+    await pressAs("undoTidy", "⌘Z");
     await sleep(350);
     return !q(".ls-note-act") ? true : "the note stayed";
   });
@@ -418,27 +478,48 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await sleep(150);
     const was = picked();
     const stacksBefore = qs(".ls-world .ls-node.stack").length;
-    const mark = env.calls.length;
+    const mark0 = env.calls.length;
     await giveLandscape();
-    await press("g", { meta: true });
-    const moved = () => env.calls.slice(mark).filter((c) => c.fn === "setGroup").map((c) => String(c.args[0]));
+    await pressAs("stack", "⌘G");
+    const movedNow = () => env.calls.slice(mark0).filter((c) => c.fn === "setGroup").map((c) => String(c.args[0]));
     const stacks = () => qs(".ls-world .ls-node.stack").length;
     // its groups change one at a time
     for (let i = 0; i < 30 && stacks() === stacksBefore; i++) await sleep(100);
-    return stacks() === stacksBefore + 1 && moved().join() === "s4,s8" ? true : `picked ${was}, moved ${moved().join() || "none"}, stacks ${stacksBefore} → ${stacks()}, keyboard ${keyboard()}, said ${q(".ls-note")?.textContent ?? "nothing"}`;
+    return stacks() === stacksBefore + 1 && movedNow().join() === "s4,s8" ? true : `picked ${was}, moved ${movedNow().join() || "none"}, stacks ${stacksBefore} → ${stacks()}, keyboard ${keyboard()}, said ${q(".ls-note")?.textContent ?? "nothing"}`;
   });
 
-  // keys with the keyboard nowhere are the landscape's: a palette clicked away leaves it on the body
+  // The palette clicked away gives the keyboard back to the landscape, which had it: `?` works straight after.
+  await giveLandscape();
   await press("k", { meta: true });
   await sleep(200);
-  q(".scrim")?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-  await sleep(150);
-  (document.activeElement as HTMLElement | null)?.blur();
-  out.nowhere = { keyboard: keyboard() };
+  const pal = box(q(".palette"));
+  const outside = { x: pal ? Math.max(8, pal.x - 40) : 8, y: innerHeight - 40 };
+  await act([{ mouse: { ...outside, clickCount: 1 } }]);
+  await sleep(200);
+  out.afterScrim = { palette: !!q(".palette"), keyboard: keyboard() };
   await press("?", { shift: true });
   await sleep(150);
-  (out.nowhere as Record<string, unknown>).sheet = !!q(".ls-keys");
+  (out.afterScrim as Record<string, unknown>).sheet = !!q(".ls-keys");
   await afterEsc();
+
+  // Keys with the keyboard nowhere do nothing: no sheet, no Needs you, no Tidy, and they don't take the keyboard either.
+  await selectFirst();
+  const selBefore = selected();
+  const writesBefore = env.calls.filter((c) => c.fn === "landscapeUpdate" || c.fn === "sessionWrite").length;
+  (document.activeElement as HTMLElement | null)?.blur();
+  const nowhereAt = keyboard();
+  for (const k of ["?", "n", "t", "Enter", " "]) {
+    await press(k, k === "?" ? { shift: true } : {});
+    await sleep(120);
+  }
+  out.nowhere = {
+    at: nowhereAt,
+    keyboard: keyboard(),
+    sheet: !!q(".ls-keys"),
+    selected: selected() === selBefore,
+    focus: !!q(".ls-focus"),
+    writes: env.calls.filter((c) => c.fn === "landscapeUpdate" || c.fn === "sessionWrite").length - writesBefore,
+  };
 
   // in a terminal, last: at 100% it has the keyboard, and `?` is typed into it
   await fit();
@@ -610,14 +691,19 @@ async function tourAgainstPart(env: FirstRunEnv, out: Record<string, unknown>): 
     out.before = keyboard();
     await startTour();
     out.during = keyboard();
+    out.firstStep = q(".ls-tour-card")?.dataset.step ?? null;
     const writes = () => env.calls.filter((c) => c.fn === "sessionWrite").length;
     const was = writes();
-    await act([{ key: "a" }, { key: "b" }, { key: " " }, { key: "Tab" }, { key: "Tab" }, { key: "c" }]);
+    // typed on as it comes up: letters, Space, Tab, Enter and Esc, none of which is meant for it
+    await act([..."ab c"].map((key) => ({ key })).concat([{ key: "Tab" }, { key: "Tab" }, { key: "Enter" }, { key: " " }, { key: "Escape" }, { key: "Enter" }]));
     await sleep(150);
     out.typedIntoTerminal = writes() - was;
-    out.stepAfterTyping = q(".ls-tour-card")?.dataset.step ?? null;
-    // pressing Space on Next moved a step: go on to the end from wherever it is
-    q<HTMLElement>('.ls-tour-card [data-act="next"]')?.focus();
+    out.stepAfterTyping = { step: q(".ls-tour-card")?.dataset.step ?? null, tourDone: env.stored().tourDone === true, keyboard: keyboard(), onButton: !!document.activeElement?.closest(".ls-tour-acts") };
+    // once the keys have stopped for a second, its buttons take the keyboard as usual
+    await sleep(1200);
+    await press("Tab");
+    await sleep(60);
+    out.tabAfterPause = (document.activeElement as HTMLElement | null)?.dataset.act ?? keyboard();
     for (let i = 0; i < 4 && q(".ls-tour-card"); i++) await tourNext();
     await sleep(900);
     out.after = { tour: !!q(".ls-tour-card"), keyboard: keyboard(), tourDone: env.stored().tourDone === true, active: document.activeElement === t };
@@ -625,6 +711,104 @@ async function tourAgainstPart(env: FirstRunEnv, out: Record<string, unknown>): 
     await press("x");
     await sleep(150);
     out.typedAfter = writes() - was2;
+  } else if (which === "typing") {
+    // a key pressed a moment before it comes up, on the landscape: Enter and Space straight after press nothing in it
+    await giveLandscape();
+    await press("x");
+    await startTour();
+    out.came = { tour: !!q(".ls-tour-card"), keyboard: keyboard(), onButton: !!document.activeElement?.closest(".ls-tour-acts") };
+    await act([{ key: "Enter" }, { key: " " }, { key: "Enter" }]);
+    await sleep(150);
+    out.afterKeys = { step: q(".ls-tour-card")?.dataset.step ?? null, tourDone: env.stored().tourDone === true };
+  } else if (which === "dropped") {
+    // the terminal being typed in goes (closed elsewhere, a pane dropped): what's typed on is no shortcut, and reaches
+    // no other session
+    await giveLandscape();
+    await press("1", { meta: true });
+    await sleep(300);
+    await clickOn(card("s1")!);
+    await sleep(300);
+    q<HTMLTextAreaElement>('.ls-world .ls-node[data-front="s1"] .xterm-helper-textarea')?.focus();
+    // the pointer off the cards, so no peek is open under it
+    await act([{ move: barePoint() }]);
+    await sleep(80);
+    out.before = keyboard();
+    env.setSession("s1", null);
+    await sleep(700);
+    out.dropped = keyboard();
+    const sel = selected();
+    const cam = camera();
+    const mark = env.calls.length;
+    const typed: Asked[] = ([..."git checkout main"].map((key) => ({ key })) as Asked[]).concat([{ key: "Enter" }], [..."yarn"].map((key) => ({ key })), [{ key: "Enter" }, { key: "y" }, { key: "n" }, { key: "t" }, { key: "?", shift: true }, { key: " " }, { key: "Enter" }]);
+    await act(typed);
+    await sleep(500);
+    out.afterTyping = {
+      keyboard: keyboard(),
+      calls: env.calls.slice(mark).filter((c) => ["sessionWrite", "landscapeUpdate", "setGroup"].includes(c.fn)).map((c) => c.fn),
+      selected: selected() === sel,
+      camera: !moved(cam, camera()),
+      focus: !!q(".ls-focus"),
+      sheet: !!q(".ls-keys"),
+      note: q(".ls-note")?.textContent ?? null,
+    };
+  } else if (which === "keys") {
+    // under the tour the window's keys hold off: ⌘E doesn't focus the selected workspace from behind it
+    await fit();
+    await clickOn(card("s1")!);
+    await sleep(200);
+    await startTour();
+    await sleep(1200);
+    await press("e", { meta: true });
+    await sleep(300);
+    out.cmdE = { focus: !!q(".ls-focus"), tour: !!q(".ls-tour-card") };
+    await press("Escape");
+    await sleep(300);
+    out.afterEsc = { tour: !!q(".ls-tour-card"), selected: selected(), focus: !!q(".ls-focus") };
+  } else if (which === "field") {
+    // the area tree's filter had the keyboard as it came up: that's where it goes back
+    const filter = q<HTMLInputElement>(".area-tree input")!;
+    filter.focus();
+    await sleep(60);
+    out.before = keyboard();
+    await startTour();
+    await sleep(1200);
+    await clickOn(q('.ls-tour-card [data-act="skip"]')!);
+    await sleep(300);
+    out.after = { tour: !!q(".ls-tour-card"), keyboard: keyboard(), field: document.activeElement === filter };
+  } else if (which === "ring") {
+    // a step whose target isn't on screen has no ring left where it was
+    await startTour();
+    await sleep(300);
+    await clickOn(q('.ls-tour-card [data-act="next"]')!);
+    await sleep(300);
+    out.zoomStep = { step: q(".ls-tour-card")?.dataset.step ?? null, ring: !q<HTMLElement>(".ls-tour-ring")!.hidden };
+    q<HTMLElement>(".ls-hud")!.style.display = "none";
+    window.dispatchEvent(new Event("resize"));
+    await sleep(200);
+    out.targetGone = { ring: !q<HTMLElement>(".ls-tour-ring")!.hidden, cardInWindow: within(box(q(".ls-tour-card")), win()) };
+  } else if (which === "undo") {
+    // a Tidy's Undo outlives saving that the tour was seen, which changes nothing it could undo
+    await fit();
+    await clickOn(card("s1")!);
+    await sleep(200);
+    await giveLandscape();
+    const before = JSON.stringify(env.stored().workspaces);
+    await press("t");
+    await sleep(400);
+    out.tidied = { note: !!q(".ls-note-act"), moved: JSON.stringify(env.stored().workspaces) !== before };
+    await startTour();
+    await sleep(300);
+    out.tourUp = !!q(".ls-tour-card");
+    await clickOn(q('.ls-tour-card [data-act="skip"]')!);
+    await sleep(400);
+    out.tourDone = env.stored().tourDone === true;
+    const act0 = q(".ls-note-act");
+    out.undoOffered = !!act0;
+    if (act0) {
+      await clickOn(act0);
+      await sleep(500);
+    }
+    out.undone = { back: JSON.stringify(env.stored().workspaces) === before, note: q(".ls-note")?.textContent ?? null };
   } else if (which === "dialog") {
     // a dialog open as it comes due: the tour waits, and comes up as it closes
     await giveLandscape();
@@ -680,6 +864,126 @@ async function tourAgainstPart(env: FirstRunEnv, out: Record<string, unknown>): 
   }
 }
 
+/**
+ * =c (with ?lsTour and ?lsCamera somewhere the tour moves it from): the camera the tour moved, put back however the tour
+ * ends, and never saved as the window's: &case=esc|skip (during step 1's flight, with ?motion=full), tab (to Dashboard
+ * and back during it), restart (a reload during it) and goto (⌘K's Go to during it, which it then leaves alone).
+ */
+async function cameraPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<void> {
+  const which = params.get("case");
+  const savedCamera = () => {
+    const v = JSON.parse(localStorage.getItem("mb.landscape.camera") ?? "null") as { x: number; y: number; zoom: number } | null;
+    return v && { x: Math.round(v.x * 10) / 10, y: Math.round(v.y * 10) / 10, zoom: Math.round(v.zoom * 1e4) / 1e4 };
+  };
+  const round = (c: ReturnType<typeof camera>) => c && { x: Math.round(c.x * 10) / 10, y: Math.round(c.y * 10) / 10, zoom: Math.round(c.zoom * 1e4) / 1e4 };
+  const finishAll = async () => {
+    for (const a of document.getAnimations()) {
+      try {
+        a.finish();
+      } catch {
+        // an infinite one (a status dot's pulse) can't be finished
+      }
+    }
+    await sleep(250);
+  };
+  const tourCard = async () => {
+    for (let i = 0; i < 40 && !q(".ls-tour-card"); i++) await sleep(100);
+    return !!q(".ls-tour-card");
+  };
+  const stage = sessionStorage.getItem("mb.audit.camera");
+  if (stage) {
+    // after the reload: the camera it was saved with, then the tour again, ended
+    sessionStorage.removeItem("mb.audit.camera");
+    const start = JSON.parse(stage) as { x: number; y: number; zoom: number };
+    // the camera the window opened on, as saved
+    out.openedAt = savedCamera();
+    await sleep(600);
+    out.start = start;
+    out.tourAgain = await tourCard();
+    await finishAll();
+    await clickOn(q('.ls-tour-card [data-act="skip"]')!);
+    await sleep(300);
+    await finishAll();
+    await sleep(400);
+    out.end = { camera: round(camera()), saved: savedCamera(), kept: localStorage.getItem("mb.landscape.tourCamera") };
+    return;
+  }
+  const s = params.get("lsCamera")!.split(",").map(Number);
+  const start = { x: s[0], y: s[1], zoom: s[2] };
+  out.start = start;
+  if (which === "esc" || which === "skip") {
+    // ended while step 1's flight is on its way
+    for (let i = 0; i < 60 && !vp().hasAttribute("data-flying"); i++) await sleep(20);
+    out.flying = vp().hasAttribute("data-flying");
+    // whether the flight was still on its way when what ends the tour arrived
+    let ended: boolean | null = null;
+    const onEnd = (e: Event) => {
+      const ends = e.type === "keydown" ? (e as KeyboardEvent).key === "Escape" : !!(e.target as Element | null)?.closest?.('[data-act="skip"]');
+      if (ends && ended === null) ended = vp().hasAttribute("data-flying");
+    };
+    document.addEventListener("keydown", onEnd, true);
+    document.addEventListener("click", onEnd, true);
+    if (which === "esc") await press("Escape");
+    // Skip from the keyboard, Tab from Next and Space, sent together: the card follows its target while the camera
+    // flies, further than it goes in the time a press aimed where Skip was takes to arrive
+    else await act([{ key: "Tab" }, { key: " " }]);
+    document.removeEventListener("keydown", onEnd, true);
+    document.removeEventListener("click", onEnd, true);
+    out.endedFlying = ended;
+    await sleep(100);
+    await finishAll();
+    await sleep(400);
+  } else {
+    await tourCard();
+    await finishAll();
+    await sleep(400);
+    out.during = { camera: round(camera()), saved: savedCamera() };
+    if (which === "tab") {
+      await clickOn(qs(".topbar .tab").find((t) => t.textContent?.trim() === "Dashboard")!);
+      await sleep(400);
+      await clickOn(qs(".topbar .tab").find((t) => t.textContent?.trim() === "Landscape")!);
+      out.tourAgain = await tourCard();
+      await finishAll();
+      await clickOn(q('.ls-tour-card [data-act="skip"]')!);
+      await sleep(300);
+      await finishAll();
+      await sleep(400);
+    } else if (which === "restart") {
+      sessionStorage.setItem("mb.audit.camera", JSON.stringify(start));
+      // without ?lsCamera, so the camera it opens on is the one it saved
+      const next = new URLSearchParams(location.search);
+      next.delete("lsCamera");
+      history.replaceState(null, "", `${location.pathname}?${next}`);
+      location.reload();
+      await new Promise<never>(() => {});
+    } else if (which === "goto") {
+      // an area other than the one the tour shows
+      const v = box(vp())!;
+      const mid = { x: v.x + v.w / 2, y: v.y + v.h / 2, w: 1, h: 1 };
+      const shown = qs(".ls-world .ls-area").find((a) => overlap(box(a), mid))?.dataset.area ?? null;
+      const other = ["5110", "5102", "5101"].find((k) => k !== shown)!;
+      out.tourShows = shown;
+      await press("k", { meta: true });
+      await sleep(250);
+      const input = q<HTMLInputElement>(".palette input")!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, `Go to ${other}`);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(200);
+      out.gotoRow = q(".palette .row.sel .lab, .palette .row.on .lab")?.textContent ?? qs(".palette .row .lab")[0]?.textContent ?? null;
+      await press("Enter");
+      await sleep(300);
+      await finishAll();
+      out.wentTo = round(camera());
+      await sleep(1200);
+      await press("Escape");
+      await sleep(300);
+      await finishAll();
+      await sleep(400);
+    }
+  }
+  out.end = { tour: !!q(".ls-tour-card"), camera: round(camera()), saved: savedCamera(), kept: localStorage.getItem("mb.landscape.tourCamera") };
+}
+
 async function emptyPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<void> {
   await sleep(1200);
   const state = () => ({
@@ -700,6 +1004,37 @@ async function emptyPart(env: FirstRunEnv, out: Record<string, unknown>): Promis
   // what's drawn, when something is, and whether it's in view
   const drawn = q(".ls-world .ls-ghost, .ls-world .ls-window, .ls-world .ls-area");
   out.drawn = drawn ? { cls: drawn.className.split(" ")[0], inView: overlap(box(drawn), box(vp())) } : null;
+  out.note = q(".ls-note")?.textContent ?? null;
+
+  if (params.has("addArea")) {
+    // with nothing to tour settled for this run, an area turning up later brings no tour
+    env.patch({ areas: { spare: { x: 0, y: 0, w: 900, h: 600, repos: [] } } });
+    await sleep(900);
+    out.afterArea = { area: !!q(".ls-world .ls-area"), tour: !!q(".ls-tour-card"), tourDone: env.stored().tourDone === true };
+    return;
+  }
+  if (params.has("tall")) {
+    // in a view too short for it, the panel scrolls: its title from the top, its foot once scrolled to
+    const panel = q(".ls-empty")!;
+    const v = box(vp());
+    out.tall = { scrolls: panel.hasAttribute("data-scrolls"), titleShown: within(box(q(".ls-empty-title")), v, 1) };
+    await act([{ wheel: { ...middle(q(".ls-empty-title")!), dy: 400 } }]);
+    await sleep(250);
+    (out.tall as Record<string, unknown>).footShown = within(box(q(".ls-empty-foot")), v, 1);
+    return;
+  }
+  if (params.has("team")) {
+    // the side bar showing Team rooms in place of the area tree: the Closed list's line says how to show it
+    await clickOn(q(".connected-line")!);
+    await sleep(300);
+    out.team = { title: q(".side-title")?.textContent ?? null, showIt: !!q('.ls-empty [data-act="show-tree"]') };
+    if (q('.ls-empty [data-act="show-tree"]')) {
+      await clickOn(q('.ls-empty [data-act="show-tree"]')!);
+      await sleep(300);
+    }
+    (out.team as Record<string, unknown>).after = q(".side-title")?.textContent ?? null;
+    return;
+  }
 
   if (params.has("retry")) {
     const b = q('.ls-empty [data-act="retry"]');
@@ -740,6 +1075,14 @@ async function emptyPart(env: FirstRunEnv, out: Record<string, unknown>): Promis
   }
   out.menus = menus;
   out.keyboardAfterMenus = keyboard();
+
+  // a press on its words is the landscape's: a drag from the title draws the marquee
+  const words = middle(q(".ls-empty-title")!);
+  await act([{ drag: { x0: words.x, y0: words.y, x1: words.x + 140, y1: words.y + 90, hold: "down" } }]);
+  await sleep(80);
+  out.marqueeFromWords = !q(".ls-marquee")?.hidden;
+  await act([{ drag: { x0: words.x, y0: words.y, x1: words.x + 140, y1: words.y + 90, hold: "up" } }]);
+  await sleep(120);
 
   // each tile runs the create menu's row: the New session dialog as that row opens it
   const dialogNow = () => {
@@ -812,6 +1155,109 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
   out.notCut = qs(".topbar button").every((b) => b.scrollWidth <= b.clientWidth + 1);
   out.scrollsSideways = document.documentElement.scrollWidth > window.innerWidth;
   out.whatsNew = !!q(".brand .ver");
+  out.rightEdge = Math.max(...named.map((n) => (n.box ? n.box.x + n.box.w : 0)));
+  out.window = { w: innerWidth, h: innerHeight };
+  if (params.get("case") === "edges") return;
+
+  const typeInPalette = async (text: string) => {
+    await press("k", { meta: true });
+    await sleep(250);
+    const input = q<HTMLInputElement>(".palette input")!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(200);
+    await press("Enter");
+    await sleep(350);
+  };
+  const writes = () => env.calls.filter((c) => c.fn === "sessionWrite").length;
+  /** What has the keyboard, and whether a key typed now reaches a terminal. */
+  const keyboardAndTyping = async () => {
+    const k = keyboard();
+    const was = writes();
+    await press("x");
+    await sleep(150);
+    return { keyboard: k, typed: writes() - was };
+  };
+
+  if (params.get("case") === "handback") {
+    // What's opened from the palette or a menu gives the keyboard back past the row it came from, which has gone: to
+    // what had it before the palette or the menu. (?lsCamera at 100%, so s1's terminal takes keys.)
+    const term = () => q<HTMLTextAreaElement>('.ls-world .ls-node[data-front="s1"] .xterm-helper-textarea, .ls-focus .xterm-helper-textarea');
+    const toTerminal = async () => {
+      await clickOn(card("s1")!);
+      await sleep(250);
+      term()?.focus();
+      await sleep(60);
+    };
+    await toTerminal();
+    out.start = keyboard();
+    await typeInPalette("Shortcuts");
+    out.sheetFromPalette = !!q(".ls-keys");
+    await afterEsc();
+    out.afterSheetFromPalette = await keyboardAndTyping();
+    await toTerminal();
+    await typeInPalette("New session");
+    out.dialogFromPalette = q(".modal h3")?.textContent ?? null;
+    await afterEsc();
+    out.afterDialogFromPalette = await keyboardAndTyping();
+    // a dialog from a menu row: the landscape had the keyboard as the menu opened
+    await giveLandscape();
+    const p = barePoint();
+    await rightAt(p.x, p.y);
+    await sleep(200);
+    await clickOn(qs(".mb-ctx:not(.mb-ghost) button").find((b) => /Terminal…/.test(b.textContent ?? ""))!);
+    await sleep(600);
+    out.dialogFromMenu = { dialog: q(".modal h3")?.textContent ?? null, keyboard: keyboard() };
+    await afterEsc();
+    out.afterDialogFromMenu = keyboard();
+    // in focus: its terminal had the keyboard
+    await clickOn(card("s1")!);
+    await sleep(200);
+    await giveLandscape();
+    await press("Enter");
+    await sleep(400);
+    term()?.focus();
+    await sleep(60);
+    out.focusStart = keyboard();
+    await typeInPalette("Shortcuts");
+    await afterEsc();
+    out.afterSheetInFocus = { ...(await keyboardAndTyping()), focus: !!q(".ls-focus") };
+    return;
+  }
+  if (params.get("case") === "foldsheet") {
+    // the sheet under », and Needs you's count changing: » is the same button, and the sheet stays where it was
+    const more = q(".tb-more");
+    if (!more) throw new Error("nothing folded at this width");
+    (more as HTMLElement & { mark?: number }).mark = 1;
+    await clickOn(more);
+    await sleep(200);
+    await clickOn(qs(".mb-ctx:not(.mb-ghost) button").find((b) => /Shortcuts/.test(b.textContent ?? ""))!);
+    await sleep(250);
+    const sheetAt = box(q(".ls-keys"));
+    const needsBefore = q(".ny-btn")?.textContent ?? null;
+    env.setSession("s3", { status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: Date.now() - 60_000 });
+    await sleep(500);
+    const now = q<HTMLElement & { mark?: number }>(".tb-more");
+    const sheetNow = box(q(".ls-keys"));
+    const moreBox = box(now)!;
+    out.countChanged = {
+      needs: [needsBefore, q(".ny-btn")?.textContent ?? null],
+      sameMore: now?.mark === 1,
+      sheetStayed: !!sheetAt && !!sheetNow && Math.abs(sheetAt.x - sheetNow.x) <= 1 && Math.abs(sheetAt.y - sheetNow.y) <= 1,
+      sheetUnderMore: !!sheetNow && sheetNow.y >= moreBox.y + moreBox.h,
+      keyboard: keyboard(),
+    };
+    await afterEsc();
+    out.afterEsc = keyboard();
+    // » with the keyboard keeps it through another change
+    env.setSession("s5", { status: "waiting", waitingReason: "Claude needs your permission to use Edit", waitingSince: Date.now() - 30_000 });
+    await sleep(500);
+    out.afterSecondChange = { keyboard: keyboard(), sameMore: q<HTMLElement & { mark?: number }>(".tb-more")?.mark === 1 };
+    await press("t");
+    await sleep(200);
+    out.tOnMore = q(".ls-note")?.textContent ?? null;
+    return;
+  }
 
   if (params.get("case") === "sheet") {
     await fit();
@@ -924,6 +1370,14 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
     return center.x >= b.x && center.x <= b.x + b.w && center.y >= b.y && center.y <= b.y + b.h;
   })?.dataset.area ?? null;
 
+  // a row's dialog takes the keyboard, whatever it fills in as it opens
+  await clickOn(q(".topbar > button.primary")!);
+  await sleep(250);
+  await clickOn(qs(".mb-ctx:not(.mb-ghost) button").find((b) => /Terminal…/.test(b.textContent ?? ""))!);
+  await sleep(700);
+  out.newDialogKeyboard = keyboard();
+  await afterEsc();
+
   // from its menu, Claude… makes a workspace that overlaps nothing
   const namesBefore = new Set(env.sessions().map((s) => s.id));
   await clickOn(q(".topbar > button.primary")!);
@@ -962,6 +1416,34 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
     out.newInFocus = { focus: !!q(".ls-focus"), menu: !!m, onTop: !!p && !!document.elementFromPoint(p.x, p.y)?.closest(".mb-ctx") };
     await afterEsc();
   }
+  // in focus on a workspace in 5102: what + New makes is 5102's, beside it, whatever's under the landscape's centre
+  if (q(".ls-focus")) await press("e", { meta: true });
+  await sleep(250);
+  await fit();
+  const s5 = card("s5");
+  if (s5) {
+    await clickOn(s5);
+    await sleep(150);
+    await giveLandscape();
+    await press("Enter");
+    await sleep(300);
+    const before5 = new Set(env.sessions().map((s) => s.id));
+    await clickOn(q(".topbar > button.primary")!);
+    await sleep(250);
+    await clickOn(qs(".mb-ctx:not(.mb-ghost) button").find((b) => /Terminal…/.test(b.textContent ?? ""))!);
+    await sleep(700);
+    const text = q(".modal.ns")?.textContent ?? "";
+    out.focusDialog = { focus: !!q(".ls-focus"), says5102: /\b5102\b/.test(text), says5101: /\b5101\b/.test(text), connected: /connected/i.test(q(".modal.ns .ns-foot, .modal.ns footer")?.textContent ?? text.slice(-200)) };
+    const go = qs<HTMLButtonElement>(".modal.ns button.primary").pop();
+    if (go) {
+      await clickOn(go);
+      await sleep(1200);
+    }
+    const made5 = env.sessions().find((s) => !before5.has(s.id));
+    const area5 = env.stored().areas["5102"];
+    const placed5 = made5 ? env.stored().workspaces[made5.id] : null;
+    out.madeInFocus = { group: made5?.taskGroup ?? null, inArea: !!placed5 && !!area5 && within({ ...placed5 }, { x: area5.x, y: area5.y, w: area5.w, h: area5.h }, 1) };
+  }
 }
 
 export function runFirstRunAudit(env: FirstRunEnv, part: string): void {
@@ -978,6 +1460,7 @@ export function runFirstRunAudit(env: FirstRunEnv, part: string): void {
       if (part === "k") await keysPart(env, out);
       else if (part === "t") await tourPart(env, out);
       else if (part === "u") await tourAgainstPart(env, out);
+      else if (part === "c") await cameraPart(env, out);
       else if (part === "e") await emptyPart(env, out);
       else await barPart(env, out);
     } catch (err) {

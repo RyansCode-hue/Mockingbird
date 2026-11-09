@@ -2645,9 +2645,9 @@ Design O, with Artifacts as a window, and N's workspace header.
       nothing either way.
     - **How it ends:** Next through to Done, Skip the tour, or Esc: `tourDone`
       through `landscapeStore.update`, so it survives a restart
-      (`?lsPersist`). A save that fails says so over the landscape and on the
-      banner ("The tour may show again next time") and it's gone for this run
-      (`tourEnded`).
+      (`?lsPersist`). A save that fails says so over the landscape ("The tour
+      may show again next time") and in the console, and it's gone for this
+      run (`tourEnded`).
     - **When it comes up:** once nothing else is open over the app
       (`OVER_TOUR`, looked for every 400 ms): What's new after an update, the
       setup wizard, a dialog, a popover, the Needs you tray. Those hold Esc,
@@ -2673,8 +2673,10 @@ Design O, with Artifacts as a window, and N's workspace header.
       and its height is capped with the window's.
     - **The keyboard:** it holds it from the moment it's up, so nothing typed
       reaches a terminal behind it: Tab goes round the card's buttons, a press
-      on the dim doesn't take focus, focus sent elsewhere comes back
-      (`focusin`), and keys on the body come back too. `OVERLAYS` includes it,
+      on the dim doesn't take focus, focus sent elsewhere comes back to the
+      card (`focusin`), and keys on the body bring it back to the card too.
+      Come up as someone types, it takes none of it (review fixes, M1).
+      `OVERLAYS` includes it,
       so ⌘E, a peek's keys and the selection's Esc hold off. ⌘K, ⌘N and ⌘P
       still open their dialogs over it, and they give it the keyboard back.
       When it goes, what had the keyboard has it again (`useDialogFocus`); a
@@ -2706,14 +2708,11 @@ Design O, with Artifacts as a window, and N's workspace header.
       and double-click for a new workspace (only right-click makes one).
       **Changed:** "Esc" as the way back from focus is ⌘E · ⌘Esc: a focused
       terminal has the keyboard and takes a plain Esc.
-    - **`?` and the letters** go through `surfaceKey`: only while the
-      landscape itself has the keyboard, never in a terminal or a text field.
-      They also take keys with the keyboard nowhere (`e.target ===
-      document.body`), which closes S7's open question about the ways out of
-      the palette that leave it on the body: nothing else wants those keys,
-      and the landscape takes the keyboard from there. A window opening on the
-      landscape, or its tab being clicked, gives it the keyboard, so `?` works
-      with no click first.
+    - **`?` and the letters** work only while the landscape itself has the
+      keyboard, never in a terminal or a text field, and never with the
+      keyboard nowhere (review fixes, H1). A window opening on the landscape,
+      or its tab being clicked, gives it the keyboard, so `?` works with no
+      click first.
   - **The empty landscape** (`LandscapeEmpty.tsx`; `emptyStateOf` and
     `EMPTY_TILES` in `landscapeFirstRun.ts`):
     - **Four states, never guessed:** `drawn` (nothing to say), `empty`,
@@ -2721,8 +2720,8 @@ Design O, with Artifacts as a window, and N's workspace header.
       where that's a list) and `reading` (said after 300 ms). A file that only
       stands in, a store error, a read-in that failed, and any session list
       not read keep it from saying "An empty landscape". A corrupt file moved
-      aside is really empty, but it's headed "The layout was reset" and points
-      at the banner.
+      aside is really empty, but it's headed "The layout was reset" and says
+      where the old file went.
     - **The cases decided:** only ghosts, only a placed tool window or
       artifact card, or only an empty area: not empty, no panel, and the
       camera's first fit goes by them (`fitRects`), so they're in view. Only a
@@ -2830,6 +2829,112 @@ Design O, with Artifacts as a window, and N's workspace header.
     - a real trackpad pinch (⌃-wheel and ⌘-wheel are simulated);
     - `?` on a keyboard other than US;
     - any of this in the real app: all of it ran in the preview.
+- **S8a review fixes (round 1) — As built:**
+  - **H1, keys after a terminal goes:** keys with the keyboard nowhere do
+    nothing. The landscape's listener for keys aimed at the body is gone, so a
+    terminal or field that goes while being typed in (closed elsewhere, a
+    remote pane dropping) leaves what's typed on going nowhere, as before S8a:
+    no N, no Tidy, no Enter into another session's prompt. The ways the
+    keyboard used to land on the body after a palette or a dialog now give it
+    back to a real place instead (M4), and a window opening on the landscape
+    still gives it the keyboard.
+  - **M4, giving the keyboard back:** `useDialogFocus` keeps a chain: what had
+    the keyboard as a dialog, the palette, the sheet or a menu opened, then
+    what those it was opened from had (`openers`, with `useOpener` for menus).
+    A row's palette or menu goes a moment after its row opens something, so
+    the keyboard goes back past the row to what had it before: the terminal
+    after ⌘K → Shortcuts → Esc, » after »'s ? Shortcuts, focus's terminal in
+    focus. When nothing in the chain is left, it goes to the landscape (or
+    focus) while that's on screen (`useKeyboardHome`). A press on a dialog's
+    backdrop or the palette's scrim no longer takes the keyboard to the page
+    after the close has given it back. Shared code: every dialog opened from
+    the palette or a menu goes back the same way.
+  - **M1, a tour that comes up as someone types:** come up over a terminal or
+    a field, or within a second of a key, the card itself has the keyboard,
+    with no button to press, and Tab, Enter, Space and Esc do nothing in it
+    until the keys have stopped for a second (`stillTyping`). Focus pulled
+    away comes back to the card, never a button.
+  - **M2, the tour's camera:** where it moved the camera from and to is kept
+    in a pref (`TOUR_CAMERA_PREF`) while the tour is up, so a tab away and
+    back or a restart doesn't lose the way back. A flight still on its way to
+    the tour's place counts as the tour's: Esc or Skip during it stops it and
+    goes back. While the tour holds the camera, the camera saved as the
+    window's is the one it moved from (`userCamera`), so a restart opens
+    there.
+  - **M3, » and the sheet under it:** » stays the same element while the bar
+    is measured again (a Needs you count or a badge changing), drawn as last
+    folded and left out of the measurement, so the sheet anchored to it and
+    the keyboard on it stay. `AnchoredPopover` can take its anchor as a
+    function, read whenever it's placed, and `placeKey` places it again when
+    what's folded changes. A tab with the keyboard that folds into » leaves it
+    on ».
+  - **M5, + New in focus:** the create menu is for the focused workspace's
+    area, and what it makes is placed beside that workspace. Outside focus
+    it's the area at the view's centre, where the menu opens over it. So + New
+    never seeds an area the window isn't showing, a room's included.
+  - **M6, the sheet kept honest:** each row's printed keys are split into what
+    it prints ("⌘0 / ⌘1": ⌘0 and ⌘1), every step presses only what its row
+    prints (`pressAs`, the key read from the text), and a row fails if
+    anything it prints wasn't driven. ⇧N is checked with three or more in
+    Needs you (`?needsMany`) going back to where N was; ⌥⇥ starts from nothing
+    selected and is pressed twice.
+  - **L1:** "nothing to tour" settles the tour for the run too, so a fresh
+    install whose save failed gets no tour later in it. Saving `tourDone` is a
+    flag's write (`update(…, { flag: true })`): a failure is said by its
+    caller, not made the store's error, so it can't turn a known-empty
+    landscape into "The layout has a problem".
+  - **L2:** a patch that only sets a flag (`flagOnly`) doesn't move `revNow`,
+    so saving `tourDone` leaves a Tidy's Undo working.
+  - **L3:** the Closed list's line offers "Show it" when the side bar shows
+    Team rooms too (`treeHidden`).
+  - **L4:** the reset panel says where the old file went, and the stand-in
+    panel says why the file can't be read, in the panel: the banner saying it
+    can be put away.
+  - **L5:** House's Start session popover (`.t2s-back`) is among what the tour
+    waits under and the window's keys hold off for. It only opens over the
+    House board's dialog, whose backdrop already held both, so no test can
+    tell it's there.
+  - **L6:** folding measures the bar as drawn, its gaps included: each folded
+    item gives back its width and the gap beside it. The window has a minimum
+    width of 640 px (`minWidth`).
+  - **L7:** a dialog whose field with the keyboard is swapped out as it fills
+    in (New session's repo search replaced by the repo) keeps the keyboard on
+    the dialog.
+  - **L8:** the empty panel scrolls in a view too short for it, from its
+    title; while it does, it takes the wheel and presses, which otherwise go
+    through it.
+  - **Tests that passed for the wrong reason, now each failing without its
+    fix:** a drag from the empty panel's words draws the marquee
+    (`pointer-events: none`); ⌘K's Go to during the tour is left alone (the
+    moved-since check); ⌘E under the tour focuses nothing (`.ls-tour-back` in
+    `OVERLAYS`); a failed migration settles nothing (`migration.step` in
+    `tourSettled`); a step's target gone leaves no ring (`ring.hidden`); the
+    keyboard goes back to the field that had it (the tour's `useDialogFocus`).
+  - **A terminal given its keyboard back after the tour** is asked again until
+    it takes it: its terminal is attached only once the band has rested at
+    100%, and the first ask could come before (within the 2 s it's held for,
+    `tourTerm`).
+  - **Preview:** `?lsMigrateFails`; the audit's =c (the tour's camera,
+    &case=esc|skip|tab|restart|goto) and =u cases typing, dropped, keys,
+    field, ring and undo; =b cases handback, foldsheet and edges; =e's
+    addArea, tall and team; the driver holds a drag mid-way (`hold`);
+    `setSession` changes or drops a live session; the audit's landscape
+    changes arrive as main sends them, the patch alone.
+  - **Checked by reverting:** each fix above, and each strengthened test, was
+    taken out on its own and its test failed, but for L5 (above) and
+    `minWidth`, which is the main process's window option and has no test.
+  - **Skip during the first flight** is pressed from the keyboard in =c (Tab
+    from Next, then Space): the card follows its target while the camera
+    flies, further than it goes in the 100–280 ms a press aimed at Skip takes
+    to arrive, so a click there missed about half the time. Each of =c's
+    esc and skip says whether the flight was still on its way when the press
+    arrived (`endedFlying`). `?keysSheet` opens the sheet from »'s menu when
+    its button is folded.
+  - **Found, not fixed:** a peek's keys (Space, Enter on a kept one) act
+    wherever the keyboard is but a field, a terminal's included (S3): with a
+    peek open under a resting pointer, Space and Enter typed on after a
+    terminal goes would keep and focus it. At 640 px wide the minimap overlaps
+    the zoom HUD. Help's guide still describes the grid (S8b's switch).
 
 ## Risks
 

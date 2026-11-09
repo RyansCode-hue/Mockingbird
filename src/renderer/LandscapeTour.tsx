@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { OVER_TOUR } from "./keys";
+import { OVER_TOUR, ownsKeys } from "./keys";
 import { useDialogFocus } from "./Modal";
-import { usePresence } from "./motion";
+import { fromKeyboard, usePresence } from "./motion";
 import { ringAround, tourCardAt, tourNext, type Box, type TourStep, type TourTarget } from "./landscapeFirstRun";
 import type { Camera } from "../shared/landscape";
 
@@ -12,6 +12,9 @@ const RING_PAD = { world: 8, chrome: 4 };
 const RING_INSET = 2;
 
 const inset = (b: Box, by: number): Box => ({ x: b.x + by, y: b.y + by, w: b.w - 2 * by, h: b.h - 2 * by });
+
+/** Keys closer together than this are typing. */
+const TYPING_MS = 1000;
 
 /** What `selector` matches on screen, as one box; null when none of it is. */
 function chromeBox(selector: string): Box | null {
@@ -30,6 +33,10 @@ function chromeBox(selector: string): Box | null {
  * It holds the keyboard while it's up, so nothing typed can reach a terminal behind it: Tab stays in the card, a press
  * on the dim keeps it there, and focus sent elsewhere comes back. When it closes, the keyboard goes back to what had it
  * (useDialogFocus), or `onClosed` finds it a home when that has gone. Esc skips it.
+ *
+ * Come up as someone is typing (in a terminal or a field, or any key a moment before), it doesn't take what they type:
+ * the card itself has the keyboard, with no button to press, and Tab, Enter, Space and Esc do nothing until the keys
+ * have stopped for a second.
  */
 export function LandscapeTour({
   steps,
@@ -51,6 +58,14 @@ export function LandscapeTour({
   onClosed: () => void;
 }) {
   useDialogFocus();
+  // read as it renders, while what had the keyboard still has it
+  const typing = useRef(ownsKeys(document.activeElement) || fromKeyboard() ? performance.now() + TYPING_MS : 0);
+  /** Keys still coming as they were when it came up: each one keeps it so for another second. */
+  const stillTyping = () => {
+    if (performance.now() >= typing.current) return false;
+    typing.current = performance.now() + TYPING_MS;
+    return true;
+  };
   const step = steps[at];
   const last = at === steps.length - 1;
   const ring = useRef<HTMLDivElement>(null);
@@ -92,18 +107,22 @@ export function LandscapeTour({
   }, [listeners]);
 
   useEffect(() => {
-    primary.current?.focus({ preventScroll: true });
+    (typing.current ? card : primary).current?.focus({ preventScroll: true });
+    // the card, never a button: an Enter or a Space on the way would press it
     const back = (e: FocusEvent) => {
       if (card.current?.contains(e.target as Node) || document.querySelector(OVER_TOUR)) return;
-      primary.current?.focus({ preventScroll: true });
+      card.current?.focus({ preventScroll: true });
     };
     // on the window, so it holds however the keyboard came to be nowhere (a dialog over the tour that closed with it)
     const onKey = (e: KeyboardEvent) => {
       if (document.querySelector(OVER_TOUR)) return;
-      if (e.key === "Escape" && !e.defaultPrevented) {
+      if (e.target === document.body) card.current?.focus({ preventScroll: true });
+      if (stillTyping()) {
+        if (e.key === "Escape") e.preventDefault();
+      } else if (e.key === "Escape" && !e.defaultPrevented) {
         e.preventDefault();
         now.current.onSkip();
-      } else if (e.target === document.body) primary.current?.focus({ preventScroll: true });
+      }
     };
     document.addEventListener("focusin", back);
     window.addEventListener("keydown", onKey);
@@ -132,6 +151,11 @@ export function LandscapeTour({
         aria-label="Landscape tour"
         tabIndex={-1}
         onKeyDown={(e) => {
+          if (stillTyping()) {
+            if (e.key === "Tab" || e.key === "Enter" || e.key === " ") e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
           if (e.key !== "Tab") return;
           e.preventDefault();
           const list = [...e.currentTarget.querySelectorAll("button")];

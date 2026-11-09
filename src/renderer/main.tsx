@@ -2815,15 +2815,21 @@ function App() {
   const tourSettled = !!landscapeLayout && migration.step.kind === "done" && !readProblem(landscapeState) && knownSessions !== null && !landscapeState?.landscape.tourDone;
   const [tourEnded, setTourEnded] = useState(false);
   const tourDue = tourSettled && !tourEnded && !nothingToTour(landscapeLayout);
-  const endTour = () => {
+  /** The tour settled for good: seen, or with nothing to show. A save that fails is said; it's gone for this run either way. */
+  const settleTour = (what: string) => {
     setTourEnded(true);
-    void landscapeStore.update({ tourDone: true }, "that the tour has been seen").then((error) => error && lsSay(`The tour may show again next time: ${error}`));
+    void landscapeStore.update({ tourDone: true }, what, { flag: true }).then((error) => {
+      if (!error) return;
+      console.error(`[mockingbird] couldn't save ${what}:`, error);
+      lsSay(`The tour may show again next time: ${error}`);
+    });
   };
+  const endTour = () => settleTour("that the tour has been seen");
   // Nothing to show a tour on means nothing was migrated: what's made from here on isn't what the tour is about, so
   // there's none later either.
-  const noTour = tourSettled && nothingToTour(landscapeLayout);
+  const noTour = tourSettled && !tourEnded && nothingToTour(landscapeLayout);
   useEffect(() => {
-    if (noTour) void landscapeStore.update({ tourDone: true }, "that there's nothing to tour");
+    if (noTour) settleTour("that there's nothing to tour");
   }, [noTour]);
   const [keysOpen, setKeysOpen] = useState(false);
   const [newAsk, setNewAsk] = useState(0);
@@ -2869,6 +2875,7 @@ function App() {
           onSeen={onLsSeen}
           switcher={sideCollapsed}
           onShowTree={() => showView("sessions")}
+          treeHidden={sideCollapsed || lsTeam}
           actionsFor={actionsFor}
           chromeFor={chromeFor}
           windowFor={windowFor}

@@ -9,14 +9,16 @@ import {
   nothingDrawn,
   nothingToTour,
   ringAround,
+  sameCamera,
   tourAreaOf,
   tourCamera,
+  tourCameraFrom,
   tourCardAt,
   tourNext,
   tourSteps,
   type ListRead,
 } from "../src/renderer/landscapeFirstRun";
-import { fitRects, type ResolvedLayout } from "../src/renderer/landscapeModel";
+import { fitRects, flagOnly, type ResolvedLayout } from "../src/renderer/landscapeModel";
 import { SHEET_FOOT, SHORTCUTS, shortcutIds } from "../src/renderer/landscapeShortcuts";
 import { actionOf, createActions } from "../src/renderer/workspaceActions";
 
@@ -36,7 +38,7 @@ const problem = (kind: LandscapeProblem["kind"], movedTo?: string): LandscapePro
 
 describe("what goes where the landscape would be empty", () => {
   it("nothing, once a landscape with nothing on it has been read whole", () => {
-    expect(state()).toEqual({ kind: "empty", closed: 0, reset: false });
+    expect(state()).toEqual({ kind: "empty", closed: 0, reset: null });
   });
 
   it("counts anything drawn as something, but not a docked window, which isn't on it", () => {
@@ -57,6 +59,8 @@ describe("what goes where the landscape would be empty", () => {
   it("is never empty over a file that only stands in, a read that failed or a read in", () => {
     const standIn = problem("unreadable");
     expect(state({ standIn, problems: [standIn] })).toMatchObject({ kind: "broken", title: PROBLEM_TITLE.unreadable });
+    // why, in the panel itself: the banner that says it too can be put away
+    expect(state({ standIn, problems: [standIn] })).toMatchObject({ why: expect.stringContaining("unreadable!") });
     expect(state({ standIn: problem("newer") })).toMatchObject({ kind: "broken", title: PROBLEM_TITLE.newer });
     expect(state({ storeError: "Couldn't read the layout: EMFILE" })).toMatchObject({ kind: "broken", why: "Couldn't read the layout: EMFILE" });
     expect(state({ migrationFailed: "It couldn't be saved" })).toMatchObject({ kind: "broken", title: "Your grid's layout wasn't read in", why: "It couldn't be saved" });
@@ -78,8 +82,9 @@ describe("what goes where the landscape would be empty", () => {
   });
 
   it("names a reset apart from an empty start, and carries the Closed list's count", () => {
-    expect(state({ problems: [problem("corrupt", "/f.bad")] })).toEqual({ kind: "empty", closed: 0, reset: true });
-    expect(state({ closed: 3 })).toEqual({ kind: "empty", closed: 3, reset: false });
+    expect(state({ problems: [problem("corrupt", "/f.bad")] })).toEqual({ kind: "empty", closed: 0, reset: "The old file was moved to /f.bad." });
+    expect(state({ problems: [problem("corrupt")] })).toEqual({ kind: "empty", closed: 0, reset: "corrupt!" });
+    expect(state({ closed: 3 })).toEqual({ kind: "empty", closed: 3, reset: null });
   });
 });
 
@@ -246,5 +251,32 @@ describe("the shortcuts sheet's rows", () => {
   it("include what the design lacks: ⇧N, ⌘= and ⌘-, and the windows' keys", () => {
     const keys = SHORTCUTS.flatMap((s) => s.rows.map((r) => r.keys)).join("\n");
     for (const k of ["⇧N", "⌘=", "⌘-", "⌘\\", "⇧⌘F", "⌃⇧G", "⇧⌘D", "⌘B"]) expect(keys).toContain(k);
+  });
+});
+
+describe("the tour's camera, kept", () => {
+  it("reads back only a from and a to that are cameras", () => {
+    const from = { x: 1, y: 2, zoom: 0.5 };
+    const to = { x: 300, y: 40, zoom: 1 };
+    expect(tourCameraFrom({ from, to })).toEqual({ from, to });
+    expect(tourCameraFrom(null)).toBe(null);
+    expect(tourCameraFrom({ from })).toBe(null);
+    expect(tourCameraFrom({ from, to: { x: 1, y: 2 } })).toBe(null);
+  });
+  it("takes a camera that rounding moved by less than half a pixel for the same one", () => {
+    expect(sameCamera({ x: 10, y: 10, zoom: 1 }, { x: 10.3, y: 9.8, zoom: 1.00001 })).toBe(true);
+    expect(sameCamera({ x: 10, y: 10, zoom: 1 }, { x: 11, y: 10, zoom: 1 })).toBe(false);
+    expect(sameCamera({ x: 10, y: 10, zoom: 1 }, { x: 10, y: 10, zoom: 1.01 })).toBe(false);
+  });
+});
+
+describe("a patch that only sets a flag", () => {
+  it("is tourDone alone, empty records aside", () => {
+    expect(flagOnly({ tourDone: true })).toBe(true);
+    expect(flagOnly({ tourDone: true, workspaces: {}, areas: {} })).toBe(true);
+    expect(flagOnly({ tourDone: true, workspaces: { s1: { x: 0, y: 0, w: 1, h: 1 } } })).toBe(false);
+    expect(flagOnly({ tourDone: true, migratedAt: "2026-11-09" })).toBe(false);
+    expect(flagOnly({ workspaces: {} })).toBe(false);
+    expect(flagOnly(null)).toBe(false);
   });
 });

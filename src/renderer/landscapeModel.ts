@@ -900,6 +900,15 @@ export function afterChange(cur: LandscapeState, change: LandscapeChange): Lands
   }
 }
 
+/**
+ * A patch that sets only a flag (tourDone): it changes nothing anyone could undo, so an Undo offered for the change
+ * before it still applies (LandscapeStore.revNow).
+ */
+export function flagOnly(p: LandscapePatch | null | undefined): boolean {
+  if (!p || p.migratedAt !== undefined || p.tourDone === undefined) return false;
+  return PATCH_RECORDS.every((k) => !p[k] || !Object.keys(p[k]!).length);
+}
+
 /** An update's answer, or a get's: taken unless it's older than what the window has. */
 export const newer = (cur: LandscapeState | null, next: LandscapeState): LandscapeState => (!cur || next.rev >= cur.rev ? next : cur);
 

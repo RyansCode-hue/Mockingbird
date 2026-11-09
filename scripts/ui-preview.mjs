@@ -144,7 +144,7 @@ const KEYS = {
 /**
  * Press, for real, the keys and the mouse the page asked for: it pushes { key, shift?, meta?, alt?, ctrl?, hold? } (hold:
  * "down" or "up", only that half of the press), { mouse: { x, y, clickCount, button?, shift? } } (clickCount 2: a double
- * click's second), { move: { x, y } }, { wheel: { x, y, dx, dy, meta?, ctrl? } } or { drag: { x0, y0, x1, y1 } } onto
+ * click's second), { move: { x, y } }, { wheel: { x, y, dx, dy, meta?, ctrl? } } or { drag: { x0, y0, x1, y1, hold? } } onto
  * window.__mbKeys, and window.__mbKeysDone counts the ones done. They reach whatever has the keyboard or is under the
  * pointer, as a person's would, which an event dispatched at an element can't show.
  */
@@ -172,11 +172,14 @@ async function pressAsked(ask) {
       continue;
     }
     if (k.drag) {
-      const { x0, y0, x1, y1 } = k.drag;
-      await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0, y: y0 });
-      await ask("Input.dispatchMouseEvent", { type: "mousePressed", x: x0, y: y0, button: "left", buttons: 1, clickCount: 1 });
-      for (const f of [0.25, 0.5, 0.75, 1]) await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0 + (x1 - x0) * f, y: y0 + (y1 - y0) * f, button: "left", buttons: 1 });
-      await ask("Input.dispatchMouseEvent", { type: "mouseReleased", x: x1, y: y1, button: "left", buttons: 0, clickCount: 1 });
+      // hold "down": pressed and moved, not let go (a later { drag, hold: "up" } lets go there); "up": only the letting go
+      const { x0, y0, x1, y1, hold } = k.drag;
+      if (hold !== "up") {
+        await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0, y: y0 });
+        await ask("Input.dispatchMouseEvent", { type: "mousePressed", x: x0, y: y0, button: "left", buttons: 1, clickCount: 1 });
+        for (const f of [0.25, 0.5, 0.75, 1]) await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0 + (x1 - x0) * f, y: y0 + (y1 - y0) * f, button: "left", buttons: 1 });
+      }
+      if (hold !== "down") await ask("Input.dispatchMouseEvent", { type: "mouseReleased", x: x1, y: y1, button: "left", buttons: 0, clickCount: 1 });
       continue;
     }
     const d = KEYS[k.key];

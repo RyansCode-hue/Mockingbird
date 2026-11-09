@@ -68,7 +68,7 @@ export type Asked =
   | { mouse: { x: number; y: number; clickCount: number; button?: "left" | "right" | "middle"; shift?: boolean } }
   | { move: { x: number; y: number } }
   | { wheel: { x: number; y: number; dx?: number; dy?: number; meta?: boolean; ctrl?: boolean } }
-  | { drag: { x0: number; y0: number; x1: number; y1: number } };
+  | { drag: { x0: number; y0: number; x1: number; y1: number; hold?: "down" | "up" } };
 type W = Window & { __mbKeys?: Asked[]; __mbKeysDone?: number };
 const w = window as W;
 let asked = 0;

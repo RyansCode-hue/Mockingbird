@@ -12,7 +12,7 @@ export interface KeyTarget {
 }
 
 /** What can open over the migration tour: dialogs, popovers and menus, which take the keyboard from it while they're up. */
-export const OVER_TOUR = ".modal-back:not(.mb-ghost), .scrim, .who-back, .mb-menu:not(.mb-ghost)";
+export const OVER_TOUR = ".modal-back:not(.mb-ghost), .scrim, .who-back, .t2s-back, .mb-menu:not(.mb-ghost)";
 /** Dialogs, popovers, menus and the tour: while one is open, Escape is its to close, and the window's keys wait. */
 export const OVERLAYS = `${OVER_TOUR}, .ls-tour-back`;
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isErr, type SessionInfo } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import { LEGACY_PREF_KEYS, migrateLayout, type LegacyPrefs } from "../shared/landscapeMigrate";
-import { afterChange, migrationPatch, migrationStep, newer, type ListsLoaded, type MigrationStep } from "./landscapeModel";
+import { afterChange, flagOnly, migrationPatch, migrationStep, newer, type ListsLoaded, type MigrationStep } from "./landscapeModel";
 import { readPref } from "./prefs";
 import { settled } from "./settled";
 import { isRemotePaneId } from "../shared/team/livePanes";
@@ -12,15 +12,19 @@ export interface LandscapeStore {
   state: LandscapeState | null;
   /** Why it couldn't be read, or the last change couldn't be made. */
   error: string | null;
-  /** Send a change; why it was refused or never answered (also said in `error`), or null once it's made. */
-  update: (patch: LandscapePatch, what: string) => Promise<string | null>;
+  /**
+   * Send a change; why it was refused or never answered (also said in `error`), or null once it's made. A flag's
+   * (`flag`) failure is its caller's to say: the layout itself is as it was, so it isn't the store's error.
+   */
+  update: (patch: LandscapePatch, what: string, o?: { flag?: boolean }) => Promise<string | null>;
   /** update, answering the revision the change made once it's made: a change's Undo is offered while that's still the newest (revNow). */
   save: (patch: LandscapePatch, what: string) => Promise<LandscapeSave>;
   reload: () => void;
   /**
-   * The revision of the newest landscape this window has, as of now (ahead of `state` until it renders): a change's
-   * Undo goes by it, offered only while it's still the revision that change made (save's answer). Read after the save
-   * instead, it could already be a later change's: main tells every window of a change, and that can come first.
+   * The revision of the newest change to the layout this window has, as of now (ahead of `state` until it renders): a
+   * change's Undo goes by it, offered only while it's still the revision that change made (save's answer). Read after
+   * the save instead, it could already be a later change's: main tells every window of a change, and that can come
+   * first. A change that only sets a flag (flagOnly) doesn't count: there's nothing in it to undo past.
    */
   revNow: () => number | null;
 }
@@ -41,8 +45,12 @@ export function useLandscape(on: boolean): LandscapeStore {
   const [state, setState] = useState<LandscapeState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cur = useRef<LandscapeState | null>(null);
-  const take = (next: LandscapeState) => {
-    cur.current = newer(cur.current, next);
+  const layoutRev = useRef<number | null>(null);
+  /** `next` taken, made by `patch` when that's known: one that only sets a flag leaves layoutRev where it was. */
+  const take = (next: LandscapeState, patch?: LandscapePatch | null) => {
+    const was = cur.current;
+    cur.current = newer(was, next);
+    if (cur.current !== was && !(flagOnly(patch) && layoutRev.current !== null)) layoutRev.current = cur.current.rev;
     setState(cur.current);
   };
   const reload = useCallback(() => {
@@ -61,10 +69,8 @@ export function useLandscape(on: boolean): LandscapeStore {
       // before the first read lands there's nothing to apply it to: that read has it
       if (!cur.current) return;
       const next = afterChange(cur.current, change);
-      if (next) {
-        cur.current = next;
-        setState(next);
-      } else reload();
+      if (next) take(next, change.landscape ? null : change.patch);
+      else reload();
     });
     reload();
     return off;
@@ -77,22 +83,23 @@ export function useLandscape(on: boolean): LandscapeStore {
     const t = setInterval(reload, rereadMs());
     return () => clearInterval(t);
   }, [on, unreadable]);
-  const save = useCallback(async (patch: LandscapePatch, what: string): Promise<LandscapeSave> => {
+  const send = async (patch: LandscapePatch, what: string, flag: boolean): Promise<LandscapeSave> => {
     const r = await settled(window.mb.landscapeUpdate(patch));
     if (isErr(r)) {
       console.error(`[mockingbird] the landscape refused ${what}:`, r.error, patch);
-      setError(`Couldn't save ${what}: ${r.error}`);
+      if (!flag) setError(`Couldn't save ${what}: ${r.error}`);
       return { error: r.error };
     }
-    setError(null);
-    take(r);
+    if (!flag) setError(null);
+    take(r, patch);
     return { rev: r.rev };
-  }, []);
-  const update = useCallback(async (patch: LandscapePatch, what: string): Promise<string | null> => {
-    const r = await save(patch, what);
+  };
+  const save = useCallback((patch: LandscapePatch, what: string) => send(patch, what, false), []);
+  const update = useCallback(async (patch: LandscapePatch, what: string, o?: { flag?: boolean }): Promise<string | null> => {
+    const r = await send(patch, what, !!o?.flag);
     return "error" in r ? r.error : null;
   }, []);
-  const revNow = useCallback(() => cur.current?.rev ?? null, []);
+  const revNow = useCallback(() => layoutRev.current ?? cur.current?.rev ?? null, []);
   return { state, error, update, save, reload, revNow };
 }
 

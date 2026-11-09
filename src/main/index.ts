@@ -489,6 +489,8 @@ function createWindow(): void {
   const win = new BrowserWindow({
     width: 1600,
     height: 1000,
+    // the top bar folds what doesn't fit behind », down to the brand, the open tab, Needs you and + New: about 500 px
+    minWidth: 640,
     title: "Mockingbird",
     backgroundColor: "#1a1917",
     titleBarStyle: "hiddenInset",

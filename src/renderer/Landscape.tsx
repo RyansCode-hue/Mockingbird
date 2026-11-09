@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatTokens, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
-import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
+import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, GAP, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
 import type { LandscapeSave, Migrating } from "./useLandscape";
 import {
   BAND_SETTLE_MS,
@@ -100,14 +100,20 @@ import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
 import { OVERLAYS, OVER_TOUR, escapeLeavesFullscreen, ownsKeys } from "./keys";
+import { useKeyboardHome } from "./Modal";
 import { LandscapeEmpty } from "./LandscapeEmpty";
 import { LandscapeTour } from "./LandscapeTour";
-import { PROBLEM_TITLE, nothingDrawn, tourAreaOf, tourCamera, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
+import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
 export const CAMERA_PREF = "mb.landscape.camera";
+/**
+ * Where the tour moved the camera from and to, while it's up: kept with the camera, so a tab away or a restart in the
+ * middle of it still puts the camera back, and saves the camera it came from as this window's, not the tour's.
+ */
+export const TOUR_CAMERA_PREF = "mb.landscape.tourCamera";
 const CAMERA_SAVE_MS = 250;
 const ARROWS: Record<string, Direction> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
 /**
@@ -137,8 +143,6 @@ export interface AreaHooks {
   create: (area: string | null, at: Point) => ModelAction[];
 }
 
-/** As much of a key event as the surface's keys read: React's, on the surface, or the window's, with the keyboard nowhere. */
-type SurfaceKey = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "preventDefault" | "stopPropagation">;
 
 /** How often a tour that's due looks again for what's open over the app (What's new after an update) having closed. */
 const TOUR_WAIT_MS = 400;
@@ -292,6 +296,7 @@ export function Landscape({
   onSeen,
   switcher,
   onShowTree,
+  treeHidden,
   actionsFor,
   chromeFor,
   windowFor,
@@ -349,6 +354,8 @@ export function Landscape({
   /** The area switcher over the landscape, while the area tree is hidden (design M). */
   switcher: boolean;
   onShowTree: () => void;
+  /** The area tree isn't showing: the side bar is hidden, or shows Team rooms in its place. */
+  treeHidden: boolean;
   /** A workspace's actions (its front session's): what its chips, ⋯ and right-click offer, in every band. */
   actionsFor: (t: Tile) => ModelAction[];
   /** Something to say over the landscape, as a gesture's refusal is said (a resize or a tool window refused); a new `n` says it again. */
@@ -495,7 +502,7 @@ export function Landscape({
     if (!gesture.current?.on && !settling.current.length) viewport.current?.classList.remove("ls-dragging");
   };
   // a flight to an area: the clock animation whose progress moves the camera, and the frame that reads it
-  const flight = useRef<{ anim: Animation; raf: number } | null>(null);
+  const flight = useRef<{ anim: Animation; raf: number; to: Camera } | null>(null);
   const clock = useRef<HTMLDivElement>(null);
 
   // semantic zoom: the band the camera's zoom is in, changed only once a new one has held for a moment
@@ -617,6 +624,17 @@ export function Landscape({
       if (r) el.style.setProperty("--ls-gh", `${ghostDrawnHeight(r, zoom, names)}px`);
     }
   };
+  /** The tour is up (set as it renders, below). */
+  const tourUpNow = useRef(false);
+  /** Where the tour moved the camera from and to, kept while it's up (TOUR_CAMERA_PREF). */
+  const tourMoved = () => tourCameraFrom(readPref<unknown>(TOUR_CAMERA_PREF, null));
+  /** The camera is where the tour put it, or on its way there. */
+  const tourHolds = (m: { to: Camera }) => sameCamera(cam.current, m.to) || (!!flight.current && sameCamera(flight.current.to, m.to));
+  /** This window's camera as it's saved: while the tour holds it, the one it moved it from. */
+  const userCamera = (): Camera => {
+    const m = tourUpNow.current ? tourMoved() : null;
+    return m && tourHolds(m) ? m.from : cam.current;
+  };
   const apply = useCallback((next: Camera) => {
     cam.current = next;
     const w = world.current;
@@ -641,7 +659,7 @@ export function Landscape({
     if (peekNow.current && !peekNow.current.pinned) closePeek();
     for (const l of listeners.current) l(next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => writePref(CAMERA_PREF, cam.current), CAMERA_SAVE_MS);
+    saveTimer.current = setTimeout(() => writePref(CAMERA_PREF, userCamera()), CAMERA_SAVE_MS);
   }, []);
   useEffect(
     () => () => {
@@ -653,7 +671,7 @@ export function Landscape({
   useEffect(
     () => () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      writePref(CAMERA_PREF, cam.current);
+      writePref(CAMERA_PREF, userCamera());
     },
     []
   );
@@ -708,7 +726,7 @@ export function Landscape({
     if (!el || !v.w || motion() !== "full" || fromKeyboard() || document.hidden || typeof el.animate !== "function") return apply(to);
     const from = cam.current;
     const anim = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: D.l, easing: EASE.move });
-    const f = { anim, raf: 0 };
+    const f = { anim, raf: 0, to };
     flight.current = f;
     viewport.current?.setAttribute("data-flying", "");
     const step = () => {
@@ -1070,9 +1088,7 @@ export function Landscape({
   };
   // the surface's own keys: only while it has the keyboard itself
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.target === viewport.current && !focusNow.current) surfaceKey(e);
-  };
-  const surfaceKey = (e: SurfaceKey) => {
+    if (e.target !== viewport.current || focusNow.current) return;
     const cmd = e.metaKey && !e.ctrlKey && !e.altKey;
     const handled = () => {
       e.preventDefault();
@@ -1124,22 +1140,15 @@ export function Landscape({
       clearSelection();
     }
   };
-  const surfaceKeyNow = useRef(surfaceKey);
-  surfaceKeyNow.current = surfaceKey;
-  // With the keyboard nowhere (what had it has gone: a palette clicked away, a dialog closed with what opened it) keys
-  // have no other taker, so they're the landscape's, and so is the keyboard from here on. A window opening on the
-  // landscape, or its tab just clicked, starts with it too, so `?` and the letters work without a click first.
+  // A window opening on the landscape, or its tab just clicked, gives it the keyboard, so `?` and the letters work
+  // without a click first. Keys with the keyboard nowhere do nothing: a terminal or a field that went while being typed
+  // in leaves it there, and what's typed on is no shortcut. What closes over the app gives the keyboard back to the
+  // landscape (or focus) when nothing that had it is left.
   useEffect(() => {
     const a = document.activeElement;
     if (!a || a === document.body || a.closest(".topbar .tabs")) viewport.current?.focus({ preventScroll: true });
-    const onKey = (e: KeyboardEvent) => {
-      if (e.target !== document.body || document.querySelector(OVERLAYS)) return;
-      (focusNow.current ? overlay.current : viewport.current)?.focus({ preventScroll: true });
-      if (!focusNow.current) surfaceKeyNow.current(e);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   }, []);
+  useKeyboardHome(() => (focusNow.current ? overlay.current : viewport.current));
 
   // A peek's keys, wherever the keyboard is but a text field, a menu or a dialog: Space keeps it open, and closes it
   // once kept; Esc closes it; Enter focuses a kept-open one's workspace.
@@ -1200,8 +1209,15 @@ export function Landscape({
     const box = viewport.current?.getBoundingClientRect();
     if (!box) return;
     const at = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-    const r = viewport.current!.getBoundingClientRect();
-    const p = toLandscape(cam.current, { x: at.x - r.left, y: at.y - r.top });
+    // In focus the landscape behind isn't what's in view: what's made goes into the focused workspace's area, beside
+    // it. Otherwise it's the area at the view's centre, where the menu opens over it.
+    const f = focusNow.current ? layoutNow.current.tiles.find((t) => t.key === focusNow.current) : undefined;
+    if (f) {
+      const beside = { x: f.rect.x + f.rect.w + GAP, y: f.rect.y };
+      ctx.openAt(at, menuOf(areaHooks.create(f.area === LOOSE_GROUP ? null : f.area, beside)));
+      return;
+    }
+    const p = toLandscape(cam.current, { x: at.x - box.left, y: at.y - box.top });
     ctx.openAt(at, menuOf(areaHooks.create(areaAt(layoutNow.current.areas, p)?.key ?? null, p)));
   }, [newAsk]);
   /** A create-menu row run for a workspace placed at the view's centre: a tile of the empty landscape. */
@@ -1216,6 +1232,7 @@ export function Landscape({
   /** The session whose terminal had the keyboard as the tour came up. */
   const tourTerm = useRef<string | null>(null);
   const [tourUp, setTourUp] = useState(false);
+  tourUpNow.current = tourUp;
   const [tourAt, setTourAt] = useState(0);
   useEffect(() => {
     if (!tourWanted) return setTourUp(false);
@@ -1243,8 +1260,6 @@ export function Landscape({
     if (!a) return null;
     return { rect: areaShown(a), box: barAnchor(areaShown(a), cam.current, a.rect.collapsed ? "pill" : bandNow.current === "cards" ? "areaName" : "areaHeader") };
   };
-  /** Where the tour moved the camera from and to: it's put back at the end, unless something has moved it since. */
-  const tourMoved = useRef<{ from: Camera; to: Camera } | null>(null);
   const tourTarget = tourList?.[tourStep].target;
   const tourTargetKey = tourTarget && (tourTarget.kind === "chrome" ? null : tourTarget.kind === "area" ? `area:${tourTarget.key}` : `at:${tourTarget.rect.x},${tourTarget.rect.y}`);
   useEffect(() => {
@@ -1252,14 +1267,18 @@ export function Landscape({
     const at = tourPlace(tourTarget);
     const to = at && tourCamera(at.rect, at.box, vpNow.current, topNow.current);
     if (!to) return;
-    tourMoved.current = { from: tourMoved.current?.from ?? cam.current, to };
+    // an earlier step's move, or one kept from before a tab away or a restart (the camera then is the one it came from)
+    const kept = tourMoved();
+    const from = kept && (tourHolds(kept) || sameCamera(cam.current, kept.from)) ? kept.from : cam.current;
+    writePref(TOUR_CAMERA_PREF, { from, to });
     placed.current = true;
     flyTo(to);
   }, [tourTargetKey]);
+  /** The camera goes back where the tour found it, unless something has moved it since: a flight still on its way to the tour's place is the tour's. */
   const endTour = () => {
-    const moved = tourMoved.current;
-    tourMoved.current = null;
-    if (moved && cam.current.x === moved.to.x && cam.current.y === moved.to.y && cam.current.zoom === moved.to.zoom) flyTo(moved.from);
+    const moved = tourMoved();
+    if (moved && tourHolds(moved)) flyTo(moved.from);
+    writePref(TOUR_CAMERA_PREF, null);
     tour.onEnd();
   };
   /**
@@ -1277,8 +1296,9 @@ export function Landscape({
     const wait = setInterval(() => {
       if (document.activeElement !== viewport.current || Date.now() > until) return clearInterval(wait);
       if (!takesKeys(bandNow.current) || bandWait.current || flight.current) return;
-      clearInterval(wait);
       focusTerm(id);
+      // its terminal is attached once the band has rested there: until then the keyboard stays, and it's asked again
+      if (document.activeElement?.closest(".xterm")) clearInterval(wait);
     }, 50);
   };
 
@@ -1638,6 +1658,8 @@ export function Landscape({
       if (!zooming && takesKeys(bandNow.current) && (e.target as Element | null)?.closest?.(".ls-world .ls-win-body")) return;
       // the selected workspace's terminal scrolls its own history while it takes the mouse; any other wheel moves the landscape
       if (!zooming && mouseAt(cam.current.zoom) && node && node.dataset.ws === selKey.current && (e.target as Element).closest(".term-holder")) return;
+      // the empty landscape's words, taller than a short view, scroll themselves (LandscapeEmpty)
+      if (!zooming && (e.target as Element | null)?.closest?.(".ls-empty[data-scrolls]")) return;
       e.preventDefault();
       e.stopPropagation();
       const page = vpNow.current.h || 800;
@@ -2152,7 +2174,7 @@ export function Landscape({
             onKeys={surface}
           />
         )}
-        {emptyState.kind !== "drawn" && <LandscapeEmpty state={emptyState} onTile={runTile} onJoinRoom={onJoinRoom} treeHidden={switcher} onShowTree={onShowTree} />}
+        {emptyState.kind !== "drawn" && <LandscapeEmpty state={emptyState} onTile={runTile} onJoinRoom={onJoinRoom} treeHidden={treeHidden} onShowTree={onShowTree} />}
         {switcher && (
           <LiveSwitcher
             stops={stops}

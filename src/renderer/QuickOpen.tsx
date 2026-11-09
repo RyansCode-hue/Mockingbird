@@ -71,7 +71,14 @@ export function QuickOpen({
 
   return (
     <>
-      <div className="scrim" onMouseDown={onClose} />
+      <div
+        className="scrim"
+        // closing gives the keyboard back to what had it; the press would otherwise take it to the page after that
+        onMouseDown={(e) => {
+          e.preventDefault();
+          onClose();
+        }}
+      />
       <div className="palette qo">
         <div className="inrow">
           <span className="prompt">⌘P</span>

@@ -1,5 +1,5 @@
 import type { Camera, LandscapeProblem, Rect, Size } from "../shared/landscape";
-import { areaShown, fitBelow, type ResolvedLayout } from "./landscapeModel";
+import { areaShown, cameraFrom, fitBelow, type ResolvedLayout } from "./landscapeModel";
 
 /**
  * First run on the landscape (docs/landscape.md, First run and empty landscape), the rules apart from the drawing:
@@ -33,7 +33,7 @@ export const nothingToTour = (l: Pick<ResolvedLayout, "areas" | "tiles" | "ghost
  */
 export type EmptyState =
   | { kind: "drawn" }
-  | { kind: "empty"; closed: number; reset: boolean }
+  | { kind: "empty"; closed: number; reset: string | null }
   | { kind: "broken"; title: string; why: string; retry?: () => void }
   | { kind: "reading"; why: string };
 
@@ -59,7 +59,8 @@ export function emptyStateOf(o: {
   closed: number;
 }): EmptyState {
   if (!nothingDrawn(o.layout)) return { kind: "drawn" };
-  if (o.standIn) return { kind: "broken", title: PROBLEM_TITLE[o.standIn.kind], why: "What's on the landscape isn't known until it can be read: the note above says why." };
+  // said here whole, since the banner over it can be put away
+  if (o.standIn) return { kind: "broken", title: PROBLEM_TITLE[o.standIn.kind], why: `${o.standIn.message} What's on the landscape isn't known until it can be read.` };
   if (o.storeError) return { kind: "broken", title: "The layout has a problem", why: o.storeError };
   if (o.migrationFailed) return { kind: "broken", title: "Your grid's layout wasn't read in", why: o.migrationFailed };
   const lists: [ListRead, string][] = [
@@ -71,7 +72,8 @@ export function emptyStateOf(o: {
   if (failed) return { kind: "broken", title: `Couldn't read ${failed[1]}`, why: failed[0].error!, retry: failed[0].retry };
   const waiting = lists.filter(([l]) => !l.read).map(([, what]) => what);
   if (waiting.length) return { kind: "reading", why: `Reading ${waiting.join(", ")}…` };
-  return { kind: "empty", closed: o.closed, reset: o.problems.some((p) => p.kind === "corrupt") };
+  const corrupt = o.problems.find((p) => p.kind === "corrupt");
+  return { kind: "empty", closed: o.closed, reset: corrupt ? (corrupt.movedTo ? `The old file was moved to ${corrupt.movedTo}.` : corrupt.message) : null };
 }
 
 // ---- the empty landscape's tiles ---------------------------------------------------------------
@@ -204,6 +206,17 @@ export const TOUR_MIN_W = 160;
 export function tourCamera(rect: Rect, box: Box, view: Size, top: number): Camera | null {
   const whole = box.x >= 0 && box.y >= top && box.x + box.w <= view.w && box.y + box.h <= view.h;
   return whole && box.w >= TOUR_MIN_W ? null : fitBelow([rect], view, top);
+}
+
+/** Two cameras that show the same: what the tour left is compared with where it is, after rounding on the way. */
+export const sameCamera = (a: Camera, b: Camera): boolean => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.zoom - b.zoom) < 1e-4;
+
+/** Where the tour moved the camera from and to, as kept (a pref); null when what was kept isn't that. */
+export function tourCameraFrom(v: unknown): { from: Camera; to: Camera } | null {
+  if (!v || typeof v !== "object") return null;
+  const from = cameraFrom((v as Record<string, unknown>).from);
+  const to = cameraFrom((v as Record<string, unknown>).to);
+  return from && to ? { from, to } : null;
 }
 
 /** How much more room to the left or above it takes for the card not to go to a target's right. */

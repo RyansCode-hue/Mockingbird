@@ -22,20 +22,20 @@ const RANK_KEYS = 2;
 const RANK_TAB = 1;
 
 /**
- * The shortcuts sheet (design G) under its button: landscapeShortcuts.ts's rows. It's a popover over the app that says
- * so (useDialogFocus puts the Needs you tray away) and gives the keyboard back to what had it: the landscape after `?`,
- * the button after a click. A dialog or the palette opening puts it away in turn, and hands them the same place to
- * give the keyboard back to.
+ * The shortcuts sheet (design G) under its button, or under » with that folded: landscapeShortcuts.ts's rows. It's a
+ * popover over the app that says so (useDialogFocus puts the Needs you tray away) and gives the keyboard back to what
+ * had it: the landscape after `?`, the button after a click, and past the palette or »'s menu it was opened from. A
+ * dialog or the palette opening puts it away in turn, and hands them the same place to give the keyboard back to.
  */
-function ShortcutsSheet({ anchor, onClose }: { anchor: HTMLElement; onClose: () => void }) {
-  useDialogFocus();
-  const opener = useRef(document.activeElement);
+function ShortcutsSheet({ anchor, placeKey, onClose }: { anchor: () => HTMLElement | null; placeKey: string; onClose: () => void }) {
+  const backTo = useDialogFocus();
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(() => {
     const onDialog = (e: Event) => {
       close.current();
-      if (opener.current instanceof HTMLElement) (e as CustomEvent<DialogOpened>).detail.handBack(opener.current);
+      const to = backTo();
+      if (to) (e as CustomEvent<DialogOpened>).detail.handBack(to);
     };
     document.addEventListener(DIALOG_OPENED, onDialog);
     return () => document.removeEventListener(DIALOG_OPENED, onDialog);
@@ -43,6 +43,7 @@ function ShortcutsSheet({ anchor, onClose }: { anchor: HTMLElement; onClose: () 
   return (
     <AnchoredPopover
       anchor={anchor}
+      placeKey={placeKey}
       className="ls-keys"
       label="Shortcuts"
       onClose={onClose}
@@ -79,11 +80,19 @@ function ShortcutsSheet({ anchor, onClose }: { anchor: HTMLElement; onClose: () 
   );
 }
 
+/** What folding was worked out from, so a narrower or wider bar is folded again only when something changes. */
+interface Folded {
+  sig: string;
+  folded: string[];
+}
+
 /**
  * The top bar with the landscape on (designs G, D and O): the brand and What's new, the tabs, Needs you, "? Shortcuts"
  * and + New. In a narrow window what doesn't fit folds behind "» n more" as the selection bar's buttons do (foldBar,
  * measured before anything is painted), the shortcuts button first, then tabs from the right; the open tab, Needs you
  * and + New stay, and a folded tab's badge shows on »: it opens a menu of them, since the bar has no second row.
+ * » stays the same element while the bar is measured again (a Needs you count or a badge changing), so the sheet
+ * under it and the keyboard on it stay where they are.
  */
 export function LandscapeTopBar({
   brand,
@@ -114,9 +123,11 @@ export function LandscapeTopBar({
   const ctx = useContextMenu("More in the top bar");
   const [room, setRoom] = useState("");
   const sig = [room, tab, needsCount, ...tabs.map((t) => `${t.id}:${t.label}:${t.badgeSays ?? ""}`)].join("\n");
-  const [fold, setFold] = useState<{ sig: string; folded: string[] } | null>(null);
+  const [fold, setFold] = useState<Folded | null>(null);
   const measuring = fold?.sig !== sig;
   const folded = new Set(measuring ? [] : fold.folded);
+  /** The tab that had the keyboard as the bar was measured: folded into », it's » that has it after. */
+  const tabWithKeys = useRef<string | null>(null);
 
   useEffect(() => {
     const b = bar.current;
@@ -132,22 +143,40 @@ export function LandscapeTopBar({
   useLayoutEffect(() => {
     const b = bar.current;
     if (!measuring || !b) return;
+    tabWithKeys.current = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(".topbar .tab[data-tab]")?.dataset.tab ?? null;
+    // Everything is shown as it's measured, so the bar's own width is what it all takes, its gaps included: each folded
+    // item gives back its width and the gap beside it, and » takes its own.
     const css = getComputedStyle(b);
-    const w = (q: string) => b.querySelector<HTMLElement>(q)?.offsetWidth ?? 0;
-    // the brand and the tabs' margins (.brand, .tabs) go with what never folds
-    const fixed = w(".brand") + 12 + w(".ny-btn") + b.querySelector<HTMLElement>(":scope > button.primary")!.offsetWidth;
+    const gap = parseFloat(css.columnGap) || 0;
+    const tabGap = parseFloat(getComputedStyle(b.querySelector(".tabs")!).columnGap) || 0;
+    const laid = [...b.children].filter((el) => getComputedStyle(el).position !== "absolute");
+    const w = (el: Element | null | undefined) => (el ? el.getBoundingClientRect().width : 0);
+    // the spacer takes whatever is left: none of it is needed, though the gaps beside it are
+    const total = laid.length ? laid[laid.length - 1].getBoundingClientRect().right - laid[0].getBoundingClientRect().left - w(b.querySelector(":scope > .spacer")) : 0;
+    const moreNow = moreBtn.current ? w(moreBtn.current) + gap : 0;
+    const tabW = tabs.map((t) => ({ t, w: w(b.querySelector(`[data-tab="${t.id}"]`)) + tabGap }));
+    const keysW = w(keysBtn.current) + gap;
+    const fixed = total - moreNow - tabW.reduce((n, x) => n + x.w, 0) - keysW;
     const fit = foldBar(
-      [{ key: FIXED, w: fixed, rank: 0 }, ...tabs.map((t) => ({ key: t.id, w: w(`[data-tab="${t.id}"]`), rank: t.id === tab ? 0 : RANK_TAB })), { key: KEYS, w: keysBtn.current?.offsetWidth ?? 0, rank: RANK_KEYS }],
-      b.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight),
-      w(".tb-probe"),
-      parseFloat(css.columnGap) || 0
+      [{ key: FIXED, w: fixed, rank: 0 }, ...tabW.map(({ t, w: tw }) => ({ key: t.id, w: tw, rank: t.id === tab ? 0 : RANK_TAB })), { key: KEYS, w: keysW, rank: RANK_KEYS }],
+      // a pixel spare, for widths the layout rounds
+      b.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight) - 1,
+      w(b.querySelector(".tb-probe")) + gap,
+      0
     );
     setFold({ sig, folded: fit.folded });
   }, [sig, measuring]);
+  useLayoutEffect(() => {
+    const id = tabWithKeys.current;
+    tabWithKeys.current = null;
+    if (id && fold?.folded.includes(id) && (!document.activeElement || document.activeElement === document.body)) moreBtn.current?.focus({ preventScroll: true });
+  }, [fold]);
 
   const rest = tabs.filter((t) => folded.has(t.id));
   const keysFolded = folded.has(KEYS);
   const count = rest.length + (keysFolded ? 1 : 0);
+  // while measuring, » is drawn as last folded: the same element, out of the measurement
+  const moreCount = measuring ? (fold?.folded.length ?? 0) : count;
   const busy = rest.filter((t) => t.badgeSays);
   const menu = (): Action[] => [
     ...rest.map((t): Action => ({ key: t.id, label: t.badgeSays ? `${t.label} (${t.badgeSays})` : t.label, onPick: () => onTab(t.id) })),
@@ -166,7 +195,7 @@ export function LandscapeTopBar({
             </button>
           ))}
       </span>
-      {count > 0 && (
+      {moreCount > 0 && (
         <button
           ref={moreBtn}
           type="button"
@@ -175,7 +204,7 @@ export function LandscapeTopBar({
           title={busy.length ? busy.map((t) => `${t.label}: ${t.badgeSays}`).join(" · ") : "What doesn't fit in the bar"}
           onClick={(e) => ctx.openBelow(e.currentTarget, menu())}
         >
-          » {count} more
+          » {moreCount} more
           {busy.length > 0 && <span className="dot sm waiting" style={{ marginLeft: 6 }} />}
         </button>
       )}
@@ -191,7 +220,9 @@ export function LandscapeTopBar({
           ? Shortcuts
         </button>
       )}
-      {keysOpen && (keysBtn.current ?? moreBtn.current) && <ShortcutsSheet anchor={(keysBtn.current ?? moreBtn.current)!} onClose={() => onKeysOpen(false)} />}
+      {keysOpen && (keysBtn.current ?? moreBtn.current) && (
+        <ShortcutsSheet anchor={() => keysBtn.current ?? moreBtn.current} placeKey={fold?.folded.join() ?? ""} onClose={() => onKeysOpen(false)} />
+      )}
       <button type="button" className="primary" title="New workspace: on the landscape, the menu a right-click gives (⌘N goes straight to New session)" onClick={onNew}>
         + New
       </button>

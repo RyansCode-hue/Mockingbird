@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { plural } from "../shared/format";
 import { EMPTY_TILES, type EmptyState } from "./landscapeFirstRun";
 
@@ -7,6 +7,24 @@ const READING_AFTER_MS = 300;
 
 /** A click on a tile or a link leaves the keyboard with the landscape (the press gave it there), so `?` and the letters still work after what it opens. */
 const keepKeyboard = (e: React.MouseEvent) => e.preventDefault();
+
+/**
+ * The panel, taller than the view it's in (a short window): it scrolls, and takes presses for as long as that lasts,
+ * since a wheel on it has to reach it. Otherwise presses go through it to the landscape.
+ */
+function useScrollsWhenTall() {
+  const ro = useRef<ResizeObserver | null>(null);
+  return useCallback((el: HTMLDivElement | null) => {
+    ro.current?.disconnect();
+    ro.current = null;
+    if (!el) return;
+    const check = () => el.toggleAttribute("data-scrolls", el.scrollHeight > el.clientHeight + 1);
+    ro.current = new ResizeObserver(check);
+    ro.current.observe(el);
+    if (el.firstElementChild) ro.current.observe(el.firstElementChild);
+    check();
+  }, []);
+}
 
 /**
  * What goes on a landscape with nothing drawn on it (design H), by what's known: the tiles and how to right-click only
@@ -25,11 +43,12 @@ export function LandscapeEmpty({
   /** A tile's create-menu row run, for a workspace placed at the view's centre. */
   onTile: (row: string) => void;
   onJoinRoom: () => void;
-  /** The side bar is hidden, so its Closed list needs showing. */
+  /** The side bar is hidden, or shows Team rooms: its Closed list needs showing. */
   treeHidden: boolean;
   onShowTree: () => void;
 }) {
   const [late, setLate] = useState(false);
+  const fits = useScrollsWhenTall();
   const reading = state.kind === "reading";
   useEffect(() => {
     if (!reading) return setLate(false);
@@ -38,13 +57,13 @@ export function LandscapeEmpty({
   }, [reading]);
   if (state.kind === "reading")
     return (
-      <div className="ls-empty" data-empty="reading">
+      <div ref={fits} className="ls-empty" data-empty="reading">
         {late && <div className="ls-empty-text">{state.why}</div>}
       </div>
     );
   if (state.kind === "broken")
     return (
-      <div className="ls-empty" data-empty="broken" role="status">
+      <div ref={fits} className="ls-empty" data-empty="broken" role="status">
         <div className="ls-empty-in">
           <div className="ls-empty-title">{state.title}</div>
           <div className="ls-empty-text">{state.why}</div>
@@ -57,11 +76,11 @@ export function LandscapeEmpty({
       </div>
     );
   return (
-    <div className="ls-empty" data-empty={state.reset ? "reset" : "empty"}>
+    <div ref={fits} className="ls-empty" data-empty={state.reset ? "reset" : "empty"}>
       <div className="ls-empty-in">
         <div className="ls-empty-title">{state.reset ? "The layout was reset" : "An empty landscape"}</div>
         <div className="ls-empty-text">
-          {state.reset && "The note above says where the old file went. "}Right-click anywhere to add a workspace, or start from one of these.
+          {state.reset && `${state.reset} `}Right-click anywhere to add a workspace, or start from one of these.
         </div>
         <div className="ls-empty-tiles">
           {EMPTY_TILES.map((t) => (

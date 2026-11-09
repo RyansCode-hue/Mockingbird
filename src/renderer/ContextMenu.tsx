@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { MoreIcon } from "./Icons";
 import { fromKeyboard, usePresence } from "./motion";
+import { useOpener } from "./Modal";
 
 /**
  * One action, said once and shown two ways: as a labelled icon button (an
@@ -113,8 +114,10 @@ function run(a: Action, close: () => void) {
 }
 
 /** The menu itself, in a portal over everything. Use it through useContextMenu or MoreButton. */
-function ContextMenuView({ state, setState, label }: { state: MenuState; setState: (s: MenuState | null) => void; label?: string }) {
+function ContextMenuView({ state, setState, label, back }: { state: MenuState; setState: (s: MenuState | null) => void; label?: string; back: HTMLElement | null }) {
   const ref = useRef<HTMLDivElement>(null);
+  // a dialog opened from a row gives the keyboard back to what had it before the menu, the row being gone
+  useOpener(back);
   // it grows from the pointer's corner; opened from the keyboard, it's simply there
   const presence = usePresence<HTMLDivElement>("menu", { instant: fromKeyboard, also: ref });
   const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
@@ -267,7 +270,7 @@ export function useContextMenu(label?: string) {
         openAt(fromKeys ? { x: r.left + 8, y: r.bottom } : { x: e.clientX, y: e.clientY }, list);
       },
     }),
-    menu: state && <ContextMenuView state={state} setState={set} label={label} />,
+    menu: state && <ContextMenuView state={state} setState={set} label={label} back={back.current} />,
   };
 }
 

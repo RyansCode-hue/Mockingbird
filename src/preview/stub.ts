@@ -1189,6 +1189,8 @@ if (landscape.tourDone === undefined) delete landscape.tourDone;
 let listReadFails = Number(new URLSearchParams(location.search).get("lsListFail") ?? 0);
 // ?lsTourSaveFails: saving that the tour has been seen is refused, as main's would be with the disk full
 const tourSaveFails = new URLSearchParams(location.search).has("lsTourSaveFails");
+// ?lsMigrateFails: reading the grid's layout in is refused (its patch, the one setting migratedAt), so it stays undone
+const migrateFails = new URLSearchParams(location.search).has("lsMigrateFails");
 // ?lsPersist: the landscape kept in sessionStorage, read back through the file's own checks (parseLandscape) when the
 // page reloads, as main reads landscape.json when the app starts again
 const LS_KEPT = "mb.preview.landscape";
@@ -1779,6 +1781,7 @@ const api: Record<string, (...a: any[]) => any> = {
     let patch: LandscapePatch;
     let next: Landscape;
     if (tourSaveFails && (raw as LandscapePatch).tourDone !== undefined) return err("ENOSPC: no space left on device");
+    if (migrateFails && (raw as LandscapePatch).migratedAt) return err("EACCES: permission denied");
     try {
       patch = parsePatch(structuredClone(raw));
       next = applyPatch(landscape, patch);
@@ -2841,19 +2844,30 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
 };
 // a sync failing after the window has read them: main pushes the failure as well as answering with it
 if (badgeFails.has("meters")) setTimeout(() => emit("onMetersChanged", err(METERS_FAIL)), 1000);
-// S8: ?keysSheet opens the shortcuts sheet, ?newMenu the top bar's + New, and ?lsTourStep=<n> presses the tour's Next n times
-if (params.has("keysSheet")) setTimeout(() => click(".tb-keys"), 1000);
+// S8: ?keysSheet opens the shortcuts sheet (from »'s menu when its button is folded), ?newMenu the top bar's + New, and
+// ?lsTourStep=<n> presses the tour's Next n times
+if (params.has("keysSheet"))
+  setTimeout(() => {
+    if (document.querySelector(".tb-keys")) return click(".tb-keys");
+    click(".tb-more");
+    setTimeout(() => [...document.querySelectorAll<HTMLElement>(".mb-ctx button")].find((b) => b.textContent?.includes("? Shortcuts"))?.click(), 300);
+  }, 1000);
 if (params.has("newMenu")) setTimeout(() => click(".topbar > button.primary"), 1000);
 if (params.has("lsTourStep")) for (let i = 0; i < Number(params.get("lsTourStep")); i++) setTimeout(() => click('.ls-tour-card [data-act="next"]'), 1000 + i * 200);
 // S8: ?landscapeFirstRunAudit=k|t|e|b works the shortcuts sheet, the tour, the empty landscape and the top bar (firstRunAudit.ts) for test/uiLandscapeFirstRun.test.ts
 if (params.has("landscapeFirstRunAudit")) {
   recordConsole();
+  // as main tells the windows of another window's change: the patch, not the whole landscape
   const patchLandscape = (patch: LandscapePatch) => {
     landscape = applyPatch(landscape, parsePatch(structuredClone(patch)));
     landscapeRev++;
-    emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, landscape, problems: landscapeProblems }));
+    emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
   };
-  runFirstRunAudit({ sessions: () => sessions, calls, stored: () => landscape, patch: patchLandscape, waitFor }, params.get("landscapeFirstRunAudit") || "k");
+  const setSession = (id: string, over: Partial<SessionInfo> | null) => {
+    sessions = over ? sessions.map((s) => (s.id === id ? { ...s, ...over } : s)) : sessions.filter((s) => s.id !== id);
+    sessionsChanged();
+  };
+  runFirstRunAudit({ sessions: () => sessions, calls, stored: () => landscape, patch: patchLandscape, setSession, waitFor }, params.get("landscapeFirstRunAudit") || "k");
 }
 // S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
