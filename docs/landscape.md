@@ -694,28 +694,32 @@ group order.
 
 ## Phases
 
-1. **Landscape:**
+1. **Landscape and wires** (1.7.0):
    - workspaces, pan and zoom, semantic zoom, focus, minimap;
    - areas (marquee, go-to, area header, badges, collapse, lock), the area
      tree, right-click create;
    - tool windows, the Artifacts window in every area, the workspace header
      and ⋯ menu;
    - stacks, Tidy, hover peek, card badges;
-   - the Needs you tray (permission prompts, questions, join requests and
-     finished workspaces for now);
-   - migration with its tour, the shortcuts sheet, the empty landscape.
+   - the Needs you tray (permission prompts, questions, join requests, finished
+     workspaces and wire gates);
+   - migration with its tour, the shortcuts sheet, the empty landscape;
+   - handoff, context link, feedback loop and shared worktree terminals, through
+     the messaging MCP server;
+   - gates and wire states, Finish step and `finish_step`;
+   - the pipeline strip in focus, Add next step, pipeline templates and the
+     stage chip following a pipeline;
+   - Tidy along wires, and wires in the tour, the shortcuts sheet and the empty
+     landscape.
 
-   Ships with no wires.
-2. **Context and collabs:**
-   - shared worktree terminals and context links, through the messaging MCP
-     server;
-   - collab workspaces built on Council's engine;
-   - agent proposals for workspaces and wires;
+   Its wires are built as [landscape-wires.md](landscape-wires.md) says.
+2. **Collabs, proposals and browsers:**
+   - collab workspaces built on Council's engine, and a collab as a pipeline
+     step;
+   - agent proposals for workspaces and wires, and proposals in the Needs you
+     tray;
    - browser workspaces, the "sees" wire and `compare`.
-3. **Pipelines:**
-   - handoff, feedback loop, gates and wire states, `finish_step`;
-   - pipeline templates and the pipeline strip in focus;
-   - wire gates and proposals in the Needs you tray.
+3. **What pipelines still lack:** the tests badge on cards.
 4. **Rooms:** shared areas, layout events, wires across Macs.
 
 Phases 1–3 are minors. Phase 4 adds room events an older Mockingbird can't

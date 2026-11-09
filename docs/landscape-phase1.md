@@ -8,6 +8,8 @@ badges) built; S8 (first run and switching over) next.
 The spec is [landscape.md](landscape.md); this file is how its phase 1 gets
 built.
 
+Wires now ship with phase 1 in 1.7.0: [landscape-wires.md](landscape-wires.md) is their plan, and it overrides what this file says about them.
+
 Phase 1 replaces the grid with the landscape: workspaces, areas, tool
 windows, stacks, the Needs you tray and migration. It has **no wires**; those are phases 2–3.
 It ships as a minor release (1.7.0). `landscape.json` is new data, and an older
