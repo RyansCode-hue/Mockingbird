@@ -75,7 +75,7 @@ function DebugConsole() {
 
 
 /**
- * The panel under the grid (⌘J), as in VS Code: a tab per service log. Logs
+ * The panel under the landscape (⌘J), as in VS Code: a tab per service log. Logs
  * of stopped services stay until their tab is closed.
  */
 export function BottomPanel({

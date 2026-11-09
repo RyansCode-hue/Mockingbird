@@ -36,7 +36,7 @@ import {
   type Landscape,
   type Rect,
 } from "../src/shared/landscape";
-import { cellKeyFor } from "../src/renderer/appModel";
+import { cellKeyFor } from "../src/shared/legacyLayout";
 
 const area = (over: Partial<Area> = {}): Area => ({ x: 0, y: 0, w: 2 * AREA_PAD + 2 * 400 + GAP, h: 600, repos: [], ...over });
 const inside = (r: Rect, a: Rect) => r.x >= a.x + AREA_PAD && r.y >= a.y + AREA_HEADER && r.x + r.w <= a.x + a.w - AREA_PAD;

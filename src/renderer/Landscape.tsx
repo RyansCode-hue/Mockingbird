@@ -838,7 +838,7 @@ export function Landscape({
     setPeek(null);
     setFocusKey(t.key);
     select(t);
-    // your own terminal takes the keyboard; a teammate's waits for a click, as it does in the grid
+    // your own terminal takes the keyboard; a teammate's waits for a click
     setTimeout(() => (!isRemote(t.front) && t.front.status !== "dead" ? focusTerm(t.front.id) : armFocus(overlay.current)), 50);
   };
   const leaveFocus = () => {
@@ -1223,7 +1223,7 @@ export function Landscape({
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // ⌘E focuses a workspace, or leaves focus, from anywhere in the window, as the grid's does: from inside a
+  // ⌘E focuses a workspace, or leaves focus, from anywhere in the window: from inside a
   // workspace (its terminal, say) that one, from anywhere else (the side bar just picked a session) the selected
   // one; with none, it arms the landscape. ⌘Esc leaves focus from anywhere. Both are taken before xterm sees them,
   // which would type Esc.

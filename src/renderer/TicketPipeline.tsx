@@ -475,7 +475,7 @@ export function PipelinePanel(props: PipelineProps) {
   );
 }
 
-/** The pipeline on its own, for tickets reached from the grid rather than the board. */
+/** The pipeline on its own, for tickets reached from an area's header or ⌘K rather than the board. */
 export function PipelineDialog(props: PipelineProps & { onClose: () => void }) {
   return (
     <Modal className="modal pl-modal" onClose={props.onClose}>

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createIpcStore, loadInto } from "../ipcStore";
 import { readPref, usePersisted, writePref } from "../prefs";
-import { initialsOf, LeaveRoomDialog, RoleChip, RoleNotice, roomOfGroup, RoomWarnings, TeamNotices, useMemberActions } from "../Team";
+import { initialsOf, LeaveRoomDialog, RoleChip, RoleNotice, RoomWarnings, TeamNotices, useMemberActions } from "../Team";
 import { roleIn } from "./rolesModel";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type MenuEntry } from "../ContextMenu";
 import { BackIcon, ChatIcon, ChevronIcon, CloseIcon, GridIcon, InviteIcon, KanbanIcon, PlusIcon } from "../Icons";
@@ -53,17 +53,8 @@ const pickRoom = (roomId: string) => {
   writePref(PICK_KEY, roomId);
 };
 
-/** The shared group's room the grid showed when the Team view last looked (the view unmounts while hidden). */
-let lastGroupRoom: string | undefined;
-/** The view is being opened on a room or the list on purpose: the grid's group doesn't override it as it opens. */
-let pickedOnPurpose = false;
-let panelOpen = false;
-
-/** Open the Team view on a room (its sessions and chat), or on the room list (null), whatever group the grid shows. */
-export const openTeamView = (roomId: string | null) => {
-  pickRoom(roomId ?? LIST);
-  pickedOnPurpose = !panelOpen;
-};
+/** Open the Team view on a room (its sessions and chat), or on the room list (null). */
+export const openTeamView = (roomId: string | null) => pickRoom(roomId ?? LIST);
 
 const sumUnread = (u: ChatUnread) => Object.values(u).reduce((acc, r) => ({ unread: acc.unread + r.unread, mentions: acc.mentions + r.mentions }), { unread: 0, mentions: 0 });
 
@@ -124,13 +115,12 @@ export interface RoomArtifactProps {
 
 /**
  * What the Team view needs from the window to show a room's sessions and act
- * on the room: the rows are the Sessions view's own (main.tsx), so they work
- * the same in both places.
+ * on the room: the rows are main.tsx's, with a workspace's actions.
  */
 export interface TeamViewHooks {
   sessionCount: (groupKey: string) => number;
   renderSessions: (groupKey: string) => React.ReactNode;
-  /** Show the room's sessions in the grid. */
+  /** Bring the room's area into view. */
   onShowGroup: (groupKey: string) => void;
   onOpenBoard: (roomId: string) => void;
   /** Invite a teammate: a one-time code for the room. */
@@ -228,39 +218,23 @@ function RoomList({ rooms, hooks }: { rooms: TeamRoomSummary[]; hooks: TeamViewH
 
 /**
  * The side bar view: the room list, or one room — its sessions, artifacts and
- * chat. The room picked, or of the shared group on screen; with one room,
- * always that one.
+ * chat. The room picked; with one room, always that one.
  */
 export function RoomChatPanel({
   status,
-  activeGroup,
   visible,
   hooks,
   ...artifactProps
 }: {
   status: TeamStatus | { error: string } | null;
-  activeGroup: string | null;
   visible: boolean;
   hooks: TeamViewHooks;
 } & RoomArtifactProps) {
   const choice = picked.use();
-  const groupRoom = activeGroup ? roomOfGroup(status, activeGroup) : undefined;
-  // switching the grid to a shared group shows its room — a switch, not every time the view opens, so the room list stays
-  useEffect(() => {
-    const purpose = pickedOnPurpose;
-    pickedOnPurpose = false;
-    if (groupRoom?.id === lastGroupRoom) return;
-    lastGroupRoom = groupRoom?.id;
-    if (groupRoom && !purpose) pickRoom(groupRoom.id);
-  }, [groupRoom?.id]);
-  useEffect(() => {
-    panelOpen = true;
-    return () => void (panelOpen = false);
-  }, []);
   if (!status) return <div className="rc-empty">Loading…</div>;
   if (isErr(status)) return <div className="rc-empty err">Couldn't read the team status: {status.error}</div>;
   const rooms = status.rooms;
-  const room = choice === LIST && rooms.length > 1 ? undefined : rooms.find((r) => r.id === choice) ?? groupRoom ?? rooms[0];
+  const room = choice === LIST && rooms.length > 1 ? undefined : rooms.find((r) => r.id === choice) ?? rooms[0];
   const notices = status.notices?.length ? (
     <div className="rc-notices">
       <TeamNotices notices={status.notices} />
@@ -271,7 +245,7 @@ export function RoomChatPanel({
       <>
         {notices}
         <div className="rc-empty">
-          No team rooms yet. Share a group from its header in the Sessions view (⇪), or join a teammate's room with the invite code they sent you. Each room shows here with
+          No team rooms yet. Share an area from its ⋯ (Share as a team room…), or join a teammate's room with the invite code they sent you. Each room shows here with
           its sessions — yours and teammates' — and its chat: what teammates say, what their agents are up to, and an @assistant.
           <div>
             <button className="outline rc-join" onClick={hooks.onJoinRoom}>

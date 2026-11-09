@@ -96,9 +96,9 @@ if (new URLSearchParams(location.search).has("needsMany"))
   sessions = sessions.map((s, i) => (["s1", "s3", "s5", "s7"].includes(s.id) ? { ...s, status: "waiting", waitingReason: "Claude needs your permission to use Edit", waitingSince: now - (i + 1) * min, waitingAt: now - (i + 1) * min } : s));
 const stallQ = new URLSearchParams(location.search).get("stall");
 if (stallQ) sessions = sessions.map((s) => (s.id === "s1" ? { ...s, status: "working", stalledSince: now - 6 * min, hooksSilent: stallQ === "hooks" } : s));
-// closed sessions this Mac can reopen (main's resumable ones): Previous on the grid; on the landscape, ghosts where they
-// have places, the rest in the Closed sessions list. p1 is a loose ghost; g1 has its place in 5102; g2's worktree has
-// been removed (missingFolders), so it starts fresh; o1 (in 5102) and o2 (in 5150, which has no area) have no place
+// closed sessions this Mac can reopen (main's resumable ones): ghosts where they have places on the landscape, the
+// rest in the Closed sessions list. p1 is a loose ghost; g1 has its place in 5102; g2's worktree has been removed
+// (missingFolders), so it starts fresh; o1 (in 5102) and o2 (in 5150, which has no area) have no place
 let previous: SessionInfo[] = [
   session("p1", { title: "Yesterday's spike", status: "dead", taskGroup: null }),
   session("g1", { title: "Profile the tag list", ticketId: "5102", taskGroup: "5102", branch: "5102-quickViewFreeze", cwd: WT("5102-quickViewFreeze"), agent: "codex", status: "dead", conversation: { agent: "codex", id: "conv-g1" }, createdAt: now - 3 * 60 * min }),
@@ -1343,7 +1343,7 @@ const unifiedDiff = (path: string) => {
 let renameLag = 0;
 
 const api: Record<string, (...a: any[]) => any> = {
-  // sessions and the grid
+  // sessions
   listSessions: async () => {
     if (listReadFails > 0) {
       listReadFails--;
@@ -2553,12 +2553,13 @@ if (params.has("reset") || !localStorage.getItem("mb.preview")) {
   localStorage.setItem("mb.preview", "1");
   localStorage.setItem("mb.helpSeen", "true");
   set("mb.tab", "sessions");
-  set("mb.sideView", "sessions");
+  // the grid's panes on screen as 1.6 left them, which the migration reads (?landscape=fresh)
   set("mb.shown", ["s1", "s2", "s3", "s4"]);
 }
 // the screen to open on, for screenshots and links:
 // ?tab=dashboard · ?view=scm (explorer, search, run) · ?section=about (a Settings section) · ?theme=light
-// · ?shown=s1,s4 (the panes on screen: group 5101 has s1, s4, s8 and the workspace s2/s3; 5102 has s5, s6)
+// · ?shown=s1,s4 (the grid's panes on screen as 1.6 left them, for ?landscape=fresh's migration: group 5101 has s1, s4,
+//   s8 and the workspace s2/s3; 5102 has s5, s6)
 const tab = params.get("tab");
 const view = params.get("view");
 const section = params.get("section");
@@ -2617,7 +2618,7 @@ for (const level of ["warn", "error"] as const) {
     was(...a);
   };
 }
-// team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared);
+// team rooms: team chat — ?chat=<room id> picks the room the Team room view shows;
 // ?chat=list shows the room list, each room with its sessions
 if (params.get("chat")) set("mb.roomChat.room", params.get("chat") === "list" ? "" : params.get("chat"));
 // the House board and New session in a room are opened from the Team view's rooms: it opens on the room list
@@ -3381,8 +3382,9 @@ if (params.has("motionMoments")) {
   });
 }
 // ?termAudit (with ?motion=full or off) does what re-fits or moves terminals — the side bar and the bottom panel
-// shown and hidden, fullscreen and back, a group switch and back, a workspace minimized and restored, a pane opened,
-// a workspace tab switched, a waiting banner and a stall banner each shown and gone — with panes full of history and output streaming, then
+// shown and hidden, focus and back, another area gone to and back, an area collapsed and opened, another workspace
+// gone to, a stack's tab switched, a waiting banner and a stall banner each shown and gone — with terminals full of
+// history and output streaming, then
 // a Repaint on the normal screen and on the alternate one, and a pane relaunched in place. It finishes animations
 // rather than waiting on them, and writes into <script id="mb-term-audit"> for test/uiTerminal.test.ts what was
 // wrong after each step: a terminal not at its holder's size, a pty not told its terminal's size, a size sent from a
@@ -3629,7 +3631,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     armFocus(vp());
     await sleep(150);
   };
-  // its row in the area tree (the Sessions view while the landscape shows), its area opened first when it's closed
+  // its row in the area tree, its area opened first when it's closed
   const treeRow = async (id: string) => {
     const find = () => document.querySelector<HTMLElement>(`.area-tree .lt-ws[data-sid="${CSS.escape(id)}"]`);
     const s = sessions.find((x) => x.id === id);
@@ -7394,9 +7396,9 @@ if (params.has("landscapePerf")) {
     document.body.appendChild(tag);
   });
 }
-// ?scrollAudit (with ?motion=full or off) checks that terminals follow their output: a pane whose view was at the
-// bottom stays there through a group switch (output arriving while it's hidden, the pane shown again while its
-// program is idle), a teammate's copy re-fitted to a wider owner screen at a smaller font, the side bar and the
+// ?scrollAudit (with ?motion=full or off) checks that terminals follow their output: a terminal whose view was at the
+// bottom stays there while another area is on screen (output arriving while it's off screen, back while its program
+// is idle), a teammate's copy re-fitted to a wider owner screen at a smaller font, the side bar and the
 // bottom panel hidden and shown, an agent's inline frame shrinking and its pane getting taller under it, and a Repaint;
 // one the user scrolled up stays where they put it while output goes
 // on (a teammate's copy too, through its font change), with a "Jump to latest" control that brings it back. After each step it checks every shown terminal: at its bottom (xterm's and the page's

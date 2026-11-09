@@ -1,5 +1,4 @@
 import React, { useSyncExternalStore } from "react";
-import type { LayoutNode } from "./layoutTree";
 
 /**
  * Drag-and-drop feedback shared by every drag in the app: what's being dragged,
@@ -18,8 +17,6 @@ export interface DropTarget {
   key: string;
   outcome: string;
   side?: Side;
-  /** A drop on the grid: the layout it would leave, and the pane to highlight in it. */
-  preview?: { tree: LayoutNode; hot: string };
   /** A drop into a list: the gap between its items it would land in, 0 above the first. A line marks it. */
   gap?: number;
   /** A place that won't take the drop: the drop isn't allowed, and the label says why (`outcome`). */
@@ -30,8 +27,6 @@ export interface DragState {
   type: string; // the dataTransfer type, e.g. "text/mb-session"
   payload: string;
   label: string; // what's moving, shown until the cursor is over a target
-  /** Where the drag started, when one payload type can come from places that drop differently. */
-  from?: string;
   /** The target under the cursor, if the drop would do something there. */
   target: DropTarget | null;
   x: number;
@@ -62,25 +57,20 @@ export function useDrag(): DragState | null {
 }
 
 /** Start dragging: sets the drag data and tells every target what's coming. */
-export function beginDrag(e: React.DragEvent, type: string, payload: string, label: string, from?: string): void {
+export function beginDrag(e: React.DragEvent, type: string, payload: string, label: string): void {
   e.dataTransfer.setData(type, payload);
   e.dataTransfer.effectAllowed = "move";
   // dragend goes to the dragged element; when the drop moved that element (a
-  // session into another group re-renders its row elsewhere) it's no longer in
+  // card into another column is drawn there anew) it's no longer in
   // the page, so the event never bubbles to the document — listen on the element
   e.currentTarget.addEventListener("dragend", endDrag, { once: true });
-  state = { type, payload, label, from, target: null, x: e.clientX, y: e.clientY };
+  state = { type, payload, label, target: null, x: e.clientX, y: e.clientY };
   emit();
 }
 
 /** The dragged item, if it's of this type. */
 export function dragging(type: string): string | null {
   return state && state.type === type ? state.payload : null;
-}
-
-/** Where the current drag started (see beginDrag). */
-export function dragFrom(): string | undefined {
-  return state?.from;
 }
 
 /**

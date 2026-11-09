@@ -3,15 +3,13 @@
  * Migration). The grid's prefs stay in localStorage untouched, so an older
  * Mockingbird still opens with its grid.
  *
- * A group's split tree is read back with the grid's own rules (layoutTree.ts,
- * gridModel.ts, appModel.ts), as the grid would draw it the next time the
- * group is on screen, then turned into rectangles. Those files go with the
- * grid; what this needs of them has to move here first.
+ * A group's split tree is read back with the grid's own rules
+ * (legacyLayout.ts), as the grid would have drawn it the next time the group
+ * was on screen, then turned into rectangles.
  */
 import type { SessionInfo } from "./types";
 import { sessionOutline } from "../renderer/appModel";
-import { activeGroupOf } from "../renderer/gridModel";
-import { asTree, hasLeaf, keysOf, legacyTree, reconcile, remove, rename, toGrid, type Extent, type LayoutNode, type LegacyLayout } from "../renderer/layoutTree";
+import { activeGroupOf, asTree, hasLeaf, keysOf, legacyTree, reconcile, remove, rename, toGrid, type Extent, type LayoutNode, type LegacyLayout } from "./legacyLayout";
 import {
   AREA_GAP,
   AREA_HEADER,

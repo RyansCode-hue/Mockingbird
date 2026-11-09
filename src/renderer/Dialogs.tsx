@@ -8,7 +8,7 @@ import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";
 import { useAction } from "./useAction";
 
-/** The grid's small dialogs: rename, move to a group, restart all, close a session. */
+/** The small dialogs: rename, move to a group, restart all, close a session. */
 
 // ---- rename dialog (groups + workspaces) ----
 export function RenameDialog({
@@ -137,7 +137,7 @@ export function GroupDialog({
 /**
  * Restart every Claude pane in place. The CLI prints "Update installed ·
  * Restart to update" when it upgrades itself, and each running claude keeps the
- * old binary until it is restarted — this does the whole grid at once.
+ * old binary until it is restarted — this does every session at once.
  */
 export function RestartAllDialog({
   sessions,
@@ -171,8 +171,8 @@ export function RestartAllDialog({
     <Modal className="modal close-dlg" onClose={onClose}>
       <h3>Restart agent sessions?</h3>
       <div className="sub-h">
-        Each pane relaunches with <code>--continue</code>, so conversations, grid position, and
-        groups are kept. Plain terminals and dead panes are left alone.
+        Each session relaunches with <code>--continue</code>, so conversations, places on the
+        landscape, and groups are kept. Plain terminals and exited sessions are left alone.
       </div>
       {active.length > 0 && (
         <label className="check-line" style={{ marginTop: 10 }}>
@@ -239,7 +239,6 @@ export function CloseSessionDialog({
   onDone,
   forceClose,
   forget,
-  ghost = false,
 }: {
   session: SessionInfo;
   /** The worktree's state, or why it couldn't be read — then the only choice is to keep it. */
@@ -252,8 +251,6 @@ export function CloseSessionDialog({
   forceClose: (s: SessionInfo, forget: boolean) => Promise<string | null>;
   /** Lets the closed session go for good once its worktree is done with, and what the landscape keeps for it. */
   forget: (s: SessionInfo) => Promise<unknown>;
-  /** On the landscape: what it keeps is its ghost where it was, not a row under Previous. */
-  ghost?: boolean;
 }) {
   // the safe option is always preselected; the destructive one is never the default
   const [mode, setMode] = useState<CleanupMode>("keep");
@@ -276,7 +273,7 @@ export function CloseSessionDialog({
     };
     try {
       // the session closes but stays resumable (scrollback and undo snapshots
-      // included), under Previous or as its ghost, until its worktree has been pushed or removed
+      // included), as its ghost, until its worktree has been pushed or removed
       const closeErr = await forceClose(session, false);
       if (closeErr) return stop(`Couldn't close the session: ${closeErr}`);
       if (mode !== "keep") {
@@ -297,7 +294,7 @@ export function CloseSessionDialog({
     {
       mode: "keep",
       label: "Keep worktree, close pane",
-      consequence: ghost ? "nothing is lost · its ghost stays where it was, to reopen" : "nothing is lost · resumable under Previous",
+      consequence: "nothing is lost · its ghost stays where it was, to reopen",
     },
     ...(st
       ? [

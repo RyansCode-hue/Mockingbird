@@ -64,7 +64,7 @@ export interface WorkspaceEnv {
   move: () => void;
   resize: (p: SizePreset) => void;
   tool: (t: WorkspaceTool) => void;
-  /** Its area's Artifacts window, or why there's none (a loose workspace); null where there are no tool windows (the grid). */
+  /** Its area's Artifacts window, or why there's none (a loose workspace); null where there are no tool windows. */
   artifacts: Can | null;
   repaint: () => void;
   hidePanel: () => void;
@@ -292,7 +292,7 @@ export interface GhostsEnv {
 }
 
 /**
- * Reopen all and Clear ghosts (Previous's restore all and its ✕ on each): an area's ⋯, the loose ones' (the tree's
+ * Reopen all and Clear ghosts: an area's ⋯, the loose ones' (the tree's
  * Loose row, a right-click outside every area), ⌘K's over every one and the Closed sessions list's. Off, saying why,
  * when there are none, when none of them can be reopened here, and while a Reopen all is under way.
  */
@@ -311,7 +311,7 @@ export function ghostsActions(g: GhostsEnv, o: { what?: string; clearLabel?: str
 /** What an area's actions need to know about it, and do (main.tsx's `areaActions` makes it). */
 export interface AreaEnv {
   title: string;
-  /** Its record on the landscape (collapsed, locked); null where it has none (the grid). */
+  /** Its record on the landscape (collapsed, locked); null where it has none. */
   stored: { collapsed?: boolean; locked?: boolean } | null;
   /** A team room's area: the room tools (Chat, Board, Members, Follow) are only ever a room's. */
   room: boolean;
@@ -341,8 +341,8 @@ export interface AreaEnv {
   chatIcon?: JSX.Element;
 }
 
-/** A group's choices for agents' messages (its area's menu, the grid's group bar): one is on, so each says what it does differently. */
-export const messageModes = (defaultSend: boolean): { value: MessageMode | ""; label: string; title: string }[] => [
+/** A group's choices for agents' messages (its area's menu): one is on, so each says what it does differently. */
+const messageModes = (defaultSend: boolean): { value: MessageMode | ""; label: string; title: string }[] => [
   { value: "", label: `As in Settings (${defaultSend ? "auto-send" : "leave in prompt"})`, title: "What Settings → Agents says, for every group" },
   { value: "send", label: "Always auto-send", title: "Sent as a prompt as soon as it arrives" },
   { value: "prompt", label: "Always leave in prompt", title: "Typed into the prompt; you press Enter" },
@@ -453,7 +453,7 @@ export function menuOf(actions: readonly ModelAction[], names: Partial<Record<Ac
 export const actionOf = (actions: readonly ModelAction[], key: string): ModelAction | undefined => actions.find((a) => a.key === key);
 
 /**
- * Session `s`'s row `key` for what offers only what can be done (the grid's pane header, ⌘K): shown while it can be
+ * Session `s`'s row `key` for what offers only what can be done (⌘K): shown while it can be
  * done; off with the take-over's reason while a teammate has taken the session over, where it could otherwise be done;
  * not shown where it never applies (a terminal, a teammate's session, a folder outside git).
  */

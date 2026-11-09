@@ -7,7 +7,7 @@ import { actionOf, menuOf, type ModelAction } from "./workspaceActions";
 
 /**
  * The Closed sessions list (docs/landscape.md, Ghost cards): this Mac's closed sessions with no ghost on the landscape
- * (left in the grid's Previous, or closed off the landscape), under the area tree above the Connected line; every closed
+ * (closed before the landscape had a place for them), under the area tree above the Connected line; every closed
  * session while the landscape has no layout yet, so each can always be reached. A row reopens its session (placed as a
  * new workspace in its group's area, which is formed again if it's gone) or forgets it; Reopen all reopens every one
  * that can be, and the header's ⋯ (or a right-click on it) has Forget all too. Its rows' actions are the ghost model's

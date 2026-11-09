@@ -7,7 +7,8 @@
  * tab, cancelled and made. =locked (with ?lsLocked=5101): those rows off, saying why. =palette: ⌘K's rows, Focus, and its
  * room rows following the selected area. =notes: Ask for status said over the landscape, a note said off it in the status
  * bar, problems with room sessions, the tree's rooms, the Team view's stack row. =handoff, =review, =import: what they
- * make, beside what it goes on from (the first free spot elsewhere) and brought into view.
+ * make, beside what it goes on from (the first free spot elsewhere) and brought into view. =search: a Search window's
+ * Match case, set and then read by the next Search window.
  */
 import type { Landscape, LandscapeState, Rect } from "../shared/landscape";
 import { AREA_PAD, GAP } from "../shared/landscape";
@@ -373,6 +374,33 @@ async function importPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
   out.imported = { opened: !!opened, placed: !!opened && !!(await stored()).workspaces[opened.id], selected: !!opened && selectedFront() === opened.id, dialog: !!document.querySelector(".import-dlg"), keysUnchanged: JSON.stringify(legacy()) === JSON.stringify(keys) };
 }
 
+/** A Search window's options are the next one's, as the side bar's Search kept them (mb.search). */
+async function searchPart(out: Record<string, unknown>) {
+  const win = () => document.querySelector<HTMLElement>('.ls-window[data-tool="search"]');
+  const filesTab = () => [...(win()?.querySelectorAll<HTMLElement>('.sv-scope [role="tab"]') ?? [])].find((t) => t.textContent?.trim() === "Files") ?? null;
+  // Match case shows only on the Files scope
+  const matchCase = () => win()?.querySelector<HTMLElement>('.sv-opt[title="Match case"]') ?? null;
+  const state = () => ({ open: !!win(), files: filesTab()?.getAttribute("aria-selected") ?? null, matchCase: matchCase()?.getAttribute("aria-pressed") ?? null });
+  const searchKey = async () => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "f", shiftKey: true, metaKey: true, bubbles: true, cancelable: true }));
+    await sleep(500);
+  };
+  await selectWs("s1");
+  await searchKey();
+  out.first = state();
+  filesTab()?.click();
+  await sleep(300);
+  matchCase()?.click();
+  await sleep(300);
+  out.saved = JSON.parse(localStorage.getItem("mb.search") ?? "null");
+  win()?.querySelector<HTMLElement>('[aria-label="Close Search"]')?.click();
+  await sleep(400);
+  out.closed = !win();
+  await selectWs("s5");
+  await searchKey();
+  out.next = state();
+}
+
 export function runSwitchAudit(env: SwitchAuditEnv, part: string): void {
   env.waitFor(".ls-world .ls-node", async () => {
     const out: Record<string, unknown> = {};
@@ -385,6 +413,7 @@ export function runSwitchAudit(env: SwitchAuditEnv, part: string): void {
       else if (part === "handoff") await handoffPart(env, out);
       else if (part === "review") await reviewPart(env, out);
       else if (part === "import") await importPart(env, out);
+      else if (part === "search") await searchPart(out);
       else throw new Error(`no part ${part}`);
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);

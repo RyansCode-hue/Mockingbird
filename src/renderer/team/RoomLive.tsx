@@ -17,9 +17,9 @@ import { settled } from "../settled";
 
 /**
  * This window's sessions with teammates' room sessions merged in (and its own
- * room sessions tagged), kept current. Tells the main process what the grid
- * shows and which pane is focused, for teammates' presence initials, Follow,
- * and which teammates' sessions to stream here.
+ * room sessions tagged), kept current. Tells the main process what's on the
+ * landscape's screen and which session is selected, for teammates' presence
+ * initials, Follow, and which teammates' sessions to stream here.
  */
 export function useRoomLive(own: SessionInfo[], shown: string[], focused: string | null): RoomLive {
   const [state, setState] = useState<LivePanesState | null>(null);
@@ -88,13 +88,13 @@ export interface Follow {
   stop(): void;
 }
 
-/** A change to the grid this soon after following applied a view is following's own. */
+/** A change to the selection this soon after following applied a view is following's own. */
 const OWN_CHANGE_MS = 600;
 
 /**
- * Follow a teammate: the room session they're in comes into view (on the grid,
- * the ones they show too), until you stop or go elsewhere yourself. Clicking
- * into a pane to type doesn't stop it.
+ * Follow a teammate: the room session they're in comes into view, until you
+ * stop or go elsewhere yourself. Clicking into a workspace to type doesn't
+ * stop it.
  */
 export function useFollow(o: {
   views: MemberView[];

@@ -243,7 +243,7 @@ button.primary:disabled .kbd { color: var(--text-4); opacity: 1; }
   display: flex; flex-shrink: 0; overflow: hidden;
 }
 .sidebar.collapsed { border-right: none; }
-/* the side bar's width snaps, so the grid and its terminals re-fit once; its contents slide in (main.tsx) */
+/* the side bar's width snaps, so the landscape re-fits once; its contents slide in (main.tsx) */
 .side-inner { display: flex; flex-direction: column; flex-shrink: 0; min-height: 0; }
 .side-grip { position: absolute; right: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; z-index: 5; }
 .side-grip:hover { background: var(--line-strong); }
@@ -258,29 +258,6 @@ button.primary:disabled .kbd { color: var(--text-4); opacity: 1; }
 }
 .filter::placeholder { color: var(--text-4); }
 .filter:focus { outline: none; border-color: var(--line-btn-hover); }
-
-.group-label {
-  display: flex; align-items: center; gap: 8px; margin: 10px 2px 4px;
-  font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase;
-  color: var(--text-4); white-space: nowrap;
-}
-.group-label { cursor: pointer; }
-.group-label:hover .txt { color: var(--text-2); }
-.group-label .glbtn {
-  opacity: 0; order: 3; border: none; padding: 0 3px; font-size: 9px;
-  color: var(--text-4); letter-spacing: 0; text-transform: none;
-}
-.group-label:hover .glbtn { opacity: 1; }
-.group-label .glbtn:hover { color: var(--text-1); }
-.group-label .txt { overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; }
-.group-label .chev { width: 10px; flex-shrink: 0; font-size: 8px; }
-.group-label::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); min-width: 8px; order: 1; }
-.sidebar h2 {
-  font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase;
-  color: var(--text-4); margin: 14px 2px 4px;
-  display: flex; align-items: center; justify-content: space-between;
-}
-.sidebar h2 button.icon { font: 400 9px var(--mono); letter-spacing: 0; text-transform: none; padding: 1px 4px; }
 
 .sub-label {
   display: flex; align-items: center; gap: 6px; margin: 6px 2px 2px 6px;
@@ -297,9 +274,7 @@ button.primary:disabled .kbd { color: var(--text-4); opacity: 1; }
   cursor: pointer; margin-bottom: 1px; color: var(--text-2); font: 400 11px var(--ui);
 }
 .sess-item:hover { background: var(--fill-subtle); }
-.sess-item.shown { background: var(--fill-selected); color: var(--text-1); font-weight: 500; }
 .sess-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.sess-item .idx { font: 400 9px var(--mono); color: var(--text-4); flex-shrink: 0; }
 .sess-item button { opacity: 0; padding: 1px 5px; }
 .sess-item:hover button { opacity: 1; }
 
@@ -330,52 +305,8 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 .chip.changes .add { color: var(--git-add); }
 .chip.changes .del { color: var(--red); }
 
-/* ---- terminal grid ---- */
+/* ---- the main column ---- */
 .main { flex: 1; min-width: 0; overflow: hidden; background: var(--bg-app); display: flex; flex-direction: column; }
-.groupbar {
-  display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px;
-  background: var(--bg-chrome); border-bottom: 1px solid var(--line-soft); flex-shrink: 0;
-}
-.gb-name {
-  font: 600 11px var(--ui); color: var(--text-1);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1;
-}
-.grid { position: relative; display: grid; flex: 1; min-height: 0; gap: 8px; padding: 8px; }
-/* grid changes (gridMotion.ts) run as View Transitions over snapshots of the panes, never the live terminals.
-   Only the panes are captured: the rest of the page stays live, and clicks pass through to it. */
-:root { view-transition-name: none; }
-::view-transition { pointer-events: none; }
-/* panes making room move on the spring; a resized pane's two images cross-fade */
-::view-transition-group(.mb-pane) { animation-duration: var(--dur-spring); animation-timing-function: var(--ease-spring); }
-::view-transition-old(.mb-pane), ::view-transition-new(.mb-pane) { animation-duration: var(--dur-2); }
-/* text in a resizing pane never stretches: each image stays its own size, pinned top-left and clipped to the
-   moving box (the new one, at the final size, is what's left) */
-::view-transition-old(.mb-pane), ::view-transition-new(.mb-pane) { height: 100%; object-fit: none; object-position: 0 0; overflow: clip; }
-/* a pane opening rises in from slightly smaller; one closing fades a little smaller, faster */
-::view-transition-new(.mb-pane):only-child { animation: mb-pane-in var(--dur-spring) var(--ease-spring) both, mb-fade-in var(--dur-3) linear both; }
-::view-transition-old(.mb-pane):only-child { animation: mb-pane-out var(--dur-2) var(--ease-exit) both; }
-/* a pane that keeps its size shows only its live image as it moves: a streaming terminal's snapshot is stale at
-   once, and fading across from it doubles the text (keepsItsSize in gridMotion.ts) */
-::view-transition-old(.mb-same) { animation: none; opacity: 0; }
-::view-transition-new(.mb-same) { animation: none; }
-@keyframes mb-pane-in { from { transform: translateY(var(--rise)) scale(var(--pop)); } }
-@keyframes mb-pane-out { to { opacity: 0; transform: scale(.985); } }
-@keyframes mb-fade-out { to { opacity: 0; } }
-/* switching groups: the new group's panes arrive from its side of the side bar, the old ones just go */
-:root[data-grid-move="down"]::view-transition-new(.mb-pane):only-child { animation: mb-from-below var(--dur-2) var(--ease-enter) both; }
-:root[data-grid-move="up"]::view-transition-new(.mb-pane):only-child { animation: mb-from-above var(--dur-2) var(--ease-enter) both; }
-:root[data-grid-move="down"]::view-transition-old(.mb-pane):only-child,
-:root[data-grid-move="up"]::view-transition-old(.mb-pane):only-child { animation: mb-fade-out var(--dur-1) linear both; }
-@keyframes mb-from-below { from { opacity: 0; transform: translateY(12px); } }
-@keyframes mb-from-above { from { opacity: 0; transform: translateY(-12px); } }
-/* fullscreen, often a key: the pane grows to the grid in 220 ms while the others fade */
-:root[data-grid-move="zoom"]::view-transition-group(.mb-pane) { animation-duration: var(--dur-3); animation-timing-function: var(--ease-move); }
-:root[data-grid-move="zoom"]::view-transition-old(.mb-pane):only-child { animation: mb-fade-out var(--dur-2) linear both; }
-:root[data-grid-move="zoom"]::view-transition-new(.mb-pane):only-child { animation: mb-fade-in var(--dur-3) linear both; }
-/* a pane flying into (or out of) its folder: script drives it along the genie path */
-::view-transition-group(mb-fly), ::view-transition-image-pair(mb-fly), ::view-transition-old(mb-fly), ::view-transition-new(mb-fly) { animation: none; }
-::view-transition-group(mb-fly) { z-index: 10; }
-::view-transition-image-pair(mb-fly) { transform-origin: 0 0; }
 .pane {
   position: relative; background: var(--bg-pane); display: flex; flex-direction: column;
   min-width: 0; min-height: 0;
@@ -383,7 +314,7 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 }
 /* the focused pane: a neutral ring outside its border and a lifted header; a waiting pane keeps its amber
    border and glow, and shows the ring too when it's also the focused one */
-.pane.focused, .ws-pane:has(.pane.focused) { outline: 1.5px solid var(--pane-focus); outline-offset: 2px; }
+.pane.focused { outline: 1.5px solid var(--pane-focus); outline-offset: 2px; }
 /* a session that just changed hands: this ring over the whole pane pulses once (handoverPulse in motion.ts).
    Only its opacity is ever animated, and it sits above the terminal, which never moves under it. */
 .pane::after {
@@ -392,22 +323,6 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 }
 .pane.focused:not(.st-waiting) > .pane-header { background: var(--bg-pane-header-focus); }
 .pane.focused:not(.st-waiting) > .pane-header .controls { box-shadow: -12px 0 10px -4px var(--bg-pane-header-focus); }
-
-/* window-style resize: a pane's own right edge (x), bottom edge (y), corner (both) —
-   the boundary there moves and the panes on either side trade size */
-.rz { position: absolute; z-index: 7; }
-.rz-e { top: 0; right: 0; width: 5px; height: 100%; cursor: ew-resize; }
-.rz-s { left: 0; bottom: 0; height: 5px; width: 100%; cursor: ns-resize; }
-.rz-se { right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; z-index: 8; }
-.rz-se::after {
-  content: ""; position: absolute; right: 3px; bottom: 3px; width: 7px; height: 7px;
-  border-right: 2px solid var(--text-4); border-bottom: 2px solid var(--text-4);
-  border-radius: 1px; opacity: 0; transition: opacity .12s;
-}
-.pane:hover .rz-se::after { opacity: .8; }
-body.rz-x, body.rz-x * { cursor: ew-resize !important; user-select: none; }
-body.rz-y, body.rz-y * { cursor: ns-resize !important; user-select: none; }
-body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 
 .pane-header {
   display: flex; align-items: center; gap: 7px; padding: 7px 9px;
@@ -518,39 +433,7 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .pane.kind-assistant .pane-header { background: var(--bg-assist); }
 
 
-/* workspace pane (cmux-style): one grid cell, session tabs on top */
-.ws-pane {
-  display: flex; flex-direction: column; min-width: 0; min-height: 0;
-  border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden;
-  background: var(--bg-pane); position: relative;
-}
-.ws-pane.st-waiting { border-color: var(--amber); box-shadow: 0 0 0 3px var(--fill-waiting-glow); }
-.ws-tabs {
-  display: flex; align-items: stretch; gap: 2px; padding: 4px 6px 0;
-  background: var(--bg-chrome); border-bottom: 1px solid var(--line-soft); flex-shrink: 0;
-  overflow-x: auto;
-}
-.ws-name {
-  align-self: center; font: 500 8.5px var(--ui); letter-spacing: .8px; text-transform: uppercase;
-  color: var(--text-4); padding: 0 6px 4px 2px; flex-shrink: 0;
-}
-.ws-tab {
-  display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px;
-  border: none; border-radius: 5px 5px 0 0; font: 500 10.5px var(--ui); color: var(--text-3);
-  background: transparent; max-width: 180px;
-}
-.ws-tab .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-tab:hover { color: var(--text-1); background: var(--fill-subtle); }
-.ws-tab.on { background: var(--bg-pane); color: var(--text-1); }
-.ws-add {
-  flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 1px dashed var(--line-btn);
-  border-radius: 5px; background: none; color: var(--text-3); font: 400 13px/1 var(--mono);
-  cursor: pointer;
-}
-.ws-add:hover { color: var(--text-1); border-color: var(--line-btn-hover); border-style: solid; background: var(--fill-subtle); }
 .hint-inline { color: var(--text-3); font-weight: 400; }
-.pane.embedded { border: none; border-radius: 0; box-shadow: none; flex: 1; min-height: 0; }
-.pane.embedded.focused { border: none; outline: none; }
 
 /* ---- status bar ---- */
 .statusbar {
@@ -971,31 +854,6 @@ input[type=checkbox] { accent-color: var(--teal); }
 ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* ---- snap layout picker ---- */
-.lay-wrap { position: relative; display: inline-flex; }
-.lay-pop {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
-  background: var(--bg-pane); border: 1px solid var(--line-strong); border-radius: 10px;
-  padding: 10px; box-shadow: 0 18px 40px rgba(0, 0, 0, .45); width: 260px;
-}
-.lay-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.lay-opt {
-  padding: 6px; border: 1px solid var(--line-btn); border-radius: 8px; background: none; cursor: pointer;
-}
-.lay-opt:hover { border-color: var(--line-btn-hover); background: var(--fill-subtle); }
-.lay-opt.on { border-color: var(--text-2); }
-.lay-thumb {
-  display: grid; gap: 2px; width: 100%; height: 34px;
-}
-.lay-thumb i { background: var(--text-3); border-radius: 2px; opacity: .55; }
-.lay-opt:hover .lay-thumb i, .lay-opt.on .lay-thumb i { opacity: .9; }
-.lay-auto {
-  margin-top: 8px; width: 100%; padding: 6px; border: 1px solid var(--line-btn); border-radius: 8px;
-  background: none; color: var(--text-2); font: 400 11px var(--mono); cursor: pointer;
-}
-.lay-auto:hover { color: var(--text-1); border-color: var(--line-btn-hover); }
-.lay-note { margin-top: 8px; font: 400 10px var(--mono); color: var(--text-3); line-height: 1.5; }
-
 /* transient confirmation after copy-on-select */
 .copy-toast {
   position: absolute; right: 14px; bottom: 14px; z-index: 6;
@@ -1160,13 +1018,11 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .sw-tips { display: flex; flex-direction: column; gap: 8px; font: 400 11.5px var(--ui); color: var(--text-2); }
 .sw-tips .kbd { display: inline-block; min-width: 26px; margin-right: 6px; }
 
-/* ---- sidebar outline tree ---- */
-.group-label .chev { display: inline-flex; align-items: center; color: var(--text-4); }
-.group-label .chev .ico, .ws-chev .ico { width: 11px; height: 11px; margin: 0; vertical-align: 0; }
+/* ---- the Team view's room sessions: rows, and stacks as folders ---- */
+.ws-chev .ico { width: 11px; height: 11px; margin: 0; vertical-align: 0; }
 .sdots { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; padding-left: 6px; }
 .sdots .more { font: 400 9.5px var(--mono); color: var(--text-4); margin-left: 2px; }
 .dot.xs { width: 5px; height: 5px; }
-.group-label::after { display: none; }
 .ws-folder { margin: 1px 0 1px 8px; }
 .sub-label {
   display: flex; align-items: center; gap: 6px; margin: 1px 0; padding: 5px 6px; border-radius: 5px;
@@ -1179,45 +1035,19 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .ico.folder { overflow: visible; }
 .ico.folder .lid { transform-box: fill-box; transform-origin: 0 100%; }
 .ico.folder.open .lid { transform: skewX(-26deg) scaleY(.74); }
-/* the sidebar's workspace folders swing it (a pane flies in, then it closes; it opens, then the pane comes out) */
+/* a stack's folder swings it as its rows fold and unfold */
 .sub-label .ico.folder .lid { transition: transform var(--dur-spring) var(--ease-spring); }
 [data-motion="reduce"] .sub-label .ico.folder .lid { transition: none; }
-/* the row's brief tint as a pane lands in its folder (gridMotion.ts) */
-.sub-label { position: relative; }
-.sub-label::after { content: ""; position: absolute; inset: -2px -4px -2px 4px; border-radius: 4px; background: var(--fill-selected); opacity: 0; pointer-events: none; }
-.sub-label.in-grid { color: var(--text-1); }
-.sub-label.in-grid > .ico { color: var(--teal-text); }
 .sub-label .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .ws-chev { display: inline-flex; align-items: center; color: var(--text-4); margin-right: -2px; }
 .ws-folder .sess-item { margin-left: 14px; }
 .sess-item .name { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
 .sess-item .name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-item .name .br { font: 400 9.5px var(--mono); color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sess-item.shown { box-shadow: inset 2px 0 0 var(--teal); }
-/* the close sits over the end of the title, so it costs no width while hidden */
-.ws-tab { position: relative; }
-.ws-tab .ws-x {
-  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
-  width: 16px; height: 16px; border-radius: 4px; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; line-height: 1; color: var(--text-2); background: var(--bg-pane);
-  box-shadow: -6px 0 6px var(--bg-pane); opacity: 0; transition: opacity .1s, background .1s, color .1s;
-}
-.ws-tab:hover .ws-x { opacity: 1; }
-.ws-tab .ws-x:hover {
-  color: var(--red); background: color-mix(in srgb, var(--red) 22%, var(--bg-pane));
-  box-shadow: -6px 0 6px var(--bg-pane);
-}
-.group-label { font: 600 11.5px var(--ui); letter-spacing: 0; text-transform: none; color: var(--text-2); margin: 12px 2px 3px; gap: 6px; }
-.group-label:hover .txt { color: var(--text-1); }
-.sess-item.shown { background: var(--fill-subtle); }
 .sess-item button { display: none; }
 .sess-item:hover button { display: inline-block; }
 .sub-label button { display: none; }
 .sub-label:hover button { display: inline-block; }
-/* like the rows': a header's actions take no width until it's hovered, so the group's name gets it */
-.group-label .glbtn { display: none; }
-.group-label:hover .glbtn { display: inline-block; }
-.group-label .txt { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* ---- settings: category sidebar + rows ---- */
 .settings-page.set2 { flex-direction: row; align-items: stretch; padding: 0; gap: 0; overflow: hidden; }
@@ -1514,10 +1344,6 @@ button.link.danger { color: var(--red); }
 .ins-card-foot .spacer { flex: 1; }
 .ins-add { margin-top: 2px; border: 1px dashed var(--line-strong2); border-radius: 6px; background: transparent; padding: 4px; font: 500 11px var(--ui); color: var(--text-3); }
 .ins-add:hover { color: var(--text-1); background: var(--fill-subtle); }
-/* search across every conversation (⌘⇧F) */
-.filter-row { display: flex; align-items: center; gap: 2px; margin-bottom: 10px; }
-.filter-row .filter { flex: 1; min-width: 0; margin-bottom: 0; }
-.filter-row button.icon { font-size: 14px; padding: 2px 6px; }
 .palette.qo { width: 640px; max-width: calc(100vw - 40px); max-height: 70vh; }
 .ts-hint { padding: 14px; font: 400 12px/1.5 var(--ui); color: var(--text-3); }
 .ts-agent { font: 500 9px var(--mono); padding: 0 5px; border-radius: 4px; border: 1px solid var(--line-med); color: var(--text-3); flex-shrink: 0; }
@@ -1767,7 +1593,7 @@ a.rv-port.live { color: var(--teal-text); cursor: pointer; text-decoration: unde
 button.chip.running { cursor: pointer; border: 0; color: var(--teal-text); background: color-mix(in srgb, var(--teal) 12%, transparent); flex-shrink: 0; }
 button.chip.running:hover { color: var(--text-1); }
 
-/* ---- the panel under the grid (⌘J) ---- */
+/* ---- the panel under the landscape (⌘J) ---- */
 .bp { position: relative; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--line-med); background: var(--bg-pane); }
 .bp-grip { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 5; }
 .bp-grip:hover { background: var(--line-strong); }
@@ -1876,35 +1702,6 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .usage-today .usage-label { color: var(--text-2); }
 .rail .cell.meter { margin-left: auto; border-right: none; border-left: 1px solid var(--line-soft); }
 /* pinned panes: the pin stays visible while pinned, in the pane header and the sidebar row */
-.pane-header .controls [data-action="pin"].on { color: var(--teal); }
-.pane:not(:hover) .pane-header .controls:has([data-action="pin"].on) { display: flex; box-shadow: none; }
-.pane:not(:hover) .pane-header .controls:has([data-action="pin"].on) > :not([data-action="pin"]) { display: none; }
-.pane:not(:hover) .pane-header:has([data-action="pin"].on) { padding-right: 46px; }
-/* a session dropped on a pane's header or a workspace's tab strip becomes a tab there */
-.pane-header[data-drop="into"], .ws-tabs[data-drop="into"] { border-radius: 6px 6px 0 0; }
-/* drag preview (GridPreview.tsx): while a session is dragged over the grid, the
-   layout the drop would leave, framed over the dimmed panes; frames morph as the
-   pointer moves between drop regions (a transform, GridPreview.tsx). The panes themselves don't move until the drop. */
-.grid > .pane, .grid > .ws-pane { transition: opacity var(--dur-2) var(--ease-move); }
-.grid.previewing > .pane, .grid.previewing > .ws-pane { opacity: .4; }
-.grid-preview {
-  position: absolute; inset: 4px; z-index: 20; pointer-events: none;
-  opacity: 0; transition: opacity var(--dur-2) var(--ease-move);
-}
-.grid-preview.on { opacity: 1; animation: mb-fade-in var(--dur-2) var(--ease-move); }
-.gp-frame { position: absolute; transform-origin: 0 0; }
-@keyframes gp-in { from { opacity: 0; transform: scale(var(--pop)); } }
-.gp-box {
-  position: absolute; inset: 4px; display: flex; align-items: center; justify-content: center; overflow: hidden;
-  border: 1px solid var(--line-strong2); border-radius: 6px;
-  background: color-mix(in srgb, var(--bg-pane-header) 90%, transparent);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .18); animation: gp-in var(--dur-3) var(--ease-enter);
-}
-.gp-title { max-width: 86%; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11.5px var(--ui); color: var(--text-3); }
-/* the dragged pane, in the drop cues' color */
-.gp-frame.hot .gp-box { border: 2px solid var(--amber); background: color-mix(in srgb, var(--bg-pane-header) 82%, var(--amber)); }
-.gp-frame.hot .gp-title { color: var(--text-1); }
-[data-motion="reduce"] .gp-box { animation: mb-fade-in var(--dur-2) linear; }
 /* ---- ticket pipeline (TicketPipeline.tsx) ---- */
 .pl { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 .pl-rail { display: flex; gap: 2px; overflow-x: auto; padding-bottom: 2px; }
@@ -1954,7 +1751,6 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .pl-modal { width: 720px; }
 .chip.stage { border: none; cursor: default; color: var(--teal-text); background: rgba(79, 179, 165, .12); }
 button.chip.stage[data-tip] { cursor: pointer; }
-.groupbar .chip { margin-left: 8px; }
 button.chip { border: none; cursor: pointer; }
 .bc-foot .chip.stage { margin-left: auto; }
 /* New session: presets start in one click */
@@ -2065,8 +1861,7 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .stall-banner .reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stall-banner button { padding: 2px 9px; font-size: 11px; flex-shrink: 0; }
 .sb-update { border: none; background: rgba(79, 179, 165, .14); color: var(--teal-text); font: 500 10.5px var(--ui); padding: 2px 8px; border-radius: 4px; margin-right: 10px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; flex-shrink: 1; }
-/* agent messaging: the group bar's delivery switch, and the message log */
-.gb-msg { background: var(--bg-pane); color: var(--text-2); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 10.5px var(--ui); margin-right: 6px; }
+/* agent messaging: the message log */
 .msg-log { width: 680px; }
 .msg-list { display: flex; flex-direction: column; gap: 4px; max-height: 60vh; overflow-y: auto; margin-top: 8px; }
 .msg-row { border: 1px solid var(--line-soft); border-radius: 6px; padding: 6px 9px; cursor: pointer; }
@@ -2080,9 +1875,6 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .msg-row.refused .msg-how { color: var(--red); }
 .msg-text { margin-top: 4px; font: 400 11px/1.5 var(--mono); color: var(--text-2); white-space: pre-wrap; overflow: hidden; max-height: 3em; }
 .msg-text.open { max-height: none; }
-/* the group's name keeps its room; the bar's controls give way first */
-.groupbar .gb-name { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.groupbar .flbl-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .sess-item .mute.on { display: inline-block; opacity: 1; color: var(--text-3); }
 .quiet-hours { display: inline-flex; align-items: center; gap: 6px; font: 400 11px var(--ui); color: var(--text-3); }
 .quiet-hours input[type=time] { background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 11px var(--mono); }
@@ -2803,8 +2595,6 @@ button.lbtn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset
 .room-sess-body .sess-item > .dot { margin-top: 5px; }
 .room-sess-body .sess-item.focused .sr-acts,
 .room-sess-body .sess-item.focused:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) > :not(.on) { display: inline-flex; }
-/* a room's group in the Sessions list */
-.group-label .gl-shared { flex-shrink: 0; font: 500 9.5px var(--ui); color: var(--teal-text); }
 
 /* ---- the Sessions view's line for the team rooms ---- */
 button.connected-line {
@@ -2843,7 +2633,7 @@ button.room-name:hover { color: var(--teal-text); background: none; }
 .room-warning { font: 400 10.5px/1.4 var(--ui); color: var(--amber-text); overflow-wrap: anywhere; }
 .room-sessions { padding: 4px 10px 6px; border-bottom: 1px solid var(--line-med); }
 .room-sess-body { max-height: 38vh; overflow-y: auto; margin: 2px -4px 0; padding: 0 4px; }
-.room-sess-body .group-label, .room-sess-body .tk-rows { margin-top: 4px; }
+.room-sess-body .tk-rows { margin-top: 4px; }
 .room-list { padding-top: 2px; }
 .room-list-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 4px;
@@ -2855,25 +2645,16 @@ button.room-name:hover { color: var(--teal-text); background: none; }
 .room-list .room-sessions { padding: 6px 0 0; border: none; }
 .room-list .room-sess-body { max-height: none; overflow: visible; }
 
-/* ---- the group bar: one style for its controls ---- */
-.groupbar { gap: 6px; min-width: 0; }
-.groupbar .gb-name { margin-right: 4px; }
-button.gb-btn, .groupbar button.chip.stage {
+/* ---- a bar's buttons (an area's header, Follow) ---- */
+button.gb-btn {
   display: inline-flex; align-items: center; gap: 5px; height: 22px; margin: 0; padding: 0 8px; flex-shrink: 0;
   border: 1px solid var(--line-btn); border-radius: 5px; background: transparent;
   font: 500 10.5px var(--ui); color: var(--text-2); white-space: nowrap; cursor: pointer;
 }
-button.gb-btn:hover, .groupbar button.chip.stage:hover { border-color: var(--line-btn-hover); color: var(--text-1); background: var(--fill-subtle); }
+button.gb-btn:hover { border-color: var(--line-btn-hover); color: var(--text-1); background: var(--fill-subtle); }
 button.gb-btn .ico { margin: 0; vertical-align: 0; color: var(--text-3); }
 button.gb-btn:hover .ico { color: var(--text-1); }
 button.gb-btn.teal { color: var(--teal-text); border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
-.groupbar button.chip.stage { color: var(--teal-text); }
-.groupbar button.gb-btn.mb-select { width: auto; margin-right: 0; min-width: 0; flex-shrink: 1; max-width: 270px; }
-.groupbar .gb-btn .mb-select-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.groupbar .gb-btn .mb-select-caret { color: var(--text-4); }
-.groupbar .team-follow { gap: 6px; }
-.groupbar .team-follow.on .ico { margin: 0; vertical-align: 0; }
-.groupbar .gb-count { flex-shrink: 1; }
 
 /* a room artifact's actions sit over the row's right end while it's hovered or focused */
 .art-row .art-acts.lbar {
@@ -2882,17 +2663,6 @@ button.gb-btn.teal { color: var(--teal-text); border-color: color-mix(in srgb, v
 }
 .art-row:hover .art-acts.lbar, .art-row:focus-within .art-acts.lbar { display: inline-flex; }
 .art-row:hover .art-acts.lbar { background: linear-gradient(to right, transparent, color-mix(in srgb, var(--fill-subtle), var(--bg-sidebar)) 12px); }
-/* a narrow group bar: the count goes first, then the buttons' words (their icons and tooltips stay) */
-.groupbar { container-type: inline-size; }
-.groupbar .gb-n { padding: 0 4px; border-radius: 6px; font: 600 9.5px/14px var(--ui); background: color-mix(in srgb, var(--teal) 22%, transparent); color: var(--teal-text); }
-@container (max-width: 1120px) {
-  .groupbar .gb-count { display: none; }
-}
-@container (max-width: 960px) {
-  .groupbar .gb-t { display: none; }
-  .groupbar .gb-btn { padding: 0 6px; }
-  .groupbar .gb-name { max-width: 34%; }
-}
 .house-modal h3 > .ico { width: 15px; height: 15px; margin: 0 4px 0 0; vertical-align: -2.5px; color: var(--teal-text); }
 
 /* ---- What's new: the version label and its popover (WhatsNew.tsx) ---- */
@@ -3045,11 +2815,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .cost-why { font: 400 11px var(--ui); color: var(--text-3); margin-top: 3px; }
 .cost-dlg { width: 460px; }
 .brief-dlg { width: 680px; }
-/* a group's and a ticket's usage (GroupUsage.tsx) */
-.gb-usage { display: inline-flex; align-items: baseline; gap: 5px; flex-shrink: 0; padding: 0 4px; font: 400 10.5px var(--ui); color: var(--text-2); cursor: default; }
-.gb-usage .k { font: 500 8.5px var(--ui); letter-spacing: .8px; text-transform: uppercase; color: var(--text-4); }
-.gb-usage .v { font: 400 10.5px var(--mono); color: var(--text-1); }
-.gb-usage .share { color: var(--amber-text); }
+/* a ticket's usage (GroupUsage.tsx) */
 .tk-usage-sec { margin-bottom: 10px; }
 .tk-usage { font: 400 11.5px var(--ui); color: var(--text-2); }
 .tk-usage .v { font-family: var(--mono); color: var(--text-1); }

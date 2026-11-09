@@ -1,26 +1,28 @@
 /** The how-to-use guide's words (⌘/, in HelpModal): what the app is, its one rule, its views and its keys. */
 export function HelpGuide() {
   const keys: [string, string][] = [
-    ["⌘K", "command palette — every action, jump to any session"],
+    ["⌘K", "command palette — every action; Go to a workspace or an area"],
     ["⌘N", "new session"],
-    ["⌘1–9", "jump to pane 1–9"],
     ["⌥⇥", "next waiting session (oldest first)"],
-    ["⌘E", "fullscreen the focused pane; ⌘E again restores (so does esc, outside the terminal and editor)"],
-    ["⌘⌃1–4", "arrange the panes in 1–4 even columns"],
-    ["drag", "a session onto a pane's edge puts it beside that pane (a preview shows where); onto its middle swaps the two, or opens it as a tab; onto its header opens it as a tab"],
+    ["N ⇧N", "the next or previous thing in Needs you"],
+    ["⌘E", "focus the selected workspace: it fills the window (Enter does too; esc goes back)"],
+    ["⌥ arrows", "select the nearest workspace that way"],
+    ["⌘0 ⌘1", "fit everything on screen · 100%, where terminals take typing"],
+    ["scroll", "pan (or Space-drag); ⌘-scroll or a pinch zooms about the cursor"],
+    ["⌘G", "stack the selected workspaces into one card with tabs"],
     ["⌥↑ ⌥↓", "move the focused Dashboard card up or down its column, as dragging it does (esc cancels a drag)"],
     ["⌘P", "go to a file in the focused session's folder (name:42 jumps to a line)"],
-    ["⌘B", "show or hide the side bar"],
-    ["⌘⇧E", "Explorer — the focused session's folder"],
-    ["⌃⇧G", "Source Control — stage, commit, push"],
-    ["⌘⇧D", "Run and Debug — the focused worktree's services; swap or side by side"],
-    ["⌘J", "the log panel under the grid"],
+    ["⌘\\", "the area tree to the rail and back"],
+    ["⌘B ⌘⇧E", "Files — the selected session's folder"],
+    ["⌃⇧G", "Changes — stage, commit, push"],
+    ["⌘⇧D", "Run and debug — the selected worktree's services"],
+    ["⌘⇧F", "Search — every conversation on this Mac, or the selected session's files"],
+    ["⌘J", "the log panel under the landscape"],
     ["⌘⇧B", "control room — broadcast + CLAUDE.md"],
-    ["⌘⇧F", "search every conversation on this Mac, or the focused session's files"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],
     ["⇧click", "select more than a screen: click where it starts, scroll, shift-click where it ends — it's copied"],
-    ["⌥drag", "Option-drag for a plain terminal selection — in a full-screen Claude pane a plain drag is Claude's own selection, which Claude copies"],
-    ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a pane"],
+    ["⌥drag", "Option-drag for a plain terminal selection — in a full-screen Claude session a plain drag is Claude's own selection, which Claude copies"],
+    ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a terminal"],
     ["⌘/", "this popup"],
   ];
 
@@ -28,7 +30,7 @@ export function HelpGuide() {
     <>
       <h3>How to use Mockingbird</h3>
       <div className="sub-h">
-        A grid of parallel Claude CLI sessions. Watch them all at once; the app tells you when one needs you.
+        Parallel Claude and Codex sessions on one landscape. Watch them all at once; the app tells you when one needs you.
       </div>
       <div className="help-cols">
         <div>
@@ -36,35 +38,34 @@ export function HelpGuide() {
           <p>
             <span className="dot waiting" style={{ marginRight: 6 }} />
             <b>Amber means a session is blocked on you</b> — a permission prompt or a question.
-            The pane gets an amber border and a banner saying exactly why. Everything else is
-            just status: <span className="dot working" /> working · <span className="dot idle" /> idle ·{" "}
-            <span className="dot dead" /> dead. Press <span className="kbd">⌥⇥</span> to jump to
-            whoever has waited longest.
+            Its workspace gets an amber border and a banner saying exactly why, and it's listed in{" "}
+            <b>Needs you</b>. Everything else is just status: <span className="dot working" /> working ·{" "}
+            <span className="dot idle" /> idle · <span className="dot dead" /> dead. Press{" "}
+            <span className="kbd">⌥⇥</span> to jump to whoever has waited longest.
           </p>
-          <div className="help-sec">Sessions &amp; the grid</div>
+          <div className="help-sec">Sessions on the landscape</div>
           <p>
             <b>New session</b> picks a repo, optionally a ticket # — Mockingbird creates a git
-            worktree and branch, and launches <span className="kbd">claude</span> in it. The grid
-            sizes itself to however many sessions you have open. Click sidebar rows to show/hide
-            panes; drag pane headers to rearrange; <b>Full</b> in a pane's header fullscreens it.
-            Hover a row or a pane header for its buttons; <b>right-click</b> either (or{" "}
-            <b>More</b>) for everything else. <b>Resize a pane from its own right edge, bottom edge, or corner grip</b> —
-            like a window; neighbors absorb the change (double-click a handle to even out).{" "}
-            <b>Double-click any name</b> — pane title or sidebar row — <b>to rename it</b>.
-            Closing a session with unsaved work always asks first — the safe choice is preselected.
+            worktree and branch, and launches the agent in it. Each session is a <b>workspace</b>{" "}
+            on the landscape, a surface you pan and zoom: at 75% and up its terminal takes typing,
+            down to 35% it's live but read-only, and below that it's a card with its title, status
+            and last line. Drag a workspace's header to move it, its edges or corners to resize it;
+            what it lands on moves aside. Its <b>⋯</b> (or a right-click) has everything else,{" "}
+            <b>Rename…</b> among them; <b>double-click its header to focus it</b>. Closing a session
+            with unsaved work always asks first — the safe choice is preselected — and leaves a{" "}
+            <b>ghost</b> where it was, to reopen.
           </p>
-          <div className="help-sec">Groups &amp; sub-groups</div>
+          <div className="help-sec">Areas &amp; stacks</div>
           <p>
-            Sessions sharing a ticket # group automatically, and <b>the grid shows one group at a
-            time</b> — the bar above the grid names it. Click a group header to fill the grid with
-            it (other groups collapse — ▸ toggles them individually); click rows to hide/re-show
-            panes. <b>Workspaces (sub-groups)</b> put several sessions in <b>one pane with tabs</b>,
-            cmux-style. <b>Create</b>: drag one session row onto another in the same group (or
-            right-click a row → <b>Move to group…</b> and name a workspace). <b>Rename</b>:
-            double-click the workspace name — in the sidebar or on the pane's tab strip.{" "}
-            <b>Dissolve</b>: hover the sidebar workspace label and click ✕ — its sessions stay,
-            they just move back up into the group. Drag rows onto any group or workspace header
-            to move them between.
+            Sessions sharing a ticket # are one group, and each group is an <b>area</b>: a coloured
+            region with its name, its ticket's stage, its usage and its room along the top. Drag a
+            workspace into or out of an area to change its group, or pick <b>Move to area…</b> on
+            its ⋯. The <b>area tree</b> in the side
+            bar lists them with their waiting counts: click an area to fly there, a workspace to
+            bring it into view. <b>Stacks</b> (sub-groups) put several sessions in one card with
+            tabs: <span className="kbd">⌘G</span> on a selection, or <b>New tab…</b> on a
+            workspace's ⋯. A stack's ⋯ renames it or unstacks its tabs; drag a tab out to unstack
+            that one.
           </p>
         </div>
         <div>
@@ -91,19 +92,20 @@ export function HelpGuide() {
           </p>
           <div className="help-sec">Team rooms</div>
           <p>
-            <span className="kbd">⇪</span> on a group header shares it as a room; a teammate joins
-            with the invite code. The <b>Team</b> view (left bar) shows each room's sessions —
-            yours and theirs, live — its artifacts and its chat. <b>Take over</b> continues a
-            teammate's session on your Mac. A room linked to a Radley House project has a{" "}
+            An area's ⋯ shares it as a room; a teammate joins with the invite code. A room's area
+            shows who's online, and its <b>Chat</b> window its messages and artifacts; the{" "}
+            <b>Connected</b> line under the area tree lists every room. <b>Take over</b> continues
+            a teammate's session on your Mac. A room linked to a Radley House project has a{" "}
             <b>Board</b>: its backlog and who has claimed what, read with your own builder token
             once you allow it. <b>Start</b> on a ticket claims it, makes its worktree and starts an
             agent there, briefed on the ticket.
           </p>
           <div className="help-sec">After a restart</div>
           <p>
-            Sessions from the last run appear under <b>Previous</b> — <span className="kbd">↺ restore all</span>{" "}
-            relaunches them with their history (<span className="kbd">claude --continue</span>) back
-            into their old grid slots and groups.
+            Sessions from the last run are <b>ghosts</b> where they were: <b>Reopen</b> on one, or{" "}
+            <b>Reopen all</b> in an area's ⋯, relaunches them with their history ({" "}
+            <span className="kbd">claude --continue</span>). Closed sessions with no place on the
+            landscape are in the <b>Closed sessions</b> list under the area tree.
           </p>
         </div>
       </div>

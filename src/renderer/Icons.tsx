@@ -21,14 +21,6 @@ function Icon({ children, className }: { children: React.ReactNode; className?: 
   );
 }
 
-/** A window split into one tall pane and two stacked panes. */
-export const LayoutIcon = () => (
-  <Icon>
-    <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
-    <path d="M7 2.75v10.5M7 8h7.25" />
-  </Icon>
-);
-
 /** Two overlapping documents with folded corners. */
 export const FilesIcon = () => (
   <Icon>
@@ -39,7 +31,7 @@ export const FilesIcon = () => (
 );
 
 /**
- * A folder: open while its workspace is in the grid, closed while it's minimized. Its back and its lid are
+ * A folder: open while its stack's rows show (the Team view), closed while they're folded away. Its back and its lid are
  * separate paths, so the lid can swing between the two (styles.css: .folder .lid).
  */
 export const FolderIcon = ({ open }: { open?: boolean }) => (
@@ -151,13 +143,6 @@ export const BugIcon = () => (
   </Icon>
 );
 
-/** A push pin, angled: the pane stays on screen when the grid switches groups. */
-export const PinIcon = () => (
-  <Icon>
-    <path d="M9.5 2.25l4.25 4.25-1.75.5-2.5 2.5.25 2.75-1 1-2.5-2.5-3.5 3.5M5.25 8.25l-2.5-2.5 1-1 2.75.25 2.5-2.5.5-1.75" />
-  </Icon>
-);
-
 /** A bell: this session notifies. */
 export const BellIcon = () => (
   <Icon>
@@ -248,24 +233,10 @@ export const HandoffIcon = () => (
   </Icon>
 );
 
-/** Four corners pointing out: fill the grid. */
+/** Four corners pointing out: fill the window (Focus). */
 export const ExpandIcon = () => (
   <Icon>
     <path d="M2.75 6V2.75H6M10 2.75h3.25V6M13.25 10v3.25H10M6 13.25H2.75V10" />
-  </Icon>
-);
-
-/** Four corners pointing in: back to the grid. */
-export const ShrinkIcon = () => (
-  <Icon>
-    <path d="M6 2.75V6H2.75M13.25 6H10V2.75M10 13.25V10h3.25M2.75 10H6v3.25" />
-  </Icon>
-);
-
-/** A bar: hide (it keeps running). */
-export const MinusIcon = () => (
-  <Icon>
-    <path d="M3.5 8h9" />
   </Icon>
 );
 
@@ -335,14 +306,6 @@ export const InviteIcon = () => (
   </Icon>
 );
 
-/** A speech bubble with a question: ask for a status report. */
-export const AskIcon = () => (
-  <Icon>
-    <path d="M2.25 3.75a1.5 1.5 0 0 1 1.5-1.5h8.5a1.5 1.5 0 0 1 1.5 1.5v5.5a1.5 1.5 0 0 1-1.5 1.5H7.25l-3 2.5v-2.5h-.5a1.5 1.5 0 0 1-1.5-1.5z" />
-    <path d="M6.6 5a1.45 1.45 0 1 1 1.9 1.4c-.35.15-.5.4-.5.75v.2M8 9h.01" />
-  </Icon>
-);
-
 /** An arrow up out of a tray: share a group as a room. */
 export const ShareIcon = () => (
   <Icon>
@@ -351,7 +314,7 @@ export const ShareIcon = () => (
   </Icon>
 );
 
-/** A grid of four squares: show in the grid. */
+/** A grid of four squares: show a group's sessions. */
 export const GridIcon = () => (
   <Icon>
     <rect x="2.25" y="2.25" width="4.75" height="4.75" rx="1" />

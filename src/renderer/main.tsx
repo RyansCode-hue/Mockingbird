@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { TerminalPane, agentPanelOf, disposeTerm, focusTerm, followOwners, applyTermTheme, hideAgentPanel, resyncTerm, termHasKeys, type PaneDensity, type PaneResize } from "./TerminalPane";
+import { TerminalPane, agentPanelOf, disposeTerm, focusTerm, followOwners, applyTermTheme, hideAgentPanel, resyncTerm, termHasKeys } from "./TerminalPane";
 import { EditorDock, ExplorerTree } from "./FilePanel";
 import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
@@ -15,49 +15,12 @@ import { CouncilView } from "./Council";
 import { UpdatePanel } from "./UpdatePanel";
 import { WhatsNew } from "./WhatsNew";
 import { LAST_SEEN_KEY, justUpdated, seenNow } from "./whatsNewModel";
-import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, useDrag } from "./drag";
-import { activeGroupOf, layoutToRemember, pruneToGroup, switchTo } from "./gridModel";
-import {
-  TEMPLATES,
-  arrange,
-  asTree,
-  canResize,
-  drawTree,
-  dropRegion,
-  equalize,
-  evenGrid,
-  hasLeaf,
-  insertBeside,
-  keysOf,
-  leafAt,
-  legacyTree,
-  maxAcross,
-  planDrop,
-  readingOrder,
-  reconcile,
-  rects,
-  remove,
-  rename,
-  renameWorkspaces,
-  resizePane,
-  sameTree,
-  templateOf,
-  templateTree,
-  toGrid,
-  worthSaving,
-  type DragSource,
-  type Extent,
-  type Landing,
-  type LayoutNode,
-  type LegacyLayout,
-  type Side as EdgeSide,
-} from "./layoutTree";
-import { GridPreview } from "./GridPreview";
+import { DragLabel, installDragListeners } from "./drag";
 import { resumeExited } from "./resumeFlow";
-import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
-import { cellKeyFor, cellKeyOf, closeStep, closeWaits, frontOf, groupChoices, inReadingOrder, queueClose, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
-import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon, MinusIcon, GridIcon, PencilIcon, MoveIcon, CloseIcon, PlusIcon, NoteIcon } from "./Icons";
-import { ActionBar, pickActions, tidyMenu, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
+import { OVERLAYS, inEditor } from "./keys";
+import { closeStep, closeWaits, groupChoices, queueClose, sessionHolding, sessionOutline, titleOf, worktreeGone } from "./appModel";
+import { FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, UpdateIcon, NoteIcon } from "./Icons";
+import { ActionBar, pickActions, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
 import { PipelineDialog, usePipelines } from "./TicketPipeline";
@@ -110,19 +73,18 @@ import { FollowingNow, LiveProblems, isRemote, useFollow, useRoomLive } from "./
 import { followIn, mergeRoomSessions } from "./team/roomLiveModel";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { roomRepoNames } from "./newSessionModel";
-import { ago, fmtElapsed, plural } from "../shared/format";
+import { fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { usePersisted, readPref, writePref } from "./prefs";
-import { D, EASE, initMotion, motion, play, useFlipRows } from "./motion";
+import { D, EASE, initMotion, play } from "./motion";
 import { StatusDot } from "./StatusDot";
-import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
 // the landscape
 import { emptyStateOf, nothingToTour } from "./landscapeFirstRun";
 import { LandscapeTopBar, type TopTab } from "./TopBar";
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type NoteAction } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
-import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
@@ -130,7 +92,7 @@ import { currentIndex, goCan, selectionAfter, stepItem, targetOf, type NeedsItem
 import { BadgeContext } from "./cardBadges";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
-import { AreaHeader, GroupBar, stageChip, type GroupBarProps } from "./GroupBar";
+import { AreaHeader, stageChip, type GroupBarProps } from "./GroupBar";
 import { AreaTree, treeCounts, treeOf, type TreeArea } from "./AreaTree";
 import { ClosedSessions } from "./ClosedSessions";
 import { MembersMenu } from "./team/MembersMenu";
@@ -155,24 +117,6 @@ const SIDE_VIEWS: { id: SideView; label: string; keys?: string; Icon: () => Reac
   { id: "room", label: "Team room", Icon: TeamRoomIcon },
 ];
 
-/** Miniature of a snap layout's shape, drawn the way the snap-layout flyout shows them. */
-function LayoutThumb({ tree }: { tree: LayoutNode }) {
-  const g = toGrid(tree);
-  return (
-    <span
-      className="lay-thumb"
-      style={{
-        gridTemplateColumns: g.cols.map((f) => `${f}fr`).join(" "),
-        gridTemplateRows: g.rows.map((f) => `${f}fr`).join(" "),
-      }}
-    >
-      {Object.values(g.areas).map((area, i) => (
-        <i key={i} style={{ gridArea: area }} />
-      ))}
-    </span>
-  );
-}
-
 /** Overlaps before main's first answer: none known, and none unread. */
 const NO_OVERLAPS: OverlapReport = { bySession: {}, unread: {} };
 
@@ -180,7 +124,6 @@ const NO_OVERLAPS: OverlapReport = { bySession: {}, unread: {} };
 const EXPECT_MS = 10_000;
 /** How long a right-click's place waits, once its session is made, for the session to reach the landscape. */
 const PLACE_HINT_MS = 10_000;
-const SIDE_WORDS: Record<EdgeSide, string> = { left: "to the left of", right: "to the right of", top: "above", bottom: "below" };
 /** What readClosed reads, as a failed read says it. */
 const CLOSED_READ = "the previous sessions";
 /** What a failed read of the closed sessions' missing folders is called in the status bar's error. */
@@ -191,18 +134,6 @@ const CLOSED_RETRY_MAX_MS = 30_000;
 const spaced = (words: string): string => (words ? ` ${words}` : "");
 /** ⌘K's pane numbers on the landscape: none, ⌘1 is 100% there. */
 const NO_SHORTCUTS: ReadonlyMap<string, number> = new Map();
-const asRecord = (v: unknown): Record<string, any> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, any>) : {});
-
-/** The layout prefs from before split trees, read once at startup for groups that have no tree yet. */
-function readLegacyLayout(): LegacyLayout {
-  const cols = readPref<unknown>("mb.cols", "auto");
-  return {
-    templates: asRecord(readPref("mb.layout", {})),
-    seats: asRecord(readPref("mb.zones", {})),
-    cols: typeof cols === "number" && cols >= 1 ? cols : "auto",
-    groups: Object.keys(asRecord(readPref("mb.groupLayouts", {}))),
-  };
-}
 
 function App() {
   const [ownSessions, setSessions] = useState<SessionInfo[]>([]);
@@ -216,19 +147,12 @@ function App() {
   /** Likewise for reads of which closed sessions' folders are gone (readGone). */
   const [goneFails, setGoneFails] = useState(0);
   const listLoaded = (which: "live" | "resumable") => setListsLoaded((p) => (p[which] ? p : { ...p, [which]: true }));
-  const landscapeOn = true as boolean;
-  // what the grid remembers is read as it left it, and saved only while the grid is what shows: the landscape never
-  // changes what the grid, or a downgrade, comes back to
-  const gridSaves = !landscapeOn;
-  const [savedShown, setShown] = usePersisted<string[]>("mb.shown", [], gridSaves);
-  const shown = useMemo(() => (Array.isArray(savedShown) ? savedShown : []), [savedShown]);
   const [focused, setFocused] = useState<string | null>(null);
-  // the sessions on the landscape's screen (Landscape's onSeen): what teammates stream here while it shows, as the
-  // grid's panes are without it
+  // the sessions on the landscape's screen (Landscape's onSeen): what teammates stream here
   const [lsSeen, setLsSeen] = useState<string[]>([]);
   const onLsSeen = useCallback((ids: string[]) => setLsSeen((p) => (p.join("\n") === ids.join("\n") ? p : ids)), []);
   // team rooms: live panes — teammates' room sessions are sessions here too (session.room says whose)
-  const roomLive = useRoomLive(ownSessions, landscapeOn ? lsSeen : shown, focused);
+  const roomLive = useRoomLive(ownSessions, lsSeen, focused);
   const sessions = roomLive.sessions;
   useEffect(() => followOwners(sessions), [sessions]);
   // team rooms: take-over — each room session's backup, shown on its row and pane; Take over opens one dialog
@@ -248,17 +172,7 @@ function App() {
     if (!v) return alert(`${l.now.ownerName}'s copy has no backup here yet — Take it back is offered once it has one`);
     setTakeOverFor({ ...v, back: true });
   };
-  const [zoomed, setZoomed] = useState<string | null>(null);
-  // pinned panes stay on screen when the grid switches groups
-  const [savedPinned, setPinned] = usePersisted<string[]>("mb.pinned", [], gridSaves);
-  const pinned = useMemo(() => (Array.isArray(savedPinned) ? savedPinned : []), [savedPinned]);
-  const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
-  // the group the grid was last switched to (see activeGroupOf)
-  const [lastGroup, setLastGroup] = usePersisted<string | null>("mb.activeGroup", null, gridSaves);
-  // where each pane sits, per group: a split tree (layoutTree.ts) whose leaves are cell keys
-  const [trees, setTrees] = usePersisted<Record<string, LayoutNode>>("mb.trees", {}, gridSaves);
-  const [legacyLayout] = useState(readLegacyLayout);
-  // the ticket pipeline opened from the grid (group bar, palette)
+  // the ticket pipeline, opened from an area's header or the palette
   const pipelines = usePipelines();
   const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string } | null>(null);
   // "continue in the other agent" for this session
@@ -310,9 +224,7 @@ function App() {
     const r = await window.mb.groupStatusCheck(group);
     if (isErr(r)) return alert(r.error);
     const said = `Asked ${plural(r.asked, "session")}`;
-    if (landscapeOn) return lsSay(said);
-    setStatusNote(said);
-    setTimeout(() => setStatusNote(""), 6000);
+    return lsSay(said);
   };
   // agent CLIs updated under running panes (they run the old version until restarted)
   const [agentUpdates, setAgentUpdates] = useState<AgentUpdateNotice[]>([]);
@@ -371,7 +283,7 @@ function App() {
   // a session title being edited inline in its sidebar row
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [sideCollapsed, setSideCollapsed] = usePersisted<boolean>("mb.side", false);
-  // the side bar's width snaps (the grid re-fits once); shown again, its contents slide in from the rail
+  // the side bar's width snaps (the landscape re-fits once); shown again, its contents slide in from the rail
   const sideInner = useRef<HTMLDivElement>(null);
   const sideWasCollapsed = useRef(sideCollapsed);
   useLayoutEffect(() => {
@@ -379,19 +291,7 @@ function App() {
       play(sideInner.current, [{ opacity: 0, transform: "translateX(-12px)" }, { opacity: 1, transform: "none" }], { duration: D.s, easing: EASE.enter });
     sideWasCollapsed.current = sideCollapsed;
   }, [sideCollapsed]);
-  const [layoutOpen, setLayoutOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    const saved = readPref<unknown>("mb.collapsed", []);
-    return new Set(Array.isArray(saved) ? saved : []);
-  });
-  useEffect(() => {
-    if (gridSaves) writePref("mb.collapsed", [...collapsed]);
-  }, [collapsed, gridSaves]);
-  // per-group memory of which sessions were visible, so switching back restores the subset
-  const [groupLayouts, setGroupLayouts] = usePersisted<Record<string, string[]>>("mb.groupLayouts", {}, gridSaves);
-  // active tab per workspace (sub-group) pane, keyed "top/sub" — persisted
-  const [wsTabs, setWsTabs] = usePersisted<Record<string, string>>("mb.wsTabs", {}, gridSaves);
   const [closeDlg, setCloseDlg] = useState<{ session: SessionInfo; wt: WorktreeStateInfo | { error: string } } | null>(null);
   const [groupDlg, setGroupDlg] = useState<SessionInfo | null>(null);
   // team rooms: which groups are shared, and the share / join dialogs
@@ -443,14 +343,12 @@ function App() {
         : groupKey(topOfKey(renameDlg.key), v);
     if (!next) return;
     if (renameDlg.key === "ungrouped") {
-      expectRename(renameDlg.key, next);
       // "ungrouped" is the absence of a group, not a stored one: naming it groups its sessions
       for (const m of groupUngrouped(workSessions, next)) {
         if (failed("Couldn't name the group", await window.mb.setGroup(m.id, m.group))) return refresh();
       }
       await migrateGroupKeys(renameDlg.key, next);
     } else if (next !== renameDlg.key) {
-      expectRename(renameDlg.key, next);
       const pending: PendingRename = { from: renameDlg.key, to: next };
       setLsRenames((r) => [...r.filter((x) => x.from !== pending.from), pending]);
       if (failed("Couldn't rename the group", await window.mb.renameGroup(renameDlg.key, next))) {
@@ -465,7 +363,6 @@ function App() {
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean; source: "release" | "branch" } | null>(null);
   const [upd, setUpd] = useState<UpdateProgress>({ state: "idle", done: [], log: [] });
-  const drag = useDrag();
   useEffect(() => installDragListeners(), []);
   useEffect(() => installTooltips(), []);
   // unsaved edits hold the window open; the main process asks whether to quit anyway
@@ -546,7 +443,6 @@ function App() {
       setUpdatedTo(false);
     }
   };
-  const [sideView, setSideView] = usePersisted<SideView>("mb.sideView", "sessions", gridSaves);
   const [sideW, setSideW] = usePersisted<number>("mb.sideW", 264);
   const [editor, setEditor] = useState(EMPTY_EDITOR);
   const [search, setSearch] = useState<SearchState>(() => ({ q: "", ...readPref("mb.search", { scope: "conversations", regex: false, matchCase: false }) }));
@@ -554,7 +450,7 @@ function App() {
     writePref("mb.search", { scope: search.scope, regex: search.regex, matchCase: search.matchCase });
   }, [search.scope, search.regex, search.matchCase]);
   const [searchFocus, setSearchFocus] = useState(0);
-  // Run and Debug: every service's state, and the log panel under the grid (⌘J)
+  // Run and Debug: every service's state, and the log panel under the landscape (⌘J)
   const [runStates, setRunStates] = useState<RunServiceState[]>([]);
   useEffect(() => {
     window.mb.runStates().then(unlessError("the services' run states", setRunStates));
@@ -593,27 +489,21 @@ function App() {
   /** Show a side bar view, from anywhere: the side bar lives on the Sessions tab. */
   const showView = (v: SideView) => {
     setTab("sessions");
-    // on the landscape the side bar is the area tree, and the other views are tool windows
-    const tool = landscapeOn ? toolOfView(v) : null;
+    // the side bar is the area tree, and the other views are tool windows
+    const tool = toolOfView(v);
     if (tool) return showTool(tool, sessions.find((s) => s.id === focused) ?? null);
-    if (v === "sessions") setLsTeam(false);
-    setSideView(v);
+    setLsTeam(false);
     setSideCollapsed(false);
-    if (v === "search") setSearchFocus((n) => n + 1);
   };
   // on the landscape the side bar shows the Team view's room list in place of the area tree (the Connected line)
   const [lsTeam, setLsTeam] = useState(false);
   /**
-   * A room's chat, from a clicked mention notification or the Connected line. On the landscape: the room's area, flown
-   * to, with its Chat window; with no room named (the line, with several rooms), the Team view's room list in the side
-   * bar, where each room's Leave and join requests are. On the grid: the Team view, on the room.
+   * A room's chat, from a clicked mention notification or the Connected line: the room's area, flown to, with its Chat
+   * window; with no room named (the line, with several rooms), the Team view's room list in the side bar, where each
+   * room's Leave and join requests are.
    */
   const openRoom = (roomId: string | null) => {
     const room = roomId && teamStatus && !isErr(teamStatus) ? teamStatus.rooms.find((r) => r.id === roomId) : undefined;
-    if (!landscapeOn) {
-      openTeamView(roomId);
-      return showView("room");
-    }
     setTab("sessions");
     const key = room?.groupKey;
     const area = key ? layoutNow.current?.areas.find((a) => a.key === key) : undefined;
@@ -648,26 +538,7 @@ function App() {
     refresh();
   };
 
-  /** Remove a sub-group without touching its sessions — they move up into the group. */
-  const dissolveSub = async (top: string, all: SessionInfo[]) => {
-    if (landscapeOn) {
-      const stack = all[0]?.taskGroup;
-      return void (stack && unstackStack(stack));
-    }
-    // teammates' sessions stay in the workspace their owners put them in
-    const list = all.filter((s) => !isRemote(s));
-    // the first of its tabs on screen takes the workspace pane's place; it moves
-    // last, so the pane is gone by the time it lands
-    const first = list.find((s) => shown.includes(s.id));
-    if (first) expectPane(first.id, (t) => rename(t, cellKeyOfSession(first), first.id));
-    const order = first ? [...list.filter((s) => s !== first), first] : list;
-    const results = await Promise.all(order.map((s) => window.mb.setGroup(s.id, top)));
-    const errors = results.filter(isErr);
-    if (errors.length) alert(`Couldn't move ${errors.length} of the workspace's sessions into the group: ${errors.map((e) => e.error).join("; ")}`);
-    refresh();
-  };
-
-  /** Auto-name for a workspace created by dropping one session onto another. */
+  /** Auto-name for a new stack in group `top`. */
   const nextSubName = (top: string): string => freeSubName(workSessions.filter((s) => topOf(s) === top).map(subOf));
 
   /**
@@ -681,7 +552,7 @@ function App() {
       setClosedFails((n) => n + 1);
       return false;
     }
-    // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
+    // debriefs aren't reopened with the other sessions: they live on the WorkTracker tab
     setResumable(previous.filter((s) => !s.debrief));
     listLoaded("resumable");
     setClosedFails(0);
@@ -750,8 +621,6 @@ function App() {
   useEffect(() => {
     refresh();
     window.mb.hooksInstalled().then(unlessError("whether the status hooks are installed", (ok: unknown) => setHooksOk(ok === true)));
-    // note: `shown` is deliberately NOT pruned against the live list — relaunch
-    // reuses session ids, so a restored session lands back in its old grid slot
     const off = window.mb.onSessionsChanged((s: SessionInfo[]) => {
       setSessions(s);
       listLoaded("live");
@@ -777,227 +646,18 @@ function App() {
   const topOf = (s: SessionInfo) => splitGroupKey(groupKeyOf(s)).top;
   const subOf = (s: SessionInfo) => splitGroupKey(groupKeyOf(s)).sub;
 
-  /** A live session's top-level group; undefined for an id awaiting a relaunch. */
-  const groupOfId = (id: string): string | undefined => {
-    const s = sessions.find((x) => x.id === id);
-    return s ? topOf(s) : undefined;
-  };
-  // the grid is group-exclusive at the TOP level: every shown session belongs
-  // to the active group (pinned panes excepted); sub-groups act as tabs within it
-  const activeGroup = useMemo(() => activeGroupOf(shown, groupOfId, pinnedSet, lastGroup), [shown, sessions, pinnedSet, lastGroup]);
-  // the grid's own bookkeeping, here and below, stands still while the landscape shows instead: the grid comes back
-  // with the layout prefs it left
-  useEffect(() => {
-    if (!landscapeOn && activeGroup && activeGroup !== lastGroup) setLastGroup(activeGroup);
-  }, [activeGroup, landscapeOn]);
 
-  /** Carry a group's remembered UI state across a rename — these registries are
-   *  keyed by group path, so without this a rename silently loses the group's
-   *  layout, its workspaces' active tabs and folders, its collapsed state, and
-   *  how agent messages arrive in it. */
+  /** Carry a group's message mode across a rename: it lives in settings, keyed by top-level group. */
   const migrateGroupKeys = async (oldKey: string, newKey: string) => {
-    const remap = <T,>(rec: Record<string, T>) => remapGroupKeys(rec, oldKey, newKey);
-    setGroupLayouts(remap);
-    setWsTabs(remap);
-    setWsOpen(remap);
-    setTrees((prev) => remapTrees(prev, oldKey, newKey));
-    setLastGroup((g) => (g === oldKey ? topOfKey(newKey) : g));
-    setCollapsed((prev) => {
-      if (!prev.has(oldKey)) return prev;
-      const next = new Set(prev);
-      next.delete(oldKey);
-      next.add(topOfKey(newKey));
-      return next;
-    });
-    // the per-group message mode lives in settings, keyed by top-level group
     const [oldTop, newTop] = [topOfKey(oldKey), topOfKey(newKey)];
     const mode = msgModes[oldTop];
     if (mode && oldTop !== newTop && (await setMsgMode(newTop, mode))) await setMsgMode(oldTop, "");
   };
 
-  const collapseOthers = (g: string) =>
-    setCollapsed(new Set([...new Set(sessions.map(topOf))].filter((k) => k !== g)));
-
-  // record the active group's visible subset whenever it changes (its own
-  // panes only — pinned visitors from other groups aren't part of its layout)
-  useEffect(() => {
-    if (landscapeOn || !activeGroup) return;
-    const own = layoutToRemember(shown, groupOfId, activeGroup);
-    if (own.length === 0) return;
-    setGroupLayouts((prev) => {
-      const cur = prev[activeGroup];
-      if (cur && cur.length === own.length && cur.every((id, i) => id === own[i])) return prev;
-      return { ...prev, [activeGroup]: own };
-    });
-  }, [shown, activeGroup, landscapeOn]);
-
-  /** A group's remembered layout, pruned to sessions that still exist in it. */
-  const rememberedLayout = (g: string): string[] => {
-    const ids = sessions.filter((x) => topOf(x) === g).map((x) => x.id);
-    return (groupLayouts[g] ?? []).filter((id) => ids.includes(id));
-  };
-
-  /** Swap the grid to another group's panes; pinned panes stay where they are. The new group's panes come in
-   *  from its side of the side bar. */
-  const switchGrid = (g: string, ids: string[]) => {
-    const apply = () => {
-      setZoomed(null);
-      setLastGroup(g);
-      setShown((p) => switchTo(p, pinnedSet, ids));
-      collapseOthers(g);
-    };
-    if (!activeGroup || g === activeGroup) return apply();
-    const order = outline.flatMap((e) => (e.kind === "connected" ? [] : [e.key]));
-    gridChange({ kind: "switch", dir: switchDir(order, activeGroup, g) }, apply);
-  };
-
-  /** Show a session — same group appends; a different group swaps the grid to
-   *  that group's remembered layout (plus the clicked session). */
-  const showSession = (s: SessionInfo) => {
-    const g = topOf(s);
-    if (activeGroup && g !== activeGroup && !pinnedSet.has(s.id)) {
-      const remembered = rememberedLayout(g);
-      switchGrid(g, remembered.length ? [...new Set([...remembered, s.id])] : [s.id]);
-    } else if (!shown.includes(s.id)) {
-      // it opens in place and the panes already there make room
-      gridChange({ kind: "open" }, () => setShown((p) => (p.includes(s.id) ? p : [...p, s.id])));
-    }
-  };
-
-  /** Pin or unpin panes. Pinning puts a minimized session back on screen;
-   *  unpinning a visitor from another group sends it back to its group. */
-  const togglePin = (ids: string[]) => {
-    const pin = !ids.every((id) => pinnedSet.has(id));
-    setPinned((p) => (pin ? [...new Set([...p, ...ids])] : p.filter((id) => !ids.includes(id))));
-    if (pin) setShown((p) => [...p, ...ids.filter((id) => !p.includes(id))]);
-  };
-
-  /**
-   * Move a session into a group (null = out of any). The grid keeps its panes:
-   * a session moved into the group on screen opens there (as the front tab of
-   * its workspace); one moved to another group leaves the grid and is open
-   * when that group is next shown — unless it's pinned, which keeps it here.
-   * Returns whether it moved.
-   */
+  /** Move a session into a group (null = out of any); returns whether it moved. */
   const moveToGroup = async (id: string, group: string | null): Promise<boolean> => {
     if (isRemote(sessions.find((s) => s.id === id))) return false; // a teammate's: only its owner moves it
-    const top = topOfKey(group ?? "ungrouped");
-    const stays = !activeGroup || top === activeGroup || pinnedSet.has(id);
-    if (!stays) {
-      setShown((p) => p.filter((x) => x !== id));
-      setGroupLayouts((p) => ({ ...p, [top]: [...(p[top] ?? []).filter((x) => x !== id), id] }));
-    }
-    const before = shown;
-    if (failed("Couldn't move the session", await window.mb.setGroup(id, group))) {
-      setShown(before);
-      return false;
-    }
-    if (stays) {
-      setShown((p) => (p.includes(id) ? p : [...p, id]));
-      if (group && splitGroupKey(group).sub) setWsTabs((p) => ({ ...p, [group]: id }));
-    }
-    return true;
-  };
-
-  const hide = (id: string) => {
-    setShown((p) => p.filter((x) => x !== id));
-    if (zoomed === id) setZoomed(null);
-  };
-
-  /**
-   * A workspace's sidebar folder follows the grid — open while it's shown,
-   * closed once minimized. The chevron only peeks until the next show/minimize.
-   */
-  const folderFollowsGrid = (list: SessionInfo[]) =>
-    setWsOpen((p) => {
-      const keys = list.map((s) => s.taskGroup).filter((g): g is string => !!g && splitGroupKey(g).sub !== null);
-      if (!keys.some((k) => k in p)) return p;
-      const n = { ...p };
-      for (const k of keys) delete n[k];
-      return n;
-    });
-
-  /** Minimize a whole workspace (all member sessions) from the grid at once. */
-  const hideSessions = (list: SessionInfo[]) => {
-    setShown((p) => p.filter((id) => !list.some((s) => s.id === id)));
-    if (zoomed && list.some((s) => s.id === zoomed)) setZoomed(null);
-    folderFollowsGrid(list);
-  };
-
-  // ---- minimizing into the side bar's folders, and restoring out of them (gridMotion.ts) ----
-  // A workspace's folder is drawn open while it's in the grid and closed once minimized. Held open here while
-  // its pane flies in (the lid closes once it lands), or opened ahead of a pane coming back out.
-  const [lidOpen, setLidOpen] = useState<string | null>(null);
-  const pendingRestore = useRef<number | null>(null);
-  const cancelRestore = () => {
-    if (pendingRestore.current !== null) clearTimeout(pendingRestore.current);
-    pendingRestore.current = null;
-  };
-  const folderSel = (wsKey: string) => `.sub-label[data-ws="${CSS.escape(wsKey)}"] .ico.folder`;
-  const rowDotSel = (id: string) => `.sess-item[data-sid="${CSS.escape(id)}"] > .dot`;
-  const railIcon = () => document.querySelector('.activitybar .ab-btn[aria-label="Sessions"] .ico');
-  const cellInGrid = (key: string) => !!document.querySelector(`.grid > [data-cell="${CSS.escape(key)}"]`);
-  /** Where a pane going into (or coming out of) the icon at `sel` flies, measured now. */
-  const flyTo = (sel: string): FlyTo => {
-    const listShown = !sideCollapsed && sideView === "sessions";
-    const icon = listShown ? document.querySelector(sel) : null;
-    const list = document.querySelector(".sidebar .scroll");
-    const rail = railIcon();
-    return flyTarget({ target: icon && rectOf(icon), list: list && rectOf(list), listShown, rail: rail && rectOf(rail) });
-  };
-  /** A pane has landed: the folder's lid closes behind it and the folder (or the rail's icon) gulps. */
-  const landed = (via: FlyTo["via"], sel: string, wsKey: string | null) => {
-    // (unless that folder is already opening again for a restore)
-    if (wsKey && pendingRestore.current === null) setLidOpen((l) => (l === wsKey ? null : l));
-    if (via === "target") {
-      const icon = document.querySelector(sel);
-      gulp(icon);
-      const row = icon?.closest(".sub-label");
-      if (row) play(row, [{ opacity: 1 }, { opacity: 0 }], { duration: D.l, easing: "ease-out", pseudoElement: "::after" });
-    } else if (via === "rail") gulp(railIcon());
-  };
-
-  /** Minimize a workspace: its pane flies into the open folder, then the lid closes. */
-  const minimizeWorkspace = (wsKey: string, list: SessionInfo[]) => {
-    cancelRestore();
-    const cell = list.map((s) => cellKeyFor(s.id, s.taskGroup)).find(cellInGrid);
-    if (!cell) return hideSessions(list);
-    const sel = folderSel(wsKey);
-    gridChange({ kind: "minimize", cell, target: () => flyTo(sel), onLanded: (via) => landed(via, sel, wsKey) }, () => {
-      setLidOpen(wsKey);
-      hideSessions(list);
-    });
-  };
-
-  /** Show a minimized workspace again: the folder's lid opens, then its pane comes out to its place. */
-  const restoreWorkspace = (top: string, wsKey: string, list: SessionInfo[]) => {
-    cancelRestore();
-    const sel = folderSel(wsKey);
-    const from = flyTo(sel);
-    const cell = list[0] ? cellKeyFor(list[0].id, list[0].taskGroup) : "";
-    const out = () => gridChange({ kind: "restore", cell, from, onOut: () => setLidOpen((l) => (l === wsKey ? null : l)) }, () => focusSub(top, list));
-    if (motion() !== "full" || from.via !== "target" || tab !== "sessions") return out();
-    setLidOpen(wsKey);
-    pendingRestore.current = window.setTimeout(() => {
-      pendingRestore.current = null;
-      out();
-    }, LID_MS);
-  };
-
-  /** Hide one session's pane: it flies into its workspace's folder, or its own row's dot. */
-  const minimizePane = (s: SessionInfo) => {
-    const sub = subOf(s);
-    const wsKey = sub ? `${topOf(s)}/${sub}` : null;
-    const cell = cellKeyFor(s.id, s.taskGroup);
-    // a workspace tab with others still shown leaves its pane in place: nothing flies
-    const leaves = !wsKey || !shown.some((id) => id !== s.id && sessions.some((x) => x.id === id && cellKeyFor(x.id, x.taskGroup) === cell));
-    if (!leaves || !cellInGrid(cell)) return hide(s.id);
-    cancelRestore();
-    const sel = wsKey ? folderSel(wsKey) : rowDotSel(s.id);
-    gridChange({ kind: "minimize", cell, target: () => flyTo(sel), onLanded: (via) => landed(via, sel, wsKey) }, () => {
-      if (wsKey) setLidOpen(wsKey);
-      hide(s.id);
-    });
+    return !failed("Couldn't move the session", await window.mb.setGroup(id, group));
   };
 
   /**
@@ -1007,16 +667,11 @@ function App() {
    */
   const jumpToSession = (s: SessionInfo, since?: number) => {
     if (s.debrief) {
-      setTab("worktracker"); // debriefs live on their own tab, not the grid
-    } else if (landscapeOn) {
-      // every workspace is on the landscape at once: this brings the session's into view, and the grid stays as it was
+      setTab("worktracker"); // debriefs live on their own tab, not the landscape
+    } else {
+      // every workspace is on the landscape at once: this brings the session's into view
       setTab("sessions");
       revealWorkspace(s.id);
-    } else {
-      setTab("sessions");
-      showSession(s);
-      const sub = subOf(s);
-      if (sub) setWsTabs((p) => ({ ...p, [`${topOf(s)}/${sub}`]: s.id })); // front its workspace tab
     }
     setFocused(s.id);
     const stale = () => since !== undefined && inputStamp() !== since;
@@ -1031,7 +686,7 @@ function App() {
       setTimeout(() => {
         if (stale()) return;
         focusTerm(s.id);
-        if (termHasKeys(s.id) || !keyboardNowhere() || s.debrief || !landscapeOn) return;
+        if (termHasKeys(s.id) || !keyboardNowhere() || s.debrief) return;
         // its terminal isn't there to take it (the landscape zoomed out past it): the keyboard waits on the holder
         // (keyArm.ts), where typed keys do nothing and say why, not on the page, where Tab would walk on from the palette
         toNowhere();
@@ -1053,37 +708,25 @@ function App() {
   const jumpToRef = useRef(jumpTo);
   jumpToRef.current = jumpTo;
 
-  // team rooms: live panes — Follow mirrors a teammate's shown room sessions and focus. On the landscape, where every
-  // workspace is on screen at once, it brings the one they focus (or the first they show) into view and selects it,
-  // and picking another one stops it: the selection is what it watches there, not what's on screen, which a flight
-  // or a pan changes
+  // team rooms: live panes — Follow brings the room session a teammate focuses (or the first they show) into view and
+  // selects it, and picking another one stops it: the selection is what it watches, not what's on screen, which a
+  // flight or a pan changes
   const followFocus = useMemo(() => (focused ? [focused] : []), [focused]);
   const follow = useFollow({
     views: roomLive.state?.views ?? [],
     sessions,
-    shown: landscapeOn ? followFocus : shown,
+    shown: followFocus,
     groupOf: topOf,
-    show: (g, ids, f) => {
-      if (landscapeOn) {
-        const id = f ?? ids[0];
-        if (id) {
-          revealWorkspace(id);
-          setFocused(id);
-        }
-        return;
-      }
-      switchGrid(g, ids);
-      if (f) setFocused(f);
+    show: (_group, ids, f) => {
+      const id = f ?? ids[0];
+      if (!id) return;
+      revealWorkspace(id);
+      setFocused(id);
     },
   });
 
-  // one group on screen: a pane whose session moved to another group (or a stale
-  // persisted layout) leaves the grid, unless it's pinned
-  useEffect(() => {
-    if (!landscapeOn) setShown((prev) => pruneToGroup(prev, groupOfId, pinnedSet, activeGroup));
-  }, [sessions, pinnedSet, activeGroup, landscapeOn]);
 
-  // debrief sessions live on the WorkTracker tab, everything else on the grid
+  // debrief sessions live on the WorkTracker tab, everything else on the landscape
   const workSessions = useMemo(() => sessions.filter((s) => !s.debrief), [sessions]);
   const debriefSessions = useMemo(() => sessions.filter((s) => s.debrief), [sessions]);
 
@@ -1104,7 +747,7 @@ function App() {
   const landscapeState = landscapeStore.state;
   // shown once the grid's layout is read in, or once it can't be: a layout made up before that would be redrawn
   // (and every terminal resized) when the migration lands
-  const landscapeShown = landscapeOn && !!landscapeState && (migration.step.kind === "done" || migration.step.kind === "blocked" || !!migration.failed);
+  const landscapeShown = !!landscapeState && (migration.step.kind === "done" || migration.step.kind === "blocked" || !!migration.failed);
   // groups renamed here whose changes (the session list, the landscape's re-keying, teammates' sessions) haven't all
   // arrived: the layout keeps each under the key the landscape holds it under meanwhile
   const [lsRenames, setLsRenames] = useState<PendingRename[]>([]);
@@ -1209,214 +852,14 @@ function App() {
       : workSessions;
   }, [workSessions, filter]);
 
-  // the sessions the layout holds: everything shown, even while one is fullscreen
-  const layoutSessions = useMemo(
-    () => shown.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
-    [sessions, shown]
-  );
-  const gridSessions = useMemo(() => (zoomed ? sessions.filter((s) => s.id === zoomed) : layoutSessions), [zoomed, sessions, layoutSessions]);
-
-  // grid cells: plain sessions render individually; a sub-group renders as ONE
-  // workspace pane with tabs (cmux-style)
-  const layoutCells: GridCell[] = useMemo(() => {
-    const out: GridCell[] = [];
-    const seen = new Set<string>();
-    for (const s of layoutSessions) {
-      const sub = subOf(s);
-      const key = `${topOf(s)}/${sub}`;
-      if (!sub) out.push({ kind: "session", s });
-      else if (!seen.has(key)) {
-        seen.add(key);
-        // tabs are the workspace's members that are in the grid, so closing a
-        // tab hides just that session; the pane goes when its last tab does
-        out.push({
-          kind: "workspace",
-          key,
-          sub,
-          list: workSessions.filter((x) => topOf(x) === topOf(s) && subOf(x) === sub && shown.includes(x.id)),
-        });
-      }
-    }
-    return out;
-  }, [layoutSessions, workSessions, shown]);
-  // fullscreen shows the one session on its own; leaving it returns to the layout as it was
-  const cells: GridCell[] = useMemo(
-    () => (zoomed ? gridSessions.map((s) => ({ kind: "session" as const, s })) : layoutCells),
-    [zoomed, gridSessions, layoutCells]
-  );
-  const cellKeyOfSession = (s: SessionInfo) => cellKeyFor(s.id, s.taskGroup);
-
-  // ---- the layout: a split tree per group (layoutTree.ts) says where each pane sits ----
-  const seatKey = activeGroup ?? "";
-  const layoutKeys = useMemo(() => layoutCells.map(cellKeyOf), [layoutCells]);
-  const gridRef = useRef<HTMLDivElement>(null);
-  // the grid's size, read when panes are added (the default rule splits along the longer side)
-  const gridExtent = useRef<Extent>({ w: window.innerWidth, h: window.innerHeight });
-  // the grid element comes and goes with the Sessions tab and with having panes at all
-  const hasGrid = tab === "sessions" && gridSessions.length > 0;
-  useEffect(() => {
-    const el = gridRef.current;
-    if (!el) return;
-    const measure = () => {
-      if (el.clientWidth && el.clientHeight) gridExtent.current = { w: el.clientWidth, h: el.clientHeight };
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [hasGrid]);
-
-  /**
-   * Panes about to appear, and where each lands instead of by the default rule.
-   * A session changing group changes its cell's key (joining a workspace, or
-   * leaving one for a pane of its own), and the main process sends the new
-   * session list — which redraws the grid — before the call that made the
-   * change returns. So the place is set before the call, and applied on the
-   * render where the key first appears.
-   */
-  const expected = useRef(new Map<string, Landing>());
-  const expectPane = (key: string, place: Landing["place"]) => expected.current.set(key, { at: Date.now(), place });
-
-  const tree = useMemo(() => {
-    if (!layoutKeys.length) return null;
-    const saved = asTree(trees[seatKey]) ?? legacyTree(legacyLayout, seatKey, layoutKeys, gridExtent.current);
-    return drawTree(saved, layoutKeys, gridExtent.current, expected.current, Date.now(), EXPECT_MS);
-  }, [trees, seatKey, layoutKeys, legacyLayout]);
-
-  // the tree is saved as drawn, so panes added by the default rule keep their places
-  useEffect(() => {
-    if (!tree || landscapeOn) return;
-    for (const k of keysOf(tree)) expected.current.delete(k);
-    // shown but not running: ids a relaunch brings back (by session, or by workspace)
-    const awaiting = new Set(
-      shown
-        .filter((id) => !sessions.some((s) => s.id === id))
-        .flatMap((id) => [id, cellKeyFor(id, resumable.find((r) => r.id === id)?.taskGroup)])
-    );
-    setTrees((p) => (worthSaving(asTree(p[seatKey]), tree, awaiting) ? { ...p, [seatKey]: tree } : p));
-  }, [tree, seatKey, landscapeOn]);
-
-  /** Change the active group's layout, starting from the tree as drawn. */
-  const commitTree = (fn: (t: LayoutNode) => LayoutNode | null) => {
-    if (!tree) return;
-    const next = fn(tree);
-    if (next && !sameTree(next, tree)) setTrees((p) => ({ ...p, [seatKey]: next }));
-  };
-  /** Arrange the panes, in the order they're read, into a snap layout or N even columns. */
-  // re-arranging moves every pane to its new place together (gridMotion.ts)
-  const arrangeAs = (id: string) => gridChange({ kind: "layout" }, () => commitTree((t) => arrange(id, readingOrder(t), gridExtent.current)));
-  const arrangeInCols = (n: number) => gridChange({ kind: "layout" }, () => commitTree((t) => evenGrid(readingOrder(t), n)));
-  const refit = () => gridChange({ kind: "layout" }, () => commitTree((t) => reconcile(null, readingOrder(t), gridExtent.current)));
-  /** Fullscreen a pane (null: back to the grid): it grows to the grid's size while the others fade. */
-  const zoomTo = (id: string | null) => gridChange({ kind: "zoom" }, () => setZoomed(id));
-
-  /**
-   * A group rename is about to change keys: the group's tree is copied under
-   * its new name, and each workspace pane under it keeps its place when its
-   * key changes (see `expected`). migrateGroupKeys tidies up once it's done.
-   */
-  const expectRename = (oldKey: string, newKey: string) => {
-    for (const k of keysOf(tree)) {
-      const nk = keysOf(renameWorkspaces({ kind: "leaf", key: k }, oldKey, newKey))[0];
-      if (nk !== k) expectPane(nk, (t) => rename(t, k, nk));
-    }
-    setTrees((p) => {
-      const from = asTree(p[oldKey]);
-      return from && !splitGroupKey(oldKey).sub ? { ...p, [topOfKey(newKey)]: renameWorkspaces(from, oldKey, newKey) } : p;
-    });
-  };
-
-  // pane numbers (⌘1–9, the badges, the palette's hints) follow the grid top-left first
-  const orderedCells = useMemo(() => (zoomed ? cells : inReadingOrder(cells, tree)), [cells, tree, zoomed]);
-  const shortcuts = useMemo(() => paneShortcuts(orderedCells, wsTabs), [orderedCells, wsTabs]);
-  const layoutGrid = useMemo(() => (zoomed || !tree ? null : toGrid(tree)), [tree, zoomed]);
-  const across = zoomed ? 1 : maxAcross(tree);
-  // pane density follows how many panes sit side by side (design 1b); a fullscreened pane is instrumented
-  const density: PaneDensity = zoomed ? "max" : across >= 4 ? "min" : across === 3 ? "std" : "max";
-
-  /** The grid's content box in client pixels, and the pixels its tracks share (gaps taken out). */
-  const gridBox = () => {
-    const el = gridRef.current;
-    if (!el) return null;
-    const r = el.getBoundingClientRect();
-    const cs = getComputedStyle(el);
-    const px = (v: string) => parseFloat(v) || 0;
-    const width = r.width - px(cs.paddingLeft) - px(cs.paddingRight);
-    const height = r.height - px(cs.paddingTop) - px(cs.paddingBottom);
-    return {
-      left: r.left + px(cs.paddingLeft),
-      top: r.top + px(cs.paddingTop),
-      width,
-      height,
-      trackW: width - px(cs.columnGap) * Math.max(0, (layoutGrid?.cols.length ?? 1) - 1),
-      trackH: height - px(cs.rowGap) * Math.max(0, (layoutGrid?.rows.length ?? 1) - 1),
-    };
-  };
-
-  // ---- window-style pane resizing: grab a pane's own right edge / bottom edge /
-  // corner; the boundary there moves and the panes on either side trade size ----
-  const startResize = (key: string, axes: ("x" | "y")[], e: React.PointerEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const box = gridBox();
-    if (!box || !tree) return;
-    const t0 = tree;
-    const group = seatKey;
-    const start = { x: e.clientX, y: e.clientY };
-    const min = { x: 150 / box.trackW, y: 90 / box.trackH }; // keep panes usable
-    const target = e.currentTarget as HTMLElement;
-    target.setPointerCapture(e.pointerId);
-    for (const a of axes) document.body.classList.add(a === "x" ? "rz-x" : "rz-y");
-    const onMove = (ev: PointerEvent) => {
-      let t = t0;
-      for (const a of axes) t = resizePane(t, key, a, a === "x" ? (ev.clientX - start.x) / box.trackW : (ev.clientY - start.y) / box.trackH, min);
-      setTrees((p) => ({ ...p, [group]: t }));
-    };
-    const onUp = () => {
-      target.removeEventListener("pointermove", onMove);
-      target.removeEventListener("pointerup", onUp);
-      target.removeEventListener("pointercancel", onUp);
-      document.body.classList.remove("rz-x", "rz-y");
-    };
-    target.addEventListener("pointermove", onMove);
-    target.addEventListener("pointerup", onUp);
-    // capture can be lost to an OS gesture or app switch — without this the
-    // resize cursor stays stuck and the handle keeps resizing with no button held
-    target.addEventListener("pointercancel", onUp);
-  };
-  /** The resize handles a pane gets: only on edges it shares with another pane. */
-  const resizeFor = (key: string): PaneResize | undefined => {
-    if (zoomed || !tree) return undefined;
-    const x = canResize(tree, key, "x");
-    const y = canResize(tree, key, "y");
-    if (!x && !y) return undefined;
-    return {
-      x: x ? (e) => startResize(key, ["x"], e) : undefined,
-      y: y ? (e) => startResize(key, ["y"], e) : undefined,
-      xy: x && y ? (e) => startResize(key, ["x", "y"], e) : undefined,
-      reset: () => commitTree(equalize),
-    };
-  };
-
   // the groups shown as team rooms
   const roomGroups = useMemo(() => teamRooms.map((r) => r.groupKey), [teamRooms]);
-  // sidebar structure: this Mac's top-level groups, then the rooms' under "Connected Sessions"; each with sessions bucketed by sub-group
+  // this Mac's top-level groups, then the rooms': the status bar counts them until the landscape's layout is read
   const outline = useMemo(() => sessionOutline(visible, roomGroups, !!filter), [visible, roomGroups, filter]);
   const groupCount = outline.filter((e) => e.kind === "group").length;
 
-  // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
-  // the rest are open exactly while the workspace is in the grid.
-  const [wsOpen, setWsOpen] = usePersisted<Record<string, boolean>>("mb.wsOpen", {}, gridSaves);
-  // the session list's rows and headings ([data-flip]) slide to their new places when sessions arrive, leave,
-  // move group or re-sort — never as the filter is typed, or a group or workspace folds open or shut
-  const sessionList = useRef<HTMLDivElement>(null);
-  useFlipRows(
-    sessionList,
-    "[data-flip]",
-    "data-flip",
-    workSessions.map((s) => `${s.id}:${s.taskGroup ?? ""}:${s.status}`).join("|"),
-    `${filter}|${[...collapsed].join(",")}|${JSON.stringify(wsOpen)}|${sideView}|${tab}|${sideCollapsed}`
-  );
+  // the Team view's stack folders, opened and shut by their chevrons: open to begin with
+  const [wsOpen, setWsOpen] = useState<Record<string, boolean>>({});
 
   const bySub = (list: SessionInfo[]): [string, SessionInfo[]][] => {
     const m = new Map<string, SessionInfo[]>();
@@ -1425,20 +868,6 @@ function App() {
       m.set(sub, [...(m.get(sub) ?? []), s]);
     }
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])); // "" (no sub) first
-  };
-
-  /** Reveal a workspace (sub-group) pane: within the active group its sessions
-   *  are added to the grid; from another group the grid swaps to it.
-   *  No focusTerm — see focusGroup (it would kill double-click rename). */
-  const focusSub = (top: string, list: SessionInfo[]) => {
-    setZoomed(null);
-    folderFollowsGrid(list);
-    if (activeGroup && top !== activeGroup) {
-      switchGrid(top, list.map((s) => s.id));
-    } else {
-      setShown((p) => [...p, ...list.map((s) => s.id).filter((id) => !p.includes(id))]);
-    }
-    if (list[0]) setFocused(list[0].id);
   };
 
   const counts = useMemo(() => {
@@ -1476,173 +905,6 @@ function App() {
     }
   };
 
-  /** Click a group header: the grid shows the panes that group last had open
-   *  (all of its sessions the first time), whether or not it's already active.
-   *  NOTE: no focusTerm here — stealing keyboard focus right after a header
-   *  click kills the double-click rename input (it blurs and closes). */
-  const focusGroup = (key: string, list: SessionInfo[]) => {
-    const remembered = rememberedLayout(key);
-    const ids = remembered.length ? remembered : list.map((s) => s.id);
-    switchGrid(key, ids);
-    const first = ids[0] ?? list[0]?.id;
-    if (first) setFocused(first);
-  };
-
-  /** The drop cue for moving a dragged sidebar/pane session into `group` (null = out of any group). */
-  const intoGroupTarget = (targetKey: string, group: string | null, name: string) => {
-    const src = sessions.find((x) => x.id === dragging("text/mb-session"));
-    if (!src || isRemote(src) || dragFrom() === "workspace" || (src.taskGroup ?? null) === group) return null; // already there, or a teammate's
-    return { key: targetKey, outcome: group === null ? `Move ${titleOf(src)} out of its group` : `Move ${titleOf(src)} into ${name}` };
-  };
-
-  /** Drop handler shared by group headers and rows — moves the dragged session. */
-  const dropToGroup = (e: React.DragEvent, group: string | null) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const src = e.dataTransfer.getData("text/mb-session");
-    if (src) moveToGroup(src, group);
-  };
-
-  /**
-   * Make a session a tab in the pane showing `target`: it joins the target's
-   * workspace, or a new workspace holding both when the target is a lone pane —
-   * `newKey` when the caller already chose it, else auto-named and offered for
-   * renaming. Every way of making a workspace comes through here, so the lone
-   * pane's place and pin always carry over to the workspace.
-   */
-  const addAsTab = async (src: SessionInfo, target: SessionInfo, newKey?: string) => {
-    if (src.id === target.id || isRemote(src)) return;
-    let key = subOf(target) ? `${topOf(target)}/${subOf(target)}` : null;
-    if (!key) {
-      const top = topOf(target);
-      key = newKey ?? `${top}/${nextSubName(top)}`;
-      const wsKey = key;
-      // the lone pane's place becomes the workspace's
-      expectPane(`ws:${wsKey}`, (t) => rename(t, target.id, `ws:${wsKey}`));
-      if (failed("Couldn't make the workspace", await window.mb.setGroup(target.id, wsKey))) {
-        expected.current.delete(`ws:${wsKey}`);
-        return;
-      }
-      if (!newKey) setRenameDlg({ kind: "sub", key: wsKey, initial: splitGroupKey(wsKey).sub ?? "" });
-    }
-    const wsKey = key;
-    if (src.taskGroup !== wsKey && failed("Couldn't add the tab", await window.mb.setGroup(src.id, wsKey))) return;
-    if (pinnedSet.has(target.id)) setPinned((p) => (p.includes(src.id) ? p : [...p, src.id]));
-    setShown((p) => placeBeside(p.includes(src.id) ? p : [...p, src.id], src.id, target.id, "after"));
-    setWsTabs((p) => ({ ...p, [wsKey]: src.id }));
-    setFocused(src.id);
-  };
-
-  // ---- dragging sessions onto the grid ----
-
-  /** What the dragged session is to the grid (see DragSource). */
-  const dragSourceOf = (src: SessionInfo): DragSource => {
-    const k = cellKeyOfSession(src);
-    if (!tree || !hasLeaf(tree, k)) return { key: src.id, from: null };
-    const cell = layoutCells.find((c) => cellKeyOf(c) === k);
-    // a lone pane, a workspace dragged by its name, or a workspace's only tab on screen moves as the pane it is
-    const sole = cell?.kind === "workspace" && cell.list.length === 1 && cell.list[0].id === src.id;
-    if (k === src.id || dragFrom() === "workspace" || sole) return { key: k, from: k };
-    // any other tab on screen is dragged out of its workspace
-    return shown.includes(src.id) ? { key: src.id, from: null, tabOf: k } : { key: src.id, from: null };
-  };
-
-  /** A pane's name in drop outcomes and the drag preview: its session's title, or its workspace's name. */
-  const paneName = (key: string): string => {
-    const c = layoutCells.find((x) => cellKeyOf(x) === key);
-    if (c) return c.kind === "session" ? titleOf(c.s) : c.sub;
-    const s = sessions.find((x) => x.id === key);
-    return s ? titleOf(s) : key;
-  };
-
-  /** The drop cue for making the dragged session a tab in `target`'s pane, if that would change anything. */
-  const tabTarget = (key: string, target: SessionInfo) => {
-    const src = sessions.find((x) => x.id === dragging("text/mb-session"));
-    if (!src || isRemote(src) || src.id === target.id || dragFrom() === "workspace") return null;
-    const ws = subOf(target) ? `${topOf(target)}/${subOf(target)}` : null;
-    if (ws && src.taskGroup === ws && shown.includes(src.id)) return null; // already a tab here
-    // the layout once it's a tab: a pane of its own on screen closes
-    const from = dragSourceOf(src).from;
-    const after = from ? remove(tree, from) : tree;
-    return {
-      key,
-      outcome: ws ? `Open ${titleOf(src)} as a tab in ${subOf(target)}` : `Open ${titleOf(src)} as a tab with ${titleOf(target)}`,
-      preview: after ? { tree: after, hot: cellKeyOfSession(target) } : undefined,
-    };
-  };
-
-  /**
-   * What dropping the dragged session on a pane's body would do, from where
-   * the pointer is in the layout: an edge splits that pane for it, the center
-   * swaps panes or makes it a tab (planDrop). Null where a drop changes nothing.
-   */
-  const gridDropAt = (e: React.DragEvent) => {
-    const src = sessions.find((x) => x.id === dragging("text/mb-session"));
-    const box = gridBox();
-    if (!src || !box || !tree || zoomed) return null;
-    const p = { x: (e.clientX - box.left) / box.width, y: (e.clientY - box.top) / box.height };
-    const target = leafAt(tree, p);
-    if (!target) return null;
-    const source = dragSourceOf(src);
-    const plan = planDrop(tree, source, target, dropRegion(rects(tree)[target], p));
-    if (!plan) return null;
-    if (plan.kind === "tab") {
-      const c = layoutCells.find((x) => cellKeyOf(x) === target);
-      const front = c && frontOf(c, wsTabs);
-      const cue = front && tabTarget(`grid:tab:${target}`, front);
-      return front && cue ? { plan, src, source, front, cue } : null;
-    }
-    const name = dragFrom() === "workspace" ? paneName(source.key) : titleOf(src);
-    const outcome = plan.kind === "swap" ? `Swap ${name} and ${paneName(target)}` : `Put ${name} ${SIDE_WORDS[plan.side]} ${paneName(target)}`;
-    const cue = { key: `grid:${plan.kind}:${target}:${plan.kind === "split" ? plan.side : ""}`, outcome, preview: { tree: plan.tree, hot: plan.key } };
-    return { plan, src, source, front: null, cue };
-  };
-
-  /** One handler for the whole grid: panes' headers take tab drops themselves, and files dropped on a pane go to its terminal. */
-  const overGrid = (e: React.DragEvent) => {
-    if (!dragging("text/mb-session")) return;
-    overTarget(e, gridDropAt(e)?.cue ?? null);
-  };
-  const dropOnGrid = async (e: React.DragEvent) => {
-    if (!dragging("text/mb-session")) return;
-    e.preventDefault();
-    const at = gridDropAt(e);
-    if (!at) return;
-    const { plan, src } = at;
-    setFocused(src.id);
-    if (plan.kind === "tab") return void (at.front && addAsTab(src, at.front));
-    if (at.source.from) return commitTree(() => plan.tree); // a pane on screen moves, or two swap
-    if (plan.kind !== "split") return;
-    // a session that isn't a pane of its own yet lands beside the target once it is one
-    const { target, side } = plan;
-    expectPane(src.id, (t) => t && insertBeside(t, target, side, src.id));
-    // it joins the group on screen (a pinned visitor keeps its own), leaving any workspace
-    const top = pinnedSet.has(src.id) ? topOf(src) : activeGroup ?? topOf(src);
-    const dest = top === "ungrouped" ? null : top;
-    if ((src.taskGroup ?? null) === dest) setShown((p) => (p.includes(src.id) ? p : [...p, src.id]));
-    else if (!(await moveToGroup(src.id, dest))) expected.current.delete(src.id);
-  };
-
-  // While a session is dragged over the grid, the preview shows the layout the
-  // drop would leave — or the one on screen, where a drop changes nothing.
-  const sessionDrag = drag?.type === "text/mb-session" ? drag : null;
-  const gridRect = sessionDrag && !zoomed ? gridRef.current?.getBoundingClientRect() : undefined;
-  const previewOn =
-    !!sessionDrag && !!gridRect && sessionDrag.x >= gridRect.left && sessionDrag.x <= gridRect.right && sessionDrag.y >= gridRect.top && sessionDrag.y <= gridRect.bottom;
-  const dragged = sessionDrag ? sessions.find((s) => s.id === sessionDrag.payload) : undefined;
-  const preview = sessionDrag?.target?.preview ?? { tree, hot: dragged ? dragSourceOf(dragged).from : null };
-
-  const restoreAll = async () => {
-    const failures: string[] = [];
-    // team rooms: a copy a teammate continued doesn't run again (Take it back continues theirs)
-    for (const s of resumable.filter((x) => !roomLive.state?.own[x.id]?.takenOver)) {
-      const info = await window.mb.relaunchSession(s.id);
-      if (isErr(info)) failures.push(`✕ ${s.title}: ${info.error}`);
-    }
-    await refresh();
-    if (failures.length) alert(`Some sessions couldn't be restored:\n\n${failures.join("\n")}`);
-  };
-
   // A restarted pane needs a new terminal: the cached one holds the old CLI's
   // screen and modes. Bumping its key remounts the pane, whichever order the
   // restart's remove/re-add and this call arrive in, and it replays the new
@@ -1660,14 +922,13 @@ function App() {
     const r = forget ? await forgetSession(s) : await window.mb.killSession(s.id, false);
     if (isErr(r)) return r.error;
     disposeTerm(s.id);
-    hide(s.id);
     refresh();
     return null;
   };
   /**
    * Let session `s` go for good in main, and the places the landscape keeps for it (forgetPatch, read before it goes: its
    * stack's tabs are in the layout until then). Every forget goes through here or forgetGhosts, so no place is left
-   * taking room nobody sees. Off the landscape there's no layout to read: a place left in its file is passed over (withoutGone).
+   * taking room nobody sees. Before the layout is read there's none to read: a place left in its file is passed over (withoutGone).
    */
   const forgetSession = async (s: SessionInfo): Promise<unknown> => {
     const l = lsNow.current?.landscape;
@@ -1693,18 +954,16 @@ function App() {
     setCloseDlg({ session: s, wt });
   };
   /** Close a session; dirty or unpushed worktrees get the dialog, clean ones close silently. */
-  // On the landscape a closed session stays resumable, its ghost where it was (docs/landscape.md, Ghost cards); the
-  // grid forgets one with nothing left in its worktree.
+  // A closed session stays resumable, its ghost where it was (docs/landscape.md, Ghost cards).
   const requestClose = async (s: SessionInfo) => {
-    const forget = !landscapeOn;
     const hasWorktree = s.repoPath && s.branch && s.cwd !== s.repoPath;
-    if (!hasWorktree) return closeNow(s, forget);
+    if (!hasWorktree) return closeNow(s, false);
     const st: WorktreeStateInfo | { error: string } = await window.mb.worktreeState(s.cwd);
     if ("error" in st) {
-      if (worktreeGone(st.error)) return closeNow(s, forget);
+      if (worktreeGone(st.error)) return closeNow(s, false);
       return askClose(s, st); // unknown state: the dialog says why and only keeps
     }
-    if (!st.dirty && st.ahead === 0) return closeNow(s, forget);
+    if (!st.dirty && st.ahead === 0) return closeNow(s, false);
     askClose(s, st);
   };
   // several closed at once (the selection bar's Close…): one at a time, each as it is now (one closed meanwhile is
@@ -1739,30 +998,14 @@ function App() {
   const placeContinuation = async (old: SessionInfo, next: SessionInfo, closeOld: boolean) => {
     const since = inputStamp();
     await refresh();
-    if (landscapeOn) {
-      // the old one, kept to reopen, stays as its ghost; the new one is beside it (placeBesideOf)
-      setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
-      if (closeOld && !failed(`Couldn't close ${titleOf(old)}`, await window.mb.killSession(old.id, false))) {
-        disposeTerm(old.id);
-        refresh();
-      }
-      setFocused(next.id);
-      revealWorkspace(next.id);
-      setTimeout(() => focusTerm(next.id), 50);
-      return;
-    }
-    const [oldKey, nextKey] = [cellKeyOfSession(old), cellKeyFor(next.id, next.taskGroup)];
-    // the old one is kept under Previous; its worktree is the new session's
+    // the old one, kept to reopen, stays as its ghost; the new one is beside it (placeBesideOf)
+    setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
     if (closeOld && !failed(`Couldn't close ${titleOf(old)}`, await window.mb.killSession(old.id, false))) {
       disposeTerm(old.id);
-      expectPane(nextKey, (t) => rename(t, oldKey, nextKey)); // the new session takes the old one's place
-      setShown((p) => (p.includes(old.id) ? p.map((x) => (x === old.id ? next.id : x)) : [...p, next.id]));
       refresh();
-    } else {
-      expectPane(nextKey, (t) => t && insertBeside(t, oldKey, "right", nextKey));
-      setShown((p) => placeBeside(p.includes(next.id) ? p : [...p, next.id], next.id, old.id, "after"));
     }
     setFocused(next.id);
+    revealWorkspace(next.id);
     // the keyboard follows only if the user didn't type, press or get a dialog while it waited on main
     setTimeout(() => inputStamp() === since && focusTerm(next.id), 50);
   };
@@ -1780,12 +1023,11 @@ function App() {
       say: alert,
     });
     if (!info) return;
-    hide(s.id);
     await refresh();
     jumpToSession(info, since);
   };
 
-  // ⌥⇥ cycles waiting sessions, oldest wait first — the primary motion for a busy grid
+  // ⌥⇥ cycles waiting sessions, oldest wait first
   const cycleWaiting = () => {
     const waiting = sessions
       .filter((s) => s.status === "waiting" && !isRemote(s))
@@ -1828,12 +1070,11 @@ function App() {
     if (cmd && !e.shiftKey && !e.ctrlKey && e.key === "b" && tab === "sessions") {
       handled();
       // the landscape's side bar is the area tree (⌘\): ⌘B is Files, as the rail's
-      if (landscapeOn) toggleTool("files");
-      else setSideCollapsed((c) => !c);
+      toggleTool("files");
       return;
     }
     // the landscape's area tree to the rail and back (design M); the area switcher stands in for it meanwhile
-    if (cmd && !e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "\\" && tab === "sessions" && landscapeOn) {
+    if (cmd && !e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "\\" && tab === "sessions") {
       handled();
       if (sideCollapsed) showView("sessions");
       else setSideCollapsed(true);
@@ -1851,7 +1092,7 @@ function App() {
     // on the landscape these open or close their tool's window
     const viewKey = (v: SideView) => {
       handled();
-      const tool = landscapeOn && tab === "sessions" ? toolOfView(v) : null;
+      const tool = tab === "sessions" ? toolOfView(v) : null;
       if (tool) toggleTool(tool);
       else showView(v);
     };
@@ -1867,41 +1108,6 @@ function App() {
     if (cmd && e.shiftKey && e.key.toLowerCase() === "b") {
       handled();
       openControlRoom();
-      return;
-    }
-    // the grid's own keys; the landscape has its own (Landscape.tsx), which take ⌘E and ⌘1 differently
-    const grid = !landscapeOn;
-    if (grid && cmd && !e.shiftKey && e.key === "e" && (focused || zoomed)) {
-      handled();
-      zoomTo(zoomed ? null : focused);
-      return;
-    }
-    if (grid && e.key === "Escape" && zoomed && escapeLeavesFullscreen(e.target as Element, !!document.querySelector(OVERLAYS))) {
-      handled();
-      zoomTo(null);
-      return;
-    }
-    if (!grid) {
-      if (e.altKey && e.key === "Tab") {
-        handled();
-        cycleWaiting();
-      }
-      return;
-    }
-    if (cmd && e.ctrlKey && /^[1-4]$/.test(e.key)) {
-      handled();
-      arrangeInCols(parseInt(e.key, 10));
-      return;
-    }
-    if (cmd && !e.ctrlKey && /^[1-9]$/.test(e.key)) {
-      // by CELL, not by session: a workspace pane holding 3 sessions is one
-      // number, which is what the pane's own ⌘n badge shows
-      const cell = orderedCells[parseInt(e.key, 10) - 1];
-      const target = cell && frontOf(cell, wsTabs);
-      if (target) {
-        handled();
-        jumpTo(target.id);
-      }
       return;
     }
     if (e.altKey && e.key === "Tab") {
@@ -1921,9 +1127,7 @@ function App() {
       key={termKey(s.id)}
       session={s}
       focused={focused === s.id}
-      zoomed={false}
       density="min"
-      paneIndex={99}
       // a teammate's session is only scaled: in focus it may grow past the landscape's font to fill the window
       landscape={{ w: size.w, h: size.h, font: home && isRemote(s) ? FOCUS_MAX_FONT : LANDSCAPE_FONT, home: home ?? undefined }}
       onFocus={() => setFocused(s.id)}
@@ -2091,10 +1295,15 @@ function App() {
   /** The rail's views and the tools they are on the landscape. */
   const toolOfView = (v: SideView): ToolKind | null => ({ explorer: "files", scm: "changes", search: "search", run: "run", room: "chat", sessions: null } as const)[v];
 
-  // a Search window keeps its own query; the side bar's is the grid's
+  // a Search window keeps its own query; the options it last set (scope, regex, case) are the next one's (mb.search)
   const [winSearch, setWinSearch] = useState<Record<string, SearchState>>({});
-  const searchOf = (key: string): [SearchState, (st: SearchState) => void] =>
-    key === "side" ? [search, setSearch] : [winSearch[key] ?? { ...search, q: "" }, (st) => setWinSearch((m) => ({ ...m, [key]: st }))];
+  const searchOf = (key: string): [SearchState, (st: SearchState) => void] => [
+    winSearch[key] ?? { ...search, q: "" },
+    (st) => {
+      setWinSearch((m) => ({ ...m, [key]: st }));
+      setSearch(st);
+    },
+  ];
   const activePathOf = (s: SessionInfo | null) => (activeTab && s && activeTab.root === s.cwd ? activeTab.path : null);
   /**
    * Mention artifact `a` of `shelf` (area `area`'s) to the selected workspace: its reference typed into the prompt, which
@@ -2123,9 +1332,8 @@ function App() {
   const shelfFor = (area: string) => shelfOfArea(area, roomOfGroup(teamStatus, area) ?? null);
 
   /**
-   * A tool's view: the side bar's on the grid (`key` "side"), a tool window's on the landscape (its id). `s` is the
-   * session it works on (one of this Mac's), `area` the area it's of; `beside` is the window's place, where a card it
-   * places goes next to.
+   * A tool window's view (`key`, the window's id). `s` is the session it works on (one of this Mac's), `area` the
+   * area it's of; `beside` is the window's place, where a card it places goes next to.
    */
   const toolBody = (tool: ToolKind, s: SessionInfo | null, area: string | null, key: string, beside: Rect | null = null, seen = true): React.ReactNode => {
     const own = s && !isRemote(s) ? s : null;
@@ -2282,26 +1490,19 @@ function App() {
     return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
   };
   /**
-   * A second opinion: the other agent reviews `author`'s branch and messages its findings back. It opens beside it on
-   * the grid, and in its area on the landscape. Returns why it couldn't start.
+   * A second opinion: the other agent reviews `author`'s branch and messages its findings back. It opens beside it, in
+   * its area. Returns why it couldn't start.
    */
   const startReview = async (author: SessionInfo): Promise<string | null> => {
-    if (landscapeOn) placeBesideOf(author);
+    placeBesideOf(author);
     const info = await window.mb.reviewStart(author.id);
     if (isErr(info)) {
       setPlaceHint(null);
       return `Couldn't start the review: ${info.error}`;
     }
     await refresh();
-    if (landscapeOn) {
-      setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
-      revealWorkspace(info.id);
-      return null;
-    }
-    // the reviewer opens beside the session it's reviewing
-    const reviewer = cellKeyFor(info.id, info.taskGroup);
-    expectPane(reviewer, (t) => t && insertBeside(t, cellKeyOfSession(author), "right", reviewer));
-    setShown((p) => placeBeside(p.includes(info.id) ? p : [...p, info.id], info.id, author.id, "after"));
+    setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
+    revealWorkspace(info.id);
     return null;
   };
   /** Workspace `t` at size preset `p` (Size S/M/L), where it is when that's clear (planResizeTile); a refusal is said. */
@@ -2375,15 +1576,15 @@ function App() {
       mute: () => void toggleMute(s),
       move: () => setGroupDlg(s),
       resize: (p) => t && resizeWorkspace(t.key, p),
-      tool: (k) => (landscapeOn ? showTool(k, s) : (setFocused(s.id), showView(({ files: "explorer", changes: "scm", search: "search", run: "run" } as const)[k]))),
-      artifacts: landscapeOn ? artifactsOf(t, s, (area) => showTool("artifacts", null, area)) : null,
+      tool: (k) => showTool(k, s),
+      artifacts: artifactsOf(t, s, (area) => showTool("artifacts", null, area)),
       repaint: () => void resyncTerm(s.id),
       hidePanel: () => {
         if (!hideAgentPanel(s.id)) lsSay("The agent's diff panel isn't open any more");
       },
       undo: s.shell ? { no: "A terminal has no agent turns to undo" } : owner ? { no: `${owner}'s session: theirs to undo` } : !s.repoPath ? { no: "It isn't in a git repository, so its turns can't be put back" } : () => setUndoFor(s),
-      handoff: noAgent ? { no: noAgent } : () => (landscapeOn && placeBesideOf(s), setHandoffFor(s)),
-      brief: noAgent ? { no: noAgent } : () => (landscapeOn && placeBesideOf(s), setBriefFor(s)),
+      handoff: noAgent ? { no: noAgent } : () => (placeBesideOf(s), setHandoffFor(s)),
+      brief: noAgent ? { no: noAgent } : () => (placeBesideOf(s), setBriefFor(s)),
       secondOpinion: noAgent ? { no: noAgent } : !s.repoPath ? { no: "It isn't in a git repository: a second opinion reviews its branch" } : () => void startReview(s).then((e) => e && alert(e)),
       close: () => requestClose(s),
       // a copy a teammate took over is taken back, not resumed or worked on: the model refuses those (workspaceActions)
@@ -2595,10 +1796,10 @@ function App() {
   };
   /**
    * Session `s`'s action `key` as its model has it, for what offers it outside the model's menus (the context chip,
-   * the Changes tool, the grid's pane header, ⌘K), so none of them can run what the menus refuse.
+   * the Changes tool, ⌘K), so none of them can run what the menus refuse.
    */
   const sessionAction = (s: SessionInfo, key: string): ModelAction | undefined => actionOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))), key);
-  /** Its row for the grid's pane header and ⌘K (paneRow). */
+  /** Its row for ⌘K (paneRow). */
   const paneAction = (s: SessionInfo, key: string): ModelAction | undefined => paneRow(s, wsEnv(s, tileOfSession(s.id)), key);
   /** Its context warning chip, with the model's Fresh session from a brief row (off, saying why, where it can't be). */
   const contextChipFor = (s: SessionInfo) => {
@@ -2622,7 +1823,7 @@ function App() {
   // ---- the landscape's areas (S4): each group's bar, ⋯ menu and tree row, and what its gestures ask ----
   const sessionsOfGroup = (key: string) => workSessions.filter((s) => topOf(s) === key);
   const areaTitle = (key: string) => groupTitle(key, sessionsOfGroup(key));
-  /** A group's bar, on the grid over its panes and on the landscape as its area's header: the same parts and handlers. */
+  /** A group's bar: its area's header on the landscape. */
   const groupBarProps = (key: string): GroupBarProps => {
     const ticket = ticketOfGroup(key);
     return {
@@ -2633,7 +1834,7 @@ function App() {
       onPipeline: () => setPipelineFor(ticket),
       meter: meters?.groups?.[key],
       room: roomOfGroup(teamStatus, key),
-      onChat: landscapeOn ? () => showTool("chat", null, key) : () => showView("room"),
+      onChat: () => showTool("chat", null, key),
       onBoard: setBoardDlg,
       follow: followIn(follow, roomOfGroup(teamStatus, key)),
       onAsk: () => askGroupStatus(key),
@@ -2670,7 +1871,7 @@ function App() {
       title,
       stored: a ?? null,
       room: !!room,
-      landscape: landscapeOn,
+      landscape: true,
       // an area outlives its sessions (their ghosts come back to it); one with none, and no ghost, can go
       empty: !!a && !sessionsOfGroup(key).length && !(landscapeLayout && closedIn(landscapeLayout, key).length),
       messages: { mode: msgModes[key], defaultSend: msgDefaultSend, set: (mode) => void setMsgMode(key, mode), log: () => setMsgLogFor({}) },
@@ -3068,8 +2269,7 @@ function App() {
     // the lone pane joins its new workspace — unless the dialog put the session elsewhere
     const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
     if (lone && pendingWs) {
-      if (!landscapeOn) await addAsTab(s, lone, pendingWs.key);
-      else if (layoutNow.current) await carry(planJoinStack(layoutNow.current, lone.id, s.id, pendingWs.key), "making them a stack");
+      if (layoutNow.current) await carry(planJoinStack(layoutNow.current, lone.id, s.id, pendingWs.key), "making them a stack");
     }
     refresh();
     jumpToSession(s);
@@ -3099,8 +2299,8 @@ function App() {
 
   // a teammate's session has no folder here: the file views and session commands are for this Mac's sessions
   const focusedSession = sessions.find((s) => s.id === focused && !isRemote(s)) ?? null;
-  /** The group ⌘K's room rows act on: the grid's on screen, or the landscape's selected area. */
-  const paletteGroup = landscapeOn ? selectedArea : activeGroup;
+  /** The group ⌘K's room rows act on: the selected area. */
+  const paletteGroup = selectedArea;
 
   /**
    * Open a definition: in the editor tab's own session when the file is in its
@@ -3198,7 +2398,6 @@ function App() {
     []
   );
   const activeTab = editor.tabs.find((t) => tabKey(t) === editor.active) ?? null;
-  const activePath = activeTab && focusedSession && activeTab.root === focusedSession.cwd ? activeTab.path : null;
 
   // the Source Control badge: the focused folder's uncommitted files (the same
   // cached state the pane rails read, so this costs no extra git work)
@@ -3249,60 +2448,17 @@ function App() {
     window.addEventListener("pointerup", up);
   };
 
-  // ---- session rows, in the Sessions view and (team rooms) the Team view ----
+  // ---- session rows, in the Team view's room lists ----
   const rowMenu = useContextMenu("Session");
 
-  /** Everything a session's row, workspace tab and right-click menu offer, in menu order. */
-  const sessionActions = (s: SessionInfo): MenuEntry[] => {
-    // on the landscape a session's row, tab and right-click offer its workspace's actions, as its ⋯ does
-    if (landscapeOn) return menuOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))));
-    const own = !isRemote(s);
-    const inGrid = shown.includes(s.id);
-    const pinned = pinnedSet.has(s.id);
-    const b = isRemote(s) ? backupFor(s) : null;
-    // the grid's show, hide and pin mean nothing on the landscape, where every session is on screen
-    const grid = !landscapeOn;
-    return tidyMenu([
-      grid &&
-        (inGrid
-          ? { key: "show", label: "Hide", menuLabel: "Hide from the grid", icon: <MinusIcon />, title: "Take its pane off the grid — the session keeps running", onPick: () => minimizePane(s) }
-          : { key: "show", label: "Show", menuLabel: "Show in the grid", icon: <GridIcon />, onPick: () => showSession(s) }),
-      "-",
-      // team rooms: take-over
-      takeOverAction(b, setTakeOverFor, b && tkView?.asking.find((a) => a.roomId === b.roomId && a.sessionId === b.sessionId)),
-      own && { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: () => setEditing({ key: s.id, value: titleOf(s) }) },
-      {
-        key: "notify",
-        label: s.muted ? "Muted" : "Notify",
-        menuLabel: s.muted ? "Unmute notifications" : "Mute notifications",
-        icon: s.muted ? <BellOffIcon /> : <BellIcon />,
-        pressed: !!s.muted,
-        title: s.muted ? "Notifications muted — click to hear from this session again" : "Notifies you when it needs you — click to mute",
-        onPick: () => toggleMute(s),
-      },
-      grid && {
-        key: "pin",
-        label: pinned ? "Pinned" : "Pin",
-        menuLabel: pinned ? "Unpin" : "Pin to the screen",
-        icon: <PinIcon />,
-        pressed: pinned,
-        title: pinned ? "Unpin — the pane goes back to following its group" : "Pin — keep this pane on screen when you switch groups",
-        onPick: () => togglePin([s.id]),
-      },
-      own && { key: "move", label: "Move", menuLabel: "Move to group…", icon: <MoveIcon />, onPick: () => setGroupDlg(s) },
-      "-",
-      // a teammate's session is theirs to rename, move or close
-      own && { key: "close", label: "Close", menuLabel: "Close session…", icon: <CloseIcon />, danger: true, onPick: () => requestClose(s) },
-    ]);
-  };
+  /** Everything a session's row and right-click menu offer, in menu order: its workspace's actions, as its ⋯ does. */
+  const sessionActions = (s: SessionInfo): MenuEntry[] => menuOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))));
 
   /** A session's row: its name, with its actions at the end of that line, and what it is underneath. */
   const sessionRow = (s: SessionInfo) => {
-    const idx = shown.indexOf(s.id);
     const acts = sessionActions(s);
-    // on the landscape every session is on screen: its row brings it into view
+    // every session is on the landscape: its row brings it into view
     const open = () => {
-      if (!landscapeOn) return idx >= 0 ? minimizePane(s) : showSession(s);
       setFocused(s.id);
       revealWorkspace(s.id);
     };
@@ -3310,8 +2466,7 @@ function App() {
       <div
         key={s.id}
         data-sid={s.id}
-        data-flip={`s:${s.id}`}
-        className={`sess-item ${idx >= 0 ? "shown" : ""} ${focused === s.id ? "focused" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""} ${s.muted ? "muted" : ""} ${isRemote(s) ? "remote" : ""}`}
+        className={`sess-item ${focused === s.id ? "focused" : ""} ${s.muted ? "muted" : ""} ${isRemote(s) ? "remote" : ""}`}
         tabIndex={0}
         onClick={open}
         onKeyDown={(e) => {
@@ -3320,34 +2475,8 @@ function App() {
             open();
           }
         }}
-        title={`${s.cwd} — double-click name to rename · drag onto a group to move, or onto a pane to open it as a tab there · right-click for more`}
+        title={`${s.cwd} — double-click name to rename · right-click for more`}
         {...rowMenu.bind(() => acts)}
-        draggable
-        onDragStart={(e) => beginDrag(e, "text/mb-session", s.id, `Moving ${titleOf(s)}`, "sidebar")}
-        data-drop={cue(drag, `s:${s.id}`)}
-        onDragOver={(e) => {
-          const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
-          if (!srcS || srcS.id === s.id) return overTarget(e, null);
-          if (topOf(srcS) === topOf(s) && !subOf(s) && !subOf(srcS)) {
-            return overTarget(e, { key: `s:${s.id}`, outcome: `Put ${titleOf(srcS)} and ${titleOf(s)} in a new workspace` });
-          }
-          const where = subOf(s) ? `${groupTitle(topOf(s), [s])} / ${subOf(s)}` : groupTitle(topOf(s), [s]);
-          overTarget(e, (srcS.taskGroup ?? null) === (s.taskGroup ?? null) ? null : { key: `s:${s.id}`, outcome: `Move ${titleOf(srcS)} into ${where}` });
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const src = e.dataTransfer.getData("text/mb-session");
-          if (!src || src === s.id) return;
-          const srcS = sessions.find((x) => x.id === src);
-          // dropping one loose session onto another in the same group
-          // creates a workspace holding both (rename it right away)
-          if (srcS && topOf(srcS) === topOf(s) && !subOf(s) && !subOf(srcS)) {
-            addAsTab(srcS, s);
-          } else {
-            moveToGroup(src, s.taskGroup); // join this row's group/workspace
-          }
-        }}
       >
         <StatusDot status={s.status} />
         {editing?.key === s.id ? (
@@ -3363,7 +2492,7 @@ function App() {
             {/* the title line holds the row's actions, so they never sit over the lines and buttons under it */}
             <span className="sr-line">
               <span className="nm">{titleOf(s)}</span>
-              <ActionBar className="sr-acts" actions={pickActions(acts, isRemote(s) ? ["takeover", "notify", "pin"] : ["notify", "pin", "close"])} more={acts} label={titleOf(s)} />
+              <ActionBar className="sr-acts" actions={pickActions(acts, isRemote(s) ? ["takeover", "notify"] : ["notify", "close"])} more={acts} label={titleOf(s)} />
             </span>
             {rowLines(s)}
           </span>
@@ -3371,58 +2500,7 @@ function App() {
       </div>
     );
   };
-  /** The previous run's sessions, each to relaunch or forget: under the Sessions view, and under the area tree. */
-  const previousList = () =>
-    resumable.length > 0 && (
-      <>
-        <h2 data-flip="previous">
-          <span>Previous</span>
-          <button className="icon" title="Relaunch every previous session, resuming its conversation" onClick={restoreAll}>
-            ↺ restore all
-          </button>
-        </h2>
-        {resumable.map((s) => {
-          // team rooms: a teammate continued it, so this copy doesn't run again — it can be taken back instead
-          const taken = roomLive.state?.own[s.id]?.takenOver;
-          const left = leftFor(s);
-          return (
-          <div key={s.id} data-flip={`p:${s.id}`} className="sess-item" title={taken ? `${s.cwd} — ${taken.back ? "it was taken back into another session here" : `${taken.byName} continued this session on their laptop`}, so this copy doesn't run again here.` : s.cwd}>
-            <span className="dot dead" />
-            <span className="name">
-              <span className="nm">{s.title}</span>
-              {left ? <LeftCopyLine left={left} onTakeBack={() => takeBack(left)} /> : taken && <span className="br tk-fresh muted">continued on {taken.byName}'s laptop {ago(taken.at)}</span>}
-            </span>
-            {!taken && (
-            <button
-              title="Relaunch, resuming the conversation"
-              onClick={async () => {
-                if (!(await costGate.resume(s))) return;
-                const info = await window.mb.relaunchSession(s.id);
-                if (isErr(info)) return alert(`Couldn't relaunch: ${info.error}`);
-                if (info) {
-                  await refresh();
-                  jumpTo(info.id);
-                }
-              }}
-            >
-              ↺
-            </button>
-            )}
-            <button
-              className="danger"
-              onClick={async () => {
-                failed(`Couldn't forget ${s.title}`, await forgetSession(s));
-                refresh();
-              }}
-            >
-              ✕
-            </button>
-          </div>
-          );
-        })}
-      </>
-    );
-  /** What a session's row says under its name, in the Sessions view and the area tree. */
+  /** What a session's row says under its name, in the Team view and the area tree. */
   const rowLines = (s: SessionInfo) => (
     <>
       {/* team rooms: live panes — whose session it is and who's looking, in words */}
@@ -3454,23 +2532,18 @@ function App() {
       })()}
       {bySub(list).map(([sub, subList]) => {
         const wsKey = `${key}/${sub}`;
-        const inGrid = subList.some((s) => shown.includes(s.id));
-        const open = !sub || (wsOpen[wsKey] ?? inGrid);
+        const open = !sub || (wsOpen[wsKey] ?? true);
         return (
           <div key={sub || "_"} className={sub ? "ws-folder" : "loose-rows"}>
             {sub && (
               <div
                 data-ws={wsKey}
-                data-flip={`w:${wsKey}`}
-                className={`sub-label ${inGrid ? "in-grid" : ""}`}
-                title="click to show/minimize this workspace · ✎/double-click to rename · ✕ dissolves it (sessions stay) · drop a session to move it in"
+                className="sub-label"
+                title="click to bring this stack into view · ✎/double-click to rename · ✕ unstacks its tabs (the sessions stay)"
                 onClick={() =>
                   deferClick(() => {
-                    if (landscapeOn && subList[0]) {
-                      setFocused(subList[0].id);
-                      revealWorkspace(subList[0].id);
-                    } else if (inGrid) minimizeWorkspace(wsKey, subList);
-                    else restoreWorkspace(key, wsKey, subList);
+                    setFocused(subList[0].id);
+                    revealWorkspace(subList[0].id);
                   })
                 }
                 onDoubleClick={(e) => {
@@ -3478,9 +2551,6 @@ function App() {
                   cancelClick();
                   setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
                 }}
-                data-drop={cue(drag, `w:${wsKey}`)}
-                onDragOver={(e) => overTarget(e, intoGroupTarget(`w:${wsKey}`, wsKey, `${groupTitle(key, list)} / ${sub}`))}
-                onDrop={(e) => dropToGroup(e, wsKey)}
               >
                 <span
                   className="ws-chev"
@@ -3492,11 +2562,11 @@ function App() {
                 >
                   <ChevronIcon open={open} />
                 </span>
-                <FolderIcon open={inGrid || lidOpen === wsKey} />
+                <FolderIcon open={open} />
                 <span className="txt">{sub}</span>
                 <StatusDots list={subList} />
                 <button
-                  title="Rename workspace"
+                  title="Rename stack"
                   onClick={(e) => {
                     e.stopPropagation();
                     cancelClick();
@@ -3507,10 +2577,10 @@ function App() {
                 </button>
                 <button
                   className="danger"
-                  title="Dissolve this workspace — its sessions move up into the group"
+                  title="Unstack its tabs — the sessions stay in the group"
                   onClick={(e) => {
                     e.stopPropagation();
-                    dissolveSub(key, subList);
+                    unstackStack(wsKey);
                   }}
                 >
                   ✕
@@ -3524,13 +2594,13 @@ function App() {
     </>
   );
 
-  // team rooms: the Sessions view's line for them, and what the Team view needs to show each room's sessions
+  // team rooms: the Connected line, and what the Team view needs to show each room's sessions
   const connected = useMemo(() => connectedSummary(teamRooms, sessions), [teamRooms, sessions]);
   const roomSessions = (groupKey: string) => workSessions.filter((s) => topOf(s) === groupKey);
   const teamHooks: TeamViewHooks = {
     sessionCount: (groupKey) => roomSessions(groupKey).length,
     renderSessions: (groupKey) => groupBody(groupKey, roomSessions(groupKey)),
-    onShowGroup: (groupKey) => (landscapeOn ? goToArea(groupKey) : focusGroup(groupKey, roomSessions(groupKey))),
+    onShowGroup: (groupKey) => goToArea(groupKey),
     onOpenBoard: setBoardDlg,
     onInvite: (groupKey, title) => shareDialog(groupKey, title),
     onNewSession: newSessionIn,
@@ -3564,80 +2634,17 @@ function App() {
 
   return (
     <div className="app">
-      {landscapeOn ? (
-        <LandscapeTopBar
-          brand={brand}
-          tabs={topTabs}
-          tab={tab}
-          onTab={setTab}
-          needs={<NeedsYou state={needs} current={needsAt >= 0 ? needs.items[needsAt].id : null} actionsFor={needsActionsFor} areaTitle={areaTitle} onStep={stepNeeds} />}
-          needsCount={needs.items.length}
-          keysOpen={keysOpen}
-          onKeysOpen={setKeysOpen}
-          onNew={newFromBar}
-        />
-      ) : (
-      <div className="topbar">
-        {brand}
-        <span className="tabs">
-          {shownTabs.map((t) => (
-            <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>
-              {TAB_LABELS[t]}
-              {tabBadge(t)}
-            </button>
-          ))}
-        </span>
-        <span className="spacer" />
-        {tab === "sessions" && (
-          <>
-            <span className="lay-wrap">
-              <button
-                className="outline"
-                onClick={() => setLayoutOpen((o) => !o)}
-                title="Layout — arrange this group's panes"
-              >
-                <LayoutIcon /> Layout
-              </button>
-              {layoutOpen && (
-                <Popover className="lay-pop" onClose={() => setLayoutOpen(false)}>
-                  <div className="lay-grid">
-                    {TEMPLATES.map((l) => (
-                      <button
-                        key={l.id}
-                        className={`lay-opt ${templateOf(tree) === l.id ? "on" : ""}`}
-                        title={`${l.label} — arranges the panes on screen in this shape`}
-                        onClick={() => {
-                          arrangeAs(l.id);
-                          setLayoutOpen(false);
-                        }}
-                      >
-                        <LayoutThumb tree={templateTree(l)} />
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    className="lay-auto"
-                    onClick={() => {
-                      refit();
-                      setLayoutOpen(false);
-                    }}
-                  >
-                    Auto — fit panes to the window
-                  </button>
-                  <div className="lay-note">
-                    Drag a session onto a pane's edge to split it there, onto its middle to swap places or open it as a tab. Drag any pane edge to fine-tune; double-click it to even out.
-                  </div>
-                </Popover>
-              )}
-            </span>
-            <button className="outline" onClick={() => setModal("import")}>Import</button>
-          </>
-        )}
-        <button className="primary" onClick={() => setModal("new")}>
-          New/Import Session <span className="kbd">⌘N</span>
-        </button>
-      </div>
-      )}
+      <LandscapeTopBar
+        brand={brand}
+        tabs={topTabs}
+        tab={tab}
+        onTab={setTab}
+        needs={<NeedsYou state={needs} current={needsAt >= 0 ? needs.items[needsAt].id : null} actionsFor={needsActionsFor} areaTitle={areaTitle} onStep={stepNeeds} />}
+        needsCount={needs.items.length}
+        keysOpen={keysOpen}
+        onKeysOpen={setKeysOpen}
+        onNew={newFromBar}
+      />
 
       <div className="body">
         <ViewErrorBoundary resetKey={tab}>
@@ -3676,7 +2683,7 @@ function App() {
               setTab("sessions");
               const s = (await refresh()).find((x) => x.id === id);
               if (s) jumpToSession(s);
-              else alert("That session isn't running any more — a closed one is under Previous in the Sessions side bar.");
+              else alert("That session isn't running any more — a closed one is a ghost on the landscape, and in the Closed sessions list.");
             }}
           />
         )}
@@ -3720,9 +2727,7 @@ function App() {
                     key={termKey(s.id)}
                     session={s}
                     focused={focused === s.id}
-                    zoomed={false}
                     density="max"
-                    paneIndex={99}
                     onFocus={() => setFocused(s.id)}
                     onClose={() => closeNow(s, true)}
                     onResume={() => resumeDead(s)}
@@ -3737,13 +2742,13 @@ function App() {
         {tab === "sessions" && (
         <>
         <nav className="activitybar" aria-label="Side bar views">
-          {[...SIDE_VIEWS, ...(landscapeOn ? [ARTIFACTS_VIEW] : [])].map(({ id, label: viewLabel, keys, Icon }) => {
+          {[...SIDE_VIEWS, ARTIFACTS_VIEW].map(({ id, label: viewLabel, keys, Icon }) => {
             // on the landscape the views are tool windows, named as their windows are: lit while one is open on the
             // selection (or docked). Artifacts and Chat open on the selection's area
-            const tool = landscapeOn ? (id === "artifacts" ? "artifacts" : toolOfView(id)) : null;
+            const tool = id === "artifacts" ? "artifacts" : toolOfView(id);
             const label = tool ? TOOL_NAME[tool] : viewLabel;
             const where = tool === "artifacts" || tool === "chat" ? "a window in the selected workspace's area" : "a window beside the selected workspace";
-            const on = tool ? toolOpen(tool) : (landscapeOn ? id === "sessions" && !lsTeam : sideView === id) && !sideCollapsed;
+            const on = tool ? toolOpen(tool) : id === "sessions" && !lsTeam && !sideCollapsed;
             // what the selection's menu has off is off here too (a click says why)
             const no = tool && !on ? toolGate(tool, selectedAny, selArea) : null;
             const badge =
@@ -3752,7 +2757,7 @@ function App() {
               <button
                 key={id}
                 className={`ab-btn ${on ? "on" : ""} ${no ? "off" : ""}`}
-                title={tool ? `${label}${keys ? ` (${keys})` : ""} — ${on ? "close its window" : no ?? where}` :`${label}${keys ? ` (${keys})` : ""}${on ? ` — click to hide the side bar (${landscapeOn ? "⌘\\" : "⌘B"})` : ""}`}
+                title={tool ? `${label}${keys ? ` (${keys})` : ""} — ${on ? "close its window" : no ?? where}` : `${label}${keys ? ` (${keys})` : ""}${on ? " — click to hide the side bar (⌘\\)" : ""}`}
                 aria-label={label}
                 aria-pressed={on}
                 aria-disabled={no ? true : undefined}
@@ -3776,21 +2781,17 @@ function App() {
         <div className={`sidebar ${sideCollapsed ? "collapsed" : ""}`} style={{ width: sideCollapsed ? 0 : sideW }}>
           <div className="side-inner" ref={sideInner} style={{ width: sideW }}>
           <div className="side-head">
-            {/* the Sessions view is the area tree while the landscape shows (designs B and L) */}
-            <span className="side-title">{landscapeOn ? (lsTeam ? "Team rooms" : "Landscape") : SIDE_VIEWS.find((v) => v.id === sideView)?.label}</span>
-            {landscapeOn && lsTeam && (
+            {/* the side bar is the area tree (designs B and L) */}
+            <span className="side-title">{lsTeam ? "Team rooms" : "Landscape"}</span>
+            {lsTeam && (
               <button type="button" className="link side-back" title="Back to the area tree" onClick={() => setLsTeam(false)}>
                 ‹ Areas
               </button>
             )}
           </div>
-          {/* the grid's views; on the landscape they're tool windows, and the side bar is the area tree */}
-          {!landscapeOn && (sideView === "explorer" || sideView === "scm" || sideView === "search" || sideView === "run") && toolBody(toolOfView(sideView)!, focusedSession, activeGroup, "side")}
-          {/* team rooms: team chat */}
-          {!landscapeOn && sideView === "room" && (
+          {lsTeam && (
             <RoomChatPanel
               status={teamStatus}
-              activeGroup={activeGroup}
               visible={!sideCollapsed}
               hooks={teamHooks}
               sessions={ownSessions}
@@ -3798,133 +2799,7 @@ function App() {
               onOpenRepoFile={openRepoFile}
             />
           )}
-          {/* the landscape's area tree stands in for this list while the landscape shows */}
-          {sideView === "sessions" && !landscapeOn && (
-          <div className="scroll" ref={sessionList}>
-            <div className="filter-row">
-              <input
-                className="filter"
-                placeholder="Filter sessions"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              />
-            </div>
-            {/* team rooms: live panes */}
-            <LiveProblems state={roomLive.state} />
-            {outline.map((entry) => {
-              // team rooms: their groups and sessions are in the Team view; this line opens it
-              if (entry.kind === "connected")
-                return (
-                  <div key="connected" data-flip="connected">
-                  <ConnectedLine
-                    summary={connected}
-                    problem={roomLive.viewError}
-                    onOpen={() => {
-                      openTeamView(connected.roomId);
-                      showView("room");
-                    }}
-                  />
-                  </div>
-                );
-              const { key, list, shared } = entry;
-              return (
-              <div key={key}>
-                {(
-                  <div
-                    className="group-label"
-                    data-flip={`g:${key}`}
-                    title="click to focus this group in the grid · ✎/double-click to rename · drop a session here to move it"
-                    onClick={() => deferClick(() => focusGroup(key, list))}
-                    onDoubleClick={() => {
-                      cancelClick();
-                      setRenameDlg({ kind: "group", key, initial: key === "ungrouped" ? "" : key });
-                    }}
-                    data-drop={cue(drag, `g:${key}`)}
-                    onDragOver={(e) => overTarget(e, intoGroupTarget(`g:${key}`, key === "ungrouped" ? null : key, groupTitle(key, list)))}
-                    onDrop={(e) => dropToGroup(e, key === "ungrouped" ? null : key)}
-                  >
-                    <button
-                      className="glbtn"
-                      title={key === "ungrouped" ? "Name this group — its sessions become a group" : "Rename group"}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        cancelClick();
-                        setRenameDlg({ kind: "group", key, initial: key === "ungrouped" ? "" : key });
-                      }}
-                    >
-                      ✎
-                    </button>
-                    <span
-                      className="chev"
-                      title={collapsed.has(key) ? "Expand" : "Collapse"}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setCollapsed((p) => {
-                          const n = new Set(p);
-                          n.has(key) ? n.delete(key) : n.add(key);
-                          return n;
-                        });
-                      }}
-                    >
-                      <ChevronIcon open={!collapsed.has(key)} />
-                    </span>
-                    <span className="txt">{groupTitle(key, list)}</span>
-                    {/* team rooms: your sessions here; teammates' are in the Team view */}
-                    {shared && <span className="gl-shared" title="A team room's group: your sessions in it are listed here, and the whole room — teammates' sessions too — in the Team view">Shared room</span>}
-                    {key !== "ungrouped" && key !== "assistant" && (
-                      <button
-                        className="glbtn"
-                        title={shared ? "Invite a teammate to this shared room" : "Share this group as a team room"}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          cancelClick();
-                          shareDialog(key, groupTitle(key, list));
-                        }}
-                      >
-                        ⇪
-                      </button>
-                    )}
-                    {key !== "assistant" && (
-                      <button
-                        className="glbtn"
-                        title={
-                          key === "ungrouped"
-                            ? "New session (no group)"
-                            : shared
-                              ? `New connected session in ${groupTitle(key, list)} — teammates see it`
-                              : `New session in ${groupTitle(key, list)}`
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          cancelClick();
-                          newSessionIn(key);
-                        }}
-                      >
-                        +
-                      </button>
-                    )}
-                  </div>
-                )}
-                {!collapsed.has(key) && groupBody(key, list)}
-              </div>
-              );
-            })}
-
-            {previousList()}
-          </div>
-          )}
-          {landscapeOn && lsTeam && (
-            <RoomChatPanel
-              status={teamStatus}
-              activeGroup={null}
-              visible={!sideCollapsed}
-              hooks={teamHooks}
-              sessions={ownSessions}
-              focusedSessionId={focusedSession?.id ?? null}
-              onOpenRepoFile={openRepoFile}
-            />
-          )}
-          {landscapeOn && !lsTeam && (
+          {!lsTeam && (
             <AreaTree
               areas={treeAreas}
               needIds={needs.sessions}
@@ -3953,7 +2828,7 @@ function App() {
                   <LiveProblems state={roomLive.state} />
                   {/* closed sessions with no ghost on the landscape (every one while it's being read in) */}
                   <ClosedSessions list={closedList} actionsFor={(s) => ghostActions(s, ghostEnv(s, [s], false))} all={ghostsActions(closedListRows(), { what: "closed session", clearLabel: "Forget all" })} statusFor={(s) => closedStatus(s, goneFolders.get(s.id))} />
-                  {/* team rooms: the way into the Team view, as in the Sessions view */}
+                  {/* team rooms: the way into the Team view */}
                   {teamRooms.length > 0 && (
                     <div className="lt-connected">
                       <ConnectedLine summary={connected} problem={roomLive.viewError} onOpen={() => openRoom(connected.roomId)} landscape />
@@ -3977,235 +2852,7 @@ function App() {
         />
 
         <div className="main">
-          {landscapeOn ? (
-            landscapeMain()
-          ) : (
-          <>
-          {activeGroup && (() => {
-            const visitors = gridSessions.filter((s) => topOf(s) !== activeGroup).length;
-            return (
-              <GroupBar
-                {...groupBarProps(activeGroup)}
-                statusNote={statusNote}
-                msgMode={msgModes[activeGroup]}
-                msgDefaultSend={msgDefaultSend}
-                onMsgMode={(mode) => void setMsgMode(activeGroup, mode)}
-                count={`Showing ${gridSessions.filter((s) => topOf(s) === activeGroup).length} of ${sessionsOfGroup(activeGroup).length}${visitors ? ` · ${visitors} pinned from other groups` : ""}`}
-              />
-            );
-          })()}
-          {gridSessions.length === 0 ? (
-            <div
-              className="empty"
-              data-drop={cue(drag, "grid")}
-              onDragOver={(e) => {
-                const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
-                overTarget(e, srcS ? { key: "grid", outcome: `Open ${titleOf(srcS)} here` } : null);
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                const srcS = sessions.find((x) => x.id === e.dataTransfer.getData("text/mb-session"));
-                if (srcS) jumpToSession(srcS);
-              }}
-            >
-              <div>no sessions in the grid</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="primary" onClick={() => setModal("new")}>New session</button>
-                <button className="outline" onClick={() => setModal("import")}>Import existing</button>
-              </div>
-            </div>
-          ) : (
-            <div
-              className={`grid ${previewOn ? "previewing" : ""}`}
-              ref={gridRef}
-              style={{
-                gridTemplateColumns: (layoutGrid?.cols ?? [1]).map((f) => `minmax(0, ${f}fr)`).join(" "),
-                gridTemplateRows: (layoutGrid?.rows ?? [1]).map((f) => `minmax(0, ${f}fr)`).join(" "),
-              }}
-              onDragOver={overGrid}
-              onDrop={dropOnGrid}
-            >
-              {cells.map((cell) => {
-                // panes stay in `shown` order as the grid's children, each placed by
-                // its area, so a layout change moves them without remounting any
-                const myKey = cellKeyOf(cell);
-                const area = layoutGrid?.areas[myKey];
-                const i = orderedCells.indexOf(cell);
-                const resize = resizeFor(myKey);
-                const tabDrop = (s: SessionInfo, key: string) => ({
-                  cue: cue(drag, key),
-                  over: (e: React.DragEvent) => overTarget(e, tabTarget(key, s)),
-                  drop: () => {
-                    const src = sessions.find((x) => x.id === dragging("text/mb-session"));
-                    if (src && tabTarget(key, s)) addAsTab(src, s);
-                  },
-                });
-                const isPinned = (ids: string[]) => ids.length > 0 && ids.every((id) => pinnedSet.has(id));
-                const visitor = (s: SessionInfo) => (isPinned([s.id]) && activeGroup && topOf(s) !== activeGroup ? `from ${groupTitle(topOf(s), [s])}` : undefined);
-                const paneFor = (s: SessionInfo, embedded: boolean, onCloseOverride?: () => void, pinIds: string[] = [s.id]) => (
-                  <TerminalPane
-                    key={termKey(s.id)}
-                    session={s}
-                    focused={focused === s.id}
-                    zoomed={zoomed === s.id}
-                    density={density}
-                    paneIndex={i}
-                    area={embedded ? undefined : area}
-                    cell={embedded ? undefined : myKey}
-                    embedded={embedded}
-                    onFocus={() => setFocused(s.id)}
-                    onOpenFiles={() => {
-                      setFocused(s.id);
-                      showView("explorer");
-                    }}
-                    onOpenChanges={() => {
-                      setFocused(s.id);
-                      showView("scm");
-                    }}
-                    runCount={runningIn(s.cwd)}
-                    meter={meters?.sessions[s.id]}
-                    onOpenRun={() => {
-                      setFocused(s.id);
-                      showView("run");
-                    }}
-                    onClose={onCloseOverride ?? (() => minimizePane(s))}
-                    onZoom={() => zoomTo(zoomed === s.id ? null : s.id)}
-                    onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
-                    tabDrop={embedded ? undefined : tabDrop(s, `h:${s.id}`)}
-                    pinned={isPinned(pinIds)}
-                    onPin={zoomed ? undefined : () => togglePin(pinIds)}
-                    pinNote={visitor(s)}
-                    onResume={() => resumeDead(s)}
-                    onCleanup={() => requestClose(s)}
-                    handoff={paneAction(s, "handoff")}
-                    undoTurn={paneAction(s, "undo")}
-                    overlaps={overlaps.bySession[s.id]}
-                    overlapsUnread={overlaps.unread[s.id]}
-                    onJump={jumpTo}
-                    onOpenBoard={setBoardDlg}
-                    backup={backupFor(s)}
-                    onTakeOver={setTakeOverFor}
-                    tookOverAt={tookOverAt(s)}
-                    leftCopy={(() => {
-                      const l = leftFor(s);
-                      return l && <LeftCopyPanel left={l} onTakeBack={() => takeBack(l)} onClose={() => requestClose(s)} />;
-                    })()}
-                    teamNotice={<ReceivedNotice received={receivedFor(s)} onReview={setReviewing} />}
-                    contextChip={contextChipFor(s)}
-                    messages={(() => {
-                      const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
-                      return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
-                    })()}
-                    onShowMessages={() => setMsgLogFor({ id: s.id, title: titleOf(s) })}
-                    menuExtras={sessionActions(s).filter((a) => a === "-" || (a.key !== "show" && a.key !== "pin"))}
-                    onRestart={async () => {
-                      const r = await window.mb.sessionRestart(s.id);
-                      if (isErr(r)) alert(`Couldn't restart ${titleOf(s)}: ${r.error}`);
-                      else freshTerms([s.id]);
-                      refresh();
-                    }}
-                    resize={resize}
-                  />
-                );
-                if (cell.kind === "session") return paneFor(cell.s, false);
-                // workspace pane: one cell, session tabs across the top (cmux-style)
-                const key = cell.key;
-                const active = frontOf(cell, wsTabs);
-                const anyWaiting = cell.list.some((s) => s.status === "waiting");
-                const strip = tabDrop(active, `h:ws:${key}`);
-                return (
-                  <div key={`ws-${key}`} data-cell={myKey} className={`ws-pane ${anyWaiting ? "st-waiting" : ""}`} style={area ? { gridArea: area } : undefined}>
-                    <div
-                      className="ws-tabs"
-                      data-drop={strip.cue}
-                      onDragOver={(e) => {
-                        if (!dragging("text/mb-session")) return;
-                        e.stopPropagation();
-                        strip.over(e);
-                      }}
-                      onDrop={(e) => {
-                        if (!dragging("text/mb-session")) return;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        strip.drop();
-                      }}
-                    >
-                      <span
-                        className="ws-name"
-                        title="drag to move this workspace's pane · double-click to rename it"
-                        draggable
-                        onDragStart={(e) => beginDrag(e, "text/mb-session", active.id, `Moving ${cell.sub}`, "workspace")}
-                        onDoubleClick={() => setRenameDlg({ kind: "sub", key, initial: cell.sub })}
-                      >
-                        {cell.sub}
-                      </span>
-                      {cell.list.map((s) => (
-                        <button
-                          key={s.id}
-                          className={`ws-tab ${active.id === s.id ? "on" : ""}`}
-                          title="drag onto the grid to give it a pane of its own, or onto another pane to make it a tab there"
-                          draggable
-                          onDragStart={(e) => beginDrag(e, "text/mb-session", s.id, `Moving ${titleOf(s)}`, "tab")}
-                          onClick={() => {
-                            setWsTabs((p) => ({ ...p, [key]: s.id }));
-                            setFocused(s.id);
-                            setTimeout(() => focusTerm(s.id), 50);
-                          }}
-                          {...rowMenu.bind(() =>
-                            tidyMenu([
-                              active.id !== s.id && {
-                                key: "front",
-                                label: "Open",
-                                menuLabel: "Open this tab",
-                                icon: <GridIcon />,
-                                onPick: () => {
-                                  setWsTabs((p) => ({ ...p, [key]: s.id }));
-                                  setFocused(s.id);
-                                  setTimeout(() => focusTerm(s.id), 50);
-                                },
-                              },
-                              { key: "newtab", label: "New tab", menuLabel: `New tab in “${cell.sub}”…`, icon: <PlusIcon />, onPick: () => newSessionIn(key) },
-                              "-",
-                              ...sessionActions(s).filter((a) => a === "-" || a.key !== "show"),
-                            ])
-                          )}
-                        >
-                          <StatusDot status={s.status} className="sm" />
-                          <span className="t">{titleOf(s)}</span>
-                          {/* a teammate's session is theirs to close */}
-                          {!isRemote(s) && (
-                          <span
-                            className="ws-x"
-                            role="button"
-                            aria-label={`Close ${titleOf(s)}`}
-                            title="Close session"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              requestClose(s);
-                            }}
-                          >
-                            ×
-                          </span>
-                          )}
-                        </button>
-                      ))}
-                      <button
-                        className="ws-add"
-                        title={`New tab in “${cell.sub}”`}
-                        onClick={() => newSessionIn(key)}
-                      >
-                        +
-                      </button>
-                    </div>
-                    {paneFor(active, true, () => minimizeWorkspace(key, cell.list), cell.list.map((s) => s.id))}
-                  </div>
-                );
-              })}
-              <GridPreview on={previewOn} tree={preview.tree} hot={preview.hot} title={paneName} />
-            </div>
-          )}
-          </>
-          )}
+          {landscapeMain()}
           {panelOpen && (
             <BottomPanel
               states={runStates}
@@ -4328,7 +2975,7 @@ function App() {
             </span>
           )}
           {/* a note said while the landscape isn't on screen */}
-          {landscapeOn && statusNote && (
+          {statusNote && (
             <span className="update-note" title={statusNote}>
               <span className="un-text">{statusNote}</span>
             </span>
@@ -4338,7 +2985,7 @@ function App() {
           <span className="sb-info">
             {(() => {
               const theirs = workSessions.filter(isRemote).length;
-              return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {landscapeOn && landscapeLayout ? plural(landscapeLayout.areas.filter((a) => a.key !== LOOSE_GROUP).length, "area") : `${groupCount} groups`}</span>;
+              return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {landscapeLayout ? plural(landscapeLayout.areas.filter((a) => a.key !== LOOSE_GROUP).length, "area") : `${groupCount} groups`}</span>;
             })()}
             <span>⌘K commands</span>
             <span className="help-link" onClick={() => setModal("help")}>? help</span>
@@ -4349,7 +2996,7 @@ function App() {
       {paletteOpen && (
         <CommandPalette
           sessions={sessions}
-          shortcuts={landscapeOn ? NO_SHORTCUTS : shortcuts}
+          shortcuts={NO_SHORTCUTS}
           onClose={() => setPaletteOpen(false)}
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },
@@ -4360,29 +3007,23 @@ function App() {
             { label: "Agent message log — what sessions told each other", run: () => setMsgLogFor({}) },
             { label: "Weekly rollup — time per ticket and outcomes", run: () => setRollupOpen(true) },
             { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
-            { label: landscapeOn ? "Landscape" : "Sessions grid", run: () => setTab("sessions") },
-            ...(landscapeOn ? [{ label: "Shortcuts — every key on the landscape", kbd: "?", run: () => setKeysOpen(true) }] : []),
+            { label: "Landscape", run: () => setTab("sessions") },
+            { label: "Shortcuts — every key on the landscape", kbd: "?", run: () => setKeysOpen(true) },
             // the landscape: each area to fly to
-            ...(landscapeOn ? (landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => goToArea(a.key) })) : []),
-            ...(landscapeOn ? [{ label: sideCollapsed ? "Show the area tree" : "Hide the area tree", kbd: "⌘\\", run: () => (sideCollapsed ? showView("sessions") : setSideCollapsed(true)) }] : []),
-            // the landscape: every ghost at once (Previous's restore all), while there are any
-            ...(landscapeOn
-              ? ghostsActions(ghostRows(null, "the landscape"))
-                  .filter((a) => !a.disabled)
-                  .map((a) => ({ label: `${a.menuLabel ?? a.label} — closed workspaces, everywhere on the landscape`, run: a.onPick }))
-              : []),
+            ...(landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => goToArea(a.key) })),
+            { label: sideCollapsed ? "Show the area tree" : "Hide the area tree", kbd: "⌘\\", run: () => (sideCollapsed ? showView("sessions") : setSideCollapsed(true)) },
+            // the landscape: every ghost at once (Reopen all), while there are any
+            ...ghostsActions(ghostRows(null, "the landscape"))
+              .filter((a) => !a.disabled)
+              .map((a) => ({ label: `${a.menuLabel ?? a.label} — closed workspaces, everywhere on the landscape`, run: a.onPick })),
             // the Closed sessions list: all of it at once, and each one to reopen
-            ...(landscapeOn
-              ? [
-                  ...ghostsActions(closedListRows(), { what: "closed session", clearLabel: "Forget all" })
-                    .filter((a) => !a.disabled)
-                    .map((a) => ({ label: `${a.menuLabel ?? a.label} — the Closed sessions list`, run: a.onPick })),
-                  ...closedList.flatMap((s) => {
-                    const reopen = actionOf(ghostActions(s, ghostEnv(s, [s], false)), "reopen");
-                    return reopen && !reopen.disabled ? [{ label: `Reopen ${titleOf(s)} — closed session`, run: reopen.onPick }] : [];
-                  }),
-                ]
-              : []),
+            ...ghostsActions(closedListRows(), { what: "closed session", clearLabel: "Forget all" })
+              .filter((a) => !a.disabled)
+              .map((a) => ({ label: `${a.menuLabel ?? a.label} — the Closed sessions list`, run: a.onPick })),
+            ...closedList.flatMap((s) => {
+              const reopen = actionOf(ghostActions(s, ghostEnv(s, [s], false)), "reopen");
+              return reopen && !reopen.disabled ? [{ label: `Reopen ${titleOf(s)} — closed session`, run: reopen.onPick }] : [];
+            }),
             ...(shownTab("dashboard") ? [{ label: "Dashboard — ticket board", run: () => setTab("dashboard") }] : []),
             { label: "Broadcast / CLAUDE.md (control room)", kbd: "⌘⇧B", run: openControlRoom },
             { label: "Go to file…", kbd: "⌘P", run: () => { setTab("sessions"); setModal("quickopen"); } },
@@ -4420,13 +3061,7 @@ function App() {
             ...(shownTab("collaborate") ? [{ label: "Council — model discussions", run: () => setTab("collaborate") }] : []),
             ...(focusedSession
               ? [
-                  landscapeOn
-                    ? { label: `Focus ${titleOf(focusedSession)} — fill the window with it`, kbd: "⌘E", run: () => revealWorkspace(focusedSession.id, true) }
-                    : {
-                        label: `${zoomed === focusedSession.id ? "Exit fullscreen" : "Fullscreen"} ${titleOf(focusedSession)}`,
-                        kbd: "⌘E",
-                        run: () => zoomTo(zoomed === focusedSession.id ? null : focusedSession.id),
-                      },
+                  { label: `Focus ${titleOf(focusedSession)} — fill the window with it`, kbd: "⌘E", run: () => revealWorkspace(focusedSession.id, true) },
                   {
                     label: `Rename ${titleOf(focusedSession)}…`,
                     run: () => setRenameDlg({ kind: "session", key: focusedSession.id, initial: titleOf(focusedSession) }),
@@ -4438,17 +3073,8 @@ function App() {
                   ...(ticketOfGroup(topOf(focusedSession))
                     ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]
                     : []),
-                  ...(landscapeOn
-                    ? []
-                    : [
-                        {
-                          label: `${pinnedSet.has(focusedSession.id) ? "Unpin" : "Pin"} ${titleOf(focusedSession)}${pinnedSet.has(focusedSession.id) ? "" : " — keep it on screen across groups"}`,
-                          run: () => togglePin([focusedSession.id]),
-                        },
-                      ]),
                 ]
               : []),
-            ...(landscapeOn ? [] : [1, 2, 3, 4].map((n) => ({ label: `Arrange in ${plural(n, "column")}`, kbd: `⌘⌃${n}`, run: () => arrangeInCols(n) }))),
             { label: "Next waiting session", kbd: "⌥⇥", run: cycleWaiting },
             { label: `Switch to ${theme === "dark" ? "light" : "dark"} mode`, run: () => setTheme(theme === "dark" ? "light" : "dark") },
             { label: "How to use Mockingbird", kbd: "⌘/", run: () => setModal("help") },
@@ -4469,7 +3095,6 @@ function App() {
           }}
           forceClose={forceClose}
           forget={forgetSession}
-          ghost={landscapeOn}
         />
       )}
       {closeMany && (
@@ -4642,7 +3267,7 @@ function App() {
       )}
       {renameDlg && (
         <RenameDialog
-          title={renameDlg.kind === "session" ? "Rename session" : renameDlg.kind === "sub" ? (landscapeOn ? "Rename stack" : "Rename workspace") : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}
+          title={renameDlg.kind === "session" ? "Rename session" : renameDlg.kind === "sub" ? "Rename stack" : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}
           initial={renameDlg.initial}
           onSave={applyRename}
           onClose={() => setRenameDlg(null)}
@@ -4683,16 +3308,8 @@ function App() {
           onClose={() => setModal(null)}
           onOpened={(opened) => {
             refresh();
-            const batch = opened.slice(0, 6); // rest stay in the sidebar to avoid a 26-pane grid
-            if (landscapeOn) {
-              // every one is on the landscape: the first is brought into view
-              if (opened[0]) jumpToSession(opened[0]);
-            } else if (batch.length) {
-              // the grid shows the first import's group (restored sessions keep theirs); pinned panes stay
-              const g = topOf(batch[0]);
-              switchGrid(g, batch.filter((s) => topOf(s) === g).map((s) => s.id));
-              setTab("sessions");
-            }
+            // every one is on the landscape: the first is brought into view
+            if (opened[0]) jumpToSession(opened[0]);
           }}
           onDone={() => setModal(null)}
         />

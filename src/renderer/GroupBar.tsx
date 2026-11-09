@@ -1,21 +1,18 @@
 import { useRef, type ReactNode } from "react";
-import { formatTokens, stageLabel, totalTokens, type GroupMeter, type MessageMode, type TicketPipeline } from "../shared/types";
+import { formatTokens, stageLabel, totalTokens, type GroupMeter, type TicketPipeline } from "../shared/types";
 import type { AreaRepo } from "../shared/landscape";
 import type { TeamRoomSummary } from "../shared/team/types";
 import { baseName } from "../shared/paths";
-import { GroupUsage, shareText, usageTitle } from "./GroupUsage";
-import { StageChip } from "./TicketPipeline";
+import { shareText, usageTitle } from "./GroupUsage";
 import { RoomChatChip } from "./team/RoomChat";
 import { FollowButtons, type Follow } from "./team/RoomLive";
-import { Select } from "./Menu";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
-import { AskIcon, KanbanIcon, LockIcon, MoreIcon } from "./Icons";
-import { messageModes } from "./workspaceActions";
+import { LockIcon, MoreIcon } from "./Icons";
 
 /**
- * A group's bar: the grid's group bar over the panes, and on the landscape each area's header along its top edge
- * (design B, with O's room buttons). Both show the group's name, its ticket's stage (or Pipeline), its usage, its
- * team room's chat and board, Follow, and Ask for status, from the same props and handlers.
+ * A group's bar: each area's header along its top edge on the landscape (design B, with O's room buttons): the
+ * group's name, its ticket's stage (or Pipeline), its usage, its team room's chat and board, Follow, and Ask for
+ * status.
  */
 export interface GroupBarProps {
   group: string;
@@ -33,53 +30,6 @@ export interface GroupBarProps {
   follow: Follow;
   /** Ask every agent in the group for a short status report. */
   onAsk: () => void;
-}
-
-const MSG_OPTIONS = (defaultSend: boolean) => messageModes(defaultSend).map((m) => ({ value: m.value, label: `Agent messages: ${m.label}`, description: m.title }));
-
-/** The grid's group bar, over the active group's panes. */
-export function GroupBar(p: GroupBarProps & { statusNote: string; msgMode: MessageMode | undefined; msgDefaultSend: boolean; onMsgMode: (mode: MessageMode | "") => void; count: string }) {
-  return (
-    <div className="groupbar">
-      <span className="gb-name">{p.title}</span>
-      {p.ticket &&
-        (p.pipeline ? (
-          <StageChip p={p.pipeline} onClick={p.onPipeline} />
-        ) : (
-          <button className="gb-btn" data-tip="Ticket pipeline — track this ticket from coding to done" onClick={p.onPipeline}>
-            Pipeline
-          </button>
-        ))}
-      <GroupUsage g={p.meter} what={p.title} />
-      {/* team rooms: team chat */}
-      {p.room && (
-        <>
-          <RoomChatChip room={p.room} onOpen={p.onChat} />
-          {/* team rooms: the House board */}
-          <button className="gb-btn" data-tip="House board — the room's Radley House tickets and who has each" onClick={() => p.onBoard(p.room!.id)}>
-            <KanbanIcon />
-            <span className="gb-t">Board</span>
-          </button>
-        </>
-      )}
-      {/* team rooms: following, only in a room's group, its own members to follow (changing the grid stops it) */}
-      {p.room && <FollowButtons follow={p.follow} />}
-      <span style={{ marginLeft: "auto" }} />
-      {p.statusNote && <span className="flbl-info">{p.statusNote}</span>}
-      <Select
-        className="gb-btn gb-msg"
-        value={p.msgMode ?? ""}
-        title="How messages from other agents arrive in this group's sessions: sent as a prompt, or typed in and left for you to send"
-        onChange={(v) => p.onMsgMode(v as MessageMode | "")}
-        options={MSG_OPTIONS(p.msgDefaultSend)}
-      />
-      <button className="gb-btn" data-tip="Ask every agent session in this group for a three-line status report — each answers when its current turn ends" onClick={p.onAsk}>
-        <AskIcon />
-        <span className="gb-t">Ask this group for status</span>
-      </button>
-      <span className="flbl-info gb-count">{p.count}</span>
-    </div>
-  );
 }
 
 /** A ticket's stage as an area shows it beside its name: "Build", or "#4182 · Build" when the name doesn't say the number. */

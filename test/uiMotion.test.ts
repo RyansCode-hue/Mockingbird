@@ -136,7 +136,7 @@ describe.skipIf(!local)("the interface's motion, round two", () => {
     // handed over: s1's ring pulses once (its ::after, over the terminal) and the note eases in; s4, taken over here, pulses
     expect(names(m.handedOver.started).sort()).toEqual(["note:s1", "pane:s1::after"]);
     expect(names(m.tookOver.started)).toEqual(["pane:s4::after"]);
-    expect(m.longest).toBeLessThanOrEqual(D.genie);
+    expect(m.longest).toBeLessThanOrEqual(D.l);
   }, 120_000);
 
   it("under reduce, only fades of 120 ms or less: bars land, and a hand-over only fades its note in", async () => {

@@ -6,11 +6,11 @@ import { readPref, writePref } from "./prefs";
  * and the small helpers every animated piece goes through.
  *
  * Rules the helpers keep:
- * - Only transform and opacity move (clip-path on View Transition pseudo-elements). Never layout properties.
+ * - Only transform and opacity move. Never layout properties.
  * - Nothing waits on an animation: state changes apply at once and exits play on a static copy (exitGhost).
- * - Under "reduce" every animation is a fade of 120 ms or less and no View Transition runs; under "off"
+ * - Under "reduce" every animation is a fade of 120 ms or less; under "off"
  *   (tests and screenshots) nothing animates at all.
- * - Terminals never animate: grid changes run as View Transitions, which move compositor snapshots.
+ * - Terminals never animate: a flight moves the landscape's camera, never a terminal's size.
  */
 
 /** The Settings → Motion choice. */
@@ -26,10 +26,10 @@ export function motionMode(pref: MotionPref, osReduce: boolean, forcedOff = fals
 }
 
 /**
- * Fluid's durations, ms: xs for small feedback, s for menus and exits, m for state, l for journeys, genie for
- * a pane flying into or out of its folder. "Relaxed": about a third longer than Fluid's first cut.
+ * Fluid's durations, ms: xs for small feedback, s for menus and exits, m for state, l for journeys (the longest).
+ * "Relaxed": about a third longer than Fluid's first cut.
  */
-export const D = { xs: 120, s: 200, m: 300, l: 460, genie: 480 } as const;
+export const D = { xs: 120, s: 200, m: 300, l: 460 } as const;
 /** The longest any animation runs under reduce. */
 export const REDUCED_MS = 120;
 export const EASE = {
@@ -73,7 +73,7 @@ export function spring(stiffness: number, damping: number): { easing: string; du
   return { easing: `linear(${pts.join(", ")})`, duration, overshoot: Math.max(0, Math.max(...samples) - 1) };
 }
 
-/** Fluid's spring: what moves on screen (the grid making room, the lid, toasts) moves on this. Stiffness 384
+/** Fluid's spring: what moves on screen (a row making room, the lid, toasts) moves on this. Stiffness 384
  * settles about 1.35× slower than 700 at the same damping ratio, matching the Relaxed durations. */
 export const SPRING = spring(384, 2 * 0.9 * Math.sqrt(384));
 
@@ -150,7 +150,7 @@ export function play(el: Element, frames: Keyframe[], o: KeyframeAnimationOption
 }
 
 /** The spring's timing, for el.animate. */
-export const springTiming = (fill: FillMode = "none"): KeyframeAnimationOptions => ({ duration: SPRING.duration, easing: SPRING.easing, fill });
+const springTiming = (fill: FillMode = "none"): KeyframeAnimationOptions => ({ duration: SPRING.duration, easing: SPRING.easing, fill });
 
 /** Things that enter and leave: dialogs (the backdrop, its box the first child), menus, toasts, and badges
  * (a small label whose content changes: the old one fades out on a copy as the new one fades in). */
@@ -284,33 +284,6 @@ export function flipChildren(container: HTMLElement | null, last: Map<Element, n
 export function useFlip(ref: RefObject<HTMLElement>): void {
   const last = useRef(new Map<Element, number>());
   useLayoutEffect(() => flipChildren(ref.current, last.current));
-}
-
-/**
- * Rows of a list (matched by `selector`, told apart by their `attr`) slide to their new places when `change`
- * changes, and rows new to it fade up in. Nothing moves when `context` changed too: a filter typed, a group
- * folded or unfolded, a different view — those redraw at once. Positions are layout offsets, read after every
- * render, so a row that's mid-slide is measured where it really is.
- */
-export function useFlipRows(ref: RefObject<HTMLElement>, selector: string, attr: string, change: string, context: string): void {
-  const last = useRef<{ at: Map<string, number>; change: string; context: string }>({ at: new Map(), change, context });
-  useLayoutEffect(() => {
-    const root = ref.current;
-    const prev = last.current;
-    const animate = !!root && prev.at.size > 0 && change !== prev.change && context === prev.context;
-    const at = new Map<string, number>();
-    for (const el of root?.querySelectorAll<HTMLElement>(selector) ?? []) {
-      const key = el.getAttribute(attr);
-      if (!key) continue;
-      const y = el.offsetTop;
-      at.set(key, y);
-      if (!animate) continue;
-      const was = prev.at.get(key);
-      if (was === undefined) play(el, [{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], { duration: D.s, easing: EASE.enter });
-      else if (Math.abs(was - y) > 0.5) play(el, [{ transform: `translateY(${was - y}px)` }, { transform: "none" }], { ...springTiming(), composite: "add" });
-    }
-    last.current = { at, change, context };
-  });
 }
 
 /**

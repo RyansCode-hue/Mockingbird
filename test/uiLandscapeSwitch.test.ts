@@ -125,3 +125,14 @@ describe.skipIf(!local)("what goes on from a workspace", () => {
     expect(a.imported).toEqual({ opened: true, placed: true, selected: true, dialog: false, keysUnchanged: true });
   }, 90_000);
 });
+
+describe.skipIf(!local)("a Search window, on the landscape", () => {
+  it("keeps the options it last set for the next one", async () => {
+    // at 100%, where a window shows its body rather than its compact card
+    const a = await run("search", "&lsCamera=0,0,1");
+    expect(a.first).toEqual({ open: true, files: "false", matchCase: null });
+    expect(a.saved).toMatchObject({ scope: "files", matchCase: true });
+    expect(a.closed).toBe(true);
+    expect(a.next).toEqual({ open: true, files: "true", matchCase: "true" });
+  }, 90_000);
+});

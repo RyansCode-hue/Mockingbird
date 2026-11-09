@@ -2045,7 +2045,7 @@ export function newStackName(l: Landscape, layout: Pick<ResolvedLayout, "tiles" 
 
 /**
  * Stack the picked workspaces `picked` into one card with a tab each (⌘G): a sub-group of their area ("area/sub"),
- * which rooms, usage and the grid already read. The first stack among them (in reading order) takes the others in;
+ * which rooms and usage already read. The first stack among them (in reading order) takes the others in;
  * with none, a new one ("tabs", "tabs-2"…) forms in the place of the first of them, its session in front. The others
  * leave their places, which stay free. A stack's closed tabs go along with it. Refused unless two or more are picked
  * in one area that isn't locked; a teammate's workspace (only its owner moves it, a stack holding one too) stays out,

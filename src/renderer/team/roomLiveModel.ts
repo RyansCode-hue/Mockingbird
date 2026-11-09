@@ -33,10 +33,9 @@ export interface FollowPlan {
 }
 
 /**
- * The grid shows one top-level group at a time, so following shows the
- * group of the pane the teammate is in (else of the first they show), with
- * the panes of theirs that are in it. Null when they show no room session
- * this window knows.
+ * What following brings into view: the group of the session the teammate is
+ * in (else of the first they show), with the sessions of theirs that are in
+ * it. Null when they show no room session this window knows.
  */
 export function followPlan(view: MemberView | undefined, sessions: SessionInfo[], groupOf: (s: SessionInfo) => string): FollowPlan | null {
   if (!view) return null;

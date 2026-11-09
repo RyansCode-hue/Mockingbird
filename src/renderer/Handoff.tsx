@@ -55,7 +55,7 @@ export function HandoffDialog({
       {error && <div className="err">{error}</div>}
       <label className="check-line" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11, display: "flex" }}>
         <input type="checkbox" checked={closeOld} onChange={(e) => setCloseOld(e.target.checked)} />
-        Close the {AGENT_NAME[from]} session (it stays under Previous, so it can be resumed)
+        Close the {AGENT_NAME[from]} session (its ghost stays, so it can be reopened)
       </label>
       <div className="row">
         <button className="outline" style={{ marginRight: "auto" }} disabled={drafting} onClick={draft}>

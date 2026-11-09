@@ -26,24 +26,12 @@ export function usageTitle(g: GroupMeter, what: string): string {
   return lines.join("\n");
 }
 
-/** A group's usage, in the group bar ("bar") or a ticket's detail ("detail"). */
-export function GroupUsage({ g, kind = "bar", what }: { g: GroupMeter | undefined; kind?: "bar" | "detail"; what: string }) {
-  if (!g || totalTokens(g.tokens) === 0) {
-    return kind === "detail" ? <div className="tk-usage none">No usage yet: no session of this ticket has replied.</div> : null;
-  }
+/** A group's usage in a ticket's detail. */
+function GroupUsage({ g, what }: { g: GroupMeter | undefined; what: string }) {
+  if (!g || totalTokens(g.tokens) === 0) return <div className="tk-usage none">No usage yet: no session of this ticket has replied.</div>;
   const share = shareText(g);
-  const title = usageTitle(g, what);
-  if (kind === "bar") {
-    return (
-      <span className="gb-usage" title={title}>
-        <span className="k">Tokens</span>
-        <span className="v">{formatTokens(totalTokens(g.tokens))}</span>
-        {share && <span className="share">{share}</span>}
-      </span>
-    );
-  }
   return (
-    <div className="tk-usage" title={title}>
+    <div className="tk-usage" title={usageTitle(g, what)}>
       <span className="v">{formatTokens(totalTokens(g.tokens))} tokens</span>
       <span className="dim">
         {" "}
@@ -90,7 +78,7 @@ export function TicketUsage({ ticket }: { ticket: string }) {
   return (
     <div className="tk-usage-sec">
       <label>Usage on this Mac</label>
-      <GroupUsage g={meters.tickets?.[ticket]} kind="detail" what={`Ticket #${ticket}`} />
+      <GroupUsage g={meters.tickets?.[ticket]} what={`Ticket #${ticket}`} />
     </div>
   );
 }

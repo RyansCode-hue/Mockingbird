@@ -1,13 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import { beginDrag, dragging } from "./drag";
-import { CloseIcon, ExpandIcon, HandoffIcon, MinusIcon, PanelRightIcon, PinIcon, PlusIcon, RepaintIcon, ShrinkIcon, UndoIcon } from "./Icons";
-import { ActionBar, tidyMenu, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
+import { CloseIcon, PanelRightIcon, RepaintIcon } from "./Icons";
+import { ActionBar, tidyMenu, useContextMenu, type Action } from "./ContextMenu";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { tokenBreakdown } from "./usageFormat";
-import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type AgentKind, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
+import { formatShare, formatTokens, isErr, totalTokens, ticketIdOf, type AgentKind, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
 import { agentSelection, trackPrintWidths } from "./agentWraps";
@@ -224,17 +223,9 @@ function meterTitle(m: SessionMeter): string {
   return lines.join("\n");
 }
 
-export type PaneDensity = "min" | "std" | "max";
+type PaneDensity = "min" | "std" | "max";
 
 const fontSizeFor = (density: PaneDensity) => (density === "max" ? 11.5 : 11);
-
-/** Window-style resize handlers on a pane's own edges; absent axes hide their handle. */
-export interface PaneResize {
-  x?: (e: React.PointerEvent) => void; // right edge
-  y?: (e: React.PointerEvent) => void; // bottom edge
-  xy?: (e: React.PointerEvent) => void; // the corner, when the pane has both edges
-  reset?: () => void; // double-click a handle → even the grid back out
-}
 
 /** Shorten hook Notification messages to banner-sized reasons (phone alerts say them the same way). */
 export { shortReason };
@@ -377,7 +368,6 @@ export interface PaneChipProps {
   onTakeOver?: (view: RoomSessionBackupView) => void;
   /** The context warning (ContextWarning.tsx), first: a narrow header cuts the other chips before it. */
   contextChip?: React.ReactNode;
-  pinNote?: string;
   onRestart?: () => void;
 }
 
@@ -386,7 +376,7 @@ export interface PaneChipProps {
  * its branch, ▶ runs (opens Run), Δ changes (opens Source Control), overlaps (the other worktree, or the room's
  * Board), model and effort, ticket, kind, muted and the guard chip.
  */
-export function PaneChips({ session, density, git, gitErr, overlaps, overlapsUnread, runCount, onOpenRun, onOpenChanges, onJump, onOpenBoard, backup, onTakeOver, contextChip, pinNote, onRestart }: PaneChipProps) {
+export function PaneChips({ session, density, git, gitErr, overlaps, overlapsUnread, runCount, onOpenRun, onOpenChanges, onJump, onOpenBoard, backup, onTakeOver, contextChip, onRestart }: PaneChipProps) {
   const chips = useMemo(() => overlapChips(overlaps), [overlaps]);
   const dead = session.status === "dead";
   const room = session.room ?? null;
@@ -476,7 +466,6 @@ export function PaneChips({ session, density, git, gitErr, overlaps, overlapsUnr
       {assistant && density !== "min" && <span className="chip teal">assistant</span>}
       {session.shell && density !== "min" && <span className="chip">shell</span>}
       {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
-      {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
       {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row, its ⋯ or ⌘K)">muted</span>}
       {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />}
     </>
@@ -761,92 +750,31 @@ function termFor(session: SessionInfo, fontSize: number): TermEntry {
 export function TerminalPane({
   session,
   focused,
-  zoomed,
   density,
-  paneIndex,
-  area,
   onFocus,
   onClose,
-  onOpenFiles,
-  onOpenChanges,
-  runCount,
-  onOpenRun,
   meter,
-  onZoom,
-  cell,
-  onAddTab,
   onResume,
   onCleanup,
   closeTitle,
-  resize,
-  embedded,
-  pinned,
-  onPin,
-  pinNote,
-  tabDrop,
-  handoff,
-  undoTurn,
-  overlaps,
-  overlapsUnread,
-  onJump,
-  onOpenBoard,
   backup,
   onTakeOver,
   tookOverAt,
   leftCopy,
   teamNotice,
-  contextChip,
   onRestart,
-  messages,
-  onShowMessages,
-  menuExtras,
   landscape,
 }: {
   session: SessionInfo;
   focused: boolean;
-  zoomed: boolean;
   density: PaneDensity;
-  paneIndex: number;
-  /** Its place in the grid ("row-start/col-start/row-end/col-end"). */
-  area?: string;
   onFocus: () => void;
   onClose: () => void;
-  /** Show this session's folder in the explorer dock. */
-  onOpenFiles?: () => void;
-  /** Open Source Control for this pane's folder. */
-  onOpenChanges?: () => void;
-  /** How many of this worktree's services are running (Run and Debug), and opening that view. */
-  runCount?: number;
   /** Tokens this pane's conversations used, and its estimated share of the 5-hour limit. */
   meter?: SessionMeter;
-  onOpenRun?: () => void;
-  onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
-  /** The grid cell this pane is (a pane of its own, not a workspace tab): grid animations find it by this. */
-  cell?: string;
-  onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
   onResume: () => void;
   onCleanup: () => void;
   closeTitle?: string;
-  resize?: PaneResize;
-  embedded?: boolean; // inside a workspace pane — the wrapper owns border/radius
-  /** Pinned panes stay on screen when the grid switches groups. */
-  pinned?: boolean;
-  onPin?: () => void;
-  /** Shown on a pinned pane visiting from another group: which group it belongs to. */
-  pinNote?: string;
-  /** A session dropped on the header joins this pane as a tab (the grid handles drops on the body). */
-  tabDrop?: { over: (e: React.DragEvent) => void; drop: (e: React.DragEvent) => void; cue?: string };
-  /** Continue this session's task in the other agent: its action model's row, off saying why where it can't be now. */
-  handoff?: Pick<Action, "onPick" | "disabled" | "title">;
-  /** Put the files back as they were before one of the agent's turns: its action model's row, as `handoff`. */
-  undoTurn?: Pick<Action, "onPick" | "disabled" | "title">;
-  /** Files another worktree of this repository has also changed. */
-  overlaps?: FileOverlap[];
-  /** How many worktrees of this repository couldn't be read for overlaps. */
-  overlapsUnread?: number;
-  onJump?: (sessionId: string) => void;
-  /** Open a team room's House board (a teammate's branch overlaps this worktree). */
-  onOpenBoard?: (roomId: string) => void;
   /** A room session's backup (team rooms), and taking a teammate's over. */
   backup?: RoomSessionBackupView | null;
   onTakeOver?: (view: RoomSessionBackupView) => void;
@@ -856,15 +784,8 @@ export function TerminalPane({
   leftCopy?: React.ReactNode;
   /** A line over the terminal from team rooms (changes a teammate sent, to review). */
   teamNotice?: React.ReactNode;
-  /** The pane's context warning (ContextWarning.tsx): a chip in the header. */
-  contextChip?: React.ReactNode;
   /** Restart this pane, resuming its conversation (for a stuck one). */
   onRestart?: () => void;
-  /** Agent messages this pane received and sent, and opening their log. */
-  messages?: { in: number; out: number };
-  onShowMessages?: () => void;
-  /** The session's own actions (rename, notifications, move, close…), after the pane's in its header's right-click menu. */
-  menuExtras?: MenuEntry[];
   /**
    * The terminal of a landscape workspace (WorkspaceNode), which draws the header: no header or rail here. The
    * workspace is `w` × `h` at 100%, and its terminal as many cells of the measured cell at `font` as that holds
@@ -956,7 +877,7 @@ export function TerminalPane({
         if (sized.refit === fixed.refit) sized.refit = undefined;
       };
     } else if (landscapeNow.current) {
-      // the terminal is cached across the grid and the landscape, each with its own font
+      // the cached terminal keeps the font it was last drawn at: the landscape's is its own
       if (term.options.fontSize !== landscapeNow.current.font) term.options.fontSize = landscapeNow.current.font;
       const placed = followPlacement(
         entry,
@@ -980,7 +901,7 @@ export function TerminalPane({
       if (term.options.fontSize !== fontSizeFor(densityNow.current)) term.options.fontSize = fontSizeFor(densityNow.current);
       stopFollowing = followSize(entry, holder.current, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
     }
-    // a landscape workspace's terminal draws with WebGL while it's attached (termGl.ts); the grid's keep the DOM renderer
+    // a landscape workspace's terminal draws with WebGL while it's attached (termGl.ts); the debriefs' keep the DOM renderer
     const gl = !!landscapeNow.current;
     if (gl) webglOn(term, session.id);
 
@@ -1161,7 +1082,6 @@ export function TerminalPane({
   }, [density, session.id]);
 
   const assistant = session.kind === "assistant" && !session.shell; // repo-less shells aren't assistants
-  const shortcut = paneIndex < 9 ? `⌘${paneIndex + 1}` : "";
   const meta = fmtElapsed(session.createdAt);
 
   // the header's labelled controls, and its right-click menu: the same actions, then the session's own
@@ -1169,41 +1089,7 @@ export function TerminalPane({
   const controls = tidyMenu([
     !dead && { key: "repaint", label: "Repaint", icon: <RepaintIcon />, title: "Repaint — have the session redraw its screen (its scrollback stays)", onPick: () => resyncTerm(session.id) },
     !!panelClose && !dead && { key: "diff", label: "Hide diff", menuLabel: "Hide the diff panel", icon: <PanelRightIcon open />, title: "Hide the CLI's diff side panel (same as its × or /diff)", onPick: () => panelClose && clickCell(session.id, panelClose) },
-    !!onAddTab && !dead && !remote && { key: "tab", label: "Tab", menuLabel: "New tab…", icon: <PlusIcon />, title: "New tab — turn this pane into a workspace and open another session in it", onPick: () => onAddTab?.() },
-    !!undoTurn && {
-      key: "undo",
-      label: "Undo",
-      menuLabel: "Undo a turn…",
-      icon: <UndoIcon />,
-      title: undoTurn.disabled ? undoTurn.title : "Undo a turn — put the files back as they were before one of the agent's recent turns",
-      disabled: undoTurn.disabled,
-      onPick: () => undoTurn.onPick(),
-    },
-    !!handoff && !remote && {
-      key: "handoff",
-      label: AGENT_NAME[otherAgent(session.agent)],
-      menuLabel: `Continue in ${AGENT_NAME[otherAgent(session.agent)]}…`,
-      icon: <HandoffIcon />,
-      title: handoff.disabled ? handoff.title : `Continue in ${AGENT_NAME[otherAgent(session.agent)]} — hand this task over with a summary of what's done and what's next`,
-      disabled: handoff.disabled,
-      onPick: () => handoff.onPick(),
-    },
-    !!onPin && {
-      key: "pin",
-      label: pinned ? "Pinned" : "Pin",
-      menuLabel: pinned ? "Unpin" : "Pin to the screen",
-      icon: <PinIcon />,
-      pressed: !!pinned,
-      title: pinned ? "Unpin — this pane goes back to following its group" : "Pin — keep this pane on screen when you switch groups",
-      onPick: () => onPin?.(),
-    },
-    !!onZoom &&
-      (zoomed
-        ? { key: "zoom", label: "Grid", menuLabel: "Back to the grid", icon: <ShrinkIcon />, title: "Back to the grid (⌘E or esc)", onPick: () => onZoom?.() }
-        : { key: "zoom", label: "Full", menuLabel: "Fullscreen", icon: <ExpandIcon />, title: "Fullscreen — fill the whole grid with this pane (⌘E)", onPick: () => onZoom?.() }),
-    closeTitle
-      ? { key: "close", label: "Close", icon: <CloseIcon />, title: closeTitle, onPick: onClose }
-      : { key: "close", label: "Hide", menuLabel: "Hide from the grid", icon: <MinusIcon />, title: "Hide from grid (session keeps running)", onPick: onClose },
+    { key: "close", label: "Close", icon: <CloseIcon />, title: closeTitle ?? "Close", onPick: onClose },
   ]) as Action[];
 
   return (
@@ -1212,7 +1098,6 @@ export function TerminalPane({
       className={[
         "pane",
         `density-${density}`,
-        embedded ? "embedded" : "",
         landscape ? "ls-body" : "",
         focused ? "focused" : "",
         waiting ? "st-waiting" : "",
@@ -1220,29 +1105,13 @@ export function TerminalPane({
         assistant ? "kind-assistant" : "",
         typingOn(room) ? "typing-on" : "",
       ].join(" ")}
-      style={area ? { gridArea: area } : undefined}
-      data-cell={cell}
       onMouseDown={onFocus}
     >
       {!landscape && (
       <div
         className="pane-header"
-        draggable={editTitle === null}
-        onDragStart={(e) => beginDrag(e, "text/mb-session", session.id, `Moving ${session.ticketTitle ?? session.title}`, "pane")}
-        title="drag onto another pane's edge to put it beside that pane, onto its middle to swap, or onto its header to make it a tab there · double-click the name to rename · right-click for more"
-        data-drop={tabDrop?.cue}
-        {...headerMenu.bind(() => tidyMenu([...controls, "-", ...(menuExtras ?? [])]))}
-        onDragOver={(e) => {
-          if (!tabDrop || !dragging("text/mb-session")) return;
-          e.stopPropagation();
-          tabDrop.over(e);
-        }}
-        onDrop={(e) => {
-          if (!tabDrop || !dragging("text/mb-session")) return;
-          e.preventDefault();
-          e.stopPropagation();
-          tabDrop.drop(e);
-        }}
+        title="double-click the name to rename · right-click for more"
+        {...headerMenu.bind(() => controls)}
       >
         <StatusDot status={session.status} className={density === "max" ? "lg" : ""} />
         {editTitle !== null ? (
@@ -1276,27 +1145,18 @@ export function TerminalPane({
           density={density}
           git={git}
           gitErr={density === "std" ? gitErr : null}
-          overlaps={overlaps}
-          overlapsUnread={overlapsUnread}
-          runCount={runCount}
-          onOpenRun={onOpenRun}
-          onOpenChanges={onOpenChanges}
-          onJump={onJump}
-          onOpenBoard={onOpenBoard}
           backup={backup}
           onTakeOver={onTakeOver}
-          contextChip={contextChip}
-          pinNote={pinNote}
           onRestart={onRestart}
         />
-        <span className="meta">{density === "min" ? shortcut : meta}</span>
+        <span className="meta">{meta}</span>
         <ActionBar className="controls" actions={controls} />
         {headerMenu.menu}
       </div>
       )}
 
       {density === "max" && !dead && !landscape && (
-        <PaneRail session={session} git={git} gitErr={gitErr} pr={pr} readPr={readPr} messages={messages} onShowMessages={onShowMessages} meter={meter} onOpenChanges={onOpenChanges} onOpenFiles={onOpenFiles} />
+        <PaneRail session={session} git={git} gitErr={gitErr} pr={pr} readPr={readPr} meter={meter} />
       )}
 
       {dead && remote ? (
@@ -1448,7 +1308,6 @@ export function TerminalPane({
                   {shortReason(session.waitingReason)}
                   {session.waitingSince ? ` · ${fmtElapsed(session.waitingSince, true)}` : ""}
                 </span>
-                {shortcut && <span className="kbd">{shortcut}</span>}
                 {!remote && (
                 <button
                   className="icon"
@@ -1467,30 +1326,6 @@ export function TerminalPane({
         </div>
       )}
 
-      {resize?.x && (
-        <div
-          className="rz rz-e"
-          title="drag to resize · double-click to even out"
-          onPointerDown={resize.x}
-          onDoubleClick={resize.reset}
-        />
-      )}
-      {resize?.y && (
-        <div
-          className="rz rz-s"
-          title="drag to resize · double-click to even out"
-          onPointerDown={resize.y}
-          onDoubleClick={resize.reset}
-        />
-      )}
-      {resize && (resize.x || resize.y) && (
-        <div
-          className="rz rz-se"
-          title="drag to resize · double-click to even out"
-          onPointerDown={(e) => (resize.xy ?? resize.x ?? resize.y)?.(e)}
-          onDoubleClick={resize.reset}
-        />
-      )}
     </div>
   );
 }

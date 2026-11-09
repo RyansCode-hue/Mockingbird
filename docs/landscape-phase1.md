@@ -3442,6 +3442,7 @@ Design O, with Artifacts as a window, and N's workspace header.
   | A room with nobody online | Marked "shared" in the tree | fixed: it looked like any other area |
   | Problems publishing room sessions (`LiveProblems`) | Under the tree | fixed: only drawn in the Sessions view |
   | Rail: Explorer, Search, Changes, Run | Tool windows | moved |
+  | Search's remembered scope, regex and case (`mb.search`) | The next Search window starts from what the last one set | fixed: only the side bar's Search wrote them |
   | **Group bar** | | |
   | Group's name, its Share, its room's Follow | The area's header | moved |
   | Notes (`statusNote`) said off the Sessions tab | In the status bar | fixed: only the group bar drew them |
@@ -3509,6 +3510,33 @@ Design O, with Artifacts as a window, and N's workspace header.
     workspace's body takes the mouse only at 100%, as S3 decided, which includes
     a typing ask's Allow and Deny; below 35% it's a card, with no ask on it, and
     Needs you doesn't list typing asks.
+- **As built, the grid deleted.** `layoutTree.ts`, `gridModel.ts`,
+  `gridMotion.ts` and `GridPreview.tsx` are gone, with main.tsx's shown,
+  pinned, zoomed, groupLayouts, trees, wsTabs, collapsed and side bar view
+  state, the Sessions view, the grid's group bar and its layout picker.
+  - **What the migration reads trees with** moved to
+    `src/shared/legacyLayout.ts`: the normal form, the default rule,
+    reconciling, renaming, the snap layouts `mb.layout` names, the CSS grid the
+    tree drew as, the earlier prefs, `cellKeyFor` and `activeGroupOf`.
+    `test/legacyLayout.test.ts` tests them; `test/landscapeMigrate.test.ts`
+    keeps what the grid wrote after a session of use as a literal, worked out
+    once by the grid's own code.
+  - **TerminalPane** lost what only the grid's panes passed (cells, resize
+    edges, pin, fullscreen, tab drops, pane numbers, the header's handoff and
+    undo, chips the workspace header draws); its own header is the
+    WorkTracker debriefs'.
+  - **The Team view's rows** bring a session or stack into view, as the area
+    tree's do; a stack's ✕ unstacks its tabs, its folder opens and shuts with
+    its chevron (open to begin with), and rows no longer drag (Move to
+    area… and a drag on the landscape do that). The Team view no longer
+    follows a grid group.
+  - **The CSS** for the grid, its panes' edges, workspace panes and tabs, the
+    group bar, the layout picker, the drag preview, the View Transitions and
+    the Sessions view's rows went; the landscape's dotted backdrop stays.
+  - **⌘/ help** describes the landscape: its keys, areas and stacks, ghosts
+    and the Closed sessions list. ⌘⌃1–4, ⌘1–9 as pane numbers and Pin are in
+    no handler, help text or palette row.
+  - **D.genie** went with the genie; D.l, 460 ms, is the longest motion.
 
 ## Risks
 

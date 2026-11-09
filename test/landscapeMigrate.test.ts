@@ -17,10 +17,8 @@ import {
 import { LEGACY_PREF_KEYS, migrateLayout, type LegacyPrefs } from "../src/shared/landscapeMigrate";
 import type { SessionInfo } from "../src/shared/types";
 import { remotePaneId, type RoomSessionTag } from "../src/shared/team/livePanes";
-import { cellKeyFor } from "../src/renderer/appModel";
 import { readLegacyPrefs } from "../src/renderer/useLandscape";
-import { layoutToRemember, switchTo } from "../src/renderer/gridModel";
-import { insertBeside, reconcile, resizePane, type LayoutNode } from "../src/renderer/layoutTree";
+import type { LayoutNode } from "../src/shared/legacyLayout";
 import { readPref, writePref, type PrefStore } from "../src/renderer/prefs";
 
 const REPO = "/Users/you/Code/backoffice";
@@ -529,27 +527,17 @@ describe("migrating prefs as the grid writes them", () => {
   it("reads a session of using the grid: two groups, a sub-group, a split and a resize, a pin and a teammate", () => {
     const n1 = remote(NICK, "n1", "5101");
     const sessions = [sess("s1", "5101"), sess("s2", "5101/api"), sess("s3", "5101/api", { agent: "codex" }), sess("s4", "5101", { shell: true, agent: undefined }), sess("s5", "5102"), sess("s6", "5102"), sess("s7", null, { kind: "assistant", repoPath: null }), n1];
-    const groupOf = (id: string) => {
-      const s = sessions.find((x) => x.id === id);
-      return s ? areaKeyOf(s) : undefined;
-    };
-    const cellsOf = (shown: string[]) => [...new Set(shown.map((id) => cellKeyFor(id, sessions.find((s) => s.id === id)!.taskGroup)))];
-    const grid = { w: 1336, h: 900 };
-
-    // 5101 on screen: its panes added by the default rule, the terminal dropped below s1, s1's edge dragged right
-    let shown = ["s1", "s2", "s3", n1.id];
-    let t5101: LayoutNode = reconcile(null, cellsOf(shown), grid)!;
-    shown = [...shown, "s4"];
-    t5101 = insertBeside(t5101, "s1", "bottom", "s4");
-    t5101 = resizePane(t5101, "s1", "x", 0.1, { x: 0.1, y: 0.1 });
-    const wsTabs = { "5101/api": "s3" };
-    // the assistant pinned: it stays on screen across the switch
-    shown = [...shown, "s7"];
+    // what 1.6's grid wrote, worked out by its own code: 5101 on screen, its panes added by the default rule, the
+    // terminal dropped below s1 and s1's edge dragged right; the assistant pinned, so it stays on screen across the
+    // switch; then switched to 5102, where 5101 remembers its own panes and 5102's get the default rule
+    const pane = (key: string): LayoutNode => ({ kind: "leaf", key });
+    const stacked = (a: LayoutNode, b: LayoutNode): LayoutNode => ({ kind: "split", dir: "col", children: [a, b], sizes: [0.5, 0.5] });
+    const t5101: LayoutNode = { kind: "split", dir: "row", children: [stacked(pane("s1"), pane("s4")), stacked(pane("ws:5101/api"), pane(n1.id))], sizes: [0.6, 0.4] };
+    const t5102: LayoutNode = { kind: "split", dir: "row", children: [pane("s5"), stacked(pane("s6"), pane("s7"))], sizes: [0.5, 0.5] };
+    const shown = ["s5", "s6", "s7"];
     const pinned = ["s7"];
-    // switched to 5102: 5101 remembers its own panes, 5102 gets the default rule
-    const groupLayouts = { "5101": layoutToRemember(shown, groupOf, "5101") };
-    shown = switchTo(shown, new Set(pinned), ["s5", "s6"]);
-    const t5102 = reconcile(null, cellsOf(shown), grid)!;
+    const groupLayouts = { "5101": ["s1", "s2", "s3", n1.id, "s4"] };
+    const wsTabs = { "5101/api": "s3" };
 
     const store = prefStore();
     writePref("mb.shown", shown, store);
