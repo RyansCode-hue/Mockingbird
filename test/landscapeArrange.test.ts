@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   GHOST_INSET,
   MOVE_EDGES,
   SNAP_PX,
   areaCounts,
+  carryPlan,
   closedIn,
   closedListOf,
   forgetPatch,
@@ -12,22 +13,26 @@ import {
   newStackName,
   notePlacement,
   NOTE_BOTTOM,
+  planJoinStack,
   planMoveArea,
   planMoveTile,
   planResizeTo,
   planStack,
   planTidy,
   planUnstack,
+  planUnstackAll,
   renamesLeft,
   resolveLayout,
   snapRect,
   tidyRefusal,
   undoOf,
   undoOfPlan,
+  unstackRefusal,
   withoutGone,
   type AreaPlan,
+  type MovesFailed,
 } from "../src/renderer/landscapeModel";
-import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, GRID, LOOSE_GROUP, applyPatch, emptyLandscape, overlaps, presetSize, renameAreaPatch, type Area, type Landscape, type Rect } from "../src/shared/landscape";
+import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, GRID, LOOSE_GROUP, applyPatch, emptyLandscape, overlaps, presetSize, renameAreaPatch, type Area, type Landscape, type LandscapePatch, type Rect } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
 
 // S6b: moving and resizing by hand, stacks, Tidy and ghosts — the pure rules Landscape.tsx and main.tsx carry out.
@@ -480,6 +485,140 @@ describe("a tab dragged out of its stack", () => {
     expect(refusal(planUnstack(l, layout, "n1", { x: AREA_PAD, y: AREA_HEADER }, "A", T))).toMatch(/Nick's session leaves the stack only on their Mac/);
     l.areas.A.locked = true;
     expect(refusal(planUnstack(l, resolveLayout(l, shown), "t2", { x: AREA_PAD, y: AREA_HEADER }, "A", T))).toMatch(/is locked/);
+  });
+});
+
+describe("Unstack", () => {
+  const tabs = (ids: string[]) => ids.map((id, i) => session(id, { taskGroup: "A/tabs", createdAt: i }));
+  const withStack = () => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 2 * AREA_PAD + 2 * M.w + GAP, AREA_HEADER + M.h + AREA_PAD);
+    l.stacks["A/tabs"] = { active: "t2", placement: { x: AREA_PAD, y: AREA_HEADER, ...M } };
+    return l;
+  };
+
+  it("gives the front tab the stack's place, moving it last, and places the others in the area as new workspaces", () => {
+    const l = withStack();
+    const shown = tabs(["t1", "t2", "t3"]);
+    const p = ready(planUnstackAll(resolveLayout(l, shown), "A/tabs", T));
+    expect(p.moves).toEqual([{ id: "t1", group: "A" }, { id: "t3", group: "A" }, { id: "t2", group: "A" }]);
+    expect(p.patch?.workspaces?.t2).toEqual({ x: AREA_PAD, y: AREA_HEADER, ...M });
+    expect(p.after?.stacks?.["A/tabs"]).toBeNull();
+    const { r } = settle(l, p, shown);
+    expect(r.tiles.map((t) => t.stack)).toEqual([null, null, null]);
+    expect(rectOf(r, "t2")).toEqual({ x: AREA_PAD, y: AREA_HEADER, ...M });
+    const others = [rectOf(r, "t1"), rectOf(r, "t3")];
+    for (const o of others) expect(overlaps(o, rectOf(r, "t2"), GAP - 1e-6)).toBe(false);
+    expect(overlaps(others[0], others[1], GAP - 1e-6)).toBe(false);
+    // the area grew to hold them, in what the layout saves
+    const a = applyPatch(l, r.patch ?? {}).areas.A;
+    for (const o of others) expect(inside(o, a)).toBe(true);
+  });
+
+  it("leaves a teammate's tab in the stack, which stays where it is, and places all of this Mac's", () => {
+    const l = withStack();
+    const shown = [...tabs(["t1", "t2"]), theirs("n1", "A/tabs")];
+    const p = ready(planUnstackAll(resolveLayout(l, shown), "A/tabs", T));
+    expect(p.moves.map((m) => m.id)).toEqual(["t1", "t2"]);
+    expect(p.patch).toBeNull();
+    expect(p.after).toBeNull();
+    const { r } = settle(l, p, shown);
+    const st = r.tiles.find((t) => t.stack === "A/tabs")!;
+    expect(st.members.map((m) => m.id)).toEqual(["n1"]);
+    expect(st.rect).toEqual({ x: AREA_PAD, y: AREA_HEADER, ...M });
+  });
+
+  it("takes its closed tabs along, which then have no place: they're in the Closed sessions list, and it says so", () => {
+    const l = withStack();
+    const shown = tabs(["t1", "t2"]);
+    const closed = [session("c1", { taskGroup: "A/tabs" })];
+    const p = ready(planUnstackAll(resolveLayout(l, shown, undefined, [], null, closed), "A/tabs", T));
+    expect(p.moves[0]).toEqual({ id: "c1", group: "A" });
+    expect(p.note).toBe("Its closed tab is in the Closed sessions list");
+    const { r, closed: shut } = settle(l, p, shown, closed);
+    expect(r.ghosts).toEqual([]);
+    expect(closedListOf(shut, r).map((s) => s.id)).toEqual(["c1"]);
+  });
+
+  it("is refused in a locked area, for a stack of only teammates' tabs, and for one that's gone: its row and its plan agree", () => {
+    const l = withStack();
+    l.areas.A.locked = true;
+    const shown = tabs(["t1", "t2"]);
+    const locked = resolveLayout(l, shown);
+    expect(unstackRefusal(locked, "A/tabs", T)).toMatch(/is locked/);
+    expect(refusal(planUnstackAll(locked, "A/tabs", T))).toBe(unstackRefusal(locked, "A/tabs", T));
+    const open = withStack();
+    const only = [theirs("n1", "A/tabs"), theirs("n2", "A/tabs")];
+    expect(unstackRefusal(resolveLayout(open, only), "A/tabs", T)).toMatch(/Nick's sessions leave the stack only on their Mac/);
+    expect(unstackRefusal(resolveLayout(open, shown), "A/gone", T)).toMatch(/isn't on the landscape/);
+  });
+});
+
+describe("a new tab beside a workspace of its own", () => {
+  it("makes the two a stack in the workspace's place, the new session in front, without moving anything else", () => {
+    const l = base();
+    const made = session("n", { taskGroup: "A/tabs", createdAt: 3 });
+    const shown = [...two, made];
+    const p = ready(planJoinStack(resolveLayout(l, shown), "a1", "n", "A/tabs"));
+    expect(p.moves).toEqual([{ id: "a1", group: "A/tabs" }]);
+    const { l: next, r } = settle(l, p, shown);
+    const st = r.tiles.find((t) => t.stack === "A/tabs")!;
+    expect(st.members.map((m) => m.id).sort()).toEqual(["a1", "n"]);
+    expect(st.front.id).toBe("n");
+    expect(st.rect).toEqual(l.workspaces.a1);
+    expect(Object.hasOwn(next.workspaces, "a1")).toBe(false);
+    expect(next.workspaces.a2).toEqual(l.workspaces.a2);
+  });
+
+  it("is refused when the workspace has left the landscape", () => {
+    const l = base();
+    expect(refusal(planJoinStack(resolveLayout(l, two), "gone", "n", "A/tabs"))).toMatch(/isn't on the landscape/);
+  });
+});
+
+describe("a plan carried out", () => {
+  const plan = { patch: { workspaces: { a1: { x: 8, y: 8, w: 8, h: 8 } } }, moves: [{ id: "a1", group: "B" }, { id: "a2", group: "B" }], after: { stacks: { "A/x": null } } };
+  type Sent = LandscapePatch;
+  const hands = (over = {}) => ({
+    before: base(),
+    send: vi.fn(async (_p: Sent): Promise<{ rev: number } | { error: string }> => ({ rev: 7 })),
+    moves: vi.fn(async (): Promise<MovesFailed | null> => null),
+    say: vi.fn(),
+    patched: vi.fn(),
+    ...over,
+  });
+
+  it("sends its places, then its groups, then `after`, answering the last revision", async () => {
+    const h = hands();
+    const order: string[] = [];
+    h.send.mockImplementation(async (p) => (order.push(p.stacks ? "after" : "patch"), { rev: order.length }));
+    h.moves.mockImplementation(async () => (order.push("moves"), null));
+    expect(await carryPlan(plan, "x", h)).toEqual({ rev: 3 });
+    expect(order).toEqual(["patch", "moves", "after"]);
+    expect(h.patched).toHaveBeenCalledWith(null, true);
+    expect(h.say).not.toHaveBeenCalled();
+  });
+
+  it("says its note once it's done", async () => {
+    const h = hands();
+    await carryPlan({ ...plan, note: "n" }, "x", h);
+    expect(h.say).toHaveBeenCalledWith("n");
+  });
+
+  it("stops with nothing moved when its places aren't saved, and says so", async () => {
+    const h = hands({ send: vi.fn(async (_p: Sent) => ({ error: "disk" })) });
+    expect(await carryPlan(plan, "making it", h)).toBeNull();
+    expect(h.moves).not.toHaveBeenCalled();
+    expect(h.patched).toHaveBeenCalledWith("disk", true);
+    expect(h.say).toHaveBeenCalledWith("making it: not saved, disk");
+  });
+
+  it("puts back the places of those not moved when a group can't be set, and says what stopped it", async () => {
+    const h = hands({ moves: vi.fn(async () => ({ said: "a2 couldn't be moved", moved: 1 })) });
+    expect(await carryPlan({ ...plan, moves: [{ id: "a2", group: "B" }, { id: "a1", group: "B" }] }, "x", h)).toBeNull();
+    expect(h.send).toHaveBeenCalledTimes(2);
+    expect(h.send.mock.calls[1][0]).toEqual({ workspaces: { a1: base().workspaces.a1 } });
+    expect(h.say).toHaveBeenCalledWith("a2 couldn't be moved");
   });
 });
 

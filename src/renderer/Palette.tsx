@@ -29,7 +29,7 @@ export function CommandPalette({
 }: {
   sessions: SessionInfo[];
   /** ⌘1–9 per session id, as the panes are numbered. */
-  shortcuts: Map<string, number>;
+  shortcuts: ReadonlyMap<string, number>;
   actions: PaletteAction[];
   onJump: (id: string) => void;
   onClose: () => void;

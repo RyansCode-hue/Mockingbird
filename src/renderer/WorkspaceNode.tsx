@@ -169,7 +169,20 @@ export function WorkspaceNode({
             )}
             {tile.stack ? (
               <span className="ls-tabs" role="tablist" aria-label={name ?? "Stack"}>
-                {name && <span className="ls-stack-name">{name}</span>}
+                {name && (
+                  <span
+                    className="ls-stack-name"
+                    title={usable(actions, "renameStack") ? `${name} — double-click to rename the stack` : name}
+                    onDoubleClick={(e) => {
+                      const rename = pick("renameStack");
+                      if (!rename) return;
+                      e.stopPropagation();
+                      rename();
+                    }}
+                  >
+                    {name}
+                  </span>
+                )}
                 {tile.members.map((m) => (
                   <button
                     key={m.id}

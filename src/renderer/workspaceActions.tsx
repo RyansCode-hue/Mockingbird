@@ -1,7 +1,7 @@
 import { AGENT_NAME, otherAgent, type MessageMode, type MissingFolder, type SessionInfo } from "../shared/types";
 import { LOOSE_GROUP, SIZE_PRESETS, areaKeyOf, type SizePreset } from "../shared/landscape";
 import { menuHeading, tidyMenu, type Action, type MenuEntry } from "./ContextMenu";
-import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, NoteIcon, PanelRightIcon, PencilIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
+import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, NoteIcon, PanelRightIcon, PencilIcon, PlusIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
 import { firstName } from "./team/connectedModel";
 
 /**
@@ -10,11 +10,12 @@ import { firstName } from "./team/connectedModel";
  * of them can offer what the others don't, or word it differently. Each action has its label, whether it can be done
  * now and why not (`disabled`, `title`), its shortcut (`kbd`) and its handler; `section` groups the menu's rows.
  */
-export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "ghosts" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "needs" | "end";
+export type ActionSection = "session" | "stack" | "tools" | "terminal" | "handon" | "room" | "area" | "ghosts" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "needs" | "end";
 
 /** A section's heading in a menu; null: its rows follow a separator only. */
 const SECTION_NAME: Record<ActionSection, string | null> = {
   session: "Session",
+  stack: "Stack",
   tools: "Tools",
   terminal: "Terminal",
   handon: "Hand on",
@@ -50,6 +51,10 @@ export interface WorkspaceEnv {
   owner: string | null;
   /** On the landscape: the size preset it's at (null: none), and why its size can't change (null: it can). Off it, null. */
   size: { current: SizePreset | null; blocked: string | null } | null;
+  /** A stack's tab: its stack's name, renaming it, and taking every tab of this Mac's out of it. Null: a workspace of its own, or off the landscape. */
+  stack: { name: string; rename: Can; unstack: Can } | null;
+  /** Another session in one card with this one: a new tab of its stack, or the stack it starts by that; or why not. */
+  newTab: Can;
   /** The agent's diff side panel is open in its terminal. */
   diffPanel: boolean;
   /** Take over, Take it back, Send, Review (team rooms): in that order, those that apply. */
@@ -133,6 +138,14 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
         ...(blocked ? { disabled: true, title: blocked } : {}),
       });
   }
+  const newTab = tookIt(env.newTab, "to add a tab beside it");
+  if (env.stack)
+    out.push(
+      { section: "stack", key: "newTab", label: "New tab", menuLabel: `New tab in “${env.stack.name}”…`, icon: <PlusIcon />, title: "Another session in this stack", ...can(newTab) },
+      { section: "stack", key: "renameStack", label: "Rename stack", menuLabel: `Rename “${env.stack.name}”…`, title: "Rename this stack: its tabs stay as they are", ...can(env.stack.rename) },
+      { section: "stack", key: "unstack", label: "Unstack", menuLabel: "Unstack its tabs", title: "Each of its tabs becomes a workspace of its own in the area, the one in front keeping the stack's place", ...can(env.stack.unstack) }
+    );
+  else out.push({ section: "session", key: "newTab", label: "New tab", menuLabel: "New tab…", icon: <PlusIcon />, title: "Another session in one card with this one: they become a stack with a tab each", ...can(newTab) });
   const local = !env.owner;
   const noFolder = env.owner ? `${env.owner}'s session has no folder on this Mac` : dead ? "Its session has exited" : null;
   const tool = (t: WorkspaceTool, label: string, icon: JSX.Element): ModelAction => ({

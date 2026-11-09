@@ -3413,6 +3413,65 @@ Design O, with Artifacts as a window, and N's workspace header.
     frame or a timer after the user's own Enter or Esc (⌘K's jump, a
     menu's hand-back) would count as code's, so every typing test would
     need re-reading against it.
+- **As built, the switch · the audit.** Every control, shortcut, menu, drag and
+  pref of the grid and the Sessions view, read from the code and driven in the
+  preview before anything was deleted. *Kept* works as it did; *moved* has its
+  home there; *fixed* was missing and was added here, tested in
+  `test/uiLandscapeSwitch.test.ts` and `test/landscapeArrange.test.ts`;
+  *decided* was dropped on purpose by `landscape.md`.
+
+  | The grid or Sessions view | On the landscape | |
+  | --- | --- | --- |
+  | **Side bar** | | |
+  | Filter box | Find a workspace, on the area tree | moved |
+  | Group row: click to show its grid | Selects the area and flies to it | moved |
+  | Group row: rename, share, new session, message mode, message log, Ask for status | The area's ⋯ and header | moved |
+  | Ask for status's "Asked N sessions" | A note over the landscape | fixed: it only showed in the grid's group bar |
+  | Collapse chevrons (`mb.collapsed`) | The tree's chevrons (`mb.areaTree.closed`); the old state isn't carried | moved |
+  | Sub-group row: click to show or minimize | Selects the stack and brings it into view, in the tree and the Team view | fixed: the Team view's row ran the grid's minimize |
+  | Sub-group row: ✕, dissolve | Unstack its tabs, on a stack's ⋯ and its tree row | fixed |
+  | Sub-group row: right-click | The stack's ⋯ on its tree row | fixed |
+  | Sub-group: rename | Rename “name”…, on the ⋯, and a double-click on its name | fixed |
+  | Sub-group: new tab in it; a tab beside a lone pane | New tab in “name”…; New tab… starts a stack in the workspace's place once the session exists | fixed |
+  | Session row: right-click | The workspace's menu (one action model) | kept |
+  | Session row: drag to another group, drag to reorder | Drag into an area, or Move to area | moved / decided |
+  | Previous: relaunch, forget, restore all | Ghost cards, the Closed sessions list, Reopen all, Clear ghosts | moved |
+  | Connected line | Under the tree | kept |
+  | Team view, the room rows | Kept by the Connected line; a room's area marked with who's online | kept |
+  | A room with nobody online | Marked "shared" in the tree | fixed: it looked like any other area |
+  | Problems publishing room sessions (`LiveProblems`) | Under the tree | fixed: only drawn in the Sessions view |
+  | Rail: Explorer, Search, Changes, Run | Tool windows | moved |
+  | **Group bar** | | |
+  | Group's name, its Share, its room's Follow | The area's header | moved |
+  | Notes (`statusNote`) said off the Sessions tab | In the status bar | fixed: only the group bar drew them |
+  | Showing N of M | Gone: everything's on the landscape | decided |
+  | Layout popover: snap templates | None | **open: needs a design** |
+  | Arrange in N columns, ⌘⌃1–4 | Tidy, with no column count | **open: needs a design** |
+  | Auto: fit panes to the window | Tidy packs; nothing fits a window | **open: needs a design** |
+  | **A pane** | | |
+  | Header: rename, mute, ⋯, undo, repaint, diff, handoff, brief, review, close | The workspace's header and ⋯ | moved |
+  | Double-click a pane edge to even out | Workspace edges resize, no even-out | **open: needs a design** |
+  | Drag its header to move, its edge to resize | The same on a workspace | moved |
+  | Drop onto a pane as a tab; tab dragged out | ⌘G Stack; a tab dragged out (`planUnstack`) | moved |
+  | Inline rename | Rename… | moved |
+  | Pin | Gone: nothing leaves the landscape | decided |
+  | Hide from grid, Show | Gone; collapse hides a whole area | decided |
+  | Genie minimize | Gone | decided |
+  | ⌘E, Esc: fullscreen | Focus | moved |
+  | Banners, file drop, Jump to latest, copy | The workspace's body (`TerminalPane`) | kept |
+  | Continue in, Brief, Second opinion | Placed beside it, brought into view, the old one kept as a ghost | fixed: they landed at the first free spot |
+  | **Elsewhere** | | |
+  | ⌘K's Fullscreen, Pin, Arrange | Focus; Pin and Arrange aren't offered | fixed: they did nothing there |
+  | ⌘K's pane numbers ⌘1–9 | ⌘1 is 100%, ⌘0 fit; ⌘K, ⌥arrows and N go places | fixed the stale hints / decided |
+  | ⌘K's Invite, Share, House board | Act on the selected area | fixed: they read the grid's group |
+  | ⌥⇥, ⌘J, the editor dock, the presets, every dialog | Unchanged | kept |
+  | Import's opened sessions | The first is brought into view | fixed: it wrote `mb.shown` and `mb.activeGroup` |
+  | Per-group remembered panes (`mb.groupLayouts`, `mb.trees`) | Each workspace's own place; read once by the migration | decided |
+  | `mb.shown`, `mb.pinned`, `mb.activeGroup`, `mb.wsTabs`, `mb.wsOpen`, `mb.sideView`, `mb.cols`, `mb.layout`, `mb.zones` | Read by the migration, listed in `LEGACY_PREF_KEYS` | see the switch's next commit |
+
+  **Open before the grid goes:** the Layout popover's templates, Arrange in N
+  columns with ⌘⌃1–4, Auto, and even-out have no home beyond Tidy, and depend on
+  `layoutTree.ts` (`TEMPLATES`, `arrange`, `evenGrid`, `equalize`).
 
 ## Risks
 

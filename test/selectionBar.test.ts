@@ -44,6 +44,8 @@ const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
 const env = (over: Partial<WorkspaceEnv> = {}): WorkspaceEnv => ({
   owner: null,
   size: { current: "M", blocked: null },
+  stack: null,
+  newTab: vi.fn<() => void>(),
   diffPanel: false,
   room: [],
   rename: vi.fn(),

@@ -39,6 +39,7 @@ import {
   nextBand,
   panBy,
   peekBox,
+  carryPlan,
   planDockWindow,
   planMakeArea,
   planMoveArea,
@@ -61,7 +62,6 @@ import {
   tilesIn,
   toLandscape,
   toMinimap,
-  undoOf,
   undoOfPlan,
   notePlacement,
   wheelPixels,
@@ -76,7 +76,9 @@ import {
   type Direction,
   type GoToAsk,
   type GroupMove,
+  type MovesFailed,
   type PendingReveal,
+  type ReadyPlan,
   type RevealAsk,
   type ScreenBox,
   type Point,
@@ -156,8 +158,6 @@ const TOUR_WAIT_MS = 400;
 const TOUR_KEYS_BACK_MS = 2000;
 
 /** A gesture's plan that can be carried out. */
-export type ReadyPlan = Exclude<AreaPlan, { refused: string }>;
-
 /** An area's actions its hover toolbar shows (AreaFrame.tsx), in this order: Tidy first, as the Zoomed board has it. */
 const ARRANGE = ["tidy", "collapse", "lock"];
 
@@ -171,12 +171,6 @@ export interface LandscapeNote {
   text: string;
   n: number;
   action?: NoteAction;
-}
-
-/** Setting a gesture's groups stopped: what to say, and how many of its moves were made first. */
-export interface MovesFailed {
-  said: string;
-  moved: number;
 }
 
 /** How far a press moves before it's a drag (a marquee, a workspace or an area moving) rather than a click. */
@@ -1047,14 +1041,7 @@ export function Landscape({
    * them where they were dropped until the layout has them there. Whatever fails is said, and nothing after it is done:
    * null. Done, the revision its last change to the landscape made (null: it made none), for an Undo to go by.
    */
-  const carryOut = async (plan: ReadyPlan, what: string, settle?: Settling): Promise<{ rev: number | null } | null> => {
-    let rev: number | null = null;
-    const send = async (patch: LandscapePatch, doing: string): Promise<string | null> => {
-      const r = await asks.current.onPatch(patch, doing);
-      if ("error" in r) return r.error;
-      rev = r.rev;
-      return null;
-    };
+  const carryOut = (plan: ReadyPlan, what: string, settle?: Settling): Promise<{ rev: number | null } | null> => {
     const unsettle = () => {
       if (!settle) return;
       settling.current = settling.current.filter((s) => s !== settle);
@@ -1062,29 +1049,16 @@ export function Landscape({
       dragDone();
     };
     if (settle) settling.current.push(settle);
-    const before = storedNow.current;
-    const error = plan.patch ? await send(plan.patch, what) : null;
-    if (error || !plan.patch) unsettle();
-    else setTimeout(unsettle, SETTLE_MS);
-    if (error) {
-      say(`${what}: not saved, ${error}`);
-      return null;
-    }
-    if (plan.moves.length) {
-      const failed = await asks.current.onMoves(plan.moves, what);
-      if (failed) {
-        // the places went first: put back those of the sessions still in their old groups (everything, when none moved),
-        // or they'd sit in an area they aren't in
-        const back = plan.patch && undoOf(before, plan.patch, failed.moved ? plan.moves.slice(failed.moved).map((m) => m.id) : undefined);
-        const undoError = back ? await send(back, `${what} (putting it back)`) : null;
-        say(undoError ? `${failed.said}; and its places couldn't be put back: ${undoError}` : failed.said);
-        return null;
-      }
-    }
-    const afterError = plan.after ? await send(plan.after, what) : null;
-    if (afterError) say(`${what}: its stack's old place wasn't let go, ${afterError}`);
-    if (plan.note) say(plan.note);
-    return afterError ? null : { rev };
+    return carryPlan(plan, what, {
+      before: storedNow.current,
+      send: (patch, doing) => asks.current.onPatch(patch, doing),
+      moves: (moves, doing) => asks.current.onMoves(moves, doing),
+      say,
+      patched: (error, sent) => {
+        if (error || !sent) unsettle();
+        else setTimeout(unsettle, SETTLE_MS);
+      },
+    });
   };
   /**
    * Tab `s` taken out of stack `t` (planUnstack), said with an Undo that puts it back in the stack and what it pushed

@@ -117,14 +117,14 @@ import { D, EASE, initMotion, motion, play, useFlipRows } from "./motion";
 import { StatusDot } from "./StatusDot";
 import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
 // the landscape (Settings → Labs)
-import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type MovesFailed, type NoteAction } from "./Landscape";
 import { emptyStateOf, nothingToTour } from "./landscapeFirstRun";
 import { LandscapeTopBar, type TopTab } from "./TopBar";
+import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type NoteAction } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
-import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, planTidy, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, withoutGone, type CardView, type GoToAsk, type GroupMove, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
-import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
-import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
+import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
 import { currentIndex, goCan, selectionAfter, stepItem, targetOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
 import { BadgeContext } from "./cardBadges";
@@ -191,6 +191,8 @@ const GONE_READ = "which closed sessions' folders are gone";
 const CLOSED_RETRY_MAX_MS = 30_000;
 /** Words that follow others in a sentence ("in 5101"), with their space; none, nothing. */
 const spaced = (words: string): string => (words ? ` ${words}` : "");
+/** ⌘K's pane numbers on the landscape: none, ⌘1 is 100% there. */
+const NO_SHORTCUTS: ReadonlyMap<string, number> = new Map();
 const asRecord = (v: unknown): Record<string, any> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, any>) : {});
 
 /** The layout prefs from before split trees, read once at startup for groups that have no tree yet. */
@@ -312,7 +314,9 @@ function App() {
   const askGroupStatus = async (group: string) => {
     const r = await window.mb.groupStatusCheck(group);
     if (isErr(r)) return alert(r.error);
-    setStatusNote(`Asked ${plural(r.asked, "session")}`);
+    const said = `Asked ${plural(r.asked, "session")}`;
+    if (landscapeOn) return lsSay(said);
+    setStatusNote(said);
     setTimeout(() => setStatusNote(""), 6000);
   };
   // agent CLIs updated under running panes (they run the old version until restarted)
@@ -648,6 +652,10 @@ function App() {
 
   /** Remove a sub-group without touching its sessions — they move up into the group. */
   const dissolveSub = async (top: string, all: SessionInfo[]) => {
+    if (landscapeOn) {
+      const stack = all[0]?.taskGroup;
+      return void (stack && unstackStack(stack));
+    }
     // teammates' sessions stay in the workspace their owners put them in
     const list = all.filter((s) => !isRemote(s));
     // the first of its tabs on screen takes the workspace pane's place; it moves
@@ -1739,6 +1747,18 @@ function App() {
   const placeContinuation = async (old: SessionInfo, next: SessionInfo, closeOld: boolean) => {
     const since = inputStamp();
     await refresh();
+    if (landscapeOn) {
+      // the old one, kept to reopen, stays as its ghost; the new one is beside it (placeBesideOf)
+      setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
+      if (closeOld && !failed(`Couldn't close ${titleOf(old)}`, await window.mb.killSession(old.id, false))) {
+        disposeTerm(old.id);
+        refresh();
+      }
+      setFocused(next.id);
+      revealWorkspace(next.id);
+      setTimeout(() => focusTerm(next.id), 50);
+      return;
+    }
     const [oldKey, nextKey] = [cellKeyOfSession(old), cellKeyFor(next.id, next.taskGroup)];
     // the old one is kept under Previous; its worktree is the new session's
     if (closeOld && !failed(`Couldn't close ${titleOf(old)}`, await window.mb.killSession(old.id, false))) {
@@ -2274,10 +2294,15 @@ function App() {
    * the grid, and in its area on the landscape. Returns why it couldn't start.
    */
   const startReview = async (author: SessionInfo): Promise<string | null> => {
+    if (landscapeOn) placeBesideOf(author);
     const info = await window.mb.reviewStart(author.id);
-    if (isErr(info)) return `Couldn't start the review: ${info.error}`;
+    if (isErr(info)) {
+      setPlaceHint(null);
+      return `Couldn't start the review: ${info.error}`;
+    }
     await refresh();
     if (landscapeOn) {
+      setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
       revealWorkspace(info.id);
       return null;
     }
@@ -2297,6 +2322,38 @@ function App() {
     if ("refused" in plan) return lsSay(plan.refused);
     void lsChange(plan.patch, `${titleOf(t.front)}'s size`);
   };
+  /** A session that goes on from `s` (or reviews it), made from now on: beside its workspace on the landscape, however long it takes to make (resolveLayout's PlaceHint). */
+  const placeBesideOf = (s: SessionInfo) => {
+    const t = tileOfSession(s.id);
+    setPlaceHint(t ? { area: t.area, at: { x: t.rect.x + t.rect.w + GAP, y: t.rect.y }, since: Date.now() } : null);
+  };
+  /** Plan `plan` carried out (carryPlan), or its refusal said. Whether it was. */
+  const carry = async (plan: AreaPlan, what: string): Promise<boolean> => {
+    const before = lsNow.current?.landscape;
+    if ("refused" in plan) {
+      lsSay(plan.refused);
+      return false;
+    }
+    if (!before) return false;
+    return !!(await carryPlan(plan, what, { before, send: landscapeStore.save, moves: runMoves, say: lsSay }));
+  };
+  /** Stack `stack`'s tabs of this Mac's each a workspace of its own (Unstack, the Team view's ✕). */
+  const unstackStack = (stack: string) => {
+    const layout = layoutNow.current;
+    if (!layout) return;
+    void carry(planUnstackAll(layout, stack, areaTitle), `unstacking ${splitGroupKey(stack).sub ?? stack}`).then(() => refresh());
+  };
+  /** New session's dialog for another session in one card with `s`: a tab of its stack, or the stack that starts with it. */
+  const newTabOf = (s: SessionInfo, t: Tile | null): Can => {
+    const layout = layoutNow.current;
+    const l = lsNow.current?.landscape;
+    if (isRemote(s)) return { no: `${s.room?.ownerName ?? "A teammate"}'s session: only its owner adds tabs beside it` };
+    if (t?.stack) return () => newSessionIn(t.stack!);
+    if (!t || t.area === LOOSE_GROUP) return { no: "It's in no area: a stack is part of an area" };
+    if (s.status === "dead") return { no: "Its session has exited: resume it first" };
+    if (layout?.areas.find((a) => a.key === t.area)?.rect.locked) return { no: `${areaTitle(t.area)} is locked: unlock it to stack its workspaces` };
+    return () => l && layout && startWorkspaceFrom(s, `${t.area}/${newStackName(l, layout, t.area)}`);
+  };
   /** What a workspace's actions need (workspaceActions.tsx): `t` is its tile on the landscape, null off it. */
   const wsEnv = (s: SessionInfo, t: Tile | null): WorkspaceEnv => {
     const own = !isRemote(s);
@@ -2307,6 +2364,15 @@ function App() {
     return {
       owner,
       size: t && landscapeLayout ? tileSize(t, landscapeLayout, areaTitle) : null,
+      stack:
+        t?.stack && landscapeLayout
+          ? {
+              name: splitGroupKey(t.stack).sub ?? t.stack,
+              rename: () => setRenameDlg({ kind: "sub", key: t.stack!, initial: splitGroupKey(t.stack!).sub ?? t.stack! }),
+              unstack: ((no) => (no ? { no } : () => unstackStack(t.stack!)))(unstackRefusal(landscapeLayout, t.stack, areaTitle)),
+            }
+          : null,
+      newTab: newTabOf(s, t),
       diffPanel: !!agentPanelOf(s.id),
       room: [
         takeOverAction(b, setTakeOverFor, b && tkView?.asking.find((a) => a.roomId === b.roomId && a.sessionId === b.sessionId)),
@@ -2324,8 +2390,8 @@ function App() {
         if (!hideAgentPanel(s.id)) lsSay("The agent's diff panel isn't open any more");
       },
       undo: s.shell ? { no: "A terminal has no agent turns to undo" } : owner ? { no: `${owner}'s session: theirs to undo` } : !s.repoPath ? { no: "It isn't in a git repository, so its turns can't be put back" } : () => setUndoFor(s),
-      handoff: noAgent ? { no: noAgent } : () => setHandoffFor(s),
-      brief: noAgent ? { no: noAgent } : () => setBriefFor(s),
+      handoff: noAgent ? { no: noAgent } : () => (landscapeOn && placeBesideOf(s), setHandoffFor(s)),
+      brief: noAgent ? { no: noAgent } : () => (landscapeOn && placeBesideOf(s), setBriefFor(s)),
       secondOpinion: noAgent ? { no: noAgent } : !s.repoPath ? { no: "It isn't in a git repository: a second opinion reviews its branch" } : () => void startReview(s).then((e) => e && alert(e)),
       close: () => requestClose(s),
       // a copy a teammate took over is taken back, not resumed or worked on: the model refuses those (workspaceActions)
@@ -3009,7 +3075,10 @@ function App() {
     setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
     // the lone pane joins its new workspace — unless the dialog put the session elsewhere
     const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
-    if (lone && pendingWs) await addAsTab(s, lone, pendingWs.key);
+    if (lone && pendingWs) {
+      if (!landscapeOn) await addAsTab(s, lone, pendingWs.key);
+      else if (layoutNow.current) await carry(planJoinStack(layoutNow.current, lone.id, s.id, pendingWs.key), "making them a stack");
+    }
     refresh();
     jumpToSession(s);
     setModal(null);
@@ -3027,9 +3096,9 @@ function App() {
   };
 
   /** "+" on a pane that isn't in a workspace yet: open a second tab beside it. */
-  const startWorkspaceFrom = (s: SessionInfo) => {
+  const startWorkspaceFrom = (s: SessionInfo, stack?: string) => {
     const top = topOf(s);
-    const key = `${top}/${nextSubName(top)}`;
+    const key = stack ?? `${top}/${nextSubName(top)}`;
     setPendingWs({ id: s.id, key });
     setNewGroup(key);
     setNewLaunch("claude");
@@ -3038,6 +3107,8 @@ function App() {
 
   // a teammate's session has no folder here: the file views and session commands are for this Mac's sessions
   const focusedSession = sessions.find((s) => s.id === focused && !isRemote(s)) ?? null;
+  /** The group ⌘K's room rows act on: the grid's on screen, or the landscape's selected area. */
+  const paletteGroup = landscapeOn ? selectedArea : activeGroup;
 
   /**
    * Open a definition: in the editor tab's own session when the file is in its
@@ -3402,11 +3473,13 @@ function App() {
                 className={`sub-label ${inGrid ? "in-grid" : ""}`}
                 title="click to show/minimize this workspace · ✎/double-click to rename · ✕ dissolves it (sessions stay) · drop a session to move it in"
                 onClick={() =>
-                  deferClick(() =>
-                    inGrid
-                      ? minimizeWorkspace(wsKey, subList)
-                      : restoreWorkspace(key, wsKey, subList)
-                  )
+                  deferClick(() => {
+                    if (landscapeOn && subList[0]) {
+                      setFocused(subList[0].id);
+                      revealWorkspace(subList[0].id);
+                    } else if (inGrid) minimizeWorkspace(wsKey, subList);
+                    else restoreWorkspace(key, wsKey, subList);
+                  })
                 }
                 onDoubleClick={(e) => {
                   e.stopPropagation();
@@ -3885,6 +3958,8 @@ function App() {
               areaMenu={(key) => (key === LOOSE_GROUP ? ((rows) => (rows.length ? menuOf(rows) : null))(looseGhostRows()) : areaMenu(key))}
               footer={
                 <>
+                  {/* team rooms: live panes */}
+                  <LiveProblems state={roomLive.state} />
                   {/* closed sessions with no ghost on the landscape (every one while it's being read in) */}
                   <ClosedSessions list={closedList} actionsFor={(s) => ghostActions(s, ghostEnv(s, [s], false))} all={ghostsActions(closedListRows(), { what: "closed session", clearLabel: "Forget all" })} statusFor={(s) => closedStatus(s, goneFolders.get(s.id))} />
                   {/* team rooms: the way into the Team view, as in the Sessions view */}
@@ -4261,6 +4336,12 @@ function App() {
               ⚠ install hooks
             </span>
           )}
+          {/* a note said while the landscape isn't on screen */}
+          {landscapeOn && statusNote && (
+            <span className="update-note" title={statusNote}>
+              <span className="un-text">{statusNote}</span>
+            </span>
+          )}
           {/* following a teammate: said here once, whichever room's (rooms' bars only offer Follow) */}
           <FollowingNow follow={follow} />
           <span className="sb-info">
@@ -4277,7 +4358,7 @@ function App() {
       {paletteOpen && (
         <CommandPalette
           sessions={sessions}
-          shortcuts={shortcuts}
+          shortcuts={landscapeOn ? NO_SHORTCUTS : shortcuts}
           onClose={() => setPaletteOpen(false)}
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },
@@ -4326,17 +4407,17 @@ function App() {
             ...(follow.leader
               ? [{ label: `Stop following ${follow.leader.name}`, run: follow.stop }]
               : follow.candidates.map((v) => ({ label: `Follow ${v.name} — mirror the shared sessions they show`, run: () => follow.follow(v.member) }))),
-            ...(activeGroup && activeGroup !== "ungrouped" && activeGroup !== "assistant"
+            ...(paletteGroup && paletteGroup !== "ungrouped" && paletteGroup !== "assistant"
               ? [
                   {
-                    label: roomOfGroup(teamStatus, activeGroup) ? `Invite a teammate to ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))}` : `Share ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))} as a team room`,
-                    run: () => shareDialog(activeGroup, groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))),
+                    label: roomOfGroup(teamStatus, paletteGroup) ? `Invite a teammate to ${groupTitle(paletteGroup, workSessions.filter((s) => topOf(s) === paletteGroup))}` : `Share ${groupTitle(paletteGroup, workSessions.filter((s) => topOf(s) === paletteGroup))} as a team room`,
+                    run: () => shareDialog(paletteGroup, groupTitle(paletteGroup, workSessions.filter((s) => topOf(s) === paletteGroup))),
                   },
                 ]
               : []),
             // team rooms: the House board
-            ...(activeGroup && roomOfGroup(teamStatus, activeGroup)
-              ? [{ label: `House board — ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))}`, run: () => setBoardDlg(roomOfGroup(teamStatus, activeGroup)!.id) }]
+            ...(paletteGroup && roomOfGroup(teamStatus, paletteGroup)
+              ? [{ label: `House board — ${groupTitle(paletteGroup, workSessions.filter((s) => topOf(s) === paletteGroup))}`, run: () => setBoardDlg(roomOfGroup(teamStatus, paletteGroup)!.id) }]
               : []),
             ...(shownTab("worktracker")
               ? [
@@ -4348,11 +4429,13 @@ function App() {
             ...(shownTab("collaborate") ? [{ label: "Council — model discussions", run: () => setTab("collaborate") }] : []),
             ...(focusedSession
               ? [
-                  {
-                    label: `${zoomed === focusedSession.id ? "Exit fullscreen" : "Fullscreen"} ${titleOf(focusedSession)}`,
-                    kbd: "⌘E",
-                    run: () => zoomTo(zoomed === focusedSession.id ? null : focusedSession.id),
-                  },
+                  landscapeOn
+                    ? { label: `Focus ${titleOf(focusedSession)} — fill the window with it`, kbd: "⌘E", run: () => revealWorkspace(focusedSession.id, true) }
+                    : {
+                        label: `${zoomed === focusedSession.id ? "Exit fullscreen" : "Fullscreen"} ${titleOf(focusedSession)}`,
+                        kbd: "⌘E",
+                        run: () => zoomTo(zoomed === focusedSession.id ? null : focusedSession.id),
+                      },
                   {
                     label: `Rename ${titleOf(focusedSession)}…`,
                     run: () => setRenameDlg({ kind: "session", key: focusedSession.id, initial: titleOf(focusedSession) }),
@@ -4364,13 +4447,17 @@ function App() {
                   ...(ticketOfGroup(topOf(focusedSession))
                     ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]
                     : []),
-                  {
-                    label: `${pinnedSet.has(focusedSession.id) ? "Unpin" : "Pin"} ${titleOf(focusedSession)}${pinnedSet.has(focusedSession.id) ? "" : " — keep it on screen across groups"}`,
-                    run: () => togglePin([focusedSession.id]),
-                  },
+                  ...(landscapeOn
+                    ? []
+                    : [
+                        {
+                          label: `${pinnedSet.has(focusedSession.id) ? "Unpin" : "Pin"} ${titleOf(focusedSession)}${pinnedSet.has(focusedSession.id) ? "" : " — keep it on screen across groups"}`,
+                          run: () => togglePin([focusedSession.id]),
+                        },
+                      ]),
                 ]
               : []),
-            ...[1, 2, 3, 4].map((n) => ({ label: `Arrange in ${plural(n, "column")}`, kbd: `⌘⌃${n}`, run: () => arrangeInCols(n) })),
+            ...(landscapeOn ? [] : [1, 2, 3, 4].map((n) => ({ label: `Arrange in ${plural(n, "column")}`, kbd: `⌘⌃${n}`, run: () => arrangeInCols(n) }))),
             { label: "Next waiting session", kbd: "⌥⇥", run: cycleWaiting },
             { label: `Switch to ${theme === "dark" ? "light" : "dark"} mode`, run: () => setTheme(theme === "dark" ? "light" : "dark") },
             { label: "How to use Mockingbird", kbd: "⌘/", run: () => setModal("help") },
@@ -4436,7 +4523,10 @@ function App() {
       {handoffFor && (
         <HandoffDialog
           session={handoffFor}
-          onClose={() => setHandoffFor(null)}
+          onClose={() => {
+            setHandoffFor(null);
+            setPlaceHint(null);
+          }}
           onStarted={(next, closeOld) => {
             const old = handoffFor;
             setHandoffFor(null);
@@ -4447,7 +4537,10 @@ function App() {
       {briefFor && (
         <BriefDialog
           session={briefFor}
-          onClose={() => setBriefFor(null)}
+          onClose={() => {
+            setBriefFor(null);
+            setPlaceHint(null);
+          }}
           onStarted={(next, closeOld) => {
             const old = briefFor;
             setBriefFor(null);
@@ -4558,7 +4651,7 @@ function App() {
       )}
       {renameDlg && (
         <RenameDialog
-          title={renameDlg.kind === "session" ? "Rename session" : renameDlg.kind === "sub" ? "Rename workspace" : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}
+          title={renameDlg.kind === "session" ? "Rename session" : renameDlg.kind === "sub" ? (landscapeOn ? "Rename stack" : "Rename workspace") : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}
           initial={renameDlg.initial}
           onSave={applyRename}
           onClose={() => setRenameDlg(null)}
@@ -4600,7 +4693,10 @@ function App() {
           onOpened={(opened) => {
             refresh();
             const batch = opened.slice(0, 6); // rest stay in the sidebar to avoid a 26-pane grid
-            if (batch.length) {
+            if (landscapeOn) {
+              // every one is on the landscape: the first is brought into view
+              if (opened[0]) jumpToSession(opened[0]);
+            } else if (batch.length) {
               // the grid shows the first import's group (restored sessions keep theirs); pinned panes stay
               const g = topOf(batch[0]);
               switchGrid(g, batch.filter((s) => topOf(s) === g).map((s) => s.id));

@@ -197,6 +197,11 @@ export function AreaTree({
                 </button>
                 <span className={`lt-sq ${a.accent === null ? "none" : `a${a.accent}`}`} />
                 <span className="lt-t">{a.title}</span>
+                {a.online && !a.online.length && (
+                  <span className="lt-tag" title="A team room: shared with your teammates, none of them online now">
+                    shared
+                  </span>
+                )}
                 {a.online?.map((m) => (
                   <span key={m.id} className="lt-av" title={`${m.name} is online`}>
                     {initialsOf(m.name).slice(0, 1)}
@@ -229,6 +234,10 @@ export function AreaTree({
                         onClick={() => onPick(it.members.find((s) => s.id === selected) ?? front)}
                         onDoubleClick={() => onFocus(it.members.find((s) => s.id === selected) ?? front)}
                         onKeyDown={(e) => e.target === e.currentTarget && onKey(e, front)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          menu.openAt({ x: e.clientX, y: e.clientY }, menuFor(it.members.find((s) => s.id === selected) ?? front));
+                        }}
                       >
                         <span className="lt-line">
                           <button

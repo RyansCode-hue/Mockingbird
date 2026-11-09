@@ -1179,6 +1179,58 @@ export interface GroupMove {
  * last session has left it, for the same reason.
  */
 export type AreaPlan = { patch: LandscapePatch | null; moves: GroupMove[]; after: LandscapePatch | null; note?: string } | { refused: string };
+/** A gesture's plan that can be carried out. */
+export type ReadyPlan = Exclude<AreaPlan, { refused: string }>;
+
+/** Setting a gesture's groups stopped: what to say, and how many of its moves were made first. */
+export interface MovesFailed {
+  said: string;
+  moved: number;
+}
+
+/** What carrying a plan out needs: the landscape as it is, the store, the sessions' groups, and where to say what stopped it. */
+export interface PlanHands {
+  before: Landscape;
+  send: (patch: LandscapePatch, what: string) => Promise<{ rev: number } | { error: string }>;
+  moves: (moves: readonly GroupMove[], what: string) => Promise<MovesFailed | null>;
+  say: (text: string) => void;
+  /** Its places have been sent, or weren't there to send (`error` is why they weren't saved). */
+  patched?: (error: string | null, sent: boolean) => void;
+}
+
+/**
+ * Plan `plan` carried out: its places, then its groups, then `after`. Groups that can't all be set put back the places
+ * of the sessions still in their old ones, or they'd sit in an area they aren't in. The revision its places made
+ * (null: there were none); null when it stopped, which has been said.
+ */
+export async function carryPlan(plan: ReadyPlan, what: string, h: PlanHands): Promise<{ rev: number | null } | null> {
+  let rev: number | null = null;
+  const send = async (patch: LandscapePatch, doing: string): Promise<string | null> => {
+    const r = await h.send(patch, doing);
+    if ("error" in r) return r.error;
+    rev = r.rev;
+    return null;
+  };
+  const error = plan.patch ? await send(plan.patch, what) : null;
+  h.patched?.(error, !!plan.patch);
+  if (error) {
+    h.say(`${what}: not saved, ${error}`);
+    return null;
+  }
+  if (plan.moves.length) {
+    const failed = await h.moves(plan.moves, what);
+    if (failed) {
+      const back = plan.patch && undoOf(h.before, plan.patch, failed.moved ? plan.moves.slice(failed.moved).map((m) => m.id) : undefined);
+      const undoError = back ? await send(back, `${what} (putting it back)`) : null;
+      h.say(undoError ? `${failed.said}; and its places couldn't be put back: ${undoError}` : failed.said);
+      return null;
+    }
+  }
+  const afterError = plan.after ? await send(plan.after, what) : null;
+  if (afterError) h.say(`${what}: its stack's old place wasn't let go, ${afterError}`);
+  if (plan.note) h.say(plan.note);
+  return afterError ? null : { rev };
+}
 
 /**
  * keptIn for a gesture on `layout`: its areas, the workspaces it shows, and the places it gave windows and cards. Its
@@ -2061,6 +2113,58 @@ export function planUnstack(l: Landscape, layout: ResolvedLayout, id: string, at
     put(after.stacks, t.stack!, null);
   } else if (t.front.id === id) put(p.stacks, t.stack!, { active: rest[0].id, placement: stackAt });
   return { patch: finish(p), moves, after: finish(after) };
+}
+
+/**
+ * Why stack `stack` can't be unstacked now, or null: the one rule its row and the Team view's ✕ keep. Not one in a locked
+ * area, nor one whose tabs are all teammates' (only their owners move those).
+ */
+export function unstackRefusal(layout: Pick<ResolvedLayout, "areas" | "tiles">, stack: string, titleOf: (key: string) => string): string | null {
+  const t = layout.tiles.find((x) => x.stack === stack);
+  if (!t) return "That stack isn't on the landscape any more";
+  if (layout.areas.find((a) => a.key === t.area)?.rect.locked) return `${titleOf(t.area)} is locked: unlock it to take tabs out of its stacks`;
+  if (t.members.every(isTheirs)) return `${t.members[0].room!.ownerName}'s sessions leave the stack only on their Mac`;
+  return null;
+}
+
+/**
+ * Every tab of this Mac's out of stack `stack`, up into its area (Unstack): the one in front takes the stack's place, the
+ * others are placed as any new workspace is (resolveLayout, which grows the area to hold them). With a teammate's tab in
+ * it the stack stays where it is, holding theirs, and every one of this Mac's goes where there's room. Its closed tabs
+ * go with it and, with no place, are in the Closed sessions list. The front tab moves last, so it never sits on the
+ * stack's place beside the stack it left.
+ */
+export function planUnstackAll(layout: Pick<ResolvedLayout, "areas" | "tiles">, stack: string, titleOf: (key: string) => string): AreaPlan {
+  const refused = unstackRefusal(layout, stack, titleOf);
+  if (refused) return { refused };
+  const t = layout.tiles.find((x) => x.stack === stack)!;
+  const group = t.area === LOOSE_GROUP ? null : t.area;
+  const mine = t.members.filter((s) => !isTheirs(s));
+  const keeps = mine.length < t.members.length;
+  const p = emptyPatch();
+  const after = emptyPatch();
+  const front = keeps ? null : (mine.find((s) => s.id === t.front.id) ?? mine[0]);
+  if (front) {
+    put(p.workspaces, front.id, t.rect);
+    put(after.stacks, stack, null);
+  }
+  const closed = keeps ? [] : (t.closed ?? []);
+  const moves: GroupMove[] = [...closed, ...mine.filter((s) => s !== front), ...(front ? [front] : [])].map((s) => ({ id: s.id, group }));
+  return { patch: finish(p), moves, after: finish(after), note: closed.length ? `${closed.length === 1 ? "Its closed tab is" : `Its ${closed.length} closed tabs are`} in the Closed sessions list` : undefined };
+}
+
+/**
+ * New session `next` (in stack `stack`, which it has just started) and workspace `lone` made one card, in `lone`'s place:
+ * `next` in front, as a new tab is. Refused when `lone` has no workspace on the landscape.
+ */
+export function planJoinStack(layout: Pick<ResolvedLayout, "tiles">, lone: string, next: string, stack: string): AreaPlan {
+  const t = layout.tiles.find((x) => !x.stack && x.front.id === lone);
+  if (!t) return { refused: "That workspace isn't on the landscape any more" };
+  const p = emptyPatch();
+  const after = emptyPatch();
+  put(p.stacks, stack, { active: next, placement: t.rect });
+  put(after.workspaces, lone, null);
+  return { patch: finish(p), moves: [{ id: lone, group: stack }], after: finish(after) };
 }
 
 /**

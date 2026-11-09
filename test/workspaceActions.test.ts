@@ -25,6 +25,8 @@ const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
 const env = (over: Partial<WorkspaceEnv> = {}): WorkspaceEnv => ({
   owner: null,
   size: { current: "M", blocked: null },
+  stack: null,
+  newTab: vi.fn<() => void>(),
   diffPanel: true,
   room: [],
   rename: vi.fn(),
@@ -52,7 +54,7 @@ describe("a workspace's actions", () => {
   it("are the pane header's controls and the session's actions, in menu order, every one usable on a live session of yours", () => {
     const acts = workspaceActions(sess(), env());
     expect(keys(acts)).toEqual([
-      "rename", "notify", "move", "size:S", "size:M", "size:L",
+      "rename", "notify", "move", "size:S", "size:M", "size:L", "newTab",
       "tool:files", "tool:changes", "tool:search", "tool:run", "tool:artifacts",
       "repaint", "diff", "undo", "handoff", "brief", "review", "close",
     ]);
@@ -129,13 +131,33 @@ describe("a workspace's actions as a menu", () => {
   it("put each section under its heading, and Close after a separator", () => {
     const menu = rows(menuOf(workspaceActions(sess(), env({ room: [{ key: "takeover", label: "Take over", onPick: vi.fn() }] }))));
     expect(menu).toEqual([
-      "# Session", "rename", "notify", "move", "size:S", "size:M", "size:L",
+      "# Session", "rename", "notify", "move", "size:S", "size:M", "size:L", "newTab",
       "-", "# Tools", "tool:files", "tool:changes", "tool:search", "tool:run", "tool:artifacts",
       "-", "# Terminal", "repaint", "diff", "undo",
       "-", "# Hand on", "handoff", "brief", "review",
       "-", "# Team room", "takeover",
       "-", "close",
     ]);
+  });
+
+  it("of a stack's tab: New tab in it, renaming it and Unstack under its own heading, each off with its reason", () => {
+    const rename = vi.fn();
+    const unstack = vi.fn();
+    const menu = menuOf(workspaceActions(sess(), env({ stack: { name: "api", rename, unstack } })));
+    expect(rows(menu).slice(0, 12)).toEqual(["# Session", "rename", "notify", "move", "size:S", "size:M", "size:L", "-", "# Stack", "newTab", "renameStack", "unstack"]);
+    const acts = workspaceActions(sess(), env({ stack: { name: "api", rename, unstack } }));
+    expect(actionOf(acts, "newTab")?.menuLabel).toBe("New tab in “api”…");
+    usable(acts, "renameStack")!.onPick();
+    usable(acts, "unstack")!.onPick();
+    expect(rename).toHaveBeenCalledOnce();
+    expect(unstack).toHaveBeenCalledOnce();
+    const locked = workspaceActions(sess(), env({ stack: { name: "api", rename, unstack: { no: "#5101 is locked" } } }));
+    expect(actionOf(locked, "unstack")).toMatchObject({ disabled: true, title: "#5101 is locked" });
+  });
+
+  it("of a copy a teammate took over: no new tab beside it", () => {
+    const acts = workspaceActions(sess({ room: { takenOver: { byName: "Nick", at: 1 } } as never }), env());
+    expect(actionOf(acts, "newTab")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back to add a tab beside it/) });
   });
 
   it("keep an area's own rows in the section they're given, ready to join the model", () => {

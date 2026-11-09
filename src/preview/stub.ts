@@ -45,6 +45,7 @@ import { recordConsole, runNeedsAudit } from "./needsYouAudit";
 import { runFirstRunAudit } from "./firstRunAudit";
 // the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
 import { armFocus } from "../renderer/keyArm";
+import { runSwitchAudit } from "./switchAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
@@ -2906,6 +2907,34 @@ if (params.has("landscapeNeedsAudit")) {
     emit("onTeamLive", clone(live));
   };
   runNeedsAudit({ sessions: () => sessions, setSession, setOwnTag, remote: () => live.remote, setRemote, calls, emit, badgeFails, waitFor }, params.get("landscapeNeedsAudit") || "a");
+}
+// S8: ?landscapeSwitchAudit=stack|locked|palette|notes|place works what the grid offered on the landscape (switchAudit.ts) for test/uiLandscapeSwitch.test.ts
+if (params.has("landscapeSwitchAudit")) {
+  const newSession = (over: Partial<SessionInfo>) => {
+    const made = session(`n${Date.now().toString(36)}`, { status: "working", createdAt: Date.now(), ...over });
+    sessions = [...sessions, made];
+    buffers[made.id] = `${C.dim}(UI preview: a new session would start here)${C.reset}\r\n> `;
+    sessionsChanged();
+    return made;
+  };
+  runSwitchAudit(
+    {
+      sessions: () => sessions,
+      calls,
+      api: api as never,
+      newSession,
+      setLiveProblems: (problems) => {
+        live.problems = problems;
+        emit("onTeamLive", clone(live));
+      },
+      roomsEmpty: () => {
+        for (const r of team.rooms) r.online = [];
+        teamChanged();
+      },
+      waitFor,
+    },
+    params.get("landscapeSwitchAudit") || "stack"
+  );
 }
 const lsFocus = params.get("lsFocus");
 if (lsFocus) {
