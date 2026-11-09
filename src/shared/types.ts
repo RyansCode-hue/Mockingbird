@@ -1016,20 +1016,34 @@ export function slugBranch(ticketId: string, ticketTitle: string): string {
 // nothing reaches Azure DevOps except comments and pull requests the user
 // approves one by one.
 
+/**
+ * The delivery stages, in order. `step` is a stage's place on the rail: 1–8, then Done (9). Stakeholder testing's
+ * approval and its PR to main are stages of their own inside step 6. An id keeps its meaning for good, because
+ * pipeline.json is never migrated: a build reads the ids it knows and shows any other as itself.
+ */
 export const TICKET_STAGES = [
-  { id: "ba", label: "BA" },
-  { id: "coding", label: "Coding" },
-  { id: "local-test", label: "Local testing" },
-  { id: "pr-dev", label: "PR to dev" },
-  { id: "stakeholder", label: "Stakeholder testing" },
-  { id: "approved", label: "Approved" },
-  { id: "pr-main", label: "PR to main" },
-  { id: "prod-test", label: "Staging / prod" },
-  { id: "comms", label: "Comms" },
-  { id: "done", label: "Done" },
+  { id: "ba", label: "BA", step: 1 },
+  { id: "coding", label: "Coding", step: 2 },
+  { id: "local-test", label: "Local testing", step: 3 },
+  { id: "pr-dev", label: "PR to dev", step: 4 },
+  { id: "dev-test", label: "AI testing in dev/UAT", step: 5 },
+  { id: "stakeholder", label: "Stakeholder testing", step: 6 },
+  { id: "approved", label: "Approved", step: 6 },
+  { id: "pr-main", label: "PR to main", step: 6 },
+  { id: "prod-test", label: "AI testing in staging/prod", step: 7 },
+  { id: "comms", label: "Patch notes", step: 8 },
+  { id: "done", label: "Done", step: 9 },
 ] as const;
 export type TicketStage = (typeof TICKET_STAGES)[number]["id"];
-export const stageLabel = (s: TicketStage): string => TICKET_STAGES.find((x) => x.id === s)?.label ?? s;
+/** A stage id as pipeline.json holds it: one of TICKET_STAGES, or a newer build's, which is kept as it is. */
+export type StoredStage = TicketStage | (string & {});
+export const isTicketStage = (s: unknown): s is TicketStage => TICKET_STAGES.some((x) => x.id === s);
+/** A stage's name; an id this build doesn't know is shown as itself. */
+export const stageLabel = (s: StoredStage): string => TICKET_STAGES.find((x) => x.id === s)?.label ?? s;
+/** A stage's place on the rail (1–8, Done 9), or null for an id this build doesn't know. */
+export const stageStep = (s: StoredStage): number | null => TICKET_STAGES.find((x) => x.id === s)?.step ?? null;
+/** `by` for a move or a tick made in the window. */
+export const BY_YOU = "you";
 
 export type PrTarget = "dev" | "main";
 
@@ -1049,22 +1063,41 @@ export interface PipelinePr {
 /** A comment drafted when a ticket reaches a stage; it posts to ADO only when the user clicks Post. */
 export interface CommentDraft {
   id: string;
-  stage: TicketStage;
+  stage: StoredStage;
   text: string;
   at: number;
 }
 
+/** Who ticked a gate's item, and when. */
+export interface GateTick {
+  by: string;
+  at: number;
+}
+
+/**
+ * One ticket's record in pipeline.json. Every field added after 1.6.0 is optional, and a build keeps fields and
+ * stage ids it doesn't know, so 1.6.0 and later builds read and write the same file.
+ */
 export interface TicketPipeline {
   ticketId: string;
   title?: string;
-  stage: TicketStage;
-  history: { at: number; stage: TicketStage; note?: string }[];
+  stage: StoredStage;
+  /** Every move; `by` is who made it (BY_YOU for the window), absent on moves from before it was kept. */
+  history: { at: number; stage: StoredStage; note?: string; by?: string }[];
   prs: PipelinePr[];
   feedback: { at: number; text: string }[];
   drafts: CommentDraft[];
-  /** Promotion-gate checklist ticks, keyed "<gate>:<item>". */
+  /** Promotion-gate checklist ticks, keyed "<gate>:<item>". Only `true` is kept: unticking deletes the key. */
   checks: Record<string, boolean>;
+  /**
+   * Who ticked each item, beside `checks` rather than in it so 1.6.0 still reads `checks` as booleans. An entry
+   * counts only while its item is ticked (tickOf), since 1.6.0 unticks without touching it.
+   */
+  checkedBy?: Record<string, GateTick>;
 }
+
+/** Who ticked a gate item that's ticked; null for one that isn't, or one ticked before authors were kept. */
+export const tickOf = (p: TicketPipeline, key: string): GateTick | null => (p.checks[key] ? (p.checkedBy?.[key] ?? null) : null);
 
 /**
  * The promotion gates (local → dev/UAT → staging → production) and what each

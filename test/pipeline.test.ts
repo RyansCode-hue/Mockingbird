@@ -5,9 +5,15 @@ import { PipelineStore, stageComment } from "../src/main/pipeline";
 import { parseRemote } from "../src/main/git";
 import { findOpenPr, prBaseProblem, openPr, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
 import type { ShellRunner } from "../src/main/headless";
+import { BY_YOU, GATES, stageLabel, stageStep, tickOf, TICKET_STAGES, type PipelinePr, type TicketPipeline, type TicketStage } from "../src/shared/types";
+import { nextSteps, railOf } from "../src/renderer/ticketPipelineModel";
+import { PipelineStore as PipelineStore160 } from "./fixtures/pipeline-1.6.0/pipeline";
+import { TICKET_STAGES as TICKET_STAGES_160, stageLabel as stageLabel160 } from "./fixtures/pipeline-1.6.0/types";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 const storeFile = () => path.join(tempDir("pipeline"), "pipeline.json");
+const readFile = (f: string): Record<string, TicketPipeline> => JSON.parse(fs.readFileSync(f, "utf8"));
+const prTo = (target: "dev" | "main", id: number): PipelinePr => ({ target, provider: "ado", id, url: `https://dev.azure.com/o/p/_git/r/pullrequest/${id}`, repo: "p/r", branch: "5101-x", base: target, at: id, summary: `PR ${id}'s summary.` });
 
 describe("the ticket pipeline store", () => {
   it("moves a ticket through stages, drafting each stage's comment", () => {
@@ -25,14 +31,19 @@ describe("the ticket pipeline store", () => {
     s.setStage("1", "pr-dev");
     expect(s.startCoding("1")).toBeNull();
     expect(s.get("1")!.stage).toBe("pr-dev");
+    s.setStage("1", "dev-test");
+    expect(s.startCoding("1")).toBeNull();
+    expect(s.get("1")!.stage).toBe("dev-test");
   });
-  it("loops stakeholder feedback back to local testing, quoting it in the draft", () => {
+  it("sends stakeholder feedback back to Coding, quoting it in the draft", () => {
     const s = new PipelineStore(storeFile());
     s.setStage("7", "stakeholder");
-    const p = s.addFeedback("7", "The dropdown should remember the last org");
-    expect(p.stage).toBe("local-test");
+    const p = s.addFeedback("7", "The dropdown should remember the last org", BY_YOU);
+    expect(p.stage).toBe("coding");
+    expect(p.history.at(-1)).toMatchObject({ stage: "coding", note: "The dropdown should remember the last org", by: "you" });
     expect(p.feedback[0].text).toBe("The dropdown should remember the last org");
-    expect(p.drafts.at(-1)!.text).toContain("The dropdown should remember the last org");
+    expect(p.drafts.at(-1)!.stage).toBe("coding");
+    expect(p.drafts.at(-1)!.text).toBe("Stakeholder feedback received; back in development to address it:\n\nThe dropdown should remember the last org");
     expect(() => s.addFeedback("7", "  ")).toThrow(/empty/);
   });
   it("records a pull request and moves to its stage with the link in the draft", () => {
@@ -43,19 +54,44 @@ describe("the ticket pipeline store", () => {
     expect(p.prs).toHaveLength(1);
     expect(p.drafts.at(-1)!.text).toBe("Pull request to dev opened:\n\nhttps://dev.azure.com/o/p/_git/r/pullrequest/42\n5101-x → dev\n\nAdds the dropdown.");
   });
-  it("keeps checklist ticks, and edits or discards drafts", () => {
+  it("keeps who made each move, and moves from before that without one", () => {
+    const s = new PipelineStore(storeFile());
+    s.startCoding("2", "t", BY_YOU);
+    s.setStage("2", "local-test", { by: BY_YOU });
+    s.addPr("2", prTo("dev", 5), undefined, BY_YOU);
+    s.setStage("2", "dev-test");
+    expect(s.get("2")!.history.map((h) => [h.stage, h.by])).toEqual([
+      ["coding", "you"],
+      ["local-test", "you"],
+      ["pr-dev", "you"],
+      ["dev-test", undefined],
+    ]);
+    expect("by" in s.get("2")!.history[3]).toBe(false);
+  });
+  it("keeps checklist ticks with who ticked them, and edits or discards drafts", () => {
     const s = new PipelineStore(storeFile());
     s.setStage("9", "coding");
-    s.setCheck("9", "dev:tests", true);
-    expect(s.get("9")!.checks).toEqual({ "dev:tests": true });
-    s.setCheck("9", "dev:tests", false);
+    const before = Date.now();
+    s.setCheck("9", "dev:tests", true, BY_YOU);
+    const p = s.get("9")!;
+    expect(p.checks).toEqual({ "dev:tests": true });
+    expect(tickOf(p, "dev:tests")).toEqual({ by: "you", at: expect.any(Number) });
+    expect(tickOf(p, "dev:tests")!.at).toBeGreaterThanOrEqual(before);
+    s.setCheck("9", "dev:tests", false, BY_YOU);
     expect(s.get("9")!.checks).toEqual({});
+    expect(s.get("9")!.checkedBy).toEqual({});
     const d = s.get("9")!.drafts[0];
     s.editDraft("9", d.id, "Started on it.");
     expect(s.findDraft("9", d.id).text).toBe("Started on it.");
     s.dropDraft("9", d.id);
     expect(s.get("9")!.drafts).toEqual([]);
     expect(() => s.dropDraft("9", d.id)).toThrow(/No draft/);
+  });
+  it("reads a tick's author only while the item is ticked", () => {
+    // 1.6.0 unticks by deleting the check alone, leaving its author beside it
+    const p: TicketPipeline = { ticketId: "1", stage: "local-test", history: [], prs: [], feedback: [], drafts: [], checks: { "dev:smoke": true }, checkedBy: { "dev:tests": { by: "you", at: 1 } } };
+    expect(tickOf(p, "dev:tests")).toBeNull();
+    expect(tickOf(p, "dev:smoke")).toBeNull();
   });
   it("persists, and keeps an unreadable file aside instead of overwriting it", () => {
     const f = storeFile();
@@ -78,9 +114,213 @@ describe("the ticket pipeline store", () => {
       errors.mockRestore();
     }
   });
-  it("drafts nothing for stages that need no comment", () => {
-    expect(stageComment("ba", {})).toBeNull();
-    expect(stageComment("comms", {})).toBeNull();
+  it("refuses a stage id it doesn't know, for a move or a draft", () => {
+    const s = new PipelineStore(storeFile());
+    s.setStage("4", "coding");
+    expect(() => s.setStage("4", "uat-signoff" as TicketStage)).toThrow('Unknown stage "uat-signoff"');
+    expect(() => s.addDraft("4", "uat-signoff" as TicketStage, "x")).toThrow('Unknown stage "uat-signoff"');
+    expect(s.get("4")!.stage).toBe("coding");
+    expect(s.get("4")!.drafts).toHaveLength(1);
+  });
+});
+
+describe("the comment each stage drafts", () => {
+  const pr = prTo("main", 9);
+  it("is the table's, for every stage", () => {
+    const drafted = Object.fromEntries(TICKET_STAGES.map((s) => [s.id, stageComment(s.id, { pr, summary: pr.summary })]));
+    expect(drafted).toEqual({
+      ba: null,
+      coding: "Development has started.",
+      "local-test": "Development is done; testing locally.",
+      "pr-dev": "Pull request to dev opened:\n\nhttps://dev.azure.com/o/p/_git/r/pullrequest/9\n5101-x → main\n\nPR 9's summary.",
+      "dev-test": null,
+      stakeholder: "Deployed to dev/UAT and tested; ready for stakeholder testing.",
+      approved: "Approved in stakeholder testing.",
+      "pr-main": "Pull request to main opened:\n\nhttps://dev.azure.com/o/p/_git/r/pullrequest/9\n5101-x → main\n\nPR 9's summary.",
+      "prod-test": "Merged to main; testing in staging/production.",
+      comms: null,
+      done: "Done.",
+    });
+  });
+  it("says a ticket is back in development, not that it has started, once it has been", () => {
+    const s = new PipelineStore(storeFile());
+    s.startCoding("6");
+    s.setStage("6", "done");
+    expect(s.setStage("6", "coding", { by: BY_YOU }).drafts.at(-1)!.text).toBe("Back in development.");
+    // a ticket set straight to a later stage by hand, then back, has been in development too
+    s.setStage("8", "stakeholder");
+    expect(s.setStage("8", "coding").drafts.at(-1)!.text).toBe("Back in development.");
+    // BA isn't development
+    s.setStage("10", "ba");
+    expect(s.setStage("10", "coding").drafts.at(-1)!.text).toBe("Development has started.");
+  });
+  it("drafts nothing at BA, AI testing in dev/UAT or Patch notes", () => {
+    const s = new PipelineStore(storeFile());
+    for (const stage of ["ba", "dev-test", "comms"] as const) s.setStage("11", stage);
+    expect(s.get("11")!.drafts).toEqual([]);
+  });
+});
+
+describe("pipeline.json across versions", () => {
+  it("1.6.0 reads and writes a file this build wrote, keeping dev-test, who moved it and who ticked", () => {
+    const f = storeFile();
+    const now = new PipelineStore(f);
+    now.startCoding("5102", "Quick view", BY_YOU);
+    now.setStage("5102", "local-test", { by: BY_YOU });
+    now.setCheck("5102", "dev:tests", true, BY_YOU);
+    now.addPr("5102", prTo("dev", 91), undefined, BY_YOU);
+    now.setStage("5102", "dev-test", { by: BY_YOU });
+    now.setStage("5101", "stakeholder", { by: BY_YOU });
+    const written = readFile(f);
+
+    const old = new PipelineStore160(f);
+    const t = old.get("5102")!;
+    // 1.6.0's panel: the chip and the heading say the id, the rail marks no step, and no next step or checklist shows
+    expect(t.stage).toBe("dev-test");
+    expect(stageLabel160(t.stage)).toBe("dev-test");
+    expect(TICKET_STAGES_160.findIndex((s) => s.id === t.stage)).toBe(-1);
+    // a session opened on it leaves it alone, and 1.6.0 can't set it
+    expect(old.startCoding("5102")).toBeNull();
+    expect(() => old.setStage("5103", "dev-test" as never)).toThrow(/Unknown stage/);
+    // 1.6.0's own changes: a tick and a draft on the ticket, another ticket moved
+    old.setCheck("5102", "dev:smoke", true);
+    old.addDraft("5102", "pr-dev", "Merged to dev.");
+    old.setStage("5101", "approved");
+
+    const after = readFile(f);
+    expect(after["5102"]).toEqual({
+      ...written["5102"],
+      checks: { "dev:tests": true, "dev:smoke": true },
+      drafts: [...written["5102"].drafts, expect.objectContaining({ stage: "pr-dev", text: "Merged to dev." })],
+    });
+    expect(after["5102"].history.map((h) => [h.stage, h.by])).toEqual([
+      ["coding", "you"],
+      ["local-test", "you"],
+      ["pr-dev", "you"],
+      ["dev-test", "you"],
+    ]);
+    expect(after["5102"].checkedBy).toEqual(written["5102"].checkedBy);
+    expect(after["5101"].stage).toBe("approved");
+
+    // and this build reads what 1.6.0 wrote: its tick without an author is still a tick
+    const back = new PipelineStore(f).get("5102")!;
+    expect(stageLabel(back.stage)).toBe("AI testing in dev/UAT");
+    expect(tickOf(back, "dev:tests")?.by).toBe("you");
+    expect(back.checks["dev:smoke"]).toBe(true);
+    expect(tickOf(back, "dev:smoke")).toBeNull();
+  });
+
+  it("1.6.0 unticking an item leaves its author unread here", () => {
+    const f = storeFile();
+    new PipelineStore(f).setCheck("1", "dev:tests", true, BY_YOU);
+    new PipelineStore160(f).setCheck("1", "dev:tests", false);
+    const p = new PipelineStore(f).get("1")!;
+    expect(p.checks).toEqual({});
+    expect(tickOf(p, "dev:tests")).toBeNull();
+  });
+
+  /** Each of 1.6.0's stages: where it lands here, as the rail shows it, and the next steps offered. */
+  const LANDS: Record<(typeof TICKET_STAGES_160)[number]["id"], { label: string; step: number; sub: string | null; next: string[] }> = {
+    ba: { label: "BA", step: 1, sub: null, next: ["Start coding"] },
+    coding: { label: "Coding", step: 2, sub: null, next: ["Ready for local testing"] },
+    "local-test": { label: "Local testing", step: 3, sub: null, next: ["Create PR to dev…"] },
+    "pr-dev": { label: "PR to dev", step: 4, sub: null, next: ["Merged — AI testing in dev/UAT"] },
+    stakeholder: { label: "Stakeholder testing", step: 6, sub: null, next: ["Record feedback…", "Approve"] },
+    approved: { label: "Approved", step: 6, sub: "approved", next: ["Create PR to main…"] },
+    "pr-main": { label: "PR to main", step: 6, sub: "PR to main open", next: ["Merged — AI testing in staging/prod"] },
+    "prod-test": { label: "AI testing in staging/prod", step: 7, sub: null, next: ["Write patch notes"] },
+    comms: { label: "Patch notes", step: 8, sub: null, next: ["Done"] },
+    done: { label: "Done", step: 9, sub: null, next: ["Reopen"] },
+  };
+
+  it("lands a ticket 1.6.0 left at each of its stages where it means the same, with all it had", () => {
+    expect(Object.keys(LANDS)).toEqual(TICKET_STAGES_160.map((s) => s.id));
+    const f = storeFile();
+    const old = new PipelineStore160(f);
+    for (const [i, { id }] of TICKET_STAGES_160.entries()) {
+      const t = String(6000 + i);
+      old.startCoding(t, `Ticket at ${id}`);
+      old.setCheck(t, "dev:tests", true);
+      old.addPr(t, prTo("dev", 100 + i));
+      old.addFeedback(t, `Feedback for ${id}`);
+      old.addDraft(t, "comms", `Notes for ${id}`);
+      old.setStage(t, id);
+    }
+    const written = readFile(f);
+
+    const now = new PipelineStore(f);
+    for (const [i, { id }] of TICKET_STAGES_160.entries()) {
+      const t = String(6000 + i);
+      const p = now.get(t)!;
+      expect(p).toEqual(written[t]);
+      expect(p.stage).toBe(id);
+      const want = LANDS[id];
+      expect({ label: stageLabel(p.stage), step: stageStep(p.stage) }).toEqual({ label: want.label, step: want.step });
+      const rail = railOf(p.stage);
+      expect(rail.filter((r) => r.state === "on").map((r) => [r.step, r.sub])).toEqual([[want.step, want.sub]]);
+      expect(rail.filter((r) => r.state === "done").map((r) => r.step)).toEqual(rail.map((r) => r.step).filter((n) => n < want.step));
+      expect(nextSteps(p.stage).map((n) => n.label)).toEqual(want.next);
+    }
+    // each gate's checklist still shows at the stage it did in 1.6.0
+    expect(GATES.map((g) => [g.id, g.at])).toEqual([
+      ["dev", "local-test"],
+      ["staging", "approved"],
+      ["prod", "prod-test"],
+    ]);
+    // a move here keeps the ticket's history, PRs, feedback, drafts and ticks, and leaves every other ticket as it was
+    now.setStage("6004", "approved", { by: BY_YOU });
+    const after = readFile(f);
+    for (const t of Object.keys(written).filter((t) => t !== "6004")) expect(after[t]).toEqual(written[t]);
+    expect(after["6004"]).toEqual({
+      ...written["6004"],
+      stage: "approved",
+      history: [...written["6004"].history, { at: expect.any(Number), stage: "approved", by: "you" }],
+      drafts: [...written["6004"].drafts, expect.objectContaining({ stage: "approved", text: "Approved in stakeholder testing." })],
+    });
+    expect(after["6004"].prs).toHaveLength(1);
+    expect(after["6004"].feedback.map((x) => x.text)).toEqual(["Feedback for stakeholder"]);
+    expect(after["6004"].checks).toEqual({ "dev:tests": true });
+  });
+
+  it("shows a stage id from a newer build as itself, at no step, and writes it back unchanged", () => {
+    const f = storeFile();
+    const newer = {
+      "7001": {
+        ticketId: "7001",
+        title: "From a newer build",
+        stage: "uat-signoff",
+        history: [
+          { at: 1, stage: "coding", by: "you" },
+          { at: 2, stage: "uat-signoff", by: "Verifier", reason: "a field this build doesn't know" },
+        ],
+        prs: [],
+        feedback: [],
+        drafts: [{ id: "d1", stage: "uat-signoff", text: "Signed off in UAT.", at: 2 }],
+        checks: { "uat:sign": true },
+        checkedBy: { "uat:sign": { by: "Verifier", at: 2, via: "gate_notes" } },
+        gateNotes: { "uat:sign": { by: "Verifier", note: "Checked the build", at: 2 } },
+        requests: [{ id: "r1", target: "main" }],
+      },
+    };
+    fs.writeFileSync(f, JSON.stringify(newer));
+    const s = new PipelineStore(f);
+    const p = s.get("7001")!;
+    expect(stageLabel(p.stage)).toBe("uat-signoff");
+    expect(stageStep(p.stage)).toBeNull();
+    expect(railOf(p.stage).map((r) => [r.state, r.sub])).toEqual(railOf(p.stage).map(() => ["todo", null]));
+    expect(nextSteps(p.stage)).toEqual([]);
+    expect(GATES.filter((g) => g.at === p.stage)).toEqual([]);
+    expect(stageLabel(p.drafts[0].stage)).toBe("uat-signoff");
+    // a session opened on it leaves it alone, and this build won't set it
+    expect(s.startCoding("7001")).toBeNull();
+    expect(() => s.setStage("7002", "uat-signoff" as TicketStage)).toThrow(/Unknown stage/);
+    // saves for other tickets, and for its own ticks and drafts, write it back as it was
+    s.setStage("7002", "coding", { by: BY_YOU });
+    s.setCheck("7001", "dev:tests", true, BY_YOU);
+    s.setCheck("7001", "dev:tests", false, BY_YOU);
+    const d = s.addDraft("7001", "comms", "Patch notes").drafts.at(-1)!;
+    s.dropDraft("7001", d.id);
+    expect(readFile(f)["7001"]).toEqual(newer["7001"]);
   });
 });
 

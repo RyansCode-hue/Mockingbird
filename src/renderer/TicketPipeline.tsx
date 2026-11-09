@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { openLink } from "./uiUtil";
-import { GATES, TICKET_STAGES, stageLabel, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
+import { GATES, stageLabel, stageStep, tickOf, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
+import { nextSteps, railOf } from "./ticketPipelineModel";
 import { ago, plural } from "../shared/format";
 import { createIpcStore } from "./ipcStore";
 import { useAction } from "./useAction";
@@ -58,22 +59,22 @@ export function StageChip({ p, onClick }: { p: TicketPipeline | undefined; onCli
   );
 }
 
-/** The lifecycle across the top: done stages ticked, the current one marked; click one to move there. */
-function StageRail({ stage, onSet }: { stage: TicketStage | null; onSet: (s: TicketStage) => void }) {
-  const at = stage ? TICKET_STAGES.findIndex((s) => s.id === stage) : -1;
+/** The lifecycle across the top: done steps ticked, the current one marked; click one to move there. */
+function StageRail({ stage, onSet }: { stage: StoredStage | null; onSet: (s: TicketStage) => void }) {
   return (
     <div className="pl-rail" role="list">
-      {TICKET_STAGES.map((s, i) => (
+      {railOf(stage).map((s) => (
         <button
-          key={s.id}
+          key={s.stage}
           role="listitem"
-          className={`pl-step ${i < at ? "done" : i === at ? "on" : ""}`}
-          aria-current={i === at ? "step" : undefined}
-          data-tip={i === at ? `Now: ${s.label}` : `Move the ticket to ${s.label}`}
-          onClick={() => i !== at && onSet(s.id)}
+          className={`pl-step ${s.state === "todo" ? "" : s.state}`}
+          aria-current={s.state === "on" ? "step" : undefined}
+          data-tip={s.state === "on" ? `Now: ${s.label}${s.sub ? `, ${s.sub}` : ""}` : `Move the ticket to ${s.label}`}
+          onClick={() => s.state !== "on" && onSet(s.stage)}
         >
-          <span className="pl-dot">{i < at ? "✓" : ""}</span>
+          <span className="pl-dot">{s.state === "done" ? "✓" : ""}</span>
           <span className="pl-lbl">{s.label}</span>
+          {s.sub && <span className="pl-sub">{s.sub}</span>}
         </button>
       ))}
     </div>
@@ -94,8 +95,9 @@ function Gate({ p, gate }: { p: TicketPipeline; gate: (typeof GATES)[number] }) 
       </div>
       {gate.items.map((it) => {
         const key = `${gate.id}:${it.key}`;
+        const tick = tickOf(p, key);
         return (
-          <label key={key} className="check-line pl-check">
+          <label key={key} className="check-line pl-check" data-tip={tick ? `Ticked by ${tick.by}, ${ago(tick.at)}` : undefined}>
             <input type="checkbox" checked={!!p.checks[key]} onChange={(e) => run("check", () => window.mb.pipelineCheck(p.ticketId, key, e.target.checked))} />
             {it.label}
           </label>
@@ -309,8 +311,8 @@ function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
   );
 }
 
-/** The announcement for the people who use the system: drafted by an agent, copied or saved as a comment draft. */
-function Comms({ p, title, details }: { p: TicketPipeline; title: string; details?: string }) {
+/** The patch notes for the people who use the system: drafted by an agent, copied or saved as a comment draft. */
+function PatchNotes({ p, title, details }: { p: TicketPipeline; title: string; details?: string }) {
   const [text, setText] = useState("");
   const { doing, run, error, setError } = useAction();
   const [copied, setCopied] = useState(false);
@@ -325,7 +327,7 @@ function Comms({ p, title, details }: { p: TicketPipeline; title: string; detail
   };
   return (
     <div className="pl-form">
-      <div className="pl-h">Comms to users</div>
+      <div className="pl-h">Patch notes</div>
       <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="What changed, who it affects, anything they need to do." style={{ minHeight: 90 }} />
       {error && <div className="fp-note err">{error}</div>}
       <div className="row">
@@ -367,42 +369,29 @@ export function PipelinePanel(props: PipelineProps) {
   const { run, error } = useAction();
   const go = (stage: TicketStage) => run("stage", () => window.mb.pipelineStage(ticketId, stage, title));
   const live = sessions.filter((s) => s.status !== "dead");
-  const step = (label: string, stage: TicketStage, primary = true) => (
-    <button className={primary ? "primary" : "outline"} onClick={() => go(stage)}>{label}</button>
-  );
   const prs = p?.prs ?? [];
+  const last = p?.history.at(-1);
   return (
     <div className="pl">
       <StageRail stage={p?.stage ?? null} onSet={go} />
       <div className="pl-now">
         {!p ? (
-          <>
-            <span className="pl-dim">Not tracked yet.</span>
-            {step("Start BA", "ba", false)}
-            {step("Start coding", "coding")}
-          </>
+          <span className="pl-dim">Not tracked yet.</span>
         ) : (
-          <>
-            <span>
-              <b>{stageLabel(p.stage)}</b>
-              {p.history.length > 0 && <span className="pl-dim"> · {ago(p.history[p.history.length - 1].at)}</span>}
-            </span>
-            {p.stage === "ba" && step("Start coding", "coding")}
-            {p.stage === "coding" && step("Ready for local testing", "local-test")}
-            {p.stage === "local-test" && <button className="primary" onClick={() => setPrFor("dev")}>Create PR to dev…</button>}
-            {p.stage === "pr-dev" && step("Deployed — ready for stakeholder testing", "stakeholder")}
-            {p.stage === "stakeholder" && (
-              <>
-                <button className="outline" onClick={() => setFeedback("")}>Record feedback…</button>
-                {step("Approved", "approved")}
-              </>
-            )}
-            {p.stage === "approved" && <button className="primary" onClick={() => setPrFor("main")}>Create PR to main…</button>}
-            {p.stage === "pr-main" && step("Merged — in staging/prod testing", "prod-test")}
-            {p.stage === "prod-test" && step("Write comms", "comms")}
-            {p.stage === "comms" && step("Done", "done")}
-            {p.stage === "done" && step("Reopen", "local-test", false)}
-          </>
+          <span>
+            <b>{stageLabel(p.stage)}</b>
+            {last && <span className="pl-dim" data-tip={last.by ? `Moved here by ${last.by}` : undefined}> · {ago(last.at)}</span>}
+            {stageStep(p.stage) === null && <span className="pl-dim"> · a stage this version of Mockingbird doesn't know</span>}
+          </span>
+        )}
+        {nextSteps(p?.stage ?? null).map((n) =>
+          n.kind === "stage" ? (
+            <button key={n.label} className={n.primary ? "primary" : "outline"} onClick={() => go(n.to)}>{n.label}</button>
+          ) : n.kind === "pr" ? (
+            <button key={n.label} className="primary" onClick={() => setPrFor(n.target)}>{n.label}</button>
+          ) : (
+            <button key={n.label} className="outline" onClick={() => setFeedback("")}>{n.label}</button>
+          )
         )}
       </div>
       {error && <div className="fp-note err">{error}</div>}
@@ -429,14 +418,14 @@ export function PipelinePanel(props: PipelineProps) {
                 setFeedback(null);
               }}
             >
-              Save — back to local testing
+              Save — back to coding
             </button>
           </div>
         </div>
       )}
       {prFor && <PrForm key={prFor} {...props} target={prFor} onClose={() => setPrFor(null)} />}
       {p && GATES.filter((g) => g.at === p.stage).map((g) => <Gate key={g.id} p={p} gate={g} />)}
-      {p?.stage === "comms" && <Comms p={p} title={title} details={details} />}
+      {p?.stage === "comms" && <PatchNotes p={p} title={title} details={details} />}
       {prs.length > 0 && (
         <div className="pl-list">
           <div className="pl-h">Pull requests</div>

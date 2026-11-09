@@ -318,6 +318,57 @@ and 7 an entry, 3 and 7 a checklist).
   saves unchanged; an unknown id kept, shown as itself, never set). Preview shots
   of the panel at each stage.
 
+**As built (2026-11-09).**
+- **Stages.** `TICKET_STAGES` gains `dev-test` and a `step` per stage, Done being 9.
+  `StoredStage` types what the file holds (a known id or a newer build's), read
+  through `stageLabel`, `stageStep` and `isTicketStage` (pipeline.ts' private
+  `isStage`, moved to `src/shared`).
+- **`by`.** `BY_YOU` ("you") on every window path: `pipeline:stage`,
+  `pipeline:feedback`, `pipeline:pr:create`, and `startCoding` from `sessions:create`.
+  Moves from before have none. The panel's "· 3m ago" says who as a tip.
+- **Ticks (decision b).** `setCheck(id, key, value, by)` keeps `checkedBy[key] = { by,
+  at }` beside `checks` and drops it on an untick. `by` is required, so W14 passes
+  the agent's. `tickOf` reads an author only while the item is ticked, because 1.6.0
+  unticks without touching `checkedBy`; a 1.6.0 untick then re-tick of an agent's
+  tick would still name the agent, reachable only by running 1.6.0 on a 1.7 file. The
+  checklist's items say "Ticked by you, 3m ago" as a tip. The person's items (peer
+  review, security doc reviewed, sign-off) aren't flagged in `GATES`: W14's refusal.
+- **Comments** as the table, and Coding drafts "Back in development." rather than
+  "Development has started." once the ticket has been at step 2 or later (Reopen, a
+  move back on the rail). Feedback drafts "Stakeholder feedback received; back in
+  development to address it:" and the text. `addDraft` refuses an unknown id too.
+- **Panel.** Rail and next steps are `src/renderer/ticketPipelineModel.ts` (`railOf`,
+  `nextSteps`, a `Record<TicketStage, …>`, so a new stage doesn't compile without its
+  steps). Step 6 shows "approved" or "PR to main open" under it. An unknown id: its
+  label, "a stage this version of Mockingbird doesn't know", no step, next step or
+  checklist; the rail moves it to a known stage. Comms is Patch notes. The rail's
+  steps size to their content and wrap between words: in the board's ticket detail
+  (about 526px wide) the rail scrolled sideways, with 10 steps as with 9.
+- **Preview.** 5102 sits at `dev-test`, so its area header, tree row and board card
+  show the new label. It records no PR: one on s5's branch would add the PR badge
+  `uiLandscapeNeeds` pins s5 without. The stub's feedback goes to Coding,
+  its ticks keep `checkedBy`. The stub drafts no comments, as before: main does, and
+  the table test covers it. Shots of the panel at all 11 stages, an unknown id, the
+  feedback form and the board detail, both themes.
+- **1.6.0.** `test/fixtures/pipeline-1.6.0/` is 1.6.0's `pipeline.ts` with only its
+  imports changed, and its ticket types (`types.ts:968–1021` at 4907cc3), diffed against
+  git when made; `readJsonOrSetAside` and `writeFileAtomic` are unchanged since. The
+  tests run it on a file this build wrote (`dev-test`, `by` and `checkedBy` kept
+  through its writes; its `startCoding` leaves the ticket alone; its `setStage` refuses
+  `dev-test`), and this build on one it wrote (a ticket at each of its 10 stages lands
+  as `LANDS` says, with its history, PRs, feedback, drafts and ticks; untouched tickets
+  equal after a save). 1.6.0's window, read at 4907cc3 and not run: each reader is
+  `stageLabel`, which falls back to the id, or `===` against its own ids (the rail
+  `TicketPipeline.tsx:44`, next steps `:371–385`, gates `:419`), so nothing throws.
+- **Outside the file list:** `ticketPipelineModel.ts` (new), `styles.css` (the rail),
+  `test/ticketPipelineModel.test.ts`, the fixture. Nothing in `main.tsx` or the group bar.
+- **The plan was wrong** in section 2: "the rail (`TicketPipeline.tsx:63`)" is today's
+  line, `:44` at 4907cc3. And the stub's `pipelineFeedback` hard-coded Local testing
+  too. The rest of W13's citations checked out.
+- **Open:** feedback leaves the dev gate's ticks from the first pass ticked, as 1.6.0
+  did when feedback landed on Local testing. README's 1.x feature line names the old
+  stages; it's history, and the roadmap is W12's.
+
 ### W14 · Ticket tools (main, no UI). Size M
 Through W1's per-launch identity, routed beside the House's (`messaging.ts:342`),
 for a workspace on a ticket (`ticketOfSession`, `cardBadges.tsx:53`, moved to
@@ -564,6 +615,7 @@ TicketPipeline.history[]: { at, stage, note?, by?: string }  // "you", "merge", 
 PipelinePr: { …today, by?: string, root?: string, mergedAt?: number, mergeCommit?: string, closedAt?: number }
 TicketPipeline.requests?: { id, target, from: string, fromTitle, title, description, at }[]  // W14
 TicketPipeline.gateNotes?: Record<string, { by: string; note: string; at: number }>       // "<gate>:<item>"
+TicketPipeline.checkedBy?: Record<string, { by: string; at: number }>     // "<gate>:<item>": who ticked (W13); read by tickOf
 CommentDraft.by?: string                                    // an agent's draft says whose
 
 // ~/.mockingbird/plans.json (W17): proposals only, never wires

@@ -55,7 +55,7 @@ import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, ContextWindow, FileOverlap, LastReply, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
-import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
+import { BY_YOU, isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
 import { claudeRunner, freeForResume } from "./claudeBackground";
@@ -747,7 +747,7 @@ handle("sessions:create", async (req) => {
   const info = await sessions.create(req);
   if (info.repoPath) overlapsSoon(info.cwd);
   // a session opened on a ticket means its coding has started
-  if (req?.ticketId && pipeline.startCoding(String(req.ticketId), req.ticketTitle ?? undefined)) pipelineChanged();
+  if (req?.ticketId && pipeline.startCoding(String(req.ticketId), req.ticketTitle ?? undefined, BY_YOU)) pipelineChanged();
   return info;
 });
 handle("sessions:relaunch", async (id) => {
@@ -1357,9 +1357,9 @@ const pipelineDo = async <T,>(fn: () => T | Promise<T>): Promise<T> => {
 const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
 
 handle("pipeline:all", () => pipeline.all());
-handle("pipeline:stage", (id, stage, title) => pipelineDo(() => pipeline.setStage(String(id), stage, { title: title ? String(title) : undefined })));
-handle("pipeline:feedback", (id, text) => pipelineDo(() => pipeline.addFeedback(String(id), String(text ?? ""))));
-handle("pipeline:check", (id, key, value) => pipelineDo(() => pipeline.setCheck(String(id), String(key), !!value)));
+handle("pipeline:stage", (id, stage, title) => pipelineDo(() => pipeline.setStage(String(id), stage, { title: title ? String(title) : undefined, by: BY_YOU })));
+handle("pipeline:feedback", (id, text) => pipelineDo(() => pipeline.addFeedback(String(id), String(text ?? ""), BY_YOU)));
+handle("pipeline:check", (id, key, value) => pipelineDo(() => pipeline.setCheck(String(id), String(key), !!value, BY_YOU)));
 handle("pipeline:draft:add", (id, stage, text) => pipelineDo(() => pipeline.addDraft(String(id), stage, String(text ?? ""))));
 handle("pipeline:draft:edit", (id, draftId, text) => pipelineDo(() => pipeline.editDraft(String(id), String(draftId), String(text ?? ""))));
 handle("pipeline:draft:drop", (id, draftId) => pipelineDo(() => pipeline.dropDraft(String(id), String(draftId))));
@@ -1415,7 +1415,8 @@ handle("pipeline:pr:create", (sessionId, ticketId, req) =>
     return pipeline.addPr(
       String(ticketId),
       { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined },
-      req?.ticketTitle ? String(req.ticketTitle) : undefined
+      req?.ticketTitle ? String(req.ticketTitle) : undefined,
+      BY_YOU
     );
   })
 );

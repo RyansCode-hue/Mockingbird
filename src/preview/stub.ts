@@ -228,6 +228,24 @@ const pipelines: Record<string, TicketPipeline> = {
     drafts: [{ id: "d1", stage: "local-test", text: "Development is done; testing locally.", at: now - 60 * min }],
     checks: { "dev:tests": true },
   },
+  // a ticket at a stage 1.6 doesn't know, AI testing in dev/UAT. No PR is recorded: one on s5's branch would add the
+  // PR badge the card audits pin s5 without
+  "5102": {
+    ticketId: "5102",
+    title: "Pathways quick view freezes",
+    stage: "dev-test",
+    history: [
+      { at: now - 3 * 24 * 60 * min, stage: "coding", by: "you" },
+      { at: now - 30 * 60 * min, stage: "local-test", by: "you" },
+      { at: now - 6 * 60 * min, stage: "pr-dev", by: "you" },
+      { at: now - 25 * min, stage: "dev-test", by: "you" },
+    ],
+    prs: [],
+    feedback: [],
+    drafts: [],
+    checks: { "dev:tests": true, "dev:smoke": true },
+    checkedBy: { "dev:tests": { by: "you", at: now - 31 * 60 * min }, "dev:smoke": { by: "you", at: now - 30 * 60 * min } },
+  },
 };
 
 const usage: UsageReport = {
@@ -1257,7 +1275,7 @@ const pipelinesChanged = () => emit("onPipelineChanged", JSON.parse(JSON.stringi
 const setStage = (id: string, stage: TicketStage) => {
   const p = pipelineOf(id);
   p.stage = stage;
-  p.history.push({ at: Date.now(), stage });
+  p.history.push({ at: Date.now(), stage, by: "you" });
   pipelinesChanged();
   return p;
 };
@@ -1743,12 +1761,17 @@ const api: Record<string, (...a: any[]) => any> = {
   pipelineStage: async (id: string, stage: TicketStage) => setStage(id, stage),
   pipelineFeedback: async (id: string, text: string) => {
     pipelineOf(id).feedback.push({ at: Date.now(), text });
-    return setStage(id, "local-test");
+    return setStage(id, "coding");
   },
   pipelineCheck: async (id: string, key: string, value: boolean) => {
     const p = pipelineOf(id);
-    if (value) p.checks[key] = true;
-    else delete p.checks[key];
+    if (value) {
+      p.checks[key] = true;
+      (p.checkedBy ??= {})[key] = { by: "you", at: Date.now() };
+    } else {
+      delete p.checks[key];
+      delete p.checkedBy?.[key];
+    }
     pipelinesChanged();
     return p;
   },
