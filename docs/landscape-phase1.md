@@ -1,18 +1,21 @@
 # Landscape, phase 1: build plan
 
 Status: S1 (model, store, migration), S2 (the surface, behind Settings →
-Labs → Landscape), S3 (semantic zoom and peek), S4 (areas), S5 (tools and
-the workspace header), S6a (the selection bar and right-click create), S6b
-(moving, resizing, stacks, Tidy, ghost cards) and S7 (Needs you and the card
-badges) built; S8 (first run and switching over) next.
+Labs → Landscape until S8b), S3 (semantic zoom and peek), S4 (areas), S5
+(tools and the workspace header), S6a (the selection bar and right-click
+create), S6b (moving, resizing, stacks, Tidy, ghost cards), S7 (Needs you and
+the card badges) and S8b (the switch: the landscape for everyone, the Labs
+setting and the grid's code gone) built; S8a (first run) is built on its own
+branch.
 The spec is [landscape.md](landscape.md); this file is how its phase 1 gets
 built.
 
 Wires now ship with phase 1 in 1.7.0: [landscape-wires.md](landscape-wires.md) is their plan, and it overrides what this file says about them.
 
 Phase 1 replaces the grid with the landscape: workspaces, areas, tool
-windows, stacks, the Needs you tray and migration. It has **no wires**; those are phases 2–3.
-It ships as a minor release (1.7.0). `landscape.json` is new data, and an older
+windows, stacks, the Needs you tray and migration. This file's slices (S1–S8)
+build all of that but the wires, which are built next in their own slices, and
+phase 1 ships with them as a minor release (1.7.0). `landscape.json` is new data, and an older
 version ignores it and still finds its grid layout in localStorage, so nothing
 breaks for a teammate who hasn't updated.
 
@@ -21,7 +24,7 @@ breaks for a teammate who hasn't updated.
 | Today | Phase 1 |
 | --- | --- |
 | `mb.trees`, `mb.shown`, `mb.pinned`, `mb.groupLayouts` (localStorage, `main.tsx:166-312`) | `~/.mockingbird/landscape.json`, owned by the main process |
-| `layoutTree.ts`, `gridModel.ts`, `drawTree` (`main.tsx:928`) | removed at the end (S8); kept until the grid is switched off |
+| `layoutTree.ts`, `gridModel.ts`, `drawTree` (`main.tsx:928`) | removed (S8b); what the migration reads trees with is `src/shared/legacyLayout.ts` |
 | A group (`taskGroup` string) | An area: a rectangle, repos and options, keyed by that group string |
 | A sub-group cell `ws:<top/sub>` with tabs | A stack, the same `top/sub` group, so rooms and usage need no changes |
 | The group bar (`main.tsx:2389-2440`) | The area header (the same component, moved out of `main.tsx`) |
@@ -3461,6 +3464,7 @@ Design O, with Artifacts as a window, and N's workspace header.
   | Genie minimize | Gone | decided |
   | ⌘E, Esc: fullscreen | Focus | moved |
   | Banners, file drop, Jump to latest, copy | The workspace's body (`TerminalPane`) | kept |
+  | A typing ask's Allow and Deny, Resume on an exited session, Jump to latest | The buttons over the terminal take the mouse at any zoom; only the terminal waits for 100%, as S3 decided | fixed: below 100% the landscape swallowed their clicks (found by `teamLiveApp.e2e`) |
   | Continue in, Brief, Second opinion | Placed beside it, brought into view, the old one kept as a ghost | fixed: they landed at the first free spot |
   | **Elsewhere** | | |
   | ⌘K's Fullscreen, Pin, Arrange | Focus; Pin and Arrange aren't offered | fixed: they did nothing there |
@@ -3506,10 +3510,11 @@ Design O, with Artifacts as a window, and N's workspace header.
   - **Found, not fixed:** at DPR 1 a landscape terminal leaves its holder's right
     edge blank: its columns come from the font's advance (7.5px here) and xterm
     draws at a whole 7px, so 140 columns take 980px of 1056. `uiTerminal` checks
-    size against the placement for that reason, and Retina isn't affected. A
-    workspace's body takes the mouse only at 100%, as S3 decided, which includes
-    a typing ask's Allow and Deny; below 35% it's a card, with no ask on it, and
-    Needs you doesn't list typing asks.
+    size against the placement for that reason, and Retina isn't affected.
+    Below 35% a workspace is a card, with no typing ask on it, and Needs you
+    doesn't list typing asks; between 35% and 75% resting the pointer on a
+    workspace opens its peek over it, covering the ask's buttons until it's
+    put away.
 - **As built, the grid deleted.** `layoutTree.ts`, `gridModel.ts`,
   `gridMotion.ts` and `GridPreview.tsx` are gone, with main.tsx's shown,
   pinned, zoomed, groupLayouts, trees, wsTabs, collapsed and side bar view
@@ -3537,6 +3542,29 @@ Design O, with Artifacts as a window, and N's workspace header.
     and the Closed sessions list. ⌘⌃1–4, ⌘1–9 as pane numbers and Pin are in
     no handler, help text or palette row.
   - **D.genie** went with the genie; D.l, 460 ms, is the longest motion.
+  - **What the grid left always on** went too: the Connected line's grid
+    wording, an area's `landscape` flag, a workspace's Artifacts row "off the
+    landscape" and ⌘K's empty pane numbers.
+- **As built, end to end.** `MB_E2E_APP=1` runs every real-app test on the
+  landscape.
+  - **`test/landscapeMigrateApp.e2e.test.ts`** starts the real app twice in
+    one throwaway HOME: once to make sessions and leave the grid's prefs in its
+    localStorage, then with no `landscape.json`. Groups become areas, the
+    split tree's arrangement holds (left of, above, inside the area, no
+    overlaps), a sub-group is a stack with its front tab, an ungrouped session
+    is loose outside every area, one in no tree is in the Closed sessions list,
+    nothing is said to be wrong, and every legacy key reads as it was written,
+    on that start and the next, which never reads the layout in again. A
+    spoiled `mb.trees` is named in the banner and left as it was.
+  - **The team tests** open a room's chat from the Connected line, find
+    room sessions' rows there (teammates' and this Mac's), and select a
+    workspace with a press on it. Nick focuses his copy before scrolling it,
+    since a terminal on the landscape scrolls its history where it takes the
+    mouse.
+  - **Found by them and fixed:** below 100% the landscape swallowed clicks on
+    the buttons drawn over a terminal (a typing ask's Allow and Deny, Resume,
+    Jump to latest), so an owner who came to an ask from its notification
+    couldn't answer it. `test/uiTyping.test.ts` answers one at 80%.
 
 ## Risks
 
