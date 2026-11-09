@@ -643,16 +643,51 @@ Agents stop many times a turn, so stopping can't be the signal. Instead:
 
 ### Pipelines
 
-A chain of workspaces and wires can be saved as a **pipeline template**, for
-example Ticket builder (Claude) → Builder (Codex) → Reviewer (Claude, feedback
-loop to Builder).
+A chain of workspaces and wires can be saved as a **pipeline template**. The
+built-in one is Orchestrator (Claude) → Coder (Codex) → Verifier (Claude), with
+a feedback loop from the Verifier back to the Coder.
 
-- **Use one.** Right-click → New → **Pipeline from a ticket…** lays the chain
-  out inside the ticket's area, with each step's agent, model and kickoff
-  prompt.
-- **Stages.** Today's per-ticket stages follow it: the stage chip is the
-  furthest step that has finished. This is the README's "Pipeline stages that
-  update themselves".
+- **Use one.** Right-click → New → **Pipeline from a ticket…** opens the
+  template picker: the chain drawn small, each step's agent, model and kickoff
+  prompt editable, automatic gates called out. Lay out puts it in the ticket's
+  area.
+- **The Orchestrator.** A template that starts with one lays out only it. It
+  reads the ticket, researches the code, and proposes the rest as a plan
+  (`propose_plan`): how many workspaces, their agents, models and prompts, and
+  their wires and gates. The plan opens in the same picker, filled in, and
+  **nothing is created until you click Lay out**, because the Orchestrator reads
+  ticket text other people wrote.
+- **Council.** Its tab starts a discussion as today; the session it opens for
+  the approved plan is that plan's Orchestrator, in its own area.
+- **A PR merging** can open a wire: the Coder's PR merging opens the
+  Verifier's, whose first job is checking the deployed build has the merge
+  commit.
+
+### Ticket stages
+
+Each ticket's stage, kept on this Mac (`pipeline.json`), shows as the area's
+stage chip. Agents move stages, but Mockingbird refuses an agent's approval in
+stakeholder testing and an agent's Done; an agent may send a ticket back to
+Coding with the feedback that caused it.
+
+| # | Stage | Who | Moves on when |
+| --- | --- | --- | --- |
+| 1 | BA | Orchestrator | its plan is laid out |
+| 2 | Coding | Coder | |
+| 3 | Local testing | Coder | dev gate checklist |
+| 4 | PR to dev | Coder | PR opened |
+| 5 | AI testing in dev/UAT | Verifier | the change lands in dev |
+| 6 | Stakeholder testing | you | your approval sends it on to production; feedback sends it back to Coding |
+| 7 | AI testing in staging/prod | Verifier | it lands in staging; prod gate checklist |
+| 8 | Patch notes | Verifier drafts, you send them | then you mark Done |
+| | Done | you | |
+
+- **Approval and the PR to main** are part of stage 6: your approval tells the
+  Coder to prepare the PR to main.
+- **Pull requests and comments.** Agents ask for a PR and draft comments and
+  patch notes; you approve every PR and every comment posted to Azure DevOps.
+- **A bug the Verifier finds** goes back to the Coder through the feedback loop,
+  3 rounds at most, then it stops and asks you.
 
 ## Team rooms
 
@@ -707,19 +742,24 @@ group order.
    - handoff, context link, feedback loop and shared worktree terminals, through
      the messaging MCP server;
    - gates and wire states, Finish step and `finish_step`;
-   - the pipeline strip in focus, Add next step, pipeline templates and the
-     stage chip following a pipeline;
+   - the pipeline strip in focus, Add next step, pipeline templates;
+   - the Orchestrator and its plan, with Council's session as one; the
+     reworked ticket stages, moved by agents within their limits; PR requests;
+     a PR merging as a wire's trigger; patch notes drafted by the Verifier;
    - Tidy along wires, and wires in the tour, the shortcuts sheet and the empty
-     landscape.
+     landscape;
+   - a Helpdesk tasks workspace: Claude in your own Chrome (Claude in Chrome),
+     for requests you paste in.
 
    Its wires are built as [landscape-wires.md](landscape-wires.md) says.
 2. **Collabs, proposals and browsers:**
-   - collab workspaces built on Council's engine, and a collab as a pipeline
-     step;
-   - agent proposals for workspaces and wires, and proposals in the Needs you
-     tray;
-   - browser workspaces, the "sees" wire and `compare`.
-3. **What pipelines still lack:** the tests badge on cards.
+   - collab workspaces built on Council's engine, a collab as a pipeline step,
+     and Council as a workspace on the landscape;
+   - running agents proposing a workspace or a wire, and proposals in the Needs
+     you tray;
+   - Mockingbird's own browser workspaces, the "sees" wire and `compare`.
+3. **What pipelines still lack:** the tests badge on cards, and other event
+   triggers (a PR opening, tests passing).
 4. **Rooms:** shared areas, layout events, wires across Macs.
 
 Phases 1–3 are minors. Phase 4 adds room events an older Mockingbird can't
