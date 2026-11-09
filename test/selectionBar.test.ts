@@ -70,7 +70,6 @@ const areaEnv = (over: Partial<AreaEnv> = {}): AreaEnv => ({
   title: "#5101 Org dropdowns",
   stored: { collapsed: false, locked: false },
   room: true,
-  landscape: true,
   empty: false,
   messages: { mode: undefined, defaultSend: true, set: vi.fn(), log: vi.fn() },
   follow: { leader: null, candidates: [{ member: "m2", name: "Nick Smith" }], stop: vi.fn(), start: vi.fn() },

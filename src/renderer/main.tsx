@@ -132,8 +132,6 @@ const GONE_READ = "which closed sessions' folders are gone";
 const CLOSED_RETRY_MAX_MS = 30_000;
 /** Words that follow others in a sentence ("in 5101"), with their space; none, nothing. */
 const spaced = (words: string): string => (words ? ` ${words}` : "");
-/** ⌘K's pane numbers on the landscape: none, ⌘1 is 100% there. */
-const NO_SHORTCUTS: ReadonlyMap<string, number> = new Map();
 
 function App() {
   const [ownSessions, setSessions] = useState<SessionInfo[]>([]);
@@ -1871,7 +1869,6 @@ function App() {
       title,
       stored: a ?? null,
       room: !!room,
-      landscape: true,
       // an area outlives its sessions (their ghosts come back to it); one with none, and no ghost, can go
       empty: !!a && !sessionsOfGroup(key).length && !(landscapeLayout && closedIn(landscapeLayout, key).length),
       messages: { mode: msgModes[key], defaultSend: msgDefaultSend, set: (mode) => void setMsgMode(key, mode), log: () => setMsgLogFor({}) },
@@ -2831,7 +2828,7 @@ function App() {
                   {/* team rooms: the way into the Team view */}
                   {teamRooms.length > 0 && (
                     <div className="lt-connected">
-                      <ConnectedLine summary={connected} problem={roomLive.viewError} onOpen={() => openRoom(connected.roomId)} landscape />
+                      <ConnectedLine summary={connected} problem={roomLive.viewError} onOpen={() => openRoom(connected.roomId)} />
                     </div>
                   )}
                 </>
@@ -2996,7 +2993,6 @@ function App() {
       {paletteOpen && (
         <CommandPalette
           sessions={sessions}
-          shortcuts={NO_SHORTCUTS}
           onClose={() => setPaletteOpen(false)}
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },

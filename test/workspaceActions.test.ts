@@ -187,14 +187,13 @@ describe("a right-click on the empty landscape", () => {
 });
 
 describe("a workspace's Artifacts", () => {
-  it("is in its Tools, its area's window, off saying why for a loose one, and absent off the landscape", () => {
+  it("is in its Tools, its area's window, off saying why for a loose one", () => {
     const e = env();
     const row = actionOf(workspaceActions(sess(), e), "tool:artifacts")!;
     expect(row).toMatchObject({ section: "tools", label: "Artifacts" });
     row.onPick();
     expect(e.artifacts).toHaveBeenCalledOnce();
     expect(actionOf(workspaceActions(sess(), env({ artifacts: { no: "It's in no area: artifacts are kept by area" } })), "tool:artifacts")).toMatchObject({ disabled: true, title: "It's in no area: artifacts are kept by area" });
-    expect(actionOf(workspaceActions(sess(), env({ artifacts: null })), "tool:artifacts")).toBeUndefined();
   });
 
   it("opens the area its tile is in, or its session's while it has no tile yet; a loose one's is off", () => {
@@ -215,7 +214,6 @@ describe("an area's actions", () => {
     title: "#5102 Pathways",
     stored: { collapsed: false, locked: false },
     room: false,
-    landscape: true,
     empty: false,
     messages: { mode: undefined, defaultSend: true, set: vi.fn(), log: vi.fn() },
     follow: { leader: null, candidates: [], stop: vi.fn(), start: vi.fn() },

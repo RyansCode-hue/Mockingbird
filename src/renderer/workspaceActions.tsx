@@ -49,9 +49,9 @@ export const TOOL_KEYS: Record<WorkspaceTool | "artifacts" | "chat", string | un
 export interface WorkspaceEnv {
   /** A teammate's session: its owner's name. Theirs to rename, move, size and close. */
   owner: string | null;
-  /** On the landscape: the size preset it's at (null: none), and why its size can't change (null: it can). Off it, null. */
+  /** The size preset it's at (null: none), and why its size can't change (null: it can). Null while it has no place on the landscape. */
   size: { current: SizePreset | null; blocked: string | null } | null;
-  /** A stack's tab: its stack's name, renaming it, and taking every tab of this Mac's out of it. Null: a workspace of its own, or off the landscape. */
+  /** A stack's tab: its stack's name, renaming it, and taking every tab of this Mac's out of it. Null: a workspace of its own, or one with no place yet. */
   stack: { name: string; rename: Can; unstack: Can } | null;
   /** Another session in one card with this one: a new tab of its stack, or the stack it starts by that; or why not. */
   newTab: Can;
@@ -64,8 +64,8 @@ export interface WorkspaceEnv {
   move: () => void;
   resize: (p: SizePreset) => void;
   tool: (t: WorkspaceTool) => void;
-  /** Its area's Artifacts window, or why there's none (a loose workspace); null where there are no tool windows. */
-  artifacts: Can | null;
+  /** Its area's Artifacts window, or why there's none (a loose workspace). */
+  artifacts: Can;
   repaint: () => void;
   hidePanel: () => void;
   undo: Can;
@@ -159,7 +159,7 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
     ...(noFolder && (t !== "search" || !local) ? { disabled: true, title: noFolder } : {}),
   });
   out.push(tool("files", "Files", <FilesIcon />), tool("changes", "Changes", <SourceControlIcon />), tool("search", "Search", <SearchIcon />), tool("run", "Run & debug", <RunDebugIcon />));
-  if (env.artifacts) out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: "Its area's artifacts", ...can(env.artifacts) });
+  out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: "Its area's artifacts", ...can(env.artifacts) });
   out.push(
     { section: "terminal", key: "repaint", label: "Repaint", icon: <RepaintIcon />, title: "Have the session redraw its screen (its scrollback stays)", onPick: env.repaint, ...(dead ? { disabled: true, title: "Its session has exited" } : {}) },
     {
@@ -315,8 +315,6 @@ export interface AreaEnv {
   stored: { collapsed?: boolean; locked?: boolean } | null;
   /** A team room's area: the room tools (Chat, Board, Members, Follow) are only ever a room's. */
   room: boolean;
-  /** The landscape is on: tool windows, the House board and following live there. */
-  landscape: boolean;
   /** No session is in it, so it can go (its ghosts come back to it otherwise). */
   empty: boolean;
   /** How agents' messages to its sessions are delivered: its own choice (undefined: Settings'), and Settings'. */
@@ -367,10 +365,8 @@ export function areaActions(env: AreaEnv): ModelAction[] {
     );
   if (env.tidy) out.push({ section: "area", key: "tidy", label: "Tidy", kbd: "T", title: "Pack its workspaces in the order they were made — Undo puts them back", ...can(env.tidy) });
   if (env.ghosts) out.push(...ghostsActions(env.ghosts));
-  if (env.landscape) {
-    out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: env.room ? "The room's artifacts" : "The area's artifacts, on this Mac", onPick: env.artifacts });
-    if (env.room) out.push({ section: "tools", key: "tool:chat", label: "Chat", icon: env.chatIcon, title: "The room's chat", onPick: env.chat });
-  }
+  out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: env.room ? "The room's artifacts" : "The area's artifacts, on this Mac", onPick: env.artifacts });
+  if (env.room) out.push({ section: "tools", key: "tool:chat", label: "Chat", icon: env.chatIcon, title: "The room's chat", onPick: env.chat });
   for (const m of messageModes(env.messages.defaultSend)) {
     const on = (env.messages.mode ?? "") === m.value;
     out.push({ section: "messages", key: `msg:${m.value || "default"}`, label: m.label, title: m.title, icon: on ? "✓" : undefined, pressed: on, onPick: () => env.messages.set(m.value) });
@@ -381,12 +377,10 @@ export function areaActions(env: AreaEnv): ModelAction[] {
     { section: "sessions", key: "ask", label: "Ask for status", onPick: env.ask }
   );
   if (env.room) {
-    if (env.landscape) {
-      out.push({ section: "room", key: "board", label: "Board", menuLabel: "House board…", title: "House board — the room's Radley House tickets and who has each", onPick: env.board });
-      const f = env.follow;
-      if (f.leader) out.push({ section: "room", key: "follow:stop", label: `Stop following ${firstName(f.leader)}`, title: `Stop mirroring ${f.leader}'s view`, onPick: f.stop });
-      else for (const v of f.candidates) out.push({ section: "room", key: `follow:${v.member}`, label: `Follow ${firstName(v.name)}`, title: `Mirror ${v.name}'s view: the shared workspace they're in is brought into view and selected`, onPick: () => f.start(v.member) });
-    }
+    out.push({ section: "room", key: "board", label: "Board", menuLabel: "House board…", title: "House board — the room's Radley House tickets and who has each", onPick: env.board });
+    const f = env.follow;
+    if (f.leader) out.push({ section: "room", key: "follow:stop", label: `Stop following ${firstName(f.leader)}`, title: `Stop mirroring ${f.leader}'s view`, onPick: f.stop });
+    else for (const v of f.candidates) out.push({ section: "room", key: `follow:${v.member}`, label: `Follow ${firstName(v.name)}`, title: `Mirror ${v.name}'s view: the shared workspace they're in is brought into view and selected`, onPick: () => f.start(v.member) });
     out.push({ section: "room", key: "share", label: "Invite", menuLabel: "Invite a teammate…", onPick: env.share });
   } else out.push({ section: "share", key: "share", label: "Share", menuLabel: "Share as a team room…", onPick: env.share });
   if (env.empty && st) out.push({ section: "end", key: "remove", label: "Remove", menuLabel: "Remove the area", danger: true, onPick: env.remove });

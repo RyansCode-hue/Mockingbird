@@ -69,7 +69,7 @@ export function roomOfGroup(status: TeamStatus | { error: string } | null, group
  * the Team view — the only room's, or the room list.
  */
 /** `landscape`: on the landscape, where it goes to the one room's area and chat, or with several to their list. */
-export function ConnectedLine({ summary, onOpen, problem = null, landscape = false }: { summary: ConnectedSummary; onOpen: () => void; problem?: string | null; landscape?: boolean }) {
+export function ConnectedLine({ summary, onOpen, problem = null }: { summary: ConnectedSummary; onOpen: () => void; problem?: string | null }) {
   // a teammate connecting or leaving turns the presence dot (the line's ::before)
   const sub = useRef<HTMLSpanElement>(null);
   useChange(summary.online.length, (was, now) => sub.current && presenceTurn(sub.current, null, now > was, "::before"));
@@ -77,7 +77,7 @@ export function ConnectedLine({ summary, onOpen, problem = null, landscape = fal
     <button
       type="button"
       className="connected-line"
-      title={`${plural(summary.live, "teammate's session")} running in ${plural(summary.rooms, "team room")}${summary.online.length ? ` · online: ${summary.online.join(", ")}` : ""}${problem ? ` · teammates' sessions on screen here may not stream: ${problem}` : ""} — ${landscape ? (summary.roomId ? "go to its area and open its chat" : "list the rooms") : "open the Team view"}`}
+      title={`${plural(summary.live, "teammate's session")} running in ${plural(summary.rooms, "team room")}${summary.online.length ? ` · online: ${summary.online.join(", ")}` : ""}${problem ? ` · teammates' sessions on screen here may not stream: ${problem}` : ""} — ${summary.roomId ? "go to its area and open its chat" : "list the rooms"}`}
       onClick={onOpen}
     >
       <TeamIcon />

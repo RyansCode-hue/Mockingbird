@@ -1701,7 +1701,6 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .rail .cell .v .share { color: var(--amber-text); }
 .usage-today .usage-label { color: var(--text-2); }
 .rail .cell.meter { margin-left: auto; border-right: none; border-left: 1px solid var(--line-soft); }
-/* pinned panes: the pin stays visible while pinned, in the pane header and the sidebar row */
 /* ---- ticket pipeline (TicketPipeline.tsx) ---- */
 .pl { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 .pl-rail { display: flex; gap: 2px; overflow-x: auto; padding-bottom: 2px; }
@@ -2587,7 +2586,7 @@ button.lbtn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset
 .sess-item .sr-acts .lbtn .ico { width: 12px; height: 12px; }
 .sess-item .sr-acts .lbtn-t { display: none; }
 .sess-item:is(:hover, :focus-within) .sr-acts { display: inline-flex; }
-/* pinned or muted: that button stays while the row rests */
+/* muted: that button stays while the row rests */
 .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) { display: inline-flex; }
 .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) > :not(.on) { display: none; }
 /* the Team view: the selected row (the pane you're in) keeps its actions */

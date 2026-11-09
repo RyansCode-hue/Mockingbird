@@ -22,14 +22,11 @@ interface PaletteAction {
 
 export function CommandPalette({
   sessions,
-  shortcuts,
   actions,
   onJump,
   onClose,
 }: {
   sessions: SessionInfo[];
-  /** ⌘1–9 per session id, as the panes are numbered. */
-  shortcuts: ReadonlyMap<string, number>;
   actions: PaletteAction[];
   onJump: (id: string) => void;
   onClose: () => void;
@@ -46,19 +43,16 @@ export function CommandPalette({
 
   const rows = useMemo(() => {
     const acts = rankMatches(q, actions, (a) => [a.label]).map((a) => ({ kind: "action" as const, label: a.label, kbd: a.kbd, run: a.run, off: a.off }));
-    const sess = rankMatches(q, sessions, (s) => [titleOf(s), s.branch]).map((s) => {
-      const n = shortcuts.get(s.id);
-      return {
-        kind: "session" as const,
-        label: titleOf(s),
-        kbd: n ? `⌘${n}` : undefined,
-        status: s.status,
-        state: statusPhrase(s),
-        run: () => onJump(s.id),
-      };
-    });
+    const sess = rankMatches(q, sessions, (s) => [titleOf(s), s.branch]).map((s) => ({
+      kind: "session" as const,
+      label: titleOf(s),
+      kbd: undefined,
+      status: s.status,
+      state: statusPhrase(s),
+      run: () => onJump(s.id),
+    }));
     return { acts, sess, flat: [...acts, ...sess] };
-  }, [q, sessions, shortcuts, actions]);
+  }, [q, sessions, actions]);
 
   const { sel, onArrow } = useListNav(rows.flat.length, [q]);
 
