@@ -140,91 +140,26 @@ describe.skipIf(!local)("the landscape", () => {
     expect(m.dblclick).toEqual({ focused: false });
   }, 180_000);
 
-  it("is on by default, and never reads landscape.json with the Labs flag off: the grid renders as before", async () => {
+  it("is what the Sessions tab shows, and writes none of the grid's prefs, not even the defaults of one that isn't there", async () => {
     const read = `(() => {
       const start = (window.__lsStart ??= Date.now());
-      if (!document.querySelector(".grid .xterm, .ls-world .ls-node") && Date.now() - start < 20000) return null;
-      if (Date.now() - start < 1500) return null;
+      if (!document.querySelector(".ls-world .ls-node") || Date.now() - start < 3000) return null;
       return JSON.stringify({
-        grid: [...document.querySelectorAll(".grid > [data-cell]")].map((e) => e.getAttribute("data-cell")),
-        gridTerms: document.querySelectorAll(".grid .xterm").length,
-        landscape: !!document.querySelector(".ls-viewport"),
         workspaces: document.querySelectorAll(".ls-world .ls-node").length,
-        layoutButton: !!document.querySelector(".lay-wrap"),
-        read: window.__mbCalls.filter((c) => c.fn.startsWith("landscape")).map((c) => c.fn),
+        read: window.__mbCalls.filter((c) => c.fn === "landscapeGet").length > 0,
+        changed: Object.entries(window.__mbPrefsAtLoad).filter(([k, v]) => localStorage.getItem(k) !== v).map(([k]) => k),
       });
     })()`;
-    const off = await page<Record<string, unknown>>("labs=off", read, "ls-off");
-    expect(off).toEqual({ grid: ["s1", "ws:5101/api", "s4"], gridTerms: 3, landscape: false, workspaces: 0, layoutButton: true, read: [] });
-    const on = await page<Record<string, unknown>>("", read, "ls-on");
-    expect(on).toMatchObject({ grid: [], gridTerms: 0, landscape: true, layoutButton: false });
+    const on = await page<{ workspaces: number; read: boolean; changed: string[] }>("", read, "ls-on");
     expect(on.workspaces).toBeGreaterThan(8);
-    expect(on.read).toContain("landscapeGet");
+    expect(on.read).toBe(true);
+    expect(on.changed).toEqual([]);
   }, 120_000);
 
-  it("turned off and on again in Settings → Labs, brings the grid back as it was, the grid's layout prefs untouched", async () => {
-    const read = `(() => {
-      window.__lsFlip ??= (async () => {
-        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-        const until = async (f) => { for (let i = 0; i < 100 && !f(); i++) await sleep(100); return f(); };
-        const prefs = () => Object.fromEntries(Object.keys(window.__mbPrefsAtLoad).map((k) => [k, localStorage.getItem(k)]));
-        const tab = (t) => [...document.querySelectorAll(".tabs .tab")].find((b) => b.textContent.startsWith(t));
-        const flip = async () => {
-          tab("Settings").click();
-          await until(() => document.querySelector(".set-nav"));
-          [...document.querySelectorAll(".set-nav button")].find((b) => b.textContent === "Labs").click();
-          await until(() => document.querySelector('[role=switch][aria-label="Landscape"]'));
-          const sw = document.querySelector('[role=switch][aria-label="Landscape"]');
-          const was = sw.getAttribute("aria-checked");
-          sw.click();
-          await sleep(300);
-          (tab("Sessions") ?? tab("Landscape")).click();
-          return was;
-        };
-        await until(() => document.querySelector(".ls-world .ls-node"));
-        await sleep(800);
-        const whileOn = prefs();
-        const wasOn = await flip();
-        await until(() => document.querySelector(".grid .xterm"));
-        await sleep(800);
-        const afterOff = prefs();
-        const grid = [...document.querySelectorAll(".grid > [data-cell]")].map((e) => e.getAttribute("data-cell"));
-        const wasOff = await flip();
-        await until(() => document.querySelector(".ls-world .ls-node"));
-        await sleep(800);
-        window.__lsResult = JSON.stringify({
-          wasOn,
-          wasOff,
-          saved: window.__mbCalls.filter((c) => c.fn === "setSettings").map((c) => c.args[0]),
-          grid,
-          landscape: !!document.querySelector(".ls-viewport"),
-          atLoad: window.__mbPrefsAtLoad,
-          whileOn,
-          afterOff,
-          afterOn: prefs(),
-          hint: localStorage.getItem("mb.labs.landscape"),
-        });
-      })();
-      return window.__lsResult ?? null;
-    })()`;
-    const r = await page<Record<string, unknown>>("", read, "ls-flip");
-    expect(r).toMatchObject({ wasOn: "true", wasOff: "false", saved: [{ labs: { landscape: false } }, { labs: { landscape: true } }], grid: ["s1", "ws:5101/api", "s4"], landscape: true, hint: "true" });
-    // the landscape writes none of the grid's prefs, from the page's load on, not even the defaults of one that isn't there
-    expect(r.whileOn).toEqual(r.atLoad);
-    const set = (p: unknown) => Object.fromEntries(Object.entries(p as Record<string, string | null>).flatMap(([k, v]) => (v === null || ["null", "[]", "{}"].includes(v) ? [] : [[k, JSON.parse(v)]])));
-    expect(r.afterOn).toEqual(r.afterOff);
-    // and the grid, back, keeps them as it does with the landscape never shown
-    const gridOnly = await page<Record<string, string | null>>(
-      "labs=off",
-      `(() => {
-        const start = (window.__lsStart ??= Date.now());
-        if (!document.querySelector(".grid .xterm") || Date.now() - start < 3000) return null;
-        return JSON.stringify(Object.fromEntries(Object.keys(window.__mbPrefsAtLoad).map((k) => [k, localStorage.getItem(k)])));
-      })()`,
-      "ls-grid-prefs"
-    );
-    expect(r.afterOff).toEqual(gridOnly);
-  }, 180_000);
+  it("opens Settings on General when the section it remembers has gone", async () => {
+    const read = `(() => document.querySelector(".set-nav button.on, .set-nav button[aria-current]")?.textContent ?? null)()`;
+    expect(await page<string>("section=labs", `(() => { const t = ${read}; return t ? JSON.stringify(t) : null; })()`, "ls-gone-section")).toBe("General");
+  }, 90_000);
 
   it("says what of the grid's layout it couldn't read, puts every session on the landscape all the same, and leaves those prefs as they were", async () => {
     const read = `(() => {
@@ -243,6 +178,7 @@ describe.skipIf(!local)("the landscape", () => {
     type Partial = { migrations: number; workspaces: string[]; banners: [string, string][]; unchanged: string[]; drawn: number; trees: string | null };
     const whole = await page<Partial>("landscape=fresh", read, "ls-whole");
     expect(whole.banners).toEqual([]);
+    expect(whole.unchanged).toEqual([]);
 
     // not JSON: named, and the migration goes on without it
     const bad = await page<Partial>("landscape=fresh&lsBadPref=mb.trees", read, "ls-bad-pref");

@@ -71,7 +71,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type LabsFlags, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -116,7 +116,7 @@ import { usePersisted, readPref, writePref } from "./prefs";
 import { D, EASE, initMotion, motion, play, useFlipRows } from "./motion";
 import { StatusDot } from "./StatusDot";
 import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
-// the landscape (Settings → Labs)
+// the landscape
 import { emptyStateOf, nothingToTour } from "./landscapeFirstRun";
 import { LandscapeTopBar, type TopTab } from "./TopBar";
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type NoteAction } from "./Landscape";
@@ -173,11 +173,9 @@ function LayoutThumb({ tree }: { tree: LayoutNode }) {
   );
 }
 
-/** The Labs landscape flag as this window last read it from settings: only a first-paint hint, settings decide. */
-const LABS_LANDSCAPE_PREF = "mb.labs.landscape";
-
 /** Overlaps before main's first answer: none known, and none unread. */
 const NO_OVERLAPS: OverlapReport = { bySession: {}, unread: {} };
+
 /** How long a pane the main process is about to add or rekey waits for its place (see `expected` in App). */
 const EXPECT_MS = 10_000;
 /** How long a right-click's place waits, once its session is made, for the session to reach the landscape. */
@@ -218,15 +216,7 @@ function App() {
   /** Likewise for reads of which closed sessions' folders are gone (readGone). */
   const [goneFails, setGoneFails] = useState(0);
   const listLoaded = (which: "live" | "resumable") => setListsLoaded((p) => (p[which] ? p : { ...p, [which]: true }));
-  // Settings → Labs. Until settings are read, the flag as this window last saw it, so the Sessions tab doesn't draw one
-  // interface only to swap it for the other (each fitting every terminal) a moment later
-  const [labs, setLabsNow] = useState<LabsFlags>(() => ({ landscape: readPref<unknown>(LABS_LANDSCAPE_PREF, true) === true }));
-  const setLabs = (next: LabsFlags) => {
-    setLabsNow(next);
-    // kept only once it differs from the default, so a window that never turns it off stores nothing new
-    if ((readPref<unknown>(LABS_LANDSCAPE_PREF, true) === true) !== (next.landscape !== false)) writePref(LABS_LANDSCAPE_PREF, next.landscape !== false);
-  };
-  const landscapeOn = labs.landscape !== false;
+  const landscapeOn = true as boolean;
   // what the grid remembers is read as it left it, and saved only while the grid is what shows: the landscape never
   // changes what the grid, or a downgrade, comes back to
   const gridSaves = !landscapeOn;
@@ -728,12 +718,7 @@ function App() {
   // popup was already seen) are marked set up without being interrupted.
   useEffect(() => {
     window.mb.getSettings().then(async (s: Settings | { error: string }) => {
-      if (isErr(s)) {
-        // the landscape, as flags are their defaults until settings say otherwise
-        setLabsNow({});
-        return readFailed("settings", s);
-      }
-      setLabs(s.labs ?? {});
+      if (isErr(s)) return readFailed("settings", s);
       const hidden = s.hiddenTabs ?? [];
       setHiddenTabs(hidden);
       setPresets(s.presets ?? []);
@@ -1102,12 +1087,11 @@ function App() {
   const workSessions = useMemo(() => sessions.filter((s) => !s.debrief), [sessions]);
   const debriefSessions = useMemo(() => sessions.filter((s) => s.debrief), [sessions]);
 
-  // ---- the landscape (Settings → Labs): the Sessions tab's surface, or the grid with it off ----
-  const landscapeStore = useLandscape(landscapeOn);
+  // ---- the landscape: the Sessions tab's surface ----
+  const landscapeStore = useLandscape();
   const liveOwn = useMemo(() => sessions.filter((s) => !isRemote(s)), [sessions]);
   const liveRemote = useMemo(() => sessions.filter(isRemote), [sessions]);
   const migration = useLandscapeMigration({
-    on: landscapeOn,
     store: landscapeStore,
     // set means teammates' sessions are all in it: main indexes them from the saved rooms as it starts
     lists: { ...listsLoaded, remote: roomLive.state !== null },
@@ -3679,7 +3663,6 @@ function App() {
             onUpdate={() => setModal("update")}
             jump={settingsJump}
             onHiddenTabs={setHiddenTabs}
-            onLabs={setLabs}
             presets={presets}
             onPresets={setPresets}
             onMsgDefaultSend={setMsgDefaultSend}

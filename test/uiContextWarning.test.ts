@@ -17,20 +17,13 @@ async function audit(query: string): Promise<Record<string, any>> {
   return JSON.parse(json);
 }
 
-/** Each interface's way to its sessions: the landscape's camera, or the grid's panes with Settings → Labs → Landscape off. */
-const INTERFACES = [
-  { where: "the landscape", takenOver: "lsCamera=0,0,0.6", idle: "lsCamera=2000,0,0.6", waiting: "lsCamera=0,0,0.6", resume: [["lsFocus=s6", true], ["", false]] },
-  { where: "the grid", takenOver: "labs=off&shown=y1,s1&view=scm", idle: "labs=off&shown=s5", waiting: "labs=off&shown=s2,s1", resume: [["labs=off&shown=s6", true]] },
-] as const;
-
-for (const on of INTERFACES) describe.skipIf(!local)(`a session's context warning, on ${on.where}`, () => {
+describe.skipIf(!local)("a workspace's context warning", () => {
   it("of a session a teammate took over: its brief, its header's Undo and Codex, ⌘K's and the Changes tool's Second opinion all off, saying why", async () => {
-    const a = await audit(`${on.takenOver}&ctxAudit=takenOver`);
+    const a = await audit("lsCamera=0,0,0.6&ctxAudit=takenOver");
     const TAKE_BACK = /^Nick Smith continues it on their laptop: take it back/;
     expect(a.shown).toBe(true);
     expect(a.brief).toEqual({ disabled: true, title: expect.stringMatching(TAKE_BACK) });
-    // its controls: Undo and Codex there (the landscape's ⋯, the grid's pane header), off, each saying why; a session
-    // of this Mac's own beside it has them on
+    // its ⋯: Undo and Codex there, off, each saying why; a session of this Mac's own beside it has them on
     expect(a.controls.y1, JSON.stringify(a)).toEqual([
       { t: expect.stringMatching(/^Undo/), off: true, why: expect.stringMatching(TAKE_BACK) },
       { t: expect.stringMatching(/Codex/), off: true, why: expect.stringMatching(TAKE_BACK) },
@@ -56,7 +49,7 @@ for (const on of INTERFACES) describe.skipIf(!local)(`a session's context warnin
   }, 120_000);
 
   it("past 75% and idle: an amber chip in the workspace's header; its popover's Compact sends /compact on the click only, and the chip goes once the context drops", async () => {
-    const a = await audit(`${on.idle}&ctxAudit=idle`);
+    const a = await audit("lsCamera=2000,0,0.6&ctxAudit=idle");
     expect(a.shown).toBe(true);
     expect(a.inHeader).toBe(true);
     expect(a.tone).toBe("heads");
@@ -76,7 +69,7 @@ for (const on of INTERFACES) describe.skipIf(!local)(`a session's context warnin
   }, 120_000);
 
   it("past 90% while asking for permission: a red chip, Compact held back with the reason; Dismiss hides it at that level", async () => {
-    const a = await audit(`${on.waiting}&ctxAudit=waiting`);
+    const a = await audit("lsCamera=0,0,0.6&ctxAudit=waiting");
     expect(a.tone).toBe("firm");
     expect(a.chip).toBe("ctx 91%");
     expect(a.popTone).toBe("firm");
@@ -91,10 +84,11 @@ for (const on of INTERFACES) describe.skipIf(!local)(`a session's context warnin
   }, 120_000);
 });
 
-for (const on of INTERFACES) describe.skipIf(!local)(`resuming a big conversation whose cache is cold, on ${on.where}`, () => {
+describe.skipIf(!local)("resuming a big conversation whose cache is cold", () => {
   it("asks first with the estimate in plain words; Cancel leaves it, Continue resumes it", async () => {
-    for (const [query, inBody] of on.resume) {
-    const a = await audit(`${query}&ctxAudit=resume`);
+    // its body's Resume in focus, and its card's on the landscape
+    for (const [query, inBody] of [["lsFocus=s6&", true], ["", false]] as const) {
+    const a = await audit(`${query}ctxAudit=resume`);
     expect(a.inBody).toBe(inBody);
     expect(a.asked).toBe(true);
     expect(a.say).toBe("Resuming this re-reads about 380k tokens, roughly 7.5% of your 5-hour limit.");

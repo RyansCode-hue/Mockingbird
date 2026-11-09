@@ -3,7 +3,7 @@ import { Pick } from "./Menu";
 import { reachesBroadcast, titleOf } from "./appModel";
 import { PresetsSection } from "./Presets";
 import { getFormatOnSave, setFormatOnSave } from "./CodeEditor";
-import { isErr, OPTIONAL_TABS, type AgentCheck, type BroadcastOutcome, type LabsFlags, type SetupStatus, type SessionInfo, type SessionPreset, type Settings, type WorktreeEntry, type OptionalTab } from "../shared/types";
+import { isErr, OPTIONAL_TABS, type AgentCheck, type BroadcastOutcome, type SetupStatus, type SessionInfo, type SessionPreset, type Settings, type WorktreeEntry, type OptionalTab } from "../shared/types";
 import { TAB_LABELS } from "./tabs";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
@@ -396,10 +396,12 @@ const SETTINGS_SECTIONS = [
   { id: "team", label: "Team" },
   { id: "debriefs", label: "Debriefs" },
   { id: "control", label: "Control room" },
-  { id: "labs", label: "Labs" },
   { id: "about", label: "About" },
 ] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
+
+/** The section to open on from the one remembered: General when it's one that's since gone. */
+export const savedSection = (saved: unknown): SettingsSection => SETTINGS_SECTIONS.find((x) => x.id === saved)?.id ?? "general";
 
 
 /** Settings → Motion: follow macOS's Reduce motion, or choose. */
@@ -433,7 +435,6 @@ export function SettingsView({
   onUpdate,
   jump,
   onHiddenTabs,
-  onLabs,
   presets,
   onPresets,
   onMsgDefaultSend,
@@ -448,15 +449,13 @@ export function SettingsView({
   /** Open a specific section, e.g. the control room from ⌘⇧B. */
   jump: { section: SettingsSection; n: number } | null;
   onHiddenTabs: (tabs: OptionalTab[]) => void;
-  /** Labs flags as saved, so the window follows a change at once. */
-  onLabs: (labs: LabsFlags) => void;
   /** The App's preset list, which ⌘N's "Save as preset" also changes while this view is open. */
   presets: SessionPreset[];
   onPresets: (presets: SessionPreset[]) => void;
   onMsgDefaultSend: (send: boolean) => void;
   onStartPreset: (p: SessionPreset) => void;
 }) {
-  const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? readPref("mb.setSection", "general"));
+  const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? savedSection(readPref<unknown>("mb.setSection", "general")));
   useEffect(() => {
     if (jump) setSection(jump.section);
   }, [jump]);
@@ -943,26 +942,6 @@ export function SettingsView({
             <div className="set-card p0">
               <ControlRoomPanel sessions={sessions} />
             </div>
-          </>
-        )}
-
-        {section === "labs" && (
-          <>
-            <h2>Labs</h2>
-            <p className="set-lede">Features still being built. They may change before they're finished.</p>
-            <SetRow
-              title="Landscape"
-              note="The Sessions tab shows your sessions on a surface you pan and zoom, your grid's layout read in the first time. Turned off, it shows the grid as you left it."
-            >
-              <Toggle
-                label="Landscape"
-                on={s.labs?.landscape !== false}
-                onChange={async (v) => {
-                  const labs = { ...s.labs, landscape: v };
-                  if (await upd({ labs })) onLabs(labs);
-                }}
-              />
-            </SetRow>
           </>
         )}
 

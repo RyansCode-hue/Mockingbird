@@ -38,10 +38,9 @@ const rereadMs = () => (globalThis as { __mbLandscapeRereadMs?: number }).__mbLa
 
 /**
  * This window's copy of the landscape (~/.mockingbird/landscape.json, owned
- * by the main process), kept in step with every window's changes. Read only
- * while `on`: with the Labs flag off the file is never touched.
+ * by the main process), kept in step with every window's changes.
  */
-export function useLandscape(on: boolean): LandscapeStore {
+export function useLandscape(): LandscapeStore {
   const [state, setState] = useState<LandscapeState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cur = useRef<LandscapeState | null>(null);
@@ -64,7 +63,6 @@ export function useLandscape(on: boolean): LandscapeStore {
     });
   }, []);
   useEffect(() => {
-    if (!on) return;
     const off = window.mb.onLandscapeChanged((change: LandscapeChange) => {
       // before the first read lands there's nothing to apply it to: that read has it
       if (!cur.current) return;
@@ -74,15 +72,15 @@ export function useLandscape(on: boolean): LandscapeStore {
     });
     reload();
     return off;
-  }, [on]);
+  }, []);
   // main reads the file again with each get while it holds only a stand-in: ask now and then, so the file's layout
   // comes back once it can be read without waiting for a change
   const unreadable = !!state?.problems.some((p) => p.kind === "unreadable");
   useEffect(() => {
-    if (!on || !unreadable) return;
+    if (!unreadable) return;
     const t = setInterval(reload, rereadMs());
     return () => clearInterval(t);
-  }, [on, unreadable]);
+  }, [unreadable]);
   const send = async (patch: LandscapePatch, what: string, flag: boolean): Promise<LandscapeSave> => {
     const r = await settled(window.mb.landscapeUpdate(patch));
     if (isErr(r)) {
@@ -146,8 +144,6 @@ export interface Migrating {
  * too. Prefs it couldn't read and ids that name no session are logged.
  */
 export function useLandscapeMigration(o: {
-  /** The Labs flag: nothing is read in while it's off. */
-  on: boolean;
   store: LandscapeStore;
   lists: ListsLoaded;
   /** This Mac's live sessions, the previous run's resumable ones, and teammates' room sessions. */
@@ -160,7 +156,7 @@ export function useLandscapeMigration(o: {
 }): Migrating {
   const [skipRemote, setSkipRemote] = useState(false);
   const lists = skipRemote ? { ...o.lists, remote: true } : o.lists;
-  const step: MigrationStep = o.on ? migrationStep(o.store.state, lists) : { kind: "wait", why: "the landscape is off" };
+  const step = migrationStep(o.store.state, lists);
   const remoteFailed = step.kind === "wait" && !lists.remote && o.remoteError ? o.remoteError : null;
   const [failed, setFailed] = useState<string | null>(null);
   const [partial, setPartial] = useState<string | null>(null);

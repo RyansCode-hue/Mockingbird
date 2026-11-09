@@ -1,6 +1,6 @@
 # The landscape
 
-Status: phase 1 in progress, on by default, with Settings → Labs → Landscape to turn it off; see
+Status: phase 1 in progress; see
 [landscape-phase1.md](landscape-phase1.md) for what's built.
 
 The Sessions tab's grid becomes a **landscape**: an infinite surface you pan

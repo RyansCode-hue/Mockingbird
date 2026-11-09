@@ -3468,14 +3468,13 @@ Design O, with Artifacts as a window, and N's workspace header.
   | ⌥⇥, ⌘J, the editor dock, the presets, every dialog | Unchanged | kept |
   | Import's opened sessions | The first is brought into view | fixed: it wrote `mb.shown` and `mb.activeGroup` |
   | Per-group remembered panes (`mb.groupLayouts`, `mb.trees`) | Each workspace's own place; read once by the migration | decided |
-  | `mb.shown`, `mb.trees`, `mb.pinned`, `mb.activeGroup`, `mb.wsTabs`, `mb.cols`, `mb.layout`, `mb.zones` | Read by the migration (`LEGACY_PREF_KEYS`); written only while the grid shows | kept |
-  | `mb.wsOpen`, `mb.collapsed`, `mb.sideView` | Not carried; written only while the grid shows | decided |
+  | `mb.shown`, `mb.trees`, `mb.pinned`, `mb.activeGroup`, `mb.wsTabs`, `mb.cols`, `mb.layout`, `mb.zones` | Read by the migration (`LEGACY_PREF_KEYS`); never written | kept |
+  | `mb.wsOpen`, `mb.collapsed`, `mb.sideView` | Not carried; never written | decided |
 
-- **As built, on by default.** `settings.labs.landscape` is on unless it's
-  false, so someone who turned it off keeps the grid, and Settings → Labs still
-  turns it off. `?labs=off` is the same in the preview; each interface's tests
-  run on it (`uiTerminal`, `uiTyping`, `uiContextWarning`, `uiPhoneAlerts`,
-  `uiLayout`, `uiTicketStart`).
+- **As built, the flag.** The landscape is the Sessions tab's only surface, and
+  Settings → Labs is gone with its one setting. `labs` stays in an existing
+  `settings.json` and nothing reads it. A remembered section that's gone opens
+  General (`savedSection`).
   - **The migration runs once for everyone**, gated as before (`migrationStep`:
     every list loaded, no problem with the file, no `migratedAt`). Someone who
     had the landscape on has `migratedAt`, so it never runs for them again.
@@ -3485,10 +3484,10 @@ Design O, with Artifacts as a window, and N's workspace header.
     shape (`m.ignored`), go in a banner, *Part of your grid's layout wasn't read
     in*. Every session still gets a place from its group; only where it sits
     depends on the prefs. Storage that can't be read at all names every key.
-  - **The grid's keys aren't written while the landscape shows**, not even
-    their defaults (`usePersisted`'s `save`): the file a downgrade reads is the
-    file the grid left, spoiled or not. `test/uiLandscape.test.ts` compares them
-    exactly. Nothing on disk changes format.
+  - **The grid's keys aren't written**, not even their defaults: what a
+    downgrade reads is what the grid left, spoiled or not.
+    `test/uiLandscape.test.ts` compares them exactly. Nothing on disk changes
+    format.
   - **What was keyed on the grid or `shown`:**
 
     | Behaviour | On the landscape | Checked by |

@@ -108,16 +108,14 @@ describe.skipIf(!local)("phone alerts in Settings", () => {
     expect(d.buttons).toEqual(["Open Automation settings"]);
   }, 120_000);
 
-  for (const [where, query] of [["a workspace on the landscape", "lsCamera=0,0,1"], ["a pane on the grid", "labs=off&shown=s1,s2"]]) {
-    it(`shows in ${where} what a reply did, until dismissed`, async () => {
-      const r = await drive<{ note: string; dismissed: unknown[]; after: boolean }>(`${query}&phone=replies`, ".phone-note", `
-        const note = $(".phone-note .reason").textContent;
-        $(".phone-note button").click();
-        await sleep(300);
-        return { note, dismissed: calls().filter((c) => c.fn === "clearPhoneNote").map((c) => c.args[0]), after: !!$(".phone-note") };`);
-      expect(r.note).toMatch(/^Answered from your phone: allow once · /);
-      expect(r.dismissed).toEqual(["s1"]);
-      expect(r.after).toBe(false);
-    }, 120_000);
-  }
+  it("shows in the workspace what a reply did, until dismissed", async () => {
+    const r = await drive<{ note: string; dismissed: unknown[]; after: boolean }>("lsCamera=0,0,1&phone=replies", ".phone-note", `
+      const note = $(".phone-note .reason").textContent;
+      $(".phone-note button").click();
+      await sleep(300);
+      return { note, dismissed: calls().filter((c) => c.fn === "clearPhoneNote").map((c) => c.args[0]), after: !!$(".phone-note") };`);
+    expect(r.note).toMatch(/^Answered from your phone: allow once · /);
+    expect(r.dismissed).toEqual(["s1"]);
+    expect(r.after).toBe(false);
+  }, 120_000);
 });

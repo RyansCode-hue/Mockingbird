@@ -43,10 +43,11 @@ npm run ui-preview -- --shot out/shot.png --query "section=about&theme=light"
 to see the screen without a browser. `--query` picks it: `tab=dashboard`,
 `view=scm` (`explorer`, `search`, `run`: that tool's window; `room`: the Team
 view), `section=<Settings section>`, `theme=light`, `lsCamera=x,y,zoom` (else it
-fits everything: terminals draw from 0.35, and take the mouse at 1), `lsSelect=ws:s5`,
-`lsFocus=s5`, `--size 1400x900`; `labs=off` shows the grid, with `shown=s1,s5`
-its panes. With the Claude in Chrome extension (`/chrome`), a session can also open the live preview
-and click through it.
+fits everything: terminals draw from 0.35, and take the mouse at 1),
+`lsSelect=ws:s5`, `lsFocus=s5`, `landscape=fresh` (no `landscape.json` yet: the
+migration reads the grid's old prefs in, `shown=s1,s5` among them),
+`--size 1400x900`. With the Claude in Chrome extension (`/chrome`), a session
+can also open the live preview and click through it.
 
 Screenshots and `?measure` run with motion off; `?motion=full` (or `reduce`)
 turns it on. Check animations by their end states — `?motionAudit` and
