@@ -606,8 +606,12 @@ Member replace the single admin (creator, else longest-standing member).
   - **Joined while running:** a Claude session moved into a shared group
     while it runs has none of this. Until it's restarted there, nothing
     crosses the room's line to or from it: teammates' messages, its own
-    `send_message` to teammates, wires, and the House, artifact and
-    teammates'-changes tools are refused, saying why.
+    `send_message` to teammates, wires and its wire tools (`finish_step`,
+    `read_context`, `read_terminal`, `list_links`), and the House, artifact
+    and teammates'-changes tools are refused, saying why.
+  - **No pushing:** like a Codex room session, it can't `git push` (the
+    keychain and ssh are denied). A PR is pushed and opened by Mockingbird
+    itself when its owner approves it.
 - **What the deny rules don't cover:** Claude's sandbox doesn't stop a
   shell command reading a secret file inside its own folders (`cat .env`);
   Codex's stops everything the agent runs. Neither stops a `!` command typed

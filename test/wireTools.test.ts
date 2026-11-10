@@ -9,7 +9,7 @@ import { WIRES_NOTICE, WireTools, type PendingsMade } from "../src/main/wireTool
 import { WIRE_TOOL, WIRE_TOOL_SCHEMAS } from "../src/main/wireToolSchemas";
 import type { AgentMessage, SessionInfo } from "../src/shared/types";
 import { gateOf, ROOM_LINE, ROOMS_STARTING, verdictDue, verdictRefusal, type FinishOutcome, type Wire, type WireReply, type WireState } from "../src/shared/wires";
-import { askAs, startServer } from "./mcpClient";
+import { askAs, startServer, testLaunch } from "./mcpClient";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 const asRoot = process.getuid?.() === 0;
@@ -67,12 +67,15 @@ function setup() {
   let n = 0;
   let k = 0;
   const flags = { roomsKnown: true };
+  /** Room sessions that joined their room while running, so they aren't in its sandbox. */
+  const unsandboxed = new Set<string>();
   const service: WireService = new WireService({
     store,
     sessions: { list: () => running, resumable: () => closed },
     roomOf: (id) => rooms[id] ?? null,
     roomsKnown: () => flags.roomsKnown,
     takenOver: (id) => takenOver[id] ?? null,
+    outsideSandbox: (id) => unsandboxed.has(id),
     log,
     onAdded: (id, w) => tools.wired(id, w),
     // never all digits, which an object would list first, so wires keep the order they were made in
@@ -142,7 +145,7 @@ function setup() {
   const txFile = path.join(dir, "conv-a.jsonl");
   fs.writeFileSync(txFile, TRANSCRIPT + "\n");
   transcripts.a = txFile;
-  return { dir, file, repo, store, service, tools, delivery, running, closed, rooms, flags, takenOver, transcripts, refusedHooks, buffers, closedOutput, delivered, queue, messages, made, logged, hooks, a, me: (id: string) => running.find((s) => s.id === id)! };
+  return { dir, file, repo, store, service, tools, delivery, running, closed, rooms, flags, unsandboxed, takenOver, transcripts, refusedHooks, buffers, closedOutput, delivered, queue, messages, made, logged, hooks, a, me: (id: string) => running.find((s) => s.id === id)! };
 }
 type Setup = ReturnType<typeof setup>;
 
@@ -727,6 +730,34 @@ describe("before team rooms have started", () => {
   });
 });
 
+describe("a Claude room session outside the room's sandbox", () => {
+  it("has every wire refused, the reads and steps along them included, saying why, until it's restarted in the room", async () => {
+    const t = setup();
+    const ab = wire(t.service.add("a", "b", "context"));
+    const ba = wire(t.service.add("b", "a", "context"));
+    const bc = wire(t.service.add("b", "c", "handoff"));
+    wire(t.service.add("a", "term", "worktree"));
+    for (const id of ["a", "b", "c", "term"]) t.rooms[id] = "R1";
+    t.unsandboxed.add("b");
+    const why = "“Reviewer” joined its team room while it was running, so it isn't in the room's sandbox: restart it in the room to wire it there.";
+    for (const id of [ab, ba, bc]) expect(gate(t, id)).toMatchObject({ state: "blocked", why });
+    // what it would read, and what would be read from it
+    expect(((await t.tools.call(t.me("b"), WIRE_TOOL.readContext, { from: "a" })) as { error?: string }).error).toBe(why);
+    expect(((await t.tools.call(t.a, WIRE_TOOL.readContext, { from: "b" })) as { error?: string }).error).toBe(why);
+    t.unsandboxed.add("a");
+    expect(((await t.tools.call(t.a, WIRE_TOOL.readTerminal, { terminal: "term" })) as { error?: string }).error).toBe(why.replace("Reviewer", "Org filter"));
+    t.unsandboxed.delete("a");
+    // a step it finishes fills in nothing along its wires
+    await t.tools.call(t.me("b"), WIRE_TOOL.finishStep, { summary: "done" });
+    expect(book(t).links[bc].pending).toBeUndefined();
+    expect(t.service.add("c", "b", "handoff")).toEqual({ refused: why });
+    // restarted in the room, it's wired as before
+    t.unsandboxed.delete("b");
+    expect(gate(t, ab).state).not.toBe("blocked");
+    expect(((await t.tools.call(t.a, WIRE_TOOL.readContext, { from: "b" })) as { error?: string }).error).toBeUndefined();
+  });
+});
+
 describe("whether a verdict is due", () => {
   it.each<[string, ("handoff" | "feedback")[], boolean]>([
     ["a handoff out", ["handoff"], false],
@@ -794,7 +825,7 @@ describe("the wire tools through the real MCP server", () => {
     relay.setWireTools(t.tools);
     const ab = wire(t.service.add("a", "b", "handoff"));
     const bc = wire(t.service.add("b", "c", "handoff"));
-    const launch = mcpLaunch("a");
+    const launch = testLaunch("a");
     const server = startServer(launch);
     try {
       const r = await server.call("finish_step", { summary: "from a" });
@@ -814,7 +845,7 @@ describe("the wire tools through the real MCP server", () => {
     expect(book(t).links[bc].pending!.body).toBe("from b");
   });
   it("are listed with schemas that take nothing else, and none of them writes a wire, gate or counter", async () => {
-    const launch = mcpLaunch("a");
+    const launch = testLaunch("a");
     const server = startServer(launch);
     try {
       const tools: { name: string; inputSchema: { additionalProperties: boolean; required: string[] } }[] = (await server.request("tools/list")).result.tools;

@@ -1901,6 +1901,14 @@ and 7 an entry, 3 and 7 a checklist).
 | 8 | Patch notes | `comms` | Verifier drafts, you send | the Verifier's `set_stage`, or your click | | the patch notes (W14) |
 | | Done | `done` | you only | your click | | "Done." |
 
+**Pushing happens in main, never in a pane.** Room Claude and Codex panes can't `git
+push`: both sandboxes deny the login keychain, ssh's keys and agent, and git's
+credential stores (W20 review fixes 1). So the PR to dev (4) and the PR to main
+inside 6 are pushed and opened by Mockingbird's main process when Ryan approves the
+PR (`pipeline:pr:create`), never by the Coder's pane. The Coder's part ends at its
+commits and `request_pr`. **This is a requirement for the slice that builds PR
+opening (W15),** and for anything later that opens a PR for an agent.
+
 - **No migration.** Every id 1.6 knows keeps its meaning, so pipeline.json isn't
   rewritten: `stakeholder` is 6, `approved` and `pr-main` are steps inside 6 (the
   chip keeps "Approved" and "PR to main"; the rail draws them at 6, with "approved"
@@ -2027,7 +2035,8 @@ write_patch_notes({ text })
   and moves nothing else. A move back keeps `note` as feedback, with who wrote it.
 - **`request_pr`**: held in `requests`, one per ticket and target, a newer one
   replacing it and saying so. dev from Coding or Local testing; main only at
-  `approved`. Nothing pushes.
+  `approved`. Nothing pushes: a room pane couldn't anyway, and the push is main's
+  at Ryan's approval (the note under the stage table).
 - **`write_patch_notes`**: at `prod-test` or `comms` only. Replaces the agent's
   comms draft (`addDraft(id, "comms")`, `pipeline.ts:125`), at most 4,000
   characters, redacted (W2's `redactSecrets`) with the count shown, refused when
@@ -2054,6 +2063,9 @@ write_patch_notes({ text })
   session the one that asked, title and description filled in and marked "written
   by Coder's agent", the checklist with the agent's notes beside each item. Push and
   open PR (`TicketPipeline.tsx:257`) is the click. Dismiss… takes a note.
+- **Required:** the push and the PR are made by main, at that click, never by the
+  pane that asked. Room panes can't push (their sandboxes deny the keychain and
+  ssh), so this is the only path that works for them, as well as the safe one.
 - The Patch notes panel opens on the agent's draft, "drafted by Verifier"; Copy,
   Post to ADO (today's Drafts, `:267`) and Done stay yours.
 - Approve calls `pipeline:approve`.
@@ -2535,7 +2547,11 @@ arguments were read only; Codex was never signed in from the scratch HOME.
       tools, and `list_sessions`'s teammates (`ROOM_SANDBOX_REFUSAL`);
     - teammates' messages to it: `roomMessageRefusal`, so teammates' lists show
       it as not taking messages;
-    - wires to it (`wireRefusal`).
+    - wires to it (`wireRefusal`), so every gate, read and step along one is
+      blocked with the same reason;
+    - since the rebase onto W2, its own wire tools as well: `finish_step`,
+      `read_context`, `read_terminal` and `list_links` answer it with
+      `ROOM_SANDBOX_REFUSAL`.
   - No new UI: the existing guard chip already offers the restart.
   - `guards.secrets` keeps its shape. For Claude it now also means the sandbox,
     so records stay readable by an older Mockingbird.
@@ -3183,7 +3199,8 @@ click. A stage move fires no wire, gate or message.
 
 `request_pr` writes a request and nothing else. Pushing and opening stay in
 `pipeline:pr:create` (`index.ts:1389`), an IPC handler the window calls from the
-form's button; no MCP tool reaches `scmPush` or `openPr`, and a test spies on both.
+form's button, in Mockingbird's main process: a room pane can't push at all, since
+its sandbox denies the keychain and ssh (W20 review fixes 1); no MCP tool reaches `scmPush` or `openPr`, and a test spies on both.
 The form shows the agent's title and description as editable text, marked as the
 agent's, and runs today's preflight on its folder at the click (`:1397–1404`). A
 request for main is refused before Ryan's approval. He still approves the PR itself

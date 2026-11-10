@@ -617,8 +617,10 @@ export class Messaging {
     const live = this.live();
     const me = live.find((s) => s.id === req.from);
     if (!me) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
+    // what crosses the room's line for it: the room's tools, and its wires and what they read
     const offLine = this.offRoomLine(me);
-    if (offLine && (isHouseTool(req.op) || req.op === ARTIFACT_TOOL.list || req.op === ARTIFACT_TOOL.read || isTeamChangesTool(req.op))) return { error: offLine };
+    const roomLine = isHouseTool(req.op) || req.op === ARTIFACT_TOOL.list || req.op === ARTIFACT_TOOL.read || isTeamChangesTool(req.op) || req.op === MCP_TOOL.listLinks || isWireTool(req.op);
+    if (offLine && roomLine) return { error: offLine };
 
     // team rooms: the House board — it answers "not in a team room" for sessions outside one
     if (isHouseTool(req.op)) return houseToolCall(me.id, req.op!, req.args ?? {});
