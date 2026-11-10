@@ -4,7 +4,7 @@ import { useEscape } from "./useEscape";
 import { MoreIcon } from "./Icons";
 import { fromKeyboard, usePresence } from "./motion";
 import { giveBack, keyboardClaimed, useOpener } from "./Modal";
-import { isArmed } from "./keyArm";
+import { isArmed, keyboardNowhere } from "./keyArm";
 
 /**
  * One action, said once and shown two ways: as a labelled icon button (an
@@ -247,8 +247,7 @@ export function useContextMenu(label?: string) {
       back.current = null;
       // unless what the row did took focus (a dialog) or is placing it (keyboardMoves), or another menu opened
       requestAnimationFrame(() => {
-        const now = document.activeElement;
-        if (el?.isConnected && (!now || now === document.body) && !keyboardClaimed() && !document.querySelector(".mb-ctx:not(.mb-ghost)")) giveBack(el, armed);
+        if (el?.isConnected && keyboardNowhere() && !keyboardClaimed() && !document.querySelector(".mb-ctx:not(.mb-ghost)")) giveBack(el, armed);
       });
     }
   };

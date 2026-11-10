@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { OVER_TOUR, ownsKeys } from "./keys";
 import { useDialogFocus } from "./Modal";
+import { keyboardNowhere } from "./keyArm";
 import { fromKeyboard, usePresence } from "./motion";
 import { ringAround, tourCardAt, tourNext, type Box, type TourStep, type TourTarget } from "./landscapeFirstRun";
 import type { Camera } from "../shared/landscape";
@@ -14,7 +15,7 @@ const RING_INSET = 2;
 const inset = (b: Box, by: number): Box => ({ x: b.x + by, y: b.y + by, w: b.w - 2 * by, h: b.h - 2 * by });
 
 /** Keys closer together than this are typing. */
-const TYPING_MS = 1000;
+export const TYPING_MS = 1000;
 /** A terminal on the landscape (not a peek's, nor the bottom panel's). */
 const LANDSCAPE_TERM = ".ls-world .xterm";
 
@@ -129,7 +130,7 @@ export function LandscapeTour({
     // on the window, so it holds however the keyboard came to be nowhere (a dialog over the tour that closed with it)
     const onKey = (e: KeyboardEvent) => {
       if (document.querySelector(OVER_TOUR)) return;
-      if (e.target === document.body) card.current?.focus({ preventScroll: true });
+      if (keyboardNowhere()) card.current?.focus({ preventScroll: true });
       if (stillTyping()) {
         if (e.key === "Escape") e.preventDefault();
       } else if (e.key === "Escape" && !e.defaultPrevented) {

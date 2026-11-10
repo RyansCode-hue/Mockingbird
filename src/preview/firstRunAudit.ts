@@ -9,7 +9,8 @@
  * &do=skip|esc|next|done. Reloads with ?lsPersist to say whether it comes back.
  * =u: the tour against what else is going on, by &case=terminal|typing|dropped|keys|field|ring|undo|dialog|palette|focus|tray.
  * =c: the camera the tour moves, by &case=esc|skip|tab|restart|goto (cameraPart).
- * =a: typed keys against the landscape's arming (keyArm.ts), by &case=tour|peekLog|peekGone|jumpInTour|jumpKeys|press|zoomOut|cap|frame.
+ * =a: typed keys against the landscape's arming (keyArm.ts), by &case=tour|peekLog|peekGone|jumpInTour|jumpKeys|press|zoomOut|cap|frame|
+ * walk|pressNothing|mount|hud|hint.
  * =e (with ?lsOnly=…): what's in the empty landscape's place, right-clicks all over it, its tiles and its links.
  * =b: the top bar's boxes at this window's width, + New's menu and its »; &case=tab for + New on another tab, &case=fold
  * for what folds, &case=sheet for the sheet at this size and beside the tray and the palette.
@@ -55,6 +56,7 @@ const moved = (a: ReturnType<typeof camera>, b: ReturnType<typeof camera>) => JS
 const keyboard = () => {
   const a = document.activeElement;
   if (!a || a === document.body) return "body";
+  if (a.classList.contains("mb-keys-nowhere")) return "nowhere";
   if (a === vp()) return "landscape";
   if (a.closest(".xterm")) return "terminal";
   if (a.closest(".ls-tour-card")) return "tour";
@@ -511,6 +513,7 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   const selBefore = selected();
   const writesBefore = env.calls.filter((c) => c.fn === "landscapeUpdate" || c.fn === "sessionWrite").length;
   (document.activeElement as HTMLElement | null)?.blur();
+  await sleep(20);
   const nowhereAt = keyboard();
   for (const k of ["?", "n", "t", "Enter", " "]) {
     await press(k, k === "?" ? { shift: true } : {});
@@ -1463,7 +1466,15 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
  * - press (with ?needsMany): the landscape given the keyboard by code, as a hand-back gives it, then by a press;
  * - zoomOut (with ?lsCamera=0,0,1&needsMany): a terminal typed in, then a trackpad zoom out of the band it takes keys in;
  * - cap (with ?lsCamera=0,0,1): the tour's hold on the keyboard running to its cap, the terminal unable to take it;
- * - frame: focus's frame given the keyboard by code, then by a press on its header.
+ * - frame: focus's frame given the keyboard by code, then by a press on its header;
+ * - walk (&how=closed|closedTab|tour, with ?lsCamera=0,0,1&needsMany): the keyboard nowhere (s1's terminal gone as
+ *   it's typed in, or the tour ended after ⌘K went elsewhere during it), then Tab or Shift+Tab, then typing;
+ * - mount (&how=jump|notified|cycle|paletteRow|tabClick): the landscape mounted from another tab by a ⌘K jump (the window
+ *   opened there, &tab=dashboard), by a notification before any input, by ⌥⇥ after the Dashboard tab was pressed, by
+ *   ⌘K's Landscape row, or by its tab;
+ * - hud (with ?lsCamera=0,0,0.625): the zoom HUD's Zoom out pressed, then a peek's Space, then Tab;
+ * - hint (with ?needsMany): typed keys swallowed by the landscape disarmed, and with the keyboard nowhere, and ⌘E;
+ * - pressNothing: a press on the top bar's bare middle, then Tab.
  */
 async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<void> {
   const which = params.get("case");
@@ -1484,6 +1495,31 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     return document.activeElement?.closest<HTMLElement>(".ls-node")?.dataset.front === id && keyboard() === "terminal";
   };
   const writesSince = (mark: number) => env.calls.slice(mark).filter((c) => c.fn === "sessionWrite").map((c) => String(c.args[0]));
+  /** What was written to session `id`'s terminal since `mark`. */
+  const dataTo = (id: string, mark: number) =>
+    env.calls
+      .slice(mark)
+      .filter((c) => c.fn === "sessionWrite" && c.args[0] === id)
+      .map((c) => String(c.args[1]))
+      .join("");
+  /** Anything that changes a session, a layout or a group since `mark`: name and first argument. */
+  const actsSince = (mark: number) =>
+    env.calls
+      .slice(mark)
+      .filter((c) => /Write$|^landscapeUpdate|^setGroup|^kill|^create|^relaunch|^resume|^forget/.test(c.fn))
+      .map((c) => `${c.fn} ${JSON.stringify(c.args[0]) ?? ""}`);
+  /** The note on the landscape, and what each one put up since `watchNotes` began said. */
+  const notesSaid: string[] = [];
+  const watchNotes = () => {
+    const mo = new MutationObserver((ms) => {
+      for (const m of ms) for (const n of m.addedNodes) if (n instanceof HTMLElement && n.classList.contains("ls-note")) notesSaid.push(n.textContent?.trim() ?? "");
+    });
+    mo.observe(vp(), { childList: true, subtree: true });
+    return () => mo.disconnect();
+  };
+  const noteText = () => q(".ls-note")?.textContent?.trim() ?? null;
+  /** What an element is, for saying where the keyboard went. */
+  const nameOf = (el: Element) => `${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} ${(el.getAttribute("aria-label") ?? el.textContent ?? "").trim().slice(0, 30)}`;
   const changesSince = (mark: number) =>
     env.calls.slice(mark).filter((c) => (c.fn === "landscapeUpdate" && JSON.stringify(c.args[0]) !== '{"tourDone":true}') || c.fn === "setGroup").map((c) => c.fn);
   const opened = () => ({ focus: !!q(".ls-focus"), sheet: !!q(".ls-keys"), dialog: !!q(".modal-back:not(.mb-ghost)"), menu: !!q(".mb-ctx:not(.mb-ghost)"), palette: !!q(".palette") });
@@ -1549,11 +1585,12 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
       out.afterClick = { spacer: s.w > 4, atPress, keyboard: keyboard(), s1HadKeys: got };
       return;
     }
-    // the keyboard 15 ms after the tour's end arrives: the tour gives the landscape none
+    // the keyboard 15 ms after the tour's end arrives: the tour gives the landscape none. The card's removal leaves it on
+    // the page for the task before the holder takes it (keyArm.ts), which a sample can land in: nowhere either way
     let atEnd: string | null = null;
     const onEnd = (e: Event) => {
       const ends = e.type === "keydown" ? (e as KeyboardEvent).key === "Escape" : !!(e.target as Element | null)?.closest?.('[data-act="skip"]');
-      if (ends) setTimeout(() => (atEnd ??= keyboard()), 15);
+      if (ends) setTimeout(() => (atEnd ??= keyboard() === "body" ? "nowhere" : keyboard()), 15);
     };
     document.addEventListener("keydown", onEnd, true);
     document.addEventListener("click", onEnd, true);
@@ -1566,7 +1603,15 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     // N, then text: a Tab that could walk onto a button, Tidy's letter, Enter, and a prompt's y
     await typeKeys(["n", "Tab", "t", "Enter", "x", "y"], 50);
     await sleep(1500);
-    out.after = { tour: !!q(".ls-tour-card"), keyboard: keyboard(), others: writesSince(mark).filter((id) => id !== "s1"), changes: changesSince(mark), selected: selected() === sel, ...opened() };
+    out.after = {
+      tour: !!q(".ls-tour-card"),
+      keyboard: keyboard(),
+      others: writesSince(mark).filter((id) => id !== "s1"),
+      s1Got: dataTo("s1", mark),
+      changes: changesSince(mark),
+      selected: selected() === sel,
+      ...opened(),
+    };
     // and s1 has its keyboard back: a key now is written to it
     const mark2 = env.calls.length;
     await press("z");
@@ -1755,6 +1800,165 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await press("n");
     await sleep(300);
     out.afterZoom = { inS1, terminalsTakeKeys: zoomNow() >= 0.75, keyboard: keyboard(), moved: selected() !== sel2 };
+  } else if (which === "walk") {
+    const how = params.get("how") ?? "closed";
+    out.before = await intoTerm("s1");
+    if (how === "tour") {
+      // the tour comes up over s1's terminal; ⌘K goes to s4 during it, then Esc ends it
+      await press("g");
+      await sleep(40);
+      env.patch({ tourDone: false });
+      await sleep(1800);
+      out.tourUp = !!q(".ls-tour-card");
+      await press("k", { meta: true });
+      await sleep(400);
+      await typeKeys([..."test runner"], 40);
+      await press("Enter");
+      await sleep(2200);
+      await press("Escape");
+      await sleep(1500);
+      out.ended = { tour: !!q(".ls-tour-card"), keyboard: keyboard() };
+    } else {
+      // s1 closed elsewhere as its terminal is typed in
+      await press("a");
+      await sleep(100);
+      env.setSession("s1", null);
+      await sleep(800);
+      out.gone = { s1: !card("s1"), keyboard: keyboard() };
+    }
+    // a control or a terminal given the keyboard from here on
+    const reached: string[] = [];
+    const onFocus = (e: FocusEvent) => {
+      const t = e.target as Element | null;
+      if (t instanceof Element && !t.classList.contains("mb-keys-nowhere")) reached.push(nameOf(t));
+    };
+    document.addEventListener("focusin", onFocus, true);
+    const mark = env.calls.length;
+    const shift = how !== "closedTab";
+    const walked: string[] = [];
+    for (let i = 0; i < (shift ? 5 : 9); i++) {
+      await press("Tab", { shift });
+      await sleep(100);
+      walked.push(keyboard());
+    }
+    // a word with a space and an Enter, as at a prompt; after Tabs, a prompt's y
+    await typeKeys(shift ? ["d", "o", " ", "i", "t", "Enter"] : ["y"], 70);
+    await sleep(600);
+    document.removeEventListener("focusin", onFocus, true);
+    out.after = { walked: [...new Set(walked)], reached, keyboard: keyboard(), acts: actsSince(mark), ...opened() };
+  } else if (which === "pressNothing") {
+    // a press on nothing puts the keyboard on the page by the user's own act: Tab goes on from the press
+    const s = box(q(".topbar > .spacer"));
+    if (!s || s.w < 4) throw new Error("no bare middle in the top bar");
+    await act([{ mouse: { x: s.x + s.w / 2, y: s.y + s.h / 2, clickCount: 1 } }]);
+    await sleep(200);
+    out.pressed = keyboard();
+    await press("Tab");
+    await sleep(150);
+    out.tabbed = keyboard();
+  } else if (which === "mount") {
+    const how = params.get("how") ?? "jump";
+    const tabBtn = (id: string) => q(`.topbar .tab[data-tab="${id}"]`);
+    const typeRow = async (text: string) => {
+      await press("k", { meta: true });
+      await sleep(400);
+      await typeKeys([...text], 40);
+      await press("Enter");
+      await sleep(900);
+    };
+    if (how === "jump") {
+      // the window opened on Dashboard (&tab=dashboard): ⌘K to a session on the landscape, zoomed out past its terminal
+      out.startedOn = { landscape: !!q(".ls-viewport"), tab: q(".topbar .tab.on")?.dataset.tab ?? null };
+      await typeRow("test runner");
+    } else if (how === "notified") {
+      // the window opened on Dashboard and nothing pressed yet: a notification clicked jumps to a session
+      out.startedOn = { landscape: !!q(".ls-viewport"), tab: q(".topbar .tab.on")?.dataset.tab ?? null };
+      (window as unknown as { __mbEmit: (ev: string, ...a: unknown[]) => void }).__mbEmit("onUiCommand", "focus-session", "s4");
+      await sleep(900);
+    } else if (how === "cycle") {
+      // the Dashboard tab pressed (its button keeps the keyboard), then ⌥⇥ to a waiting session
+      await clickOn(tabBtn("dashboard")!);
+      await sleep(800);
+      out.startedOn = { landscape: !!q(".ls-viewport"), keyboard: keyboard() };
+      await press("Tab", { alt: true });
+      await sleep(900);
+    } else if (how === "paletteRow") {
+      // the Dashboard tab pressed, then ⌘K's Landscape row: the palette gives the keyboard back to Dashboard's button
+      await clickOn(tabBtn("dashboard")!);
+      await sleep(800);
+      out.startedOn = { landscape: !!q(".ls-viewport"), keyboard: keyboard() };
+      await typeRow("Landscape");
+    } else {
+      // the Landscape tab pressed, from Dashboard: the user chose it
+      await clickOn(tabBtn("dashboard")!);
+      await sleep(800);
+      out.startedOn = { landscape: !!q(".ls-viewport"), keyboard: keyboard() };
+      await clickOn(tabBtn("sessions")!);
+      await sleep(900);
+    }
+    out.mounted = { landscape: !!q(".ls-viewport"), keyboard: keyboard(), selected: selected() };
+    const sel0 = selected();
+    const mark = env.calls.length;
+    // ? asks for the sheet; then N, Enter and a prompt's y
+    await press("?", { shift: true });
+    await sleep(300);
+    const sheet = !!q(".ls-keys");
+    if (sheet) {
+      await press("Escape");
+      await sleep(300);
+    }
+    await typeKeys(["n", "Enter", "y"], 120);
+    await sleep(700);
+    out.after = { sheet, moved: selected() !== sel0, acts: actsSince(mark), focus: !!q(".ls-focus"), note: noteText() };
+  } else if (which === "hud") {
+    // the zoom HUD's Zoom out pressed: the landscape is armed by the press, the button doesn't keep the keyboard
+    const zoomOut = q('.ls-hud-btn[aria-label="Zoom out"]');
+    if (!zoomOut) throw new Error("no Zoom out on the HUD");
+    const z0 = zoomNow();
+    await clickOn(zoomOut);
+    await sleep(800);
+    out.pressed = { keyboard: keyboard(), zoomedOut: zoomNow() < z0 };
+    const z1 = zoomNow();
+    await restOn("s2");
+    out.peek = peekNow();
+    await press(" ");
+    await sleep(400);
+    out.space = { peek: peekNow(), zoomSame: zoomNow() === z1, keyboard: keyboard() };
+    // and the buttons are still the keyboard's: Tab from the armed landscape reaches one of its own
+    await press("Escape");
+    await sleep(300);
+    await press("Tab");
+    await sleep(200);
+    const a = document.activeElement;
+    out.tab = { button: !!a?.matches("button, [role=button]"), inLandscape: !!a && vp().contains(a) && a !== vp() };
+  } else if (which === "hint") {
+    const stop = watchNotes();
+    // nothing selected, with the landscape armed as the window opened on it
+    await press("Escape");
+    await sleep(200);
+    out.start = { keyboard: keyboard(), selected: selected() };
+    // given the keyboard by code (a hand-back): typed keys say why they do nothing, once
+    vp().blur();
+    vp().focus({ preventScroll: true });
+    await sleep(60);
+    await typeKeys(["n", "t", "Tab", "x"], 120);
+    await sleep(200);
+    out.disarmed = { notes: [...notesSaid], keyboard: keyboard(), selected: selected() };
+    // ⌘E with nothing selected arms it: ? opens the sheet
+    await press("e", { meta: true });
+    await sleep(200);
+    await press("?", { shift: true });
+    await sleep(300);
+    out.cmdE = { sheet: !!q(".ls-keys") };
+    await press("Escape");
+    await sleep(300);
+    // with the keyboard nowhere, typed keys say why once more, and only once
+    vp().blur();
+    await sleep(100);
+    await typeKeys(["x", "y", "z"], 120);
+    await sleep(200);
+    out.nowhere = { notes: [...notesSaid], keyboard: keyboard() };
+    stop();
   }
 }
 
@@ -1766,7 +1970,8 @@ export function runFirstRunAudit(env: FirstRunEnv, part: string): void {
     el.textContent = JSON.stringify(out);
     document.body.appendChild(el);
   };
-  env.waitFor(part === "b" ? ".topbar" : part === "e" ? ".ls-viewport" : ".ls-viewport", async () => {
+  // =b, and =a&case=mount (which may open on another tab), start once the top bar is there; the rest, the landscape
+  env.waitFor(part === "b" || (part === "a" && params.get("case") === "mount") ? ".topbar" : ".ls-viewport", async () => {
     const out: Record<string, unknown> = {};
     try {
       if (part === "k") await keysPart(env, out);

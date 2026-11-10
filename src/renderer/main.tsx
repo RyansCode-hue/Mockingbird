@@ -7,6 +7,7 @@ import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
 import { QuickOpen } from "./QuickOpen";
 import { keyboardMoves } from "./Modal";
+import { keyboardNowhere } from "./keyArm";
 import { EMPTY_EDITOR, closeTab, openTab, tabKey, updateTab } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
@@ -1011,7 +1012,12 @@ function App() {
     // gives none back to what had it meanwhile, or a key typed straight after would land in the session left.
     keyboardMoves();
     focusTerm(s.id);
-    if (!termHasKeys(s.id)) setTimeout(() => focusTerm(s.id), 50);
+    if (!termHasKeys(s.id))
+      setTimeout(() => {
+        focusTerm(s.id);
+        // its terminal isn't there to take it (the landscape zoomed out past it): typed keys go nowhere, and say so
+        if (!termHasKeys(s.id) && keyboardNowhere()) console.warn(`[mockingbird] ${s.id}'s terminal couldn't take the keyboard as it was gone to: it's left nowhere`);
+      }, 50);
   };
   const jumpTo = (id: string) => {
     const s = sessions.find((x) => x.id === id);

@@ -4,6 +4,7 @@ import { DIALOG_OPENED, useDialogFocus, type DialogOpened } from "./Modal";
 import { AnchoredPopover } from "./Popover";
 import { SHEET_FOOT, SHORTCUTS } from "./landscapeShortcuts";
 import { foldBar } from "./selectionBarModel";
+import { keyboardNowhere, tabChosen } from "./keyArm";
 import type { Tab } from "./tabs";
 
 /** A tab of the top bar: its name, what it draws beside it, and what that says when the tab is folded into the menu. */
@@ -121,6 +122,11 @@ export function LandscapeTopBar({
   const keysBtn = useRef<HTMLButtonElement>(null);
   const moreBtn = useRef<HTMLButtonElement>(null);
   const ctx = useContextMenu("More in the top bar");
+  /** A tab's button or its row in » pressed: the user chose it, which the landscape mounting for it takes up (keyArm.ts). */
+  const choose = (id: Tab) => {
+    if (id !== tab) tabChosen(id);
+    onTab(id);
+  };
   const [room, setRoom] = useState("");
   const sig = [room, tab, needsCount, ...tabs.map((t) => `${t.id}:${t.label}:${t.badgeSays ?? ""}`)].join("\n");
   const [fold, setFold] = useState<Folded | null>(null);
@@ -169,7 +175,7 @@ export function LandscapeTopBar({
   useLayoutEffect(() => {
     const id = tabWithKeys.current;
     tabWithKeys.current = null;
-    if (id && fold?.folded.includes(id) && (!document.activeElement || document.activeElement === document.body)) moreBtn.current?.focus({ preventScroll: true });
+    if (id && fold?.folded.includes(id) && keyboardNowhere()) moreBtn.current?.focus({ preventScroll: true });
   }, [fold]);
 
   const rest = tabs.filter((t) => folded.has(t.id));
@@ -179,7 +185,7 @@ export function LandscapeTopBar({
   const moreCount = measuring ? (fold?.folded.length ?? 0) : count;
   const busy = rest.filter((t) => t.badgeSays);
   const menu = (): Action[] => [
-    ...rest.map((t): Action => ({ key: t.id, label: t.badgeSays ? `${t.label} (${t.badgeSays})` : t.label, onPick: () => onTab(t.id) })),
+    ...rest.map((t): Action => ({ key: t.id, label: t.badgeSays ? `${t.label} (${t.badgeSays})` : t.label, onPick: () => choose(t.id) })),
     ...(keysFolded ? [{ key: KEYS, label: "? Shortcuts", onPick: () => onKeysOpen(true) }] : []),
   ];
   return (
@@ -189,7 +195,7 @@ export function LandscapeTopBar({
         {tabs
           .filter((t) => !folded.has(t.id))
           .map((t) => (
-            <button key={t.id} type="button" className={`tab ${tab === t.id ? "on" : ""}`} data-tab={t.id} onClick={() => onTab(t.id)}>
+            <button key={t.id} type="button" className={`tab ${tab === t.id ? "on" : ""}`} data-tab={t.id} onClick={() => choose(t.id)}>
               {t.label}
               {t.badge}
             </button>

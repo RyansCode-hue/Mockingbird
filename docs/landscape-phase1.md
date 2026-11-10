@@ -2947,11 +2947,15 @@ Design O, with Artifacts as a window, and N's workspace header.
     - **Armed only by an act of the user aimed at it:** a press on the canvas,
       a card or the landscape's own chrome (`armOnPress`, from the viewport's
       pointerdown: at once if it has the keyboard, or as the press's own focus
-      move gives it it; a press that gives a terminal or a button the keyboard
-      arms nothing); a command that leaves a terminal for it or goes to it
-      (⌘E, ⌘Esc, Esc out of focus, Go there, `armFocus`); the window opening
-      on it, or its tab clicked; and the user leaving what they opened from it
-      while it was armed. "Leaving" means Esc, `?` (the sheet's own key) or a
+      move gives it it; a press that gives a terminal the keyboard arms
+      nothing; a press on one of its own buttons arms it and leaves the button
+      without the keyboard, round 3); a command that leaves a terminal for it
+      or goes to it (⌘E, ⌘Esc, Esc out of focus, Go there, ⌘E with nothing
+      selected, `armFocus`); its tab's button pressed (`tabChosen`, recorded
+      by the press itself, never read from where the keyboard is), or the
+      window opening on it before any input (`untouched`), but never with a
+      reveal or a jump on its way (round 3); and the user leaving what they
+      opened from it while it was armed. "Leaving" means Esc, `?` (the sheet's own key) or a
       press (Cancel, ×, outside it). Then `useDialogFocus` and the context
       menu give the keyboard back armed. A dialog submitted with Enter, or a
       palette row run with it, gives it back disarmed: keys may still be
@@ -2967,12 +2971,29 @@ Design O, with Artifacts as a window, and N's workspace header.
       can't walk onto a button and press it with the Enter after. ⌘ and Ctrl
       chords still work (⌘0, ⌘1, ⌘K, ⌘E), and ⌥⇥ is the window's, from
       anywhere. Focus's frame (`.ls-focus`) is a surface too: Esc on the
-      frame itself leaves focus only while it's armed.
+      frame itself leaves focus only while it's armed. What it swallows says
+      why once, in the landscape's note, until something is armed again
+      (round 3).
+    - **Nowhere is a place (round 3).** When what had the keyboard goes
+      (removed, hidden, blurred, or the tour's hold at its cap), the keyboard
+      goes to an inert holder (`toNowhere`, a hidden `tabindex=-1` element),
+      never to the page: from the page, Tab walks on from where what went had
+      been. The holder is never armed. It swallows typed keys at the window's
+      capture, Tab, Shift+Tab, Space and Enter included, says so
+      (`KEYS_SWALLOWED`, which the landscape's note takes up), and lets Esc
+      and ⌘/Ctrl chords through. A press on anything leaves it. A press on
+      nothing (a bare stretch of a bar) isn't nowhere: the user put the
+      keyboard on the page there, and Tab goes on from the press.
+      `keyboardNowhere()` is the one test for "nothing has the keyboard", the
+      page and the holder alike; nothing compares `activeElement` with
+      `document.body` any more.
     - **A new key handler:** if it acts on a typed key, it asks
       `isArmed(surface)`. A peek's keys also act while the peek itself has
       the keyboard. Code that gives the landscape the keyboard for the user's
       own command calls `armFocus`; anything else calls `focus()` and leaves
-      it disarmed. Preview audits that stand in for a press use `armFocus` in
+      it disarmed. Code that asks whether the keyboard is anywhere calls
+      `keyboardNowhere()`; code that leaves it nowhere on purpose calls
+      `toNowhere()`, never `blur()`. Preview audits that stand in for a press use `armFocus` in
       their setup (`giveLandscape`); the tests of the rule itself press for
       real.
   - **H1, the tour's hand-back:** the tour's end never gives the landscape
@@ -3046,9 +3067,98 @@ Design O, with Artifacts as a window, and N's workspace header.
     after it. In the tour's zoomed-out step the jump's terminal isn't
     attached, so the hand-back finds no way back and leaves the keyboard
     nowhere, which is what's tested.
-  - **Found, not fixed:** with the keyboard nowhere (the page's body), Tab
-    still moves it to the window's first control and Enter presses it. That's
-    the browser's own, outside the landscape.
+  - **Found, not fixed (corrected in round 3, and fixed there):** with the
+    keyboard nowhere (the page's body), Tab and Shift+Tab walked on from where
+    what went had been, into the controls beside it (a ghost's Forget, the next
+    workspace's tabs and then its terminal, the status bar's Restart), and the
+    Enter or Space after pressed them. This note first said Tab went to the
+    window's first control; Chrome starts it from the removed element's place.
+- **S8a review fixes (round 3) — As built:**
+  - **H1, the keyboard nowhere:** an inert holder takes it (keyArm.ts, the
+    rule above). It's put there on a `focusout` to nothing while the window
+    is in front, once the move is over (`setTimeout`, so a frame or a webview
+    taking the keyboard shows first), and on any key while the keyboard is
+    on the page. It takes a key only when the key's target is nowhere too:
+    the same thing for anything typed, but a key dispatched by code at an
+    element (the preview's audits) stays that element's. The tour's hold at
+    its cap uses `toNowhere()`.
+    `keyboardNowhere()` replaced every `=== document.body` test: Modal's
+    hand-back and the dialog's own refocus, the context menu's hand-back,
+    TopBar's » refocus, Dashboard's card refocus, the tour card's guard, and
+    the mount below. The tour's hold isn't ended by the keyboard going to the
+    holder. `jumpToSession` logs when its 50 ms retry leaves the keyboard
+    nowhere. One case is left the page's: a press on nothing (a bare stretch
+    of the top bar or the side bar) puts the keyboard there by the user's own
+    act, and Tab goes on from the press as in any browser. Sending that to
+    the holder too would leave a keyboard user no way to Tab into the window
+    after clicking empty space.
+  - **H2, arming as it mounts:** the landscape's tab button, and its row in
+    », record the user's choice as they're pressed (`tabChosen`, kept 1 s);
+    the mount takes it up (`takeTabChoice`). The window opening on it arms it
+    only before any input (`untouched`, no key or press yet). A reveal or a
+    jump on its way (`reveal`, `keyboardClaimed`) never arms. Mounted any
+    other way it takes the keyboard disarmed, as before, from nowhere or from
+    a tab's button.
+  - **M1, the tour's hold and a burst:** the terminal gets its keyboard back
+    only once keys pause for `TYPING_MS` (the card's own 1 s) and the camera
+    is back in the band, even when it never left it. Till then everything
+    typed is swallowed, so a burst through the tour's end reaches nothing,
+    never its tail. The cap runs from the end or the last key, whichever is
+    later.
+  - **M2, a peek's Space after a landscape button:** a press on one of the
+    landscape's own buttons (the HUD, the selection bar, a header's, a
+    ghost's, the note's) `preventDefault`s its mousedown and arms the
+    landscape (or focus's frame) instead, so the button keeps no keyboard to
+    be pressed again by Space. Tab from the armed landscape still reaches the
+    buttons. A peek's buttons, terminals and fields are left alone.
+  - **L1, swallowed keys say why:** once, in the note, until something is
+    armed again: "Click the landscape, or press ⌘E, to use its keys" (with a
+    workspace selected, "…or press ⌘E to type in the selected workspace").
+    Never for a modifier or Esc, nor during the tour's hold. ⌘E with nothing
+    selected arms the landscape, unless a terminal, field or editor has the
+    keyboard.
+  - **Tests** (=a, real keys and presses):
+    - walk: s1's terminal closed as it's typed in, then Shift+Tab ×5 and "do
+      it⏎", or Tab ×9 and y; and the tour ended after ⌘K went elsewhere
+      during it, then Shift+Tab ×5 and "do it⏎". The keyboard stays on the
+      holder, no control or terminal is given it (every `focusin` recorded),
+      and nothing is written, forgotten, created or moved;
+    - pressNothing: a press on the top bar's bare middle leaves the keyboard
+      on the page, and Tab then reaches a top bar control;
+    - mount: by a ⌘K jump from the tab the window opened on, by a
+      notification's jump before any input, by ⌥⇥ after the Dashboard tab was
+      pressed, and by ⌘K's Landscape row: `?` opens no sheet, N moves
+      nothing, nothing is written; by its own tab: `?` opens the sheet;
+    - the tour's burst: exactly what reached s1 is checked (nothing), at
+      1024×768, motion off and on; a key once things settle reaches s1;
+    - hud: the HUD's Zoom out pressed, a peek's Space keeps the peek and
+      leaves the zoom; Tab reaches a button of the landscape's;
+    - hint: said once disarmed, once more with the keyboard nowhere after
+      ⌘E (with nothing selected) armed the landscape and `?` opened the sheet;
+    - the cap's log line: the cap test from round 2 is still there and still
+      checks it (`said` 0, then 1).
+
+    Earlier tests that saw the keyboard on the page now see it on the holder
+    ("nowhere"), and the one where it goes as a terminal is typed in sees the
+    note said once. The shortcuts sheet's test gives Chrome two minutes
+    (`pageResult`'s `limitMs`): driving every row took 58–59 s against the
+    60 s cap, on 772734a as now.
+  - **Checked by reverting**, each taken out on its own with its test
+    failing:
+    - H1: the holder swallowing typed keys (Tab walks on); the keyboard put
+      on the holder at all (it stays on the page); the tour's hold ended by
+      the keyboard going to the holder (s1 never gets it back); a press on
+      nothing left the page's (Tab is swallowed);
+    - H2: its tab's press recorded; arming on the window opening only before
+      any input; never with a reveal or a jump on its way (the notification's
+      jump); the old read of a tab button having the keyboard;
+    - M1: waiting for keys to pause (the burst's tail reaches s1);
+    - M2: a press on a landscape button arming the landscape;
+    - L1: the note; once until something is armed again; ⌘E with nothing
+      selected arming;
+    - the cap's log line.
+  - **Not tested:** still, a terminal asked for during the tour taking the
+    keyboard after it (round 2's note).
 
 ## Risks
 
@@ -3057,8 +3167,8 @@ Design O, with Artifacts as a window, and N's workspace header.
 - **Many live terminals.** Mitigated by the zoom bands, attaching only
   on-screen workspaces, and WebGL; measured in S3.
 - **Shortcut conflicts.** Single-letter keys (N, M, T, ?) work only while the
-  landscape has focus and the user armed it (keyArm.ts, S8a review round 2),
-  never in a terminal.
+  landscape has focus and the user armed it (keyArm.ts, S8a review rounds 2
+  and 3), never in a terminal, and never with the keyboard nowhere.
 - **Electron gestures.** Pinch arrives as ctrl+wheel, and trackpad scroll as
   wheel with fractional deltas; the camera handles both, as `wheelLines`
   already does for scrolling.

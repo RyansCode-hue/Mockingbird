@@ -193,7 +193,8 @@ async function pressAsked(ask) {
   if (keys.length) await ask("Runtime.evaluate", { expression: `window.__mbKeysDone = (window.__mbKeysDone || 0) + ${keys.length}` });
 }
 
-export async function pageResult({ size = "1400x900", query = "", outDir, read, scale = null }) {
+/** `limitMs`: how long Chrome gets to have the result (an audit that drives a lot, longer). */
+export async function pageResult({ size = "1400x900", query = "", outDir, read, scale = null, limitMs = 60_000 }) {
   let devtools = null;
   let result = null;
   let ws = null;
@@ -211,7 +212,7 @@ export async function pageResult({ size = "1400x900", query = "", outDir, read, 
       ws.send(JSON.stringify({ id: n, method, params }));
     });
   try {
-    await inChrome({ size, query, outDir, budget: null, args: ["--remote-debugging-port=0", ...(scale ? [`--force-device-scale-factor=${scale}`] : [])], what: "the page's result", onStderr: (text) => (devtools ??= text.match(/DevTools listening on (ws:\/\/\S+)/)?.[1] ?? null) }, async () => {
+    await inChrome({ size, query, outDir, budget: null, limitMs, args: ["--remote-debugging-port=0", ...(scale ? [`--force-device-scale-factor=${scale}`] : [])], what: "the page's result", onStderr: (text) => (devtools ??= text.match(/DevTools listening on (ws:\/\/\S+)/)?.[1] ?? null) }, async () => {
       if (!devtools) return false;
       if (!ws) {
         const pages = await (await fetch(`http://127.0.0.1:${new URL(devtools).port}/json`)).json();
@@ -239,7 +240,7 @@ export async function pageResult({ size = "1400x900", query = "", outDir, read, 
  * the result is there (`closed`: Chrome has exited and its output is read). `budget` is the virtual time the
  * page gets (null: real time).
  */
-async function inChrome({ size, query, outDir, args, what, onStdout, onStderr, budget = 4000 }, done) {
+async function inChrome({ size, query, outDir, args, what, onStdout, onStderr, budget = 4000, limitMs = 60_000 }, done) {
   if (!fs.existsSync(CHROME)) throw new Error(`Chrome isn't at ${CHROME} — set CHROME to its binary`);
   const [w, h] = size.split("x").map(Number);
   if (!w || !h) throw new Error(`--size wants WIDTHxHEIGHT, not "${size}"`);
@@ -280,7 +281,7 @@ async function inChrome({ size, query, outDir, args, what, onStdout, onStderr, b
     for (;;) {
       if (await done(closed)) break;
       if (closed) throw new Error(`Chrome exited without ${what}: ${stderr.trim().split("\n").pop() ?? ""}`);
-      if (Date.now() - started > 60_000) throw new Error(`Chrome took over a minute without ${what}`);
+      if (Date.now() - started > limitMs) throw new Error(`Chrome took over ${Math.round(limitMs / 1000)} s without ${what}`);
       await new Promise((r) => setTimeout(r, 250));
     }
   } finally {

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { useLiftOut } from "./lift";
-import { armFocus, isArmed, userLeft } from "./keyArm";
+import { armFocus, isArmed, isNowhere, keyboardNowhere, userLeft } from "./keyArm";
 
 /**
  * Said on `document` as a dialog opens, so what floats over the app can get out of its way. `handBack` names who gets
@@ -31,7 +31,7 @@ let home: (() => HTMLElement | null) | null = null;
 
 /** The first of `chain` still in the page, or home. */
 function placeFor(chain: readonly Element[]): HTMLElement | null {
-  for (const el of chain) if (el instanceof HTMLElement && el.isConnected && el !== document.body) return el;
+  for (const el of chain) if (el instanceof HTMLElement && el.isConnected && !isNowhere(el)) return el;
   return home?.() ?? null;
 }
 
@@ -110,8 +110,7 @@ export function useDialogFocus(opts: { rearms?: boolean; handsBack?: (to: HTMLEl
     );
     return () => {
       openers.splice(openers.indexOf(entry), 1);
-      const lost = !document.activeElement || document.activeElement === document.body;
-      if (!lost || keyboardClaimed()) return;
+      if (!keyboardNowhere() || keyboardClaimed()) return;
       const to = placeFor(chain.current!);
       if (to && (handsBack.current?.(to) ?? true)) giveBack(to, entry.armed);
     };
@@ -158,8 +157,7 @@ export function Modal({
     const out = (e: FocusEvent) => {
       if (e.relatedTarget) return;
       requestAnimationFrame(() => {
-        const a = document.activeElement;
-        if (el.isConnected && (!a || a === document.body)) el.focus({ preventScroll: true });
+        if (el.isConnected && keyboardNowhere()) el.focus({ preventScroll: true });
       });
     };
     el.addEventListener("focusout", out);

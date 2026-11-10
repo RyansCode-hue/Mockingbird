@@ -20,6 +20,7 @@ import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { blockAction, editTags, tagSuggestions } from "./tagEdits";
 import { splitTagInput, type TagChange } from "../shared/cardRules";
 import { gapAt, placeCard, placeLabel, placement, stepGap } from "./boardOrder";
+import { keyboardNowhere } from "./keyArm";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -175,7 +176,7 @@ export function DashboardBoard({
     if (id === null) return;
     const active = document.activeElement;
     const el = document.querySelector<HTMLElement>(`.bcard[data-id="${id}"]`);
-    if (el && active !== el && (!active || active === document.body)) el.focus();
+    if (el && active !== el && keyboardNowhere()) el.focus();
     else if (active !== el) refocus.current = null;
   }, [items]);
   // detail edit state
