@@ -10,7 +10,7 @@ import { SessionManager } from "../src/main/sessions";
 import { LivePanes, type LivePanesDeps } from "../src/main/team/livePanes";
 import { onTurnEnded, isRoomSession, originIdentity, roomOfSession, setRoomSessionLookup, validateRecord, type TurnEnded } from "../src/main/team/roomSessions";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
-import { CODEX_ROOM_GUARD_SINCE, decodePtyChunk, encodePtyChunk, remotePaneId, type RoomSessionRecord } from "../src/shared/team/livePanes";
+import { CLAUDE_ROOM_SANDBOX_SINCE, CODEX_ROOM_GUARD_SINCE, decodePtyChunk, encodePtyChunk, remotePaneId, type RoomSessionRecord } from "../src/shared/team/livePanes";
 import { CODEX_ROOM_PROFILE } from "../src/main/codexRoomSandbox";
 import { HouseService } from "../src/main/team/houseService";
 import { claudeToolName } from "../src/main/messaging";
@@ -18,6 +18,7 @@ import { ROOM_CONTEXT_ENV } from "../src/shared/team/claims";
 import { HOUSE_READ_TOOLS, HOUSE_TOOL_NAMES, HOUSE_WRITE_TOOLS } from "../src/shared/team/house";
 import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
 import { RemoteAudit } from "../src/main/team/remoteAudit";
+import { git } from "../src/main/git";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; emit(d: string): void; exit(code: number): void };
@@ -68,6 +69,8 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
   };
   const sessions = new SessionManager(store as any);
   sessions.scrollbackDir = path.join(dir, m.name, "scrollback");
+  // a Claude Code new enough for the room's sandbox
+  sessions.setAgentVersions({ claude: CLAUDE_ROOM_SANDBOX_SINCE });
   const window: unknown[][] = [];
   const notes: { title: string; body: string; paneId: string }[] = [];
   const audits: string[] = [];
@@ -94,6 +97,8 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
     dir: base,
     hooksDir: path.join(base, "githooks"),
     coauthorsDir: path.join(base, "coauthors"),
+    cachesDir: path.join(base, "caches"),
+    markerScript: path.join(base, "room-sandbox.sh"),
     timing: FAST,
     ...over,
   });
@@ -111,6 +116,16 @@ async function pair(over: Partial<LivePanesDeps> = {}) {
   const [ryan, nick] = members.map((m) => side(m, dir, over));
   return { dir, roomId, net, ryan, nick };
 }
+
+/** What a Claude room launch's settings and Mockingbird's own SessionStart hook report as it starts (RoomSandboxWatch). */
+function reportIn(s: ReturnType<typeof side>, id: string, o: { late?: boolean; marker?: string } = {}) {
+  const marker = o.marker ?? /room-sandbox\.sh\\" ([0-9a-f]+)/.exec(ptyOf(id).args.join(" "))![1];
+  s.sessions.roomSandboxReported(id, marker, !!o.late);
+  s.sessions.statusFromHook({ paneId: id, status: "idle", started: true });
+}
+
+/** The room one of this install's own sessions is in, as its window's state tags it; undefined until it does. */
+const remoteOfOwn = (s: ReturnType<typeof side>, id: string): string | undefined => s.live.state().own[id]?.roomId;
 
 const remoteOf = (s: ReturnType<typeof side>, id: string) => s.live.state().remote.find((r) => r.room?.sessionId === id);
 
@@ -274,6 +289,45 @@ describe("live panes", () => {
     await ryan.sessions.restart(s.id);
     ptyOf(s.id).emit("new pty\r\n");
     await until(() => /\x1bc[^]*restarted[^]*new pty/.test(nick.shown(paneId)), "the redraw from the new pty");
+  });
+
+  it("catches up a teammate's pane whose session comes back after its record said it had ended", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    nick.live.setView({ shown: [paneId], focused: null });
+    await nick.sessions.paneBuffer(paneId);
+    ptyOf(s.id).emit("old pty\r\n");
+    await until(() => nick.shown(paneId).includes("old pty"), "output");
+    // the restart's launch takes long enough for the ended record to reach Nick first
+    const launch = ryan.sessions.roomLaunch!;
+    ryan.sessions.roomLaunch = async (t) => {
+      await until(() => remoteOf(nick, s.id)?.room?.live === false, "the ended record");
+      // and for Nick's view to come again meanwhile (every 100 ms here), while Ryan's session is between its ptys
+      await new Promise((r) => setTimeout(r, 300));
+      return launch(t);
+    };
+    await ryan.sessions.restart(s.id);
+    ptyOf(s.id).emit("new pty\r\n");
+    await until(() => /\x1bc[^]*new pty/.test(nick.shown(paneId)), "the redraw from the new pty");
+  });
+
+  it("keeps a session a teammate shows streamed across a restart, so its new pty's first output isn't dropped", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    nick.live.setView({ shown: [remotePaneId(ryan.m.id, s.id)], focused: null });
+    const watched = () => (ryan.live["watchedOwn"] as Set<string>).has(s.id);
+    await until(watched, "Nick's view");
+    // a view comes while the session is between its ptys
+    const launch = ryan.sessions.roomLaunch!;
+    ryan.sessions.roomLaunch = async (t) => {
+      ryan.live["recomputeWatched"]();
+      return launch(t);
+    };
+    await ryan.sessions.restart(s.id);
+    expect(watched()).toBe(true);
   });
 
   it("chunks say where they start; anything else isn't a chunk", () => {
@@ -668,6 +722,9 @@ describe("room session launch", () => {
     for (const rule of ["Read(**/.env)", "Read(**/.env.*)", "Read(//**/.env)", "Read(**/*.pem)", "Read(**/*.key)", "Read(**/credentials.json)", "Read(~/.mockingbird/team/**)"]) expect(command).toContain(rule);
     expect(command).toContain(`Read(/${path.join(ryan.settings.workTrackerPath, "secrets/ado.pat")})`);
     expect(p.env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
+    // starting until its sandbox reports in
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true, starting: true });
+    reportIn(ryan, s.id);
     expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
   });
 
@@ -740,7 +797,7 @@ describe("room session launch", () => {
     expect(ryan.sessions.guardsOf(before.id)).toBeNull();
     await service.shareGroup("5120", "#5120 Donor search");
     const s = await ryan.start({ taskGroup: "5120" });
-    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true, starting: true });
     expect(ptyOf(s.id).args.join(" ")).toContain("--disallowedTools");
     service.stop();
   });
@@ -850,6 +907,7 @@ describe("room session launch", () => {
     const s = await ryan.start({ taskGroup: "private" });
     const local = await ryan.start({ taskGroup: "private" });
     const inRoom = await ryan.start();
+    reportIn(ryan, inRoom.id);
     expect(ryan.live.outsideSandbox(s.id)).toBe(false);
     ryan.sessions.setGroup(s.id, "5110");
     await until(() => !!remoteOf(nick, s.id), "the record");
@@ -857,31 +915,166 @@ describe("room session launch", () => {
     expect(ryan.live.outsideSandbox(s.id)).toBe(true);
     expect(ryan.live.outsideSandbox(inRoom.id)).toBe(false);
     expect(ryan.live.outsideSandbox(local.id)).toBe(false);
-    // restarted in the room, it runs in the room's sandbox
+    // restarted in the room, it runs in the room's sandbox once that reports in
     const again = await ryan.sessions.restart(s.id);
     expect(ptyOf(again.id).args.join(" ")).toContain('"sandbox":{"enabled":true');
+    expect(ryan.live.outsideSandbox(again.id)).toBe(true);
+    reportIn(ryan, again.id);
     expect(ryan.live.outsideSandbox(again.id)).toBe(false);
   });
-  it("starts Claude in the room's sandbox, with the status line in the same --settings; outside a room, as before", async () => {
+
+  it("starts Claude in the room's sandbox, with the status line in the same --settings, reading no settings but the user's and running no MCP server but Mockingbird's; outside a room, as before", async () => {
     const { ryan } = await pair();
     const repo = makeRepo();
-    const s = await ryan.start({ cwd: repo });
+    const s = await ryan.start({ cwd: repo, extraDirs: ["/extra/dir"] });
     const args = ptyOf(s.id).args.join(" ");
     expect(args.match(/--settings/g)).toHaveLength(1);
+    expect(args).toContain("'--setting-sources' 'user' '--strict-mcp-config'");
+    expect(args).toMatch(/'--mcp-config' '\{"mcpServers":\{"mockingbird"/);
     const settings = JSON.parse(/--settings' '(\{.*?\})'/.exec(args)![1]);
     expect(settings.statusLine).toMatchObject({ type: "command", command: expect.stringContaining("statusline.sh") });
     expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false, network: { allowedDomains: ["*"] } });
     const git = fs.realpathSync(path.join(repo, ".git"));
-    expect(settings.sandbox.filesystem.allowWrite).toEqual(expect.arrayContaining([git, "~/.npm"]));
-    expect(settings.sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining(["~/.mockingbird", "~/.zshenv", "~/.claude", path.join(git, "config"), path.join(git, "hooks")]));
+    expect(settings.sandbox.filesystem.allowWrite[0]).toBe(git);
+    expect(settings.sandbox.filesystem.allowWrite).not.toContain("~/.npm");
+    expect(settings.sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining(["~/.mockingbird", "~/.zshenv", "~/.claude", path.join(git, "config"), path.join(git, "hooks"), path.join(git, "info", "attributes")]));
     expect(settings.sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(["~/.mockingbird/mcp-tokens", "~/Library/Keychains"]));
     // the co-author hooks its commits run, inside the denied ~/.mockingbird/team
     expect(settings.sandbox.filesystem.allowRead.map((p: string) => path.basename(p))).toEqual(["githooks", "coauthors"]);
-    expect(settings.permissions).toMatchObject({ blockWritesOutsideWorkingDirectories: true, deny: expect.arrayContaining(["Edit(~/.mockingbird/**)", "Edit(~/.zshrc)", `Edit(/${path.join(git, "config")})`, `Edit(/${path.join(git, "hooks")}/**)`]) });
-    expect(ryan.sessions.guardsOf(s.id)).toMatchObject({ secrets: true });
+    expect(settings.permissions).toMatchObject({
+      blockWritesOutsideWorkingDirectories: true,
+      deny: expect.arrayContaining(["Edit(~/.mockingbird/**)", "Edit(~/.zshrc)", `Edit(/${path.join(git, "config")})`, `Edit(/${path.join(git, "hooks")}/**)`, `Edit(/${repo}/.git)`, `Edit(/${repo}/.mcp.json)`, `Edit(/${repo}/.claude/**)`, "Edit(//extra/dir/.git/**)"]),
+    });
+    // its sandbox reports in through its own SessionStart hook
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toMatch(/room-sandbox\.sh" [0-9a-f]{32}$/);
+    expect(ryan.sessions.guardsOf(s.id)).toMatchObject({ secrets: true, starting: true });
     const outside = ptyOf((await ryan.start({ taskGroup: "private" })).id).args.join(" ");
     expect(outside).not.toContain("sandbox");
+    expect(outside).not.toContain("--setting-sources");
     expect(outside).toMatch(/--settings' '[^']*statusline-settings\.json'/);
+  });
+
+  it("points a room agent's package managers at the room's own caches, on its command and not its shell's startup", async () => {
+    const { ryan } = await pair();
+    const s = await ryan.start();
+    const p = ptyOf(s.id);
+    await until(() => !!remoteOfOwn(ryan, s.id), "the room");
+    const roomId = remoteOfOwn(ryan, s.id)!;
+    const folder = path.join(ryan.live["d"].cachesDir!, roomId);
+    expect(fs.statSync(folder).isDirectory()).toBe(true);
+    const command = p.args.join(" ");
+    expect(command).toContain(`exec '/usr/bin/env' 'npm_config_cache=${folder}/npm'`);
+    for (const k of ["XDG_CACHE_HOME", "GOMODCACHE", "CARGO_HOME", "NUGET_PACKAGES", "COREPACK_HOME", "electron_config_cache"]) expect(command).toContain(`'${k}=${folder}/`);
+    // the pane's shell starts with the user's own
+    expect(p.env.XDG_CACHE_HOME).toBeUndefined();
+    expect(JSON.parse(/--settings' '(\{.*?\})'/.exec(command)![1]).sandbox.filesystem.allowWrite).toEqual([folder]);
+    // a Codex in the room writes them too, and a plain terminal is left alone
+    ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
+    const codex = ptyOf((await ryan.start({ agent: "codex" })).id).args.join(" ");
+    expect(codex).toContain(`'GOMODCACHE=${folder}/go/mod'`);
+    expect(codex).toContain(`${JSON.stringify(folder)}="write"`);
+    const term = ptyOf((await ryan.start({ shell: true, agent: undefined })).id);
+    expect(term.args.join(" ")).not.toContain("/usr/bin/env");
+  });
+
+  it("runs a Claude conversation a terminal brings back under the room's settings, the terminal itself still unguarded", async () => {
+    const { ryan } = await pair();
+    const t = await ryan.start({ shell: true, agent: undefined, shellResume: { agent: "claude", id: "conv-1" } });
+    const command = ptyOf(t.id).args.join(" ");
+    expect(command).toMatch(/'--resume' 'conv-1'/);
+    expect(command).toContain('"sandbox":{"enabled":true');
+    expect(command).toContain("'--setting-sources' 'user' '--strict-mcp-config'");
+    expect(command).toContain("--disallowedTools");
+    // no messaging tools, so no report to wait for; back at the shell once it quits
+    expect(command).not.toContain("room-sandbox.sh");
+    expect(command).not.toContain("--mcp-config");
+    expect(command).toMatch(/; exec \/bin\/zsh -il$/);
+    expect(ryan.sessions.guardsOf(t.id)).toEqual({ secrets: false, coauthors: true });
+  });
+
+  it("keeps a Claude launch off the room's line until its sandbox reports in, and for good when a turn comes first or nothing comes in time — told once", async () => {
+    const { ryan, nick } = await pair();
+    const folder = tempDir("own");
+    const ok = await ryan.start({ title: "reported", cwd: folder });
+    expect(ryan.live.outsideSandbox(ok.id)).toBe(true);
+    // starting is this Mac's to know: teammates' records keep the two fields every Mockingbird reads
+    await until(() => !!remoteOf(nick, ok.id), "the record");
+    expect(remoteOf(nick, ok.id)!.room!.guards).toEqual({ secrets: true, coauthors: true });
+    // an event matched only by its folder may be another agent's there: it says nothing of this launch
+    ryan.sessions.statusFromHook({ cwd: folder, status: "working", prompted: true });
+    expect(ryan.sessions.guardsOf(ok.id)).toMatchObject({ secrets: true, starting: true });
+    // the marker alone isn't enough: Mockingbird's own hooks must be seen to run for it
+    const marker = /room-sandbox\.sh\\" ([0-9a-f]+)/.exec(ptyOf(ok.id).args.join(" "))![1];
+    ryan.sessions.roomSandboxReported(ok.id, "f".repeat(32), false); // another launch's marker says nothing
+    ryan.sessions.roomSandboxReported(ok.id, marker, false);
+    expect(ryan.live.outsideSandbox(ok.id)).toBe(true);
+    ryan.sessions.statusFromHook({ paneId: ok.id, status: "idle", started: true });
+    expect(ryan.live.outsideSandbox(ok.id)).toBe(false);
+    // a turn after it changes nothing
+    ryan.sessions.statusFromHook({ paneId: ok.id, status: "working", prompted: true });
+    expect(ryan.sessions.guardsOf(ok.id)).toEqual({ secrets: true, coauthors: true });
+
+    // a prompt before the report: its agent could have written the marker itself
+    const early = await ryan.start({ title: "early" });
+    ryan.sessions.statusFromHook({ paneId: early.id, status: "idle", started: true });
+    ryan.sessions.statusFromHook({ paneId: early.id, status: "working", prompted: true });
+    reportIn(ryan, early.id);
+    expect(ryan.sessions.guardsOf(early.id)).toEqual({ secrets: false, coauthors: true });
+    expect(ryan.live.outsideSandbox(early.id)).toBe(true);
+    await until(() => remoteOf(nick, early.id)?.room?.guards.secrets === false, "teammates see it unguarded");
+
+    // read beside a turn's event, the marker can't be told from one the turn wrote
+    const late = await ryan.start({ title: "late" });
+    reportIn(ryan, late.id, { late: true });
+    expect(ryan.sessions.guardsOf(late.id)).toMatchObject({ secrets: false });
+
+    // a rejected settings file runs none of its hooks: nothing reports in, and the time runs out
+    ryan.sessions.sandboxReportMs = 300;
+    const silent = await ryan.start({ title: "silent" });
+    ryan.sessions.statusFromHook({ paneId: silent.id, status: "idle", started: true });
+    await until(() => ryan.sessions.guardsOf(silent.id)?.secrets === false, "the time running out");
+    const told = ryan.live.state().problems.filter((p) => p.includes("“silent”"));
+    expect(told).toHaveLength(1);
+    expect(told[0]).toMatch(/didn't report in within 0 seconds.*may have rejected them/);
+    expect(ryan.live.state().problems.filter((p) => p.includes("“early”"))).toEqual([expect.stringMatching(/first turn began before its sandbox settings reported in/)]);
+    // a session refused across the line says why
+    expect(ryan.live.outsideSandbox(silent.id)).toBe(true);
+  });
+
+  it("holds git in a room session's worktree to the git folders it started on: rewritten, its folder isn't read for teammates, and Ryan is told once", async () => {
+    const { ryan } = await pair();
+    const repo = makeRepo();
+    const wt = path.join(fs.realpathSync(tempDir("wts")), "5110");
+    execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", "5110-x", wt]);
+    const reads: string[] = [];
+    ryan.live["d"].gitState = async (cwd: string) => (reads.push(cwd), { dirty: false, dirtyFiles: 0, branch: "5110-x", upstream: null, ahead: 0, behind: 0, insertions: 0, deletions: 0 });
+    const s = await ryan.start({ cwd: wt, repoPath: repo });
+    await ryan.live["pollGit"]();
+    expect(reads).toContain(wt);
+    fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${tempDir("elsewhere")}\n`);
+    reads.length = 0;
+    await ryan.live["pollGit"]();
+    await ryan.live["pollGit"]();
+    expect(reads).toEqual([]);
+    expect(ryan.live.state().problems.filter((p) => p.includes(`won't run git in ${wt}`))).toHaveLength(1);
+    // restarted, it reads its folder afresh: a .git leading out of its repository is refused from the start, said once
+    await ryan.sessions.restart(s.id);
+    await expect(git(wt, ["status"])).rejects.toThrow(/won't run git/);
+    expect(ryan.live.state().problems.filter((p) => p.includes(`won't run git in room session ${s.id}`))).toEqual([expect.stringMatching(/git found no repository there/)]);
+    expect(ryan.live.state().problems.filter((p) => p.includes(`won't run git in ${wt}`))).toHaveLength(1);
+  });
+
+  it("leaves a Claude Code too old for the room's sandbox outside it, and says so once", async () => {
+    const { ryan } = await pair();
+    ryan.sessions.setAgentVersions({ claude: "2.1.313" });
+    const a = await ryan.start();
+    const b = await ryan.start();
+    for (const s of [a, b]) {
+      expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: false, coauthors: true });
+      expect(ryan.live.outsideSandbox(s.id)).toBe(true);
+      expect(ptyOf(s.id).args.join(" ")).not.toContain("room-sandbox.sh");
+    }
+    expect(ryan.live.state().problems.filter((p) => p.includes("Claude Code 2.1.313 is older than 2.1.314"))).toHaveLength(1);
   });
 });
 

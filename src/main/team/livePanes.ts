@@ -1,16 +1,22 @@
+import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { randomBytes } from "crypto";
 import { git } from "../git";
 import { worktreeState } from "../worktrees";
 import { readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { roomWaitingNotice, shouldNotify } from "../notifications";
 import { roomSecretReads } from "../secrets";
-import { CODEX_ROOM_SANDBOX_NOTE, codexHomeOf, codexRoomPermissions, roomGitDirs, type RoomGitDirs } from "../codexRoomSandbox";
+import { CODEX_ROOM_SANDBOX_NOTE, codexHomeOf, codexRoomPermissions, roomCacheEnv, roomCachesFolder, roomGitDirs, type RoomGitDirs } from "../codexRoomSandbox";
 import { claudeRoomSettings } from "../claudeRoomSandbox";
+import { sandboxMarkerCommand } from "../hooks";
+import { gitPinRefusal, gitTop, onGitPinRefused, pinGitDirs, unpinGitDirs } from "../gitPins";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
 import { isTermReply, isViewControl } from "../../shared/termInput";
 import { CLAUDE_INLINE_ENV } from "../agents";
 import {
+  claudeSandboxes,
+  claudeTooOld,
   codexGuardsSecrets,
   decodePtyChunk,
   encodePtyChunk,
@@ -111,6 +117,10 @@ export interface LivePanesDeps {
   dir?: string;
   hooksDir?: string;
   coauthorsDir?: string;
+  /** Where rooms' caches go (ROOM_CACHES_DIR unless a test says otherwise). */
+  cachesDir?: string;
+  /** The room sandbox's marker hook script (hooks.ts's unless a test says otherwise). */
+  markerScript?: string;
   now?: () => number;
   timing?: Partial<Timing>;
 }
@@ -265,6 +275,10 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const s = this.d.sessions;
     s.remote = this;
     s.roomLaunch = (target) => this.roomLaunch(target);
+    s.sandboxLost = (info, why) =>
+      this.problem(`“${info.ticketTitle ?? info.title}” isn't in its team room's sandbox: ${why}. Nothing crosses the room's line for it, and teammates see it as unguarded; restart it to try again.`);
+    const ownFolder = (top: string) => [...s.list(), ...s.resumable()].some((x) => x.cwd === top || x.cwd.startsWith(top + path.sep));
+    this.offs.push(onGitPinRefused((top, why) => ownFolder(top) && this.problem(why)));
     setRoomSessionLookup(this);
 
     this.offs.push(
@@ -320,6 +334,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const s = this.d.sessions;
     if (s.remote === this) s.remote = null;
     s.roomLaunch = null;
+    s.sandboxLost = null;
     setRoomSessionLookup(null);
   }
 
@@ -401,29 +416,67 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     let denyReads: string[] = [];
     let codexPermissions: string[] = [];
     let claudeSettings: Record<string, unknown> | null = null;
-    const codexGuarded = target.agent === "codex" && codexGuardsSecrets(target.agentVersion);
-    const gitDirs = async (who: string): Promise<RoomGitDirs | null> => {
+    let sandboxMarker: string | null = null;
+    // the agent the room's settings are for: an agent pane's, or the one a terminal brings back
+    const runs = target.agent ?? target.resumes ?? null;
+    const codexGuarded = runs === "codex" && codexGuardsSecrets(target.agentVersion);
+    const claudeSandboxed = runs === "claude" && claudeSandboxes(target.agentVersion);
+    let git: RoomGitDirs | null = null;
+    let gitRead = false;
+    /** `who`: the sandboxed agent that couldn't commit without them; null where nothing depends on them but pollGit. */
+    const gitDirs = async (who: string | null): Promise<RoomGitDirs | null> => {
+      if (gitRead) return git;
+      gitRead = true;
+      // what it starts on is what git in its folder is held to from here on (gitPins.ts): read afresh at each launch
+      let top: string | null = null;
       try {
-        return await roomGitDirs(target.cwd);
+        top = gitTop(target.cwd);
+        if (top) unpinGitDirs(top);
+        git = await roomGitDirs(target.cwd);
       } catch (err) {
-        this.problem(`${who} in room session ${target.id} can't commit: its repository's git folder couldn't be found (${errText(err)})`, err);
-        return null;
+        git = null;
+        if (who) this.problem(`${who} in room session ${target.id} can't commit: its repository's git folder couldn't be found (${errText(err)})`, err);
+        else this.d.log(`team: finding room session ${target.id}'s git folder`, err);
       }
+      const moved = pinGitDirs(target.cwd, git, target.repoPath);
+      if (moved) {
+        git = null;
+        this.problem(`Mockingbird won't run git in room session ${target.id}'s folder: ${moved}`);
+      }
+      return git;
     };
     const hooks = [this.d.hooksDir ?? HOOKS_DIR, this.d.coauthorsDir ?? COAUTHORS_DIR];
-    if (target.agent === "claude") {
+    const caches = runs ? this.cachesFor(roomId) : null;
+    if (runs === "claude") {
       const secrets = roomSecretReads(this.d.settings().workTrackerPath);
       if (secrets.problem) this.problem(secrets.problem);
       denyReads = secrets.rules;
-      const sandbox = claudeRoomSettings({ workTrackerPath: this.d.settings().workTrackerPath, git: await gitDirs("Claude"), hooks });
+      // a terminal is never on the room's line, so only an agent pane's sandbox reports in
+      if (target.agent === "claude" && claudeSandboxed) sandboxMarker = randomBytes(16).toString("hex");
+      if (!claudeSandboxed) this.problem(claudeTooOld(target.agentVersion));
+      const sandbox = claudeRoomSettings({
+        workTrackerPath: this.d.settings().workTrackerPath,
+        git: await gitDirs("Claude"),
+        hooks,
+        folders: [target.cwd, ...(target.extraDirs ?? [])],
+        ...(caches ? { caches } : {}),
+        ...(sandboxMarker ? { marker: sandboxMarkerCommand(sandboxMarker, this.d.markerScript) } : {}),
+      });
       if (sandbox.problem) this.problem(sandbox.problem);
       claudeSettings = sandbox.settings;
     }
     if (codexGuarded) {
-      const sandbox = codexRoomPermissions({ workTrackerPath: this.d.settings().workTrackerPath, git: await gitDirs("Codex"), hooks, codexHome: codexHomeOf(process.env) });
+      const sandbox = codexRoomPermissions({
+        workTrackerPath: this.d.settings().workTrackerPath,
+        git: await gitDirs("Codex"),
+        hooks,
+        codexHome: codexHomeOf(process.env),
+        ...(caches ? { caches } : {}),
+      });
       if (sandbox.problem) this.problem(sandbox.problem);
       codexPermissions = sandbox.config;
     }
+    if (!gitRead) await gitDirs(null);
     let instructions: string | null = null;
     if (target.agent) {
       try {
@@ -448,8 +501,22 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
       allowTools: target.agent === "claude" ? [...HOUSE_READ_TOOLS, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read, ...TEAM_CHANGES_READ_TOOLS] : [],
       inline,
-      guards: { secrets: target.agent === "claude" || codexGuarded, coauthors: this.hooksReady },
+      // a terminal is a shell once the agent it brought back quits: never guarded
+      guards: { secrets: target.agent !== null && (claudeSandboxed || codexGuarded), coauthors: this.hooksReady },
+      sandboxMarker,
+      agentEnv: caches ? roomCacheEnv(caches) : {},
     };
+  }
+
+  /** Room `roomId`'s cache folder, made if it isn't there: a launch that can't have one is told why. */
+  private cachesFor(roomId: RoomId): string {
+    const folder = roomCachesFolder(roomId, this.d.cachesDir);
+    try {
+      fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      this.problem(`Room sessions' package installs and builds may fail: their cache folder ${folder} couldn't be made (${errText(err)})`, err);
+    }
+    return folder;
   }
 
   // ---- owner: records ----------------------------------------------------------------------
@@ -552,7 +619,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       if ((only && s.id !== only) || !s.repoPath || s.status === "dead" || !this.roomOfInfo(s)) continue;
       let next: RoomGitState | null = null;
       try {
-        next = gitOf(await read(s.cwd));
+        // a folder git is refused in (gitPins.ts) was told once, when it was first refused
+        if (!gitPinRefusal(s.cwd)) next = gitOf(await read(s.cwd));
       } catch (err) {
         if (this.gitStates.get(s.id) !== null) this.d.log(`team: reading git state for room session ${s.id}`, err);
       }
@@ -626,7 +694,9 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const next = new Set<string>();
     if (team) {
       const now = this.now();
-      for (const s of this.d.sessions.list()) {
+      // a session between its ptys (a restart: the old one gone, its relaunch not yet spawned) stays watched, so its
+      // new pty's first output isn't dropped before the next view comes
+      for (const s of [...this.d.sessions.list(), ...this.d.sessions.resumable()]) {
         const roomId = this.roomOfInfo(s);
         if (!roomId) continue;
         const key = roomSessionKey(team.self.id, s.id);
@@ -882,7 +952,14 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     }
     for (const id of this.panes.keys()) if (!next.has(id)) this.panes.delete(id);
     for (const id of this.typing.keys()) if (!next.has(id)) this.typing.delete(id);
+    const before = this.remotes;
     this.remotes = next;
+    // a session started again (a restart, a relaunch): output its new pty sent while the record still said it had
+    // ended was dropped, so the panes this window shows of it catch up from its scrollback
+    for (const [id, r] of next) {
+      const p = this.panes.get(id);
+      if (r.rec.live && before.get(id)?.rec.live === false && p?.attached && p.watched) this.resync(id);
+    }
   }
 
   has(id: string): boolean {

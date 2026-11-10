@@ -56,7 +56,7 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
           key={a.member}
           className="typing-ask"
           role="alert"
-          title={`${a.name} would type into this session on your Mac, as you. Even then, only you can answer your agent's permission prompts: their keys wait while it asks.`}
+          title={`${a.name} would type into this session on your Mac, as you. A \`!\` command typed at its prompt runs in your shell, outside the room's sandbox, as anything typed into a terminal does. Even then, only you can answer your agent's permission prompts: their keys wait while it asks.`}
           onMouseDown={(e) => e.stopPropagation()}
         >
           <span className="team-initials">{initialsOf(a.name)}</span>

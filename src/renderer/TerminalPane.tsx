@@ -23,7 +23,7 @@ import { TypingAsks, TypingChip, TypingRefused, Typists, typingOn } from "./team
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
 import type { RoomSessionBackupView } from "../shared/team/takeover";
-import { CODEX_ROOM_GUARD_SINCE, codexGuardsSecrets, isRemotePaneId } from "../shared/team/livePanes";
+import { CODEX_ROOM_GUARD_SINCE, claudeSandboxes, claudeTooOld, codexGuardsSecrets, isRemotePaneId } from "../shared/team/livePanes";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
 import { ago, fmtElapsed, plural } from "../shared/format";
@@ -242,8 +242,8 @@ export { shortReason };
 /**
  * A room session of this Mac's that teammates see but that runs without the
  * room's protections: a terminal (it can read anything), a Codex too old for
- * the room's permission profile, or a session that joined the room while
- * running.
+ * the room's permission profile, a Claude Code too old for the room's sandbox,
+ * or a session that joined the room while running or whose sandbox didn't start.
  */
 function GuardChip({ session, guards, inline, onRestart }: { session: SessionInfo; guards: { secrets: boolean; coauthors: boolean }; inline?: boolean; onRestart?: () => void }) {
   if (guards.secrets && guards.coauthors) return null;
@@ -273,10 +273,17 @@ function GuardChip({ session, guards, inline, onRestart }: { session: SessionInf
       </span>
     );
   }
+  if (session.agent !== "codex" && !claudeSandboxes(session.agentVersion)) {
+    return (
+      <span className="chip warn" title={`Teammates in this room see what this session prints, and it runs outside the room's sandbox: ${claudeTooOld(session.agentVersion)}${credit}`}>
+        claude: no room sandbox
+      </span>
+    );
+  }
   return (
     <button
       className="chip warn"
-      title={`This session joined the room while it was running, so it started without the room's rules: it can read .env files and keys, teammates see what it prints, and its commits don't credit teammates who type into it.${inline ? " It also keeps the screen it started with: if that's full screen, teammates see one screen of it and can't scroll its history." : ""} Click to restart it with them (its conversation resumes${inline ? ", inline" : ""}).`}
+      title={`This session isn't running under the room's rules — it joined the room while it was running, or its sandbox didn't start (the reason is above the session list): it can read .env files and keys, teammates see what it prints, nothing crosses the room's line for it, and its commits don't credit teammates who type into it.${inline ? " It also keeps the screen it started with: if that's full screen, teammates see one screen of it and can't scroll its history." : ""} Click to restart it with them (its conversation resumes${inline ? ", inline" : ""}).`}
       onClick={(e) => {
         e.stopPropagation();
         onRestart?.();

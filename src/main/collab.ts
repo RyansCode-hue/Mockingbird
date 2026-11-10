@@ -19,6 +19,7 @@ import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, SEAT_PALETTE_SIZE } from "..
 import { MB_DIR } from "./store";
 import { writeFileAtomic } from "./fileOps";
 import { claudeRoomSettings } from "./claudeRoomSandbox";
+import { roomCacheEnv, roomCachesFolder } from "./codexRoomSandbox";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
 import { MCP_TOOL, bindMcpLaunch, claudeToolName, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
@@ -886,9 +887,12 @@ export class CollabRooms {
  * sandbox, and can reach the network (package installs, local services). A Docker seat also gets the Docker socket, and
  * through the daemon everything Docker can reach.
  */
-function claudeCommandSandbox(dockerSockets: string[]): string {
-  return JSON.stringify(claudeRoomSettings({ git: null, hooks: [], sockets: dockerSockets, autoAllowBash: true }).settings);
+function claudeCommandSandbox(dockerSockets: string[], caches?: string): string {
+  return JSON.stringify(claudeRoomSettings({ git: null, hooks: [], sockets: dockerSockets, autoAllowBash: true, ...(caches ? { caches } : {}) }).settings);
 }
+
+/** Where Council's seats that run commands keep their package and build caches: their own, as a room's (roomCacheEnv). */
+export const COUNCIL_CACHES = roomCachesFolder("council");
 
 /** The Docker daemon sockets on this Mac (Docker Desktop, OrbStack, Colima), both as linked and as resolved. */
 export function dockerSockets(home = os.homedir()): string[] {
@@ -918,15 +922,21 @@ export function claudeTurnCommand(
   p: CollabParticipant,
   // mcp: the room's MCP server, with whichever of its tools this turn gets — asking
   // the code reader (ask), and routing permission questions to the user (permit)
-  opts: { mcp?: McpLaunch; ask?: boolean; permit?: boolean; sockets?: string[] } = {}
+  // caches: a seat that runs commands writes its package caches there (COUNCIL_CACHES), never the ones in home
+  opts: { mcp?: McpLaunch; ask?: boolean; permit?: boolean; sockets?: string[]; caches?: string } = {}
 ): string {
   const allowed = [...(opts.mcp && opts.ask ? [claudeToolName(MCP_TOOL.askCodeReader)] : []), ...(p.usesDocker ? [quote("Bash(docker:*)")] : [])];
   const permit = !!(opts.mcp && opts.permit);
+  const caches = p.runsCommands && opts.caches ? opts.caches : undefined;
   return [
+    // on the turn's own command, not its shell's startup, which may read a cache too
+    ...(caches ? ["/usr/bin/env", ...Object.entries(roomCacheEnv(caches)).map(([k, v]) => quote(`${k}=${v}`))] : []),
     quote(bin),
     "-p",
     "--model", quote(p.model),
     "--output-format", "json",
+    // the checkout's own settings would run their hooks outside any sandbox: only the user's (Mockingbird's hooks)
+    "--setting-sources", "user",
     "--strict-mcp-config",
     ...(opts.mcp ? ["--mcp-config", quote(claudeMcpConfig(opts.mcp))] : []),
     // a Docker seat's docker commands are pre-approved: Claude holds some for
@@ -935,7 +945,7 @@ export function claudeTurnCommand(
     ...(permit ? ["--permission-prompt-tool", claudeToolName(MCP_TOOL.approvePermission)] : []),
     ...(p.conversationId ? ["--resume", quote(p.conversationId)] : []),
     ...(p.effort ? ["--effort", quote(p.effort)] : []),
-    ...(p.runsCommands ? ["--settings", quote(claudeCommandSandbox(p.usesDocker ? opts.sockets ?? [] : [])), "--permission-mode", "acceptEdits"] : []),
+    ...(p.runsCommands ? ["--settings", quote(claudeCommandSandbox(p.usesDocker ? opts.sockets ?? [] : [], caches)), "--permission-mode", "acceptEdits"] : []),
     "--disallowedTools",
     ...(p.runsCommands ? ["NotebookEdit"] : ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]),
     ...(p.readsCode || p.runsCommands ? [] : ["Read", "Grep", "Glob", "LS"]),
@@ -999,7 +1009,8 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
       const timeoutMs = p.runsCommands ? 30 * 60_000 : 10 * 60_000;
       if (!isInstalledBin(bin)) throw new Error(`${agentLabel(p.agent)} isn't installed`);
       if (p.agent === "claude") {
-        const r = await userShellWithInput(claudeTurnCommand(bin, p, { mcp, ask: askTool, permit: true, sockets }), prompt, { cwd, env, signal, timeoutMs, onSpawn: (pid) => bindMcpLaunch(mcp, pid) });
+        if (p.runsCommands) fs.mkdirSync(COUNCIL_CACHES, { recursive: true, mode: 0o700 });
+        const r = await userShellWithInput(claudeTurnCommand(bin, p, { mcp, ask: askTool, permit: true, sockets, caches: COUNCIL_CACHES }), prompt, { cwd, env, signal, timeoutMs, onSpawn: (pid) => bindMcpLaunch(mcp, pid) });
         const { text, sessionId } = parseClaudeJson(r, 400);
         const conversationId = sessionId ?? p.conversationId;
         if (!conversationId) throw new Error("Claude replied without naming its conversation, so the next turn couldn't continue it");

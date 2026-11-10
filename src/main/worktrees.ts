@@ -2,6 +2,7 @@ import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, Worktre
 import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
 import { dirtyFileCount } from "./scm";
 import { guardedGit, ownFetch, ownNetworkGit, WRITE_ENV } from "./safeGit";
+import { unpinGitDirs } from "./gitPins";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -183,6 +184,8 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
       throw new Error(`${target} is there, ${out ? `on ${out}` : "but isn't a checkout of a branch"}, so a session on ${branch} can't run in it: move it, or start fresh`);
     }
     await unregisterMissing(repoPath, target);
+    // a room session's earlier worktree here was held to its own git folder: this one has another
+    unpinGitDirs(target);
 
     const sp = await startPoint(repoPath, branch, baseBranch, !!opts.mustExist, opts.warn ?? warnInConsole);
     // worktree add makes the folders above it, so a refusal leaves nothing behind

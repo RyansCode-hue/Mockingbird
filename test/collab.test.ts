@@ -299,7 +299,7 @@ describe("CLI commands", () => {
   const base = { key: "k", label: "L", color: 0, lastSeen: 0, conversationId: null as string | null };
   it("Claude: model, effort, resume; never edits; no file tools without code access", () => {
     const reader = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5", effort: "max", readsCode: true, conversationId: "abc" });
-    expect(reader).toBe("'/bin/claude' -p --model 'claude-opus-5-5' --output-format json --strict-mcp-config --resume 'abc' --effort 'max' --disallowedTools Edit Write MultiEdit NotebookEdit Bash");
+    expect(reader).toBe("'/bin/claude' -p --model 'claude-opus-5-5' --output-format json --setting-sources user --strict-mcp-config --resume 'abc' --effort 'max' --disallowedTools Edit Write MultiEdit NotebookEdit Bash");
     const blind = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-fable-5-1", effort: null, readsCode: false });
     expect(blind).toMatch(/--disallowedTools Edit Write MultiEdit NotebookEdit Bash Read Grep Glob LS$/);
     expect(blind).not.toMatch(/--effort|--resume/);
@@ -542,6 +542,13 @@ describe("models that run commands", () => {
     expect(settings.sandbox.filesystem.denyWrite).toContain("~/.mockingbird");
     expect(settings.permissions).toMatchObject({ blockWritesOutsideWorkingDirectories: true, deny: expect.arrayContaining(["Edit(~/.mockingbird/**)", "Edit(~/.zshenv)"]) });
     expect(cl).toMatch(/--permission-mode acceptEdits --disallowedTools NotebookEdit$/);
+    // no cache in home; given Council's own, it writes that, its tools pointed there on the turn's own command
+    expect(settings.sandbox.filesystem.allowWrite).toEqual([]);
+    const cached = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5" }, { caches: "/c/council" });
+    expect(JSON.parse(/--settings '([^']+)'/.exec(cached)![1]).sandbox.filesystem.allowWrite).toEqual(["/c/council"]);
+    expect(cached).toMatch(/^\/usr\/bin\/env 'npm_config_cache=\/c\/council\/npm' .*'XDG_CACHE_HOME=\/c\/council\/xdg' .*'\/bin\/claude' -p /);
+    // a seat that doesn't run commands writes nothing
+    expect(claudeTurnCommand("/bin/claude", { ...base, runsCommands: false, agent: "claude", model: "claude-opus-5-5" }, { caches: "/c/council" })).not.toContain("/usr/bin/env");
     const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r");
     expect(cx).toContain(`-c 'sandbox_mode="workspace-write"' -c 'sandbox_workspace_write.network_access=true'`);
     expect(cx).not.toContain("read-only");

@@ -113,6 +113,36 @@ ${ROOM.sessionStart}
 exit 0
 `;
 
+/**
+ * The SessionStart hook a Claude room launch's own --settings carry (claudeRoomSandbox.ts): it leaves a RoomSandbox
+ * event with the launch's marker, which tells main the settings — the sandbox with them — were taken. A settings file
+ * Claude Code rejects runs none of its hooks. It's written by Mockingbird where a room session's sandbox can't write.
+ */
+const MARKER_SCRIPT = path.join(MB_DIR, "room-sandbox.sh");
+const MARKER_SCRIPT_TEXT = `#!/bin/bash
+# Mockingbird — a team room launch's sandbox settings were taken: their own SessionStart hook leaves this event.
+case "$1" in ""|*[!0-9a-f]*) exit 0;; esac
+cat > /dev/null
+dir="${EVENTS_DIR}"
+mkdir -p "$dir"
+if tmp=$(mktemp "$dir/.tmp.XXXXXXXX"); then
+  if printf '{"event":"RoomSandbox","ts":%s,"pane":"%s","payload":{"marker":"%s"}}\\n' "$(date +%s)" "\${MOCKINGBIRD_SESSION:-}" "$1" > "$tmp"; then
+    mv -f "$tmp" "$dir/$(date +%s)-\${tmp##*.}.json" || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+fi
+exit 0
+`;
+
+/** The marker hook's command for a launch whose marker is `marker` (hex), its script written first. */
+export function sandboxMarkerCommand(marker: string, script = MARKER_SCRIPT): string {
+  if (!/^[0-9a-f]{16,64}$/.test(marker)) throw new Error("a room launch's marker is hex");
+  writeGenerated(script, MARKER_SCRIPT_TEXT, 0o755);
+  // quoted as mergeHooks quotes hook.sh
+  return `"${script}" ${marker}`;
+}
+
 /** Keep hook.sh current: installs from older builds wrote an older script. */
 export function ensureHookScript(): void {
   if (!fs.existsSync(HOOK_SCRIPT)) return; // hooks were never installed — the Install button writes it
@@ -199,8 +229,26 @@ function claimEvent(evt: any): ClaimEvent | null {
   return { kind: "warning", warning: { pane, cwd: String(p.cwd ?? ""), conversation: String(p.conversation ?? ""), tool: String(p.tool ?? ""), decision: p.decision, conflicts: p.conflicts } };
 }
 
+/** Events that say nothing of a turn: a pane starting, and a room launch's settings reporting in. */
+const NOT_A_TURN = new Set(["SessionStart", "RoomSandbox"]);
+
+/**
+ * The panes that, in one read of the events, left an event only a turn leaves (a prompt, a tool, a stop). A room
+ * launch's marker read beside one can't be told from one its agent wrote during that turn — an agent outside the
+ * sandbox can write the events folder, and give a file any time — so it counts as late (roomSandboxWatch.ts).
+ */
+function turnsIn(events: any[]): Set<string> {
+  return new Set(events.filter((e) => typeof e?.pane === "string" && e.pane && !NOT_A_TURN.has(e.event)).map((e) => e.pane as string));
+}
+
 /** One hook event → its pane's status, and the alert and prompt callbacks that follow from it. */
-function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler, onClaim?: ClaimHandler): void {
+function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler, onClaim?: ClaimHandler, turns: Set<string> = new Set()): void {
+  if (evt.event === "RoomSandbox") {
+    const pane = typeof evt.pane === "string" ? evt.pane : "";
+    const marker = typeof evt.payload?.marker === "string" ? evt.payload.marker : "";
+    if (pane && marker) sessions.roomSandboxReported(pane, marker, turns.has(pane));
+    return;
+  }
   if (evt.event === "ClaimWarning" || evt.event === "ClaimCheckFailed" || evt.event === "RoomCheck") {
     const e = claimEvent(evt);
     if (e) onClaim?.(e);
@@ -214,7 +262,7 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
   // the transcript's location says which agent wrote the event
   const transcript = typeof evt.payload?.transcript_path === "string" ? evt.payload.transcript_path : "";
   const agent = transcript.includes("/.codex/") ? ("codex" as const) : ("claude" as const);
-  const route = { cwd, conversationId, paneId, agent, transcriptPath: transcript || undefined };
+  const route = { cwd, conversationId, paneId, agent, transcriptPath: transcript || undefined, at: typeof evt.ts === "number" ? evt.ts : undefined };
   // An agent that has just started, resumed or cleared its conversation waits at
   // its prompt: no turn has run, so no Stop will come until someone prompts it.
   // A compaction's SessionStart can come mid-turn, so it says nothing. A starting
@@ -254,20 +302,28 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
  * that stops watching. `onClaim` hears team rooms' claim warnings.
  */
 export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler, onClaim?: ClaimHandler): () => void {
-  const handle = (raw: string, source: string) => {
-    let evt: any;
+  const parse = (raw: string, source: string): any => {
     try {
-      evt = JSON.parse(raw);
+      return JSON.parse(raw);
     } catch {
       console.warn(`[hooks] skipped a hook event that isn't JSON (${source}): ${raw.slice(0, 200)}`);
-      return;
+      return undefined;
     }
+  };
+  const route = (evt: any, turns?: Set<string>) => {
     try {
-      routeEvent(evt, sessions, onStatus, onPrompt, onClaim);
+      routeEvent(evt, sessions, onStatus, onPrompt, onClaim, turns);
     } catch (err) {
       console.error(`[hooks] handling ${evt?.event} for pane ${evt?.pane || "(none)"} failed:`, err);
     }
   };
+  /** One read's events, routed in order; which panes ran a turn in it is known first (turnsIn). */
+  const handleBatch = (batch: { raw: string; source: string }[]) => {
+    const events = batch.map((b) => parse(b.raw, b.source)).filter((e) => e !== undefined);
+    const turns = turnsIn(events);
+    for (const evt of events) route(evt, turns);
+  };
+  const handle = (raw: string, source: string) => handleBatch([{ raw, source }]);
 
   try {
     // events left from before this run describe panes that are gone
@@ -301,17 +357,17 @@ export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, o
     }
     // a pane's hooks run one after another, so the order they were written in is the order they happened
     files.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.file < b.file ? -1 : 1));
+    const batch: { raw: string; source: string }[] = [];
     for (const { file } of files) {
-      let raw: string;
       try {
-        raw = fs.readFileSync(file, "utf8");
+        const raw = fs.readFileSync(file, "utf8");
         fs.rmSync(file, { force: true });
+        batch.push({ raw, source: path.basename(file) });
       } catch (err) {
         console.error(`[hooks] can't read hook event ${file}:`, err);
-        continue;
       }
-      handle(raw, path.basename(file));
     }
+    handleBatch(batch);
   };
   const timer = setInterval(drain, POLL_MS);
   sessions.hooksCatchUp = drain;

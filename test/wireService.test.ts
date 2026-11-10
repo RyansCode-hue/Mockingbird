@@ -6,7 +6,7 @@ import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { WireService } from "../src/main/wires";
 import type { SessionInfo } from "../src/shared/types";
-import { newWire, ROOM_LINE, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
+import { MESSAGE_ROOM_LINE, newWire, ROOM_LINE, ROOMS_STARTING, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
 import { askAs, askRaw, startServer, testLaunch } from "./mcpClient";
 import { tempDir } from "./helpers";
 
@@ -528,6 +528,32 @@ describe("list_links through the real MCP server", () => {
       retireMcpLaunch(launch);
     }
     for (const op of ["wires:add", "wires:set", "add_wire", "set_gate"]) expect((await askAs(sock, { from: "a", op })).error, op).toMatch(/Unknown tool/);
+  });
+  it("keeps send_message and list_sessions to the caller's side of a team room's line, as wires are, and to none while the line can't be seen", async () => {
+    let known = false;
+    const rooms: Record<string, string | null> = { a: "R1", b: "R1", c: null };
+    const lined = new WireService({ store, sessions: { list: () => running, resumable: () => closed }, roomOf: (id) => rooms[id] ?? null, roomsKnown: () => known, takenOver: () => null, log: () => {} });
+    relay.setWires(lined);
+    try {
+      const send = (from: string, to: string) => askAs(sock, { from, op: "send_message", args: { to, message: "hello" } });
+      const listed = async (from: string) => (await askAs(sock, { from, op: "list_sessions" })).result;
+      expect(await listed("a")).toMatchObject({ sessions: [], note: ROOMS_STARTING });
+      expect((await send("a", "b")).error).toBe(ROOMS_STARTING);
+      known = true;
+      // a room session reaches its own room's sessions only, and a session outside the room none in it
+      expect((await listed("a")).sessions.map((s: any) => s.id)).toEqual(["b"]);
+      expect(await listed("a")).not.toHaveProperty("note");
+      expect((await listed("c")).sessions).toEqual([]);
+      expect((await send("a", "c")).error).toBe(MESSAGE_ROOM_LINE);
+      expect((await send("c", "a")).error).toBe(MESSAGE_ROOM_LINE);
+      expect((await send("a", "b")).result).toMatch(/^Delivered to/);
+      // a session that moves out of the room is on the other side from then on
+      rooms.b = null;
+      expect((await send("a", "b")).error).toBe(MESSAGE_ROOM_LINE);
+      expect((await listed("c")).sessions.map((s: any) => s.id)).toEqual(["b"]);
+    } finally {
+      relay.setWires(service);
+    }
   });
 });
 

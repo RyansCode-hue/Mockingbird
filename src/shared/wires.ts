@@ -351,6 +351,10 @@ const rivals = (ctx: WireContext): KeptWire[] => [...others(ctx), ...Object.entr
 export const ROOM_LINE =
   "Both ends have to be in the same team room, or neither in one: a wire across the line would carry a room's text out of its guardrails, or private output onto teammates' screens.";
 
+/** Why send_message is refused, and list_sessions leaves a session out, across a team room's line. It names neither end. */
+export const MESSAGE_ROOM_LINE =
+  "Sessions reach each other only on the same side of a team room's line, both in the same room or neither in one: a message across it would carry a room's text out of its guardrails, or private output onto teammates' screens.";
+
 /** Why a wire is refused while Mockingbird hasn't started its team rooms: a room's line can't be seen yet. */
 export const ROOMS_STARTING = "Mockingbird is still starting its team rooms, so it can't tell yet which sessions are in one: try again in a moment.";
 
@@ -403,7 +407,7 @@ export function wireRefusal(from: string, to: string, type: WireType, ctx: WireC
   if (a.room !== b.room) return ROOM_LINE;
   for (const e of [a, b]) if (e.debrief) return `“${e.title}” is a debrief interview with you, and takes no wires.`;
   for (const e of [a, b]) if (e.takenOver) return e.takenOver;
-  for (const e of [a, b]) if (e.outsideSandbox) return `“${e.title}” joined its team room while it was running, so it isn't in the room's sandbox: restart it in the room to wire it there.`;
+  for (const e of [a, b]) if (e.outsideSandbox) return `“${e.title}” isn't in its team room's sandbox (it joined the room while it was running, or its sandbox didn't start): restart it in the room to wire it there.`;
 
   if (type === "worktree") {
     if (a.kind !== "agent" || b.kind !== "terminal") return "A shared worktree wire runs from an agent to a terminal.";

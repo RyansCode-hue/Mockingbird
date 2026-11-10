@@ -125,7 +125,8 @@ export function recordFor(info: SessionInfo, x: RecordExtras): RoomSessionRecord
     live: x.live,
     cols: Math.min(1000, Math.max(1, Math.round(x.cols))),
     rows: Math.min(1000, Math.max(1, Math.round(x.rows))),
-    guards: x.guards,
+    // only the two every Mockingbird reads: a launch still starting is this Mac's to know (RoomSandboxWatch)
+    guards: { secrets: x.guards.secrets, coauthors: x.guards.coauthors },
     git: x.git,
   };
 }

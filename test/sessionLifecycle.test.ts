@@ -765,7 +765,7 @@ describe("a session a teammate continues", () => {
 });
 
 describe("what an agent is told of its wires as it launches", () => {
-  const room = { env: {}, denyReads: [], codexPermissions: [], claudeSettings: null, instructions: "ROOM RULES", allowTools: [], inline: false, guards: { secrets: false, coauthors: false } };
+  const room = { env: {}, denyReads: [], codexPermissions: [], claudeSettings: null, sandboxMarker: null, agentEnv: {}, instructions: "ROOM RULES", allowTools: [], inline: false, guards: { secrets: false, coauthors: false } };
   it("goes in each CLI's instructions, after a room's, at launch and at every relaunch", async () => {
     const { m } = await manager();
     const asked: string[] = [];

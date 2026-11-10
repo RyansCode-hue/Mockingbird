@@ -10,6 +10,7 @@ import "../src/main/team/takeover"; // the take-over events
 import { signGrant } from "../src/main/team/takeoverGrants";
 import { Messaging, mcpLaunch, remoteSessionId } from "../src/main/messaging";
 import { askAs } from "./mcpClient";
+import { CLAUDE_ROOM_SANDBOX_SINCE } from "../src/shared/team/livePanes";
 import { DEFAULT_SETTINGS, type AgentMessage, type NewSessionRequest, type SessionInfo, type Settings } from "../src/shared/types";
 
 /**
@@ -20,12 +21,12 @@ import { DEFAULT_SETTINGS, type AgentMessage, type NewSessionRequest, type Sessi
  * both sides.
  */
 
-type FakePty = { env: Record<string, string>; exit(code: number): void };
+type FakePty = { args: string[]; env: Record<string, string>; exit(code: number): void };
 const ptys: FakePty[] = [];
 vi.mock("node-pty", () => ({
-  spawn: (_file: string, _args: string[], opts: { env: Record<string, string> }) => {
+  spawn: (_file: string, args: string[], opts: { env: Record<string, string> }) => {
     let onExit: (e: { exitCode: number }) => void = () => {};
-    ptys.push({ env: opts.env, exit: (exitCode) => onExit({ exitCode }) });
+    ptys.push({ args, env: opts.env, exit: (exitCode) => onExit({ exitCode }) });
     return { onData: () => ({ dispose() {} }), onExit: (cb: any) => ((onExit = cb), { dispose() {} }), write() {}, resize() {}, kill() {}, pid: 1 };
   },
 }));
@@ -57,6 +58,7 @@ function side(m: LoopbackMember, dir: string, listen = false) {
   };
   const sessions = new SessionManager(store as any);
   sessions.scrollbackDir = path.join(dir, m.name, "scrollback");
+  sessions.setAgentVersions({ claude: CLAUDE_ROOM_SANDBOX_SINCE });
   const base = path.join(dir, m.name, "live");
   const live = new LivePanes({
     team: () => m.team,
@@ -73,6 +75,8 @@ function side(m: LoopbackMember, dir: string, listen = false) {
     dir: base,
     hooksDir: path.join(base, "githooks"),
     coauthorsDir: path.join(base, "coauthors"),
+    cachesDir: path.join(base, "caches"),
+    markerScript: path.join(base, "room-sandbox.sh"),
     timing: FAST,
   });
   live.start();
@@ -97,7 +101,16 @@ function side(m: LoopbackMember, dir: string, listen = false) {
   room.start(m.team, messaging);
   const repo = path.join(dir, m.name, "atticus-backoffice");
   fs.mkdirSync(repo, { recursive: true });
-  const start = (req: Partial<NewSessionRequest> = {}) => sessions.create({ repoPath: repo, useWorktree: false, cwd: repo, agent: "claude", taskGroup: "5110", title: "atticus-backoffice - nick", ...req });
+  // a Claude room launch's sandbox reports in as it starts, as the real CLI's SessionStart hooks do (RoomSandboxWatch)
+  const start = async (req: Partial<NewSessionRequest> = {}) => {
+    const s = await sessions.create({ repoPath: repo, useWorktree: false, cwd: repo, agent: "claude", taskGroup: "5110", title: "atticus-backoffice - nick", ...req });
+    const marker = /room-sandbox\.sh\\" ([0-9a-f]+)/.exec(ptyOf(s.id).args.join(" "))?.[1];
+    if (marker) {
+      sessions.roomSandboxReported(s.id, marker, false);
+      sessions.statusFromHook({ paneId: s.id, status: "idle", started: true });
+    }
+    return s;
+  };
   return { m, sessions, live, room, log, lines, start, stop: () => (live.stop(), room.stop()) };
 }
 

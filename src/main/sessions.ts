@@ -12,6 +12,7 @@ import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
 import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
+import { RoomSandboxWatch, SANDBOX_REPORT_MS } from "./roomSandboxWatch";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
 import { compactBlocker } from "../shared/contextBudget";
@@ -163,8 +164,15 @@ export interface RoomLaunch {
   allowTools: string[];
   /** Codex runs inline (Claude's switch is in env): teammates' copies hold its history. */
   inline: boolean;
-  /** secrets: it runs under the room's settings (Claude: its sandbox and deny rules; Codex: its permission profile). */
-  guards: { secrets: boolean; coauthors: boolean };
+  /**
+   * secrets: it runs under the room's settings (Claude: its sandbox and deny rules; Codex: its permission profile).
+   * starting: a Claude launch whose sandbox hasn't reported in yet (RoomSandboxWatch), shown only on this Mac.
+   */
+  guards: { secrets: boolean; coauthors: boolean; starting?: boolean };
+  /** The marker a Claude launch's sandbox settings report with (RoomSandboxWatch); null when none is awaited. */
+  sandboxMarker: string | null;
+  /** Environment on the agent's own command, not its pane's shell: the room's caches (roomCacheEnv). */
+  agentEnv: Record<string, string>;
 }
 
 /** Where a session would run, for deciding its room launch. */
@@ -174,10 +182,16 @@ export interface LaunchTarget {
   group: string | null;
   /** null for a terminal. */
   agent: AgentKind | null;
-  /** The agent CLI's installed version, when it could be read. */
+  /** A terminal's: the agent whose conversation it brings back, which runs under the room's settings too. */
+  resumes?: AgentKind | null;
+  /** The agent CLI's installed version (a terminal's: the one it brings back), when it could be read. */
   agentVersion: string | null;
   /** The folder it starts in. */
   cwd: string;
+  /** The repository it was opened on (its worktree's, when it has one); null outside one. */
+  repoPath?: string | null;
+  /** More folders it works in (--add-dir). */
+  extraDirs?: string[];
 }
 
 interface LiveSession {
@@ -198,6 +212,7 @@ interface LiveSession {
   cols: number;
   rows: number;
   guards: RoomLaunch["guards"] | null; // set when it was started as a room session
+  sandbox: RoomSandboxWatch | null; // a Claude room launch's sandbox, until and once it reports in
   hookEvents: number; // hook events routed to this pty since it started
   transcripts: Map<string, string>; // conversation id → the transcript file its hooks named, the newest few
   kickoff: boolean; // its initial prompt is still to be typed in
@@ -306,6 +321,10 @@ export class SessionManager {
   remote: RemotePanes | null = null;
   /** Extra launch settings for a session in a shared group (team rooms); null outside rooms. */
   roomLaunch: ((target: LaunchTarget) => Promise<RoomLaunch | null>) | null = null;
+  /** A Claude room launch whose sandbox didn't report in (RoomSandboxWatch): told once per launch. */
+  sandboxLost: ((info: SessionInfo, why: string) => void) | null = null;
+  /** How long a room launch's sandbox has to report in; SANDBOX_REPORT_MS unless a test says otherwise. */
+  sandboxReportMs = SANDBOX_REPORT_MS;
   /**
    * What an agent pane's launch is told on top of its own instructions, beside a room's: its wires (wireTools.ts), so a
    * relaunched workspace knows to finish its step with finish_step. Null when it has nothing to say.
@@ -527,8 +546,12 @@ export class SessionManager {
     // which for Codex depend on its version
     const group = req.taskGroup ?? req.ticketId ?? null;
     const targetAgent = req.shell ? null : req.agent ?? "claude";
-    const agentVersion = targetAgent && group && this.roomLaunch && !req.debrief ? await this.versionOf(targetAgent) : null;
-    const room = req.debrief ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, agentVersion, cwd })) ?? null);
+    // a terminal bringing a conversation back runs that agent under the room's settings too
+    const resumes = req.shell ? req.shellResume?.agent ?? null : null;
+    const versioned = targetAgent ?? resumes;
+    const agentVersion = versioned && group && this.roomLaunch && !req.debrief ? await this.versionOf(versioned) : null;
+    const extraDirs = (req.extraDirs ?? []).map(expandHome);
+    const room = req.debrief ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs })) ?? null);
     const instructions = [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id)].filter(Boolean).join("\n\n");
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
@@ -537,8 +560,10 @@ export class SessionManager {
       ...(instructions ? { instructions } : {}),
       ...(room?.allowTools.length ? { allowTools: room.allowTools } : {}),
       ...(room?.inline ? { inline: true } : {}),
+      ...(room && Object.keys(room.agentEnv).length ? { env: room.agentEnv } : {}),
     };
-    const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext) => [this.resolveBin(a), ...a.launchArgs(r, ctx)].map(quote).join(" ");
+    const envFirst = (env?: Record<string, string>) => (env ? ["/usr/bin/env", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)] : []);
+    const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext) => [...envFirst(ctx.env), this.resolveBin(a), ...a.launchArgs(r, ctx)].map(quote).join(" ");
     // the agent this pty runs: an agent pane's, or the one a terminal brings back
     const runs = req.shell ? req.shellResume?.agent : req.agent ?? "claude";
     let proc: pty.IPty;
@@ -594,6 +619,7 @@ export class SessionManager {
       this.running.delete(proc);
       exited();
       retireMcpLaunch(mcp);
+      started?.sandbox?.stop();
       if (this.quitting || !started || this.live.get(started.info.id) !== started) return;
       started.info.exitCode = exitCode;
       this.setStatus(started.info.id, "dead");
@@ -665,6 +691,7 @@ export class SessionManager {
       cols: 120,
       rows: 32,
       guards: room?.guards ?? null,
+      sandbox: null,
       hookEvents: 0,
       transcripts: new Map(),
       kickoff: false,
@@ -675,6 +702,7 @@ export class SessionManager {
       mcp,
     };
     sess.total = sess.buffer.length;
+    if (room?.sandboxMarker) sess.sandbox = this.watchSandbox(sess, room.sandboxMarker);
     started = sess;
     this.live.set(info.id, sess);
     const records = [...this.store.state.sessions];
@@ -1253,6 +1281,8 @@ export class SessionManager {
       return;
     }
     s.lastInput = Date.now();
+    // a room launch's sandbox report already written is read before an Enter could start its first turn
+    if (s.sandbox?.state === "starting" && data.includes("\r")) this.catchUpHooks();
     // Enter sends the draft and Ctrl-C clears it; escape sequences (arrows, focus
     // reports) don't add text — except a bracketed paste, which is text.
     // Anything else leaves unsent text in the prompt.
@@ -1303,9 +1333,43 @@ export class SessionManager {
     return s ? { data: s.buffer, epoch: s.epoch, end: s.total, cols: s.cols, rows: s.rows } : null;
   }
 
-  /** What a live session was started with as a room session; null when it wasn't started in a room. */
+  /**
+   * What a live session was started with as a room session; null when it wasn't started in a room. A Claude launch is
+   * `starting` until its sandbox reports in, and without secrets once it didn't (RoomSandboxWatch).
+   */
   guardsOf(id: string): RoomLaunch["guards"] | null {
-    return this.live.get(id)?.guards ?? null;
+    const s = this.live.get(id);
+    if (!s?.guards) return null;
+    const state = s.sandbox?.state;
+    return state === "failed" ? { ...s.guards, secrets: false } : state === "starting" ? { ...s.guards, starting: true } : s.guards;
+  }
+
+  /** A room launch's sandbox settings reported in for pane `id` (hooks.ts): `late`, beside one of its turn's events. */
+  roomSandboxReported(id: string, marker: string, late: boolean): void {
+    this.live.get(id)?.sandbox?.reported(marker, late);
+  }
+
+  private watchSandbox(sess: LiveSession, marker: string): RoomSandboxWatch {
+    const current = () => this.live.get(sess.info.id) === sess;
+    return new RoomSandboxWatch(
+      marker,
+      {
+        confirmed: () => {
+          if (current()) this.emitChanged();
+        },
+        failed: (why) => {
+          if (!current()) return;
+          console.warn(`[sessions] ${sess.info.id} isn't in its team room's sandbox: ${why}`);
+          this.emitChanged();
+          try {
+            this.sandboxLost?.(sess.info, why);
+          } catch (err) {
+            console.error(`[sessions] telling the user ${sess.info.id} isn't in its room's sandbox failed:`, err);
+          }
+        },
+      },
+      this.sandboxReportMs
+    );
   }
 
   /**
@@ -1603,6 +1667,8 @@ export class SessionManager {
     prompted?: boolean;
     /** The transcript file the agent is writing the conversation to (the hook's `transcript_path`). */
     transcriptPath?: string;
+    /** When the hook wrote it (its `ts`, whole seconds). */
+    at?: number;
   }): SessionInfo | null {
     // a tagged event that names no live pane comes from something else Mockingbird
     // runs (a Collaborate room) or a closed pane — never guess a pane for it
@@ -1611,6 +1677,11 @@ export class SessionManager {
     // must not bring its dead pane back to life
     if (!s || s.info.status === "dead") return null;
     s.hookEvents++;
+    // only the pane's own events speak for its launch's sandbox: one matched by folder may be another agent's
+    if (s.sandbox && ev.paneId === s.info.id) {
+      if (ev.started) s.sandbox.sessionStarted();
+      else s.sandbox.turn(ev.at);
+    }
     if (ev.prompted) {
       if (s.ownPrompts > 0) s.ownPrompts--;
       else s.prompts++;

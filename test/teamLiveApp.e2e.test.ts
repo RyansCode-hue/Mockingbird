@@ -62,7 +62,7 @@ const convOf = (sessionId: string) => `e2e-${sessionId}`;
 const FAKE_CLAUDE = `#!/bin/bash
 conv="e2e-$MOCKINGBIRD_SESSION"
 if [ "$1" = "--resume" ]; then conv="$2"; fi
-if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code stand-in)"; exit 0; fi
+if [ "$1" = "--version" ]; then echo "2.1.400 (Claude Code stand-in)"; exit 0; fi
 # reads this launch's token where its MCP server would, leaving it as the server does, so the test can call tools as this session
 token_file=$(printf '%s' "$*" | sed -n 's/.*"MOCKINGBIRD_TOKEN_FILE":"\\([^"]*\\)".*/\\1/p')
 if [ -n "$token_file" ]; then mkdir -p "$HOME/e2e-tokens" && cp "$token_file" "$HOME/e2e-tokens/$MOCKINGBIRD_SESSION"; fi
@@ -80,6 +80,10 @@ emit() {
   printf '{"event":"%s","ts":%s,"pane":"%s","payload":{"session_id":"%s","cwd":"%s","transcript_path":"%s","prompt":"%s"}}\\n' "$1" "$(date +%s)" "$MOCKINGBIRD_SESSION" "$conv" "$cwd" "$transcript" "$2" > "$tmp"
   mv -f "$tmp" "$events/$(date +%s)-\${tmp##*.}.json"
 }
+# as it starts: a room launch's own SessionStart hook (its --settings), and Mockingbird's
+marker=$(printf '%s' "$*" | sed -n 's/.*room-sandbox\\.sh\\\\" \\([0-9a-f]*\\).*/\\1/p')
+if [ -n "$marker" ]; then "$HOME/.mockingbird/room-sandbox.sh" "$marker" </dev/null; fi
+emit SessionStart ""
 paste=
 while IFS= read -r line; do
   # a pasted message (a take-over's brief) is read whole and runs no turn

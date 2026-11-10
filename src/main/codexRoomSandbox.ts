@@ -34,24 +34,44 @@ const CERT_BUNDLE_GLOBS: ReadonlySet<string> = new Set(["*.pem"]);
 export const CREDENTIAL_STORES = ["~/Library/Keychains", "~/.config/git/credentials", "~/.codex/auth.json"];
 
 /**
- * Package and build caches in home that installs and builds write: npm, XDG
- * caches (uv, pip elsewhere), macOS caches (pip, go-build, Yarn 1, node-gyp),
- * Yarn Berry, pnpm, Go modules, NuGet, Cargo. Caches only — never a folder on
- * PATH, whose programs would later run outside the sandbox.
+ * Where a room's sessions keep their package and build caches: a folder per room, outside ~/.mockingbird, that nothing
+ * outside a room session's agent uses. The caches in home (~/.npm, ~/.cache, ~/Library/Caches, Go's, Cargo's, NuGet's)
+ * hold code that tools run later without checking it again — npx's packages, unpacked sources, corepack's package
+ * managers, a shell's cached prompt — so a room session never writes them: its agent is pointed here instead
+ * (roomCacheEnv), and its sandbox writes nowhere else of the kind.
  */
-export const TOOL_CACHES = [
-  "~/.npm",
-  "~/.cache",
-  "~/Library/Caches",
-  "~/.yarn/berry/cache",
-  "~/Library/pnpm/store",
-  "~/.pnpm-store",
-  "~/go/pkg",
-  "~/.nuget/packages",
-  "~/.local/share/NuGet",
-  "~/.cargo/registry",
-  "~/.cargo/git",
-];
+export const ROOM_CACHES_DIR = path.join(os.homedir(), "Library", "Caches", "mockingbird-room-caches");
+
+/** The cache folder of room `roomId`, under `base`. */
+export function roomCachesFolder(roomId: string, base = ROOM_CACHES_DIR): string {
+  return path.join(base, roomId.replace(/[^A-Za-z0-9_-]/g, "_"));
+}
+
+/**
+ * The environment that points an agent's package managers and build tools at `folder`: npm (and npx), Yarn, pnpm,
+ * corepack, node-gyp, Electron's downloads, Playwright's browsers, pip, uv and the XDG caches, Go's modules and builds,
+ * Cargo and NuGet. It goes on the agent's own command, not its pane's shell, whose startup may read a cache too.
+ */
+export function roomCacheEnv(folder: string): Record<string, string> {
+  const at = (...p: string[]) => path.join(folder, ...p);
+  return {
+    npm_config_cache: at("npm"),
+    YARN_CACHE_FOLDER: at("yarn"),
+    npm_config_store_dir: at("pnpm-store"),
+    COREPACK_HOME: at("corepack"),
+    npm_config_devdir: at("node-gyp"),
+    electron_config_cache: at("electron"),
+    PLAYWRIGHT_BROWSERS_PATH: at("playwright"),
+    XDG_CACHE_HOME: at("xdg"),
+    PIP_CACHE_DIR: at("pip"),
+    UV_CACHE_DIR: at("uv"),
+    GOMODCACHE: at("go", "mod"),
+    GOCACHE: at("go", "build"),
+    CARGO_HOME: at("cargo"),
+    NUGET_PACKAGES: at("nuget", "packages"),
+    NUGET_HTTP_CACHE_PATH: at("nuget", "http"),
+  };
+}
 
 /** Where a session's repository keeps its git data: the shared folder, and a linked worktree's own (the same folder outside one). */
 export interface RoomGitDirs {
@@ -77,10 +97,11 @@ export async function roomGitDirs(cwd: string): Promise<RoomGitDirs | null> {
  * git would run code from, or follow to another folder, when Mockingbird or
  * the user runs git outside the sandbox later — config (core.fsmonitor,
  * aliases, credential helpers), hooks, submodules' git folders, other
- * worktrees, and this worktree's own config and pointers.
+ * worktrees, the attributes that pick a config's drivers for files, and this
+ * worktree's own config and pointers.
  */
 export function gitWrites(g: RoomGitDirs): { write: string[]; read: string[] } {
-  const read = ["config", "hooks", "modules", "worktrees"].map((f) => path.join(g.common, f));
+  const read = ["config", "hooks", "modules", "worktrees", path.join("info", "attributes")].map((f) => path.join(g.common, f));
   if (g.own === g.common) return { write: [g.common], read };
   return { write: [g.common, g.own], read: [...read, ...["config.worktree", "commondir", "gitdir"].map((f) => path.join(g.own, f))] };
 }
@@ -93,6 +114,8 @@ export interface CodexRoomPlaces {
   hooks: string[];
   /** CODEX_HOME, when it isn't ~/.codex. */
   codexHome?: string;
+  /** The room's cache folder (roomCachesFolder), the one cache it writes; none when absent. */
+  caches?: string;
 }
 
 /**
@@ -105,7 +128,8 @@ export interface CodexRoomPlaces {
  *   signs a push, a Docker daemon that mounts any folder — and connect
  *   anywhere directly;
  * - writes to the repository's git data (commits, branches, stashes,
- *   fetches), all but gitWrites' read-only parts, and to TOOL_CACHES;
+ *   fetches), all but gitWrites' read-only parts, and to the room's own
+ *   caches (ROOM_CACHES_DIR), never the ones in home;
  * - SECRET_FILE_GLOBS denied in the session's folders and, but for
  *   certificate bundles, anywhere on disk, plus the credential folders in
  *   home, CREDENTIAL_STORES, Messages and Mail (HOME_PRIVATE_DATA) and the
@@ -120,7 +144,7 @@ export function codexRoomPermissions(p: CodexRoomPlaces): { config: string[]; pr
   const entries = (access: string, paths: readonly string[]) => paths.map((x) => `${JSON.stringify(x)}="${access}"`);
   const filesystem = [
     `":workspace_roots"=${inline(entries("deny", SECRET_FILE_GLOBS.map((g) => `**/${g}`)))}`,
-    ...entries("write", [...gitDirs.write, ...TOOL_CACHES]),
+    ...entries("write", [...gitDirs.write, ...(p.caches ? [p.caches] : [])]),
     ...entries("read", [...gitDirs.read, ...p.hooks]),
     ...entries("deny", SECRET_FILE_GLOBS.filter((g) => !CERT_BUNDLE_GLOBS.has(g)).map((g) => `/**/${g}`)),
     ...entries("deny", [...[...HOME_SECRETS, ...HOME_PRIVATE_DATA].map((x) => x.replace(/\/\*\*$/, "")), ...CREDENTIAL_STORES, ...codexAuth]),

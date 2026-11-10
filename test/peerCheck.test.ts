@@ -433,7 +433,7 @@ describe("the system's check, with what ps and lsof answer stood in for", () => 
     expect(reads(seen, "lsof")[0].ms).toBeLessThanOrEqual(PEER_CHECK_MS - 700);
     expect(reads(seen, "confirm")[0].ms).toBeLessThanOrEqual(PEER_CHECK_MS - 1400);
   });
-  it(`runs ${MAX_RUNNING} checks at once and lines up ${MAX_WAITING} more; past that, a call is refused at once`, async () => {
+  it(`runs ${MAX_RUNNING} of a launch's checks at once and lines up ${MAX_WAITING} more; past that, its call is refused at once, and another launch's still runs`, async () => {
     let running = 0;
     let most = 0;
     const gates: (() => void)[] = [];
@@ -448,15 +448,20 @@ describe("the system's check, with what ps and lsof answer stood in for", () => 
       return answer(file, args, o);
     };
     const c = systemPeerCheck({ exec, self: SELF, now: () => BOUND });
-    const root = c.root(ROOT);
+    const busy = c.root(ROOT);
     let settled = 0;
-    const calls = Array.from({ length: MAX_RUNNING + MAX_WAITING }, () => c.check(13, root).finally(() => settled++));
-    expect(await c.check(13, root)).toEqual({ ok: false, failed: "too many calls were being checked at once" });
+    const calls = Array.from({ length: MAX_RUNNING + MAX_WAITING }, () => c.check(13, busy).finally(() => settled++));
+    expect(await c.check(13, busy)).toEqual({ ok: false, failed: "its workspace made too many calls at once to check them all" });
+    // the busy launch's line doesn't hold up another's
+    const other = c.check(13, c.root(ROOT));
+    await new Promise((r) => setTimeout(r, 1));
+    expect(running).toBe(MAX_RUNNING + 1);
     while (settled < calls.length) {
       await new Promise((r) => setTimeout(r, 1));
       gates.splice(0).forEach((go) => go());
     }
     expect(await Promise.all(calls)).toEqual(Array(MAX_RUNNING + MAX_WAITING).fill({ ok: true, pid: 602 }));
-    expect(most).toBe(MAX_RUNNING);
+    expect(await other).toEqual({ ok: true, pid: 602 });
+    expect(most).toBe(MAX_RUNNING + 1);
   });
 });

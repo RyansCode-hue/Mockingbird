@@ -55,9 +55,13 @@ export const TOOL_ENV: Readonly<Record<string, string>> = Object.freeze({ PATH: 
 export const PEER_CHECK_MS = 2000;
 /** A tree bigger than this isn't searched: refused, saying so. */
 const MAX_CANDIDATES = 2000;
-/** Checks that run at once; more wait their turn, up to MAX_WAITING, so a flood of calls can't fill the process table. */
-export const MAX_RUNNING = 4;
-export const MAX_WAITING = 32;
+/**
+ * Each launch's checks that run at once; more wait their turn, up to MAX_WAITING, so a flood of calls can't fill the
+ * process table. The budget is the launch's own: one launch calling in a flood (parallel tool calls, subagents on its
+ * server) is refused, never another's calls.
+ */
+export const MAX_RUNNING = 2;
+export const MAX_WAITING = 16;
 
 export const systemExec: Exec = (file, args, o) =>
   new Promise((resolve, reject) =>
@@ -102,30 +106,40 @@ export function systemPeerCheck(o: { exec?: Exec; self?: number; now?: () => num
   const self = o.self ?? process.pid;
   const now = o.now ?? Date.now;
 
-  let running = 0;
-  const waiting: (() => void)[] = [];
-  const release = () => {
-    const next = waiting.shift();
-    if (next) next();
-    else running--;
+  /** Each launch's checks running and waiting, by its root. */
+  const budgets = new WeakMap<LaunchRoot, { running: number; waiting: (() => void)[] }>();
+  const budgetOf = (root: LaunchRoot) => {
+    let b = budgets.get(root);
+    if (!b) budgets.set(root, (b = { running: 0, waiting: [] }));
+    return b;
   };
-  /** A turn to run a check: at once while fewer than MAX_RUNNING run, else in line; false when the line is full or slow. */
-  const turn = (): Promise<boolean> => {
-    if (running < MAX_RUNNING) {
-      running++;
+  const release = (root: LaunchRoot) => {
+    const b = budgetOf(root);
+    const next = b.waiting.shift();
+    if (next) next();
+    else b.running--;
+  };
+  /**
+   * A turn to run a check of `root`'s launch: at once while fewer than MAX_RUNNING of its own run, else in its line;
+   * false when its line is full or slow.
+   */
+  const turn = (root: LaunchRoot): Promise<boolean> => {
+    const b = budgetOf(root);
+    if (b.running < MAX_RUNNING) {
+      b.running++;
       return Promise.resolve(true);
     }
-    if (waiting.length >= MAX_WAITING) return Promise.resolve(false);
+    if (b.waiting.length >= MAX_WAITING) return Promise.resolve(false);
     return new Promise((resolve) => {
       const go = () => {
         clearTimeout(timer);
         resolve(true);
       };
       const timer = setTimeout(() => {
-        waiting.splice(waiting.indexOf(go), 1);
+        b.waiting.splice(b.waiting.indexOf(go), 1);
         resolve(false);
       }, PEER_CHECK_MS);
-      waiting.push(go);
+      b.waiting.push(go);
     });
   };
 
@@ -243,11 +257,11 @@ export function systemPeerCheck(o: { exec?: Exec; self?: number; now?: () => num
     async check(fd, root) {
       if (typeof fd !== "number" || !Number.isInteger(fd) || fd < 0) return { ok: false, failed: "the connection has no descriptor to look up" };
       if (!Number.isInteger(root.pid) || root.pid <= 1) return { ok: false, failed: "its launch has no process to check against" };
-      if (!(await turn())) return { ok: false, failed: "too many calls were being checked at once" };
+      if (!(await turn(root))) return { ok: false, failed: "its workspace made too many calls at once to check them all" };
       try {
         return await checkNow(fd, root);
       } finally {
-        release();
+        release(root);
       }
     },
   };

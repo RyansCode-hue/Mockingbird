@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFile, execFileSync } from "child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installHooks, hookStatus, hooksInstalled, watchEvents, ensureHookScript } from "../src/main/hooks";
+import { installHooks, hookStatus, hooksInstalled, watchEvents, ensureHookScript, sandboxMarkerCommand } from "../src/main/hooks";
 import { makeRepo, scratchDir, write } from "./helpers";
 import { claimsFile } from "../src/shared/team/claims";
 
@@ -225,6 +225,51 @@ describe("hook script", () => {
     const buf = Buffer.alloc(64);
     expect(buf.toString("utf8", 0, fs.readSync(fd, buf, 0, 64, 0))).toContain("echo old"); // reads on undisturbed
     fs.closeSync(fd);
+  });
+});
+
+describe("a room launch's sandbox report", () => {
+  it("is a script of Mockingbird's that leaves a RoomSandbox event with the launch's marker, and nothing for one that isn't hex", () => {
+    const at = path.join(scratchDir("marker"), "room-sandbox.sh");
+    expect(() => sandboxMarkerCommand("not hex!")).toThrow(/hex/);
+    const command = sandboxMarkerCommand("ab".repeat(16), at);
+    expect(command).toBe(`"${at}" ${"ab".repeat(16)}`);
+    expect(fs.statSync(at).mode & 0o777).toBe(0o755);
+    fs.rmSync(eventsDir, { recursive: true, force: true });
+    // as Claude Code runs a hook: through a shell, the payload on stdin, the pane in the environment
+    execFileSync("/bin/sh", ["-c", command], { input: JSON.stringify({ hook_event_name: "SessionStart" }), env: { PATH: "/usr/bin:/bin", MOCKINGBIRD_SESSION: "p7" } });
+    execFileSync(at, ["not-hex"], { input: "", env: { PATH: "/usr/bin:/bin", MOCKINGBIRD_SESSION: "p7" } });
+    const left = fs.readdirSync(eventsDir).map((n) => JSON.parse(fs.readFileSync(path.join(eventsDir, n), "utf8")));
+    expect(left).toEqual([{ event: "RoomSandbox", ts: expect.any(Number), pane: "p7", payload: { marker: "ab".repeat(16) } }]);
+  });
+
+  it("reaches the session manager, late when it's read beside one of its pane's turn events", () => {
+    const seen: any[] = [];
+    const sessions: any = {
+      statusFromHook: (ev: any) => (seen.push(["status", ev.paneId, ev.started ?? false, ev.at]), { id: ev.paneId, title: "t" }),
+      roomSandboxReported: (pane: string, marker: string, late: boolean) => seen.push(["marker", pane, marker, late]),
+    };
+    stops.push(watchEvents(sessions, () => {}));
+    fs.mkdirSync(eventsDir, { recursive: true });
+    const marker = (pane: string) => JSON.stringify({ event: "RoomSandbox", ts: 5, pane, payload: { marker: "m" } });
+    drop(event("SessionStart", { source: "startup" }, "a"));
+    drop(marker("a"));
+    sessions.hooksCatchUp();
+    // read with a prompt of its own pane's, even one written before it
+    drop(event("UserPromptSubmit", { prompt: "hi" }, "b"));
+    drop(marker("b"));
+    // another pane's turn makes no difference
+    drop(event("Stop", {}, "c"));
+    drop(marker("d"));
+    sessions.hooksCatchUp();
+    expect(seen).toEqual([
+      ["status", "a", true, 1],
+      ["marker", "a", "m", false],
+      ["status", "b", false, 1],
+      ["marker", "b", "m", true],
+      ["status", "c", false, 1],
+      ["marker", "d", "m", false],
+    ]);
   });
 });
 

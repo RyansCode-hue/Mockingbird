@@ -232,7 +232,7 @@ describe("a Claude session that joined its room while it was running", () => {
         expect((await ask({ op, from: "joined", args: { from: "front", summary: "done" } })).error, op).toBe(ROOM_SANDBOX_REFUSAL);
       }
       // and what its teammates send it, which would become its prompt
-      const why = "it joined the room while it was running on Ryan's Mac, so it isn't in the room's sandbox — ask Ryan to restart it in the room";
+      const why = "it isn't in the room's sandbox on Ryan's Mac (it joined the room while it was running, or its sandbox didn't start) — ask Ryan to restart it in the room";
       const theirs = await nick.room.bridge.list(roomId);
       expect(theirs.flatMap((t) => t.sessions).find((s) => s.id === "joined")).toMatchObject({ refused: why });
       const sent = await nick.room.bridge.send(roomId, { id: "api", title: "Export API", agent: "claude", repo: "backoffice", branch: "api-branch" }, rid("joined", ryan), "hello");

@@ -15,6 +15,7 @@ import {
   rekeyRefusal,
   restoredWire,
   restoreRefusal,
+  MESSAGE_ROOM_LINE,
   ROOM_LINE,
   ROOMS_STARTING,
   sameWire,
@@ -274,11 +275,22 @@ export class WireService {
    * along a wire while it can't be, and agents' messages don't stop because landscape.json can't be read.
    */
   messageRefusal(from: SessionInfo, to: SessionInfo): string | null {
+    const across = this.acrossRoomLine(from, to);
+    if (across) return across;
     const book = this.o.store.wires().book;
     if (!book) return null;
     const loop = Object.values(book.links).some((w) => w.type === "feedback" && ((w.from === from.id && w.to === to.id) || (w.from === to.id && w.to === from.id)));
     if (!loop) return null;
     return `“${to.ticketTitle ?? to.title}” and this workspace are the two ends of a feedback wire, so send_message between them is off: finish your step with finish_step instead, which counts the wire's rounds.`;
+  }
+
+  /**
+   * Why `from` can't reach `to` with send_message, or see it in list_sessions: they're on either side of a team room's
+   * line, as a wire would be (ROOM_LINE), or the line can't be seen yet. Null when they're on the same side.
+   */
+  acrossRoomLine(from: SessionInfo, to: SessionInfo): string | null {
+    if (this.o.roomsKnown && !this.o.roomsKnown()) return ROOMS_STARTING;
+    return this.o.roomOf(from.id) === this.o.roomOf(to.id) ? null : MESSAGE_ROOM_LINE;
   }
 
   /**

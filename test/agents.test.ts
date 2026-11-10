@@ -39,8 +39,12 @@ describe("Claude launch", () => {
     const room = agentFor("claude").launchArgs({ ...base }, { claudeSettings: { sandbox: { enabled: true } } });
     expect(room.filter((a) => a === "--settings")).toHaveLength(1);
     expect(JSON.parse(room[room.indexOf("--settings") + 1])).toEqual({ statusLine: { type: "command", command: expect.stringMatching(/statusline\.sh"$/) }, sandbox: { enabled: true } });
+    // a room launch reads no settings but the user's (where Mockingbird's hooks are) and runs no MCP server but Mockingbird's
+    expect(room.slice(room.indexOf("--settings") + 2, room.indexOf("--settings") + 5)).toEqual(["--setting-sources", "user", "--strict-mcp-config"]);
     const local = agentFor("claude").launchArgs({ ...base }, {});
     expect(local[local.indexOf("--settings") + 1]).toMatch(/statusline-settings\.json$/);
+    expect(local).not.toContain("--setting-sources");
+    expect(local).not.toContain("--strict-mcp-config");
     // the user's own status line is theirs: the room's settings go alone
     fs.mkdirSync(path.join(os.homedir(), ".claude"), { recursive: true });
     fs.writeFileSync(path.join(os.homedir(), ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "mine" } }));

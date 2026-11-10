@@ -17,8 +17,13 @@ export interface LaunchContext {
   denyReads?: string[];
   /** Codex -c settings that run it in a team room's sandbox (codexRoomSandbox.ts). */
   codexPermissions?: string[];
-  /** Claude settings that run it in a team room's sandbox (claudeRoomSandbox.ts), as --settings beside the status line's. */
+  /**
+   * Claude settings that run it in a team room's sandbox (claudeRoomSandbox.ts), as --settings beside the status
+   * line's. With them it reads no settings but the user's and these, and runs no MCP server but Mockingbird's.
+   */
   claudeSettings?: Record<string, unknown>;
+  /** Environment on the agent's own command (a room's caches): sessions.ts puts it before the binary. */
+  env?: Record<string, string>;
   /**
    * Instructions the agent starts with on top of its own (a team room's House
    * board and artifact tools, and Codex's room sandbox): Claude's --append-system-prompt,
@@ -92,11 +97,13 @@ const claude: AgentAdapter = {
     if (req.model) args.push("--model", req.model);
     if (req.effort) args.push("--effort", req.effort);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    // one --settings: the room's sandbox carries the status line with it
-    if (ctx.claudeSettings) args.push("--settings", JSON.stringify({ ...usageReporterSettings(), ...ctx.claudeSettings }));
+    // one --settings: the room's sandbox carries the status line with it. Hooks from every settings file run, and
+    // outside the sandbox, as do the MCP servers a project's .mcp.json starts: a room launch reads only the user's
+    // settings (Mockingbird's own hooks are there) and runs only Mockingbird's server
+    if (ctx.claudeSettings) args.push("--settings", JSON.stringify({ ...usageReporterSettings(), ...ctx.claudeSettings }), "--setting-sources", "user", "--strict-mcp-config");
     else args.push(...usageReporterArgs());
-    // --mcp-config adds to the user's own servers; the allow rule spares a
-    // permission prompt on every message
+    // --mcp-config adds to the user's own servers (outside a room); the allow
+    // rule spares a permission prompt on every message
     if (ctx.mcp) {
       const tools = [...new Set<string>([MCP_TOOL.listSessions, MCP_TOOL.sendMessage, MCP_TOOL.listLinks, ...Object.values(WIRE_TOOL), ...(ctx.allowTools ?? [])])];
       args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", tools.map(claudeToolName).join(","));

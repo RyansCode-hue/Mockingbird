@@ -2620,6 +2620,241 @@ these. Still to do in Ryan's own room, with his HOME:
 - W20's "Left for real CLIs" still stands: Codex sub-agents' servers, Claude's
   split-pane teammates, `/mcp` reconnects and real Council turns are unchecked.
 
+#### W20 review fixes 2 as built
+The second review found the sandbox held against Bash, with gaps around it. Rebased
+first onto main 6c1f9fd (W3 and the W2+W3 join); the one conflict was a test's
+return value, kept with both fields. What each finding became:
+
+**H1 · The repository's settings no longer run.** Hooks from every settings file
+run, outside the sandbox, and outranking the project file with `--settings`
+doesn't remove its hooks; a `.mcp.json` server starts outside it too.
+- A room Claude launch passes `--setting-sources user --strict-mcp-config` beside
+  its `--settings`, with only Mockingbird's server in `--mcp-config`
+  (`agents.ts`). Every Council turn passes `--setting-sources user` (it already had
+  `--strict-mcp-config`).
+- Lost on purpose, and in `team-rooms.md`: the worktree's `.claude/settings.json`
+  and `settings.local.json` (permission rules, hooks, plugins), its `.mcp.json`
+  servers, and Ryan's own MCP servers (they run outside the sandbox too).
+  Mockingbird's hooks are user-level and still fire: the probe below saw
+  SessionStart, UserPromptSubmit and Stop from the real `hook.sh`.
+- **Codex: reported, not fixed.** Probed without signing in (`codex mcp list` in
+  a scratch HOME, Codex 0.156.1):
+  - a trusted project's `.codex/config.toml` adds its MCP servers; an untrusted
+    one's doesn't load (no `projects` entry, or `trust_level = "untrusted"`);
+  - Ryan's own `~/.codex/config.toml` servers load in every project;
+  - `-c mcp_servers={}` doesn't clear either: overrides merge into tables. So
+    **Council's Codex turns, which pass `-c 'mcp_servers={}'`, still start
+    every configured server** (`collab.ts` `codexTurnCommand`);
+  - `-c mcp_servers.<name>.enabled=false` does switch one off, and
+    `codex mcp list --json` names them all, as Codex would load them in that
+    folder.
+  - **What's left:** a fix would read that list at each Codex room launch (and
+    Council turn) and switch each server off by name, refusing the launch's
+    guards when a name can't be switched off (`-c` splits keys on every dot).
+    A project's `notify` program, which runs outside the sandbox at each turn's
+    end, would need `-c notify=[]`. Neither is done, and project hooks still
+    rely on Codex asking Ryan to trust them.
+
+**H2 · What the sandbox protects from Bash is denied to the file tools too, and
+main's git is held to where it started.**
+- `claudeRoomSettings` denies, in each of the session's folders (cwd and any
+  `--add-dir`) and any folder below, what Claude's sandbox keeps Bash from
+  writing there (`IN_FOLDER_RUNS_CODE`): `.git` (a worktree's pointer file
+  included), `.claude/`, `.vscode/`, `.idea/`, `.mcp.json`, `.gitconfig`,
+  `.gitmodules`, the shell rc files and `.ripgreprc`. Also the git folder's
+  `info/attributes`.
+- **One check for every git main runs** (`gitPins.ts`, called from `git.ts`'s
+  `run`): the coordinator's addition. A room launch pins its folder's git
+  folders (`pinGitDirs`), read from the filesystem (`readGitPointer`: the `.git`
+  folder, or a pointer file and its `commondir`), never through git, which would
+  follow the pointer it's checking. A pin holds only when that agrees with what
+  `roomGitDirs` (git's own answer) found, a linked worktree's folder is one of its
+  repository's `worktrees/`, and the shared folder is the repository the session
+  was opened on (`LaunchTarget.repoPath`). Otherwise git is refused there from the
+  start, and Ryan is told.
+  - Then every git in that folder, or below it, checks first that its `.git`
+    leads where it did and that no new `.git` sits between it and the top. The
+    status poll, the per-turn snapshot (`snapshots.ts`), stage, commit, discard,
+    a closing worktree's WIP commit, a search's `isRepo`, and W2's `guardedGit`
+    all go through `git.ts`, so none repeats it.
+  - A refusal says what moved and is told once per folder: listed above the
+    session list, logged.
+  - Pins live for the app's run. A relaunch reads the folder afresh;
+    `createWorktree` unpins a path it makes a new worktree at.
+  - The status poll skips a refused folder.
+  - Not pinned: a session that joined a room while running (its agent is
+    unsandboxed anyway), and anything from before Mockingbird started.
+- Running main's reads with fsmonitor and the other overrides off is W2 fixes 2's
+  (`guardedGit` on every read), merging separately. This change doesn't touch
+  `safeGit.ts`. A note for it: `git status` and `git diff` write the index when
+  they can, which runs a `post-index-change` hook from the git folder's hooks.
+  `GIT_OPTIONAL_LOCKS=0` stops that.
+- Test: a worktree whose `.git` is rewritten to a git folder whose config sets
+  `core.fsmonitor`. Once pinned, status, commit and checkout are refused and the
+  program never runs; plain git, unpinned, runs it (`gitPins.test.ts`). Also
+  through a room launch and the poll (`teamLivePanes.test.ts`).
+
+**M1 · A rejected settings file is noticed** (`roomSandboxWatch.ts`).
+- The room's `--settings` carry their own SessionStart hook,
+  `"~/.mockingbird/room-sandbox.sh" <marker>`, with a marker only that launch was
+  given (16 random bytes). It leaves a `RoomSandbox` event (`hooks.ts`). A
+  rejected file runs none of its hooks.
+- A Claude room launch is `starting` until its marker and Mockingbird's own
+  SessionStart event for its pane have both come. Its `guardsOf` carries
+  `starting: true`, only on this Mac: records strip it, so an older Mockingbird
+  reads them unchanged. `outsideRoomSandbox` counts it as outside, so nothing
+  crosses the room's line meanwhile.
+- **It fails for good** when either of these comes first:
+  - an event only a turn leaves (a prompt, a tool, a stop) from its own pane;
+  - the end of a minute (`SANDBOX_REPORT_MS`). Then the reason it gives depends
+    on what's missing: the marker (Claude Code may have rejected the settings),
+    or Mockingbird's own hooks.
+
+  Failed, its `guards.secrets` is false: teammates see it unguarded, and it's
+  refused across the line. Ryan is told once, in the problems list, naming the
+  session and why.
+- **Why the order holds:**
+  - An agent outside the sandbox could write the marker: it's on its command
+    line. But it can only do that in a turn, and a prompt reaches Mockingbird's
+    UserPromptSubmit hook before the model sees it.
+  - Mockingbird's own SessionStart is what shows those hooks run for the launch.
+  - Event files can be given any time, so a marker read in the same pass over
+    the events as one of its pane's turn events counts as late (`turnsIn`).
+  - Events stamped before the launch's second (the pane's earlier pty's, read
+    late) don't count as turns.
+  - An Enter typed into a starting pane reads the events first. So does
+    Mockingbird's own paste, which already did.
+- **Claude Code 2.1.314 or later** (`CLAUDE_ROOM_SANDBOX_SINCE`,
+  `claudeSandboxes`, as `codexGuardsSecrets`). Below it, or unknown, the launch
+  gets the settings but no marker, starts unguarded and is refused the line.
+  Ryan is told once (`claudeTooOld`). The guard chip says "claude: no room
+  sandbox" with the update to make; the generic chip's wording now covers a
+  sandbox that didn't start.
+- **Refusal wording:** `ROOM_SANDBOX_REFUSAL`, `roomMessageRefusal` (with a
+  "still starting" reason) and the wire refusal now say "joined the room while it
+  was running, or its sandbox didn't start".
+
+**M2 · A terminal that brings back a Claude conversation is sandboxed.**
+- `create` passes the resumed agent to `roomLaunch` (`LaunchTarget.resumes`),
+  which builds that agent's settings (Claude's sandbox, or Codex's profile with
+  its version read), and the resumed command uses them.
+- The terminal stays unguarded, since it's a shell once the agent quits. It
+  awaits no marker: terminals are never on the room's line, and it gets no
+  messaging tools.
+
+**M3 · The room's own caches** (`roomCachesFolder`, `roomCacheEnv` in
+`codexRoomSandbox.ts`).
+- Each room gets a folder, `~/Library/Caches/mockingbird-room-caches/<room>`:
+  outside `~/.mockingbird`, and named for nothing else on the Mac. It's made at
+  launch, mode 700; a failure is told.
+- A room agent's command, Claude's and Codex's alike, starts as
+  `/usr/bin/env K=V … <agent>`. The pane's shell doesn't get these, because a
+  shell's startup can read a cache: a cached prompt (`p10k`), `zcompdump`. The
+  variables are `npm_config_cache`, `YARN_CACHE_FOLDER`,
+  `npm_config_store_dir` (pnpm), `COREPACK_HOME`, `npm_config_devdir`
+  (node-gyp), `electron_config_cache`, `PLAYWRIGHT_BROWSERS_PATH`,
+  `XDG_CACHE_HOME`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `GOMODCACHE`, `GOCACHE`,
+  `CARGO_HOME`, `NUGET_PACKAGES` and `NUGET_HTTP_CACHE_PATH`.
+- Both sandboxes write that folder and no cache in home: `TOOL_CACHES` is gone.
+- Council's command seats get their own folder (`COUNCIL_CACHES`) the same way,
+  on the turn's own command.
+- A tool that ignores these variables and writes `~/Library/Caches` now fails
+  inside the sandbox, saying so.
+
+**M4 · Local messages keep to the room's line** (`WireService.acrossRoomLine`).
+- `send_message` between this Mac's sessions is refused across a room's line in
+  either direction (`MESSAGE_ROOM_LINE`), as wires are. While the line can't be
+  seen yet, it's `ROOMS_STARTING`.
+- `list_sessions` lists only the caller's side. What's left out isn't counted or
+  named, though while rooms are starting it says so (`note`).
+
+**L1 · Each launch has its own budget.** `peerCheck.ts` keeps the turn limit per
+launch root: `MAX_RUNNING` (2) running and `MAX_WAITING` (16) waiting each. A launch
+calling in a flood is refused ("its workspace made too many calls at once…"),
+never another's calls.
+
+**L2 · The other worktrees' folders by name.** At launch, each other worktree's
+`<common>/worktrees/<name>` is denied to Bash by name, and so is
+`<common>/info/attributes` (Codex's profile reads it as read-only too). A worktree
+made after the launch isn't covered until the next one.
+
+**L3 · The ask to type** now says a `!` command typed at the prompt runs in Ryan's
+shell, outside the room's sandbox (`Typing.tsx`, wording only).
+
+**Found on the way:** the rebase onto W3 broke "redraws a teammate's pane when its
+session restarts". A room launch now awaits git, so the restart's gap between
+ptys got longer. That showed two existing races, both fixed, each with a test that
+fails without its fix:
+- the viewer dropped the new pty's output while the record said the session had
+  ended, and never fetched it again. Now a record that comes back live resyncs a
+  pane on screen;
+- the owner stopped streaming a session that was between its ptys, so the new
+  pty's first output went to no one. Now `recomputeWatched` counts resumable
+  sessions too.
+
+**Checked with real CLIs.** Three `claude -p --model sonnet` runs (2.1.318) in a
+linked worktree of a scratch repository with a scratch HOME (`env -i HOME=…`, the
+Keychains folder linked). The worktree had a committed `.claude/settings.json` (a
+SessionStart hook and `enableAllProjectMcpServers`) and a `.mcp.json` server, each
+leaving a mark in `~/.mockingbird` if it ever ran. Mockingbird's real hooks were
+installed in the scratch HOME (`installHooks`). The settings came from
+`claudeRoomSettings` and `sandboxMarkerCommand`, and the launch flags were the
+room's.
+
+| Run | Result |
+| :- | :- |
+| 1: room settings | Mockingbird's hooks fired (SessionStart, UserPromptSubmit, Stop); the RoomSandbox event came with the launch's marker; the project hook and the `.mcp.json` server never ran |
+| 2: room settings, `bypassPermissions`, Write to `<wt>/.git`, `.mcp.json`, `.claude/settings.local.json`, `.vscode/settings.json`, `src/.git`, `src/ok.txt` | all refused ("denied by your permission settings") but `src/ok.txt`; `.git` and `.mcp.json` unchanged on disk |
+| 3: one field mistyped (`allowedDomains` a string) | Claude Code said the file didn't load; no RoomSandbox event; Mockingbird's hooks still fired; the project hook still didn't run (the flags aren't in the file) |
+
+Each run's events were then fed, one pass at a time, through the real
+`watchEvents` into a `RoomSandboxWatch`. Run 1 was confirmed. Run 3 failed with
+"its first turn began before its sandbox settings reported in", giving guards
+`{ secrets: false }`, refused the room's line.
+
+Scripts: the session's scratch folder, `w20rf2/probe/` (`setup.sh`, `run.sh`,
+`run.out`). The scratch HOME was removed afterwards, and no claude or MCP process
+was left. Codex was never signed in.
+
+**Mutation check.** Each of 26 guards was reverted in turn, and its test file failed
+for each (`w20rf2/mutate.py`). Three weren't caught at first, the repository anchor,
+the worktree-folder check and own-pane-only events, so each got a test.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0: 185 files pass and 30 skip; 2,965 tests pass and 144
+  skip. An earlier run at load average 20 failed `appModel.test.ts` on a leaked
+  `git symbolic-ref` from a folder that isn't a repository, the load flake seen
+  before this change. That file passed three times alone, and the rerun passed
+  whole.
+- `test/uiTyping.test.ts` passes alone: the one UI test over what changed (the ask
+  to type). No UI test renders the guard chip.
+- `MB_E2E_APP=1`: `wiresApp`, `quitApp` and `teamLiveApp` pass, with no relays
+  left. `teamLiveApp`'s stand-in Claude now reports in as the real CLI does: it
+  runs the room's marker hook from its `--settings` and leaves a SessionStart
+  event. So the House calls it makes from room panes went through a confirmed
+  sandbox.
+
+**Hand checks for Ryan's own room** (with his HOME):
+- a room pane starts, its chip doesn't flash, and `list_sessions`, the House
+  tools and `send_message` work a few seconds in;
+- `npm install` there fills `~/Library/Caches/mockingbird-room-caches/…`, not
+  `~/.npm`;
+- a repo's own `.claude/settings.json` hook doesn't fire in a room pane but does
+  in a local one;
+- Source Control in a room worktree works as before.
+
+**Left.**
+- Codex's project config and MCP servers (H1, above).
+- Pins are in memory: a pointer rewritten while Mockingbird wasn't running is
+  checked against the session's repository at the next launch, not against the
+  launch before.
+- `.envrc` and other files Ryan's own tools run on entering a folder (direnv)
+  aren't protected inside the worktree, by either sandbox. Like the code itself,
+  that's what the agent is there to write.
+- A launch whose marker report comes later than Ryan's first Enter (typed within
+  half a second of its start) fails safe and asks for a restart.
+
 ## 2. Data model
 
 ### The file
@@ -3004,12 +3239,16 @@ is refused.
   and no peer check can tell. **The room sandbox closes it for room agents.** Since
   W20 review fixes 1, a Claude session started in a room's area runs in Claude
   Code's sandbox, as a Codex room session runs in Codex's. Its commands write only
-  its worktree, the repository's git data but config and hooks, the temp folder and
-  package caches. Its file tools can't write outside its folders, and `HOME_RUNS_CODE`
-  is denied to both by name. A Claude pane that joined a room while running isn't
-  sandboxed: until it restarts in the room, nothing crosses the room's line to or
-  from it. **Ryan's own local panes aren't sandboxed.** They are trusted as his own,
-  like his terminal: what one of them writes, he could have written.
+  its worktree, the repository's git data but what git runs code from, the temp
+  folder and the room's own caches (review fixes 2: never home's). Its file tools
+  can't write outside its folders, or what the sandbox protects inside them, and
+  `HOME_RUNS_CODE` is denied to both by name. It reads no settings but the user's,
+  and runs no MCP server but Mockingbird's, and its sandbox has to report in before
+  anything crosses the room's line for it. A Claude pane that joined a room while
+  running, or whose sandbox didn't report in, isn't sandboxed: until it restarts in
+  the room, nothing crosses the room's line to or from it. **Ryan's own local panes
+  aren't sandboxed.** They are trusted as his own, like his terminal: what one of
+  them writes, he could have written.
 - **A process in the tree can let one outside it through.** It can hand over its
   connection, or relay for it. It can also bind a socket at a path that reads like
   main's end's address, so that `lsof` names it as the peer. Any of these takes the

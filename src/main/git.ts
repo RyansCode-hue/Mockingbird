@@ -1,5 +1,6 @@
 import { execFile } from "child_process";
 import type { PrTarget } from "../shared/types";
+import { gitPinRefusal } from "./gitPins";
 
 const LOCAL_TIMEOUT_MS = 30_000;
 const NETWORK_TIMEOUT_MS = 120_000; // fetch / push / pull over a slow VPN
@@ -20,6 +21,9 @@ export interface GitOptions {
 }
 
 function run(cwd: string, args: string[], opts: GitOptions, encoding: "utf8" | "buffer", maxBuffer: number): Promise<string | Buffer> {
+  // a room session's folder runs git only while its .git leads where it did when the session started (gitPins.ts)
+  const pinned = gitPinRefusal(cwd);
+  if (pinned) return Promise.reject(new Error(`git ${args[0]}: ${pinned}`));
   const timeout = opts.timeoutMs ?? (NETWORK.has(args[0]) ? NETWORK_TIMEOUT_MS : LOCAL_TIMEOUT_MS);
   const ok = opts.okCodes ?? [0];
   return new Promise((resolve, reject) => {

@@ -44,10 +44,11 @@ describe("a Codex room session's permission profile", () => {
     for (const h of p.hooks) expect(profile).toContain(`${JSON.stringify(h)}="read"`);
   });
 
-  it("lets the session write its repository's git data and package caches, but not git config, hooks or another worktree's pointers", () => {
-    const profile = profileOf(codexRoomPermissions(places({ git: { common: "/r/.git", own: "/r/.git/worktrees/wt" } })).config);
-    for (const w of ["/r/.git", "/r/.git/worktrees/wt", "~/.npm", "~/Library/Caches", "~/.cache", "~/go/pkg", "~/.nuget/packages", "~/.cargo/registry"]) expect(profile).toContain(`"${w}"="write"`);
-    for (const r of ["config", "hooks", "modules", "worktrees", "worktrees/wt/config.worktree", "worktrees/wt/commondir", "worktrees/wt/gitdir"]) expect(profile).toContain(`"/r/.git/${r}"="read"`);
+  it("lets the session write its repository's git data and the room's own caches, but not git config, hooks, attributes, another worktree's pointers or home's caches", () => {
+    const profile = profileOf(codexRoomPermissions(places({ git: { common: "/r/.git", own: "/r/.git/worktrees/wt" }, caches: "/c/rooms/r1" })).config);
+    for (const w of ["/r/.git", "/r/.git/worktrees/wt", "/c/rooms/r1"]) expect(profile).toContain(`"${w}"="write"`);
+    for (const w of ["~/.npm", "~/Library/Caches", "~/.cache", "~/go/pkg", "~/.nuget/packages", "~/.cargo/registry"]) expect(profile).not.toContain(`"${w}"="write"`);
+    for (const r of ["config", "hooks", "modules", "worktrees", "info/attributes", "worktrees/wt/config.worktree", "worktrees/wt/commondir", "worktrees/wt/gitdir"]) expect(profile).toContain(`"/r/.git/${r}"="read"`);
     // no folder on PATH
     for (const bin of ["~/.yarn\"", "~/go\"", "~/.cargo\"", "~/.dotnet", "~/.local/bin", "~/Library/pnpm\""]) expect(profile).not.toContain(bin);
     // a main checkout: one git folder

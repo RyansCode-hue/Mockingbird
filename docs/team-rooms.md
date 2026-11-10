@@ -555,18 +555,26 @@ Member replace the single admin (creator, else longest-standing member).
     inside that team folder stay readable, so commits get their trailers.
   - **Writes:** the session's folders and temp folders (Codex's `:workspace`);
     the repository's git data — the common git folder and a worktree's own —
-    so commits, branches, stashes and fetches work; and package caches in
-    home: `~/.npm`, `~/.cache`, `~/Library/Caches` (pip, go-build, Yarn 1),
-    Yarn Berry's and pnpm's stores, `~/go/pkg`, NuGet's packages and HTTP
-    cache, Cargo's registry. A cache whose parent folder doesn't exist yet
-    can't be created from inside (a toolchain's first run happens outside).
-    Inside the git folder, what git would later run code from or follow when
-    Mockingbird or the user runs git outside the sandbox stays read-only:
-    `config` (fsmonitor, aliases, credential helpers), `hooks`, `modules`,
-    other worktrees, and this worktree's `config.worktree`, `commondir` and
+    so commits, branches, stashes and fetches work; and the room's own cache
+    folder (`~/Library/Caches/mockingbird-room-caches/<room>`), never the
+    caches in home, whose contents tools run later outside any sandbox (npx's
+    packages, unpacked sources, corepack's package managers, a shell's cached
+    prompt). The agent's command, not its pane's shell, points npm, Yarn,
+    pnpm, corepack, node-gyp, Electron's and Playwright's downloads, pip, uv,
+    the XDG caches, Go, Cargo and NuGet there (`roomCacheEnv`), so a room's
+    first install downloads afresh. Inside the git folder, what git would
+    later run code from or follow when Mockingbird or the user runs git
+    outside the sandbox stays read-only: `config` (fsmonitor, aliases,
+    credential helpers), `hooks`, `modules`, `info/attributes`, other
+    worktrees, and this worktree's `config.worktree`, `commondir` and
     `gitdir`. So `git config`, `git remote add` and new upstream tracking
     fail. Nothing on `PATH` (`~/.local/bin`, `~/go/bin`, `~/.cargo/bin`) is
     writable.
+  - **Still outside it:** MCP servers from the user's `~/.codex/config.toml`,
+    and, in a project Codex trusts, from the repository's `.codex/config.toml`,
+    start outside the sandbox, as does a `notify` program either names. A
+    teammate's committed `.codex/config.toml` would run there once pulled.
+    (Claude room sessions don't read the repository's settings at all.)
   - **Network:** on, through Codex's network proxy, for any domain and local
     services (`allow_local_binding`). Without the proxy the sandbox lets
     commands open Unix sockets and connect anywhere directly: an SSH agent
@@ -589,33 +597,77 @@ Member replace the single admin (creator, else longest-standing member).
   `--settings` on that launch alone (`src/main/claudeRoomSandbox.ts`), so
   `~/.claude/settings.json` is never touched. It mirrors Codex's profile:
   - **Commands** (Bash and what it starts) write only the session's folders,
-    the temp folder, the repository's git data but its config, hooks and
-    submodules, and the package caches. They can't read the home secrets,
-    credential stores, Messages, Mail or the PAT file. There's no unsandboxed
-    retry, and Claude won't start without the sandbox. Set from `--settings`,
-    that makes the repository's own settings unable to widen it.
+    the temp folder, the repository's git data but its config, hooks,
+    attributes, submodules and the other worktrees' folders (as they are at
+    launch), and the room's own caches, as a Codex room session's do. They
+    can't read the home secrets, credential stores, Messages, Mail or the PAT
+    file. There's no unsandboxed retry, and Claude won't start without the
+    sandbox. Set from `--settings`, that makes the repository's own settings
+    unable to widen it.
+  - **The repository's own settings aren't read.** A room launch, and every
+    Council turn, passes `--setting-sources user` and `--strict-mcp-config`
+    with only Mockingbird's server: hooks from any settings file run outside
+    the sandbox, and so does a `.mcp.json` server. So a room session doesn't
+    have the worktree's `.claude/settings.json` and `settings.local.json`
+    (their permission rules, hooks, plugins), its `.mcp.json` servers, or the
+    user's own MCP servers, which would run outside the sandbox too.
+    Mockingbird's hooks are the user's, so they still run; so do the user's
+    own hooks and plugins. CLAUDE.md is still read.
   - **The file tools** can't write outside the session's folders, and the
     files that run in every pane (`HOME_RUNS_CODE`: `~/.mockingbird`, the
     shell's start-up files, `~/.claude`, `~/.codex`, git's and ssh's config,
-    launchd's agents) and the git folder's config and hooks are denied by rule.
-    Deny rules hold in every permission mode.
+    launchd's agents) and the git folder's config, hooks and attributes are
+    denied by rule. So is what the sandbox keeps Bash from writing inside the
+    session's folders, there and in any folder below: `.git` (a worktree's
+    pointer too), `.claude/`, `.vscode/`, `.idea/`, `.mcp.json`,
+    `.gitconfig`, `.gitmodules`, and the shell and ripgrep rc files. Deny
+    rules hold in every permission mode.
   - **The network** is open, as for Codex and Council. Bash still asks before
     each command, as outside a room.
   - Hooks, the status line and Mockingbird's MCP server run outside the
     sandbox, as they must.
+  - **Its sandbox reports in.** Claude Code drops a settings file it rejects
+    whole, sandbox and all, saying so only in the pane. So the room's
+    settings carry a SessionStart hook of their own that reports a marker
+    only that launch was given (`~/.mockingbird/room-sandbox.sh`). The launch
+    counts as in the room's sandbox once that marker and Mockingbird's own
+    SessionStart event have both come, before anything a turn leaves; until
+    then it's starting, and nothing crosses the room's line for it. If a
+    turn's event comes first (its agent could have written the marker
+    itself), or nothing comes within a minute, it's outside the sandbox for
+    the rest of its life: teammates see it unguarded, its guard chip offers
+    the restart, and the reason is listed above the session list once.
+  - **Claude Code 2.1.314 or later:** the first release that keeps the file
+    tools in the session's folders. An older one starts room sessions
+    outside the sandbox, kept off the room's line, and its chip says
+    "claude: no room sandbox", naming the update.
+  - **A terminal that brings back a Claude conversation** runs that Claude
+    under the same settings; the terminal itself, once it quits, is a shell.
   - **Joined while running:** a Claude session moved into a shared group
     while it runs has none of this. Until it's restarted there, nothing
     crosses the room's line to or from it: teammates' messages, its own
     `send_message` to teammates, wires and its wire tools (`finish_step`,
     `read_context`, `read_terminal`, `list_links`), and the House, artifact
     and teammates'-changes tools are refused, saying why.
+  - **Its folder's git is held to where it started.** Mockingbird pins a
+    room launch's git folders, read from the filesystem and checked against
+    the repository the session was opened on. Every git Mockingbird runs
+    there — the status poll, the per-turn snapshot, stage, commit, discard,
+    a closing worktree's WIP commit — goes through one check first
+    (`gitPins.ts`, from `git.ts`): a `.git` that now leads elsewhere, or a
+    new `.git` between the folder and its top, refuses it, saying so once.
+    Restarting the session reads the folder afresh.
+  - **Messages stay on its side of the line.** `send_message` and
+    `list_sessions` reach only this Mac's sessions on the same side of the
+    room's line as the caller (both in the room, or neither), as wires do;
+    while Mockingbird is still starting its rooms, none.
   - **No pushing:** like a Codex room session, it can't `git push` (the
     keychain and ssh are denied). A PR is pushed and opened by Mockingbird
     itself when its owner approves it.
 - **What the deny rules don't cover:** Claude's sandbox doesn't stop a
   shell command reading a secret file inside its own folders (`cat .env`);
   Codex's stops everything the agent runs. Neither stops a `!` command typed
-  into the pane. A terminal in a shared group is shared too (anyone in the
+  into the pane, which runs in the owner's shell; the ask to type says so. A terminal in a shared group is shared too (anyone in the
   room sees it, and can type into it once its owner lets them) and says so.
   A session moved into a shared group while running keeps what it started
   with until it's restarted, and offers the restart.

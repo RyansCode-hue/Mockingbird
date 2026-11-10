@@ -73,6 +73,19 @@ export const CODEX_ROOM_GUARD_SINCE = "0.138.0";
 /** Whether a Codex CLI at `version` starts room sessions unable to read secret files; false when the version is unknown. */
 export const codexGuardsSecrets = (version: string | null | undefined): boolean => !!version && !isNewer(version, CODEX_ROOM_GUARD_SINCE);
 
+/**
+ * The first Claude Code release whose file tools a room session's settings can keep in its folders
+ * (blockWritesOutsideWorkingDirectories): an older one runs room sessions outside the room's sandbox.
+ */
+export const CLAUDE_ROOM_SANDBOX_SINCE = "2.1.314";
+
+/** Whether a Claude Code CLI at `version` runs room sessions in the room's sandbox; false when the version is unknown. */
+export const claudeSandboxes = (version: string | null | undefined): boolean => !!version && !isNewer(version, CLAUDE_ROOM_SANDBOX_SINCE);
+
+/** What this Mac's person is told when its Claude Code can't run room sessions in the room's sandbox. */
+export const claudeTooOld = (version: string | null | undefined): string =>
+  `${version ? `Claude Code ${version} is older than` : "Mockingbird couldn't read Claude Code's version, so it can't tell whether it's at least"} ${CLAUDE_ROOM_SANDBOX_SINCE}, the first release that can run room sessions in the room's sandbox: they start outside it, and nothing crosses the room's line for them. Update Claude Code (Settings → Agents → Update), then restart them.`;
+
 /** A room session as every member's room state holds it. */
 export interface RoomSessionState extends RoomSessionRecord {
   owner: MemberId;
@@ -113,28 +126,31 @@ export function parseRemoteId(id: string): { session: string; member: string } |
  * agent quits would run as a shell command. Teammates' views show all of
  * these sessions, so list_sessions lists them too, with this reason.
  */
-export function roomMessageRefusal(s: { agent: AgentKind | null; status: SessionStatus; live: boolean; guards?: { secrets: boolean } | null }, owner: string): string | null {
+export function roomMessageRefusal(s: { agent: AgentKind | null; status: SessionStatus; live: boolean; guards?: { secrets: boolean; starting?: boolean } | null }, owner: string): string | null {
   const who = named(owner, 60);
   if (!s.live) return `${who} closed it; only ${who} can resume it`;
   if (s.agent === null) {
     return `it's a terminal on ${who}'s Mac (an agent started in it by hand, or brought back in one): agent messages are never typed into terminals, where one typed after the agent quits would run as a shell command — ask ${who} to continue it in an agent pane`;
   }
   if (s.status === "dead") return `its agent has exited on ${who}'s Mac (the pane is still open) — ask ${who} to restart it`;
-  if (s.guards !== undefined && outsideRoomSandbox(s.agent, s.guards)) return `it joined the room while it was running on ${who}'s Mac, so it isn't in the room's sandbox — ask ${who} to restart it in the room`;
+  if (s.guards?.starting && s.agent === "claude") return `it's still starting on ${who}'s Mac, and its sandbox hasn't reported in yet — try again in a moment`;
+  if (s.guards !== undefined && outsideRoomSandbox(s.agent, s.guards)) return `it isn't in the room's sandbox on ${who}'s Mac (it joined the room while it was running, or its sandbox didn't start) — ask ${who} to restart it in the room`;
   return null;
 }
 
 /**
- * Whether a session in a room runs outside the room's sandbox: a Claude session that wasn't started there (it joined
- * the room's area while it was running) has none, and nothing crosses the room's line to or from it until it's
- * restarted in the room. `guards` are its launch's (secrets: it runs under the room's settings); none for one that
- * wasn't started in a room.
+ * Whether a session in a room runs outside the room's sandbox, so nothing crosses the room's line to or from it: a
+ * Claude session that wasn't started there (it joined the room's area while it was running), one whose Claude Code
+ * is too old for it (claudeSandboxes), or one whose sandbox didn't report in, or hasn't yet (`starting`:
+ * RoomSandboxWatch). `guards` are its launch's (secrets: it runs under the room's settings); none for one that wasn't
+ * started in a room.
  */
-export const outsideRoomSandbox = (agent: AgentKind | null | undefined, guards: { secrets: boolean } | null | undefined): boolean => agent === "claude" && !guards?.secrets;
+export const outsideRoomSandbox = (agent: AgentKind | null | undefined, guards: { secrets: boolean; starting?: boolean } | null | undefined): boolean =>
+  agent === "claude" && (!guards?.secrets || !!guards.starting);
 
 /** What a session outside the room's sandbox is told when it reaches for the room. */
 export const ROOM_SANDBOX_REFUSAL =
-  "This session joined its team room while it was running, so it doesn't run in the room's sandbox, and nothing crosses the room's line to or from it: teammates' sessions, the House board, room artifacts and teammates' changes. Tell your user: restart this session in the room to use them.";
+  "This session doesn't run in its team room's sandbox (it joined the room while it was running, or its sandbox didn't start), so nothing crosses the room's line to or from it: teammates' sessions, the House board, room artifacts and teammates' changes. Tell your user: restart this session in the room to use them.";
 
 /** A room session's key in room state and views: the same on every member's Mockingbird. */
 export const roomSessionKey = (owner: MemberId, id: string): string => `${owner}:${id}`;

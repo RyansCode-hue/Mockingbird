@@ -12,6 +12,7 @@ import { named, plainLine, quoted } from "../shared/team/agentText";
 import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
 import { isTeamChangesTool, TEAM_CHANGES_TOOL_SCHEMAS, teamChangesToolCall } from "./team/teamChanges";
 import { outsideRoomSandbox, parseRemoteId, remoteSessionId, ROOM_SANDBOX_REFUSAL } from "../shared/team/livePanes";
+import { ROOMS_STARTING } from "../shared/wires";
 import { McpTokens } from "./mcpTokens";
 import { isWireTool, WIRE_TOOL_SCHEMAS } from "./wireToolSchemas";
 import { systemPeerCheck, type PeerCheck } from "./peerCheck";
@@ -365,8 +366,13 @@ export interface MessagingHooks {
 /** What the `list_links` tool answers from (src/main/wires.ts). */
 export interface WireLinks {
   linksFor(me: SessionInfo): Reply;
-  /** Why `send_message` from `from` to `to` is off (a feedback wire joins them, so its rounds would go uncounted), or null. */
+  /**
+   * Why `send_message` from `from` to `to` is off, or null: they're on either side of a team room's line (as a wire
+   * would be), or a feedback wire joins them, so its rounds would go uncounted.
+   */
   messageRefusal(from: SessionInfo, to: SessionInfo): string | null;
+  /** Why `from` doesn't see `to` in list_sessions: they're on either side of a team room's line. Null when it does. */
+  acrossRoomLine?(from: SessionInfo, to: SessionInfo): string | null;
 }
 
 /** What finish_step, read_context and read_terminal answer from (src/main/wireTools.ts), for the caller its token names. */
@@ -633,8 +639,16 @@ export class Messaging {
     if (isWireTool(req.op)) return this.wireTools ? this.wireTools.call(me, req.op, req.args ?? {}) : { error: "Wires aren't ready yet — try again in a moment." };
 
     if (req.op === MCP_TOOL.listSessions) {
+      // only this Mac's sessions on its side of a team room's line, which send_message reaches; what's left out isn't
+      // counted or named, as the line names neither side. While the line can't be seen yet, none, saying so
+      let starting: string | null = null;
       const others: Record<string, unknown>[] = live
-        .filter((s) => s.id !== me.id && !s.debrief)
+        .filter((s) => {
+          if (s.id === me.id || s.debrief) return false;
+          const across = this.wires?.acrossRoomLine?.(me, s) ?? null;
+          if (across === ROOMS_STARTING) starting = across;
+          return !across;
+        })
         .map((s) => ({
           id: s.id,
           title: titleOf(s),
@@ -646,6 +660,7 @@ export class Messaging {
           same_group: !!me.taskGroup && !!s.taskGroup && topOfKey(me.taskGroup) === topOfKey(s.taskGroup),
         }));
       const result: Record<string, unknown> = { you: { id: me.id, title: titleOf(me) }, sessions: others };
+      if (starting) result.note = starting;
       const roomId = this.remote?.roomOf(me) ?? null;
       if (offLine) result.teammates_error = offLine;
       else if (this.remote && roomId) {
