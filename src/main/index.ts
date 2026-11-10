@@ -47,7 +47,7 @@ import { shouldNotify, toolsLostNotice } from "./notifications";
 import { composeRollup, weekBounds } from "./rollup";
 import { fmtElapsed } from "../shared/format";
 import { MessageLog } from "./messageLog";
-import { changedFiles, overlaps, type WorktreeChanges } from "./conflicts";
+import { overlapReport, rereadWorktrees, type WorktreeReads } from "./conflicts";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
 import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
@@ -57,7 +57,7 @@ import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, FileOverlap, LastReply, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
+import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { BY_YOU, isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
@@ -69,7 +69,6 @@ import { configureWebRtc } from "./team/peerHost";
 import { HouseService } from "./team/houseService";
 import { TicketSessions } from "./team/ticketSession";
 import { TeamChanges } from "./team/teamChanges";
-import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 // team rooms: team chat
 import { TeamRoom } from "./team/teamRoom";
 import { forgetViewsWith } from "./team/chat";
@@ -1815,8 +1814,8 @@ app.whenReady().then(() => {
 });
 
 // ---- conflict early warning: worktrees of one repository changing the same files ----
-let overlapState: Record<string, FileOverlap[]> = {};
-const worktreeChanges = new Map<string, { repo: string; branch: string | null; files: string[] }>();
+let overlapState: OverlapReport = { bySession: {}, unread: {} };
+const worktreeReads: WorktreeReads = { changes: new Map(), unread: new Map() };
 const staleRoots = new Set<string>();
 let overlapTimer: NodeJS.Timeout | null = null;
 let overlapRun: Promise<void> | null = null;
@@ -1831,24 +1830,9 @@ function overlapsSoon(root?: string): void {
   }, 2000);
 }
 async function refreshOverlaps(): Promise<void> {
-  const live = sessions.list().filter((s) => s.repoPath && s.status !== "dead" && !s.debrief);
-  const cwds = [...new Set(live.map((s) => s.cwd))];
-  for (const cwd of [...worktreeChanges.keys()]) if (!cwds.includes(cwd)) worktreeChanges.delete(cwd);
-  for (const cwd of cwds) {
-    if (worktreeChanges.has(cwd) && !staleRoots.has(cwd)) continue;
-    staleRoots.delete(cwd);
-    try {
-      worktreeChanges.set(cwd, await changedFiles(cwd));
-    } catch (err) {
-      worktreeChanges.delete(cwd);
-      logError(`overlaps ${cwd}`, err);
-    }
-  }
-  const list: WorktreeChanges[] = live.flatMap((s) => {
-    const c = worktreeChanges.get(s.cwd);
-    return c ? [{ sessionId: s.id, title: s.ticketTitle ?? s.title, branch: c.branch, repo: c.repo, cwd: s.cwd, files: c.files }] : [];
-  });
-  const next = mergeOverlaps(overlaps(list), teammateOverlaps(list, teamChanges.teammateChanges())); // team rooms: teammates' branches and shared uncommitted work too
+  const live = sessions.list().flatMap((s) => (s.repoPath && s.status !== "dead" && !s.debrief ? [{ sessionId: s.id, title: s.ticketTitle ?? s.title, repoPath: s.repoPath, cwd: s.cwd }] : []));
+  await rereadWorktrees([...new Set(live.map((s) => s.cwd))], worktreeReads, staleRoots, logError);
+  const next = overlapReport(live, worktreeReads, teamChanges.teammateChanges()); // team rooms: teammates' branches and shared uncommitted work too
   if (JSON.stringify(next) === JSON.stringify(overlapState)) return;
   overlapState = next;
   toWindow("overlaps:changed", overlapState);
@@ -1856,7 +1840,7 @@ async function refreshOverlaps(): Promise<void> {
 handle("overlaps:get", () => overlapState);
 // branches move and sessions come and go without a file changing: look again every 2 minutes
 setInterval(() => {
-  for (const cwd of worktreeChanges.keys()) staleRoots.add(cwd);
+  for (const cwd of worktreeReads.changes.keys()) staleRoots.add(cwd);
   overlapsSoon();
 }, 120_000);
 app.whenReady().then(() => {

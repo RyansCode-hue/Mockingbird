@@ -359,6 +359,8 @@ export interface PaneChipProps {
   git: WorktreeStateInfo | null;
   gitErr: string | null;
   overlaps?: FileOverlap[];
+  /** How many worktrees of its repository couldn't be read for overlaps (OverlapReport.unread). */
+  overlapsUnread?: number;
   runCount?: number;
   onOpenRun?: () => void;
   onOpenChanges?: () => void;
@@ -377,7 +379,7 @@ export interface PaneChipProps {
  * its branch, ▶ runs (opens Run), Δ changes (opens Source Control), overlaps (the other worktree, or the room's
  * Board), model and effort, ticket, kind, muted and the guard chip.
  */
-export function PaneChips({ session, density, git, gitErr, overlaps, runCount, onOpenRun, onOpenChanges, onJump, onOpenBoard, backup, onTakeOver, contextChip, pinNote, onRestart }: PaneChipProps) {
+export function PaneChips({ session, density, git, gitErr, overlaps, overlapsUnread, runCount, onOpenRun, onOpenChanges, onJump, onOpenBoard, backup, onTakeOver, contextChip, pinNote, onRestart }: PaneChipProps) {
   const chips = useMemo(() => overlapChips(overlaps), [overlaps]);
   const dead = session.status === "dead";
   const room = session.room ?? null;
@@ -433,6 +435,11 @@ export function PaneChips({ session, density, git, gitErr, overlaps, runCount, o
         >
           ⚠ {overlapCount(chips.local)} overlap
         </button>
+      )}
+      {!!overlapsUnread && density !== "min" && (
+        <span className="chip" title={`${plural(overlapsUnread, "worktree")} of this repository couldn't be read, so overlaps with ${overlapsUnread === 1 ? "it" : "them"} aren't shown. Mockingbird's log says why.`}>
+          overlaps: {overlapsUnread} unread
+        </span>
       )}
       {/* team rooms: a teammate's pushed branch changes the same files — the room's House board shows who has which ticket */}
       {density !== "min" &&
@@ -773,6 +780,7 @@ export function TerminalPane({
   handoff,
   undoTurn,
   overlaps,
+  overlapsUnread,
   onJump,
   onOpenBoard,
   backup,
@@ -827,6 +835,8 @@ export function TerminalPane({
   undoTurn?: Pick<Action, "onPick" | "disabled" | "title">;
   /** Files another worktree of this repository has also changed. */
   overlaps?: FileOverlap[];
+  /** How many worktrees of this repository couldn't be read for overlaps. */
+  overlapsUnread?: number;
   onJump?: (sessionId: string) => void;
   /** Open a team room's House board (a teammate's branch overlaps this worktree). */
   onOpenBoard?: (roomId: string) => void;
@@ -1260,6 +1270,7 @@ export function TerminalPane({
           git={git}
           gitErr={density === "std" ? gitErr : null}
           overlaps={overlaps}
+          overlapsUnread={overlapsUnread}
           runCount={runCount}
           onOpenRun={onOpenRun}
           onOpenChanges={onOpenChanges}

@@ -1290,6 +1290,17 @@ export interface FileOverlap {
   };
 }
 
+/** Overlaps as the window shows them (overlaps:get, overlaps:changed). */
+export interface OverlapReport {
+  /** Per session: the other worktrees, and teammates' branches, that change files its worktree changes. */
+  bySession: Record<string, FileOverlap[]>;
+  /**
+   * Per session: how many live worktrees of its repository, its own included, couldn't be read, so overlaps with them
+   * are unknown rather than none. Absent when every one was read.
+   */
+  unread: Record<string, number>;
+}
+
 /** One agent-to-agent message, as the message log shows it. */
 export interface AgentMessage {
   at: number;

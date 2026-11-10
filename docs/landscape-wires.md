@@ -894,6 +894,149 @@ often caught by the test run's leak check (`appModel`'s, which was already known
 order, the creation stamp, WRITE_ENV on stage, commit, discard and snapshots, and
 readState's settling), and a test failed for each.
 
+#### W2 review fixes 2c as built
+
+The second review's findings on 2 and 2b, built on 52061d6.
+
+**No hooks for a read (H1):**
+- Guarded reads add `core.hooksPath=/dev/null`. A diff refreshes the index when it
+  finds a file merely touched, and writing the index runs `post-index-change` from
+  wherever core.hooksPath points, a folder in the working tree included. Probed: a
+  plain status and a plain diff each ran it.
+- Reads set `GIT_OPTIONAL_LOCKS=0`. A status no longer rewrites the index, so it never
+  holds `index.lock` against the agent's own git.
+- A diff ignores `GIT_OPTIONAL_LOCKS` (probed: it still rewrites the index). So it still
+  takes the lock for that moment, with no hook run. `diff.autoRefreshIndex=false` would
+  stop that, but then `--name-only` lists files merely touched (probed), so it's left
+  on.
+- `hostileRepo()` plants `post-index-change` ("hook") and `reference-transaction`
+  ("refhook") in `.githooks/` in the working tree, which core.hooksPath names (left out
+  of status through `info/exclude`). It also has an unchanged `f.txt` dated anew
+  (`stale()`), so a status or diff writes the index.
+
+**git-lfs (H2, M1):**
+- The listing guardedGit reads before and after each run is now `^(filter|lfs)\.`, so
+  an LFS setting changed during a run sets the result aside too.
+- `lfs.repositoryformatversion` is left out of the listing. git-lfs's own clean writes
+  it on its first run in a repository, a read's included (probed). Without the
+  exception, that first read would always be set aside.
+- git-lfs's own driver stays on only when all of these hold:
+  - git-lfs is on main's PATH (`programOnPath`, looked up once per PATH). An empty or
+    relative entry before it counts as not found: sh would look in the working tree
+    first, where an agent could put a `git-lfs` of its own.
+  - No `lfs.extension.*` is set. git-lfs runs each extension's clean command on every
+    file it cleans (probed: a plain status ran one).
+  - No `lfs.storage` is set. git-lfs's clean writes objects there (probed: a status
+    wrote to it).
+- Otherwise the driver is turned off like any other, and an LFS file that was merely
+  touched reads as changed.
+- `.lfsconfig` can't name an extension's commands: git-lfs 3.7.1 ignores them there
+  as unsafe (probed). An extension's `priority` set there is read, though, and makes
+  git-lfs's clean fail. The read then throws in git's words; nothing runs.
+- Tests:
+  - `driversToTurnOff`'s rules and `programOnPath` directly;
+  - a read with git-lfs off main's PATH (the Dock's PATH, with this run's git first),
+    where a plain status fails;
+  - with real git-lfs (skipped without it): on for a touched file; off with an
+    extension, whose command a plain status runs; off with a storage folder, which
+    stays unwritten.
+
+**Other plain reads (M2):**
+- teamChanges' migration-folder detection runs its `ls-files -z` through guardedGit.
+- Its test plants `core.fsmonitor` in the room's clone. It caught `git fetch` too: a
+  fetch reads the index (for submodules), and reading it runs fsmonitor.
+  - `fetchOrigin` (a room's background fetch, and reserve_migration_number's) now runs
+    with `OWN_WRITE_ENV`: fsmonitor and the pager off, and no hooks.
+  - Source Control's fetch runs with `WRITE_ENV`, as its pull already did.
+- The rest of `src/main` was swept. Each other plain git reads neither the index nor
+  the working tree (rev-parse, for-each-ref, ls-tree, merge-base, rev-list, cat-file,
+  commit-to-commit diffs, `show` of a blob), or is listed under Left.
+
+**{diff}'s ceiling (M3):** `shapeDiff` redacts the raw diff's whole lines within
+`DIFF_REDACT_CHARS`, cutting at the last line break before it.
+- A secret's line cut in two might no longer read as one, and its first half would go
+  through: a quoted value with no closing quote matches nothing.
+- The cut is flagged whenever anything of the diff is left out. Before, the rest past
+  the ceiling went unflagged when the redacted part fit in `DIFF_CHARS`.
+- A first line longer than the ceiling leaves only the note.
+- The test puts a fake `DB_PASSWORD="…"` line across the ceiling, after a token that
+  redaction shrinks to a word.
+
+**Wider redaction bounds (L1):**
+- Bounds raised: secret names to 256, JWT segments to 65,536, a URL's user to 1,024
+  and its password to 16,384.
+- A name may start after `--` (a flag's), so a run of `a--a--…` starts one at every
+  third character. With 256 that run took 128 ms. So a name now ends before `--`, and
+  no run is read from more than one start.
+- The timing tests gained runs for each of these:
+  - `a--`;
+  - URL beginnings with long credentials;
+  - 84-character words with no signature;
+  - lines of a key's width, two at a time.
+
+  Seen: 1 to 15 ms for each 400 KB run (the `a--` run was 128 ms before names ended
+  at `--`).
+
+**Snapshots run no hooks (L2):** `OWN_WRITE_ENV` (`WRITE_ENV` with
+`core.hooksPath=/dev/null`) goes on every git of a snapshot's throwaway index
+(`withIndex`) and on its `update-ref`s (taking one, and dropping a session's). Source
+Control's stage and commit keep their hooks: the writes test shows stage runs
+post-index-change and commit runs reference-transaction, while snapshots run neither.
+
+**Redaction gaps (L3):**
+- PowerShell's `$env:NAME = "…"`. `$env:` was read as the name `env`, whose value was
+  the real name. Now `ASSIGNMENT_RE` starts no name at `$env:`, so the one after it is
+  read.
+- Azure DevOps' 84-character tokens: `[A-Za-z0-9]{76}AZDO[A-Za-z0-9]{4}`, after
+  Microsoft Purview's definition and its example. They sit beside the 52-character
+  `[a-z2-7]{52}`.
+- A key's END line in a diff (`+-----END …`, `------END …`), and its lines before it
+  starting with `+` or `-`.
+- A run of a key's lines with neither BEGIN nor END (a hunk from a key's middle): three
+  or more lines each exactly 64 base64 characters wide (PEM, PGP) or 70 (OpenSSH),
+  after a diff's `+`, `-` or space, plus a shorter last line.
+  - Each line is one width, so a run is read once.
+  - A certificate's body is redacted too.
+  - Known gap: fewer than three such lines, or a key wrapped at another width, goes
+    through.
+
+**Overlaps say what they couldn't read (L4):**
+- `overlaps:get` and `overlaps:changed` give an `OverlapReport`:
+  - `bySession`, as before;
+  - `unread`, which gives each session how many live worktrees of its repository
+    (its own included) couldn't be read.
+- `rereadWorktrees` and `overlapReport` (conflicts.ts) do the work index.ts did inline.
+  - A folder that fails is kept as unread, and read again on the next pass.
+  - Its failure is logged when it starts or changes, naming the folder. Before, it was
+    logged every two minutes.
+- The pane's chips show `overlaps: N unread` beside the overlap chip. The stub's
+  `?overlapsUnread` shows it.
+
+**Checked:** each guard was reverted on its own, 26 in all, and a test failed for each:
+- the read overrides: hooksPath, `GIT_OPTIONAL_LOCKS`;
+- git-lfs: the extension and storage rule, the PATH check, the listing's `lfs.` keys,
+  the `lfs.repositoryformatversion` exception, relative PATH entries;
+- the snapshot's index and its update-ref, `fetchOrigin`, Source Control's fetch,
+  teamChanges' `ls-files`;
+- `shapeDiff`'s cut at a line's end, and its flag for the rest;
+- each redaction change: the diff prefix on END lines and on key lines, the key-body
+  run and its run to the text's end, `$env:`, names to 256, names ending at `--`, JWT
+  segments, URL credentials, the 84-character token;
+- overlaps: logged once, unread kept.
+
+**Left:**
+- **Network gits run what the config names, by design**: core.sshCommand, credential
+  helpers, `url.*.insteadOf`. Of them:
+  - Worktree creation's fetches, take-over's fetches and a repo artifact's fetch still
+    run plain, so core.fsmonitor runs for each and reference-transaction for the refs
+    they move.
+  - Pushes run pre-push. Take-over's backup push does so on purpose (a secret scanner
+    sees the snapshot).
+- **Take-over's own refs** (`update-ref` of room backups and pins) run
+  reference-transaction hooks.
+- **A guarded diff** still takes `index.lock` for its refresh (see H1).
+- **A test copy's checkout and apply** run in the fresh clone, whose config is its own.
+
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the
   round limit, starting B, reconciling on start (section 3).

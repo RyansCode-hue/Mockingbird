@@ -134,7 +134,7 @@ export async function scmPull(root: string): Promise<void> {
 
 /** Update the remote branches (what ↑/↓ and the graph compare against), dropping deleted ones. */
 export async function scmFetch(root: string): Promise<void> {
-  await git(root, ["fetch", "--prune", "-q"]);
+  await git(root, ["fetch", "--prune", "-q"], { env: WRITE_ENV });
 }
 
 const SEP = "\x1f";

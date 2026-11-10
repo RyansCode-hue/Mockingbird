@@ -30,12 +30,18 @@ export const REDACTED = "[redacted]";
 
 /** A PEM private key or a PGP private key block, to its END line or the end of the text when that was cut off. */
 const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----|$)/g;
-/** A key's END line, for one whose BEGIN line was cut off (redactKeyEnds). */
-const KEY_END_LINE_RE = /^[ \t]*-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/gm;
-/** A line of a key's body: base64, nothing else. */
-const KEY_LINE_RE = /^[ \t]*[A-Za-z0-9+/=]+[ \t]*\r?$/;
+/** A key's END line, for one whose BEGIN line was cut off (redactKeyEnds): a diff's `+` or `-` before it too. */
+const KEY_END_LINE_RE = /^[+-]?[ \t]*-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/gm;
+/** A line of a key's body: base64, nothing else, after a diff's `+` or `-`. */
+const KEY_LINE_RE = /^[+-]?[ \t]*[A-Za-z0-9+/=]+[ \t]*\r?$/;
 /** How far back from an END line a key's body is looked for: more lines than any key has. */
 const KEY_LINES_MAX = 200;
+/**
+ * A key's body with neither its BEGIN nor its END line (a diff's hunk from a key's middle): three or more lines in a row
+ * each exactly as wide as a PEM or PGP key's (64 base64 characters) or an OpenSSH key's (70), after a diff's `+`, `-`
+ * or space, and a shorter last line. Each line is one width, so a run is read once; a certificate's body reads as one.
+ */
+const KEY_BODY_RE = /^(?:[+-]?[ \t]*[A-Za-z0-9+/]{64}(?:[A-Za-z0-9+/]{6})?[ \t]*(?:\r?\n|\r?$)){3,}(?:[+-]?[ \t]*[A-Za-z0-9+/]{1,69}={0,2}[ \t]*\r?$)?/gm;
 /** A signed URL's signature: Azure's SAS `sig`, AWS's and Google's presigned `X-*-Signature`. */
 const URL_SIGNATURE_RE = /([?&](?:sig|x-amz-signature|x-goog-signature)=)[^&\s"'`#<>]+/gi;
 
@@ -50,11 +56,12 @@ const TOKEN_RES: readonly RegExp[] = [
   /\bglpat-[A-Za-z0-9_-]{20,}/g, // GitLab
   /\bnpm_[A-Za-z0-9]{36}/g,
   /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/g, // Stripe
-  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,8192}\.eyJ[A-Za-z0-9_-]{8,8192}\.[A-Za-z0-9_-]{8,}/g, // JWTs
+  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,65536}\.eyJ[A-Za-z0-9_-]{8,65536}\.[A-Za-z0-9_-]{8,}/g, // JWTs
   /\b[a-z2-7]{52}\b/g, // Azure DevOps personal access tokens
+  /(?<![A-Za-z0-9])[A-Za-z0-9]{76}AZDO[A-Za-z0-9]{4}(?![A-Za-z0-9])/g, // and their 84-character format, signed AZDO
 ];
 
-const URL_CREDENTIALS_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,30}:\/\/[^\s/:@]{1,256}:)[^\s/@]{1,512}@/gi;
+const URL_CREDENTIALS_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,30}:\/\/[^\s/:@]{1,1024}:)[^\s/@]{1,16384}@/gi;
 const AUTH_HEADER_RE = /\b(Bearer|Basic)[ \t]+[A-Za-z0-9._~+/-]{12,}=*/gi;
 
 /**
@@ -87,11 +94,13 @@ function redactKeyEnds(text: string, hit: () => void): string {
  */
 const SECRET_NAME_RE = /passw(?:or)?d|passphrase|secret|token|api[_-]?key|access[_-]?key|account[_-]?key|access[_-]?signature|private[_-]?key|credential|auth[_-]?key|(?:^|[_.-])(?:pat|pwd)(?:$|[_.-])/i;
 /**
- * `name = value`, `name: value`, `"name": "value"`, `--name=value`: not `==`, `=>`, `!=`. A name starts where a word
- * does (not after a dot, or a hyphen inside a word: `a.b-c` is one name, read from its start), so a run of name
- * characters is tried from its start alone, and at most 80 of them.
+ * `name = value`, `name: value`, `"name": "value"`, `--name=value`, PowerShell's `$env:NAME = value`: not `==`, `=>`,
+ * `!=`. A name starts where a word does (not after a dot, or a hyphen inside a word: `a.b-c` is one name, read from its
+ * start), so a run of name characters is tried from its start alone, and at most 256 of them. A name may start after
+ * `--` (a flag), so it ends before one: no run is read from more than one start. `$env:` is no name of its own, so the
+ * name after it is read.
  */
-const ASSIGNMENT_RE = /(["']?)(?<![\w.]|[\w.]-)([A-Za-z_][\w.-]{0,80})\1([ \t]{0,40}(?::|=(?![=>]))[ \t]{0,40})("[^"\n]*"|'[^'\n]*'|[^\s"'`,;&)}[\]]+)/g;
+const ASSIGNMENT_RE = /(["']?)(?<![\w.]|[\w.]-)(?!(?<=\$)[Ee][Nn][Vv]:)([A-Za-z_](?:[\w.]|-(?!-)){0,255})\1([ \t]{0,40}(?::|=(?![=>]))[ \t]{0,40})("[^"\n]*"|'[^'\n]*'|[^\s"'`,;&)}[\]]+)/g;
 
 /**
  * Whether `value`, set on a secret-looking `name`, looks like the secret itself rather than code that reads one: an
@@ -109,7 +118,8 @@ function secretValue(name: string, value: string): boolean {
 }
 
 /**
- * `text` with what looks like a secret replaced: private keys (one cut off before its BEGIN line too), tokens known by
+ * `text` with what looks like a secret replaced: private keys (one cut off before its BEGIN line too, and a run of a
+ * key's lines with neither its BEGIN nor its END), tokens known by
  * their shape, credentials in URLs and Authorization headers, signed URLs' signatures, and values set on
  * secret-looking names (a connection string's AccountKey and SharedAccessKey among them). `count` says how many, for
  * the flag or the note that goes with it. It's a net: a secret of no known shape, under a name that doesn't say so,
@@ -119,6 +129,7 @@ export function redactSecrets(text: string): { text: string; count: number } {
   let count = 0;
   const hit = (to: string) => () => (count++, to);
   let out = redactKeyEnds(text.replace(PRIVATE_KEY_RE, hit("[redacted: a private key]")), () => count++);
+  out = out.replace(KEY_BODY_RE, (m) => (count++, `[redacted: lines that look like a key]${m.endsWith("\n") ? "\n" : ""}`));
   for (const re of TOKEN_RES) out = out.replace(re, hit(REDACTED));
   out = out.replace(URL_SIGNATURE_RE, (_m, head: string) => (count++, `${head}${REDACTED}`));
   out = out.replace(URL_CREDENTIALS_RE, (_m, head: string) => (count++, `${head}${REDACTED}@`));
@@ -504,19 +515,22 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  */
 export const DIFF_REDACT_CHARS = 4 * DIFF_CHARS;
 
-/** A diff as {diff} carries it: its first DIFF_REDACT_CHARS redacted, then cut at DIFF_CHARS, saying where and of how much. */
+/**
+ * A diff as {diff} carries it: its whole lines within DIFF_REDACT_CHARS redacted, then cut at DIFF_CHARS, saying where
+ * and of how much whenever anything of the diff is left out. The redacted part ends at a line's end: a secret's line cut
+ * in two might no longer read as one, and its first half would go through.
+ */
 export function shapeDiff(raw: string): Expansion {
-  const r = redactSecrets(raw.slice(0, DIFF_REDACT_CHARS));
-  const flags: string[] = [];
-  let text = r.text.trimEnd();
-  if (!text) text = "(No changes.)";
-  else if (text.length > DIFF_CHARS) {
-    const at = fileAt(text, DIFF_CHARS);
-    const where = `${nOf(DIFF_CHARS)} of ${nOf(raw.trimEnd().length)} characters${at ? `, in ${at}` : ""}`;
-    flags.push(`The diff was cut at ${where}.`);
-    text = `${text.slice(0, DIFF_CHARS)}\n[… cut at ${where}]`;
-  }
-  return { text, flags, redacted: r.count };
+  const whole = raw.trimEnd();
+  const read = whole.length > DIFF_REDACT_CHARS ? whole.slice(0, whole.lastIndexOf("\n", DIFF_REDACT_CHARS - 1) + 1) : whole;
+  const r = redactSecrets(read);
+  const text = r.text.trimEnd();
+  if (read.length === whole.length && text.length <= DIFF_CHARS) return { text: text || "(No changes.)", flags: [], redacted: r.count };
+  const kept = Math.min(text.length, DIFF_CHARS);
+  const at = fileAt(text, kept);
+  const where = `${nOf(kept)} of ${nOf(whole.length)} characters${at ? `, in ${at}` : ""}`;
+  // a first line longer than the ceiling leaves nothing redacted to carry, only the note
+  return { text: [text.slice(0, kept), `[… cut at ${where}]`].filter(Boolean).join("\n"), flags: [`The diff was cut at ${where}.`], redacted: r.count };
 }
 
 /**

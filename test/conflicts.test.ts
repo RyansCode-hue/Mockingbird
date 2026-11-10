@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { changedFiles, overlaps, type WorktreeChanges } from "../src/main/conflicts";
+import { changedFiles, overlapReport, overlaps, rereadWorktrees, type WorktreeChanges, type WorktreeReads } from "../src/main/conflicts";
 import { baseRef } from "../src/main/files";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
@@ -15,6 +15,42 @@ describe("overlapping changes between worktrees", () => {
   });
   it("leaves out sessions sharing a folder, other repositories, and worktrees with nothing in common", () => {
     expect(overlaps([wt("a", "/r", "/r", ["x"]), wt("b", "/r", "/r", ["x"]), wt("c", "/other", "/other", ["x"]), wt("d", "/r", "/r/wt/d", ["y"])])).toEqual({});
+  });
+});
+
+describe("worktrees overlaps couldn't read", () => {
+  it("are counted for every session of their repository, never read as having no changes, and logged once each", async () => {
+    const reads: WorktreeReads = { changes: new Map(), unread: new Map() };
+    const logs: string[] = [];
+    const log = (context: string, err: unknown) => logs.push(`${context}: ${(err as Error).message}`);
+    let broken = true;
+    const read = async (cwd: string) => {
+      if (cwd === "/r/wt/b" && broken) throw new Error("git status: fatal: not a git repository");
+      return { repo: cwd.startsWith("/r") ? "/r" : "/o", branch: null, files: ["x.ts"] };
+    };
+    const live = [
+      { sessionId: "a", title: "a", repoPath: "/r", cwd: "/r/wt/a" },
+      { sessionId: "b", title: "b", repoPath: "/r", cwd: "/r/wt/b" },
+      { sessionId: "b2", title: "b2", repoPath: "/r", cwd: "/r/wt/b" },
+      { sessionId: "o", title: "o", repoPath: "/o", cwd: "/o" },
+    ];
+    const cwds = [...new Set(live.map((s) => s.cwd))];
+    await rereadWorktrees(cwds, reads, new Set(), log, read);
+    expect(overlapReport(live, reads, [])).toEqual({ bySession: {}, unread: { a: 1, b: 1, b2: 1 } });
+    expect(logs).toEqual(["overlaps: /r/wt/b's changed files couldn't be read, so overlaps with it are unknown: git status: fatal: not a git repository"]);
+    // read again on the next pass, its failure not logged again while it's the same
+    await rereadWorktrees(cwds, reads, new Set(), log, read);
+    expect(logs).toHaveLength(1);
+    broken = false;
+    await rereadWorktrees(cwds, reads, new Set(), log, read);
+    expect(overlapReport(live, reads, [])).toEqual({
+      bySession: { a: [{ other: "b", otherTitle: "b", otherBranch: null, files: ["x.ts"] }, { other: "b2", otherTitle: "b2", otherBranch: null, files: ["x.ts"] }], b: [{ other: "a", otherTitle: "a", otherBranch: null, files: ["x.ts"] }], b2: [{ other: "a", otherTitle: "a", otherBranch: null, files: ["x.ts"] }] },
+      unread: {},
+    });
+    // a folder no longer live is forgotten, read or not
+    reads.unread.set("/gone", "x");
+    await rereadWorktrees(["/o"], reads, new Set(), log, read);
+    expect([...reads.changes.keys(), ...reads.unread.keys()]).toEqual(["/o"]);
   });
 });
 

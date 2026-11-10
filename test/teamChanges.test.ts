@@ -334,8 +334,15 @@ describe("migration number reservations", () => {
     write(main, { "other/migrations/001_a.sql": "--\n", "other/migrations/002_b.sql": "--\n" });
     git(main, "add", "-A");
     git(main, "commit", "-qm", "other");
+    // the fetch and detection's file list each read the clone's index: nothing its config names runs for them
+    const ran = path.join(tempDir("planted"), "fsmonitor-ran");
+    const fsmonitor = path.join(path.dirname(ran), "fsmonitor.sh");
+    fs.writeFileSync(fsmonitor, `#!/bin/sh\ntouch '${ran}'\nexit 1\n`, { mode: 0o755 });
+    git(main, "config", "core.fsmonitor", fsmonitor);
     expect(await r.changes.toolCall(ryanS, "reserve_migration_number", {})).toEqual({ error: 'This repository has 2 migration folders: "db/migrations", "other/migrations". Call again with folder set to the one you\'re adding a migration to.' });
     expect(ok(await r.changes.toolCall(ryanS, "reserve_migration_number", { folder: "other/migrations" }))).toMatch(/^Reserved migration 003 in "other\/migrations"/);
+    expect(fs.existsSync(ran), "a git in the clone ran its core.fsmonitor").toBe(false);
+    git(main, "config", "--unset", "core.fsmonitor");
     const plain = makeRepo({ "README.md": "x\n" });
     git(plain, "remote", "add", "origin", path.join(tempDir("nowhere"), "x.git"));
     const loner = { ...ryanS, id: "r9", cwd: plain, repoPath: plain };

@@ -3,6 +3,7 @@ import * as path from "path";
 import { git, originUrl } from "../git";
 import { baseRef } from "../files";
 import { mainCheckout } from "../runProfile";
+import { guardedGit } from "../safeGit";
 import { changedFiles, type TeammateChanges } from "../conflicts";
 import { isSecretFileName } from "../secrets";
 import { isMissing } from "../fileOps";
@@ -437,7 +438,9 @@ export class TeamChanges {
     let entry: { at: number; detected: MigrationFolder[]; problem?: string };
     try {
       const base = await baseRef(clone);
-      const [onBase, here] = await Promise.all([base ? git(clone, ["ls-tree", "-r", "--name-only", "-z", base], { trim: false }) : Promise.resolve(""), git(clone, ["ls-files", "-z"], { trim: false })]);
+      // any ls-files reads the index, which runs core.fsmonitor: the clone's config is a session's to write
+      const g = await guardedGit(clone);
+      const [onBase, here] = await Promise.all([base ? git(clone, ["ls-tree", "-r", "--name-only", "-z", base], { trim: false }) : Promise.resolve(""), g.run(["ls-files", "-z"], { trim: false })]);
       entry = { at: Date.now(), detected: detectMigrationFolders([...new Set([...split(onBase), ...split(here)])]) };
     } catch (err) {
       entry = { at: Date.now(), detected: hit?.detected ?? [], problem: this.d.log(`team changes: finding the migration folders in ${clone}`, err) };

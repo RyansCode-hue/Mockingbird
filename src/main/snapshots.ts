@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { parseNameStatus } from "./files";
 import { git, headCommit, repoTop } from "./git";
-import { guardedGit, WRITE_ENV } from "./safeGit";
+import { guardedGit, OWN_WRITE_ENV } from "./safeGit";
 import { SNAPSHOT_MAX_FILE_BYTES, type TurnChange, type TurnSnapshot } from "../shared/types";
 
 /**
@@ -31,11 +31,11 @@ const safeId = (id: string) => {
   return id;
 };
 
-/** A throwaway index, removed once `fn` is done with it. Its gits write, so they run with WRITE_ENV. */
+/** A throwaway index, removed once `fn` is done with it. Its gits write, on Mockingbird's own, so they run with OWN_WRITE_ENV. */
 async function withIndex<T>(fn: (env: Record<string, string>) => Promise<T>): Promise<T> {
   const file = path.join(os.tmpdir(), `mb-snapshot-${crypto.randomBytes(6).toString("hex")}.index`);
   try {
-    return await fn({ ...WRITE_ENV, GIT_INDEX_FILE: file, ...IDENTITY });
+    return await fn({ ...OWN_WRITE_ENV, GIT_INDEX_FILE: file, ...IDENTITY });
   } finally {
     await fs.promises.rm(file, { force: true });
   }
@@ -218,8 +218,8 @@ async function snapshotNow(cwd: string, sessionId: string, prompt: string): Prom
     const parent = latest?.sha ?? (await headCommit(top));
     const sha = await git(top, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", message], { env });
     const n = (latest?.n ?? 0) + 1;
-    await git(top, ["update-ref", `${REF_ROOT}/${id}/${n}`, sha]);
-    for (const old of [{ n, sha }, ...prior].slice(KEEP)) await git(top, ["update-ref", "-d", `${REF_ROOT}/${id}/${old.n}`]);
+    await git(top, ["update-ref", `${REF_ROOT}/${id}/${n}`, sha], { env: OWN_WRITE_ENV });
+    for (const old of [{ n, sha }, ...prior].slice(KEEP)) await git(top, ["update-ref", "-d", `${REF_ROOT}/${id}/${old.n}`], { env: OWN_WRITE_ENV });
     return { n, sha, at: Date.now(), prompt: prompt.trim(), skipped, beforeUndo: prompt === BEFORE_UNDO };
   });
 }
@@ -298,5 +298,5 @@ async function pruneEmptyDirs(top: string, dir: string): Promise<void> {
 export async function dropSnapshots(cwd: string, sessionId: string): Promise<void> {
   const top = await repoTop(cwd);
   if (!top) return;
-  for (const s of await listSnapshots(top, sessionId)) await git(top, ["update-ref", "-d", `${REF_ROOT}/${safeId(sessionId)}/${s.n}`]);
+  for (const s of await listSnapshots(top, sessionId)) await git(top, ["update-ref", "-d", `${REF_ROOT}/${safeId(sessionId)}/${s.n}`], { env: OWN_WRITE_ENV });
 }

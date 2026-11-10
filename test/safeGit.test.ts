@@ -1,7 +1,7 @@
 import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { commitContext } from "../src/main/commitMessage";
 import { changedFiles } from "../src/main/conflicts";
 import { refreshBrief } from "../src/main/contextActions";
@@ -10,9 +10,10 @@ import { listAllFiles } from "../src/main/find";
 import { repoState } from "../src/main/handoff";
 import { prDescriptionPrompt } from "../src/main/pullRequests";
 import { ignoredCandidates } from "../src/main/runDraft";
-import { driversToTurnOff, guardedGit } from "../src/main/safeGit";
-import { scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmGraph, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
-import { skippedIn, snapshotCommit } from "../src/main/snapshots";
+import { driversToTurnOff, guardedGit, programOnPath } from "../src/main/safeGit";
+import { scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
+import { dropSnapshots, skippedIn, snapshotCommit, takeSnapshot } from "../src/main/snapshots";
+import { fetchOrigin } from "../src/main/team/branchFiles";
 import { excludeInRepo } from "../src/main/team/claims";
 import { makeTestCopy } from "../src/main/testCopy";
 import { worktreeState } from "../src/main/worktrees";
@@ -27,7 +28,7 @@ describe("git run through guardedGit", { timeout: 300_000 }, () => {
     // each does run for a plain git, so the markers prove something (a pager needs a terminal, so it's left to the env)
     const plain = spawnSync("git", ["-C", h.repo, "diff", "dev"], { encoding: "utf8" });
     expect(plain.status, plain.stderr).toBe(0);
-    expect(h.ran()).toEqual(["fsmonitor", "plain", "equals", "empty", "external"]);
+    expect(h.ran()).toEqual(["fsmonitor", "plain", "equals", "empty", "external", "hook"]);
     h.clear();
     expect(spawnSync("git", ["-C", h.repo, "diff", "--no-ext-diff", "dev"], { encoding: "utf8" }).status).toBe(0);
     expect(h.ran()).toContain("textconv");
@@ -40,6 +41,35 @@ describe("git run through guardedGit", { timeout: 300_000 }, () => {
     const diff = await g.diff(["dev"]);
     for (const line of ["+two", "+bea", "+sea", "+dea"]) expect(diff).toContain(line);
     expect(await g.status(["--porcelain"], { trim: false })).toMatch(/^ M a\.txt$/m);
+    expect(h.ran()).toEqual([]);
+  });
+
+  it("runs no hook, and leaves the index to the agent's own git: a status takes no lock and writes nothing", async () => {
+    const h = hostileRepo();
+    const index = path.join(h.repo, ".git", "index");
+    const stamp = () => {
+      const st = fs.statSync(index);
+      return [st.ino, st.mtimeMs];
+    };
+    // a plain status and diff each write the index for a file merely touched, running post-index-change from the
+    // working tree's folder core.hooksPath names
+    let before = stamp();
+    expect(spawnSync("git", ["-C", h.repo, "status", "--porcelain"], { encoding: "utf8" }).status).toBe(0);
+    expect(h.ran()).toContain("hook");
+    expect(stamp()).not.toEqual(before);
+    h.clear();
+    h.stale();
+    expect(spawnSync("git", ["-C", h.repo, "diff"], { encoding: "utf8" }).status).toBe(0);
+    expect(h.ran()).toContain("hook");
+    h.clear();
+
+    h.stale();
+    const g = await guardedGit(h.repo);
+    before = stamp();
+    expect(await g.status(["--porcelain"], { trim: false })).toMatch(/^ M a\.txt$/m);
+    expect(stamp(), "the status rewrote the index, taking index.lock to do it").toEqual(before);
+    // a diff still refreshes the index when it can, with no hook run
+    expect(await g.diff([])).toContain("+two");
     expect(h.ran()).toEqual([]);
   });
 
@@ -76,7 +106,18 @@ describe("git run through guardedGit", { timeout: 300_000 }, () => {
     const h = hostileRepo();
     const g = await guardedGit(h.repo);
     fs.appendFileSync(path.join(h.repo, ".git", "config"), `[filter "late"]\n\tclean = cat\n`);
-    await expect(g.diff(["dev"])).rejects.toThrow(/filter drivers changed while it ran, so a driver Mockingbird hadn't turned off may have run/);
+    await expect(g.diff(["dev"])).rejects.toThrow(/filter drivers or LFS settings changed while it ran, so a command Mockingbird hadn't turned off may have run/);
+  });
+
+  it("sets it aside when an LFS setting was added, but not for the one git-lfs writes itself on its first run", async () => {
+    const h = hostileRepo();
+    let g = await guardedGit(h.repo);
+    // git-lfs's own clean adds it to a repository that hasn't one, a read's clean included
+    fs.appendFileSync(path.join(h.repo, ".git", "config"), "[lfs]\n\trepositoryformatversion = 0\n");
+    expect(await g.diff(["dev"])).toContain("+two");
+    g = await guardedGit(h.repo);
+    fs.appendFileSync(path.join(h.repo, ".git", "config"), `[lfs "extension.late"]\n\tclean = cat\n`);
+    await expect(g.diff(["dev"])).rejects.toThrow(/filter drivers or LFS settings changed while it ran/);
   });
 
   it("throws when the config can't be read, rather than run with nothing turned off", async () => {
@@ -161,6 +202,10 @@ describe("main-process writes of a session's folder", { timeout: 300_000 }, () =
     git(control.repo, "add", "a.txt");
     expect(control.ran(), "a plain add runs fsmonitor and the file's filter").toEqual(expect.arrayContaining(["fsmonitor", "plain"]));
     const h = hostileRepo();
+    const origin = path.join(tempDir("origin"), "origin.git");
+    git(path.dirname(origin), "clone", "-q", "--bare", h.repo, origin);
+    git(h.repo, "remote", "add", "origin", origin);
+    h.clear();
     const writes: [string, () => Promise<unknown>][] = [
       ["scmStage", () => scmStage(h.repo, ["a.txt"])],
       ["scmUnstage", () => scmUnstage(h.repo, ["a.txt"])],
@@ -168,9 +213,16 @@ describe("main-process writes of a session's folder", { timeout: 300_000 }, () =
       ["scmCommit", () => scmCommit(h.repo, "staged")],
       ["scmDiscard", () => scmDiscard(h.repo, [{ path: "c.bin", untracked: false }], async () => {})],
       ["snapshotCommit", () => snapshotCommit(h.repo, "backup")],
+      ["takeSnapshot", () => takeSnapshot(h.repo, "s1", "a prompt")],
+      ["takeSnapshot again", () => takeSnapshot(h.repo, "s1", "another")],
+      ["dropSnapshots", () => dropSnapshots(h.repo, "s1")],
+      // a fetch reads the index, for submodules: the first makes origin's refs, which runs reference-transaction
+      ["fetchOrigin", () => fetchOrigin(h.repo)],
+      ["scmFetch", () => scmFetch(h.repo)],
     ];
     const ran: [string, string[]][] = [];
     for (const [name, write] of writes) {
+      h.stale();
       await write();
       ran.push([name, [...h.ran()]]);
       h.clear();
@@ -178,7 +230,115 @@ describe("main-process writes of a session's folder", { timeout: 300_000 }, () =
     expect(ran.filter(([, r]) => r.includes("fsmonitor") || r.includes("pager"))).toEqual([]);
     expect(ran.find(([n]) => n === "scmStage")![1]).toContain("plain");
     expect(ran.find(([n]) => n === "snapshotCommit")![1]).toContain("empty");
+    // the user's own stage and commit keep their hooks; what Mockingbird writes on its own (a turn's snapshot, a room's
+    // fetch) runs none
+    expect(ran.find(([n]) => n === "scmStage")![1]).toContain("hook");
+    expect(ran.find(([n]) => n === "scmCommit")![1]).toContain("refhook");
+    expect(ran.filter(([n, r]) => /snapshot|fetchOrigin/i.test(n) && (r.includes("hook") || r.includes("refhook")))).toEqual([]);
+    expect(git(h.repo, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/")).toContain("refs/remotes/origin/feature");
+    expect(git(h.repo, "for-each-ref", "refs/mockingbird/")).toBe("");
     expect(git(h.repo, "show", "HEAD:a.txt")).toBe("two");
+  });
+});
+
+/** The filter settings `git lfs install` makes. */
+const LFS_INSTALL: [string, string][] = [
+  ["filter.lfs.clean", "git-lfs clean -- %f"],
+  ["filter.lfs.smudge", "git-lfs smudge -- %f"],
+  ["filter.lfs.process", "git-lfs filter-process"],
+  ["filter.lfs.required", "true"],
+];
+
+/** A repository whose big.bin is under git-lfs's driver, set as `git lfs install` sets it once `configure` is done. */
+function lfsRepo(configureFirst: boolean): string {
+  const repo = makeRepo({ "a.txt": "a\n" });
+  const configure = () => {
+    for (const [k, v] of LFS_INSTALL) git(repo, "config", k, v);
+  };
+  if (configureFirst) configure();
+  write(repo, { ".gitattributes": "*.bin filter=lfs diff=lfs merge=lfs -text\n", "big.bin": "binary one\n" });
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "lfs");
+  if (!configureFirst) configure();
+  return repo;
+}
+
+/** A file dated anew, its content the same: a status reads it through its filter to tell whether it changed. */
+let dated = 1_600_000_000;
+const touch = (file: string) => {
+  dated += 10;
+  fs.utimesSync(file, dated, dated);
+};
+
+describe("git-lfs's own driver", { timeout: 300_000 }, () => {
+  // what an app opened from the Dock has, with this run's git first
+  const dockPath = (bin: string) => `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`;
+  it.skipIf(programOnPath("git-lfs", "/usr/bin:/bin:/usr/sbin:/sbin"))("is turned off when git-lfs isn't on main's PATH, so a read doesn't fail for want of it", async () => {
+    const repo = lfsRepo(false);
+    write(repo, { "big.bin": "binary two\n" });
+    const bin = tempDir("bin");
+    const realGit = (process.env.PATH ?? "").split(":").map((d) => path.join(d, "git")).find((f) => path.isAbsolute(f) && fs.existsSync(f));
+    fs.symlinkSync(realGit!, path.join(bin, "git"));
+    vi.stubEnv("PATH", dockPath(bin));
+    try {
+      const plain = spawnSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" });
+      expect(plain.status).not.toBe(0);
+      expect(plain.stderr).toMatch(/git-lfs/);
+      const g = await guardedGit(repo);
+      expect(await g.status(["--porcelain"], { trim: false })).toBe(" M big.bin\n");
+      expect(await g.diff([])).toContain("+binary two");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  // needs git-lfs itself: what's under test is what it runs
+  it.skipIf(!programOnPath("git-lfs", process.env.PATH))("stays on only with no lfs.extension or lfs.storage set, so neither's command or folder is used", async () => {
+    const repo = lfsRepo(true);
+    const big = path.join(repo, "big.bin");
+    expect(git(repo, "cat-file", "-p", "HEAD:big.bin")).toMatch(/^version https:\/\/git-lfs/);
+    touch(big);
+    const g = await guardedGit(repo);
+    expect(await g.status(["--porcelain"]), "on: a file merely touched reads as its pointer, unchanged").toBe("");
+
+    const marker = path.join(path.dirname(repo), "extension-ran");
+    const ext = path.join(path.dirname(repo), "extension.sh");
+    fs.writeFileSync(ext, `#!/bin/sh\ntouch '${marker}'\ncat\n`, { mode: 0o755 });
+    git(repo, "config", "lfs.extension.planted.clean", `${ext} %f`);
+    git(repo, "config", "lfs.extension.planted.smudge", `${ext} %f`);
+    git(repo, "config", "lfs.extension.planted.priority", "0");
+    touch(big);
+    expect(spawnSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }).status).toBe(0);
+    expect(fs.existsSync(marker), "git-lfs runs an extension's clean for a plain status").toBe(true);
+    fs.rmSync(marker);
+    touch(big);
+    expect(await (await guardedGit(repo)).status(["--porcelain"]), "off: the file is read as it is").toBe("M big.bin");
+    expect(fs.existsSync(marker)).toBe(false);
+
+    git(repo, "config", "--remove-section", "lfs.extension.planted");
+    const elsewhere = path.join(path.dirname(repo), "elsewhere");
+    git(repo, "config", "lfs.storage", elsewhere);
+    write(repo, { "big.bin": "binary two\n" });
+    expect(await (await guardedGit(repo)).status(["--porcelain"])).toBe("M big.bin");
+    expect(fs.existsSync(elsewhere), "git-lfs's clean writes its objects where lfs.storage says").toBe(false);
+  });
+});
+
+describe("where a program is found", () => {
+  it("is where sh finds it, from absolute folders alone: one in the repository's own folder isn't git-lfs", () => {
+    const a = tempDir("bin-a");
+    const b = tempDir("bin-b");
+    fs.writeFileSync(path.join(a, "tool"), "#!/bin/sh\n", { mode: 0o644 }); // not runnable: looked past
+    fs.mkdirSync(path.join(a, "other"));
+    fs.writeFileSync(path.join(b, "tool"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(programOnPath("tool", `${a}:${b}`)).toBe(true);
+    expect(programOnPath("tool", `${b}:.`)).toBe(true);
+    expect(programOnPath("tool", a)).toBe(false);
+    expect(programOnPath("other", a)).toBe(false);
+    expect(programOnPath("tool", `.:${b}`)).toBe(false);
+    expect(programOnPath("tool", `:${b}`)).toBe(false);
+    expect(programOnPath("tool", `bin:${b}`)).toBe(false);
+    expect(programOnPath("tool", undefined)).toBe(false);
   });
 });
 
@@ -191,18 +351,27 @@ describe("the drivers turned off", () => {
     ["filter.lfs.required", "true"],
   ] as [string, string][];
   it("are every one the config names, whatever its name holds", () => {
-    expect(driversToTurnOff(listing(["filter.plain.clean", "x"], ["filter.x=y.clean", "x"], ["filter..clean", "x"], ["filter.a.b.smudge", "x"], ["filter.Caps.process", "x"]))).toEqual(["plain", "x=y", "", "a.b", "Caps"]);
+    expect(driversToTurnOff(listing(["filter.plain.clean", "x"], ["filter.x=y.clean", "x"], ["filter..clean", "x"], ["filter.a.b.smudge", "x"], ["filter.Caps.process", "x"]), true)).toEqual(["plain", "x=y", "", "a.b", "Caps"]);
   });
   it("leave git-lfs's own on, as LFS repositories can't be read without it, and nothing that only looks like it", () => {
-    expect(driversToTurnOff(listing(...LFS))).toEqual([]);
-    expect(driversToTurnOff(listing(...LFS, ["filter.lfs.process", "sh -c evil"]))).toEqual(["lfs"]);
-    expect(driversToTurnOff(listing(["filter.lfs.clean", "git-lfs clean -- %f; sh evil.sh"], ...LFS.slice(1)))).toEqual(["lfs"]);
-    expect(driversToTurnOff(listing(["filter.other.clean", "git-lfs clean -- %f"], ["filter.other.smudge", "sh evil.sh"]))).toEqual(["other"]);
-    expect(driversToTurnOff(listing(["filter.lfs.required", "true"]))).toEqual(["lfs"]);
+    expect(driversToTurnOff(listing(...LFS), true)).toEqual([]);
+    expect(driversToTurnOff(listing(...LFS, ["filter.lfs.process", "sh -c evil"]), true)).toEqual(["lfs"]);
+    expect(driversToTurnOff(listing(["filter.lfs.clean", "git-lfs clean -- %f; sh evil.sh"], ...LFS.slice(1)), true)).toEqual(["lfs"]);
+    expect(driversToTurnOff(listing(["filter.other.clean", "git-lfs clean -- %f"], ["filter.other.smudge", "sh evil.sh"]), true)).toEqual(["other"]);
+    expect(driversToTurnOff(listing(["filter.lfs.required", "true"]), true)).toEqual(["lfs"]);
+  });
+  it("turn git-lfs's own off too when git-lfs isn't on main's PATH, or the config names an extension's command or a storage folder", () => {
+    expect(driversToTurnOff(listing(...LFS), false)).toEqual(["lfs"]);
+    expect(driversToTurnOff(listing(...LFS, ["lfs.extension.x.clean", "sh evil.sh"]), true)).toEqual(["lfs"]);
+    expect(driversToTurnOff(listing(["lfs.extension.x.priority", "0"], ...LFS), true)).toEqual(["lfs"]);
+    expect(driversToTurnOff(listing(...LFS, ["lfs.Extension.x.clean", "sh evil.sh"]), true)).toEqual(["lfs"]);
+    expect(driversToTurnOff(listing(...LFS, ["lfs.storage", "/elsewhere"]), true)).toEqual(["lfs"]);
+    // settings that name no command leave it on
+    expect(driversToTurnOff(listing(...LFS, ["lfs.url", "https://lfs.example.invalid"], ["lfs.fetchinclude", "a"], ["lfs.storage.x", "y"]), true)).toEqual([]);
   });
   it("name nothing for a [filter] setting with no driver, and refuse a listing they can't take apart", () => {
-    expect(driversToTurnOff("filter.clean\nx\0")).toEqual([]);
-    expect(driversToTurnOff("")).toEqual([]);
-    expect(() => driversToTurnOff("core.fsmonitor\nx\0")).toThrow(/among the filter settings/);
+    expect(driversToTurnOff("filter.clean\nx\0", true)).toEqual([]);
+    expect(driversToTurnOff("", true)).toEqual([]);
+    expect(() => driversToTurnOff("core.fsmonitor\nx\0", true)).toThrow(/among the filter and LFS settings/);
   });
 });

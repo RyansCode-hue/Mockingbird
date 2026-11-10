@@ -1543,7 +1543,14 @@ const api: Record<string, (...a: any[]) => any> = {
     cwd.includes("5101")
       ? { branch: "5101-orgDropdowns", pr: { id: 88, url: "https://dev.azure.com/acme/Backoffice/_git/backoffice/pullrequest/88", title: "#5101 Org dropdowns remember the last org", base: "dev", state: "approved", conflicts: false, reviews: ["Sam: approved"] }, at: Date.now() }
       : { branch: null, pr: null, at: Date.now() },
-  overlapsGet: async () => (params.has("statusNotes") && params.get("statusNotes") !== "few" ? err("git diff --name-only: fatal: bad object HEAD") : { s1: [{ other: "s5", otherTitle: "Pathways quick view freezes", otherBranch: "5102-quickViewFreeze", files: ["src/org/Dropdown.tsx"] }, { other: `team:${NICK}:5101-lastOrgApi`, otherTitle: "Nick Smith's pushed branch", otherBranch: "5101-lastOrgApi", files: ["src/org/Dropdown.tsx"], teammate: { id: NICK, name: "Nick Smith", roomId: ROOM_5101 } }], s5: [{ other: "s1", otherTitle: "Org dropdowns remember the last org", otherBranch: "5101-orgDropdowns", files: ["src/org/Dropdown.tsx"] }] }),
+  // ?overlapsUnread: s1's and s5's repository has one worktree overlaps couldn't read
+  overlapsGet: async () =>
+    params.has("statusNotes") && params.get("statusNotes") !== "few"
+      ? err("git diff --name-only: fatal: bad object HEAD")
+      : {
+          bySession: { s1: [{ other: "s5", otherTitle: "Pathways quick view freezes", otherBranch: "5102-quickViewFreeze", files: ["src/org/Dropdown.tsx"] }, { other: `team:${NICK}:5101-lastOrgApi`, otherTitle: "Nick Smith's pushed branch", otherBranch: "5101-lastOrgApi", files: ["src/org/Dropdown.tsx"], teammate: { id: NICK, name: "Nick Smith", roomId: ROOM_5101 } }], s5: [{ other: "s1", otherTitle: "Org dropdowns remember the last org", otherBranch: "5101-orgDropdowns", files: ["src/org/Dropdown.tsx"] }] },
+          unread: params.has("overlapsUnread") ? { s1: 1, s5: 1 } : {},
+        },
   healthUpdates: async () => [{ agent: "claude", installed: "2.1.290", sessions: [{ id: "s1", title: "Org dropdowns remember the last org", version: "2.1.289" }] }],
   messagesList: async () => [
     { at: now - 25 * min, from: "s1", fromTitle: "Org dropdowns remember the last org", to: "s2", toTitle: "API: last org per user", text: "The dropdown reads GET /api/users/me/last-org — return { org } or { org: null }.", outcome: "delivered" },

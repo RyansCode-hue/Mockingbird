@@ -55,6 +55,12 @@ describe("redaction", () => {
       `https://acct.blob.core.windows.net/c/f?sv=2022-11-02&ss=b&sp=r&se=2026-12-01&sig=${REDACTED}`,
     ],
     ["a presigned S3 URL's signature", "https://b.s3.amazonaws.com/k?X-Amz-Expires=60&X-Amz-Signature=0a1b2c3d4e5f&x=1", `https://b.s3.amazonaws.com/k?X-Amz-Expires=60&X-Amz-Signature=${REDACTED}&x=1`],
+    ["a PowerShell environment variable", '$env:DB_PASSWORD = "not-a-real-password"', `$env:DB_PASSWORD = "${REDACTED}"`],
+    ["one in PowerShell's other case", "$Env:GITHUB_TOKEN='fake-token-for-a-test'", `$Env:GITHUB_TOKEN='${REDACTED}'`],
+    ["an ADO token's 84-character shape", `pat ${"FAKE".repeat(19)}AZDOfake end`, `pat ${REDACTED} end`],
+    ["a long secret's name", `${"VERY_".repeat(40)}PASSWORD=not-a-real-one`, `${"VERY_".repeat(40)}PASSWORD=${REDACTED}`],
+    ["a JWT with long segments", `eyJ${"a".repeat(20_000)}.eyJ${"b".repeat(20_000)}.${"c".repeat(40)}`, REDACTED],
+    ["long credentials in a URL", `https://${"u".repeat(600)}:${"p".repeat(2000)}@example.invalid/x`, `https://${"u".repeat(600)}:${REDACTED}@example.invalid/x`],
   ])("replaces %s", (_what, text, expected) => {
     const r = redactSecrets(text);
     expect(r.text).toBe(expected);
@@ -82,6 +88,27 @@ describe("redaction", () => {
     expect(redactSecrets(long).text).toBe([...lines(100, "a"), "[redacted: the end of a private key]"].join("\n"));
     const two = [...lines(3, "a"), "-----END PRIVATE KEY-----", ...lines(3, "b"), "-----END PRIVATE KEY-----"].join("\n");
     expect(redactSecrets(two)).toEqual({ text: "[redacted: the end of a private key]\n[redacted: the end of a private key]", count: 2 });
+  });
+
+  it("takes out a key's end in a diff, whose lines start with + or -", () => {
+    const body = ["MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "kqhkiG9w0BAQ=="];
+    const added = ["@@ -0,0 +1,3 @@", ...body.map((l) => `+${l}`), "+-----END RSA PRIVATE KEY-----", " after"].join("\n");
+    expect(redactSecrets(added)).toEqual({ text: "@@ -0,0 +1,3 @@\n[redacted: the end of a private key]\n after", count: 1 });
+    const removed = [...body.map((l) => `-${l}`), "------END PRIVATE KEY-----"].join("\n");
+    expect(redactSecrets(removed)).toEqual({ text: "[redacted: the end of a private key]", count: 1 });
+  });
+
+  it("takes out a run of a key's lines with neither its BEGIN nor its END, keeping what follows on its own line", () => {
+    const line = (i: number, width = 64) => `${"FAKEkeyLINE".repeat(7)}${i}`.slice(-width);
+    const hunk = ["@@ -10,4 +10,4 @@", ` ${line(1)}`, `-${line(2)}`, `+${line(3)}`, ` ${line(4)}`, " Zm9vYmFy==", "next"].join("\n");
+    expect(redactSecrets(hunk)).toEqual({ text: "@@ -10,4 +10,4 @@\n[redacted: lines that look like a key]\nnext", count: 1 });
+    const openssh = [line(1, 70), line(2, 70), line(3, 70)].join("\n");
+    expect(redactSecrets(openssh)).toEqual({ text: "[redacted: lines that look like a key]", count: 1 });
+    // two such lines, or lines of another width, are no key's
+    const two = [line(1), line(2), "x"].join("\n");
+    expect(redactSecrets(two)).toEqual({ text: two, count: 0 });
+    const wide = [line(1, 65), line(2, 65), line(3, 65)].join("\n");
+    expect(redactSecrets(wide)).toEqual({ text: wide, count: 0 });
   });
 
   it("takes a command line's flag", () => {
@@ -136,6 +163,10 @@ describe("what redaction costs", () => {
     ["one long word", "a".repeat(400_000)],
     ["END lines with nothing before them", "-----END PRIVATE KEY-----\n".repeat(15_000)],
     ["names and colons with no value", "ab: :".repeat(80_000)],
+    ["names each after a double hyphen, as a flag's is", "a--".repeat(133_000)],
+    ["URL beginnings with long credentials", `a://${"u".repeat(900)}:${"p".repeat(9000)} `.repeat(40)],
+    ["84-character words with no signature", `${"x".repeat(83)} `.repeat(4_800)],
+    ["lines a key's width, two at a time", `${"QUJD".repeat(16)}\n${"QUJD".repeat(16)}\nx\n`.repeat(3_000)],
   ])("reads 400 KB of %s in under 100 ms", (_what, text) => {
     redactSecrets(text.slice(0, 100));
     expect(ms(() => redactSecrets(text))).toBeLessThan(100);
@@ -151,6 +182,30 @@ describe("what redaction costs", () => {
     expect(r.text).not.toContain("API_KEY");
     expect(DIFF_REDACT_CHARS).toBeGreaterThan(DIFF_CHARS);
     expect(shapeDiff(`API_KEY=${"z".repeat(30)}\n`).redacted).toBe(1);
+  });
+
+});
+
+describe("{diff}'s ceiling", () => {
+  it("leaves out whole the line it would cut, so no half of a secret goes through, and says the rest was left out", () => {
+    const head = "diff --git a/s.env b/s.env\n+TOKEN sk-";
+    // a token the redaction shrinks to a word, so all that's redacted fits in what's carried
+    const token = "a".repeat(DIFF_REDACT_CHARS - head.length - 11);
+    const raw = `${head}${token}\n+DB_PASSWORD="not-a-real-password-only-a-test"\n+PORT=3000\n`;
+    expect(raw.indexOf("DB_PASSWORD")).toBeLessThan(DIFF_REDACT_CHARS);
+    expect(raw.indexOf("only-a-test")).toBeGreaterThan(DIFF_REDACT_CHARS);
+    const r = shapeDiff(raw);
+    expect(r.text).not.toContain("not-a-real");
+    expect(r.text).not.toContain("DB_PASSWORD");
+    expect(r.text).toBe(`diff --git a/s.env b/s.env\n+TOKEN ${REDACTED}\n[… cut at 44 of ${(raw.length - 1).toLocaleString("en-US")} characters, in s.env]`);
+    expect(r.flags).toEqual([`The diff was cut at 44 of ${(raw.length - 1).toLocaleString("en-US")} characters, in s.env.`]);
+    expect(r.redacted).toBe(1);
+  });
+  it("carries a diff within it whole, with no flag, and a first line longer than it as only the note", () => {
+    expect(shapeDiff("diff --git a/x b/x\n+one\n")).toEqual({ text: "diff --git a/x b/x\n+one", flags: [], redacted: 0 });
+    expect(shapeDiff("")).toEqual({ text: "(No changes.)", flags: [], redacted: 0 });
+    const long = "x".repeat(DIFF_REDACT_CHARS + 5);
+    expect(shapeDiff(long)).toEqual({ text: `[… cut at 0 of ${long.length.toLocaleString("en-US")} characters]`, flags: [`The diff was cut at 0 of ${long.length.toLocaleString("en-US")} characters.`], redacted: 0 });
   });
 });
 

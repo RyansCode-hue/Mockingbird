@@ -69,7 +69,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type LabsFlags, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type LabsFlags, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -172,6 +172,8 @@ function LayoutThumb({ tree }: { tree: LayoutNode }) {
 /** The Labs landscape flag as this window last read it from settings: only a first-paint hint, settings decide. */
 const LABS_LANDSCAPE_PREF = "mb.labs.landscape";
 
+/** Overlaps before main's first answer: none known, and none unread. */
+const NO_OVERLAPS: OverlapReport = { bySession: {}, unread: {} };
 /** How long a pane the main process is about to add or rekey waits for its place (see `expected` in App). */
 const EXPECT_MS = 10_000;
 /** How long a right-click's place waits, once its session is made, for the session to reach the landscape. */
@@ -316,10 +318,10 @@ function App() {
     return window.mb.onHealthUpdates((n: AgentUpdateNotice[]) => setAgentUpdates(Array.isArray(n) ? n : []));
   }, []);
   // files two worktrees of one repository have both changed, per session
-  const [overlaps, setOverlaps] = useState<Record<string, FileOverlap[]>>({});
+  const [overlaps, setOverlaps] = useState<OverlapReport>(NO_OVERLAPS);
   useEffect(() => {
-    window.mb.overlapsGet().then(unlessError("files changed in two worktrees", (o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {})));
-    return window.mb.onOverlapsChanged((o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {}));
+    window.mb.overlapsGet().then(unlessError("files changed in two worktrees", (o: OverlapReport) => setOverlaps(o ?? NO_OVERLAPS)));
+    return window.mb.onOverlapsChanged((o: OverlapReport) => setOverlaps(o ?? NO_OVERLAPS));
   }, []);
   const [modal, setModal] = useState<ModalKind>(null);
   const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
@@ -2501,7 +2503,8 @@ function App() {
   /** What a workspace's header chips and footer show (WorkspaceNode). */
   const chromeFor = (s: SessionInfo): WorkspaceChrome => ({
     chips: {
-      overlaps: overlaps[s.id],
+      overlaps: overlaps.bySession[s.id],
+      overlapsUnread: overlaps.unread[s.id],
       runCount: runningIn(s.cwd),
       onJump: jumpTo,
       onOpenBoard: setBoardDlg,
@@ -3887,7 +3890,8 @@ function App() {
                     onCleanup={() => requestClose(s)}
                     handoff={paneAction(s, "handoff")}
                     undoTurn={paneAction(s, "undo")}
-                    overlaps={overlaps[s.id]}
+                    overlaps={overlaps.bySession[s.id]}
+                    overlapsUnread={overlaps.unread[s.id]}
                     onJump={jumpTo}
                     onOpenBoard={setBoardDlg}
                     backup={backupFor(s)}

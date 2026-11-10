@@ -2,7 +2,7 @@ import { currentBranch } from "./git";
 import { baseRef } from "./files";
 import { guardedGit } from "./safeGit";
 import { mainCheckout } from "./runProfile";
-import type { FileOverlap } from "../shared/types";
+import type { FileOverlap, OverlapReport } from "../shared/types";
 
 /** A worktree's changes: what its branch changed since the base, plus what isn't committed yet. */
 export interface WorktreeChanges {
@@ -105,4 +105,64 @@ export function mergeOverlaps(...maps: Record<string, FileOverlap[]>[]): Record<
   const out: Record<string, FileOverlap[]> = {};
   for (const m of maps) for (const [id, list] of Object.entries(m)) (out[id] ??= []).push(...list);
   return out;
+}
+
+/** What overlaps know of each live worktree's folder: its changed files, or why they couldn't be read. */
+export interface WorktreeReads {
+  changes: Map<string, { repo: string; branch: string | null; files: string[] }>;
+  /** A folder whose changed files couldn't be read, and git's words for why. */
+  unread: Map<string, string>;
+}
+
+/**
+ * Reads each of `cwds` again that `stale` names or that has no changes read, and forgets folders no longer among them. A
+ * folder that can't be read leaves `changes` for `unread`, so overlaps with it are unknown rather than none, and is read
+ * again on the next pass. Its failure is logged when it starts or changes, not on every pass.
+ */
+export async function rereadWorktrees(
+  cwds: readonly string[],
+  reads: WorktreeReads,
+  stale: Set<string>,
+  log: (context: string, err: unknown) => void,
+  read: (cwd: string) => Promise<{ repo: string; branch: string | null; files: string[] }> = changedFiles
+): Promise<void> {
+  for (const known of [reads.changes, reads.unread]) for (const cwd of [...known.keys()]) if (!cwds.includes(cwd)) known.delete(cwd);
+  for (const cwd of cwds) {
+    if (reads.changes.has(cwd) && !stale.has(cwd)) continue;
+    stale.delete(cwd);
+    try {
+      reads.changes.set(cwd, await read(cwd));
+      reads.unread.delete(cwd);
+    } catch (err) {
+      reads.changes.delete(cwd);
+      const why = err instanceof Error ? err.message : String(err);
+      if (reads.unread.get(cwd) !== why) log(`overlaps: ${cwd}'s changed files couldn't be read, so overlaps with it are unknown`, err);
+      reads.unread.set(cwd, why);
+    }
+  }
+}
+
+/** A live session overlaps are worked out for: its folder, and the repository it's a worktree of. */
+export interface LiveWorktree {
+  sessionId: string;
+  title: string;
+  repoPath: string;
+  cwd: string;
+}
+
+/**
+ * The window's overlaps from what `reads` holds: this Mac's worktrees against each other and against teammates'
+ * branches, and for each session how many worktrees of its repository couldn't be read.
+ */
+export function overlapReport(live: readonly LiveWorktree[], reads: WorktreeReads, teammates: TeammateChanges[]): OverlapReport {
+  const list: WorktreeChanges[] = live.flatMap((s) => {
+    const c = reads.changes.get(s.cwd);
+    return c ? [{ sessionId: s.sessionId, title: s.title, branch: c.branch, repo: c.repo, cwd: s.cwd, files: c.files }] : [];
+  });
+  const unread: Record<string, number> = {};
+  for (const s of live) {
+    const n = new Set(live.filter((o) => o.repoPath === s.repoPath && reads.unread.has(o.cwd)).map((o) => o.cwd)).size;
+    if (n) unread[s.sessionId] = n;
+  }
+  return { bySession: mergeOverlaps(overlaps(list), teammateOverlaps(list, teammates)), unread };
 }
