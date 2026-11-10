@@ -13,7 +13,7 @@ import { transcriptRefusal } from "./roomLimits";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
-import { guardedGit } from "../safeGit";
+import { guardedGit, OWN_WRITE_ENV } from "../safeGit";
 import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, realpathOr } from "../agentFiles";
@@ -814,7 +814,7 @@ export class TakeoverService {
     const same = !!prev && prev.tree === snap.tree && prev.parent === snap.parent && (await hasCommits(top, [prev.sha])).length === 1;
     const kept = { repo: s.repoPath ?? top, title: (s.ticketTitle ?? s.title).slice(0, 300), activeAt: takenAt }; // a turn is activity: a pending drop no longer applies
     let rec: OwnRecord = same ? { ...prev, ...kept, drop: undefined } : { sha: snap.sha, tree: snap.tree, parent: snap.parent, takenAt, pushed: prev?.pushed ?? null, pushedAt: prev?.pushedAt, ...kept };
-    await git(top, ["update-ref", ref, rec.sha]);
+    await git(top, ["update-ref", ref, rec.sha], { env: OWN_WRITE_ENV });
     this.saveOwn(roomId, s.id, rec);
     for (const peer of this.d.team.presence(roomId)) this.mirror(peer, roomId, s.id);
     const toOrigin = this.toOriginFor(roomId);
@@ -867,7 +867,7 @@ export class TakeoverService {
       if (left) {
         // the copy a teammate continued is closed: what kept count of its changes goes (its folder stays)
         try {
-          if (fs.existsSync(left.repo)) for (const root of [LEFT_ROOT, SENT_ROOT]) await git(left.repo, ["update-ref", "-d", roomBackupRef(room.id, sessionId, root)]);
+          if (fs.existsSync(left.repo)) for (const root of [LEFT_ROOT, SENT_ROOT]) await git(left.repo, ["update-ref", "-d", roomBackupRef(room.id, sessionId, root)], { env: OWN_WRITE_ENV });
           delete local.left[sessionId];
           this.unsent.delete(sessionId);
           this.saveLocal(room.id);
@@ -1081,7 +1081,7 @@ export class TakeoverService {
     // what this install pushed while the room backed up to origin goes from there first (with the room on, its current owner deletes it)
     if (own?.pushed && !this.toOriginFor(roomId)) await this.deleteOnOrigin(own.repo, ref);
     for (const repo of new Set([own?.repo, mirrored?.repo, clone].filter((r): r is string => !!r && fs.existsSync(r)))) {
-      for (const r of [ref, roomBackupRef(roomId, sessionId, ORIGIN_COPY_ROOT)]) await git(repo, ["update-ref", "-d", r]);
+      for (const r of [ref, roomBackupRef(roomId, sessionId, ORIGIN_COPY_ROOT)]) await git(repo, ["update-ref", "-d", r], { env: OWN_WRITE_ENV });
     }
     await fs.promises.rm(this.transcriptDir(roomId, sessionId), { recursive: true, force: true });
     delete local.own[sessionId];
@@ -1174,7 +1174,7 @@ export class TakeoverService {
       if (!fs.existsSync(repo)) continue;
       try {
         const refs = (await git(repo, ["for-each-ref", "--format=%(refname)", ...[ROOM_REF_ROOT, ORIGIN_COPY_ROOT, LEFT_ROOT, SENT_ROOT].map((root) => `${root}/${room.id}/`)])).split("\n").filter(Boolean);
-        for (const r of refs) await git(repo, ["update-ref", "-d", r]);
+        for (const r of refs) await git(repo, ["update-ref", "-d", r], { env: OWN_WRITE_ENV });
       } catch (err) {
         const why = withoutCredentials(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim().slice(0, 300);
         this.d.log(`team: deleting the room's hidden refs in ${repo}`, why);
@@ -1409,7 +1409,7 @@ export class TakeoverService {
       await fs.promises.writeFile(tmp, bytes, { mode: 0o600 });
       try {
         // the bundle's objects only: the ref is set to the commit named, never to whatever the bundle's own ref says
-        await git(clone, ["fetch", "--no-tags", "--no-write-fetch-head", tmp, ref]);
+        await git(clone, ["fetch", "--no-tags", "--no-write-fetch-head", tmp, ref], { env: OWN_WRITE_ENV });
       } finally {
         await fs.promises.rm(tmp, { force: true });
       }
@@ -1419,7 +1419,7 @@ export class TakeoverService {
       this.d.log(`team: session ${sessionId}`, `the snapshot ${this.nameOf(roomId, ctx.from)} sent doesn't hold the commit it named (${want.slice(0, 8)}): refused`);
       throw new PeerError(`snapshot ${want.slice(0, 8)} isn't in this Mac's clone${p.bundle ? " (the bundle didn't hold it)" : ""}`);
     }
-    await git(clone, ["update-ref", ref, want]);
+    await git(clone, ["update-ref", ref, want], { env: OWN_WRITE_ENV });
     const got = want;
     const signed = this.d.team.room(roomId)?.ext.takeover?.sessions[sessionId];
     const takenAt = signed?.latest.sha === got ? signed.latest.takenAt : await takenAtOf(clone, got);
@@ -1638,12 +1638,12 @@ export class TakeoverService {
       const pin = roomBackupRef(roomId, sessionId, LEFT_ROOT);
       if (!(await hasCommits(repo, [base])).length && backupsToOrigin(this.d.team.room(roomId))) {
         try {
-          await git(repo, ["fetch", "--no-tags", "--no-write-fetch-head", "origin", `+${roomBackupRef(roomId, sessionId)}:${pin}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 });
+          await git(repo, ["fetch", "--no-tags", "--no-write-fetch-head", "origin", `+${roomBackupRef(roomId, sessionId)}:${pin}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000, env: OWN_WRITE_ENV });
         } catch (err) {
           this.d.log(`team: fetching the snapshot session ${sessionId} was continued from`, err);
         }
       }
-      if ((await hasCommits(repo, [base])).length) await git(repo, ["update-ref", pin, base]);
+      if ((await hasCommits(repo, [base])).length) await git(repo, ["update-ref", pin, base], { env: OWN_WRITE_ENV });
     }
     await this.checkLeft(roomId, sessionId);
   }
@@ -1706,7 +1706,7 @@ export class TakeoverService {
       const patch = await gitBytes(top, ["diff", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", base, commit.sha]);
       if (patch.length > MAX_BUNDLE) throw new Error(`The changes come to ${mb(patch.length)}, over the ${mb(MAX_BUNDLE)} sent peer to peer`);
       await this.d.team.request(now.owner, "takeover.changes", { roomId, sessionId, title: rec.title, files, patch: patch.toString("base64") }, { roomId, timeoutMs: SEND_TIMEOUT_MS });
-      await git(top, ["update-ref", roomBackupRef(roomId, sessionId, SENT_ROOT), commit.sha]);
+      await git(top, ["update-ref", roomBackupRef(roomId, sessionId, SENT_ROOT), commit.sha], { env: OWN_WRITE_ENV });
       rec.sent = { sha: commit.sha, at: this.now(), files: files.length };
       this.saveLocal(roomId);
       this.unsent.set(sessionId, { files: [], checkedAt: this.now() });
@@ -2188,7 +2188,7 @@ export class TakeoverService {
     // origin holds a backup of this session only when its owner pushed one (the room offers it and they allowed it)
     if (backupsToOrigin(this.d.team.room(roomId)) && (b.toOrigin || b.pushed || handed)) {
       try {
-        await git(clone, ["fetch", "--no-tags", "--no-write-fetch-head", "origin", `+${ref}:${copy}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 });
+        await git(clone, ["fetch", "--no-tags", "--no-write-fetch-head", "origin", `+${ref}:${copy}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000, env: OWN_WRITE_ENV });
         const got = await git(clone, ["rev-parse", "--verify", copy]);
         const at = signed.get(got);
         if (at !== undefined) found.push({ sha: got, takenAt: at, source: "origin" });
@@ -2196,7 +2196,7 @@ export class TakeoverService {
           originProblem = `origin's backup ref points at ${got.slice(0, 8)}, a commit ${ownerName} never recorded backing up — ignored (anyone who can push to the repository can set that ref)`;
           // TODO(audit-log): a planted backup ref on origin was ignored
           this.d.log(`team: reading origin's backup of session ${b.sessionId}`, originProblem);
-          await git(clone, ["update-ref", "-d", copy]);
+          await git(clone, ["update-ref", "-d", copy], { env: OWN_WRITE_ENV });
         }
       } catch (err) {
         const msg = withoutCredentials((err as Error).message);

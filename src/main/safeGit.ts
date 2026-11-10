@@ -53,7 +53,10 @@ export const WRITE_ENV: Readonly<Record<string, string>> = configEnv(NEUTRAL_OVE
 
 /**
  * WRITE_ENV with no hooks: for the writes Mockingbird makes on its own, which nobody asked to run a hook for: a turn's
- * snapshot (its throwaway index, its refs) and a room's fetch of origin. Filters stay on, as for WRITE_ENV.
+ * snapshot (its throwaway index, its refs), a fetch it makes (a room's of origin, a new worktree's branch or base, a
+ * repo artifact's commit, take-over's backups) and take-over's own refs (backups, pins, copies). A fetch reads the
+ * index (for submodules), so fsmonitor off matters there too. Filters stay on, as for WRITE_ENV; ssh and credential
+ * helpers stay too, as a fetch needs them.
  */
 export const OWN_WRITE_ENV: Readonly<Record<string, string>> = configEnv([...NEUTRAL_OVERRIDES, NO_HOOKS]);
 

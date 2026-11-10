@@ -6,6 +6,7 @@ import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranc
 import { pickDefaultBase } from "../src/main/git";
 import { changedPaths, scmStatus } from "../src/main/scm";
 import { git, makeRepo, tempDir } from "./helpers";
+import { watchRepo } from "./hostileRepo";
 
 describe("pickDefaultBase", () => {
   it("prefers the team's integration branch over main", () => {
@@ -146,6 +147,25 @@ describe("branches on origin", () => {
     const { mine, pushed } = pushedSinceFetch();
     await checkoutBranch(mine, "feat/shared", "main");
     expect(git(mine, "rev-parse", "HEAD")).toBe(pushed);
+  });
+
+  it("fetches a new worktree's branch and base with nothing the clone's config names run: no fsmonitor, no hook", async () => {
+    const { mine, pushed } = pushedSinceFetch();
+    git(mine, "push", "-q", "origin", "HEAD:refs/heads/feat/other");
+    const w = watchRepo(mine);
+    // a plain fetch reads the index, for submodules, which runs fsmonitor
+    git(mine, "fetch", "-q", "origin", "main");
+    expect(w.ranBy(/ fetch /).map((l) => l.split("\t")[0])).toContain("fsmonitor");
+    w.clear();
+    // a relaunch's worktree, of a branch on origin alone: fetching it makes origin/feat/shared here, which would run
+    // reference-transaction
+    const shared = await createWorktree(mine, "feat/shared", "main", { mustExist: true });
+    expect(git(shared, "rev-parse", "HEAD")).toBe(pushed);
+    await createWorktree(mine, "feat/other", "main");
+    await createWorktree(mine, "feat/new", "main");
+    expect(w.ranBy(/ fetch /)).toEqual([]);
+    // the worktree's own checkout, which someone asked for, keeps them
+    expect(w.ranBy(/ worktree add /).length).toBeGreaterThan(0);
   });
 });
 

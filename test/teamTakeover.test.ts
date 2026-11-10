@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
+import { watchRepo } from "./hostileRepo";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { liveRoomHost, TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
 import { ROOM_LIMITS } from "../src/main/team/roomLimits";
@@ -652,6 +653,56 @@ describe("taking over", () => {
     const r = await t.nick.svc.takeOver(t.roomId, "s1", t.nickClone);
     expect(files(r.cwd)).toEqual(files(t.wt));
   });
+});
+
+describe("take-over's own fetches and refs", () => {
+  it("run nothing a clone's config names, from a backup through a take-over to leaving the room: no fsmonitor, no hook", async () => {
+    const t = await setup();
+    // a clone of Ryan's without the snapshot, which his session names by the time he hears of the take-over
+    const ryanOther = path.join(tempDir("ryan-other"), "app");
+    sh(path.dirname(ryanOther), "clone", "-q", t.bare, ryanOther);
+    const watched = [watchRepo(t.ryanClone), watchRepo(ryanOther), watchRepo(t.nickClone)];
+    const byOwnGits = () => watched.flatMap((w) => w.ranBy(/ (fetch|update-ref) /));
+    // a plain git of each kind runs them, so what follows proves something
+    sh(t.nickClone, "update-ref", "refs/watch-check", "HEAD");
+    sh(t.nickClone, "update-ref", "-d", "refs/watch-check");
+    sh(t.nickClone, "fetch", "-q", "origin");
+    expect(new Set(byOwnGits().map((l) => l.split("\t")[0]))).toEqual(new Set(["fsmonitor", "refhook"]));
+    for (const w of watched) w.clear();
+
+    // a backup: its ref here, and the copy fetched from its bundle into Nick's clone
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    await until(() => !!refIn(t.nickClone, ref), "Nick's copy");
+    // a take-over with Ryan offline, fetching origin's backup into Nick's clone: planted there, so its copy is deleted
+    const signed = refIn(t.bare, ref)!;
+    sh(t.bare, "update-ref", ref, sh(t.bare, "rev-parse", "main"));
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
+    const r = await t.nick.svc.takeOver(t.roomId, "s1");
+    expect(t.nick.logs.some((l) => /a commit Ryan never recorded backing up/.test(l))).toBe(true);
+    expect(refIn(t.nickClone, roomBackupRef(t.roomId, "s1", "refs/mockingbird/rooms-origin"))).toBeNull();
+    sh(t.bare, "update-ref", ref, signed);
+    // Ryan, back, fetches the snapshot it was continued from into the clone his session names, and pins it there
+    t.ryan.sessions.set("s1", { ...t.ryan.sessions.get("s1")!, repoPath: ryanOther });
+    t.net.setOnline(t.ryanM.id, true);
+    const left = roomBackupRef(t.roomId, "s1", "refs/mockingbird/rooms-left");
+    await until(() => !!refIn(ryanOther, left), "Ryan to pin what Nick continued from");
+    // he sends Nick what he changed since, then closes his copy
+    write(t.wt, { "src/a.ts": "Ryan kept typing\n" });
+    await until(() => t.ryanM.team.presence(t.roomId).includes(t.nickM.id), "Nick to be back in reach");
+    expect(await t.ryan.svc.sendLeft(t.roomId, "s1")).toEqual({ files: expect.any(Number) });
+    await t.ryan.svc.sessionForgotten("s1");
+    expect(refIn(ryanOther, left)).toBeNull();
+    // Nick's first backup of his copy, which deletes the old one's here
+    await t.nick.svc.turnEnded(r.sessionId);
+    await until(() => !refIn(t.nickClone, ref), "Nick's copy of the old backup to go");
+    // Ryan leaves, deleting every hidden ref of the room in his clones
+    t.ryanM.team.handOver(t.roomId, t.nickM.id);
+    expect(await t.ryan.svc.roomLeft((await t.ryanM.team.leave(t.roomId)).room)).toEqual([]);
+    expect(byOwnGits()).toEqual([]);
+  }, 60_000);
 });
 
 describe("cleaning up backups", () => {

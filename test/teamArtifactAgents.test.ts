@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
+import { watchRepo } from "./hostileRepo";
 import { until } from "../src/main/team/loopback";
 import { Messaging } from "../src/main/messaging";
 import { assistantArtifacts } from "../src/main/team/artifactTools";
@@ -97,6 +98,27 @@ describe("repo file references", () => {
     // once pushed, the fetch on resolving brings it
     git(ryanRepo, "push", "-q", "origin", "main");
     expect(await nick.arts.resolveRepo(roomId, ref.id, null)).toMatchObject({ commitPresent: true, atCommit: { text: "unpushed\n" }, problem: null });
+  });
+});
+
+describe("a repo reference's fetch", () => {
+  it("brings the commit with nothing the clone's config names run: no fsmonitor, no hook", async () => {
+    const { roomId, sides: [ryan, nick] } = await sides(["Ryan", "Nick"]);
+    const { ryanRepo, nickRepo } = repos();
+    ryan.sessions.push(session("r1", { cwd: ryanRepo, repoPath: ryanRepo }));
+    write(ryanRepo, { "src/y.ts": "pushed later\n" });
+    git(ryanRepo, "add", "-A");
+    git(ryanRepo, "commit", "-qm", "pushed later");
+    git(ryanRepo, "push", "-q", "origin", "main");
+    const ref = await ryan.arts.addRepo(roomId, { sessionId: "r1", path: "src/y.ts" });
+    await until(() => items(nick.m.team.room(roomId)).length === 1, "Nick to have the reference");
+    nick.repos.push(nickRepo);
+    const w = watchRepo(nickRepo);
+    // the fetch moves origin/main here, which would run reference-transaction, and reads the index, which runs fsmonitor
+    expect(await nick.arts.resolveRepo(roomId, ref.id, null)).toMatchObject({ clone: nickRepo, commitPresent: true, atCommit: { text: "pushed later\n" }, problem: null });
+    expect(w.ranBy(/ fetch /)).toEqual([]);
+    git(nickRepo, "fetch", "-q", "origin");
+    expect(w.ranBy(/ fetch /).map((l) => l.split("\t")[0]), "a plain fetch runs fsmonitor").toContain("fsmonitor");
   });
 });
 

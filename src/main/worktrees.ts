@@ -1,7 +1,7 @@
 import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
 import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
 import { dirtyFileCount } from "./scm";
-import { guardedGit, WRITE_ENV } from "./safeGit";
+import { guardedGit, OWN_WRITE_ENV, WRITE_ENV } from "./safeGit";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -55,11 +55,11 @@ async function startPoint(repo: string, branch: string, base?: string, mustExist
   if (await git(repo, ["branch", "--list", branch])) return { existing: true };
   const there = await onOrigin(repo, branch);
   if (there.has) {
-    if (!mustExist) await git(repo, ["fetch", "origin", branch]);
+    if (!mustExist) await git(repo, ["fetch", "origin", branch], { env: OWN_WRITE_ENV });
     // origin just didn't answer: a fetch would only wait out its timeout to fail, and the last fetch's ref is there
     else if (!there.unreachable) {
       try {
-        await git(repo, ["fetch", "origin", branch]);
+        await git(repo, ["fetch", "origin", branch], { env: OWN_WRITE_ENV });
       } catch (err) {
         if (!(await lastFetched(repo, branch))) throw err;
         console.error(`[worktrees] couldn't fetch ${branch}, going by the last fetch:`, err);
@@ -75,7 +75,7 @@ async function startPoint(repo: string, branch: string, base?: string, mustExist
   }
   if (!base) return { existing: false, track: false };
   try {
-    await git(repo, ["fetch", "origin", base]); // freshest dev/uat
+    await git(repo, ["fetch", "origin", base], { env: OWN_WRITE_ENV }); // freshest dev/uat
     return { existing: false, track: false, from: `origin/${base}` };
   } catch (err) {
     // offline or no origin — fall back to the local base branch, loudly

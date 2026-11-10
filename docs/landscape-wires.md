@@ -1029,13 +1029,67 @@ post-index-change and commit runs reference-transaction, while snapshots run nei
   helpers, `url.*.insteadOf`. Of them:
   - Worktree creation's fetches, take-over's fetches and a repo artifact's fetch still
     run plain, so core.fsmonitor runs for each and reference-transaction for the refs
-    they move.
+    they move. (Done in 2d.)
   - Pushes run pre-push. Take-over's backup push does so on purpose (a secret scanner
     sees the snapshot).
 - **Take-over's own refs** (`update-ref` of room backups and pins) run
-  reference-transaction hooks.
+  reference-transaction hooks. (Done in 2d.)
 - **A guarded diff** still takes `index.lock` for its refresh (see H1).
 - **A test copy's checkout and apply** run in the fresh clone, whose config is its own.
+
+#### W2 review fixes 2d as built
+
+Finishes 2c's open items for the gits Mockingbird runs on its own.
+
+**`OWN_WRITE_ENV` on every fetch and on take-over's own refs.** It means fsmonitor and
+the pager off, and no hooks. It now goes on:
+- a new worktree's fetches: its branch from origin (made anew, and on a relaunch) and
+  its base;
+- take-over's fetches: a teammate's backup from its bundle, origin's backup, and the
+  snapshot an owner pins;
+- a repo artifact's fetch of its commit;
+- take-over's `update-ref`s: backups, the copies fetched from bundles and from
+  origin, pins, what was sent, and deleting each of them (a session closed, a backup
+  dropped, a room left).
+
+Every `fetch` and `update-ref` in `src/main` now runs with `OWN_WRITE_ENV`, or with
+`WRITE_ENV` where someone asked (Source Control's fetch). What stays as it was:
+- ssh and credential helpers, which a fetch needs;
+- take-over's backup push running `pre-push`, on purpose;
+- a worktree's own checkout (`worktree add`, `switch`), which someone asked for, and
+  keeps its hooks.
+
+**`watchRepo`** (test/hostileRepo.ts) plants hostileRepo's fsmonitor and its two hooks
+in an existing repository's config. The hooks folder is named by its whole path, so a
+linked worktree's gits find it. Every planted command now also logs the git that ran
+it (its parent's command line), and `ranBy(re)` lists those runs. A test can then tell
+a fetch's runs from those of a `worktree add` in the same flow.
+
+**Tests**, one per place. Each first shows that a plain git of the same kind runs the
+planted commands. Then:
+- **worktree create** (`worktrees.test.ts`): a relaunch's branch, a new branch on
+  origin, and a base. No fetch runs anything. `worktree add` still does.
+- **repo artifacts** (`teamArtifactAgents.test.ts`): resolving a reference fetches
+  the commit, with nothing run.
+- **take-over** (`teamTakeover.test.ts`) runs through one flow, with three clones
+  watched (Ryan's, one he moves to, and Nick's):
+  - a backup and Nick's copy of it;
+  - a take-over with a planted ref on origin, whose copy is deleted;
+  - Ryan back, pinning the snapshot into a clone without it, which fetches it;
+  - Ryan sending his later changes, then closing his copy;
+  - Nick's first backup, which deletes the old copy;
+  - Ryan leaving the room.
+
+  No `fetch` or `update-ref` runs anything.
+
+**Checked:** taking `OWN_WRITE_ENV` off each of the 15 call sites on its own failed
+its test each time.
+
+**Left, documented:**
+- **A guarded diff refreshes the index**, taking `index.lock` for that moment
+  (`diff.autoRefreshIndex` stays on; see 2c).
+- **A `.lfsconfig` extension `priority`** makes git-lfs's clean fail, so the read
+  throws in git's words, and nothing runs (see 2c).
 
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the
