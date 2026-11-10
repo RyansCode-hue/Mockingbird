@@ -30,10 +30,22 @@ function configEnv(pairs: readonly (readonly [string, string])[]): Record<string
   return env;
 }
 
-/** Settings that would run a command for a read: fsmonitor's on every status-like one, a pager, gpg for a signature, a submodule's own diff. */
-const READ_OVERRIDES: readonly (readonly [string, string])[] = [
+/** Settings that run a command whatever git does and change nothing it stores: fsmonitor's on every index read, a pager. */
+const NEUTRAL_OVERRIDES: readonly (readonly [string, string])[] = [
   ["core.fsmonitor", "false"],
   ["core.pager", "cat"],
+];
+
+/**
+ * The environment for git that writes a session's folder (stage, commit, discard, a WIP commit, a turn's snapshot):
+ * NEUTRAL_OVERRIDES alone. Filters stay on, as they define what's stored, so a write stores what it would without
+ * Mockingbird. A room's worktree can't have its config written under the room's sandbox, and a local pane is trusted.
+ */
+export const WRITE_ENV: Readonly<Record<string, string>> = configEnv(NEUTRAL_OVERRIDES);
+
+/** Settings that would run a command for a read: NEUTRAL_OVERRIDES', gpg for a signature, a submodule's own diff. */
+const READ_OVERRIDES: readonly (readonly [string, string])[] = [
+  ...NEUTRAL_OVERRIDES,
   ["diff.submodule", "short"],
   ["status.submoduleSummary", "false"],
   ["log.showSignature", "false"],

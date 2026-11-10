@@ -61,6 +61,8 @@ interface Setup {
   frame?: FrameWire | "real";
   /** How a closed session is reopened; the manager's relaunch unless a test holds it back. */
   reopen?: (id: string, m: SessionManager) => Promise<SessionInfo | null>;
+  /** Each new wire's id, in turn; random ones otherwise. */
+  ids?: string[];
 }
 
 function setup(o: Setup = {}) {
@@ -90,7 +92,16 @@ function setup(o: Setup = {}) {
   const store = new LandscapeStore({ file, emit: () => {}, log });
   const rooms: Record<string, string> = {};
   const takenOver: Record<string, string> = {};
-  const service: WireService = new WireService({ store, sessions: m, roomOf: (id) => rooms[id] ?? null, takenOver: (id) => (takenOver[id] ? `${takenOver[id]} — take it back rather than wiring it` : null), log, delivery: { withdraw: (id, w) => d.withdraw(id, w), restoring: (w) => d.restoring(w), restored: (id) => d.restored(id) } });
+  const ids = [...(o.ids ?? [])];
+  const service: WireService = new WireService({
+    store,
+    sessions: m,
+    roomOf: (id) => rooms[id] ?? null,
+    takenOver: (id) => (takenOver[id] ? `${takenOver[id]} — take it back rather than wiring it` : null),
+    log,
+    delivery: { withdraw: (id, w) => d.withdraw(id, w), restoring: (w) => d.restoring(w), restored: (id) => d.restored(id) },
+    ...(o.ids ? { newId: () => ids.shift() ?? `w${Math.random().toString(16).slice(2, 9)}` } : {}),
+  });
   const told: { id: string; title: string; body: string }[] = [];
   const made: PendingsMade[] = [];
   const opts = { submit: true };
@@ -1175,6 +1186,19 @@ describe("finishing a step, through the one writer", () => {
     ]);
     vi.advanceTimersByTime(150);
     expect(t.ptyOf(b.id).writes.at(-1)).toBe("\r");
+  });
+
+  it("finish_step goes along its wires in the order they were made, an id that reads as an integer included", async () => {
+    const t = setup({ ids: ["ab12cd34", "12345678", "cd34ef56"] });
+    const a = await t.pane("Builder");
+    const [b, c, e] = [await t.pane("Reviewer"), await t.pane("Tester"), await t.pane("Deployer")];
+    for (const x of [b, c, e]) t.add(a.id, x.id, "handoff");
+    expect(Object.keys(t.book().links)[0]).toBe("12345678"); // the object's own order
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    const reply = (await t.tools.call(t.m.list().find((s) => s.id === a.id)!, "finish_step", { summary: "Built it." })) as { result: string };
+    expect(reply.result.split("\n").slice(1).map((l) => /"(\w+)"/.exec(l)?.[1])).toEqual(["Reviewer", "Tester", "Deployer"]);
+    const listed = t.service.linksFor(t.m.list().find((s) => s.id === a.id)!) as { result: { links: { wire: string }[] } };
+    expect(listed.result.links.map((l) => l.wire)).toEqual(["ab12cd34", "12345678", "cd34ef56"]);
   });
 
   it("a gate that fails on one wire holds that one, saying why, and the finish is saved and the other wires' gates still run", async () => {

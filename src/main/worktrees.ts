@@ -1,7 +1,7 @@
 import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
 import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
 import { dirtyFileCount } from "./scm";
-import { guardedGit } from "./safeGit";
+import { guardedGit, WRITE_ENV } from "./safeGit";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -243,8 +243,15 @@ export function parseShortstat(out: string): { insertions: number; deletions: nu
   };
 }
 
+/** Promise.all that lets every one settle before it throws the first failure, so no git is left running behind it. */
+async function allSettledOrThrow<T extends unknown[] | []>(ps: { [K in keyof T]: Promise<T[K]> }): Promise<T> {
+  const rs = await Promise.allSettled(ps as readonly Promise<unknown>[]);
+  for (const r of rs) if (r.status === "rejected") throw r.reason;
+  return rs.map((r) => (r as PromiseFulfilledResult<unknown>).value) as T;
+}
+
 async function readState(wtPath: string): Promise<WorktreeStateInfo> {
-  const [dirtyFiles, branch, { upstream, counts }, stat] = await Promise.all([
+  const [dirtyFiles, branch, { upstream, counts }, stat] = await allSettledOrThrow([
     dirtyFileCount(wtPath),
     currentBranch(wtPath).then((b) => b ?? "HEAD"),
     // what the counts are against (a branch made from origin/dev tracks it until
@@ -300,8 +307,8 @@ export async function cleanupWorktree(repoPath: string, wtPath: string, mode: Wo
   stateCache.delete(wtPath);
   if (mode === "push") {
     if (st.dirty) {
-      await git(wtPath, ["add", "-A"]);
-      await git(wtPath, ["commit", "--no-verify", "-m", `WIP: ${st.branch} (closed from Mockingbird)`]);
+      await git(wtPath, ["add", "-A"], { env: WRITE_ENV });
+      await git(wtPath, ["commit", "--no-verify", "-m", `WIP: ${st.branch} (closed from Mockingbird)`], { env: WRITE_ENV });
     }
     await git(wtPath, ["push", "-u", "origin", "HEAD"]);
     await git(repoPath, ["worktree", "remove", "--force", wtPath]);

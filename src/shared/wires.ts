@@ -420,6 +420,22 @@ export function newWire(from: string, to: string, type: WireType, at: number): W
   return { from, to, type, when: carriesWork(type) ? "finished" : "manual", gate: "ask", ...(type === "feedback" ? { rounds: { limit: DEFAULT_ROUNDS, used: 0 } } : {}), createdAt: at };
 }
 
+/** When a wire made at `now` is stamped: after every wire in `links`, so wires made within one millisecond keep their order. */
+export function createdAtAfter(links: Readonly<Record<string, Wire>>, now: number): number {
+  let at = now;
+  for (const w of Object.values(links)) if (w.createdAt >= at) at = w.createdAt + 1;
+  return at;
+}
+
+/**
+ * A book's wires in the order they were made (createdAt, then id), for whatever an order reaches: a reply, a prompt, a
+ * notice, the gates a finish runs. Never by the object's own key order, which puts an id that reads as an integer
+ * ("12345678") ahead of the rest.
+ */
+export function wiresInOrder(links: Readonly<Record<string, Wire>>): [string, Wire][] {
+  return Object.entries(links).sort(([a, x], [b, y]) => x.createdAt - y.createdAt || (a < b ? -1 : a > b ? 1 : 0));
+}
+
 // ---- finishing a step -------------------------------------------------------------------
 
 /** What finishing a step does along one of the workspace's handoff and feedback wires out (finishPlan). */
@@ -498,7 +514,7 @@ export function verdictRefusal(id: string, verdict: unknown, links: Readonly<Rec
  * Context links and shared worktrees carry nothing, so they're not in it.
  */
 export function finishPlan(id: string, verdict: WireVerdict | undefined, ctx: WireContext): FinishStep[] {
-  return Object.entries(ctx.links).flatMap(([k, w]): FinishStep[] => {
+  return wiresInOrder(ctx.links).flatMap(([k, w]): FinishStep[] => {
     if (w.from !== id || !carriesWork(w.type)) return [];
     const step = { wire: k, to: w.to, type: w.type };
     const refused = wireRefusal(w.from, w.to, w.type, { ...ctx, self: k });
@@ -597,7 +613,7 @@ export function withSettings(w: Wire, s: WireSettings): Wire {
 
 /** The book without session `id`: its wires, both directions, and its note. Nothing changes when it has neither. */
 export function withoutSession(book: WireBook, id: string): { book: WireBook; dropped: DroppedWire[] } {
-  const dropped = Object.entries(book.links).flatMap(([k, w]) => (w.from === id || w.to === id ? [{ id: k, wire: w }] : []));
+  const dropped = wiresInOrder(book.links).flatMap(([k, w]) => (w.from === id || w.to === id ? [{ id: k, wire: w }] : []));
   if (!dropped.length && !Object.hasOwn(book.notes, id)) return { book, dropped };
   const links: Record<string, Wire> = {};
   for (const [k, w] of Object.entries(book.links)) if (w.from !== id && w.to !== id) put(links, k, w);
@@ -618,7 +634,7 @@ export function rekeyRefusal(book: WireBook, moved: WireBook, old: string, next:
   const from = ctx.end(old);
   if (from?.takenOver) return from.takenOver;
   if (to.takenOver) return to.takenOver;
-  for (const [id, w] of Object.entries(book.links)) {
+  for (const [id, w] of wiresInOrder(book.links)) {
     if (w.from !== old && w.to !== old) continue;
     if (from && from.kind !== to.kind) return `“${to.title}” isn't the same kind of workspace as “${from.title}”, so its wires can't move there.`;
     if (isSending(w)) return "One of these wires is sending right now: try again once it's gone.";

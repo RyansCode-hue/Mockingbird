@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { parseNameStatus } from "./files";
 import { git, headCommit, repoTop } from "./git";
-import { guardedGit } from "./safeGit";
+import { guardedGit, WRITE_ENV } from "./safeGit";
 import { SNAPSHOT_MAX_FILE_BYTES, type TurnChange, type TurnSnapshot } from "../shared/types";
 
 /**
@@ -31,11 +31,11 @@ const safeId = (id: string) => {
   return id;
 };
 
-/** A throwaway index, removed once `fn` is done with it. */
+/** A throwaway index, removed once `fn` is done with it. Its gits write, so they run with WRITE_ENV. */
 async function withIndex<T>(fn: (env: Record<string, string>) => Promise<T>): Promise<T> {
   const file = path.join(os.tmpdir(), `mb-snapshot-${crypto.randomBytes(6).toString("hex")}.index`);
   try {
-    return await fn({ GIT_INDEX_FILE: file, ...IDENTITY });
+    return await fn({ ...WRITE_ENV, GIT_INDEX_FILE: file, ...IDENTITY });
   } finally {
     await fs.promises.rm(file, { force: true });
   }

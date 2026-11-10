@@ -35,6 +35,7 @@ import {
   verdictRefusal,
   WIRE_VERDICTS,
   wireRefusal,
+  wiresInOrder,
   type FinishedStep,
   type FinishOutcome,
   type GateContext,
@@ -496,7 +497,7 @@ export class WireTools {
     const why = wireRefusal(w.from, w.to, w.type, { ...ctx, self: wireId });
     if (why) return { refused: why };
     // the receiver's wires out that it can use now: one the rules refuse (across a room's line, say) isn't named
-    const out = Object.entries(state.book.links).flatMap(([k, x]) => (x.from === w.to && carriesWork(x.type) && !wireRefusal(x.from, x.to, x.type, { ...ctx, self: k }) ? [x] : []));
+    const out = wiresInOrder(state.book.links).flatMap(([k, x]) => (x.from === w.to && carriesWork(x.type) && !wireRefusal(x.from, x.to, x.type, { ...ctx, self: k }) ? [x] : []));
     return {
       text: wireMessage({
         type: w.type,
@@ -532,7 +533,7 @@ export const usesSummary = (w: Wire): boolean => (w.template ?? DEFAULT_TEMPLATE
 
 /** Session `id`'s wires, either way, that the rules allow now: what it's told of them. */
 function linesOf(id: string, book: WireBook, ctx: GateContext): WireLine[] {
-  return Object.entries(book.links).flatMap(([k, w]): WireLine[] => {
+  return wiresInOrder(book.links).flatMap(([k, w]): WireLine[] => {
     if (w.from !== id && w.to !== id) return [];
     if (wireRefusal(w.from, w.to, w.type, { ...ctx, self: k })) return []; // blocked by the rules now: nothing it can use
     const otherId = w.from === id ? w.to : w.from;

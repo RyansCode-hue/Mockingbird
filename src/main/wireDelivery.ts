@@ -16,6 +16,7 @@ import {
   restoredWire,
   verdictRefusal,
   WIRE_BODY_MAX,
+  wiresInOrder,
   type DeliveryState,
   type FinishedStep,
   type FinishOutcome,
@@ -372,7 +373,7 @@ export class WireDelivery {
     const state = this.o.store.wires();
     if (!state.book) return void this.reconcileFailed(state.refused ?? "the wires can't be read");
     const ctx = this.o.context(state.book);
-    const plan = Object.entries(state.book.links).flatMap(([id, w]) => {
+    const plan = wiresInOrder(state.book.links).flatMap(([id, w]) => {
       const next = this.reconciled(id, w, ctx);
       return next === w ? [] : [{ id, w, next }];
     });

@@ -5,6 +5,7 @@ import { canonical } from "./handlers";
 import { LandscapeShapeError, own, put } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
 import {
+  createdAtAfter,
   gateOf,
   keptNaming,
   newWire,
@@ -22,6 +23,7 @@ import {
   wireRefusal,
   withoutSession,
   withSettings,
+  wiresInOrder,
   type GateContext,
   type KeptEntries,
   type Wire,
@@ -98,7 +100,7 @@ export class WireService {
       const refused = wireRefusal(from, to, type, ctx) ?? settingsRefusal({ from, to, type }, settings.settings, ctx);
       if (refused) return { refused };
       id = this.unusedId(book, kept);
-      made = withSettings(newWire(from, to, type, Date.now()), settings.settings);
+      made = withSettings(newWire(from, to, type, createdAtAfter(book.links, Date.now())), settings.settings);
       const links = { ...book.links };
       put(links, id, made);
       return { book: { ...book, links } };
@@ -219,7 +221,7 @@ export class WireService {
     if (!state.book) return { error: state.refused ?? "Wires can't be read right now." };
     const ctx = this.context(state.book);
     const mine = ctx.end(me.id);
-    const links = Object.entries(state.book.links)
+    const links = wiresInOrder(state.book.links)
       .filter(([, w]) => w.from === me.id || w.to === me.id)
       .map(([id, w]) => {
         const gate = gateOf(id, w, ctx);

@@ -1,10 +1,11 @@
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranches, listWorktrees, migrateWorktree, parseShortstat, removeWorktree, unregisterMissing, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
 import { pickDefaultBase } from "../src/main/git";
 import { changedPaths, scmStatus } from "../src/main/scm";
-import { git, makeRepo } from "./helpers";
+import { git, makeRepo, tempDir } from "./helpers";
 
 describe("pickDefaultBase", () => {
   it("prefers the team's integration branch over main", () => {
@@ -145,6 +146,22 @@ describe("branches on origin", () => {
     const { mine, pushed } = pushedSinceFetch();
     await checkoutBranch(mine, "feat/shared", "main");
     expect(git(mine, "rev-parse", "HEAD")).toBe(pushed);
+  });
+});
+
+describe("a worktree's state that can't be read", () => {
+  it("fails once every git it started has ended, leaving none running", async () => {
+    const notRepo = tempDir("notrepo");
+    const children = () => process.getActiveResourcesInfo().filter((r) => r === "ProcessWrap").length;
+    const before = children();
+    const failed = await worktreeState(notRepo).then(
+      () => "",
+      (e: Error) => e.message
+    );
+    // read as the failure arrives: a git still running then is one it left behind (others may end meanwhile)
+    expect(children()).toBeLessThanOrEqual(before);
+    expect(failed).toMatch(/not a git repository/);
+    expect(execFileSync("ps", ["-Ao", "command"], { encoding: "utf8" }).split("\n").filter((l) => l.includes(notRepo))).toEqual([]);
   });
 });
 

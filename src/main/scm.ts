@@ -1,6 +1,6 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
-import { guardedGit, SAFE_DIFF } from "./safeGit";
+import { guardedGit, SAFE_DIFF, WRITE_ENV } from "./safeGit";
 import type { GitChange, GraphCommit, GraphRef, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
 
 /**
@@ -68,13 +68,13 @@ async function inside(root: string, paths: string[]): Promise<string[]> {
 }
 
 export async function scmStage(root: string, paths: string[]): Promise<void> {
-  await git(root, ["add", "-A", "--", ...(await inside(root, paths))]);
+  await git(root, ["add", "-A", "--", ...(await inside(root, paths))], { env: WRITE_ENV });
 }
 
 export async function scmUnstage(root: string, paths: string[]): Promise<void> {
   const rel = await inside(root, paths);
   // before the first commit there's no HEAD to restore the index from
-  await git(root, (await headCommit(root)) ? ["restore", "--staged", "--", ...rel] : ["rm", "--cached", "-r", "-q", "--", ...rel]);
+  await git(root, (await headCommit(root)) ? ["restore", "--staged", "--", ...rel] : ["rm", "--cached", "-r", "-q", "--", ...rel], { env: WRITE_ENV });
 }
 
 /**
@@ -84,7 +84,7 @@ export async function scmUnstage(root: string, paths: string[]): Promise<void> {
 export async function scmDiscard(root: string, entries: { path: string; untracked: boolean }[], trash: (abs: string) => Promise<void>): Promise<void> {
   const tracked = entries.filter((e) => !e.untracked).map((e) => e.path);
   const untracked = entries.filter((e) => e.untracked).map((e) => e.path);
-  if (tracked.length) await git(root, ["restore", "--worktree", "--", ...(await inside(root, tracked))]);
+  if (tracked.length) await git(root, ["restore", "--worktree", "--", ...(await inside(root, tracked))], { env: WRITE_ENV });
   for (const p of untracked) await trash(await resolveIn(root, p));
 }
 
@@ -93,7 +93,7 @@ export async function scmCommit(root: string, message: string): Promise<{ sha: s
   if (!msg) throw new Error("Write a commit message first");
   const staged = (await scmStatus(root)).staged.length;
   if (!staged) throw new Error("Nothing is staged — stage the changes to commit first");
-  await git(root, ["commit", "-q", "-m", msg]);
+  await git(root, ["commit", "-q", "-m", msg], { env: WRITE_ENV });
   return { sha: await git(root, ["rev-parse", "--short", "HEAD"]) };
 }
 
@@ -120,7 +120,7 @@ export async function scmPull(root: string): Promise<void> {
   if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to pull into");
   if (!st.upstream) throw new Error("This branch doesn't track a remote branch yet, so there's nothing to pull");
   try {
-    await git(root, ["pull", "--ff-only", "-q"]);
+    await git(root, ["pull", "--ff-only", "-q"], { env: WRITE_ENV });
   } catch (err) {
     const msg = (err as Error).message;
     if (/not possible to fast-forward|diverg/i.test(msg)) {

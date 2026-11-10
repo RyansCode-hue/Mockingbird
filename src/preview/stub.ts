@@ -8317,6 +8317,7 @@ w.__mbPrefsAtLoad = Object.fromEntries(Object.values(LEGACY_PREF_KEYS).map((k) =
 
 // ---- wires: an empty book, changed by main's own rules (shared/wires.ts), on this file's sessions. Nothing here reaches a pane ----
 import {
+  createdAtAfter,
   emptyWireBook,
   newWire,
   parseWireSettings,
@@ -8389,7 +8390,7 @@ Object.assign(api, {
     if (refused) return { refused };
     let id = Math.random().toString(16).slice(2, 10);
     while (Object.hasOwn(wireBook.links, id)) id = Math.random().toString(16).slice(2, 10);
-    return wireChanged(withLink(id, withSettings(newWire(from, to, type, Date.now()), s.settings)), id);
+    return wireChanged(withLink(id, withSettings(newWire(from, to, type, createdAtAfter(wireBook.links, Date.now())), s.settings)), id);
   },
   wiresSet: async (id: string, raw: unknown): Promise<WireReply> => {
     const s = wireSettings(raw);

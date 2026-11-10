@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LANDSCAPE_VERSION } from "../src/shared/landscape";
 import {
+  createdAtAfter,
   DEFAULT_ROUNDS,
   WIRE_FORMAT,
   WIRE_VERSION,
@@ -24,6 +25,7 @@ import {
   storedWireBook,
   verdictRefusal,
   wireRefusal,
+  wiresInOrder,
   withSettings,
   withoutSession,
   type GateContext,
@@ -158,6 +160,11 @@ describe("a new wire", () => {
     expect(newWire("a", "b", "feedback", 5).when).toBe("finished");
     expect(newWire("a", "b", "context", 5).when).toBe("manual");
     expect(newWire("a", "b", "worktree", 5).when).toBe("manual");
+  });
+  it("is stamped after every wire already made, so wires made within one millisecond keep their order", () => {
+    expect(createdAtAfter({}, 5)).toBe(5);
+    expect(createdAtAfter({ x: wire("a", "b", "handoff", { createdAt: 3 }) }, 5)).toBe(5);
+    expect(createdAtAfter({ x: wire("a", "b", "handoff", { createdAt: 5 }), y: wire("a", "c", "handoff", { createdAt: 6 }) }, 5)).toBe(7);
   });
   it("counts rounds only on a feedback wire, from the default limit", () => {
     expect(newWire("a", "b", "feedback", 5).rounds).toEqual({ limit: DEFAULT_ROUNDS, used: 0 });
@@ -585,6 +592,13 @@ describe("finishing a step", () => {
       { wire: "f", to: "b", type: "feedback", does: "passes", withdraws: "p1" },
       { wire: "h", to: "c", type: "handoff", does: "readies" },
     ]);
+  });
+  it("goes along wires in the order they were made, whatever their ids: one that reads as an integer isn't put first", () => {
+    const links = { ab12cd34: wire("a", "b", "handoff", { createdAt: 1 }), "12345678": wire("a", "c", "handoff", { createdAt: 2 }) };
+    expect(Object.keys(links)).toEqual(["12345678", "ab12cd34"]); // the object's own order
+    expect(finishPlan("a", undefined, ctxOf(ends, links)).map((s) => s.wire)).toEqual(["ab12cd34", "12345678"]);
+    // made in the same millisecond, an older book's are in their ids' order
+    expect(wiresInOrder({ b: wire("a", "b"), a: wire("a", "c"), "9": wire("a", "d", "handoff", { createdAt: 0 }) }).map(([k]) => k)).toEqual(["9", "a", "b"]);
   });
   it("takes back nothing on its way, and puts nothing on a wire the rules refuse", () => {
     const sending = wire("a", "b", "feedback", { pending, delivery: { id: "p1", state: "pasting", at: 1 } });

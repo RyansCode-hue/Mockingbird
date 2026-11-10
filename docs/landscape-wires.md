@@ -833,10 +833,66 @@ file's routing. Its tests caught all 30.
   with nobody asking, so a clean filter or fsmonitor an agent plants runs in main.
   Turning filters off there changes what a snapshot stores for a filtered repository
   (the file as it is) and what restoring one gives back. That makes it a decision, not
-  a routing.
+  a routing. (Settled in 2b: fsmonitor and the pager off, filters on.)
 - **Diffs between two commits** that name files only (`teamChanges`, `branchFiles`,
   take-over's file lists, snapshots' turn changes) run nothing a config names, and stay
   plain. So does `git grep --untracked` (probed).
+
+#### W2 review fixes 2b as built
+
+**Wires in the order they were made:**
+- Each place that iterates the book's wires where the order reaches a reply, a prompt,
+  a notice or a delivery now goes through `wiresInOrder(links)` (shared/wires.ts):
+  createdAt, then id. Before, these used the object's own key order. That order puts
+  an id reading as an integer (`12345678`, about one wire in fifty) ahead of the rest,
+  so finish_step's steps, the order its gates ran, and the reply all hung on the
+  random id.
+- Those places are:
+  - `finishPlan` (finish_step's steps, the order its gates run, its reply);
+  - `linksFor` (list_links);
+  - `linesOf` (what a launch and a new wire's notice say);
+  - `messageFor`'s list of the receiver's wires out;
+  - `withoutSession`'s dropped wires;
+  - `rekeyRefusal`, which reports the first refusal it finds;
+  - delivery's `reconcile`.
+- Places that only ask whether something exists (`some`, a `find` of a pair the rules
+  keep unique) stay as they were. So does rebuilding a links object.
+- A new wire is stamped `createdAtAfter(links, now)`, one millisecond past the latest
+  wire when it would tie. So wires made within one millisecond keep their order too.
+  Ids keep their format.
+- Wires in an older book that tie on createdAt go in id order.
+- Tests use `12345678`: `finishPlan` and `wiresInOrder` directly, and a finish_step
+  reply and list_links through the service, with ids given in turn (`setup({ ids })`).
+
+**Writes run with the overrides that don't change what's stored:**
+- `WRITE_ENV` (safeGit.ts) is fsmonitor off and no pager (`NEUTRAL_OVERRIDES`, which
+  the reads' overrides start from). Nothing else is overridden.
+- It goes on Source Control's stage, unstage, discard, commit and pull, the worktree
+  close's WIP commit (`add -A`, `commit --no-verify`), and every git a snapshot's
+  throwaway index runs (`withIndex`, so `treeOfWorktree`, `commit-tree` and a
+  restore's `checkout-index`).
+- Filters stay on for writes: they define what's stored, so a write stores what it
+  would without Mockingbird.
+- Why that's enough:
+  - a room's worktree can't have its config written under the room's sandbox (W20);
+  - a local pane is trusted;
+  - W20 is adding a check that a room worktree's `.git` pointer hasn't moved before
+    main touches it.
+- `test/safeGit.test.ts`:
+  - shows a plain `add` runs fsmonitor and the file's filter;
+  - shows each write here runs neither fsmonitor nor the pager, while stage and the
+    snapshot still run the filters;
+  - shows the commit stores the file.
+
+**A worktree's state that fails leaves no git running:** `readState` waits for every
+git it started before it throws the first failure (`allSettledOrThrow`). With
+`Promise.all`, the first failure (a folder that isn't a repository, say) returned while
+its siblings still ran. Guarded reads start more gits, so those siblings were more
+often caught by the test run's leak check (`appModel`'s, which was already known).
+
+**Checked:** each change was reverted on its own (the finish's order, list_links'
+order, the creation stamp, WRITE_ENV on stage, commit, discard and snapshots, and
+readState's settling), and a test failed for each.
 
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the

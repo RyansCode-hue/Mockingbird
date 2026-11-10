@@ -11,8 +11,8 @@ import { repoState } from "../src/main/handoff";
 import { prDescriptionPrompt } from "../src/main/pullRequests";
 import { ignoredCandidates } from "../src/main/runDraft";
 import { driversToTurnOff, guardedGit } from "../src/main/safeGit";
-import { scmCommitDiff, scmCommitFiles, scmDiff, scmGraph, scmStatus } from "../src/main/scm";
-import { skippedIn } from "../src/main/snapshots";
+import { scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmGraph, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
+import { skippedIn, snapshotCommit } from "../src/main/snapshots";
 import { excludeInRepo } from "../src/main/team/claims";
 import { makeTestCopy } from "../src/main/testCopy";
 import { worktreeState } from "../src/main/worktrees";
@@ -152,6 +152,33 @@ describe("main-process reads of a session's folder", { timeout: 300_000 }, () =>
     expect(await scmCommitDiff(repo, later, "later.txt")).toBe(plain("diff", "-M", `${later}^1`, later, "--", "later.txt"));
     const status = ["--porcelain=v2", "--branch", "-z", "--untracked-files=all"];
     expect(await (await guardedGit(repo)).status(status, { trim: false })).toBe(plain("status", ...status));
+  });
+});
+
+describe("main-process writes of a session's folder", { timeout: 300_000 }, () => {
+  it("run with fsmonitor and the pager off, and the repository's filters still on, as they define what's stored", async () => {
+    const control = hostileRepo();
+    git(control.repo, "add", "a.txt");
+    expect(control.ran(), "a plain add runs fsmonitor and the file's filter").toEqual(expect.arrayContaining(["fsmonitor", "plain"]));
+    const h = hostileRepo();
+    const writes: [string, () => Promise<unknown>][] = [
+      ["scmStage", () => scmStage(h.repo, ["a.txt"])],
+      ["scmUnstage", () => scmUnstage(h.repo, ["a.txt"])],
+      ["scmStage again", () => scmStage(h.repo, ["a.txt", "b.md"])],
+      ["scmCommit", () => scmCommit(h.repo, "staged")],
+      ["scmDiscard", () => scmDiscard(h.repo, [{ path: "c.bin", untracked: false }], async () => {})],
+      ["snapshotCommit", () => snapshotCommit(h.repo, "backup")],
+    ];
+    const ran: [string, string[]][] = [];
+    for (const [name, write] of writes) {
+      await write();
+      ran.push([name, [...h.ran()]]);
+      h.clear();
+    }
+    expect(ran.filter(([, r]) => r.includes("fsmonitor") || r.includes("pager"))).toEqual([]);
+    expect(ran.find(([n]) => n === "scmStage")![1]).toContain("plain");
+    expect(ran.find(([n]) => n === "snapshotCommit")![1]).toContain("empty");
+    expect(git(h.repo, "show", "HEAD:a.txt")).toBe("two");
   });
 });
 
