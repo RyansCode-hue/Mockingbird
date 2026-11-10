@@ -1227,6 +1227,7 @@ const teamRoom = new TeamRoom({
   resumable: () => sessions.resumable(),
   roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
   roomOf: (id) => livePanes.roomOfSession(id),
+  guardsOf: (id) => sessions.guardsOf(id),
   // Claude only: it runs with no tools, while Codex's read-only sandbox can still read files,
   // and the room's chat (which teammates write) is in the prompt
   ask: async (prompt) => {
@@ -1378,6 +1379,7 @@ const wires = new WireService({
   roomOf: (id) => livePanes.roomOfSession(id),
   roomsKnown: () => roomsKnown,
   takenOver: (id) => takeover?.takenOverRefusal(id, "wiring it") ?? null,
+  outsideSandbox: (id) => livePanes.outsideSandbox(id),
   log: logError,
   onAdded: (id, w) => wireTools.wired(id, w),
   delivery: { withdraw: (id, w) => delivery.withdraw(id, w), restoring: (w) => delivery.restoring(w), restored: (id) => delivery.restored(id) },

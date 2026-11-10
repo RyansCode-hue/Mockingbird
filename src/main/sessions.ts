@@ -155,12 +155,15 @@ export interface RoomLaunch {
   denyReads: string[];
   /** Codex -c settings that run it in the room's sandbox (codexRoomSandbox.ts). */
   codexPermissions: string[];
+  /** Claude --settings that run it in the room's sandbox (claudeRoomSandbox.ts); null for anything but Claude. */
+  claudeSettings: Record<string, unknown> | null;
   /** What the agent starts knowing about the room (its House board and artifact tools, and Codex its sandbox); null for a terminal, or when there's nothing. */
   instructions: string | null;
   /** Mockingbird MCP tools the agent may call without asking (the House board's and the room artifacts'). */
   allowTools: string[];
   /** Codex runs inline (Claude's switch is in env): teammates' copies hold its history. */
   inline: boolean;
+  /** secrets: it runs under the room's settings (Claude: its sandbox and deny rules; Codex: its permission profile). */
   guards: { secrets: boolean; coauthors: boolean };
 }
 
@@ -530,6 +533,7 @@ export class SessionManager {
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
       ...(room?.codexPermissions.length ? { codexPermissions: room.codexPermissions } : {}),
+      ...(room?.claudeSettings ? { claudeSettings: room.claudeSettings } : {}),
       ...(instructions ? { instructions } : {}),
       ...(room?.allowTools.length ? { allowTools: room.allowTools } : {}),
       ...(room?.inline ? { inline: true } : {}),

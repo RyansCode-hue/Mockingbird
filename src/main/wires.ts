@@ -61,6 +61,8 @@ export interface WireServiceOptions {
   roomsKnown?: () => boolean;
   /** Why a session can't be wired because a teammate took it over; null when none did. */
   takenOver: (id: string) => string | null;
+  /** Whether a session of this Mac's is in a team room but outside its sandbox (outsideRoomSandbox). */
+  outsideSandbox?: (id: string) => boolean;
   log: (context: string, err: unknown) => void;
   /** Delivery's part as a wire leaves and comes back (WireDelivery), the one writer of what's on its way. */
   delivery?: WireDeliveryHooks;
@@ -301,6 +303,7 @@ export class WireService {
             debrief: !!s.debrief,
             room: this.o.roomOf(id),
             takenOver: this.o.takenOver(id),
+            outsideSandbox: !!this.o.outsideSandbox?.(id),
             where: !running.has(id) ? "closed" : s.status === "dead" ? "dead" : "running",
             placed: running.has(id) || Object.hasOwn(ghosts, id),
             folder: canonical(s.cwd),

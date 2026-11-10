@@ -35,6 +35,22 @@ describe("Claude launch", () => {
   it("resumes a specific conversation by id", () => {
     expect(agentFor("claude").launchArgs({ ...base, resumeSessionId: "uuid-1" }, { mcp }).slice(0, 2)).toEqual(["--resume", "uuid-1"]);
   });
+  it("gives a room's sandbox and the status line in one --settings; without one, the status line's file as before", () => {
+    const room = agentFor("claude").launchArgs({ ...base }, { claudeSettings: { sandbox: { enabled: true } } });
+    expect(room.filter((a) => a === "--settings")).toHaveLength(1);
+    expect(JSON.parse(room[room.indexOf("--settings") + 1])).toEqual({ statusLine: { type: "command", command: expect.stringMatching(/statusline\.sh"$/) }, sandbox: { enabled: true } });
+    const local = agentFor("claude").launchArgs({ ...base }, {});
+    expect(local[local.indexOf("--settings") + 1]).toMatch(/statusline-settings\.json$/);
+    // the user's own status line is theirs: the room's settings go alone
+    fs.mkdirSync(path.join(os.homedir(), ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(os.homedir(), ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "mine" } }));
+    try {
+      const own = agentFor("claude").launchArgs({ ...base }, { claudeSettings: { sandbox: { enabled: true } } });
+      expect(JSON.parse(own[own.indexOf("--settings") + 1])).toEqual({ sandbox: { enabled: true } });
+    } finally {
+      fs.rmSync(path.join(os.homedir(), ".claude", "settings.json"));
+    }
+  });
   it("leaves the messaging server out when the pane has none", () => {
     expect(agentFor("claude").launchArgs({ ...base }, {})).not.toContain("--mcp-config");
     expect(agentFor("codex").launchArgs({ ...base }, {}).join(" ")).not.toContain("mcp_servers.mockingbird");

@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { AGENT_NAME, type AgentKind, type NewSessionRequest, type Settings } from "../shared/types";
 import { expandHome } from "./store";
-import { usageReporterArgs } from "./usage";
+import { usageReporterArgs, usageReporterSettings } from "./usage";
 import { MCP_SERVER, MCP_TOOL, claudeToolName, type McpLaunch } from "./messaging";
 import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
 import { readSlice } from "./fileOps";
@@ -17,6 +17,8 @@ export interface LaunchContext {
   denyReads?: string[];
   /** Codex -c settings that run it in a team room's sandbox (codexRoomSandbox.ts). */
   codexPermissions?: string[];
+  /** Claude settings that run it in a team room's sandbox (claudeRoomSandbox.ts), as --settings beside the status line's. */
+  claudeSettings?: Record<string, unknown>;
   /**
    * Instructions the agent starts with on top of its own (a team room's House
    * board and artifact tools, and Codex's room sandbox): Claude's --append-system-prompt,
@@ -90,7 +92,9 @@ const claude: AgentAdapter = {
     if (req.model) args.push("--model", req.model);
     if (req.effort) args.push("--effort", req.effort);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    args.push(...usageReporterArgs());
+    // one --settings: the room's sandbox carries the status line with it
+    if (ctx.claudeSettings) args.push("--settings", JSON.stringify({ ...usageReporterSettings(), ...ctx.claudeSettings }));
+    else args.push(...usageReporterArgs());
     // --mcp-config adds to the user's own servers; the allow rule spares a
     // permission prompt on every message
     if (ctx.mcp) {

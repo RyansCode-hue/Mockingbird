@@ -317,6 +317,8 @@ export interface WireEnd {
   room: string | null;
   /** Why it can't be wired: a teammate took it over. */
   takenOver: string | null;
+  /** It's in a team room but runs outside the room's sandbox (outsideRoomSandbox): no wires there until it restarts. */
+  outsideSandbox?: boolean;
   where: "running" | "dead" | "closed";
   /** Whether it's on the landscape: running, or closed with a ghost. Closed with no place, it's only in the Closed sessions list. */
   placed: boolean;
@@ -401,6 +403,7 @@ export function wireRefusal(from: string, to: string, type: WireType, ctx: WireC
   if (a.room !== b.room) return ROOM_LINE;
   for (const e of [a, b]) if (e.debrief) return `“${e.title}” is a debrief interview with you, and takes no wires.`;
   for (const e of [a, b]) if (e.takenOver) return e.takenOver;
+  for (const e of [a, b]) if (e.outsideSandbox) return `“${e.title}” joined its team room while it was running, so it isn't in the room's sandbox: restart it in the room to wire it there.`;
 
   if (type === "worktree") {
     if (a.kind !== "agent" || b.kind !== "terminal") return "A shared worktree wire runs from an agent to a terminal.";

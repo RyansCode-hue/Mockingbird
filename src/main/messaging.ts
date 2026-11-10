@@ -11,7 +11,7 @@ import { ARTIFACT_TOOL } from "../shared/team/artifacts";
 import { named, plainLine, quoted } from "../shared/team/agentText";
 import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
 import { isTeamChangesTool, TEAM_CHANGES_TOOL_SCHEMAS, teamChangesToolCall } from "./team/teamChanges";
-import { parseRemoteId, remoteSessionId } from "../shared/team/livePanes";
+import { outsideRoomSandbox, parseRemoteId, remoteSessionId, ROOM_SANDBOX_REFUSAL } from "../shared/team/livePanes";
 import { McpTokens } from "./mcpTokens";
 import { isWireTool, WIRE_TOOL_SCHEMAS } from "./wireToolSchemas";
 import { systemPeerCheck, type PeerCheck } from "./peerCheck";
@@ -46,6 +46,14 @@ function lostReason(code: unknown, current: boolean): string | null {
   const read = typeof code === "string" ? /^read:([A-Z][A-Z0-9_]{0,23})$/.exec(code) : null;
   return read ? `its token file couldn't be read (${read[1]})` : null;
 }
+
+/** What a caller refused by the process check (W20) is told to do next, by why it was refused. */
+const CALLER_NEXT = {
+  failed: "This is usually brief: try the call again in a moment. If it keeps failing, tell your user; Mockingbird has logged it for them.",
+  gone: "That launch is over, so its tools have stopped. If the workspace is still open, your user can restart it in Mockingbird to get them back.",
+  outside:
+    "Only the workspace's agent, and what it starts, can use its tools. A Claude teammate in split-pane (tmux) mode runs under tmux, outside the pane, so it gets none of them: Mockingbird's tools work for in-process teammates. Mockingbird has logged this for the user.",
+} as const;
 
 /** Messages allowed between one pair of sessions per window, in either direction. */
 const PAIR_LIMIT = 8;
@@ -400,6 +408,8 @@ export class Messaging {
    */
   private lostLogged = new Map<string, number>();
   private lostTold = new Set<string>();
+  /** Launches whose callers the process check couldn't check, until it can again. */
+  private checkFailing = new Set<string>();
 
   /** Collaborate registers here; until then room tools report that they're unavailable. */
   setRoomHandler(h: RoomRequestHandler): void {
@@ -499,7 +509,7 @@ export class Messaging {
     const args = isObject(req.args) ? req.args : {};
     const identity = tokens.identity(req.token);
     if (!identity) return this.noToken(op, req);
-    const notCaller = await this.callerRefusal(op, identity, req.token, conn);
+    const notCaller = await this.callerRefusal(op, identity, req, conn);
     if (notCaller) return notCaller;
     const m = /^collab-([^.]+)\.(.+)$/.exec(identity);
     if (!m) return this.handle({ op, from: identity, args });
@@ -549,10 +559,11 @@ export class Messaging {
    * A live token, from a process that isn't its launch's or one of its descendants, or with no way to check: refused
    * (W20). Logged once a minute per launch and kind. The user is told once per launch only when the check couldn't run,
    * since that stops the pane's own calls; a process outside the pane holding its token isn't the pane's doing, and a
-   * notice for it would be one more thing whoever holds the token could spend.
+   * notice for it would be one more thing whoever holds the token could spend. Once the check works again, the log says
+   * so and a later failure is told again. A launch that ended during the check is answered as ended.
    */
-  private async callerRefusal(op: string, identity: string, token: unknown, conn: net.Socket): Promise<Reply | null> {
-    const root = tokens.rootOf(token);
+  private async callerRefusal(op: string, identity: string, req: Record<string, unknown>, conn: net.Socket): Promise<Reply | null> {
+    const root = tokens.rootOf(req.token);
     const fd = (conn as unknown as { _handle?: { fd?: unknown } })._handle?.fd;
     const v = root
       ? await (this.hooks.peers ?? systemPeers).check(fd, root).catch((err: unknown) => {
@@ -560,7 +571,15 @@ export class Messaging {
           return { ok: false, failed: "the check itself failed" } as const;
         })
       : ({ ok: false, failed: "its launch has no process to check against" } as const);
-    if (v.ok) return null;
+    if (tokens.identity(req.token) !== identity || tokens.rootOf(req.token) !== root) return this.noToken(op, req);
+    const launch = `${identity} ${root?.pid ?? "unbound"}`; // a launch's root pid is its own: each launch's pty is a new process
+    if (v.ok) {
+      if (this.checkFailing.delete(launch)) this.log("messaging", `Mockingbird can check who's calling with the token of ${identity} again, so its tools answer again`);
+      this.lostTold.delete(`caller ${launch}`);
+      return null;
+    }
+    const kind = "failed" in v ? "failed" : "gone" in v ? "gone" : "outside";
+    if (kind === "failed") this.checkFailing.add(launch);
     const why =
       "failed" in v
         ? `Mockingbird couldn't check which process is calling (${v.failed})`
@@ -569,14 +588,12 @@ export class Messaging {
           : "the process calling isn't one of its workspace's own";
     const session = this.sessions.list().find((s) => s.id === identity && !s.shell);
     const who = session ? `${quoted(plainLine(titleOf(session)))} (${session.id})` : identity;
-    const kind = "failed" in v ? "failed" : "gone" in v ? "gone" : "outside";
-    const launch = `${identity} ${root?.pid ?? "unbound"}`; // a launch's root pid is its own: each launch's pty is a new process
     this.report(
       `caller ${kind} ${launch}`,
       () => `A call with the token of ${who} was refused: ${why} (asked for ${JSON.stringify(plainLine(op, 60))})`,
       "failed" in v && session ? { launch: `caller ${launch}`, session, why } : undefined
     );
-    return { error: `Mockingbird refused this call: ${why}. Mockingbird has logged this for the user; tell them if you need these tools.` };
+    return { error: `Mockingbird refused this call: ${why}. ${CALLER_NEXT[kind]}` };
   }
 
   /** A refusal for the log, at most once a minute per `key`, and for the user once per `notice.launch`. */
@@ -600,6 +617,8 @@ export class Messaging {
     const live = this.live();
     const me = live.find((s) => s.id === req.from);
     if (!me) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
+    const offLine = this.offRoomLine(me);
+    if (offLine && (isHouseTool(req.op) || req.op === ARTIFACT_TOOL.list || req.op === ARTIFACT_TOOL.read || isTeamChangesTool(req.op))) return { error: offLine };
 
     // team rooms: the House board — it answers "not in a team room" for sessions outside one
     if (isHouseTool(req.op)) return houseToolCall(me.id, req.op!, req.args ?? {});
@@ -626,7 +645,8 @@ export class Messaging {
         }));
       const result: Record<string, unknown> = { you: { id: me.id, title: titleOf(me) }, sessions: others };
       const roomId = this.remote?.roomOf(me) ?? null;
-      if (this.remote && roomId) {
+      if (offLine) result.teammates_error = offLine;
+      else if (this.remote && roomId) {
         try {
           const teammates = await this.remote.list(roomId);
           const group = me.taskGroup ? topOfKey(me.taskGroup) : null;
@@ -717,12 +737,20 @@ export class Messaging {
     return null;
   }
 
+  /** Why a session in a room gets nothing across the room's line: it runs outside the room's sandbox. Null otherwise. */
+  private offRoomLine(me: SessionInfo): string | null {
+    const inRoom = !!this.remote?.roomOf(me);
+    return inRoom && outsideRoomSandbox(me.shell ? null : (me.agent ?? "claude"), this.sessions.guardsOf(me.id)) ? ROOM_SANDBOX_REFUSAL : null;
+  }
+
   /** A message for a session on a teammate's laptop: through the room this session is in, with the real outcome. */
   private async sendRemote(me: SessionInfo, to: string, text: string): Promise<Reply> {
     const roomId = this.remote?.roomOf(me) ?? null;
     if (!this.remote || !roomId) {
       return { error: `"${to}" is a session on a teammate's laptop. Only sessions in a shared team room can reach teammates' sessions, and this session's group isn't shared.` };
     }
+    const offLine = this.offRoomLine(me);
+    if (offLine) return { error: offLine };
     const logged = { at: Date.now(), from: me.id, fromTitle: titleOf(me), to, toTitle: to, text };
     const limited = this.paced(me, { id: to, title: to, ticketTitle: null }, logged);
     if (limited) return limited;

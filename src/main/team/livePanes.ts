@@ -6,6 +6,7 @@ import { readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { roomWaitingNotice, shouldNotify } from "../notifications";
 import { roomSecretReads } from "../secrets";
 import { CODEX_ROOM_SANDBOX_NOTE, codexHomeOf, codexRoomPermissions, roomGitDirs, type RoomGitDirs } from "../codexRoomSandbox";
+import { claudeRoomSettings } from "../claudeRoomSandbox";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
 import { isTermReply, isViewControl } from "../../shared/termInput";
 import { CLAUDE_INLINE_ENV } from "../agents";
@@ -36,6 +37,7 @@ import {
   type TypingState,
   type ViewMessage,
   TYPING_MINUTES,
+  outsideRoomSandbox,
 } from "../../shared/team/livePanes";
 import { quoted } from "../../shared/team/agentText";
 import { takenOverOwn, takenOverTag } from "../../shared/team/takeover";
@@ -348,6 +350,12 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   }
 
   /** The room one of this install's sessions is shared in (live or resumable), or null. */
+  /** Whether session `id` is in a room but runs outside its sandbox (outsideRoomSandbox): nothing crosses the line for it. */
+  outsideSandbox(id: string): boolean {
+    const s = this.d.sessions.list().find((x) => x.id === id);
+    return !!s && !!this.roomOfSession(id) && outsideRoomSandbox(s.shell ? null : (s.agent ?? "claude"), this.d.sessions.guardsOf(id));
+  }
+
   roomOfSession(id: string): RoomId | null {
     if (!this.started) return null;
     if (!this.ownRooms) {
@@ -392,25 +400,27 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     if (!roomId) return null;
     let denyReads: string[] = [];
     let codexPermissions: string[] = [];
+    let claudeSettings: Record<string, unknown> | null = null;
+    const codexGuarded = target.agent === "codex" && codexGuardsSecrets(target.agentVersion);
+    const gitDirs = async (who: string): Promise<RoomGitDirs | null> => {
+      try {
+        return await roomGitDirs(target.cwd);
+      } catch (err) {
+        this.problem(`${who} in room session ${target.id} can't commit: its repository's git folder couldn't be found (${errText(err)})`, err);
+        return null;
+      }
+    };
+    const hooks = [this.d.hooksDir ?? HOOKS_DIR, this.d.coauthorsDir ?? COAUTHORS_DIR];
     if (target.agent === "claude") {
       const secrets = roomSecretReads(this.d.settings().workTrackerPath);
       if (secrets.problem) this.problem(secrets.problem);
       denyReads = secrets.rules;
+      const sandbox = claudeRoomSettings({ workTrackerPath: this.d.settings().workTrackerPath, git: await gitDirs("Claude"), hooks });
+      if (sandbox.problem) this.problem(sandbox.problem);
+      claudeSettings = sandbox.settings;
     }
-    const codexGuarded = target.agent === "codex" && codexGuardsSecrets(target.agentVersion);
     if (codexGuarded) {
-      let gitDirs: RoomGitDirs | null = null;
-      try {
-        gitDirs = await roomGitDirs(target.cwd);
-      } catch (err) {
-        this.problem(`Codex in room session ${target.id} can't commit: its repository's git folder couldn't be found (${errText(err)})`, err);
-      }
-      const sandbox = codexRoomPermissions({
-        workTrackerPath: this.d.settings().workTrackerPath,
-        git: gitDirs,
-        hooks: [this.d.hooksDir ?? HOOKS_DIR, this.d.coauthorsDir ?? COAUTHORS_DIR],
-        codexHome: codexHomeOf(process.env),
-      });
+      const sandbox = codexRoomPermissions({ workTrackerPath: this.d.settings().workTrackerPath, git: await gitDirs("Codex"), hooks, codexHome: codexHomeOf(process.env) });
       if (sandbox.problem) this.problem(sandbox.problem);
       codexPermissions = sandbox.config;
     }
@@ -434,6 +444,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       },
       denyReads,
       codexPermissions,
+      claudeSettings,
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
       allowTools: target.agent === "claude" ? [...HOUSE_READ_TOOLS, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read, ...TEAM_CHANGES_READ_TOOLS] : [],
       inline,

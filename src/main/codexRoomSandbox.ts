@@ -31,7 +31,7 @@ const CERT_BUNDLE_GLOBS: ReadonlySet<string> = new Set(["*.pem"]);
  * gh's token), git's XDG credential store and Codex's own sign-in. The Codex
  * CLI reads its auth.json itself, outside the sandbox.
  */
-const CREDENTIAL_STORES = ["~/Library/Keychains", "~/.config/git/credentials", "~/.codex/auth.json"];
+export const CREDENTIAL_STORES = ["~/Library/Keychains", "~/.config/git/credentials", "~/.codex/auth.json"];
 
 /**
  * Package and build caches in home that installs and builds write: npm, XDG
@@ -39,7 +39,7 @@ const CREDENTIAL_STORES = ["~/Library/Keychains", "~/.config/git/credentials", "
  * Yarn Berry, pnpm, Go modules, NuGet, Cargo. Caches only — never a folder on
  * PATH, whose programs would later run outside the sandbox.
  */
-const TOOL_CACHES = [
+export const TOOL_CACHES = [
   "~/.npm",
   "~/.cache",
   "~/Library/Caches",
@@ -79,7 +79,7 @@ export async function roomGitDirs(cwd: string): Promise<RoomGitDirs | null> {
  * aliases, credential helpers), hooks, submodules' git folders, other
  * worktrees, and this worktree's own config and pointers.
  */
-function gitWrites(g: RoomGitDirs): { write: string[]; read: string[] } {
+export function gitWrites(g: RoomGitDirs): { write: string[]; read: string[] } {
   const read = ["config", "hooks", "modules", "worktrees"].map((f) => path.join(g.common, f));
   if (g.own === g.common) return { write: [g.common], read };
   return { write: [g.common, g.own], read: [...read, ...["config.worktree", "commondir", "gitdir"].map((f) => path.join(g.own, f))] };

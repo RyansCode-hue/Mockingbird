@@ -10,6 +10,10 @@ import { Messaging, mcpLaunch, remoteSessionId } from "../src/main/messaging";
 import { askAs, testLaunch } from "./mcpClient";
 import { AGENT_REQUESTS, AgentBridge } from "../src/main/team/agentBridge";
 import type { AgentMessage, SessionInfo } from "../src/shared/types";
+import { roomMessageRefusal, ROOM_SANDBOX_REFUSAL } from "../src/shared/team/livePanes";
+import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
+import { TEAMMATE_TOOL } from "../src/shared/team/overlaps";
+import { HOUSE_TOOLS } from "../src/shared/team/house";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, title: id, ticketTitle: null, repoPath: `/code/backoffice`, branch: `${id}-branch`, taskGroup: "5110", status: "idle", agent: "claude", cwd: `/w/${id}`, kind: "work", waitingReason: null, ...over }) as SessionInfo;
@@ -21,6 +25,8 @@ interface Side {
   sessions: SessionInfo[];
   delivered: { to: string; text: string; submit: boolean }[];
   log: AgentMessage[];
+  /** Sessions whose launch didn't run under the room's settings: they joined the room while running. */
+  unguarded: Set<string>;
 }
 
 let roomId: string;
@@ -31,9 +37,11 @@ const launch = testLaunch("front");
 const sock = launch.env.MOCKINGBIRD_SOCK;
 
 function side(m: LoopbackMember, sessions: SessionInfo[], dir: string, opts: { listen?: boolean; mode?: (s: SessionInfo) => boolean } = {}): Side {
-  const s = { m, sessions, delivered: [], log: [] } as unknown as Side;
+  const s = { m, sessions, delivered: [], log: [], unguarded: new Set() } as unknown as Side;
   const fakeSessions = {
     list: () => s.sessions,
+    // each session was started in its room, under the room's settings, unless a test says otherwise
+    guardsOf: (id: string) => (s.unguarded.has(id) ? null : { secrets: true, coauthors: true }),
     deliverAgentMessage: (to: string, text: string, submit: boolean) => {
       s.delivered.push({ to, text, submit });
       if (s.sessions.find((x) => x.id === to)?.status !== "idle") return "queued until its current turn ends";
@@ -44,6 +52,7 @@ function side(m: LoopbackMember, sessions: SessionInfo[], dir: string, opts: { l
   if (opts.listen) s.messaging.start();
   s.room = new TeamRoom({
     sessions: () => s.sessions,
+    guardsOf: fakeSessions.guardsOf,
     roomGroups: () => m.team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
     ask: async () => "unused",
     houseBoard: async () => null,
@@ -203,6 +212,39 @@ describe("the MCP server script", () => {
     expect(byId[2].result.isError).toBe(false);
     expect(byId[2].result.content[0].text).toMatch(/^Delivered to "Export API" on Nick's laptop/);
     expect(nick.delivered.at(-1)!.text.endsWith("via MCP")).toBe(true);
+  });
+});
+
+describe("a Claude session that joined its room while it was running", () => {
+  it("gets nothing across the room's line, either way, saying why, until it's restarted in the room; nor does a terminal or a Codex change", async () => {
+    const joined = session("joined", { title: "Joined", taskGroup: "5110" });
+    ryan.sessions.push(joined);
+    ryan.unguarded.add("joined");
+    const before = nick.delivered.length;
+    try {
+      const listed = await ask({ op: "list_sessions", from: "joined" });
+      expect(listed.result.teammates_error).toBe(ROOM_SANDBOX_REFUSAL);
+      expect(listed.result.sessions.some((s: any) => s.remote)).toBe(false);
+      expect((await ask({ op: "send_message", from: "joined", args: { to: rid("api", nick), message: "hi" } })).error).toBe(ROOM_SANDBOX_REFUSAL);
+      for (const op of [ARTIFACT_TOOL.list, TEAMMATE_TOOL.changes, HOUSE_TOOLS.list]) expect((await ask({ op, from: "joined" })).error).toBe(ROOM_SANDBOX_REFUSAL);
+      // and what its teammates send it, which would become its prompt
+      const why = "it joined the room while it was running on Ryan's Mac, so it isn't in the room's sandbox — ask Ryan to restart it in the room";
+      const theirs = await nick.room.bridge.list(roomId);
+      expect(theirs.flatMap((t) => t.sessions).find((s) => s.id === "joined")).toMatchObject({ refused: why });
+      const sent = await nick.room.bridge.send(roomId, { id: "api", title: "Export API", agent: "claude", repo: "backoffice", branch: "api-branch" }, rid("joined", ryan), "hello");
+      expect(sent).toMatchObject({ status: "refused", detail: expect.stringContaining(why) });
+      expect(ryan.delivered.some((d) => d.to === "joined")).toBe(false);
+      // the same session outside a room, and a Codex in one, are as before
+      expect(roomMessageRefusal({ agent: "codex", status: "idle", live: true, guards: null }, "Ryan")).toBeNull();
+      expect(roomMessageRefusal({ agent: "claude", status: "idle", live: true }, "Ryan")).toBeNull();
+      // restarted in the room, it runs under the room's settings
+      ryan.unguarded.delete("joined");
+      expect((await ask({ op: "send_message", from: "joined", args: { to: rid("api", nick), message: "back" } })).result).toMatch(/^Delivered to "Export API"/);
+      expect(nick.delivered.length).toBe(before + 1);
+    } finally {
+      ryan.sessions.splice(ryan.sessions.indexOf(joined), 1);
+      ryan.unguarded.delete("joined");
+    }
   });
 });
 

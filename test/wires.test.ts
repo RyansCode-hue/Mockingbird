@@ -77,6 +77,15 @@ describe("wireRefusal", () => {
     expect(wireRefusal("a", "t", "handoff", ctx)).toMatch(/continues on Nick's laptop/);
     expect(wireRefusal("t", "a", "handoff", ctx)).toMatch(/continues on Nick's laptop/);
   });
+  it("refuses a room session outside the room's sandbox, at either end, until it's restarted in the room", () => {
+    const joined = end("j", { room: "R1", title: "Joined", outsideSandbox: true });
+    const ctx = ctxOf([end("r", { room: "R1" }), joined]);
+    const why = "“Joined” joined its team room while it was running, so it isn't in the room's sandbox: restart it in the room to wire it there.";
+    expect(wireRefusal("r", "j", "handoff", ctx)).toBe(why);
+    expect(wireRefusal("j", "r", "context", ctx)).toBe(why);
+    // across the line it's the line that's said, naming nothing on the far side
+    expect(wireRefusal("a", "j", "handoff", ctxOf([end("a"), joined]))).toBe(ROOM_LINE);
+  });
   it("wants both ends in one room or neither", () => {
     const inRoom = end("r", { room: "R1" });
     const inOther = end("o", { room: "R2" });

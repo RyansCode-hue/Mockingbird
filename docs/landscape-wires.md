@@ -2430,6 +2430,180 @@ nothing added. The 1-minute load average is given with each figure:
   in the tree.
 - **The cost on Ryan's and Nick's Macs** with a real day's process count.
 
+#### W20 review fixes 1 as built
+The review's High was that W20's peer check holds, but files that run inside every
+pane's tree are writable by any same-uid process, so a token reader could still act
+as every pane. Ryan's decision: sandbox Claude panes in team rooms. The Medium and
+the Lows are fixed too.
+
+**What Claude Code's sandbox does.** Docs read first, then checked with the
+installed CLI (2.1.318):
+1. **One launch only:** `--settings <json or file>`. It ranks above the user,
+   project and local files and below managed settings, and lists merge.
+   `~/.claude/settings.json` isn't touched. Pane launches already passed
+   `--settings` for the status line, so a room launch passes one JSON carrying both
+   (`usageReporterSettings`).
+2. **Bash writes:** by default, the working folder, `--add-dir` folders, the
+   per-user temp folder and, in a linked worktree, the main checkout's shared
+   `.git` but its `config` and `hooks`. Paths are added with
+   `sandbox.filesystem.allowWrite` and refused with `denyWrite`.
+   **`denyWrite` outranks `allowWrite` whatever their depth.** The first probe
+   showed it: denying `.git/worktrees`, as Codex's profile does, stopped the
+   worktree's own commits.
+3. **The file tools aren't sandboxed.** Only permission rules govern them: `Edit(~/x)`
+   for home, `Edit(//abs)` for absolute paths, and an `Edit` rule covers Write and
+   NotebookEdit. Deny rules hold in every mode, `bypassPermissions` included.
+   `permissions.blockWritesOutsideWorkingDirectories` (2.1.314 and later) refuses
+   them outside the session's folders in every mode.
+4. **Hooks, the status line and stdio MCP servers run outside the sandbox.**
+5. **Escape hatches:** `allowUnsandboxedCommands: false` makes Claude ignore
+   `dangerouslyDisableSandbox`. Set from `--settings`, it also makes the sandbox
+   one the repository's settings can't widen: their `excludedCommands`,
+   `allowWrite` and network entries are ignored. `failIfUnavailable: true`
+   refuses to run unsandboxed when the sandbox can't start. The `.claude`
+   settings files and `.mcp.json` in the working folder are protected paths.
+   A `!` command the user types runs outside the sandbox, as it should.
+6. **Network:** `allowedDomains` starts empty. The docs show only `*.domain`
+   patterns, but Council's command seats have shipped with `["*"]`, and the
+   probe's `npm install` worked through it. The network is open, with local
+   binding, as for Codex rooms.
+7. **Worktrees:** writes are mirrored from Codex's profile (`gitWrites`). The
+   common git folder and the worktree's own are writable. Its `config`, `hooks`,
+   `modules` and the worktree's pointer files are denied. `worktrees/` as a whole
+   isn't, since that would deny the worktree's own folder (point 2). Another
+   worktree's `config.worktree` is read only once the denied `config` turns
+   `extensions.worktreeConfig` on. Codex room panes can't write `~/.mockingbird`:
+   it isn't in their write list, and `:workspace` is the session's folders and
+   temp.
+
+**Checked with real CLIs.** Three `claude -p --model sonnet` runs, under the
+settings `claudeRoomSettings` writes, in `bypassPermissions` (the mode that asks
+least). Each ran in a linked worktree of a scratch repository, with a scratch HOME
+(`env -i HOME=<scratch> PATH=…`, the Keychains folder linked so Claude stays signed
+in). The scripts are in the session's scratch folder (`w20rf/setup.sh`, `run.sh`,
+`run2.sh`):
+
+| What | Result |
+| :- | :- |
+| `git commit` in the worktree | worked, once `worktrees/` was no longer denied |
+| `npm install is-number@7.0.0` | worked: registry reached, `~/.npm` and `node_modules` written |
+| `echo x > ~/.mockingbird/x`, `>> ~/.zshenv`, `>> <common>/config`, `touch <common>/hooks/probe` | refused by the permission layer (a redirect's target is checked against `Edit` rules) |
+| The same writes through `node -e fs.appendFileSync(…)`, which the permission layer can't see | refused by the OS sandbox, `EPERM` |
+| A retry with `dangerouslyDisableSandbox: true` | refused the same way |
+| `node -e fs.readFileSync('~/.mockingbird/team/probe')` | refused, `EPERM` |
+| Write `~/.mockingbird/y`, Edit `~/.zshenv`, Write `<common>/hooks/pre-commit`, Edit `<common>/config` | refused, "denied by your permission settings" |
+| Write inside the worktree | worked |
+| A `PreToolUse` hook writing `~/.mockingbird/hook-ran` | ran: hooks are outside the sandbox |
+| A stdio MCP server's tool writing `~/.mockingbird/mcp-ran` | ran: MCP servers are outside the sandbox |
+
+Two of these checks were limited by the setup:
+- A write to `<scratch HOME>/elsewhere.txt` worked. The scratch folder is inside
+  `/private/tmp/claude-501`, which Claude's sandbox counts as its temp folder, so
+  "outside the working folder" couldn't be shown with a scratch HOME. The named
+  denies above did hold there.
+- The status line doesn't run in `-p`, so it wasn't checked. The docs put it
+  outside the sandbox.
+
+No claude, node or MCP processes from these runs were left. Codex's launch
+arguments were read only; Codex was never signed in from the scratch HOME.
+
+**What changed.**
+- **The sandbox.** `claudeRoomSandbox.ts` (new) builds a room launch's settings:
+  - the sandbox: on, `failIfUnavailable`, no unsandboxed retry, Bash still asking;
+  - its writes and reads: `allowWrite` the git data and `TOOL_CACHES`; `denyWrite`
+    `HOME_RUNS_CODE` and the git folder's code; `denyRead` the home secrets,
+    private data, credential stores and the PAT file; `allowRead` the co-author
+    hooks;
+  - the network open;
+  - `Edit` deny rules for `HOME_RUNS_CODE` and the git folder's config and hooks;
+  - `blockWritesOutsideWorkingDirectories`.
+- **One list.** `HOME_RUNS_CODE` (`secrets.ts`, beside `HOME_SECRETS`) is the one
+  list of what runs in every pane. `TOOL_CACHES`, `CREDENTIAL_STORES` and
+  `gitWrites` are shared with Codex's profile.
+- **Which launches.**
+  - `roomLaunch` gives every Claude launch in a room's area its settings. New,
+    resume, relaunch, restart and take-over all go through `SessionManager.create`.
+  - Council's command seats use the same builder (`claudeCommandSandbox`), with
+    Bash not asking, since a headless turn can't. Council's other seats have no
+    Bash or edit tools.
+  - Local panes are unchanged: the status line's settings file, as before.
+- **Joined while running.**
+  - A Claude session in a room whose launch didn't run under the room's settings
+    (`outsideRoomSandbox`: no `guards.secrets`) is kept off the room's line until
+    it restarts there:
+    - `send_message` to teammates, the House, artifact and teammates'-changes
+      tools, and `list_sessions`'s teammates (`ROOM_SANDBOX_REFUSAL`);
+    - teammates' messages to it: `roomMessageRefusal`, so teammates' lists show
+      it as not taking messages;
+    - wires to it (`wireRefusal`).
+  - No new UI: the existing guard chip already offers the restart.
+  - `guards.secrets` keeps its shape. For Claude it now also means the sandbox,
+    so records stay readable by an older Mockingbird.
+- **The check.**
+  - **M:** `ps` runs with `TZ=UTC` (`TOOL_ENV`), so start times read the same in
+    any zone.
+  - **L, pid reuse:** after `lsof`, a third `ps` reads the caller's line back to
+    the root. A pid on it with another start or parent refuses the call ("a
+    process in its workspace changed while it was being checked"), and a changed
+    root is `gone`.
+  - **L, start reads:** a root's start is read again while it isn't known. Only
+    a confirmed start time counts: one from after it was bound means the pid is
+    another process's, for good.
+  - **L, floods:** at most `MAX_RUNNING` (4) checks run at once and
+    `MAX_WAITING` (32) wait, each up to 2 s. Past that, a call is refused at
+    once.
+  - **L, the await:** after it, `callerRefusal` checks the token is still live and
+    bound to the same launch. Otherwise the call is answered as ended, through
+    `noToken`.
+- **Refusals.** They say what to do:
+  - **Outside the tree:** only the workspace's agent and what it starts can use
+    the tools, and a split-pane (tmux) teammate is outside the pane, so use
+    in-process teammates.
+  - **Gone:** the launch is over, and restarting the workspace brings the tools
+    back.
+  - **Failed:** usually brief, so try again; if it keeps failing, tell the user.
+  - **Recovery:** once the check works again for that launch, `main.log` says so,
+    and a later failure is told again.
+- **Tests.**
+  - The clean environment, run for real through `/usr/bin/env`.
+  - A zone flip, with a stand-in `ps` that writes starts in the zone its
+    environment names.
+  - Descendant pid reuse, the start re-reads, a late start, the turn limit, the
+    after-the-await check, and the recovery log and re-arm.
+  - The room settings (`claudeRoomSandbox.test.ts`), one `--settings` with the
+    status line (`agents.test.ts`), and a room launch's settings in a real repo.
+  - A Claude pane moved into the room: kept off the line, then sandboxed after a
+    restart (`teamLivePanes.test.ts`). The line refusals both ways
+    (`teamAgents.test.ts`), and the wire refusal (`wires.test.ts`).
+  - The unused `grand` server is gone.
+- **Measured.** At a load average of 11 with 1,210–1,220 processes, three runs
+  gave a median of 111–112 ms a call and a slowest of 114–420 ms. Ten calls at
+  once were all answered in 628–681 ms. That is about 50 ms more a call for the
+  third `ps`, and ten at once now take turns.
+
+**Hand checks for the real-CLI smoke test.** The probes above cover most of
+these. Still to do in Ryan's own room, with his HOME:
+- a commit in a room pane's worktree, and `git fetch`;
+- `npm install` in a room pane: no network prompt;
+- the hook (status chips move), the status line (usage shows) and the Mockingbird
+  tools (`list_sessions`, `send_message`) all working;
+- asking the agent to write `~/.mockingbird/x` and `~/.zshenv`: refused through
+  Bash and through Write;
+- a pane moved into a room while running: refused across the line, saying to
+  restart; and fine after the restart;
+- `git push` from a room pane: expected to fail, since the keychain is denied as
+  for Codex. Mockingbird's own git does the pushing.
+
+**Left.**
+- Version skew: an older Mockingbird publishes `guards.secrets: true` for Claude
+  room panes that aren't sandboxed. Both teammates should be on this build before
+  relying on it.
+- Commands can still read secret files inside the session's own folders
+  (`cat .env`). The sandbox has no glob denies, so as before only Claude's file
+  tools are kept from them.
+- W20's "Left for real CLIs" still stands: Codex sub-agents' servers, Claude's
+  split-pane teammates, `/mcp` reconnects and real Council turns are unchecked.
+
 ## 2. Data model
 
 ### The file
@@ -2760,16 +2934,18 @@ socket's other end also has to be the launch's own process, or descend from it.
     Nothing falls back to the token alone.
 - **The token stays as a second factor.** It picks the launch and is checked first,
   so a call without a live token runs no `ps` or `lsof`.
-- **Cost:** about 70–85 ms a call for the two tools, and 0.17–0.25 s for ten calls
-  at once. This was measured at a load average of 32 with 1,280–1,300 processes (see
-  W20 as built).
+- **Cost:** about 110 ms a call for the three tools, and 0.63–0.68 s for ten calls
+  at once, at most four of them checked at a time. This was measured at a load
+  average of 11 with 1,210–1,220 processes (see W20 review fixes 1 as built).
 
-*Who can still read a token.* The same processes as before W20. Anything running as
-the user outside a sandbox can read any running launch's token from its file, for as
-long as that launch runs. That includes:
+*Who can still read a token.* Anything running as the user outside a sandbox can read
+any running launch's token from its file, for as long as that launch runs. That
+includes:
 - the user's own shells and apps;
-- every Claude pane's shell, private or in a room. A Claude room session has no OS
-  sandbox, only `Read()` deny rules, and those cover its file tools, not its Bash;
+- every Claude pane's shell outside a room. Since W20 review fixes 1, a Claude room
+  session's sandbox denies `~/.mockingbird/mcp-tokens` to its commands, beside the
+  `Read()` deny rules that cover its file tools. A Claude pane that joined a room
+  while running has neither until it restarts there;
 - a Codex pane outside a room;
 - a Codex room session older than `CODEX_ROOM_GUARD_SINCE` (0.138.0,
   `livePanes.ts:71`).
@@ -2798,28 +2974,44 @@ is refused.
   that stays under the pane, can call its tools without the CLI's prompt for each
   MCP call. A process that leaves the tree is refused: a daemon that double-forks
   ends up under launchd.
-- **Whatever puts code into a pane's tree runs as that pane.** That includes:
-  - the user's shell start-up files (a pane is `zsh -ilc`);
-  - the CLI's own hooks and MCP config;
-  - a binary earlier on its `PATH`.
+- **Whatever puts code into a pane's tree runs as that pane, and W20 can't stop
+  that.** Every pane, and Mockingbird itself, runs files that any same-uid process
+  can write:
+  - Mockingbird's `hook.sh`, `statusline.sh` and `mcp.js` in `~/.mockingbird`;
+  - the shell's start-up files (a pane is `zsh -ilc`);
+  - the CLIs' own settings, hooks and MCP config;
+  - git's config (`core.fsmonitor`, `hooksPath`, aliases), which panes' git and
+    main's git both run;
+  - a binary earlier on `PATH`.
 
-  These are the user's own files. Any same-uid process can write them, and the next
-  launch runs whatever is there. In a room, the session's sandbox or deny rules
-  decide whether its agent can write them.
+  A token reader that writes one of these acts as every pane at its next launch,
+  and no peer check can tell. **The room sandbox closes it for room agents.** Since
+  W20 review fixes 1, a Claude session started in a room's area runs in Claude
+  Code's sandbox, as a Codex room session runs in Codex's. Its commands write only
+  its worktree, the repository's git data but config and hooks, the temp folder and
+  package caches. Its file tools can't write outside its folders, and `HOME_RUNS_CODE`
+  is denied to both by name. A Claude pane that joined a room while running isn't
+  sandboxed: until it restarts in the room, nothing crosses the room's line to or
+  from it. **Ryan's own local panes aren't sandboxed.** They are trusted as his own,
+  like his terminal: what one of them writes, he could have written.
 - **A process in the tree can let one outside it through.** It can hand over its
   connection, or relay for it. It can also bind a socket at a path that reads like
   main's end's address, so that `lsof` names it as the peer. Any of these takes the
   inside process's help, and an inside process could make the calls itself.
-- **pid reuse.** The root is pinned by its start time, so its pid going to a new
-  process reads as ended. A descendant's pid isn't pinned. Suppose a descendant ends
-  in the few tens of ms between `ps` and `lsof`, and an outside process that has
-  already connected to the socket takes its pid at once: that caller would pass.
-  The gap can't be aimed. A native `LOCAL_PEERTOKEN` check would close it.
+- **pid reuse.** The root is pinned by its start time, read in UTC, so its pid
+  going to a new process reads as ended. A start after it was bound is another
+  process's. Since review fixes 1, a third `ps` after `lsof` reads the caller's
+  line back to the root and refuses it if any pid on it changed start time or
+  parent. What's left is a pid changing hands twice between two `ps` runs, the
+  second time to a process with the first's start second. A native `LOCAL_PEERTOKEN`
+  check would close even that.
 - **Claude teammates in split-pane mode** run under tmux's server, not under the
-  pane, so they're refused (*inferred*: see "Left for real CLIs" in W20 as built).
+  pane, so they're refused. The refusal says so and points to in-process teammates
+  (*inferred*: see "Left for real CLIs" in W20 as built).
 
 Before W1, any socket client could name any pane in `from`. Before W20, any same-uid
-process could read a token and act as its pane. The rest of the boundary is the
+process could read a token and act as its pane. W20 stops callers outside the
+pane's tree. The room sandbox stops room agents writing what runs in every tree. The rest of the boundary is the
 agent's own permissions and, in a Codex room, its sandbox. Wire scope is a rule on
 the tool, not a wall, and this file shouldn't be read as saying otherwise.
 

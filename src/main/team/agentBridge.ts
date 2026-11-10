@@ -47,12 +47,14 @@ export interface AgentBridgeDeps {
    * session's room is its top-level group's.
    */
   roomOf?: (sessionId: string) => RoomId | null;
+  /**
+   * What a session's launch runs under in its room (the session manager's guardsOf): a Claude session started outside
+   * the room has none, and takes no agent messages from it until it's restarted there (outsideRoomSandbox).
+   */
+  guardsOf?: (sessionId: string) => { secrets: boolean } | null;
   log: (msg: string) => void;
   now?: () => number;
 }
-
-/** What a session's room record says about taking messages (roomSessions.ts recordFor). */
-const asRecord = (s: SessionInfo, live = true) => ({ agent: s.shell ? null : s.agent ?? "claude", status: s.status, live });
 
 const titleOf = (s: SessionInfo): string => s.ticketTitle ?? s.title;
 
@@ -66,6 +68,11 @@ export class AgentBridge implements RemoteAgents {
 
   constructor(private d: AgentBridgeDeps) {
     this.now = d.now ?? Date.now;
+  }
+
+  /** What a session's room record says about taking messages (roomSessions.ts recordFor). */
+  private asRecord(s: SessionInfo, live = true) {
+    return { agent: s.shell ? null : (s.agent ?? "claude"), status: s.status, live, ...(this.d.guardsOf ? { guards: this.d.guardsOf(s.id) } : {}) };
   }
 
   /** Answer teammates' requests, delivering their messages through `messaging`. */
@@ -116,7 +123,7 @@ export class AgentBridge implements RemoteAgents {
     return this.d
       .sessions()
       .filter((s) => !s.debrief && this.roomOf(s) === roomId)
-      .map((session) => ({ session, refused: roomMessageRefusal(asRecord(session), me) }));
+      .map((session) => ({ session, refused: roomMessageRefusal(this.asRecord(session), me) }));
   }
 
   /** This install's sessions in a room that take agent messages. */
@@ -158,7 +165,7 @@ export class AgentBridge implements RemoteAgents {
     if (s) {
       const r = this.roomOf(s);
       if (r === roomId) {
-        const why = roomMessageRefusal(asRecord(s), me);
+        const why = roomMessageRefusal(this.asRecord(s), me);
         return why ? { detail: `${theirs(s)}: ${why}`, toTitle: titleOf(s) } : null;
       }
       const other = r ? team.room(r) : undefined;
@@ -167,7 +174,7 @@ export class AgentBridge implements RemoteAgents {
       }
     } else {
       const closed = this.d.resumable?.().find((x) => x.id === to && this.roomOf(x) === roomId);
-      if (closed) return { detail: `${theirs(closed)}: ${roomMessageRefusal(asRecord(closed, false), me)}`, toTitle: titleOf(closed) };
+      if (closed) return { detail: `${theirs(closed)}: ${roomMessageRefusal(this.asRecord(closed, false), me)}`, toTitle: titleOf(closed) };
     }
     return { detail: `${me}'s Mockingbird has no session "${to}" in this room: it was closed for good, moved out of the room, or the id is wrong — call list_sessions for current ids` };
   }

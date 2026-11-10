@@ -536,7 +536,11 @@ describe("models that run commands", () => {
     const base = { key: "k", label: "L", color: 0, lastSeen: 0, conversationId: "c1", effort: null, readsCode: true, runsCommands: true };
     const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5" });
     const settings = JSON.parse(/--settings '([^']+)'/.exec(cl)![1]);
-    expect(settings.sandbox).toEqual({ enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowLocalBinding: true, allowedDomains: ["*"] } });
+    // a room session's sandbox, whose Bash doesn't ask: a headless turn can't
+    expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowLocalBinding: true, allowedDomains: ["*"] } });
+    expect(settings.sandbox.network.allowUnixSockets).toBeUndefined();
+    expect(settings.sandbox.filesystem.denyWrite).toContain("~/.mockingbird");
+    expect(settings.permissions).toMatchObject({ blockWritesOutsideWorkingDirectories: true, deny: expect.arrayContaining(["Edit(~/.mockingbird/**)", "Edit(~/.zshenv)"]) });
     expect(cl).toMatch(/--permission-mode acceptEdits --disallowedTools NotebookEdit$/);
     const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r");
     expect(cx).toContain(`-c 'sandbox_mode="workspace-write"' -c 'sandbox_workspace_write.network_access=true'`);

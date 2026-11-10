@@ -47,17 +47,26 @@ exit 0
  * replace it.
  */
 export function usageReporterArgs(): string[] {
+  return usageReporterSettings() ? ["--settings", STATUSLINE_SETTINGS] : [];
+}
+
+/**
+ * The settings usageReporterArgs passes, for a launch that gives its own --settings (a team room session's sandbox)
+ * and so has to carry them in the same one; null when the user has their own statusLine.
+ */
+export function usageReporterSettings(): { statusLine: { type: "command"; command: string } } | null {
   try {
-    if (readJsonFile(CLAUDE_SETTINGS, {})?.statusLine) return [];
+    if (readJsonFile(CLAUDE_SETTINGS, {})?.statusLine) return null;
   } catch (err) {
     console.warn(`usage: cannot read ${CLAUDE_SETTINGS}, usage reporting off: ${(err as Error).message}`);
-    return [];
+    return null;
   }
+  const settings = { statusLine: { type: "command" as const, command: `"${STATUSLINE_SCRIPT}"` } };
   // running panes run the script every few hundred ms: it is only replaced when it changed, and in one step
   writeGenerated(STATUSLINE_SCRIPT, SCRIPT, 0o755);
-  writeGenerated(STATUSLINE_SETTINGS, JSON.stringify({ statusLine: { type: "command", command: `"${STATUSLINE_SCRIPT}"` } }));
+  writeGenerated(STATUSLINE_SETTINGS, JSON.stringify(settings));
   pruneContextReports();
-  return ["--settings", STATUSLINE_SETTINGS];
+  return settings;
 }
 
 /** Drops the context reports of conversations that haven't run for two weeks. */

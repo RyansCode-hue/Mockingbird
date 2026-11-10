@@ -528,8 +528,9 @@ Member replace the single admin (creator, else longest-standing member).
   `~/Library/Messages` and `~/Library/Mail` (`HOME_PRIVATE_DATA`): phone
   replies need Full Disk Access, which everything Mockingbird runs inherits,
   and macOS otherwise keeps both from apps. Claude's rules gate its file
-  tools only: a shell command a Claude session runs can still read them, as
-  it can any secret file (M9). Codex's sandbox (below) covers its commands.
+  tools; its room sandbox (below) covers the home folders, credential stores
+  and known files for its commands, but not the secret patterns inside its own
+  folders (`cat .env`, M9). Codex's sandbox (below) covers its commands.
 - **Codex room sessions** (Codex 0.138 or later) run in the room's sandbox:
   a permission profile, `mockingbird-room` (`src/main/codexRoomSandbox.ts`),
   defined and selected entirely by `-c` settings on that launch
@@ -584,12 +585,36 @@ Member replace the single admin (creator, else longest-standing member).
     sessions as configured and they say "codex: secrets unguarded", naming
     the update to make. Mockingbird reads the installed version before a room
     launch when it doesn't know it yet.
-- **What the deny rules don't cover:** Claude's stop Claude's file tools, not
-  a shell command the user approves (`cat .env`); Codex's stop everything the
-  agent runs, but not a `!` command typed into the pane. A terminal in a
-  shared group is shared too (anyone in the room sees it, and can type into
-  it once its owner lets them) and says so. A session moved into a shared group while running keeps what
-  it started with until it's restarted, and offers the restart.
+- **Claude room sessions** run in Claude Code's own sandbox, given with
+  `--settings` on that launch alone (`src/main/claudeRoomSandbox.ts`), so
+  `~/.claude/settings.json` is never touched. It mirrors Codex's profile:
+  - **Commands** (Bash and what it starts) write only the session's folders,
+    the temp folder, the repository's git data but its config, hooks and
+    submodules, and the package caches. They can't read the home secrets,
+    credential stores, Messages, Mail or the PAT file. There's no unsandboxed
+    retry, and Claude won't start without the sandbox. Set from `--settings`,
+    that makes the repository's own settings unable to widen it.
+  - **The file tools** can't write outside the session's folders, and the
+    files that run in every pane (`HOME_RUNS_CODE`: `~/.mockingbird`, the
+    shell's start-up files, `~/.claude`, `~/.codex`, git's and ssh's config,
+    launchd's agents) and the git folder's config and hooks are denied by rule.
+    Deny rules hold in every permission mode.
+  - **The network** is open, as for Codex and Council. Bash still asks before
+    each command, as outside a room.
+  - Hooks, the status line and Mockingbird's MCP server run outside the
+    sandbox, as they must.
+  - **Joined while running:** a Claude session moved into a shared group
+    while it runs has none of this. Until it's restarted there, nothing
+    crosses the room's line to or from it: teammates' messages, its own
+    `send_message` to teammates, wires, and the House, artifact and
+    teammates'-changes tools are refused, saying why.
+- **What the deny rules don't cover:** Claude's sandbox doesn't stop a
+  shell command reading a secret file inside its own folders (`cat .env`);
+  Codex's stops everything the agent runs. Neither stops a `!` command typed
+  into the pane. A terminal in a shared group is shared too (anyone in the
+  room sees it, and can type into it once its owner lets them) and says so.
+  A session moved into a shared group while running keeps what it started
+  with until it's restarted, and offers the restart.
 - **How commits get the trailer:** a room session starts with
   `GIT_CONFIG_PARAMETERS` pointing `core.hooksPath` at Mockingbird's hooks
   folder, so every git the session runs uses it and no repository's config

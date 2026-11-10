@@ -845,12 +845,43 @@ describe("room session launch", () => {
     expect(ryan.logs.some((l) => /House board for session/.test(l))).toBe(true);
   });
 
-  it("flags a session moved into the room while running as unguarded", async () => {
+  it("flags a session moved into the room while running as unguarded, and keeps a Claude one off the room's line until it restarts there", async () => {
     const { ryan, nick } = await pair();
     const s = await ryan.start({ taskGroup: "private" });
+    const local = await ryan.start({ taskGroup: "private" });
+    const inRoom = await ryan.start();
+    expect(ryan.live.outsideSandbox(s.id)).toBe(false);
     ryan.sessions.setGroup(s.id, "5110");
     await until(() => !!remoteOf(nick, s.id), "the record");
     expect(remoteOf(nick, s.id)!.room!.guards).toEqual({ secrets: false, coauthors: false });
+    expect(ryan.live.outsideSandbox(s.id)).toBe(true);
+    expect(ryan.live.outsideSandbox(inRoom.id)).toBe(false);
+    expect(ryan.live.outsideSandbox(local.id)).toBe(false);
+    // restarted in the room, it runs in the room's sandbox
+    const again = await ryan.sessions.restart(s.id);
+    expect(ptyOf(again.id).args.join(" ")).toContain('"sandbox":{"enabled":true');
+    expect(ryan.live.outsideSandbox(again.id)).toBe(false);
+  });
+  it("starts Claude in the room's sandbox, with the status line in the same --settings; outside a room, as before", async () => {
+    const { ryan } = await pair();
+    const repo = makeRepo();
+    const s = await ryan.start({ cwd: repo });
+    const args = ptyOf(s.id).args.join(" ");
+    expect(args.match(/--settings/g)).toHaveLength(1);
+    const settings = JSON.parse(/--settings' '(\{.*?\})'/.exec(args)![1]);
+    expect(settings.statusLine).toMatchObject({ type: "command", command: expect.stringContaining("statusline.sh") });
+    expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false, network: { allowedDomains: ["*"] } });
+    const git = fs.realpathSync(path.join(repo, ".git"));
+    expect(settings.sandbox.filesystem.allowWrite).toEqual(expect.arrayContaining([git, "~/.npm"]));
+    expect(settings.sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining(["~/.mockingbird", "~/.zshenv", "~/.claude", path.join(git, "config"), path.join(git, "hooks")]));
+    expect(settings.sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(["~/.mockingbird/mcp-tokens", "~/Library/Keychains"]));
+    // the co-author hooks its commits run, inside the denied ~/.mockingbird/team
+    expect(settings.sandbox.filesystem.allowRead.map((p: string) => path.basename(p))).toEqual(["githooks", "coauthors"]);
+    expect(settings.permissions).toMatchObject({ blockWritesOutsideWorkingDirectories: true, deny: expect.arrayContaining(["Edit(~/.mockingbird/**)", "Edit(~/.zshrc)", `Edit(/${path.join(git, "config")})`, `Edit(/${path.join(git, "hooks")}/**)`]) });
+    expect(ryan.sessions.guardsOf(s.id)).toMatchObject({ secrets: true });
+    const outside = ptyOf((await ryan.start({ taskGroup: "private" })).id).args.join(" ");
+    expect(outside).not.toContain("sandbox");
+    expect(outside).toMatch(/--settings' '[^']*statusline-settings\.json'/);
   });
 });
 

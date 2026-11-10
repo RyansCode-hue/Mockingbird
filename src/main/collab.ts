@@ -18,6 +18,7 @@ import type {
 import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, SEAT_PALETTE_SIZE } from "../shared/types";
 import { MB_DIR } from "./store";
 import { writeFileAtomic } from "./fileOps";
+import { claudeRoomSettings } from "./claudeRoomSandbox";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
 import { MCP_TOOL, bindMcpLaunch, claudeToolName, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
@@ -880,20 +881,13 @@ export class CollabRooms {
 }
 
 /**
- * Claude's OS sandbox for a seat that runs commands: Bash runs without asking,
- * can write only inside its cwd (the test copy), can't escape the sandbox, and
- * can reach the network (package installs, local services). A Docker seat also
- * gets the Docker socket — and through the daemon, everything Docker can reach.
+ * Claude's OS sandbox for a seat that runs commands: a room session's (claudeRoomSandbox.ts), whose Bash runs without
+ * asking, since a headless turn can't ask. It writes only inside its cwd (the test copy) and the caches, can't escape the
+ * sandbox, and can reach the network (package installs, local services). A Docker seat also gets the Docker socket, and
+ * through the daemon everything Docker can reach.
  */
 function claudeCommandSandbox(dockerSockets: string[]): string {
-  return JSON.stringify({
-    sandbox: {
-      enabled: true,
-      autoAllowBashIfSandboxed: true,
-      allowUnsandboxedCommands: false,
-      network: { allowLocalBinding: true, allowedDomains: ["*"], ...(dockerSockets.length ? { allowUnixSockets: dockerSockets } : {}) },
-    },
-  });
+  return JSON.stringify(claudeRoomSettings({ git: null, hooks: [], sockets: dockerSockets, autoAllowBash: true }).settings);
 }
 
 /** The Docker daemon sockets on this Mac (Docker Desktop, OrbStack, Colima), both as linked and as resolved. */

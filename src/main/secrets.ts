@@ -50,12 +50,35 @@ export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 
 /**
  * Credentials outside any repository, this install's own team keys and invite tokens, and each running launch's MCP
- * token. Only a Codex room session's sandbox (from CODEX_ROOM_GUARD_SINCE) denies these to the agent's commands. A
- * Claude room session has no OS sandbox: its deny rules (roomSecretReads) cover Claude's file tools, so its Bash can read
- * them, a running pane's MCP token included, for as long as that pane runs. Neither covers the MCP servers the agents
- * start, which read their own token here.
+ * token. A room session's sandbox denies these to the agent's commands: Codex's from CODEX_ROOM_GUARD_SINCE
+ * (codexRoomSandbox.ts), Claude's always (claudeRoomSandbox.ts); Claude's deny rules (roomSecretReads) cover its file
+ * tools. Neither covers the MCP servers the agents start, which read their own token here.
  */
 export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**", "~/.mockingbird/mcp-tokens/**"];
+
+/**
+ * What runs inside every pane's process tree, or in Mockingbird's own processes: Mockingbird's hook, status line and
+ * MCP scripts, the login shell's start-up files (a pane is `zsh -ilc`), the CLIs' own settings, hooks and MCP config,
+ * git's config (core.fsmonitor, hooksPath, aliases) and ssh's, and launchd's agents. Whatever writes one of these acts as
+ * every pane, so a room session's agent may write none of them: its sandbox denies them to its commands, and its deny
+ * rules to its file tools (claudeRoomSandbox.ts). The git folder's own config and hooks are added per repository.
+ */
+export const HOME_RUNS_CODE = [
+  "~/.mockingbird/**",
+  "~/.zshenv",
+  "~/.zshrc",
+  "~/.zprofile",
+  "~/.zlogin",
+  "~/.bashrc",
+  "~/.bash_profile",
+  "~/.profile",
+  "~/.claude/**",
+  "~/.codex/**",
+  "~/.gitconfig",
+  "~/.config/git/**",
+  "~/.ssh/**",
+  "~/Library/LaunchAgents/**",
+];
 
 /**
  * Personal data in home: Messages' history and attachments, and Mail's store
