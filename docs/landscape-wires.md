@@ -3071,12 +3071,55 @@ W2's `guardedGit` (its config listing too) and every write with `WRITE_ENV` or
 `add` with `WRITE_ENV` and a `fetch` with `OWN_WRITE_ENV` refused in a rewritten
 folder. The one git `src/main` starts outside `git.ts`, Find's streamed `git grep`
 (`find.ts`), starts only once `isRepo` has run through it, and is refused with it; the
-test checks that too.
+test checks that too. (Fixes 3 gives it a check of its own as it starts.)
 
 **Checked on the rebased head** (load 9 to 16):
 - `npm run typecheck` and `npm run build` pass.
 - `CI=true npm test` exits 0: 187 files pass and 30 skip; 3,054 tests pass and 147 skip.
 - `MB_E2E_APP=1`: `wiresApp`, `quitApp` and `teamLiveApp` pass, with no relays left.
+
+#### W20 review fixes 3 as built
+The re-review confirmed H1, H2, M1–M4 and L1–L3 fixed. This closes its two new Lows,
+on the branch rebased onto W2 3b (main `e992b83`). Its new Medium (the sandbox's
+report-in proves its settings loaded, not that it enforces) is still open.
+
+**Rebase.** One conflict again: `worktrees.ts`'s imports. W2 3b's `ownFetch` and
+`ownNetworkGit` were kept beside W20's `unpinGitDirs`. Every Mockingbird-initiated
+fetch, ls-remote and push now goes through `ownNetworkGit`, which reads the
+repository's config with `git()` and then runs `git()`, so through the pin check in
+`run()`. `gitPins.test.ts` adds an `ownFetch`, an `ls-remote` and a `push` with its
+pre-push, each refused in a rewritten folder and logged where the app logs its own
+network gits.
+
+**L-new1: Find's `git grep` checks the pin itself** (`find.ts`). It's spawned there,
+not through `git.ts`, so `gitPinRefusal(root)` now runs just before the spawn, not
+only in the `isRepo` before it. `findPins.test.ts` stubs `isRepo` so the check at the
+spawn is the only one: a rewritten `.git` refuses the search, saying why.
+
+**L-new2: a teammate's typing waits out the folder notice** (`sessions.ts`
+`writeFromTeammate`, from `LivePanes.answerInput`).
+- While a Codex room launch's notice holds, a teammate's typing is held, then typed in
+  order once Codex has opened, before anything queued. What it leaves in the prompt is
+  a draft, so queued messages then wait for it as they would for anyone's.
+- At most 64 KB is held; beyond that the teammate is told the pane's Codex hasn't
+  opened yet.
+- A pane that exits with typing still held says so in the log, with its size.
+- The owner's own keys go straight in, as before.
+
+**Tests:**
+- `findPins.test.ts`;
+- `gitPins.test.ts` (W2 3b's network gits);
+- `sessionLifecycle.test.ts`: held and typed in order, capped, the owner's keys
+  direct, and the exit logged;
+- `teamLivePanes.test.ts`: Nick's "2\r", with Ryan's leave, never reaches the
+  notice, and goes once Codex has opened.
+
+**Checked:**
+- Each of the 7 new guards undone in turn (`w20rf2b/mutate3.py`) fails its test.
+- `npm run typecheck` and `npm run build` pass, and `CI=true npm test` exits 0: 188
+  files pass and 30 skip; 3,074 tests pass and 147 skip.
+- `MB_E2E_APP=1`: `wiresApp`, `quitApp` and `teamLiveApp` pass, with no relays left.
+- Load averages ran 35 to 58 throughout.
 
 ## 2. Data model
 

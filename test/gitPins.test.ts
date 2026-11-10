@@ -6,7 +6,7 @@ import { git } from "../src/main/git";
 import { clearGitPins, gitPinRefusal, onGitPinRefused, pinGitDirs, readGitPointer } from "../src/main/gitPins";
 import { roomGitDirs } from "../src/main/codexRoomSandbox";
 import { worktreeState } from "../src/main/worktrees";
-import { guardedGit, OWN_WRITE_ENV, WRITE_ENV } from "../src/main/safeGit";
+import { guardedGit, logOwnGitFailuresTo, ownFetch, ownNetworkGit, OWN_WRITE_ENV, WRITE_ENV } from "../src/main/safeGit";
 import { searchFiles } from "../src/main/find";
 import { tempDir } from "./helpers";
 
@@ -58,6 +58,18 @@ describe("git in a room session's folder", () => {
     await expect(guardedGit(t.wt).then((g) => g.status(["--porcelain"]))).rejects.toThrow(/won't run git/);
     await expect(git(t.wt, ["add", "-A"], { env: WRITE_ENV })).rejects.toThrow(/won't run git/);
     await expect(git(t.wt, ["fetch", "origin"], { env: OWN_WRITE_ENV })).rejects.toThrow(/won't run git/);
+    // Mockingbird's own fetches, ls-remotes and pushes, each failure logged where the app logs them
+    const ownLogged: string[] = [];
+    const before = logOwnGitFailuresTo((context, err) => ownLogged.push(`${context}: ${err}`));
+    try {
+      await expect(ownFetch(t.wt, ["origin"])).rejects.toThrow(/won't run git/);
+      await expect(ownNetworkGit(t.wt, "ls-remote", ["origin"])).rejects.toThrow(/won't run git/);
+      await expect(ownNetworkGit(t.wt, "push", ["origin", "HEAD"], { prePush: true })).rejects.toThrow(/won't run git/);
+    } finally {
+      logOwnGitFailuresTo(before);
+    }
+    expect(ownLogged).toHaveLength(3);
+    expect(ownLogged.every((l) => l.includes("won't run git"))).toBe(true);
     // the one git main starts itself, Find's streamed git grep, waits on isRepo's git, which is refused
     await expect(searchFiles(t.wt, "x", { regex: false, matchCase: false })).rejects.toThrow(/won't run git/);
     expect(fs.existsSync(t.ran)).toBe(false);

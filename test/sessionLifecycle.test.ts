@@ -876,6 +876,44 @@ describe("a Codex room launch's folder notice", () => {
     expect(p.writes).toEqual(["\r", "|the wire|", "\r", "|the next wire|", "\r"]);
   });
 
+  it("holds a teammate's typing until Codex has opened, then types it in order before what was queued; the owner's own keys go at once", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    m.roomLaunch = async () => room;
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const s = await m.create(codexPane);
+    const p = ptys.at(-1)!;
+    m.deliverAgentMessage(s.id, "the wire", true);
+    p.emit(capture.fresh.beforeEnter);
+    expect(m.writeFromTeammate(s.id, "2")).toBe("held");
+    expect(m.writeFromTeammate(s.id, "fix it")).toBe("held");
+    expect(m.writeFromTeammate(s.id, "x".repeat(64 * 1024))).toBe("full");
+    // the owner's key is the owner's: straight to the pty
+    m.write(s.id, "\x1b[A");
+    expect(p.writes).toEqual(["\x1b[A"]);
+    vi.advanceTimersByTime(FOLDER_NOTICE_SETTLE_MS);
+    expect(p.writes).toEqual(["\x1b[A", "\r"]);
+    p.emit(capture.fresh.afterEnter);
+    expect(p.writes).toEqual(["\x1b[A", "\r", "2", "fix it"]);
+    expect(m.writeFromTeammate(s.id, " now")).toBe("typed");
+    // what the teammate left in the prompt is a draft: the wire waits for it, as it would for anyone's
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(p.writes).toEqual(["\x1b[A", "\r", "2", "fix it", " now"]);
+    expect(m.list().find((x) => x.id === s.id)?.queuedCount).toBe(1);
+  });
+
+  it("says so when a pane exits with a teammate's typing still held", async () => {
+    const { m } = await manager();
+    m.roomLaunch = async () => room;
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await m.create(codexPane);
+    ptys.at(-1)!.emit(capture.fresh.beforeEnter);
+    expect(m.writeFromTeammate(s.id, "abc")).toBe("held");
+    ptys.at(-1)!.exit(1);
+    expect(warned).toHaveBeenCalledWith(`[sessions] ${s.id} exited with a teammate's typing (3 bytes) still held for its Codex's folder notice: it wasn't typed`);
+  });
+
   it("isn't waited for by a pane that isn't a Codex opening its folders untrusted", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const { m } = await manager();

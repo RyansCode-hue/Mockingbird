@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { isRepo } from "./git";
+import { gitPinRefusal } from "./gitPins";
 import { guardedGit } from "./safeGit";
 import type { FileHit, FileList, FileSearch, FileSearchOptions } from "../shared/types";
 
@@ -95,6 +96,9 @@ export async function searchFiles(root: string, query: string, opts: FileSearchO
   const [cmd, args] = repo
     ? ["git", ["-C", root, "grep", "-n", "-I", "--untracked", "--no-color", "-z", ...caseFlag, mode, "-e", query]]
     : ["grep", ["-rnIs", "--null", ...caseFlag, mode, ...[".git", ...SKIP_DIRS].map((d) => `--exclude-dir=${d}`), "-e", query, "--", "."]];
+  // started here, not through git.ts, so held to a room session's git folders here (gitPins.ts), as it starts
+  const pinned = repo ? gitPinRefusal(root) : null;
+  if (pinned) throw new Error(`git grep: ${pinned}`);
 
   return new Promise((resolve, reject) => {
     const child = spawn(cmd as string, args as string[], { cwd: root, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });

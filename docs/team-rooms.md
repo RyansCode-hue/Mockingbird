@@ -618,8 +618,11 @@ Member replace the single admin (creator, else longest-standing member).
       is left to the user, who is told once above the session list. Until
       Codex draws its composer after the notice (or its hooks report), nothing
       is typed into the pane: wires and other queued messages wait (and say
-      so), a broadcast sent now waits with them, and Compact is refused. A
-      Codex that shows no notice within a minute is no longer waited for.
+      so), a broadcast sent now waits with them, a teammate's typing (with
+      the owner's leave) is held and typed in order once Codex has opened
+      (64 KB of it at most), and Compact is refused. The owner's own keys go
+      straight in. A Codex that shows no notice within a minute is no longer
+      waited for.
       Council's turns run `codex exec`, which has no notice.
     - **`notify`**, the user's program run after each turn with the turn's last
       message, is set to nothing.
@@ -709,8 +712,10 @@ Member replace the single admin (creator, else longest-standing member).
     room launch's git folders, read from the filesystem and checked against
     the repository the session was opened on. Every git Mockingbird runs
     there — the status poll, the per-turn snapshot, stage, commit, discard,
-    a closing worktree's WIP commit — goes through one check first
-    (`gitPins.ts`, from `git.ts`): a `.git` that now leads elsewhere, or a
+    a closing worktree's WIP commit, its own fetches, ls-remotes and pushes,
+    Find's `git grep` — goes through one check first (`gitPins.ts`, from
+    `git.ts`, and from `find.ts` for the grep it starts itself): a `.git`
+    that now leads elsewhere, or a
     new `.git` between the folder and its top, refuses it, saying so once.
     Restarting the session reads the folder afresh.
   - **Messages stay on its side of the line.** `send_message` and

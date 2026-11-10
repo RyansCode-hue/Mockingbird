@@ -34,6 +34,8 @@ export function tailOf(text: string, max: number): string {
 }
 /** How long after an agent's start hook its prompt is ready to take a queued message. */
 const STARTED_SETTLE_MS = 1500;
+/** What of a teammate's typing is held while a Codex's folder notice is up (writeFromTeammate). */
+const MAX_HELD_INPUT = 64 * 1024;
 
 /**
  * Where a relaunched pane's earlier output ends: cursor shown and attributes
@@ -217,6 +219,7 @@ interface LiveSession {
   guards: RoomLaunch["guards"] | null; // set when it was started as a room session
   sandbox: RoomSandboxWatch | null; // a Claude room launch's sandbox, until and once it reports in
   folderNotice: CodexFolderNotice | null; // a Codex room launch's folder notice: nothing is typed in while it holds
+  heldInput: string[]; // a teammate's typing while the folder notice holds, typed once it's gone
   hookEvents: number; // hook events routed to this pty since it started
   transcripts: Map<string, string>; // conversation id → the transcript file its hooks named, the newest few
   kickoff: boolean; // its initial prompt is still to be typed in
@@ -629,6 +632,11 @@ export class SessionManager {
       retireMcpLaunch(mcp);
       started?.sandbox?.stop();
       started?.folderNotice?.stop();
+      if (started?.heldInput.length) {
+        const bytes = started.heldInput.reduce((n, d) => n + Buffer.byteLength(d), 0);
+        console.warn(`[sessions] ${started.info.id} exited with a teammate's typing (${bytes} bytes) still held for its Codex's folder notice: it wasn't typed`);
+        started.heldInput = [];
+      }
       if (this.quitting || !started || this.live.get(started.info.id) !== started) return;
       started.info.exitCode = exitCode;
       this.setStatus(started.info.id, "dead");
@@ -702,6 +710,7 @@ export class SessionManager {
       guards: room?.guards ?? null,
       sandbox: null,
       folderNotice: null,
+      heldInput: [],
       hookEvents: 0,
       transcripts: new Map(),
       kickoff: false,
@@ -1305,6 +1314,23 @@ export class SessionManager {
     s.proc.write(data);
   }
 
+  /**
+   * A teammate's typing (allowed to type, LivePanes.answerInput). While a Codex's folder notice holds, it's held and typed
+   * in order once Codex has opened: typed into the notice, a "2" or Esc would answer it. The pane's owner types through
+   * `write`, never held. "full" when what's held would pass MAX_HELD_INPUT.
+   */
+  writeFromTeammate(id: string, data: string): "typed" | "held" | "full" {
+    const s = this.live.get(id);
+    if (!s?.folderNotice?.holding()) {
+      this.write(id, data);
+      return "typed";
+    }
+    const held = s.heldInput.reduce((n, d) => n + d.length, 0);
+    if (held + data.length > MAX_HELD_INPUT) return "full";
+    s.heldInput.push(data);
+    return "held";
+  }
+
   /** Resize a pane's pty. A teammate's session is never resized from here: its owner's window decides its size. */
   resize(id: string, cols: number, rows: number): void {
     const s = this.live.get(id);
@@ -1410,6 +1436,7 @@ export class SessionManager {
       },
       cleared: (by) => {
         if (!current()) return;
+        for (const data of sess.heldInput.splice(0)) this.write(sess.info.id, data);
         // a hook's event goes on to deliver what waited as its status says (statusFromHook): flushed here too, a second
         // message would go while the first one's turn runs
         if (by !== "hook" && sess.info.status === "idle") this.flushQueued(sess);

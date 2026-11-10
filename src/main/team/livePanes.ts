@@ -808,7 +808,9 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     }
     if (/[\r\x03]/.test(data)) this.d.audit(`remote-input session=${s.id} from=${JSON.stringify(name)} bytes=${JSON.stringify(data.slice(-300))}`);
     this.d.remoteAudit?.count("input", who, Buffer.byteLength(data));
-    this.d.sessions.write(s.id, data);
+    // typed into a Codex's folder notice, it could answer it: held until Codex has opened, as queued messages are
+    if (this.d.sessions.writeFromTeammate(s.id, data) === "full")
+      throw new PeerError("its Codex hasn't opened its folder yet: typing waits for it, and 64 KB of it is already waiting");
     const email = typeof p.email === "string" ? p.email.slice(0, 200) : null;
     this.coauthors.typed(s.id, { id: from, name, email }, s.status, !s.shell);
     return { ok: true };

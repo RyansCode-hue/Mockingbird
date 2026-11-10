@@ -375,6 +375,22 @@ describe("typing into a teammate's session", () => {
     expect(ptyOf(own.id).writes).toEqual([]);
   });
 
+  it("holds a teammate's typing into a Codex room session until its Codex has opened its folder: a \"2\" never reaches the notice", async () => {
+    const { ryan, nick } = await pair();
+    ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
+    ryan.sessions.folderNoticeTiming = { settleMs: 60_000 };
+    const s = await ryan.start({ agent: "codex" });
+    ptyOf(s.id).emit(capture.fresh.beforeEnter);
+    await allowTyping(ryan, nick, s.id);
+    nick.sessions.write(remotePaneId(ryan.m.id, s.id), "2\r");
+    await until(() => ryan.audits.some((l) => l.startsWith(`remote-input session=${s.id} from="Nick"`)), "Nick's typing at Ryan's");
+    expect(ptyOf(s.id).writes).toEqual([]);
+    // Ryan answers it himself: Codex opens, and what Nick typed goes
+    ryan.sessions.write(s.id, "\r");
+    ptyOf(s.id).emit(capture.fresh.afterEnter);
+    expect(ptyOf(s.id).writes).toEqual(["\r", "2\r"]);
+  });
+
   it("never lets a teammate's wheel, clicks or PageUp/PageDown move the owner's view; their typing still arrives", async () => {
     let clock = 1_000_000;
     const { ryan, nick } = await pair({ now: () => clock });
