@@ -7,13 +7,25 @@ import { worktreeState } from "../worktrees";
 import { readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { roomWaitingNotice, shouldNotify } from "../notifications";
 import { roomSecretReads } from "../secrets";
-import { CODEX_ROOM_SANDBOX_NOTE, codexHomeOf, codexRoomPermissions, roomCacheEnv, roomCachesFolder, roomGitDirs, type RoomGitDirs } from "../codexRoomSandbox";
+import {
+  CODEX_ROOM_APPROVALS,
+  CODEX_ROOM_SANDBOX_NOTE,
+  codexHomeOf,
+  codexOutsideOff,
+  codexProjectFolders,
+  codexRoomPermissions,
+  roomCacheEnv,
+  roomCachesFolder,
+  roomGitDirs,
+  type RoomGitDirs,
+} from "../codexRoomSandbox";
+import { codexMcpNames } from "../codexMcpNames";
 import { claudeRoomSettings } from "../claudeRoomSandbox";
 import { sandboxMarkerCommand } from "../hooks";
 import { gitPinRefusal, gitTop, onGitPinRefused, pinGitDirs, unpinGitDirs } from "../gitPins";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
 import { isTermReply, isViewControl } from "../../shared/termInput";
-import { CLAUDE_INLINE_ENV } from "../agents";
+import { CLAUDE_INLINE_ENV, codexMcpOff } from "../agents";
 import {
   claudeSandboxes,
   claudeTooOld,
@@ -121,6 +133,8 @@ export interface LivePanesDeps {
   cachesDir?: string;
   /** The room sandbox's marker hook script (hooks.ts's unless a test says otherwise). */
   markerScript?: string;
+  /** The names of the user's Codex MCP servers, which a Codex room launch switches off; throws when they can't be read (codexMcpNames's unless a test says otherwise). */
+  codexMcpServers?: () => Promise<string[]>;
   now?: () => number;
   timing?: Partial<Timing>;
 }
@@ -465,6 +479,10 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       if (sandbox.problem) this.problem(sandbox.problem);
       claudeSettings = sandbox.settings;
     }
+    // the user's Codex MCP servers, switched off by name, and the folders named untrusted: either unknown, what they'd
+    // keep out could run outside the sandbox, so the launch is outside it
+    let codexServers: string[] | null = null;
+    let codexFoldersKnown = false;
     if (codexGuarded) {
       const sandbox = codexRoomPermissions({
         workTrackerPath: this.d.settings().workTrackerPath,
@@ -474,7 +492,23 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         ...(caches ? { caches } : {}),
       });
       if (sandbox.problem) this.problem(sandbox.problem);
-      codexPermissions = sandbox.config;
+      try {
+        codexServers = await (this.d.codexMcpServers ?? (() => codexMcpNames.names(this.d.sessions.binFor("codex"))))();
+      } catch (err) {
+        this.problem(
+          `Codex room sessions start outside the room's sandbox: Mockingbird couldn't read which MCP servers your Codex config names, to switch them off (${errText(err)}). ` +
+            "Nothing crosses the room's line for them until it can. Run `codex mcp list` in a terminal to see what's wrong, then restart the session.",
+          err
+        );
+      }
+      let folders: string[] = [];
+      try {
+        folders = codexProjectFolders(target.cwd, gitTop(target.cwd));
+        codexFoldersKnown = true;
+      } catch (err) {
+        this.problem(`Room session ${target.id} starts outside the room's sandbox: the folders whose Codex config it must not read couldn't be listed (${errText(err)})`, err);
+      }
+      codexPermissions = [...codexMcpOff(codexServers ?? []), ...codexOutsideOff(folders), CODEX_ROOM_APPROVALS, ...sandbox.config];
     }
     if (!gitRead) await gitDirs(null);
     let instructions: string | null = null;
@@ -502,7 +536,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       allowTools: target.agent === "claude" ? [...HOUSE_READ_TOOLS, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read, ...TEAM_CHANGES_READ_TOOLS] : [],
       inline,
       // a terminal is a shell once the agent it brought back quits: never guarded
-      guards: { secrets: target.agent !== null && (claudeSandboxed || codexGuarded), coauthors: this.hooksReady },
+      guards: { secrets: target.agent !== null && (claudeSandboxed || (codexGuarded && codexServers !== null && codexFoldersKnown)), coauthors: this.hooksReady },
       sandboxMarker,
       agentEnv: caches ? roomCacheEnv(caches) : {},
     };

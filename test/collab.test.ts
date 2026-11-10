@@ -6,6 +6,11 @@ import { execFileSync } from "child_process";
 import { makeTestCopy } from "../src/main/testCopy";
 import { CollabRooms, COLLAB_MODELS, dockerSockets, permissionKind, PERMISSION_REMIND_MS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
 import type { CollabParticipantSpec } from "../src/shared/types";
+import { CODEX_AGENTS_NOTE, CODEX_OUTSIDE_FEATURES } from "../src/main/codexRoomSandbox";
+import { quote } from "../src/main/shell";
+
+/** A Codex turn with none of the user's MCP servers to switch off and no project folders. */
+const NO_OFF = { mcpServers: [], folders: [] };
 import { DEFAULT_ASK_TIMEOUT_MIN, type CollabRoom } from "../src/shared/types";
 
 /** A runner whose replies come from a script: reply(modelKey, turnNumberForThatModel, prompt). */
@@ -305,11 +310,22 @@ describe("CLI commands", () => {
     expect(blind).not.toMatch(/--effort|--resume/);
   });
   it("Codex: read-only sandbox on the first turn, effort on every turn", () => {
-    const first = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: "high", readsCode: true }, "/tmp/r.txt");
-    expect(first).toBe(`'/bin/codex' exec -c 'model_reasoning_effort="high"' --disable apps --disable plugins -c 'mcp_servers={}' -c 'approval_policy="never"' -c 'sandbox_mode="read-only"' --json --skip-git-repo-check -m 'gpt-6-astra' -o '/tmp/r.txt' -`);
-    const later = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: null, readsCode: true, conversationId: "t1" }, "/tmp/r.txt");
+    const first = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: "high", readsCode: true }, "/tmp/r.txt", NO_OFF);
+    const outside = `-c 'notify=[]' ${CODEX_OUTSIDE_FEATURES.map((f) => `-c 'features.${f}=false'`).join(" ")} -c ${quote(`developer_instructions=${JSON.stringify(CODEX_AGENTS_NOTE)}`)}`;
+    expect(first).toBe(`'/bin/codex' exec -c 'model_reasoning_effort="high"' ${outside} -c 'approval_policy="never"' -c 'sandbox_mode="read-only"' --json --skip-git-repo-check -m 'gpt-6-astra' -o '/tmp/r.txt' -`);
+    const later = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: null, readsCode: true, conversationId: "t1" }, "/tmp/r.txt", NO_OFF);
     // resume takes no -s, so the sandbox is set on every turn rather than left to the user's config
-    expect(later).toBe(`'/bin/codex' exec resume 't1' --disable apps --disable plugins -c 'mcp_servers={}' -c 'approval_policy="never"' -c 'sandbox_mode="read-only"' --json --skip-git-repo-check -o '/tmp/r.txt' -`);
+    expect(later).toBe(`'/bin/codex' exec resume 't1' ${outside} -c 'approval_policy="never"' -c 'sandbox_mode="read-only"' --json --skip-git-repo-check -o '/tmp/r.txt' -`);
+  });
+  it("Codex: the user's MCP servers off by name before Mockingbird's own, no project config read in its folders, and no AGENTS.md note for a seat that can't read code", () => {
+    const ask = { command: "/Apps/Mockingbird", args: ["/h/mcp.js"], env: { MOCKINGBIRD_SESSION: "collab-r1.gpt6" } };
+    const off = { mcpServers: ["github", "dotted.name", "mockingbird"], folders: ["/code/app", "/code/app/web"] };
+    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: null, readsCode: false }, "/tmp/r", off, ask);
+    const servers = `-c 'mcp_servers={"github"={enabled=false}, "dotted.name"={enabled=false}}'`;
+    expect(cx).toContain(servers);
+    expect(cx.indexOf(servers)).toBeLessThan(cx.indexOf(`-c 'mcp_servers.mockingbird.command=`));
+    expect(cx).toContain(`-c 'projects={"/code/app"={trust_level="untrusted"}, "/code/app/web"={trust_level="untrusted"}}'`);
+    expect(cx).not.toMatch(/--disable|mcp_servers=\{\}|"mockingbird"=\{enabled=false\}|developer_instructions/);
   });
 });
 
@@ -375,8 +391,8 @@ describe("asking the code reader", () => {
     const base = { key: "fable", label: "L", color: 0, lastSeen: 0, conversationId: null, effort: null, readsCode: false };
     const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-fable-5-1" }, { mcp: ask, ask: true });
     expect(cl).toContain(`--strict-mcp-config --mcp-config '{"mcpServers":{"mockingbird":{"type":"stdio","command":"/Apps/Mockingbird","args":["/h/mcp.js"],"env":{"MOCKINGBIRD_SESSION":"collab-r1.fable"}}}}' --allowedTools mcp__mockingbird__ask_code_reader`);
-    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", ask);
-    expect(cx).toContain(`-c 'mcp_servers={}' -c 'mcp_servers.mockingbird.command="/Apps/Mockingbird"'`);
+    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", NO_OFF, ask);
+    expect(cx).toContain(`-c 'mcp_servers.mockingbird.command="/Apps/Mockingbird"'`);
     expect(cx).toContain(`-c 'mcp_servers.mockingbird.default_tools_approval_mode="approve"' -c 'mcp_servers.mockingbird.tool_timeout_sec=600'`);
   });
 });
@@ -549,7 +565,7 @@ describe("models that run commands", () => {
     expect(cached).toMatch(/^\/usr\/bin\/env 'npm_config_cache=\/c\/council\/npm' .*'XDG_CACHE_HOME=\/c\/council\/xdg' .*'\/bin\/claude' -p /);
     // a seat that doesn't run commands writes nothing
     expect(claudeTurnCommand("/bin/claude", { ...base, runsCommands: false, agent: "claude", model: "claude-opus-5-5" }, { caches: "/c/council" })).not.toContain("/usr/bin/env");
-    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r");
+    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", NO_OFF);
     expect(cx).toContain(`-c 'sandbox_mode="workspace-write"' -c 'sandbox_workspace_write.network_access=true'`);
     expect(cx).not.toContain("read-only");
   });
@@ -586,7 +602,7 @@ describe("models that use Docker", () => {
     // sockets are only opened for a Docker seat, even if passed
     const plain = claudeTurnCommand("/bin/claude", { ...base, usesDocker: false, agent: "claude", model: "claude-opus-5-5" }, { sockets: socks });
     expect(JSON.parse(/--settings '([^']+)'/.exec(plain)![1]).sandbox.network.allowUnixSockets).toBeUndefined();
-    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", undefined, socks);
+    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", NO_OFF, undefined, socks);
     expect(cx).toContain(`-c 'default_permissions="mb-docker"' -c 'features.network_proxy=true' -c 'permissions.mb-docker.extends=":workspace"'`);
     expect(cx).toContain(`-c 'permissions.mb-docker.network.unix_sockets={"/Users/me/.docker/run/docker.sock"="allow", "/var/run/docker.sock"="allow"}'`);
     expect(cx).not.toContain("sandbox_mode");

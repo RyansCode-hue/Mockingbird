@@ -5,9 +5,20 @@ import type { AddressInfo } from "net";
 import * as os from "os";
 import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CODEX_ROOM_PROFILE, codexHomeOf, codexRoomPermissions, roomGitDirs, type CodexRoomPlaces } from "../src/main/codexRoomSandbox";
+import {
+  CODEX_ROOM_APPROVALS,
+  CODEX_ROOM_PROFILE,
+  codexHomeOf,
+  codexOutsideOff,
+  codexProjectFolders,
+  codexRoomPermissions,
+  roomCacheEnv,
+  roomGitDirs,
+  type CodexRoomPlaces,
+} from "../src/main/codexRoomSandbox";
+import { CodexMcpNames } from "../src/main/codexMcpNames";
 import { SECRET_FILE_GLOBS } from "../src/main/secrets";
-import { agentFor, cliVersion } from "../src/main/agents";
+import { agentFor, cliVersion, codexMcpOff } from "../src/main/agents";
 import { quote } from "../src/main/shell";
 import { ensureHooks, hooksEnv } from "../src/main/team/coauthors";
 import { CODEX_ROOM_GUARD_SINCE, codexGuardsSecrets } from "../src/shared/team/livePanes";
@@ -85,6 +96,39 @@ describe("a Codex room session's permission profile", () => {
     expect(codexHomeOf({})).toBeUndefined();
     expect(codexHomeOf({ CODEX_HOME: home(".codex") })).toBeUndefined();
     expect(codexHomeOf({ CODEX_HOME: "/elsewhere/codex" })).toBe("/elsewhere/codex");
+  });
+
+  it("keeps the editors', agents' and shells' settings files read-only at the session folder's top and hidden below it, leaving .git to gitWrites", () => {
+    const profile = profileOf(codexRoomPermissions(places()).config);
+    const roots = /":workspace_roots"=\{([^}]*)\}/.exec(profile)![1];
+    for (const f of [".envrc", ".mcp.json", ".zshrc", ".gitmodules"]) expect(roots).toContain(`"${f}"="read", "*/**/${f}"="deny"`);
+    for (const d of [".codex", ".claude", ".vscode", ".idea"]) expect(roots).toContain(`"${d}"="read", "*/**/${d}"="deny", "*/**/${d}/**"="deny"`);
+    expect(roots).not.toContain(`.git"=`);
+  });
+
+  it("keeps a launch from what a repository commits or its agent picks to run outside the sandbox: each folder untrusted, notify, apps, plugins, computer and browser use", () => {
+    expect(codexOutsideOff(["/r", "/r/web"])).toEqual([
+      `projects={"/r"={trust_level="untrusted"}, "/r/web"={trust_level="untrusted"}}`,
+      "notify=[]",
+      ...["apps", "plugins", "computer_use", "browser_use", "browser_use_external", "skill_mcp_dependency_install"].map((f) => `features.${f}=false`),
+    ]);
+    expect(codexOutsideOff([])[0]).toBe("notify=[]");
+    // a folder with dots stays one key
+    expect(codexOutsideOff(["/Users/me/.mockingbird/wt/a.b"])[0]).toBe(`projects={"/Users/me/.mockingbird/wt/a.b"={trust_level="untrusted"}}`);
+  });
+
+  it("names every folder from the repository's top down to the session's, as given and resolved", () => {
+    const repo = makeRepo({ "web/src/a.ts": "x\n" });
+    const real = fs.realpathSync(repo);
+    const link = path.join(tempDir("link"), "repo");
+    fs.symlinkSync(repo, link);
+    const all = (...ps: string[]) => [...new Set(ps)];
+    expect(codexProjectFolders(path.join(link, "web", "src"), link)).toEqual(
+      all(path.join(link, "web", "src"), path.join(real, "web", "src"), path.join(link, "web"), path.join(real, "web"), link, real)
+    );
+    // outside a repository: the folder itself
+    const plain = tempDir("plain");
+    expect(codexProjectFolders(plain, null)).toEqual(all(plain, fs.realpathSync(plain)));
   });
 
   it("is used from the first Codex release whose permission profiles hold it", () => {
@@ -204,7 +248,8 @@ describe.skipIf(!realCodex)("the installed Codex in a room session's sandbox", (
       try branch git branch side
       try fetch git fetch -q origin
       try install npm install --no-audit --no-fund --offline "$tgz"
-      try npm-cache test -d "$HOME/.npm/_cacache"
+      try npm-cache test -d "$npm_config_cache/_cacache"
+      try room-cache sh -c 'mkdir -p "$XDG_CACHE_HOME/mb-probe" && echo x > "$XDG_CACHE_HOME/mb-probe/x"'
       try macos-cache sh -c 'mkdir -p "$HOME/Library/Caches/mb-probe" && echo x > "$HOME/Library/Caches/mb-probe/x"'
       try xdg-cache sh -c 'mkdir -p "$HOME/.cache/mb-probe" && echo x > "$HOME/.cache/mb-probe/x"'
       try local-service sh -c 'curl -sf "http://127.0.0.1:$port/" | grep -q "local service"'
@@ -217,21 +262,23 @@ describe.skipIf(!realCodex)("the installed Codex in a room session's sandbox", (
       try path-write sh -c 'mkdir -p "$HOME/.local/bin" && echo x > "$HOME/.local/bin/git"'
       ssh-add -l >/dev/null 2>&1; echo "ssh-agent $?"
     `;
+    // the room's own caches, which the agent's command points its tools at; home's stay unwritten
+    const caches = outsideTmp("room-caches");
     let out: string;
     try {
       out = await inRoomSandbox({
         cwd: wt,
-        places: places({ git: gitDirs, hooks: [hooksDir, coauthorsDir] }),
+        places: places({ git: gitDirs, hooks: [hooksDir, coauthorsDir], caches }),
         home,
         script,
         args: [path.join(pkg, "tiny-local-1.0.0.tgz"), remote, gitDirs.common, gitDirs.own, port],
-        env: { ...hooksEnv(hooksDir, ""), MOCKINGBIRD_SESSION: "s1" },
+        env: { ...hooksEnv(hooksDir, ""), MOCKINGBIRD_SESSION: "s1", ...roomCacheEnv(caches) },
       });
     } finally {
       service.close();
     }
-    for (const done of ["commit", "stash", "branch", "fetch", "install", "npm-cache", "macos-cache", "xdg-cache", "local-service"]) expect(out, done).toContain(`ok ${done}\n`);
-    for (const refused of ["push", "ssh-push", "config", "hook", "commondir", "home-write", "path-write"]) expect(out, refused).toContain(`failed ${refused}\n`);
+    for (const done of ["commit", "stash", "branch", "fetch", "install", "npm-cache", "room-cache", "local-service"]) expect(out, done).toContain(`ok ${done}\n`);
+    for (const refused of ["push", "ssh-push", "config", "hook", "commondir", "home-write", "path-write", "macos-cache", "xdg-cache"]) expect(out, refused).toContain(`failed ${refused}\n`);
     // 2: no SSH agent reachable (the proxy keeps Unix sockets closed), whether or not one runs
     expect(out).toContain("ssh-agent 2\n");
     expect(git(wt, "log", "-1", "--format=%B")).toContain("in the sandbox\n\nCo-authored-by: Nick Smith <nick@example.com>");
@@ -267,5 +314,120 @@ describe.skipIf(!realCodex)("the installed Codex in a room session's sandbox", (
     const r = spawnSync("codex", ["login", "status", ...config.flatMap((c) => ["-c", c])], { encoding: "utf8", env: { ...process.env, CODEX_HOME: codexHome }, timeout: 60_000 });
     expect(`${r.stdout}${r.stderr}`).toMatch(/logged in using an api key/i);
   }, 90_000);
+
+  it("can't write the editors', agents' and shells' settings files in its folder or below, and still reads them at the top", async () => {
+    const home = outsideTmp("home");
+    const repo = makeRepo({ "README.md": "hello\n", ".claude/settings.json": "{}\n", "web/index.ts": "x\n" }, "repo", outsideTmp("code"));
+    const script = `
+      try() { label=$1; shift; if "$@" >/dev/null 2>&1; then echo "ok $label"; else echo "failed $label"; fi; }
+      try envrc sh -c 'echo x > .envrc'
+      try nested-envrc sh -c 'echo x > web/.envrc'
+      try claude-settings sh -c 'echo x > .claude/settings.json'
+      try codex-config sh -c 'mkdir -p .codex && echo x > .codex/config.toml'
+      try nested-codex sh -c 'mkdir -p web/.codex && echo x > web/.codex/config.toml'
+      try nested-vscode sh -c 'mkdir -p web/.vscode && echo x > web/.vscode/settings.json'
+      try mcp-json sh -c 'echo {} > .mcp.json'
+      try zshrc sh -c 'echo x > web/.zshrc'
+      try ordinary sh -c 'echo x > web/notes.md'
+      try read-claude cat .claude/settings.json
+    `;
+    const out = await inRoomSandbox({ cwd: repo, places: places({ git: (await roomGitDirs(repo))! }), home, script });
+    for (const done of ["ordinary", "read-claude"]) expect(out, done).toContain(`ok ${done}\n`);
+    for (const refused of ["envrc", "nested-envrc", "claude-settings", "codex-config", "nested-codex", "nested-vscode", "mcp-json", "zshrc"]) expect(out, refused).toContain(`failed ${refused}\n`);
+    expect(fs.readFileSync(path.join(repo, ".claude/settings.json"), "utf8")).toBe("{}\n");
+  }, 120_000);
+
+  /**
+   * A room session's worktree whose repository the user's config trusts, with a .codex config of its own, and the
+   * user's config naming two MCP servers (one with dots in its name) and a notify program. `ran` collects what started.
+   */
+  function trustedWorktree(extra = "") {
+    const codexHome = outsideTmp("codex-home");
+    const ran = outsideTmp("ran");
+    const repo = makeRepo({ "README.md": "x\n" }, "repo", outsideTmp("code"));
+    const wt = path.join(outsideTmp("wt"), "dot.feature");
+    git(repo, "worktree", "add", "-q", "-b", "feature", wt);
+    const mark = (name: string) => `["/bin/sh", "-c", ${JSON.stringify(`echo x >> ${path.join(ran, name)}`)}]`;
+    const server = (name: string) => `command = "/bin/sh"\nargs = ["-c", ${JSON.stringify(`echo x >> ${path.join(ran, name)}; sleep 1`)}]\n`;
+    write(wt, { ".codex/config.toml": `[mcp_servers.reposrv]\n${server("reposrv")}` });
+    write(codexHome, {
+      "config.toml":
+        `cli_auth_credentials_store = "file"\nnotify = ${mark("notify")}\n${extra}\n` +
+        `[mcp_servers.usersrv]\n${server("usersrv")}\n[mcp_servers."dotted.name"]\n${server("dotted")}\n` +
+        `[projects.${JSON.stringify(fs.realpathSync(repo))}]\ntrust_level = "trusted"\n`,
+    });
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^npm_/i.test(k))), CODEX_HOME: codexHome };
+    const codex = (cwd: string, args: string[]) => spawnSync("codex", args, { cwd, encoding: "utf8", env, timeout: 90_000, stdio: ["ignore", "pipe", "pipe"] });
+    /** codex, leaving this process free to answer it (the stand-in model runs here). */
+    const codexAsync = (cwd: string, args: string[]) =>
+      new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+        const child = spawn("codex", args, { cwd, env, stdio: ["ignore", "ignore", "pipe"] });
+        let stderr = "";
+        child.stderr.on("data", (d) => (stderr += d));
+        child.on("error", reject);
+        child.on("close", (status) => resolve({ status, stderr }));
+      });
+    // the names as a launch reads them: from Codex itself, outside any project
+    const names = new CodexMcpNames({ list: async () => ({ code: 0, out: codex("/", ["mcp", "list", "--json"]).stdout }), configFiles: () => [path.join(codexHome, "config.toml")] });
+    /** A room launch's settings in the worktree, Mockingbird's own server given as `mcp`. */
+    const launch = async (mcp?: { command: string; args: string[]; env: Record<string, string> }) =>
+      agentFor("codex").launchArgs(
+        { repoPath: null, useWorktree: false },
+        {
+          ...(mcp ? { mcp } : {}),
+          codexPermissions: [
+            ...codexMcpOff(await names.names("codex")),
+            ...codexOutsideOff(codexProjectFolders(wt, wt)),
+            CODEX_ROOM_APPROVALS,
+            ...codexRoomPermissions(places({ git: (await roomGitDirs(wt))! })).config,
+          ],
+        }
+      );
+    return { wt, ran, codex, codexAsync, names, launch };
+  }
+
+  it("reads none of the repository's .codex config and switches the user's MCP servers off but Mockingbird's, under a room launch's settings", async () => {
+    const t = trustedWorktree();
+    expect(await t.names.names("codex")).toEqual(["dotted.name", "usersrv"]);
+    const servers = (args: string[]) => Object.fromEntries((JSON.parse(t.codex(t.wt, [...args, "mcp", "list", "--json"]).stdout) as { name: string; enabled: boolean }[]).map((s) => [s.name, s.enabled]));
+    // as configured, the trusted repository's own server loads
+    expect(servers([])).toEqual({ "dotted.name": true, reposrv: true, usersrv: true });
+    expect(servers(await t.launch({ command: "/bin/echo", args: ["mb"], env: { MOCKINGBIRD_SESSION: "s1" } }))).toEqual({ "dotted.name": false, mockingbird: true, usersrv: false });
+    const features = t.codex(t.wt, [...(await t.launch()), "features", "list"]).stdout;
+    for (const f of ["apps", "plugins", "computer_use", "browser_use", "skill_mcp_dependency_install"]) expect(features, f).toMatch(new RegExp(`^${f} .* false$`, "m"));
+  }, 120_000);
+
+  it("starts none of them in a turn, and runs no notify program — a stand-in model answering it on this machine", async () => {
+    const model = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        if (req.url?.includes("/models")) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ models: [] }));
+        if (req.method !== "POST" || !req.url?.endsWith("/responses")) return void res.writeHead(404).end();
+        const sse = (type: string, body: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...body })}\n\n`;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(sse("response.created", { response: { id: "r1" } }));
+        res.write(sse("response.output_item.done", { item: { type: "message", role: "assistant", id: "m1", content: [{ type: "output_text", text: "ok" }] } }));
+        res.end(sse("response.completed", { response: { id: "r1", usage: { input_tokens: 1, input_tokens_details: null, output_tokens: 1, output_tokens_details: null, total_tokens: 2 } } }));
+      });
+    });
+    await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
+    const port = (model.address() as AddressInfo).port;
+    try {
+      const t = trustedWorktree(`model_provider = "standin"\nmodel = "gpt-5.1-codex"\n[model_providers.standin]\nname = "standin"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n`);
+      /** What started for a turn: the notify program runs once the turn is over, as the CLI exits. */
+      const turn = async (args: string[]) => {
+        for (const f of fs.readdirSync(t.ran)) fs.rmSync(path.join(t.ran, f));
+        const r = await t.codexAsync(t.wt, ["exec", "--skip-git-repo-check", ...args, "say ok"]);
+        expect(r.status, r.stderr).toBe(0);
+        await new Promise((done) => setTimeout(done, 1500));
+        return fs.readdirSync(t.ran).sort();
+      };
+      // as configured, everything starts outside the sandbox
+      expect(await turn([])).toEqual(["dotted", "notify", "reposrv", "usersrv"]);
+      expect(await turn(await t.launch())).toEqual([]);
+    } finally {
+      model.close();
+    }
+  }, 180_000);
 });
 

@@ -15,7 +15,7 @@ export interface LaunchContext {
   mcp?: McpLaunch;
   /** Claude permission rules denying file reads (a team room session's secrets), as --disallowedTools. */
   denyReads?: string[];
-  /** Codex -c settings that run it in a team room's sandbox (codexRoomSandbox.ts). */
+  /** Codex -c settings that run it in a team room's sandbox (codexRoomSandbox.ts), the user's MCP servers off. */
   codexPermissions?: string[];
   /**
    * Claude settings that run it in a team room's sandbox (claudeRoomSandbox.ts), as --settings beside the status
@@ -185,8 +185,10 @@ const codex: AgentAdapter = {
     // -c values are parsed as TOML, so the string needs its quotes
     if (req.effort) args.push("-c", `model_reasoning_effort="${req.effort}"`);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    if (ctx.mcp) args.push(...codexMcpSettings(ctx.mcp).flatMap((c) => ["-c", c]));
+    // before Mockingbird's server's settings: the room's switch off the user's servers with one table (codexMcpOff),
+    // which would replace the dotted keys given before it
     for (const c of ctx.codexPermissions ?? []) args.push("-c", c);
+    if (ctx.mcp) args.push(...codexMcpSettings(ctx.mcp).flatMap((c) => ["-c", c]));
     if (ctx.inline) args.push("-c", CODEX_INLINE_SETTING);
     // a JSON string is a valid TOML basic string
     if (ctx.instructions) args.push("-c", `developer_instructions=${JSON.stringify(ctx.instructions)}`);
@@ -244,6 +246,17 @@ export function codexMcpSettings(mcp: McpLaunch, opts: { toolTimeoutSec?: number
     ...(opts.toolTimeoutSec ? [`${key}.tool_timeout_sec=${opts.toolTimeoutSec}`] : []),
     ...CODEX_ASKS_TOOLS.map((tool) => `${key}.tools.${tool}.approval_mode="prompt"`),
   ];
+}
+
+/**
+ * Codex's -c setting that switches off each MCP server in `names` (the user's: CodexMcpNames) but Mockingbird's own.
+ * One inline table, so a name with dots stays one key; it merges with the config's servers, keeping their other
+ * settings. Within the command line a table given whole replaces the dotted keys given before it, so this comes
+ * before codexMcpSettings.
+ */
+export function codexMcpOff(names: readonly string[]): string[] {
+  const off = names.filter((n) => n !== MCP_SERVER);
+  return off.length ? [`mcp_servers={${off.map((n) => `${JSON.stringify(n)}={enabled=false}`).join(", ")}}`] : [];
 }
 
 /** Sessions persisted before agents existed carry no agent field — they were all Claude. */

@@ -19,13 +19,15 @@ import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, SEAT_PALETTE_SIZE } from "..
 import { MB_DIR } from "./store";
 import { writeFileAtomic } from "./fileOps";
 import { claudeRoomSettings } from "./claudeRoomSandbox";
-import { roomCacheEnv, roomCachesFolder } from "./codexRoomSandbox";
+import { CODEX_AGENTS_NOTE, codexOutsideOff, codexProjectFolders, roomCacheEnv, roomCachesFolder } from "./codexRoomSandbox";
+import { codexMcpNames } from "./codexMcpNames";
+import { gitTop } from "./gitPins";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
 import { MCP_TOOL, bindMcpLaunch, claudeToolName, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { makeTestCopy } from "./testCopy";
 import { codexError, parseClaudeJson, readCodexReply } from "./headless";
-import { agentLabel, claudeMcpConfig, codexMcpSettings, isInstalledBin } from "./agents";
+import { agentLabel, claudeMcpConfig, codexMcpOff, codexMcpSettings, isInstalledBin } from "./agents";
 import { asDraft, draftsFromModel, MAX_MODEL_TICKETS, splitPlan, wholePlanDraft, type CouncilCreateResult, type CouncilTicketDrafts, type TicketDraft } from "../shared/collabTickets";
 
 /** The models a room can seat; each runs through the CLI and plan the user already has. */
@@ -960,11 +962,19 @@ export function claudeTurnCommand(
  * approval_policy=never lets it act within the sandbox, and the sandbox is what
  * keeps it from writing: read-only, or for a seat that runs commands
  * workspace-write with the network on — writes confined to its cwd (the test
- * copy) and temp folders. The sandbox goes in -c because `exec resume` has no -s. Apps, plugins and MCP
- * servers are switched off — their tools act outside the sandbox — and any MCP
- * call that slips through needs approval, which "never" refuses.
+ * copy) and temp folders. The sandbox goes in -c because `exec resume` has no -s. What would run outside the
+ * sandbox is switched off as for a room session (codexOutsideOff): the user's MCP servers by name (`off.mcpServers`),
+ * any project config in the folders it works in (`off.folders`), `notify`, apps, plugins, computer and browser use —
+ * and any MCP call that slips through needs approval, which "never" refuses.
  */
-export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: string, ask?: McpLaunch, sockets: string[] = []): string {
+export function codexTurnCommand(
+  bin: string,
+  p: CollabParticipant,
+  lastFile: string,
+  off: { mcpServers: readonly string[]; folders: readonly string[] },
+  ask?: McpLaunch,
+  sockets: string[] = []
+): string {
   // the one MCP tool a room allows: asking the code reader (pre-approved; a lookup can take minutes)
   const askFlags = ask ? codexMcpSettings(ask, { toolTimeoutSec: 600 }).map((c) => `-c ${quote(c)} `).join("") : "";
   // a Docker seat needs a permission profile (the legacy sandbox settings can't
@@ -983,9 +993,16 @@ export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: st
     : p.runsCommands
       ? `-c ${quote('sandbox_mode="workspace-write"')} -c ${quote("sandbox_workspace_write.network_access=true")} `
       : `-c ${quote('sandbox_mode="read-only"')} `;
+  // the servers' table before askFlags' dotted keys, which a table given after them would replace (codexMcpOff)
+  const outside = [
+    ...codexMcpOff(off.mcpServers),
+    ...codexOutsideOff(off.folders),
+    ...(p.readsCode || p.runsCommands ? [`developer_instructions=${JSON.stringify(CODEX_AGENTS_NOTE)}`] : []),
+  ];
   const flags =
     (p.effort ? `-c ${quote(`model_reasoning_effort="${p.effort}"`)} ` : "") +
-    `--disable apps --disable plugins -c ${quote("mcp_servers={}")} ${askFlags}-c ${quote('approval_policy="never"')} ${sandbox}`;
+    outside.map((c) => `-c ${quote(c)} `).join("") +
+    `${askFlags}-c ${quote('approval_policy="never"')} ${sandbox}`;
   return p.conversationId
     ? `${quote(bin)} exec resume ${quote(p.conversationId)} ${flags}--json --skip-git-repo-check -o ${quote(lastFile)} -`
     : `${quote(bin)} exec ${flags}--json --skip-git-repo-check -m ${quote(p.model)} -o ${quote(lastFile)} -`;
@@ -1019,7 +1036,15 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
       const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mb-collab-"));
       const last = path.join(tmp, "reply.txt");
       try {
-        const r = await userShellWithInput(codexTurnCommand(bin, p, last, askTool ? mcp : undefined, sockets), prompt, { cwd, env, signal, timeoutMs, onSpawn: (pid) => bindMcpLaunch(mcp, pid) });
+        // unknown, the user's MCP servers would run outside the sandbox: the turn fails instead
+        let mcpServers: string[];
+        try {
+          mcpServers = await codexMcpNames.names(bin);
+        } catch (err) {
+          throw new Error(`Mockingbird couldn't read which MCP servers your Codex config names, to switch them off for the turn (${(err as Error).message}). Run \`codex mcp list\` in a terminal to see what's wrong.`);
+        }
+        const off = { mcpServers, folders: codexProjectFolders(cwd, gitTop(cwd)) };
+        const r = await userShellWithInput(codexTurnCommand(bin, p, last, off, askTool ? mcp : undefined, sockets), prompt, { cwd, env, signal, timeoutMs, onSpawn: (pid) => bindMcpLaunch(mcp, pid) });
         const text = await readCodexReply(last, r, 400);
         const thread = /"thread_id":"([^"]+)"/.exec(r.out)?.[1] ?? p.conversationId;
         if (!thread) throw codexError(r, 400);

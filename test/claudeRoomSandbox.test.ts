@@ -40,7 +40,17 @@ describe("a Claude room session's settings", () => {
       }
       expect(s.permissions.deny).toContain(`Edit(/${dir}/**/.mcp.json)`);
       expect(s.permissions.deny).toContain(`Edit(/${dir}/**/.git/**)`);
+      for (const rule of [`Edit(/${dir}/.envrc)`, `Edit(/${dir}/**/.envrc)`, `Edit(/${dir}/.codex/**)`, `Edit(/${dir}/**/.codex/**)`]) expect(s.permissions.deny).toContain(rule);
     }
+  });
+
+  it("keeps Bash off them too by its own denyWrite, not only Claude Code's list (which lacks .envrc and .codex), leaving .git to the git rules", () => {
+    const s = settingsOf({ git: null, hooks: [], folders: ["/w/5110"] });
+    const denied: string[] = s.sandbox.filesystem.denyWrite;
+    for (const p of ["/w/5110/.envrc", "/w/5110/**/.envrc", "/w/5110/.codex", "/w/5110/.codex/**", "/w/5110/**/.codex", "/w/5110/**/.codex/**", "/w/5110/.vscode/**", "/w/5110/**/.mcp.json", "/w/5110/**/.zshrc"]) {
+      expect(denied).toContain(p);
+    }
+    expect(denied.filter((p) => p.includes(".git") && !p.includes(".gitconfig") && !p.includes(".gitmodules"))).toEqual([]);
   });
 
   it("reports in with its own SessionStart hook, when given one", () => {

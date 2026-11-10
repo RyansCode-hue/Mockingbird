@@ -569,11 +569,49 @@ Member replace the single admin (creator, else longest-standing member).
     worktrees, and this worktree's `config.worktree`, `commondir` and
     `gitdir`. So `git config`, `git remote add` and new upstream tracking
     fail. Nothing on `PATH` (`~/.local/bin`, `~/go/bin`, `~/.cargo/bin`) is
-    writable.
-  - **Still outside it:** MCP servers from the user's `~/.codex/config.toml`,
-    and, in a project Codex trusts, from the repository's `.codex/config.toml`,
-    start outside the sandbox, as does a `notify` program either names. A
-    teammate's committed `.codex/config.toml` would run there once pulled.
+    writable. In the session's folders, the files something outside the
+    sandbox runs later (`IN_FOLDER_RUNS_CODE`: `.claude/`, `.codex/`,
+    `.vscode/`, `.idea/`, `.mcp.json`, `.envrc`, `.gitconfig`, `.gitmodules`,
+    the shell and ripgrep rc files) are read-only at the folder's top and
+    hidden in the folders below: Codex's globs can only deny.
+  - **Nothing of the user's or the repository's runs outside it** (Codex
+    0.156.1 probed; `codexOutsideOff`, `codexMcpOff`):
+    - **The user's MCP servers are switched off by name**, Mockingbird's own
+      kept: one `-c mcp_servers={"<name>"={enabled=false}, …}` table, so a
+      name with dots stays one key. It has to come before Mockingbird's own
+      server's settings, since a table given whole replaces the dotted keys
+      before it. The names come from `codex mcp list --json`, run from `/`
+      through the login shell, so Codex's own reading of its config decides
+      them. They're read once (ahead of time when the user is in a room) and
+      again only when `config.toml` in `CODEX_HOME`, or
+      `/etc/codex/config.toml`, changes (`src/main/codexMcpNames.ts`). The
+      listing carries each server's command, environment and headers: only
+      names are kept, and nothing of it is logged. When the names can't be
+      read, the launch fails closed: the session starts with its guards off,
+      so nothing crosses the room's line for it, and the reason is listed
+      above the session list once.
+    - **No `.codex` folder from the repository's top down to the session's
+      folder is read.** Each of those folders, as given and resolved, is named
+      untrusted (`-c projects={…}`). A folder Codex would otherwise trust (the
+      user trusted it, or the repository's main checkout, which covers its
+      worktrees) reads its project config: MCP servers, hooks, model
+      providers, rules, and a `permissions` table merged into the room's
+      profile. A teammate's committed `.codex/config.toml` would run there
+      once pulled. Codex 0.156.1 already ignores a project's `notify`. What
+      untrusted costs: Codex leaves out the repository's `AGENTS.md`, so the
+      session is told to read them itself; an interactive Codex opens with a
+      "Folder access" notice ("Open restricted"), dismissed with Enter on each
+      launch; and approvals become `on-request`, what a trusted folder gets,
+      whatever `approval_policy` the user's config sets (untrusted alone would
+      ask before every command). The sandbox, not the approval, decides what
+      runs.
+    - **`notify`**, the user's program run after each turn with the turn's last
+      message, is set to nothing.
+    - **Apps, plugins, computer and browser use**, and skills installing the MCP
+      servers they name, are off (`CODEX_OUTSIDE_FEATURES`).
+    - Mockingbird's hooks are the user's, so they still run.
+    - Council's Codex turns get the same, but their approvals stay `never`; a
+      turn whose MCP server names can't be read fails, saying why.
     (Claude room sessions don't read the repository's settings at all.)
   - **Network:** on, through Codex's network proxy, for any domain and local
     services (`allow_local_binding`). Without the proxy the sandbox lets
@@ -585,8 +623,7 @@ Member replace the single admin (creator, else longest-standing member).
     folders can't be written, and every login a push needs is unreadable or
     unreachable. The session is told at launch that commits work and pushes
     are the user's (Source Control, or a `!` command in the pane, which Codex
-    runs outside its sandbox). Approvals otherwise follow the user's own
-    Codex settings.
+    runs outside its sandbox).
   - Older Codex releases lack parts of this (`-c` settings outranking a
     config file's `sandbox_mode`, `extends`, `:workspace_roots`, denied reads
     that hold through approvals), so a Codex older than 0.138 starts its room
@@ -617,11 +654,14 @@ Member replace the single admin (creator, else longest-standing member).
     files that run in every pane (`HOME_RUNS_CODE`: `~/.mockingbird`, the
     shell's start-up files, `~/.claude`, `~/.codex`, git's and ssh's config,
     launchd's agents) and the git folder's config, hooks and attributes are
-    denied by rule. So is what the sandbox keeps Bash from writing inside the
-    session's folders, there and in any folder below: `.git` (a worktree's
-    pointer too), `.claude/`, `.vscode/`, `.idea/`, `.mcp.json`,
+    denied by rule. So is `IN_FOLDER_RUNS_CODE` inside the session's folders,
+    there and in any folder below: `.git` (a worktree's pointer too),
+    `.claude/`, `.codex/`, `.vscode/`, `.idea/`, `.mcp.json`, `.envrc`,
     `.gitconfig`, `.gitmodules`, and the shell and ripgrep rc files. Deny
-    rules hold in every permission mode.
+    rules hold in every permission mode. Bash is kept from them too by the
+    sandbox's own `denyWrite` (globs hold on macOS), all but `.git`, which
+    the git rules cover: Claude Code's built-in list lacks `.envrc` and
+    `.codex`.
   - **The network** is open, as for Codex and Council. Bash still asks before
     each command, as outside a room.
   - Hooks, the status line and Mockingbird's MCP server run outside the

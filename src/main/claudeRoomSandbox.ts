@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { CREDENTIAL_STORES, gitWrites, type RoomGitDirs } from "./codexRoomSandbox";
+import { CREDENTIAL_STORES, gitWrites, IN_FOLDER_RUNS_CODE, type RoomGitDirs } from "./codexRoomSandbox";
 import { HOME_PRIVATE_DATA, HOME_RUNS_CODE, HOME_SECRETS, knownSecretFiles, notDeniedByPath } from "./secrets";
 
 /**
@@ -8,7 +8,8 @@ import { HOME_PRIVATE_DATA, HOME_RUNS_CODE, HOME_SECRETS, knownSecretFiles, notD
  * so ~/.claude/settings.json stays untouched. It mirrors a Codex room session's (codexRoomSandbox.ts):
  * - Bash, and whatever it starts, writes only in the session's folders, the temp folder, the repository's git data but
  *   what git runs code from (gitWrites' read-only parts, and the other worktrees' folders), and the room's own caches.
- *   HOME_RUNS_CODE is denied by name as well, since the git data could otherwise sit above one of them.
+ *   HOME_RUNS_CODE is denied by name as well, since the git data could otherwise sit above one of them, and so is
+ *   IN_FOLDER_RUNS_CODE inside the session's folders.
  * - It can't read HOME_SECRETS, HOME_PRIVATE_DATA, CREDENTIAL_STORES or the known secret files, but for Mockingbird's
  *   co-author hooks, which its commits run.
  * - It can't leave the sandbox: no unsandboxed retry, and Claude won't start a session without one. Set from
@@ -17,8 +18,8 @@ import { HOME_PRIVATE_DATA, HOME_RUNS_CODE, HOME_SECRETS, knownSecretFiles, notD
  *   (agents.ts), so the repository's hooks and MCP servers, which would run outside the sandbox, never start.
  * - The network is open, as for Codex and Council: any domain, and local services.
  * - The file tools (Edit, Write, NotebookEdit) refuse paths outside the session's folders, HOME_RUNS_CODE and the git
- *   folder's config, hooks and attributes, and inside the session's folders what the sandbox keeps Bash from writing
- *   there (IN_FOLDER_RUNS_CODE): by rule, in every permission mode. Hooks, the status line and MCP servers run outside
+ *   folder's config, hooks and attributes, and inside the session's folders IN_FOLDER_RUNS_CODE: by rule, in every
+ *   permission mode. Hooks, the status line and MCP servers run outside
  *   the sandbox, as Mockingbird's own need to.
  * - Its own SessionStart hook (`marker`) tells Mockingbird the settings were taken: a settings file Claude Code
  *   rejects is dropped whole, sandbox and all, and runs none of its hooks (roomSandboxWatch.ts).
@@ -44,30 +45,6 @@ export interface ClaudeRoomPlaces {
   marker?: string;
 }
 
-/**
- * What the sandbox keeps Bash from writing inside the folders it may write, because something outside the sandbox
- * would run it later: git's own folder or the pointer to it, the editors' and Claude's project settings, a project's
- * MCP servers, and the shell and tool rc files a shell started there reads. Folders end in "/": their rules cover the
- * name too, so a linked worktree's `.git` file is one of them.
- */
-export const IN_FOLDER_RUNS_CODE = [
-  ".git/",
-  ".claude/",
-  ".vscode/",
-  ".idea/",
-  ".mcp.json",
-  ".gitconfig",
-  ".gitmodules",
-  ".bashrc",
-  ".bash_profile",
-  ".zshrc",
-  ".zprofile",
-  ".zshenv",
-  ".zlogin",
-  ".profile",
-  ".ripgreprc",
-];
-
 /** A home pattern as a sandbox path: the folder for "~/x/**", the file otherwise. */
 const sandboxPath = (p: string) => p.replace(/\/\*\*$/, "");
 
@@ -80,6 +57,20 @@ function inFolderDenies(dir: string): string[] {
     const folder = name.endsWith("/");
     const n = folder ? name.slice(0, -1) : name;
     return [...editDeny(path.join(dir, n), folder), ...editDeny(path.join(dir, "**", n), folder)];
+  });
+}
+
+/**
+ * IN_FOLDER_RUNS_CODE in `dir` and below, as the sandbox's denyWrite paths (globs hold on macOS), so Bash is kept from
+ * them by these settings rather than by Claude Code's own list, which lacks some (`.envrc`, `.codex`). `.git` stays
+ * with gitWrites: a main checkout's commits write it.
+ */
+function inFolderWriteDenies(dir: string): string[] {
+  return IN_FOLDER_RUNS_CODE.filter((name) => name !== ".git/").flatMap((name) => {
+    const folder = name.endsWith("/");
+    const n = folder ? name.slice(0, -1) : name;
+    const at = [path.join(dir, n), path.join(dir, "**", n)];
+    return folder ? [...at, ...at.map((p) => `${p}/**`)] : at;
   });
 }
 
@@ -125,7 +116,7 @@ export function claudeRoomSettings(p: ClaudeRoomPlaces): { settings: Record<stri
         autoAllowBashIfSandboxed: !!p.autoAllowBash,
         filesystem: {
           allowWrite: [...git.write, ...(p.caches ? [p.caches] : [])],
-          denyWrite: [...HOME_RUNS_CODE.map(sandboxPath), ...gitDenied],
+          denyWrite: [...HOME_RUNS_CODE.map(sandboxPath), ...gitDenied, ...(p.folders ?? []).flatMap((d) => inFolderWriteDenies(path.resolve(d)))],
           denyRead: [...[...HOME_SECRETS, ...HOME_PRIVATE_DATA].map(sandboxPath), ...CREDENTIAL_STORES, ...known.files.map((f) => path.resolve(f))],
           allowRead: p.hooks,
         },

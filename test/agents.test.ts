@@ -10,9 +10,10 @@ const base = { repoPath: null, useWorktree: false };
 // agents.ts caches its Codex index for 30s, so each test loads a fresh copy
 let agentFor: typeof import("../src/main/agents").agentFor;
 let agentLabel: typeof import("../src/main/agents").agentLabel;
+let codexMcpOff: typeof import("../src/main/agents").codexMcpOff;
 beforeEach(async () => {
   vi.resetModules();
-  ({ agentFor, agentLabel } = await import("../src/main/agents"));
+  ({ agentFor, agentLabel, codexMcpOff } = await import("../src/main/agents"));
 });
 
 function rollout(cwd: string, source: string, day = "01"): void {
@@ -106,6 +107,14 @@ describe("Codex launch", () => {
     const claude = agentFor("claude").launchArgs({ ...base }, ctx);
     expect(claude.join(" ")).not.toContain("default_permissions");
     expect(claude[claude.indexOf("--disallowedTools") + 1]).toBe("Read(**/.env)");
+  });
+  it("switches the user's MCP servers off by name, Mockingbird's own kept, before Mockingbird's server's settings", () => {
+    expect(codexMcpOff(["github", "dotted.name", "say \"hi\"", "mockingbird"])).toEqual([`mcp_servers={"github"={enabled=false}, "dotted.name"={enabled=false}, "say \\"hi\\""={enabled=false}}`]);
+    expect(codexMcpOff([])).toEqual([]);
+    expect(codexMcpOff(["mockingbird"])).toEqual([]);
+    // a table given whole replaces the dotted keys given before it, so the room's settings come first
+    const args = agentFor("codex").launchArgs({ ...base }, { mcp, codexPermissions: codexMcpOff(["github"]) });
+    expect(args.indexOf(`mcp_servers={"github"={enabled=false}}`)).toBeLessThan(args.findIndex((a) => a.startsWith("mcp_servers.mockingbird.command=")));
   });
   it("runs inline when asked (a room session), fresh or resumed, as a setting before the prompt", () => {
     const inline = ["-c", 'tui.alternate_screen="never"'];

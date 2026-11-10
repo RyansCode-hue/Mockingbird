@@ -99,6 +99,8 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
     coauthorsDir: path.join(base, "coauthors"),
     cachesDir: path.join(base, "caches"),
     markerScript: path.join(base, "room-sandbox.sh"),
+    // the user's own Codex MCP servers, as `codex mcp list` names them
+    codexMcpServers: async () => ["github", "dotted.name"],
     timing: FAST,
     ...over,
   });
@@ -835,6 +837,52 @@ describe("room session launch", () => {
     const outside = await ryan.start({ agent: "codex", taskGroup: "private" });
     expect(ptyOf(outside.id).args.join(" ")).not.toContain("default_permissions");
     expect(ryan.sessions.guardsOf(outside.id)).toBeNull();
+  });
+
+  it("keeps a Codex room session from what would run outside its sandbox: the user's MCP servers, project config from the repository's top down, notify, apps", async () => {
+    const { ryan } = await pair();
+    ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
+    const repo = makeRepo({ "web/index.ts": "x\n" });
+    const s = await ryan.start({ agent: "codex", cwd: path.join(repo, "web") });
+    const cmd = ptyOf(s.id).args.join(" ");
+    // off by name, before Mockingbird's own server's settings, which a table given after them would replace
+    const servers = cmd.indexOf(`'-c' 'mcp_servers={"github"={enabled=false}, "dotted.name"={enabled=false}}'`);
+    expect(servers).toBeGreaterThan(0);
+    expect(servers).toBeLessThan(cmd.indexOf("'mcp_servers.mockingbird.command="));
+    const real = fs.realpathSync(repo);
+    const folders = [path.join(repo, "web"), path.join(real, "web"), repo, real].filter((f, i, all) => all.indexOf(f) === i);
+    expect(cmd).toContain(`'-c' 'projects={${folders.map((f) => `${JSON.stringify(f)}={trust_level="untrusted"}`).join(", ")}}'`);
+    for (const c of ["notify=[]", 'approval_policy="on-request"', "features.apps=false", "features.plugins=false", "features.computer_use=false"]) expect(cmd).toContain(`'-c' '${c}'`);
+    expect(cmd).toContain("Before you start, read any AGENTS.md from the repository");
+    // the editors', agents' and shells' settings files: read-only at its folder's top, hidden below
+    expect(cmd).toContain(`".envrc"="read", "*/**/.envrc"="deny"`);
+    expect(cmd).toContain(`".codex"="read", "*/**/.codex"="deny", "*/**/.codex/**"="deny"`);
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
+  });
+
+  it("starts a Codex room session outside the room's sandbox when the user's MCP servers can't be named, and says so once", async () => {
+    let reads = 0;
+    const { ryan, nick } = await pair({
+      codexMcpServers: async () => {
+        reads++;
+        throw new Error("`codex mcp list` exited with code 1");
+      },
+    });
+    ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
+    const [a, b] = [await ryan.start({ agent: "codex" }), await ryan.start({ agent: "codex" })];
+    expect(reads).toBe(2);
+    for (const s of [a, b]) {
+      const cmd = ptyOf(s.id).args.join(" ");
+      // everything else still holds
+      expect(cmd).toContain(`'-c' 'default_permissions="${CODEX_ROOM_PROFILE}"'`);
+      expect(cmd).toContain("'-c' 'notify=[]'");
+      expect(cmd).not.toContain("enabled=false");
+      expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: false, coauthors: true });
+    }
+    const told = ryan.live.state().problems.filter((p) => p.includes("couldn't read which MCP servers your Codex config names"));
+    expect(told).toEqual([expect.stringContaining("(`codex mcp list` exited with code 1)")]);
+    await until(() => !!remoteOf(nick, a.id), "the record");
+    expect(remoteOf(nick, a.id)!.room!.guards).toEqual({ secrets: false, coauthors: true });
   });
 
   it("leaves a Codex older than the permission profile unguarded, and says so", async () => {

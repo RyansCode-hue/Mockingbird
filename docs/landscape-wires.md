@@ -2637,7 +2637,7 @@ doesn't remove its hooks; a `.mcp.json` server starts outside it too.
   servers, and Ryan's own MCP servers (they run outside the sandbox too).
   Mockingbird's hooks are user-level and still fire: the probe below saw
   SessionStart, UserPromptSubmit and Stop from the real `hook.sh`.
-- **Codex: reported, not fixed.** Probed without signing in (`codex mcp list` in
+- **Codex: reported, not fixed here** (fixed in 2b, below). Probed without signing in (`codex mcp list` in
   a scratch HOME, Codex 0.156.1):
   - a trusted project's `.codex/config.toml` adds its MCP servers; an untrusted
     one's doesn't load (no `projects` entry, or `trust_level = "untrusted"`);
@@ -2845,15 +2845,134 @@ the worktree-folder check and own-pane-only events, so each got a test.
 - Source Control in a room worktree works as before.
 
 **Left.**
-- Codex's project config and MCP servers (H1, above).
+- Codex's project config and MCP servers (H1, above): closed in 2b.
 - Pins are in memory: a pointer rewritten while Mockingbird wasn't running is
   checked against the session's repository at the next launch, not against the
   launch before.
 - `.envrc` and other files Ryan's own tools run on entering a folder (direnv)
-  aren't protected inside the worktree, by either sandbox. Like the code itself,
-  that's what the agent is there to write.
+  aren't protected inside the worktree, by either sandbox: closed in 2b.
 - A launch whose marker report comes later than Ryan's first Enter (typed within
   half a second of its start) fails safe and asks for a restart.
+
+#### W20 review fixes 2b as built
+Goal: nothing a room can commit, or its agent can pick, runs outside the sandbox.
+The Codex gaps 2 reported, closed, plus the in-folder files for both agents. Not
+rebased: W2's 2c is still landing.
+
+**The user's MCP servers, off by name** (`agents.ts` `codexMcpOff`,
+`codexMcpNames.ts`). A Codex room launch and a Council Codex turn pass one
+`-c mcp_servers={"<name>"={enabled=false}, …}` table, Mockingbird's own server
+left out of it. Probed:
+- `enabled=false` merges with the configured server, and a quoted key keeps a name
+  with dots whole.
+- A name that isn't configured is an error ("invalid transport"), so only names
+  Codex itself listed go in.
+- Within the command line, a table given after dotted keys replaces them:
+  `-c mcp_servers.mockingbird.command=…` then `-c mcp_servers={…}` drops
+  Mockingbird's server. So `launchArgs` now puts the room's settings before
+  Mockingbird's server's, and Council's table sits before `askFlags`.
+
+The names come from `codex mcp list --json`, run from `/` through the login shell
+(`CODEX_HOME` as the panes have it). They're cached by the mtime and size of
+`config.toml` in `CODEX_HOME` and `/etc/codex/config.toml`, read ahead of time
+when versions are read and the user is in a room, and shared by concurrent
+launches. Only names are kept. A failure says how the read failed (exit code,
+not JSON, not a list), never what it printed: a TOML error, or a JSON parse
+message, can quote a token.
+
+A failed read isn't cached. A room launch then starts with everything else
+applied but `guards.secrets` false, telling Ryan once. A Council turn fails,
+saying why.
+
+**No project `.codex` read** (`codexOutsideOff`, `codexProjectFolders`). Every
+folder from the repository's top down to the session's folder, as given and
+resolved, is named untrusted with an inline
+`-c projects={"<folder>"={trust_level="untrusted"}, …}`. Probed with
+`codex mcp list --json` and `debug prompt-input` under a scratch `CODEX_HOME`:
+- A worktree's `.codex/config.toml` loads when the main checkout is trusted.
+  Naming the worktree untrusted drops it.
+- From a subfolder, naming only that subfolder still loads the top's ("Trusted
+  project folders can still contribute settings"), hence every folder.
+- `project_root_markers` changes nothing.
+- 0.156.1 already ignores a project's `notify` ("unsupported project-local
+  config keys").
+- Untrusted also drops `AGENTS.md` from the prompt: the session's launch
+  instructions now tell it to read them (`CODEX_AGENTS_NOTE`). Skills still load.
+- With no `approval_policy`, an untrusted folder asks before every command
+  (`unless-trusted`), so a room launch passes `approval_policy="on-request"`
+  (`CODEX_ROOM_APPROVALS`), what a trusted folder gets. It outranks Ryan's own.
+- The TUI, driven in a pty, opens an untrusted folder with a "Folder access …
+  Open restricted / Quit" notice. That's one Enter per room Codex launch, and it
+  doesn't change saved trust. An unset folder asks "Trust this folder?" instead
+  and saves the answer.
+
+**notify, apps, plugins, computer and browser use.** `notify=[]` (Ryan's
+program ran after every exec turn, and stops with it), and
+`features.{apps,plugins,computer_use,browser_use,browser_use_external,skill_mcp_dependency_install}=false`.
+Unknown feature names are ignored, so an older Codex starts all the same. Council
+had `--disable apps --disable plugins`; it now takes the same list.
+
+**`.envrc` and `.codex/` in the session's folders** (`IN_FOLDER_RUNS_CODE`, now in
+`codexRoomSandbox.ts` for both agents).
+- **Codex:** the list had nothing in its profile. Probed with `codex sandbox`: a
+  glob can only `deny` ("only supports `deny` access"), and an exact relative path
+  can be `read`. So each name is `read` at a session folder's top (readable, not
+  writable) and denied by `*/**/<name>` below. `.git` stays with `gitWrites`.
+- **Claude:** the Edit rules gain both. Bash was kept off the others by Claude
+  Code's own list, which lacks these two, so the room's `denyWrite` now carries
+  the whole list but `.git`, as globs.
+
+**Real runs** (scratch HOME, Codex never signed in):
+
+| Run | Result |
+| :- | :- |
+| `codex exec` against a stand-in Responses API on localhost, the user's config naming two MCP servers and `notify`, the main checkout trusted, the worktree's `.codex/config.toml` naming a third | as configured: all three servers and `notify` started; the scratch user's hooks (`hooks.json`, trusted as `/hooks` would, by the hashes the app-server's `hooks/list` gives) fired. With the room's settings: no server, no `notify`; the user's hooks still fired; the model was offered no MCP resource tools |
+| Claude, room settings, Bash `echo x > .envrc` (and `src/`, `.codex/`, `src/.codex/`) | refused by the permission layer (the Edit rules): nothing written; `src/ok.txt` written |
+| Claude, room settings, the same writes through `node -e` (out of the permission layer's sight) | `EPERM` from the sandbox for all four; `src/ok.txt` written |
+
+**Tests.**
+- `codexMcpNames.test.ts`: one read for concurrent launches, a re-read on change,
+  failures named without the listing, a failure not kept.
+- `agents.test.ts`: `codexMcpOff` and the argument order.
+- `codexRoomSandbox.test.ts`: `codexOutsideOff`, `codexProjectFolders`, the
+  in-folder entries. Against the real CLI (skipped under CI):
+  - `mcp list` and `features list` under a launch's settings;
+  - the `exec` turn above, as a test with its own stand-in model;
+  - the in-folder writes through `codex sandbox`.
+- `claudeRoomSandbox.test.ts`: `denyWrite`.
+- `collab.test.ts` and `mcpLaunches.test.ts`: Council's command, its stand-in CLI
+  answering `mcp list`.
+- `teamLivePanes.test.ts`: a room launch's settings, and the read failing closed,
+  told once.
+
+Found on the way: `codexRoomSandbox.test.ts`'s real-CLI install test still
+expected home's caches writable (2's M3 moved them to the room's). CI skips it,
+so it had gone unnoticed. It now installs through the room's caches and checks
+home's are refused.
+
+**Checked:**
+- Mutation check: each of 28 guards reverted in turn (`w20rf2b/mutate.py`) fails its
+  test file, the real-CLI ones with only the real-CLI tests run. One wasn't caught at
+  first (a failure's message carrying Codex's output, which a substring match let
+  through), so its test now matches the whole message.
+- `npm run typecheck` and `npm run build` pass, and `CI=true npm test` exits 0:
+  186 files pass and 30 skip; 2,976 tests pass and 147 skip. Runs at load averages
+  40 to 90, with other sessions' suites, each failed one different file:
+  - `teamLimits`' catch-up timing;
+  - `teamTakeover` leaving a temp folder;
+  - `appModel`'s known leaked `git symbolic-ref`.
+
+  Each passed alone (three times for the last two).
+- `MB_E2E_APP=1`: `wiresApp` and `teamLiveApp` pass with no relays left. `quitApp`
+  failed once at load 50, a terminal outliving the quit by its one-second grace,
+  then passed alone. It has no room, so no names read.
+
+**Not proved without a signed-in run:**
+- A real model's turn in a room pane: the stand-in only answers text.
+- Apps and plugins: with no sign-in there were none to switch off, so their flags
+  are checked by `features list` only.
+- The TUI's notice with an initial prompt (a ticket start): whether the prompt
+  waits for the Enter.
 
 ## 2. Data model
 

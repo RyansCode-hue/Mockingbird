@@ -378,6 +378,8 @@ function launch() {
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 (async () => {
+  // Codex's MCP servers, read before a Codex turn to switch them off: one of the user's
+  if (argv.join(" ") === "mcp list --json") return console.log(JSON.stringify([{ name: "users-own", enabled: true }]));
   let input = "";
   for await (const d of process.stdin) input += d;
   const ask = JSON.parse(input);
@@ -446,6 +448,8 @@ describe("a Council turn's launch", () => {
     expect(tokenFiles()).toEqual([]);
     expect((await askRaw(sock, JSON.stringify({ op: "ask_code_reader", token: s.token, args: { question: "after" } }))).error).toMatch(REFUSED);
     expect(s.argv.join(" ")).not.toContain(s.token);
+    // the user's own servers, read from Codex, are switched off for the turn
+    if (agent === "codex") expect(s.argv).toContain('mcp_servers={"users-own"={enabled=false}}');
   });
 
   it("gives Claude its permission tool, which reaches the room", async () => {
@@ -484,6 +488,17 @@ describe("a Council turn's launch", () => {
     expect(seen("quick").answer.isError).toBe(false);
     expect(seen("slow").answer.isError).toBe(false);
     expect(seen("slow").token).not.toBe(seen("quick").token);
+    expect(tokenFiles()).toEqual([]);
+  });
+
+  it("fails a Codex turn whose user's MCP servers can't be named, rather than run them, saying why but nothing Codex printed", async () => {
+    const broken = path.join(dir, "fake-cli-broken");
+    fs.writeFileSync(broken, `#!/bin/sh\nif [ "$1" = mcp ]; then echo 'bearer_token = "sk-secretvalue"' >&2; exit 1; fi\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(dir, "fake.js"))} "$@"\n`, { mode: 0o755 });
+    const ran = record("broken");
+    const r = cliTurnRunner(() => broken)(seat("codex"), prompt("broken", "ask_code_reader"), { cwd: dir, signal: new AbortController().signal, tag: "collab-r1.s", askTool: true });
+    await expect(r).rejects.toThrow(/couldn't read which MCP servers your Codex config names, to switch them off for the turn \(`codex mcp list` exited with code 1\)/);
+    await expect(r).rejects.not.toThrow(/secretvalue/);
+    expect(fs.existsSync(ran)).toBe(false);
     expect(tokenFiles()).toEqual([]);
   });
 

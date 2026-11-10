@@ -25,6 +25,7 @@ import { generateCommitMessage } from "./commitMessage";
 import { Messaging, removeMcpTokenFiles } from "./messaging";
 import { setupStatus } from "./setup";
 import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
+import { codexMcpNames } from "./codexMcpNames";
 import { CouncilTickets } from "./collabTickets";
 import { userShell, userShellWithInput, which, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
@@ -1783,6 +1784,9 @@ async function refreshAgentVersions(): Promise<void> {
   }
   sessions.setAgentVersions(found);
   healthChanged();
+  // read ahead of a room's first Codex launch, which switches the user's MCP servers off by name; read again only once the config changes
+  const codexBin = found.codex && team.status().rooms.length ? await installedBin("codex") : null;
+  if (codexBin) codexMcpNames.names(codexBin).catch((err) => logError("reading Codex's MCP server names", err));
 }
 function healthChanged(): void {
   const notices = sessions.updateNotices();
