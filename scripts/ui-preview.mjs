@@ -189,11 +189,12 @@ async function pressAsked(ask) {
     const base = { modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, nativeVirtualKeyCode: d.keyCode };
     if (k.hold !== "up") await ask("Input.dispatchKeyEvent", { type: typed ? "keyDown" : "rawKeyDown", ...base, ...(typed ? { text: d.text, unmodifiedText: d.text } : {}) });
     if (k.hold !== "down") await ask("Input.dispatchKeyEvent", { type: "keyUp", ...base });
-    // headless Chrome hides the page on Esc, which slows its timers to a crawl and stops its animation frames
-    if (k.key === "Escape") await ask("Page.bringToFront", {});
   }
   if (keys.length) await ask("Runtime.evaluate", { expression: `window.__mbKeysDone = (window.__mbKeysDone || 0) + ${keys.length}` });
 }
+
+/** How long one DevTools call gets before the run fails naming it. */
+const ASK_MS = 20_000;
 
 /** `limitMs`: how long Chrome gets to have the result (an audit that drives a lot, longer). */
 export async function pageResult({ size = "1400x900", query = "", outDir, read, scale = null, limitMs = 60_000 }) {
@@ -201,18 +202,41 @@ export async function pageResult({ size = "1400x900", query = "", outDir, read, 
   let result = null;
   let ws = null;
   let id = 0;
-  const ask = (method, params) =>
-    new Promise((resolve) => {
+  // Chrome's whole answer ({ result } or { error }); a call it never answers fails by name rather than leaving the run
+  // to time out saying nothing
+  const call = (method, params) =>
+    new Promise((resolve, reject) => {
       const n = ++id;
+      const timer = setTimeout(() => {
+        ws.removeEventListener("message", on);
+        reject(new Error(`Chrome didn't answer ${method} ${JSON.stringify(params ?? {}).slice(0, 160)} within ${ASK_MS / 1000} s`));
+      }, ASK_MS);
       const on = (e) => {
         const m = JSON.parse(String(e.data));
         if (m.id !== n) return;
+        clearTimeout(timer);
         ws.removeEventListener("message", on);
-        resolve(m.result);
+        resolve(m);
       };
       ws.addEventListener("message", on);
       ws.send(JSON.stringify({ id: n, method, params }));
     });
+  // its result: none for a call refused while the page is still loading, polled again next time round
+  const ask = async (method, params) => (await call(method, params)).result;
+  /** A JS dialog the page opened (it holds up every call until it's answered). */
+  let dialog = null;
+  /** Whether the page still answers, and where its keyboard is: said with a call that stalled. */
+  const alive = async () => {
+    const probe = call("Runtime.evaluate", {
+      expression:
+        "`visible: ${document.visibilityState}, focus: ${document.hasFocus()}, keyboard: ${document.activeElement?.className || document.activeElement?.tagName}, keys asked ${(window.__mbKeys || []).length} / done ${window.__mbKeysDone || 0}, so far: ${JSON.stringify(window.__mbAuditOut ?? null)?.slice(0, 600)}`",
+      returnByValue: true,
+    });
+    const r = await Promise.race([probe.then((m) => m.result?.result?.value ?? "no value"), new Promise((r) => setTimeout(() => r(null), 3000))]);
+    return r === null ? "the page doesn't answer either" : `the page answers (${r})`;
+  };
+  // when the page was first reached: the stall report below runs from about when inChrome's time-out does
+  let started = Infinity;
   try {
     await inChrome({ size, query, outDir, budget: null, limitMs, args: ["--remote-debugging-port=0", ...(scale ? [`--force-device-scale-factor=${scale}`] : [])], what: "the page's result", onStderr: (text) => (devtools ??= text.match(/DevTools listening on (ws:\/\/\S+)/)?.[1] ?? null) }, async () => {
       if (!devtools) return false;
@@ -220,15 +244,33 @@ export async function pageResult({ size = "1400x900", query = "", outDir, read, 
         const pages = await (await fetch(`http://127.0.0.1:${new URL(devtools).port}/json`)).json();
         const page = pages.find((t) => t.type === "page" && t.url.startsWith("http://localhost"));
         if (!page) return false;
+        started = Date.now();
         ws = new WebSocket(page.webSocketDebuggerUrl);
         await new Promise((r, j) => {
           ws.addEventListener("open", r, { once: true });
           ws.addEventListener("error", j, { once: true });
         });
+        ws.addEventListener("message", (e) => {
+          const m = JSON.parse(String(e.data));
+          if (m.method === "Page.javascriptDialogOpening") dialog = `${m.params.type} dialog ("${String(m.params.message).slice(0, 120)}")`;
+        });
+        await call("Page.enable", {});
+        // The page keeps the window's focus whatever is pressed: headless Chrome otherwise hides it on Esc (its timers
+        // slow to about a second each and its animation frames stop) and blurs the window, which closes popovers and
+        // menus on its own, so an Esc the app ignored would still look handled
+        const emulated = await call("Emulation.setFocusEmulationEnabled", { enabled: true });
+        if (emulated.error) throw new Error(`Chrome refused focus emulation, which the driver's keys need: ${emulated.error.message}`);
       }
-      await pressAsked(ask);
-      const r = await ask("Runtime.evaluate", { expression: read, returnByValue: true });
-      result = r?.result?.value ?? null;
+      try {
+        await pressAsked(ask);
+        const r = await ask("Runtime.evaluate", { expression: read, returnByValue: true });
+        result = r?.result?.value ?? null;
+      } catch (err) {
+        throw new Error(`${err.message}${dialog ? `; the page had opened a ${dialog}` : ""}; ${await alive()}`);
+      }
+      if (dialog) throw new Error(`the page opened a ${dialog}`);
+      // about to run out of time: say where the page is, which the bare time-out can't
+      if (result === null && Date.now() - started > limitMs - 3000) throw new Error(`no result in ${Math.round(limitMs / 1000)} s; ${await alive()}`);
       return result !== null;
     });
   } finally {

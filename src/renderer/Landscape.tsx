@@ -84,7 +84,7 @@ import {
   type Tile,
   type WindowView,
 } from "./landscapeModel";
-import { WorkspaceNode, edgesOf, type NodeMode, type ResizeEdge, type WorkspaceChrome } from "./WorkspaceNode";
+import { WorkspaceNode, edgesOf, ownTermHasKeys, type NodeMode, type ResizeEdge, type WorkspaceChrome } from "./WorkspaceNode";
 import { ToolWindow } from "./ToolWindow";
 import { LiftOut } from "./lift";
 import { actionOf, menuOf, severalActions, severalMenu, type ModelAction } from "./workspaceActions";
@@ -101,7 +101,7 @@ import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
 import { OVERLAYS, OVER_TOUR, escapeLeavesFullscreen, ownsKeys } from "./keys";
 import { keyboardClaimed, useKeyboardHome } from "./Modal";
-import { KEYS_SWALLOWED, QUIET_KEYS, TYPING_MS, armFocus, armOnPress, holdNowhere, inputStamp, isArmed, isNowhere, keyboardNowhere, keyboardSpell, sinceKey, swallowedNote, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
+import { HOLDS_KEYS, KEYS_SWALLOWED, QUIET_KEYS, TYPING_MS, armFocus, armOnPress, holdNowhere, inputStamp, isArmed, isNowhere, keyboardNowhere, keyboardSpell, sinceKey, swallowedNote, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
 import { LandscapeEmpty } from "./LandscapeEmpty";
 import { LandscapeTour } from "./LandscapeTour";
 import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
@@ -960,10 +960,11 @@ export function Landscape({
     if (t === "expired") return gaveUp(p);
     const room = roomClearOf(revealOpts.current.avoid);
     const seen = !vpNow.current.w || inView(cam.current, t.rect, room);
-    // The user did something while it waited (main slow to bring a stack's tab to the front, or to open an area): it
-    // moves no keyboard and enters no focus, which would take what's being typed now or hide it. It's still brought
-    // into view, unless that would move the view from under a terminal or a field being typed in.
-    if (inputStamp() !== revealStamp.current) {
+    // The user did something while it waited (main slow to bring a stack's tab to the front, or to open an area), or a
+    // dialog opened (inputStamp counts those too), or one is open now: it moves no keyboard and enters no focus, which
+    // would take what's being typed now, or the dialog's keys. It's still brought into view, unless that would move the
+    // view from under a terminal or a field being typed in.
+    if (inputStamp() !== revealStamp.current || document.querySelector(OVERLAYS)) {
       if (!seen && !ownsKeys(document.activeElement)) flyTo(centreOn(cam.current, t.rect, room));
       return;
     }
@@ -1988,7 +1989,11 @@ export function Landscape({
     // Claude in focus); from the landscape itself, or from nowhere, the press arms the landscape, or focus's frame, as
     // a press beside it does. Tab still reaches the buttons from the armed landscape.
     const onButtonDown = (e: MouseEvent) => {
-      const b = e.button === 0 ? (e.target as Element | null)?.closest?.("button, [role=button], a[href]") : null;
+      const at = e.button === 0 ? (e.target as Element | null) : null;
+      // the bare header of the workspace whose terminal is being typed in is the same: the keyboard stays there, and a
+      // drag by it still moves the workspace. Another workspace's header selects it and arms the landscape, as before
+      if (at?.closest?.(".ls-head") && !at.closest("button, [role=button], a[href]") && ownTermHasKeys(at)) return e.preventDefault();
+      const b = at?.closest?.("button, [role=button], a[href]");
       if (!b || b.closest(".xterm, .ls-peek, input, textarea, select, [contenteditable]")) return;
       e.preventDefault();
       const a = document.activeElement;
@@ -2242,6 +2247,7 @@ export function Landscape({
       <div
         ref={viewport}
         className="ls-viewport"
+        {...{ [HOLDS_KEYS]: "" }}
         tabIndex={0}
         aria-label="Landscape — scroll to pan, ⌘-scroll or pinch to zoom, ⌘0 fits everything, ⌘1 is 100%, ⌥-arrows move between workspaces, Enter focuses"
         onKeyDown={onKeyDown}
@@ -2387,6 +2393,7 @@ export function Landscape({
           <div
             ref={overlay}
             className="ls-focus"
+            {...{ [HOLDS_KEYS]: "" }}
             onKeyDown={(e) => {
               if (!typed(e)) return;
               // on the frame itself, what's typed counts only while the user armed it (keyArm.ts)

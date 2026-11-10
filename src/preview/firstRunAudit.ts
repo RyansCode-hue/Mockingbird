@@ -1475,10 +1475,25 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
  * - hud (with ?lsCamera=0,0,0.625): the zoom HUD's Zoom out pressed, then a peek's Space, then Tab;
  * - hint (with ?needsMany): typed keys swallowed by the landscape disarmed, and with the keyboard nowhere, and ⌘E;
  * - pressNothing: a press on the top bar's bare middle, then Tab;
- * - button (&btn=hud|chip|typist, with ?lsCamera=0,0,1): s1's terminal typed in, a landscape button pressed, typing on;
+ * - button (&btn=hud|chip|typist|head, with ?lsCamera=0,0,1): s1's terminal typed in, a landscape button pressed (or
+ *   s1's own header, off its buttons), typing on;
+ * - headOther (with ?lsCamera=0,0,1): s1's terminal typed in, another workspace's header pressed, then ?;
  * - frameButton (with ?lsCamera=0,0,1): the same in focus on s1, a button on its frame, then Esc;
- * - lag (&how=go|side, with ?lsCamera=0,0,1): Go there on s3 (a stack's back tab), or a double-click on its side bar
- *   row, while main is slow to bring it to the front; meanwhile s1's terminal clicked into and typed in;
+ * - lag (&how=go|side|dialog|dialogGone|idle, with ?lsCamera=0,0,1): Go there on s3 (a stack's back tab), or a
+ *   double-click on its side bar row, while main is slow to bring it to the front; meanwhile s1's terminal clicked into
+ *   and typed in (go, side), a join prompt coming up on its own (dialog, with ?joinRequest=later), and going on its own
+ *   too (dialogGone), or nothing (idle);
+ * - preset (&how=typed|idle, with ?lsCamera=500,0,0.75&needsMany): ⌘K's Start preset while main is slow to start it
+ *   (it answers with s2, on screen); meanwhile s1's terminal clicked into and typed in, or nothing;
+ * - selfClose (with ?joinRequest=later&lsCamera=0,0,0.4): the landscape armed by a press, a join prompt coming up and
+ *   going on its own, then ?, N, Enter and y;
+ * - frameGone (with ?lsCamera=0,700,0.75): a teammate's workspace focused by a press on its header and Enter, the
+ *   frame's session gone, then Shift+Tab ×5 and y;
+ * - jumpCards (with ?lsCamera=0,0,0.2): ⌘K to a session whose terminal isn't there (cards), then Shift+Tab ×5 and y;
+ * - escMask: the shortcuts sheet opened, the app's Esc cut off, then Esc: the sheet stays (the driver's Esc does no
+ *   more than a key's);
+ * - menuEsc (with ?lsCamera=0,0,0.4): the landscape armed by a press, the right-click menu opened on it and left with
+ *   Esc, then ?;
  * - join (&how=withdrawn|enter|esc, with ?joinRequest=later&lsCamera=0,0,1): Go there on Lee's request, then the
  *   request going from under its prompt, or Accept with Enter, or Esc;
  * - tabWalk (&how=fresh|palette|reopen): Tab from a fresh window (&tab=dashboard, &tab=settings, ?labsOff), after
@@ -1512,6 +1527,19 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await act([{ mouse: { ...at, clickCount: 1 } }]);
     await sleep(300);
     return document.activeElement?.closest<HTMLElement>(".ls-node")?.dataset.front === id && keyboard() === "terminal";
+  };
+  /** A point on workspace `front`'s header off its buttons and tabs, inside the window. */
+  const bareHead = (front: string): { x: number; y: number } | null => {
+    const head = q(`.ls-world .ls-node[data-front="${front}"] .ls-head`);
+    if (!head) return null;
+    const r = head.getBoundingClientRect();
+    const y = r.top + r.height / 2;
+    for (let x = r.left + 4; x < r.right - 4; x += 6) {
+      if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) continue;
+      const el = document.elementFromPoint(x, y);
+      if (el && head.contains(el) && !el.closest("button, [role=button], a[href], input, .ls-tab")) return { x, y };
+    }
+    return null;
   };
   const writesSince = (mark: number) => env.calls.slice(mark).filter((c) => c.fn === "sessionWrite").map((c) => String(c.args[0]));
   /** What was written to session `id`'s terminal since `mark`. */
@@ -1880,17 +1908,25 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await typeKeys(["o", "k", " "], 60);
     const s1 = (sel: string) => q(`.ls-world .ls-node[data-front="s1"] ${sel}, .ls-focus ${sel}`);
     // in focus, the frame's Stop … typing ×: a button that leaves focus (its ← or ⋯) is a move of its own
-    const btn =
-      which === "frameButton"
-        ? q(".ls-focus button.typist-x")
-        : params.get("btn") === "chip"
-          ? qs<HTMLElement>('.ls-world .ls-node[data-front="s1"] button').find((b) => /\bfiles?\b/.test(b.textContent ?? ""))
-          : params.get("btn") === "typist"
-            ? s1("button.typist-x")
-            : q(".ls-hud-btn.pct");
-    if (!btn) throw new Error(`no button to press (${params.get("btn") ?? which})`);
-    out.button = btn.getAttribute("aria-label") ?? btn.textContent?.trim().slice(0, 30) ?? "";
-    await clickOn(btn);
+    if (params.get("btn") === "head") {
+      // s1's own header, off its buttons: the workspace being typed in
+      const at = bareHead("s1");
+      if (!at) throw new Error("no bare part of s1's header in the window");
+      out.button = "s1's header";
+      await act([{ mouse: { ...at, clickCount: 1 } }]);
+    } else {
+      const btn =
+        which === "frameButton"
+          ? q(".ls-focus button.typist-x")
+          : params.get("btn") === "chip"
+            ? qs<HTMLElement>('.ls-world .ls-node[data-front="s1"] button').find((b) => /\bfiles?\b/.test(b.textContent ?? ""))
+            : params.get("btn") === "typist"
+              ? s1("button.typist-x")
+              : q(".ls-hud-btn.pct");
+      if (!btn) throw new Error(`no button to press (${params.get("btn") ?? which})`);
+      out.button = btn.getAttribute("aria-label") ?? btn.textContent?.trim().slice(0, 30) ?? "";
+      await clickOn(btn);
+    }
     await sleep(250);
     out.pressed = { keyboard: keyboard(), inS1: !!document.activeElement?.closest('.ls-node[data-front="s1"], .ls-focus') };
     // Esc in focus is Claude's (interrupt); n, Enter and y as at a prompt
@@ -1921,6 +1957,55 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
       await clickOn(go);
     }
     await sleep(150);
+    const how = params.get("how");
+    if (how === "dialog" || how === "dialogGone" || how === "idle") {
+      // nothing typed while it waits; a join prompt comes up on its own meanwhile (dialog), or nothing does (idle)
+      const mark = env.calls.length;
+      let waited = 0;
+      if (how !== "idle") {
+        const team = window as unknown as { mb: { teamStatus: () => Promise<{ rooms: { requests?: Record<string, unknown>[] }[] }> }; __mbEmit: (ev: string, ...a: unknown[]) => void };
+        const st = await team.mb.teamStatus();
+        const room = st.rooms.find((r) => r.requests?.length);
+        if (!room?.requests) throw new Error("no join request to copy");
+        const lee = room.requests[0];
+        room.requests = [lee, { ...lee, id: "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b", name: "Max", at: Number(lee.at) + 1000 }];
+        team.__mbEmit("onTeamChanged", st);
+        await sleep(300);
+        out.promptUp = { prompt: !!q(".join-ask"), keyboard: keyboard() };
+        if (how === "dialogGone") {
+          // and Max's request answered elsewhere, still while s3 waits
+          const now = await team.mb.teamStatus();
+          const same = now.rooms.find((r) => r.requests?.some((x) => x.id === lee.id));
+          if (!same) throw new Error("the join request went from the status");
+          same.requests = [lee];
+          team.__mbEmit("onTeamChanged", now);
+          await sleep(300);
+          out.promptGone = { prompt: !!q(".join-ask"), keyboard: keyboard() };
+          waited = 300;
+        }
+      }
+      await sleep(1900 - waited);
+      out.afterLag = { keyboard: keyboard(), front: q('.ls-world .ls-node[data-ws="ws:5101/api"]')?.dataset.front ?? null, focus: !!q(".ls-focus"), prompt: !!q(".join-ask") };
+      if (how === "dialog") {
+        // Enter (meant for the prompt) and y
+        await typeKeys(["Enter", "y"], 200);
+        await sleep(400);
+        out.after = { writes: writesSince(mark), keyboard: keyboard() };
+      } else {
+        // idle: Go there's own, the landscape armed once s3 is in front, so ? opens the sheet; after a prompt that came
+        // and went meanwhile, the late move is dropped: ? and n do nothing
+        await press("?", { shift: true });
+        await sleep(300);
+        const sheet = !!q(".ls-keys");
+        if (how === "dialogGone") {
+          await press("n");
+          await sleep(300);
+        }
+        out.after = { sheet, writes: writesSince(mark) };
+      }
+      w.mb = real;
+      return;
+    }
     out.before = await intoTerm("s1");
     const mark = env.calls.length;
     const words = params.get("how") === "side" ? [..."please run the tests"] : ["a", "b"];
@@ -2030,6 +2115,168 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await press("Tab", { shift });
     await sleep(150);
     out.left = { keyboard: keyboard(), isStart: !!want && document.activeElement === want };
+  } else if (which === "preset") {
+    // a jump that waits on main: the preset's session (s2 here) shown and given the keyboard once main answers
+    const w = window as unknown as { mb: Record<string, unknown> };
+    const real = w.mb;
+    w.mb = new Proxy(real, {
+      get: (t, n) =>
+        n === "presetStart"
+          ? async () => (await sleep(1500), ((await (t.listSessions as () => Promise<{ id: string }[]>)()) ?? []).find((s) => s.id === "s2"))
+          : t[n as string],
+    });
+    await press("k", { meta: true });
+    await sleep(300);
+    await typeKeys([..."Start preset"], 30);
+    await sleep(150);
+    await press("Enter");
+    await sleep(300);
+    const typedIn = params.get("how") !== "idle";
+    if (typedIn) out.before = await intoTerm("s1");
+    const mark = env.calls.length;
+    if (typedIn) await typeKeys(["a", "b"], 110);
+    await sleep(1900);
+    out.afterLag = { keyboard: keyboard(), in: document.activeElement?.closest<HTMLElement>(".ls-node")?.dataset.front ?? null };
+    if (typedIn) {
+      await typeKeys(["n", "Enter", "y"], 120);
+      await sleep(400);
+      out.after = { others: writesSince(mark).filter((id) => id !== "s1"), s1Got: dataTo("s1", mark) };
+    }
+    w.mb = real;
+  } else if (which === "headOther") {
+    // typing in s1, then a press on another workspace's header, off its buttons: that one is selected, and the
+    // landscape armed
+    out.before = await intoTerm("s1");
+    const other = qs(".ls-world .ls-node[data-front]").map((n) => n.dataset.front!).find((f) => f !== "s1" && bareHead(f));
+    const at = other ? bareHead(other) : null;
+    if (!other || !at) throw new Error("no other workspace's header in the window");
+    await act([{ mouse: { ...at, clickCount: 1 } }]);
+    await sleep(250);
+    out.pressed = { keyboard: keyboard(), selected: selected() === other };
+    await press("?", { shift: true });
+    await sleep(300);
+    out.armed = { sheet: !!q(".ls-keys") };
+  } else if (which === "selfClose") {
+    // armed by a press on the bare landscape; a join prompt comes up on its own, and goes on its own
+    const at = barePoint();
+    await act([{ mouse: { ...at, clickCount: 1 } }]);
+    await sleep(300);
+    out.armedAt = keyboard();
+    const team = window as unknown as { mb: { teamStatus: () => Promise<{ rooms: { requests?: Record<string, unknown>[] }[] }> }; __mbEmit: (ev: string, ...a: unknown[]) => void };
+    const st = await team.mb.teamStatus();
+    const room = st.rooms.find((r) => r.requests?.length);
+    if (!room?.requests) throw new Error("no join request to copy");
+    const lee = room.requests[0];
+    room.requests = [lee, { ...lee, id: "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b", name: "Max", at: Number(lee.at) + 1000 }];
+    team.__mbEmit("onTeamChanged", st);
+    await sleep(700);
+    out.up = { prompt: !!q(".join-ask"), keyboard: keyboard() };
+    // Max's request answered elsewhere: the status as it is now, without his
+    const now = await team.mb.teamStatus();
+    const same = now.rooms.find((r) => r.requests?.some((x) => x.id === lee.id));
+    if (!same) throw new Error("the join request went from the status");
+    same.requests = [lee];
+    team.__mbEmit("onTeamChanged", now);
+    await sleep(700);
+    out.gone = { prompt: !!q(".join-ask"), keyboard: keyboard() };
+    const mark = env.calls.length;
+    const sel0 = selected();
+    await press("?", { shift: true });
+    await sleep(300);
+    const sheet = !!q(".ls-keys");
+    await typeKeys(["n", "Enter", "y"], 150);
+    await sleep(400);
+    out.after = { sheet, moved: selected() !== sel0, writes: writesSince(mark), focus: !!q(".ls-focus") };
+  } else if (which === "frameGone" || which === "jumpCards") {
+    const warned: string[] = [];
+    const warn = console.warn;
+    console.warn = (...a: unknown[]) => (warned.push(a.map(String).join(" ")), warn.apply(console, a));
+    if (which === "frameGone") {
+      // a teammate's workspace focused from the keyboard: its header pressed, then Enter; its frame has the keyboard
+      const id = "r~0f1e2d3c4b5a~n1";
+      const head = q(`.ls-world .ls-node[data-ws="${id}"] .ls-head`);
+      if (!head) throw new Error(`no ${id} on the landscape`);
+      const r = head.getBoundingClientRect();
+      let at: { x: number; y: number } | null = null;
+      for (let x = r.left + 4; !at && x < r.right - 4; x += 6) {
+        const el = document.elementFromPoint(x, r.top + r.height / 2);
+        if (el && head.contains(el) && !el.closest("button, [role=button], a[href]")) at = { x, y: r.top + r.height / 2 };
+      }
+      if (!at) throw new Error(`no bare part of ${id}'s header`);
+      await act([{ mouse: { ...at, clickCount: 1 } }]);
+      await sleep(200);
+      await press("Enter");
+      await sleep(400);
+      out.inFocus = { focus: !!q(".ls-focus"), keyboard: document.activeElement === q(".ls-focus") ? "frame" : keyboard() };
+      // the teammate's session goes, and its frame with it
+      const live = window as unknown as { mb: { teamLive: () => Promise<{ remote: { id: string }[] }> }; __mbEmit: (ev: string, ...a: unknown[]) => void };
+      const l = await live.mb.teamLive();
+      l.remote = l.remote.filter((s) => s.id !== id);
+      live.__mbEmit("onTeamLive", l);
+      await sleep(1500);
+    } else {
+      // ⌘K to a session whose terminal takes no keys this far out
+      await press("k", { meta: true });
+      await sleep(300);
+      await typeKeys([..."test runner"], 30);
+      await sleep(150);
+      await press("Enter");
+      await sleep(400);
+    }
+    out.gone = { focus: !!q(".ls-focus"), keyboard: keyboard(), warned: warned.filter((w) => /keyboard/.test(w)) };
+    console.warn = warn;
+    const reached: string[] = [];
+    const onFocus = (e: FocusEvent) => {
+      const t = e.target as Element | null;
+      if (t instanceof Element && !t.classList.contains("mb-keys-nowhere")) reached.push(keyboard());
+    };
+    document.addEventListener("focusin", onFocus, true);
+    const mark = env.calls.length;
+    for (let i = 0; i < 5; i++) {
+      await press("Tab", { shift: true });
+      await sleep(100);
+    }
+    await press("y");
+    await sleep(400);
+    document.removeEventListener("focusin", onFocus, true);
+    out.after = { reached: [...new Set(reached)], writes: writesSince(mark), acts: actsSince(mark), ...opened() };
+  } else if (which === "menuEsc") {
+    // the menu gives the keyboard back a frame after it closes: armed, since the user's Esc closed it
+    const at = barePoint();
+    await act([{ mouse: { ...at, clickCount: 1 } }]);
+    await sleep(250);
+    await act([{ mouse: { ...at, clickCount: 1, button: "right" } }]);
+    await sleep(300);
+    out.menu = { open: !!q(".mb-ctx:not(.mb-ghost)"), keyboard: keyboard() };
+    await press("Escape");
+    await sleep(300);
+    out.left = { menu: !!q(".mb-ctx:not(.mb-ghost)"), keyboard: keyboard() };
+    await press("?", { shift: true });
+    await sleep(300);
+    out.armed = { sheet: !!q(".ls-keys") };
+  } else if (which === "escMask") {
+    // the app's own Esc cut off: Esc reaches nothing of it, so the sheet stays open, the page in front all along
+    let blurs = 0;
+    const onBlur = () => void blurs++;
+    window.addEventListener("blur", onBlur);
+    await giveLandscape();
+    await press("?", { shift: true });
+    await sleep(300);
+    out.open = !!q(".ls-keys");
+    const cut = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", cut, true);
+    await press("Escape");
+    await sleep(400);
+    window.removeEventListener("keydown", cut, true);
+    window.removeEventListener("blur", onBlur);
+    out.afterEsc = { open: !!q(".ls-keys"), visibility: document.visibilityState, blurs };
+    await press("Escape");
+    await sleep(300);
+    out.closed = !q(".ls-keys");
   } else if (which === "pressNothing") {
     // a press on nothing puts the keyboard on the page by the user's own act: Tab goes on from the press
     const s = box(q(".topbar > .spacer"));
@@ -2171,6 +2418,8 @@ export function runFirstRunAudit(env: FirstRunEnv, part: string): void {
   const fromBar = part === "b" || (part === "a" && (["mount", "tabWalk"].includes(params.get("case") ?? "") || params.get("how") === "grid"));
   env.waitFor(fromBar ? ".topbar" : ".ls-viewport", async () => {
     const out: Record<string, unknown> = {};
+    // what it has found so far, for the driver to say where it was if it never finishes
+    (window as unknown as { __mbAuditOut?: unknown }).__mbAuditOut = out;
     try {
       if (part === "k") await keysPart(env, out);
       else if (part === "t") await tourPart(env, out);

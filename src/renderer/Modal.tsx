@@ -3,13 +3,14 @@ import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { useLiftOut } from "./lift";
-import { armFocus, isArmed, isNowhere, keyboardNowhere, userLeft } from "./keyArm";
+import { DIALOG_OPENED, armFocus, isArmed, isNowhere, keyboardNowhere, userLeft } from "./keyArm";
 
 /**
- * Said on `document` as a dialog opens, so what floats over the app can get out of its way. `handBack` names who gets
- * the keyboard when the dialog closes, in place of what had it as it opened (which may be leaving with what floated).
+ * Said on `document` as a dialog opens, so what floats over the app can get out of its way (and a keyboard move waiting
+ * on main knows it's out of date, keyArm.ts). `handBack` names who gets the keyboard when the dialog closes, in place
+ * of what had it as it opened (which may be leaving with what floated).
  */
-export const DIALOG_OPENED = "mb-dialog-opened";
+export { DIALOG_OPENED };
 export interface DialogOpened {
   handBack: (to: HTMLElement) => void;
 }
@@ -35,9 +36,12 @@ function placeFor(chain: readonly Element[]): HTMLElement | null {
   return home?.() ?? null;
 }
 
-/** The keyboard back to `to`: armed again if the user had armed it when what's closing opened from it, and left it. */
-export function giveBack(to: HTMLElement, armedThen: ReadonlySet<Element>): void {
-  if (armedThen.has(to) && userLeft()) armFocus(to);
+/**
+ * The keyboard back to `to`: armed again if the user had armed it when what's closing opened from it, and `left` it:
+ * their Esc or press is what closed it (`userLeft`, read as it closes; a hand-back made later passes what it read then).
+ */
+export function giveBack(to: HTMLElement, armedThen: ReadonlySet<Element>, left = userLeft()): void {
+  if (armedThen.has(to) && left) armFocus(to);
   else to.focus({ preventScroll: true });
 }
 

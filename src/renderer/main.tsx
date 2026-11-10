@@ -7,7 +7,7 @@ import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
 import { QuickOpen } from "./QuickOpen";
 import { keyboardMoves } from "./Modal";
-import { KEYS_SWALLOWED, keyboardNowhere, userLeft } from "./keyArm";
+import { KEYS_SWALLOWED, inputStamp, keyboardNowhere, toNowhere, userLeft } from "./keyArm";
 import { EMPTY_EDITOR, closeTab, openTab, tabKey, updateTab } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
@@ -411,8 +411,8 @@ function App() {
   }, [joinShown, joinAsk]);
   /** The join prompt was closed by the user's own press or Esc: the landscape it was gone to from gets its keyboard armed. */
   const joinLeft = useRef(false);
-  const joinDone = useCallback((byUser: boolean) => {
-    joinLeft.current = byUser && userLeft();
+  const joinDone = useCallback((left: boolean) => {
+    joinLeft.current = left;
     setJoinShown(null);
   }, []);
   // team rooms: rooms whose admin made backups to origin available and this member hasn't answered for theirs; Not now is an answer, closing asks again next start
@@ -999,7 +999,12 @@ function App() {
     });
   };
 
-  const jumpToSession = (s: SessionInfo) => {
+  /**
+   * Show session `s` and give its terminal the keyboard. `since`: the user's input as they asked for it (`inputStamp`),
+   * for a jump that waited on main (resuming, starting a preset, opening a search hit): if they typed, pressed or a
+   * dialog opened meanwhile, it's still shown, but the keyboard stays where it is.
+   */
+  const jumpToSession = (s: SessionInfo, since?: number) => {
     if (s.debrief) {
       setTab("worktracker"); // debriefs live on their own tab, not the grid
     } else if (landscapeOn) {
@@ -1013,15 +1018,20 @@ function App() {
       if (sub) setWsTabs((p) => ({ ...p, [`${topOf(s)}/${sub}`]: s.id })); // front its workspace tab
     }
     setFocused(s.id);
+    if (since !== undefined && inputStamp() !== since) return;
     // The keyboard goes to its terminal, at once when that's already there: a palette or menu closing as it's picked
     // gives none back to what had it meanwhile, or a key typed straight after would land in the session left.
     keyboardMoves();
     focusTerm(s.id);
     if (!termHasKeys(s.id))
       setTimeout(() => {
+        if (since !== undefined && inputStamp() !== since) return;
         focusTerm(s.id);
-        // its terminal isn't there to take it (the landscape zoomed out past it): typed keys go nowhere, and say so
-        if (!termHasKeys(s.id) && keyboardNowhere()) console.warn(`[mockingbird] ${s.id}'s terminal couldn't take the keyboard as it was gone to: it's left nowhere`);
+        if (termHasKeys(s.id) || !keyboardNowhere() || s.debrief || !landscapeOn) return;
+        // its terminal isn't there to take it (the landscape zoomed out past it): the keyboard waits on the holder
+        // (keyArm.ts), where typed keys do nothing and say why, not on the page, where Tab would walk on from the palette
+        toNowhere();
+        console.warn(`[mockingbird] ${s.id}'s terminal couldn't take the keyboard as it was gone to: it waits on the holder until a click or ⌘E`);
       }, 50);
   };
   const jumpTo = (id: string) => {
@@ -1718,6 +1728,7 @@ function App() {
 
   /** A session continued in a new one (a handoff, or a fresh session from a brief): beside it, or in its place when it's closed. */
   const placeContinuation = async (old: SessionInfo, next: SessionInfo, closeOld: boolean) => {
+    const since = inputStamp();
     await refresh();
     const [oldKey, nextKey] = [cellKeyOfSession(old), cellKeyFor(next.id, next.taskGroup)];
     // the old one is kept under Previous; its worktree is the new session's
@@ -1731,10 +1742,12 @@ function App() {
       setShown((p) => placeBeside(p.includes(next.id) ? p : [...p, next.id], next.id, old.id, "after"));
     }
     setFocused(next.id);
-    setTimeout(() => focusTerm(next.id), 50);
+    // the keyboard follows only if the user didn't type, press or get a dialog while it waited on main
+    setTimeout(() => inputStamp() === since && focusTerm(next.id), 50);
   };
 
   const resumeDead = async (s: SessionInfo) => {
+    const since = inputStamp();
     // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed); main
     // checks too, for a take-over this window hasn't heard of, before it lets the pty go
     const info = await resumeExited(titleOf(s), {
@@ -1748,7 +1761,7 @@ function App() {
     if (!info) return;
     hide(s.id);
     await refresh();
-    jumpToSession(info);
+    jumpToSession(info, since);
   };
 
   // ⌥⇥ cycles waiting sessions, oldest wait first — the primary motion for a busy grid
@@ -2949,6 +2962,7 @@ function App() {
 
   /** Open a search hit wherever it lives; returns why it couldn't be opened. */
   const openTranscript = async (h: TranscriptHit): Promise<string | null> => {
+    const since = inputStamp();
     if (h.open.how === "pane") {
       jumpTo(h.open.sessionId);
       return null;
@@ -2966,7 +2980,7 @@ function App() {
     if (!info) return "That session is no longer saved.";
     if (isErr(info)) return info.error;
     await refresh();
-    jumpToSession(info);
+    jumpToSession(info, since);
     return null;
   };
 
@@ -3043,10 +3057,11 @@ function App() {
 
   /** Start a preset's session and show it. */
   const startPreset = async (p: SessionPreset) => {
+    const since = inputStamp();
     const info = await window.mb.presetStart(p.id);
     if (isErr(info)) return alert(`Couldn't start “${p.name}”: ${info.error}`);
     await refresh();
-    jumpToSession(info);
+    jumpToSession(info, since);
   };
   /** Save the preset list. Settings writes merge, so only the changed key is sent. */
   const savePresets = async (next: SessionPreset[]) => {

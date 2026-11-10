@@ -2950,7 +2950,9 @@ Design O, with Artifacts as a window, and N's workspace header.
       move gives it it; a press that gives a terminal the keyboard arms
       nothing; a press on one of its own buttons never gives the button the
       keyboard, and arms the landscape only from the landscape itself or from
-      nowhere: a terminal or a field being typed in keeps it, rounds 3 and 4);
+      nowhere: a terminal or a field being typed in keeps it, rounds 3 and 4;
+      so does a press on the bare header of the workspace being typed in,
+      round 5);
       a command that leaves a terminal for it
       or goes to it (⌘E, ⌘Esc, Esc out of focus, Go there, ⌘E with nothing
       selected, `armFocus`); its tab's button pressed (`tabChosen`, recorded
@@ -2963,13 +2965,19 @@ Design O, with Artifacts as a window, and N's workspace header.
       palette row run with it, gives it back disarmed: keys may still be
       coming for what it made. A dialog that goes on its own (the join
       prompt, its request answered elsewhere) gives it back disarmed (round
-      4).
-    - **A move that waited is dropped if the user moved on (round 4).** A
-      reveal that waits on main (a stack's tab brought to the front, an area
-      opened) is stamped with the user's keys and presses as it's asked
-      (`inputStamp`). If any came since, it moves no keyboard and enters no
-      focus, and it doesn't move the view from under a terminal or a field
-      being typed in.
+      4), whatever the user did last: `userLeft` holds only while the user's
+      own key or press (or the click it ends in) is being handled, so it's
+      read as the thing closes (round 5).
+    - **A move that waited is dropped if the user moved on (rounds 4 and
+      5).** A reveal that waits on main (a stack's tab brought to the front,
+      an area opened), and a jump that does (resuming a session, starting a
+      preset, opening a search hit, a continuation placed: `jumpToSession`'s
+      `since`), is stamped as it's asked with `inputStamp`: the user's keys
+      and presses, and dialogs opened (`DIALOG_OPENED`). If any came since,
+      it moves no keyboard and enters no focus. Nor does a reveal while a
+      dialog, the palette, a menu or the tour is open (`OVERLAYS`). It's
+      still brought into view, unless that would move the view from under a
+      terminal or a field being typed in.
     - **Disarmed whenever the keyboard goes anywhere else**, however that
       happens (`focusin` elsewhere, focus falling to the page), and nothing
       but the acts above arms it again. So a hand-back after a terminal,
@@ -2985,13 +2993,15 @@ Design O, with Artifacts as a window, and N's workspace header.
       why once each time the keyboard comes to it (`keyboardSpell`), in the
       landscape's note, naming the terminal ⌘E types in when a workspace is
       selected (rounds 3 and 4).
-    - **Nowhere (rounds 3 and 4).** A terminal or a text field being typed
-      in that goes from under the user (removed or hidden, nothing taking the
-      keyboard) while the landscape is up (`holdNowhere`) puts the keyboard
-      on an inert holder (`toNowhere`, a hidden `tabindex=-1` element), not
-      the page, where Tab would walk on from where it was. So does the tour
-      ending over a terminal it hid with nothing to give back yet, and the
-      hold's cap. The holder is never armed. It swallows typed keys at the
+    - **Nowhere (rounds 3 to 5).** A terminal or a text field being typed
+      in, or a surface that holds the keyboard itself (`data-holds-keys`: the
+      landscape, focus's frame), that goes from under the user (removed or
+      hidden, nothing taking the keyboard) while the landscape is up
+      (`holdNowhere`) puts the keyboard on an inert holder (`toNowhere`, a
+      hidden `tabindex=-1` element), not the page, where Tab would walk on
+      from where it was. So does the tour ending over a terminal it hid with
+      nothing to give back yet, the hold's cap, and a jump to a session whose
+      terminal isn't there to take it (zoomed out to cards). The holder is never armed. It swallows typed keys at the
       window's capture, Tab, Shift+Tab, Space and Enter included, and says why
       once each time the keyboard goes there (`KEYS_SWALLOWED`: the
       landscape's note while it's up, the status bar elsewhere); Esc and
@@ -3013,7 +3023,8 @@ Design O, with Artifacts as a window, and N's workspace header.
       `keyboardNowhere()`; code that leaves it nowhere on purpose calls
       `toNowhere()`, never `blur()`. A keyboard move made later than the
       command that asked for it (after main answers) checks `inputStamp()`
-      first. Preview audits that stand in for a press use `armFocus` in
+      first, and a jump that waited passes it to `jumpToSession`. A surface
+      that takes the keyboard itself carries `data-holds-keys`. Preview audits that stand in for a press use `armFocus` in
       their setup (`giveLandscape`); the tests of the rule itself press for
       real.
   - **H1, the tour's hand-back:** the tour's end never gives the landscape
@@ -3275,6 +3286,105 @@ Design O, with Artifacts as a window, and N's workspace header.
     (Esc reaching s1), and the Tab walks on Dashboard, after ⌘K's Dashboard
     row, from a fresh grid, Shift+Tab into the side bar and through an
     area's header. Each now shows what the tests check.
+- **S8a review fixes (round 5) — As built:**
+  - **N1, a surface that goes:** the landscape's viewport and focus's frame
+    carry `data-holds-keys` (`HOLDS_KEYS`), and the holder takes the
+    keyboard from them as from a terminal or a field: lost to nothing and,
+    a task later, removed or hidden. So focus's frame going with its session
+    (a teammate's, focused from the keyboard) leaves it on the holder, and
+    Shift+Tab after a pause starts at the top bar's last control, never at
+    the frame's place (round 4 had let it walk from there, onto another
+    session's terminal or the status bar's Restart). `jumpToSession`'s
+    retry, when the session's terminal isn't there to take the keyboard
+    (zoomed out to cards) and nothing has it, puts it on the holder on the
+    landscape and logs "…it waits on the holder until a click or ⌘E" (the
+    old line said "left nowhere" while it was on the page).
+  - **N2, a reveal under a dialog:** `inputStamp` also counts dialogs
+    opened (`DIALOG_OPENED`, now declared in keyArm.ts and re-exported by
+    Modal.tsx), and a reveal resolving while anything in `OVERLAYS` is open
+    moves no keyboard and enters no focus. A join prompt that came up on its
+    own while Go there waited keeps the keyboard; Enter and y reach no
+    session.
+  - **N3, a dialog that closes on its own:** `userLeft` holds only while
+    the user's key or press (or the click it ends in) is being handled
+    (`acting`, cleared the task after), so a give-back as something closes
+    later never re-arms, whatever the last input was. The join prompt reads
+    it at the user's act (`onDone(left)`), before an answer is waited for.
+  - **N4, jumps that wait on main:** `jumpToSession(s, since)` skips the
+    keyboard (and its 50 ms retry) when `inputStamp()` moved on: resuming a
+    session, starting a preset, opening a search hit; a continuation's
+    delayed `focusTerm` checks the same. The session is still shown.
+  - **A press on the header of the workspace being typed in** is treated as
+    one on its buttons: its mousedown is `preventDefault`ed, it's no header
+    press (`ownTermHasKeys`, WorkspaceNode.tsx), the terminal keeps the
+    keyboard and nothing arms. A drag by it still moves the workspace.
+    Another workspace's header selects it and arms the landscape, as before.
+  - **The preview's driver:** `pageResult` turns on
+    `Emulation.setFocusEmulationEnabled` once per page, in place of round
+    4's `Page.bringToFront` after each Esc. Headless Chrome then neither
+    hides the page on Esc nor blurs the window, which had closed popovers
+    and menus by itself, so an Esc the app ignored looked handled. A stall
+    now says what it was: Chrome refusing focus emulation fails the run; a
+    DevTools call it doesn't answer within 20 s fails it naming the call;
+    a JS dialog the page opens fails it with its text; and a page with no
+    result as the time runs out fails it saying whether the page answers,
+    where its keyboard is, how many asked keys were pressed and what the
+    audit had found so far (`window.__mbAuditOut`). Three of four full runs
+    of the first-run file had one test stall each (escMask past the 60 s cap, the
+    hint case on a key press, then the hint case past the cap) while the
+    machine's load average was 41–50 on 12 cores from other sessions; the
+    same two cases passed alone every time (nine and eight runs).
+  - **Tests** (=a, real keys and presses):
+    - button (head): s1's bare header pressed mid-line; s1 gets "ok n⏎y";
+    - headOther: another workspace's header pressed while typing in s1
+      selects it and arms the landscape (`?` opens the sheet);
+    - lag (dialog): Go there on s3 with main slow, a join prompt coming up
+      on its own; the prompt keeps the keyboard, Enter and y write nothing;
+      lag (idle), the positive control: nothing happens meanwhile, and Go
+      there's landscape is armed once s3 is in front;
+    - preset (typed): ⌘K's Start preset with main slow (answering with s2,
+      on screen), s1 typed in meanwhile, gets every key and s2 none; preset
+      (idle): s2's terminal gets the keyboard;
+    - selfClose: the landscape armed by a press, a join prompt coming up
+      and going on its own: `?`, N, Enter and y do nothing;
+    - frameGone: a teammate's workspace focused by its header and Enter,
+      its session gone: the keyboard on the holder, Shift+Tab ×5 only in the
+      top bar, y writes nothing;
+    - jumpCards: ⌘K to s4 at 20%: the keyboard on the holder, the log line,
+      Shift+Tab ×5 and y reach nothing;
+    - escMask: the sheet open, the app's Esc cut off, Esc: the sheet stays,
+      the page visible, no window blur; let through, Esc closes it.
+    - menuEsc: the right-click menu, which hands back a frame after it
+      closes, left with Esc gives the landscape back armed.
+  - **Checked by reverting**, each taken out on its own with its test
+    failing:
+    - N1: the holder taking the keyboard from a surface that goes
+      (frameGone); a jump whose terminal isn't there waiting on the holder
+      (jumpCards);
+    - N2: the overlay check and the dialog stamp together (lag dialog); the
+      stamp alone (lag dialogGone). The overlay check alone isn't caught:
+      every way the tests can reach has the dialog open after the stamp. It
+      stays for a reveal asked while a dialog is already up (Follow);
+    - N3: `userLeft` only while the act is handled (selfClose). The menu
+      reading it as it closes isn't caught by a revert: its frame-later
+      hand-back usually still lands before the act's task ends;
+    - N4: the jump's stamp (preset typed);
+    - the header: its mousedown kept from the keyboard, and its press not
+      counted as a header press, each on its own;
+    - the driver: focus emulation taken out, and round 4's `bringToFront`
+      put back in its place (escMask, both).
+  - **The re-review's probes, rerun** with focus emulation on (s30 and Tab,
+    s32, s28 and with a key typed, s34, s25, s31 at 40% and at 20%, s29,
+    s23, s33, and the earlier s3–s17): s30 and s29 leave the keyboard on the
+    holder and the walk starts at the top bar; s32 keeps it in the prompt;
+    s28 comes back disarmed; s25 keeps it in s1; s31 at 20% is on the holder
+    with the new log line; no session is written to by any of them.
+  - **Seen in the code, not run:** a notification's jump (`focus-session`)
+    while a dialog is open reads as if it would still give the session's
+    terminal the keyboard behind the dialog: `jumpToSession` focuses at
+    once, with no overlay check. The palette's own jump goes through the
+    same call while the palette is still on screen, so a check there would
+    need the palette told apart.
 
 ## Risks
 

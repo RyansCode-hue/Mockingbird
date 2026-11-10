@@ -12,6 +12,12 @@ import { isRemote } from "./team/RoomLive";
 import { usable, type ModelAction } from "./workspaceActions";
 import { DiffCell } from "./cardBadges";
 
+/** `el` is part of the workspace whose terminal has the keyboard: it's being typed in. */
+export const ownTermHasKeys = (el: Element): boolean => {
+  const a = document.activeElement;
+  return !!a?.closest(".xterm") && !!el.closest(".ls-node")?.contains(a);
+};
+
 /**
  * The frame around a workspace's terminal, from the size colsRows takes off: the sides' padding, the header bar over
  * it and the footer under it. Drawn from WORKSPACE_CHROME, so the terminal's holder is exactly the room colsRows
@@ -85,7 +91,8 @@ export function WorkspaceNode({
   chrome: WorkspaceChrome;
   /**
    * A press on it; `header` when it was on the header (or a card), off its buttons, which leaves the keyboard with the
-   * landscape. A button's press is the button's: what had the keyboard (a terminal being typed in) keeps it.
+   * landscape. A button's press is the button's, and a press on the header of the workspace being typed in its: what
+   * had the keyboard (its terminal) keeps it.
    */
   onSelect: (tile: Tile, header: boolean) => void;
   onFocus: (tile: Tile) => void;
@@ -139,7 +146,7 @@ export function WorkspaceNode({
       data-front={s.id}
       onPointerDown={(e) => {
         const t = e.target as Element;
-        onSelect(tile, !t.closest?.("button, [role=button], a[href]") && (card || !!t.closest?.(".ls-head")));
+        onSelect(tile, !t.closest?.("button, [role=button], a[href]") && (card || !!t.closest?.(".ls-head")) && !ownTermHasKeys(t));
       }}
       onDoubleClick={card ? () => onFocus(tile) : undefined}
     >

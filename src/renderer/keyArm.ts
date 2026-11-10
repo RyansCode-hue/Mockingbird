@@ -18,10 +18,13 @@ import { OVERLAYS, ownsKeys } from "./keys";
  * however that happens: a terminal or a field taking it, a dialog opening, focus falling to the page. A disarmed
  * surface swallows typed keys (Tab too, so a burst can't walk onto a button and press it); ⌘ and Ctrl chords still
  * work. Every key handler of such a surface asks `isArmed` before acting on a typed key. A move of the keyboard that
- * waits on something (a reveal waiting for main) is dropped if the user did anything meanwhile (`inputStamp`).
+ * waits on something (a reveal or a jump waiting for main) is dropped if the user did anything meanwhile, or a dialog
+ * opened (`inputStamp`). What closing gives the keyboard back armed asks `userLeft`, which holds only while the user's
+ * own key or press is being handled: a dialog going on its own, later, isn't the user leaving it.
  *
- * Nowhere: a terminal or a text field being typed in that goes from under the user (removed, hidden) while the
- * landscape is up (`holdNowhere`) doesn't leave the keyboard on the page, where Tab would walk on from where it was,
+ * Nowhere: a terminal or a text field being typed in, or a surface marked `data-holds-keys` (the landscape, focus's
+ * frame), that goes from under the user (removed, hidden) while the landscape is up (`holdNowhere`) doesn't leave the
+ * keyboard on the page, where Tab would walk on from where it was,
  * into the controls beside it, and a burst typed on would press them. It goes to an inert holder (`toNowhere`), never
  * armed, which swallows typed keys, Tab, Shift+Tab, Space and Enter included, and says why once (`KEYS_SWALLOWED`); Esc
  * and ⌘ and Ctrl chords go through. Once keys have paused (`TYPING_MS`), Tab and Shift+Tab leave it for a fixed start,
@@ -37,6 +40,10 @@ export const TYPING_MS = 1000;
 export const QUIET_KEYS: ReadonlySet<string> = new Set(["Shift", "Alt", "Meta", "Control", "CapsLock", "Fn", "Escape"]);
 /** Said on `document` (detail: the key) the first time a key is swallowed with the keyboard on the holder, each time it goes there. */
 export const KEYS_SWALLOWED = "mb-keys-swallowed";
+/** Said on `document` as a dialog opens (Modal.tsx's `useDialogFocus`, which says what it hands back). */
+export const DIALOG_OPENED = "mb-dialog-opened";
+/** A surface that takes the keyboard itself: losing it by going (removed, hidden) puts it on the holder, as a terminal's does. */
+export const HOLDS_KEYS = "data-holds-keys";
 /** What a typing target lost can have been inside and not count: a dialog, the palette, a menu, the tour. */
 const OVER = `${OVERLAYS}, .palette, .mb-ctx, .ls-tour-card`;
 
@@ -51,8 +58,16 @@ let lastKeyAt = -Infinity;
 let touched = false;
 /** A pointer press is being dispatched: a focus move to nothing now is the press's own. */
 let pressing = false;
-/** Keys and presses so far: a deferred move of the keyboard made before a change of this is out of date. */
+/** Keys, presses and dialogs opened so far: a deferred move of the keyboard made before a change of this is out of date. */
 let inputs = 0;
+/** The user's key or press (or the click it ends in) is being handled: from its dispatch to the task after it. */
+let acting = false;
+let actingTimer: ReturnType<typeof setTimeout> | undefined;
+function act(): void {
+  acting = true;
+  clearTimeout(actingTimer);
+  actingTimer = setTimeout(() => (acting = false), 0);
+}
 /** Moves of the keyboard so far: a surface says why it swallowed keys once for each place the keyboard comes to. */
 let spells = 0;
 /** The holder's spell already said why it swallowed keys. */
@@ -127,6 +142,7 @@ if (typeof document !== "undefined") {
       lastKeyAt = performance.now();
       touched = true;
       inputs++;
+      act();
       // a key goes to what has the keyboard, so for one typed these are the same; one dispatched by code at an element
       // (the preview's) is that element's
       if (!holderEl || document.activeElement !== holderEl || e.target !== holderEl) return;
@@ -146,11 +162,15 @@ if (typeof document !== "undefined") {
       lastKey = null;
       touched = true;
       inputs++;
+      act();
       pressing = true;
       setTimeout(() => (pressing = false), 0);
     },
     true
   );
+  // a press's click is the same act as its press, in a task of its own
+  document.addEventListener("click", act, true);
+  document.addEventListener(DIALOG_OPENED, () => void inputs++);
   document.addEventListener(
     "focusin",
     (e) => {
@@ -162,17 +182,18 @@ if (typeof document !== "undefined") {
     },
     true
   );
-  // To nothing while the window is in front. A terminal or a field being typed in that went from under the user (a
-  // task later it's gone or hidden, and nothing took the keyboard: a frame or a webview taking it shows only then) puts
-  // it on the holder while a surface holds for it. A press's own move, something inside a dialog, the palette, a menu
-  // or the tour, and anything else, leave it on the page. A window going behind another keeps it.
+  // To nothing while the window is in front. A terminal or a field being typed in, or a surface that holds the keyboard
+  // (`HOLDS_KEYS`), that went from under the user (a task later it's gone or hidden, and nothing took the keyboard: a
+  // frame or a webview taking it shows only then) puts it on the holder while a surface holds for it. A press's own
+  // move, something inside a dialog, the palette, a menu or the tour, and anything else, leave it on the page. A window
+  // going behind another keeps it.
   document.addEventListener(
     "focusout",
     (e) => {
       if (e.relatedTarget || !document.hasFocus()) return;
       armed = null;
       const t = e.target as HTMLElement | null;
-      if (pressing || !holders || !t || !ownsKeys(t) || t.closest(OVER)) return;
+      if (pressing || !holders || !t || !(ownsKeys(t) || t.hasAttribute(HOLDS_KEYS)) || t.closest(OVER)) return;
       setTimeout(() => {
         if (!holders || !document.hasFocus() || !keyboardNowhere() || document.activeElement === holderEl) return;
         if (t.isConnected && t.getClientRects().length > 0) return;
@@ -207,10 +228,11 @@ export function armFocus(el: HTMLElement | null | undefined): void {
 }
 
 /**
- * What's closing now was left by the user: Esc, ? (the shortcuts sheet's own key), or a press (Cancel, ×, outside it).
- * Not run with Enter or typed past, after which keys may still be coming for what it made.
+ * What's closing now was left by the user: their Esc, ? (the shortcuts sheet's own key), or press (Cancel, ×, outside
+ * it) is being handled now. Not with Enter or typed past, after which keys may still be coming for what it made, nor
+ * for what closes on its own later (a request answered elsewhere), whatever the user did last.
  */
-export const userLeft = (): boolean => lastKey === null || lastKey === "Escape" || lastKey === "?";
+export const userLeft = (): boolean => acting && (lastKey === null || lastKey === "Escape" || lastKey === "?");
 
 /** Milliseconds since the user's last key. */
 export const sinceKey = (): number => performance.now() - lastKeyAt;

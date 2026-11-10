@@ -478,8 +478,8 @@ describe.skipIf(!local)("the landscape's buttons and swallowed keys", () => {
 
 describe.skipIf(!local)("a landscape button pressed while a terminal is typed in", () => {
   const none = { others: [], moved: false, sheet: false, dialog: false, menu: false, palette: false };
-  for (const btn of ["hud", "chip", "typist"] as const)
-    it(`leaves the keyboard in the terminal, which gets the rest of the line (${btn})`, async () => {
+  for (const btn of ["hud", "chip", "typist", "head"] as const)
+    it(`leaves the keyboard in the terminal, which gets the rest of the line (${btn === "head" ? "its own header, off its buttons" : btn})`, async () => {
       const a = await run("a", `case=button&btn=${btn}&lsCamera=0,0,1`);
       expect(a.before).toBe(true);
       expect(a.pressed).toEqual({ keyboard: "terminal", inS1: true });
@@ -494,6 +494,13 @@ describe.skipIf(!local)("a landscape button pressed while a terminal is typed in
     expect(a.pressed).toEqual({ keyboard: "terminal", inS1: true });
     expect(a.after).toMatchObject({ ...none, keyboard: "terminal", s1Got: "ok \u001bn\ry", focus: true, changes: [] });
   }, 120_000);
+
+  it("selects another workspace pressed on its header, and arms the landscape", async () => {
+    const a = await run("a", "case=headOther&lsCamera=0,0,1");
+    expect(a.before).toBe(true);
+    expect(a.pressed).toEqual({ keyboard: "landscape", selected: true });
+    expect(a.armed).toEqual({ sheet: true });
+  }, 120_000);
 });
 
 describe.skipIf(!local)("a move of the keyboard that waited on main", () => {
@@ -505,6 +512,42 @@ describe.skipIf(!local)("a move of the keyboard that waited on main", () => {
       expect(a.afterLag).toEqual({ keyboard: "terminal", inS1: true, focus: false });
       expect(a.after).toEqual({ others: [], s1Got: how === "go" ? "abn\ry" : "please run the testsn\ry", focus: false });
     }, 120_000);
+
+  it("is dropped when a dialog came up on its own meanwhile, nothing typed: the dialog keeps its keys", async () => {
+    const a = await run("a", "case=lag&how=dialog&needsMany&joinRequest=later&lsCamera=0,0,1");
+    expect(a.promptUp).toEqual({ prompt: true, keyboard: "dialog" });
+    // s3 brought forward under the prompt, the keyboard left in it; Enter and y reach no session
+    expect(a.afterLag).toEqual({ keyboard: "dialog", front: "s3", focus: false, prompt: true });
+    expect(a.after).toEqual({ writes: [], keyboard: "dialog" });
+  }, 120_000);
+
+  it("is dropped when a dialog came and went on its own meanwhile: the landscape it hands back to stays disarmed", async () => {
+    const a = await run("a", "case=lag&how=dialogGone&needsMany&joinRequest=later&lsCamera=0,0,1");
+    expect(a.promptUp).toEqual({ prompt: true, keyboard: "dialog" });
+    expect(a.promptGone).toEqual({ prompt: false, keyboard: "landscape" });
+    expect(a.afterLag).toEqual({ keyboard: "landscape", front: "s3", focus: false, prompt: false });
+    // Go there's arming was dropped with the move: ? opens no sheet
+    expect(a.after).toEqual({ sheet: false, writes: [] });
+  }, 120_000);
+
+  it("is dropped for a session started from a preset once the user typed in a terminal meanwhile (main is slow)", async () => {
+    const a = await run("a", "case=preset&how=typed&lsCamera=500,0,0.75&needsMany");
+    expect(a.before).toBe(true);
+    // the preset's session (s2) shown, but every key typed reached s1
+    expect(a.afterLag).toEqual({ keyboard: "terminal", in: "s1" });
+    expect(a.after).toEqual({ others: [], s1Got: "abn\ry" });
+  }, 120_000);
+
+  it("still gives a session started from a preset the keyboard when nothing happened meanwhile", async () => {
+    const a = await run("a", "case=preset&how=idle&lsCamera=500,0,0.75&needsMany");
+    expect(a.afterLag).toEqual({ keyboard: "terminal", in: "s2" });
+  }, 120_000);
+
+  it("still moves it when nothing happened meanwhile: Go there's landscape armed once s3 is in front", async () => {
+    const a = await run("a", "case=lag&how=idle&needsMany&lsCamera=0,0,1");
+    expect(a.afterLag).toEqual({ keyboard: "landscape", front: "s3", focus: false, prompt: false });
+    expect(a.after).toEqual({ sheet: true, writes: [] });
+  }, 120_000);
 });
 
 describe.skipIf(!local)("the join prompt gives the landscape its keyboard", () => {
@@ -521,6 +564,14 @@ describe.skipIf(!local)("the join prompt gives the landscape its keyboard", () =
     const a = await run("a", "case=join&how=enter&joinRequest=later&lsCamera=0,0,1");
     expect(a.onAccept).toBe(true);
     expect(a.closed).toEqual({ prompt: false, keyboard: "landscape" });
+    expect(a.after).toEqual(disarmed);
+  }, 120_000);
+
+  it("disarmed when it comes up and goes on its own, though the user had armed the landscape before it", async () => {
+    const a = await run("a", "case=selfClose&joinRequest=later&lsCamera=0,0,0.4");
+    expect(a.armedAt).toBe("landscape");
+    expect(a.up).toEqual({ prompt: true, keyboard: "dialog" });
+    expect(a.gone).toEqual({ prompt: false, keyboard: "landscape" });
     expect(a.after).toEqual(disarmed);
   }, 120_000);
 
@@ -558,6 +609,28 @@ describe.skipIf(!local)("the holder", () => {
       expect(a.left).toMatchObject({ isStart: true });
       expect(a.left.keyboard).toMatch(/^topbar:/);
     }, 120_000);
+
+  const noneReached = { writes: [], acts: [], focus: false, sheet: false, dialog: false, menu: false, palette: false };
+  it("takes the keyboard when focus's frame goes with its session, so Shift+Tab starts at the top bar, never where the frame was", async () => {
+    const a = await run("a", "case=frameGone&lsCamera=0,700,0.75");
+    expect(a.inFocus).toEqual({ focus: true, keyboard: "frame" });
+    expect(a.gone).toEqual({ focus: false, keyboard: "nowhere", warned: [] });
+    // keys had paused: Shift+Tab ×5 walk back from the top bar's last control, and y after them reaches nothing
+    expect(a.after.reached.length).toBeGreaterThan(0);
+    expect(a.after.reached.every((k: string) => k.startsWith("topbar:"))).toBe(true);
+    expect(a.after).toMatchObject(noneReached);
+  }, 120_000);
+
+  it("takes the keyboard after ⌘K to a session whose terminal isn't there, and says so in the log", async () => {
+    const a = await run("a", "case=jumpCards&lsCamera=0,0,0.2");
+    expect(a.gone).toEqual({
+      focus: false,
+      keyboard: "nowhere",
+      warned: ["[mockingbird] s4's terminal couldn't take the keyboard as it was gone to: it waits on the holder until a click or ⌘E"],
+    });
+    // straight after the palette's Enter: Shift+Tab ×5 and y held, nothing reached
+    expect(a.after).toEqual({ reached: [], ...noneReached });
+  }, 120_000);
 
   it("isn't there without the landscape: the grid's terminal gone as it's typed in leaves the keyboard on the page", async () => {
     const a = await run("a", "case=escape&how=grid&labsOff");
@@ -767,3 +840,21 @@ describe.skipIf(!local)("the top bar", () => {
   }, 120_000);
 });
 
+describe.skipIf(!local)("the right-click menu", () => {
+  it("gives the landscape its keyboard back armed when the user left it with Esc, though it does so a frame later", async () => {
+    const a = await run("a", "case=menuEsc&lsCamera=0,0,0.4");
+    expect(a.menu).toEqual({ open: true, keyboard: "menu" });
+    expect(a.left).toEqual({ menu: false, keyboard: "landscape" });
+    expect(a.armed).toEqual({ sheet: true });
+  }, 120_000);
+});
+
+describe.skipIf(!local)("the preview's driver", () => {
+  it("presses Esc as a key only: with the app's Esc cut off, the sheet stays open, the page in front and the window never blurred", async () => {
+    const a = await run("a", "case=escMask");
+    expect(a.open).toBe(true);
+    expect(a.afterEsc).toEqual({ open: true, visibility: "visible", blurs: 0 });
+    // and the app's own Esc, once it's let through, closes it
+    expect(a.closed).toBe(true);
+  }, 120_000);
+});

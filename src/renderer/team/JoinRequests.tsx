@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Modal } from "../Modal";
+import { userLeft } from "../keyArm";
 import { settled } from "../settled";
 import { isErr } from "../../shared/types";
 import type { JoinAnswerOutcome, JoinRequestSummary, PendingJoinSummary, TeamRoomSummary, TeamStatus } from "../../shared/team/types";
@@ -49,8 +50,11 @@ export function JoinRequestPrompt({
   /** The request is still waiting (not answered from Settings → Team, not expired). */
   stillAsked: boolean;
   onLater: () => void;
-  /** It's gone: `byUser` when the user's own answer or close ended it, not the request going from under it. */
-  onDone: (byUser: boolean) => void;
+  /**
+   * It's gone: `left` when the user left it by a press or Esc (keyArm.ts's `userLeft`, read as they did, before an
+   * answer is waited for), not by Enter and not by the request going from under it.
+   */
+  onDone: (left: boolean) => void;
 }) {
   const [busy, setBusy] = useState<"accept" | "decline" | null>(null);
   const [error, setError] = useState("");
@@ -59,6 +63,7 @@ export function JoinRequestPrompt({
     if (!stillAsked && !busy && !declined) onDone(false);
   }, [stillAsked, busy, declined, onDone]);
   const go = async (accept: boolean) => {
+    const left = userLeft();
     setBusy(accept ? "accept" : "decline");
     setError("");
     const out = await answer(r, accept);
@@ -69,18 +74,18 @@ export function JoinRequestPrompt({
     // declined, and the Worker couldn't drop them at the door: said before the prompt goes
     if (!accept && out.outcome?.worker) setDeclined(out.outcome);
     setBusy(null);
-    if (accept || !out.outcome?.worker) onDone(true);
+    if (accept || !out.outcome?.worker) onDone(left);
   };
   if (declined) {
     return (
-      <Modal className="modal team-dlg join-ask" onClose={() => onDone(true)}>
+      <Modal className="modal team-dlg join-ask" onClose={() => onDone(userLeft())}>
         <h3>You declined {declined.name}</h3>
         <ul className="team-effects">
           <li>They're told, and get nothing of {room.name}. The code they used is used up.</li>
           <li className="warn">{declined.worker}</li>
         </ul>
         <div className="row">
-          <button className="primary" onClick={() => onDone(true)}>
+          <button className="primary" onClick={() => onDone(userLeft())}>
             Close
           </button>
         </div>
