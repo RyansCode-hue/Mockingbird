@@ -36,6 +36,16 @@ import {
 /** Wires removed this run that their Undo can still restore; older ones have gone for good. */
 const RESTORABLE = 50;
 
+/** What delivery does as a wire is removed and restored (WireDelivery's methods of these names). */
+export interface WireDeliveryHooks {
+  /** Wire `id` was removed as `w`: its message still queued at the other end comes out of that queue unpasted. */
+  withdraw(id: string, w: Wire): void;
+  /** Wire `w` as Undo puts it back: nothing still on its way (restoredWire). */
+  restoring(w: Wire): Wire;
+  /** Wire `id` is back: what waited at its automatic gate behind what it had on its way is tried. */
+  restored(id: string): void;
+}
+
 export interface WireServiceOptions {
   store: Pick<LandscapeStore, "get" | "wires" | "editWires" | "wiresWriteRefusal">;
   /** Every session this Mac has: running, and closed. */
@@ -50,11 +60,8 @@ export interface WireServiceOptions {
   /** Why a session can't be wired because a teammate took it over; null when none did. */
   takenOver: (id: string) => string | null;
   log: (context: string, err: unknown) => void;
-  /**
-   * Wire `id` was removed as `w`: its message still queued at the other end comes out of that queue unpasted
-   * (WireDelivery.withdraw), so an Undo never finds it there.
-   */
-  removed?: (id: string, w: Wire) => void;
+  /** Delivery's part as a wire leaves and comes back (WireDelivery), the one writer of what's on its way. */
+  delivery?: WireDeliveryHooks;
   /** A new wire id; random unless a test says otherwise. */
   newId?: () => string;
   /** A wire was made and saved (not restored: its ends heard of it when it was first made). Told after the change counts. */
@@ -142,7 +149,7 @@ export class WireService {
       this.removed.delete(k);
     }
     try {
-      this.o.removed?.(id, taken!);
+      this.o.delivery?.withdraw(id, taken!);
     } catch (err) {
       // it's removed and can be restored all the same; a message it left queued isn't pasted once its wire is gone
       this.o.log(`wires: ${id} was removed, but what it had queued couldn't be taken back out`, err);
@@ -163,11 +170,16 @@ export class WireService {
       const refused = restoreRefusal(book, id, w, this.context(book, kept));
       if (refused) return { refused };
       const links = { ...book.links };
-      put(links, id, restoredWire(w));
+      put(links, id, this.o.delivery ? this.o.delivery.restoring(w) : restoredWire(w));
       return { book: { ...book, links } };
     });
     if ("refused" in reply) return reply;
     this.removed.delete(id);
+    try {
+      this.o.delivery?.restored(id);
+    } catch (err) {
+      this.o.log(`wires: ${id} was restored, but what waited at its gate couldn't be tried`, err);
+    }
     return { ...reply, id };
   }
 

@@ -1026,9 +1026,17 @@ Every guard was reverted in turn, and a test failed for each but two. That was W
 #### W2+W3 joined
 
 W3 rebased onto W2 (5a7762d), its own commits and review fixes as one. Then the join:
-`WireDelivery` is the one writer of `pending`, `delivery`, `rounds.used` and `hops`.
-Nothing else in main writes them. W2's notes and W3's above still hold except where
-this section says otherwise.
+`WireDelivery` is the one writer of `pending`, `delivery`, `rounds.used` and `hops`. W2's
+notes and W3's above still hold except where this section says otherwise. Three of W1's
+changes still touch those fields, and none counts, sends or settles:
+- `WireService.restore` puts a removed wire back through delivery's `restoring`
+  (`restoredWire`, which W1 wrote) and then calls `restored`;
+- `add` gives a new feedback wire `rounds: { limit, used: 0 }`, and `set` changes `limit`
+  alone (a person's setting);
+- `rekey` (Start fresh) moves a session's wires and note whole, pending, delivery,
+  rounds and hops unchanged, and is refused while any of them is sending, so no wire
+  with a send on its way moves; `withoutSession` drops a forgotten session's wires and
+  note.
 
 **One transaction per finish** (`WireDelivery.offer(me, fill, how, prompt)`):
 - It takes W2's `FinishFill` (from `planFinish`), the origin (`agent` for finish_step,
@@ -1050,6 +1058,16 @@ this section says otherwise.
   pasting under its id). A `held` or `failed` one never reached B and is taken back.
   An `unconfirmed` one is taken back too; its delivery stays unconfirmed for Mark
   sent.
+- **A verdict reversed:** a wire the finish holds or passes whose message is still
+  queued at B (not yet being pasted) has it taken back out of B's queue, as removing
+  the wire does. Its pending goes, and its delivery is written failed: "It was taken
+  back before it was pasted: this step finished again with …". `queuedRefusal` checks
+  the verdict too (`verdictStops`: a handoff after "changes" with a feedback wire out,
+  a feedback wire after an explicit "approve"), so whatever wrote the verdict, a queued
+  message isn't pasted against it, and its gate shows why.
+- **The verdict rule inside the write:** `verdictRefusal` runs again in `offer`'s edit.
+  A feedback wire drawn or removed while the fill was made refuses the whole finish,
+  saying so in finish_step's reply, and nothing is written.
 - `carriesWork` (W2's) replaced W3's `carries`. The one body cap is `WIRE_BODY_MAX` in
   `shared/wires.ts`, and W3's copy went.
 
@@ -1073,6 +1091,18 @@ this section says otherwise.
   the next `UserPromptSubmit` its hooks report takes one off instead of counting.
 - So `promptCount` counts only prompts the agent was given, and two notices can't let
   one finish send twice (W2's L4).
+- The overdue-message notice (`index.ts`'s `tellOverdue`) goes the same way, under its
+  own key (`overdue`). The other pastes are prompts a person or an agent gave: the
+  launch's initial prompt, a broadcast, `send_message`, a teammate's message, a phone
+  reply, and a Send along a wire. `/compact` (the user's click, pasted directly)
+  still counts if its CLI reports it as a prompt.
+
+**Undo of a removed wire:** what came to its automatic gate behind the message it had
+queued stays waiting while the wire is gone. `restored` tries it once Undo puts the
+wire back, and it goes or is held saying why.
+
+**The notification** (`onPendings`) names only what still waits for the user: a pending
+its gate sent, or has on its way, isn't in it.
 
 **A launch before team rooms started:** `launchInstructions` notes each session that
 launched while `roomsUnknown` (every wire refused then). `index.ts` calls
@@ -1103,7 +1133,12 @@ launch instructions' words; one with none is told nothing.
   - a pre-rooms launch told once;
   - in `wiresApp.e2e`, a person's Send of a finish's pending, framed by `index.ts`'s
     `messageFor` and queued.
-- Each of the join's 13 guards was reverted in turn, and a test failed for each.
+  - review fixes 1: a verdict reversed both ways with the message queued, a verdict
+    written elsewhere stopped at the paste, `gateOf` on both, a feedback wire drawn
+    mid-finish, Undo letting what waited go, the notification only for what waits,
+    and the overdue notice keyed.
+- Each of the join's 13 guards was reverted in turn, and a test failed for each. So
+  did each of review fixes 1's 11.
 
 **Not checked against real CLIs** (every test runs a mocked pty or the e2e's stand-in
 agent, which never ends a turn):
@@ -1119,7 +1154,8 @@ agent, which never ends a turn):
 **Checked:**
 
 - `npm run typecheck` and `npm run build` pass.
-- `CI=true npm test`: 181 files pass and 30 skip; 2886 tests pass and 144 skip. No
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test`: 181 files pass and 30 skip; 2892 tests pass and 144 skip. No
   load-only reruns were needed, `appModel` included.
 - `test/uiWiresStub.test.ts` and `test/uiPreview.test.ts` pass alone; the join touches
   no UI test.
@@ -1128,7 +1164,6 @@ agent, which never ends a turn):
 **Left:**
 - W16's merge uses `offer` with `origin: "merge"` and `hold`, with a fill it builds;
   nothing makes one yet.
-- The notification (`onPendings`) still fires for a pending its gate sent at once.
 
 ### W4a · Wires drawn. Size M
 - `WireLayer.tsx`, `wiresModel.ts`: one SVG in `.ls-world` (`Landscape.tsx:1933`),

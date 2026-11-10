@@ -332,6 +332,15 @@ describe("areas' rectangles", () => {
   });
 });
 
+describe("Mockingbird's overdue notice (index.ts)", () => {
+  it("goes as a notice under its own key, so it isn't counted as a prompt the agent was given", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8");
+    const tell = src.slice(src.indexOf("function tellOverdue("), src.indexOf("\n}\n", src.indexOf("function tellOverdue(")));
+    expect(tell).toContain('sessions.deliverNotice(\n      o.from,\n      "overdue",');
+    expect(tell).not.toContain("deliverAgentMessage");
+  });
+});
+
 describe("a closed session reopened", () => {
   const withAreas = () => {
     const l = emptyLandscape();

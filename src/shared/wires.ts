@@ -692,11 +692,23 @@ export function gateInForce(w: Pick<Wire, "from" | "to" | "gate">, ctx: Pick<Wir
 }
 
 /**
- * Why a message queued on wire `id` mustn't be pasted now, or null: the rules on using the wire refuse it (a room's
- * line, a take-over), or an automatic gate sent it and that gate asks now. Checked again just before the paste.
+ * Why the source's verdict now stops what wire `w` carries, or null: a handoff waits for "approve" while its source's
+ * last finish said "changes" with a feedback wire out, and a feedback wire's changes stop once it said "approve".
  */
-export function queuedRefusal(id: string, w: Wire, ctx: WireContext): string | null {
-  const refused = wireRefusal(w.from, w.to, w.type, { ...ctx, self: id });
+export function verdictStops(w: Pick<Wire, "from" | "type">, ctx: Pick<GateContext, "notes" | "links">): string | null {
+  const verdict = own(ctx.notes, w.from)?.verdict;
+  if (w.type === "handoff" && verdict === "changes" && verdictDue(w.from, ctx.links)) return "Its source's step finished again with \"changes\": a handoff waits for \"approve\".";
+  if (w.type === "feedback" && verdict === "approve") return "Its source's step finished again with \"approve\": there's nothing to send back.";
+  return null;
+}
+
+/**
+ * Why a message queued on wire `id` mustn't be pasted now, or null: the rules on using the wire refuse it (a room's
+ * line, a take-over), the source's verdict changed since (verdictStops), or an automatic gate sent it and that gate
+ * asks now. Checked again just before the paste.
+ */
+export function queuedRefusal(id: string, w: Wire, ctx: GateContext): string | null {
+  const refused = wireRefusal(w.from, w.to, w.type, { ...ctx, self: id }) ?? verdictStops(w, ctx);
   if (refused) return refused;
   if (!w.delivery?.automatic || gateInForce(w, ctx) === "automatic") return null;
   return ctx.end(w.from)?.room || ctx.end(w.to)?.room

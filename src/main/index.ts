@@ -1379,7 +1379,7 @@ const wires = new WireService({
   takenOver: (id) => takeover?.takenOverRefusal(id, "wiring it") ?? null,
   log: logError,
   onAdded: (id, w) => wireTools.wired(id, w),
-  removed: (id, w) => delivery.withdraw(id, w),
+  delivery: { withdraw: (id, w) => delivery.withdraw(id, w), restoring: (w) => delivery.restoring(w), restored: (id) => delivery.restored(id) },
 });
 handle("wires:get", () => wires.get());
 handle("wires:add", (from, to, type, settings) => wires.add(from, to, type, settings));
@@ -1748,8 +1748,11 @@ function tellOverdue(o: OverdueMessage): void {
   if (!sender) return;
   notifySession(o.from, "Message not delivered yet", `To ${o.toTitle}: waiting ${mins} min — that session is ${state}${o.hooksSilent ? " (its status may be wrong)" : ""}`);
   try {
-    sessions.deliverAgentMessage(
+    // Mockingbird's own notice, under its own key: it isn't a prompt the agent was given (an automatic wire sends once per
+    // prompt), and a newer one replaces it while it waits
+    sessions.deliverNotice(
       o.from,
+      "overdue",
       `[Mockingbird: your message to session "${o.toTitle}" (id ${o.to}) hasn't been delivered after ${mins} minutes. ` +
         `It is delivered when that session's turn ends, and it is still ${state}${why}. If it's urgent, ask your user to look at that session.]`,
       submitsAgentMessages(sender)

@@ -443,6 +443,18 @@ describe("gateOf", () => {
     const w = wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "pasting", at: 1 } });
     expect(gate(w, ctxOf(AB, {}, {}, { fileRefusal: "read-only" }))).toMatchObject({ state: "blocked", why: "read-only" });
   });
+  it("is blocked while queued once its source's verdict stops it: a handoff after \"changes\", a feedback wire after \"approve\"", () => {
+    const ends = [end("a"), end("b"), end("c")];
+    const fb = wire("a", "c", "feedback", { pending, delivery: { id: "p1", state: "queued", at: 1 } });
+    const ho = wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "queued", at: 1 } });
+    const links = { w: ho, f: fb };
+    expect(gateOf("w", ho, ctxOf(ends, links, { a: { hops: 0, verdict: "changes" } }))).toMatchObject({ state: "blocked", why: expect.stringMatching(/finished again with "changes"/) });
+    expect(gateOf("f", fb, ctxOf(ends, links, { a: { hops: 0, verdict: "approve" } }))).toMatchObject({ state: "blocked", why: expect.stringMatching(/finished again with "approve"/) });
+    expect(gateOf("w", ho, ctxOf(ends, links, { a: { hops: 0, verdict: "approve" } })).state).toBe("sending");
+    expect(gateOf("f", fb, ctxOf(ends, links, { a: { hops: 0, verdict: "changes" } })).state).toBe("sending");
+    expect(gateOf("f", fb, ctxOf(ends, links)).state).toBe("sending"); // no verdict known: nothing to go by
+    expect(gateOf("w", ho, ctxOf(ends, { w: ho }, { a: { hops: 0, verdict: "changes" } })).state).toBe("sending"); // no feedback wire out
+  });
   it("is blocked and stalled when what's queued waits at an end whose hooks aren't reporting, and sending once it's pasting", () => {
     const silent = ctxOf([end("a"), end("b", { hooksSilent: true })]);
     expect(gate(wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "queued", at: 1 } }), silent)).toMatchObject({ state: "blocked", stalled: true, pendingId: "p1", why: expect.stringMatching(/Mark it idle/) });

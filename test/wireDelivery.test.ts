@@ -5,7 +5,7 @@ import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { SessionManager } from "../src/main/sessions";
 import { AUTOMATIC_HOPS, START_WAIT_MS, WireDelivery, type FrameWire, type OfferHow } from "../src/main/wireDelivery";
-import { WireTools } from "../src/main/wireTools";
+import { WireTools, type PendingsMade } from "../src/main/wireTools";
 import { WireService } from "../src/main/wires";
 import type { SessionInfo } from "../src/shared/types";
 import { gateOf, ROOM_LINE, WIRE_BODY_MAX, type FinishedStep, type FinishOutcome, type SendReply, type Wire, type WireReply, type WireVerdict } from "../src/shared/wires";
@@ -90,11 +90,12 @@ function setup(o: Setup = {}) {
   const store = new LandscapeStore({ file, emit: () => {}, log });
   const rooms: Record<string, string> = {};
   const takenOver: Record<string, string> = {};
-  const service = new WireService({ store, sessions: m, roomOf: (id) => rooms[id] ?? null, takenOver: (id) => (takenOver[id] ? `${takenOver[id]} — take it back rather than wiring it` : null), log, removed: (id, w) => d.withdraw(id, w) });
+  const service: WireService = new WireService({ store, sessions: m, roomOf: (id) => rooms[id] ?? null, takenOver: (id) => (takenOver[id] ? `${takenOver[id]} — take it back rather than wiring it` : null), log, delivery: { withdraw: (id, w) => d.withdraw(id, w), restoring: (w) => d.restoring(w), restored: (id) => d.restored(id) } });
   const told: { id: string; title: string; body: string }[] = [];
+  const made: PendingsMade[] = [];
   const opts = { submit: true };
   const reopened: string[] = [];
-  const d = new WireDelivery({
+  const d: WireDelivery = new WireDelivery({
     store,
     context: (book) => service.context(book),
     sessions: m,
@@ -124,6 +125,7 @@ function setup(o: Setup = {}) {
     submitOnDelivery: () => opts.submit,
     offer: (me, f, how, prompt) => d.offer(me, f, how, prompt),
     promptOf: (id) => d.promptOf(id),
+    onPendings: (e) => void made.push(e),
     log,
   });
 
@@ -170,7 +172,7 @@ function setup(o: Setup = {}) {
     store.update({ ghosts: { [id]: ghost(title) } });
     store.flush();
   };
-  return { dir, file, m, store, service, d, tools, finishing, rooms, takenOver, told, logged, opts, reopened, pane, ptyOf, idle, add, book, wireOf, gate, offer, onDisk, placeGhost };
+  return { dir, file, m, store, service, d, tools, finishing, made, rooms, takenOver, told, logged, opts, reopened, pane, ptyOf, idle, add, book, wireOf, gate, offer, onDisk, placeGhost };
 }
 
 const refusal = (r: WireReply | SendReply | { refused: string } | { offered: unknown }) => ("refused" in r ? r.refused : `not refused: ${JSON.stringify(r).slice(0, 200)}`);
@@ -934,9 +936,9 @@ describe("what's queued answers to its own send", () => {
   it("a removal whose queued message can't be taken back out is still a removal, logged, and Undo still restores it", async () => {
     const t = await ready();
     const logged: string[] = [];
-    const failing = new WireService({ store: t.store, sessions: t.m, roomOf: () => null, takenOver: () => null, log: (c, e) => void logged.push(`${c}: ${(e as Error).message}`), removed: () => {
+    const failing = new WireService({ store: t.store, sessions: t.m, roomOf: () => null, takenOver: () => null, log: (c, e) => void logged.push(`${c}: ${(e as Error).message}`), delivery: { withdraw: () => {
       throw new Error("the queue is gone");
-    } });
+    }, restoring: (w) => t.d.restoring(w), restored: () => {} } });
     t.m.statusFromHook({ paneId: t.b.id, status: "working", prompted: true });
     await t.d.send(t.w, t.p, "the summary");
     expect(failing.remove(t.w)).not.toHaveProperty("refused");
@@ -1145,6 +1147,7 @@ describe("finishing a step, through the one writer", () => {
     expect(t.wireOf(w).pending).toBeUndefined();
     expect(t.book().notes[a.id]).toMatchObject({ summary: { text: "Built the org filter." } });
     expect(t.book().notes[b.id]).toEqual({ hops: 1 });
+    expect(t.made).toEqual([]); // sent by its gate: nothing waits for the user
     // nothing more goes for it: a second finish in the same prompt waits
     t.idle(b.id);
     await t.offer(w, "again");
@@ -1227,7 +1230,7 @@ describe("finishing a step, through the one writer", () => {
     for (const n of [1, 2]) {
       t.idle(a.id);
       t.idle(b.id);
-      t.m.deliverNotice(a.id, "wires", `[Mockingbird: notice ${n}]`, true);
+      t.m.deliverNotice(a.id, n === 1 ? "wires" : "overdue", `[Mockingbird: notice ${n}]`, true);
       vi.advanceTimersByTime(150); // its Enter
       t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true }); // its hooks report that prompt
       t.idle(a.id);
@@ -1259,6 +1262,92 @@ describe("finishing a step, through the one writer", () => {
     expect(await finishing).toMatchObject({ steps: [{ does: "readies" }] });
     expect(t.wireOf(w).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/without a new prompt/) });
     expect(t.ptyOf(b.id).writes.filter((x) => x !== "\r")).toHaveLength(1);
+  });
+
+  it('a verdict reversed takes back what the last one queued: "changes" stops a queued handoff, "approve" a queued feedback', async () => {
+    const t = setup();
+    const a = await t.pane("Reviewer");
+    const back = await t.pane("Builder");
+    const on = await t.pane("Deployer");
+    const fb = t.add(a.id, back.id, "feedback");
+    const ho = t.add(a.id, on.id, "handoff");
+    for (const s of [on, back]) t.m.statusFromHook({ paneId: s.id, status: "working", prompted: true });
+    const p = await t.offer(ho, "approved: ship it", { origin: "agent" }, { verdict: "approve" });
+    expect(t.made.at(-1)?.pendings).toEqual([expect.objectContaining({ wire: ho, pending: p })]); // it waits for you
+    expect(await t.d.send(ho, p, "approved: ship it")).not.toHaveProperty("refused");
+    expect(t.m.list().find((s) => s.id === on.id)!.queuedCount).toBe(1);
+    const changes = await t.tools.finish(t.m.list().find((s) => s.id === a.id)!, { summary: "wait, the null case is broken", verdict: "changes" }, "agent");
+    expect(changes).toMatchObject({ steps: expect.arrayContaining([expect.objectContaining({ wire: ho, does: "holds", withdraws: p })]) });
+    expect(t.wireOf(ho).delivery).toMatchObject({ id: p, state: "failed", why: 'It was taken back before it was pasted: this step finished again with "changes".' });
+    expect(t.wireOf(ho).pending).toBeUndefined();
+    expect(t.m.list().find((s) => s.id === on.id)!.queuedCount).toBe(0);
+    t.idle(on.id, { finished: true });
+    vi.advanceTimersByTime(150);
+    expect(t.ptyOf(on.id).writes).toEqual([]);
+    // the other way: "changes" queued for the builder, then "approve"
+    const fp = t.wireOf(fb).pending!.id;
+    expect(await t.d.send(fb, fp, "wait, the null case is broken")).not.toHaveProperty("refused");
+    await t.tools.finish(t.m.list().find((s) => s.id === a.id)!, { summary: "it's fine after all", verdict: "approve" }, "agent");
+    expect(t.wireOf(fb).delivery).toMatchObject({ id: fp, state: "failed", why: 'It was taken back before it was pasted: this step finished again with "approve".' });
+    t.idle(back.id, { finished: true });
+    vi.advanceTimersByTime(150);
+    expect(t.ptyOf(back.id).writes).toEqual([]);
+    expect(t.wireOf(ho).pending).toBeDefined(); // the approve readied the handoff again
+  });
+
+  it("a verdict written by anything else while a message is queued stops it at the paste all the same", async () => {
+    const t = setup();
+    const a = await t.pane("Reviewer");
+    const back = await t.pane("Builder");
+    const on = await t.pane("Deployer");
+    t.add(a.id, back.id, "feedback");
+    const ho = t.add(a.id, on.id, "handoff");
+    t.m.statusFromHook({ paneId: on.id, status: "working", prompted: true });
+    const p = await t.offer(ho, "approved", { origin: "agent" }, { verdict: "approve" });
+    await t.d.send(ho, p, "approved");
+    t.store.editWires((bk) => ({ book: { ...bk, notes: { ...bk.notes, [a.id]: { ...bk.notes[a.id], verdict: "changes" } } } }));
+    expect(t.gate(ho)).toMatchObject({ state: "blocked", why: expect.stringMatching(/finished again with "changes"/) });
+    t.idle(on.id, { finished: true });
+    vi.advanceTimersByTime(150);
+    expect(t.ptyOf(on.id).writes).toEqual([]);
+    expect(t.wireOf(ho).delivery).toMatchObject({ state: "failed", why: expect.stringMatching(/rules changed while it waited: Its source's step finished again with "changes"/) });
+  });
+
+  it("a feedback wire drawn while a finish was filled in: the verdict it now needs is checked in the write, and nothing is finished", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const c = await t.pane("Deployer");
+    const x = await t.pane("Reviewer");
+    const ho = t.add(a.id, c.id, "handoff");
+    const me = t.m.list().find((s) => s.id === a.id)!;
+    const fill = await t.tools.planFinish(me, { summary: "done" });
+    if ("refused" in fill) throw new Error(fill.refused);
+    const fb = t.add(a.id, x.id, "feedback");
+    expect(t.tools.applyFinish(me, fill, "agent")).toEqual({ refused: expect.stringMatching(/^This workspace's wires changed while its step was being finished, so nothing was: This workspace has a feedback wire out, so finishing its step needs a verdict/) });
+    expect([t.wireOf(ho).pending, t.wireOf(fb).pending, t.book().notes[a.id]]).toEqual([undefined, undefined, undefined]);
+    expect(t.made).toEqual([]);
+  });
+
+  it("what came to an automatic gate behind a message whose wire was removed goes once Undo puts the wire back", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const b = await t.pane("Reviewer");
+    const w = t.add(a.id, b.id, "handoff", { gate: "automatic" });
+    t.m.statusFromHook({ paneId: b.id, status: "working", prompted: true });
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    await t.offer(w, "first");
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    const p2 = await t.offer(w, "second");
+    t.service.remove(w);
+    await Promise.resolve(); // Undo comes later, in a call of its own
+    t.idle(b.id, { finished: true });
+    vi.advanceTimersByTime(150);
+    expect(t.ptyOf(b.id).writes).toEqual([]);
+    t.service.restore(w);
+    await Promise.resolve();
+    expect(t.wireOf(w).delivery).toMatchObject({ id: p2, state: "pasting" });
+    vi.advanceTimersByTime(150);
+    expect(t.ptyOf(b.id).writes.filter((x) => x !== "\r")).toEqual(["|[automatic from Builder to Reviewer] second|"]);
   });
 
   it("a finish's pending is known as this run's: the reconcile tick never holds it as one from before, even once its gate turns automatic", async () => {

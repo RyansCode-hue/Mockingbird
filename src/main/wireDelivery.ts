@@ -13,6 +13,8 @@ import {
   gateOf,
   isSending,
   queuedRefusal,
+  restoredWire,
+  verdictRefusal,
   WIRE_BODY_MAX,
   type DeliveryState,
   type FinishedStep,
@@ -212,13 +214,28 @@ export class WireDelivery {
     const v = f.note.verdict;
     const filled = new Map(f.fills.map((x) => [x.wire, x]));
     let steps: FinishedStep[] = [];
+    let verdictWhy = "";
+    const recalled: string[] = [];
     const r = this.o.store.editWires((book) => {
+      // a feedback wire drawn or removed while the fill was made changes what the verdict has to be
+      const due = verdictRefusal(me.id, v, book.links);
+      if (due) return { refused: (verdictWhy = due) };
       // the book as it is now: a wire changed while its template was being filled in isn't readied with what was read
       const now = this.o.context(book);
       const links = { ...book.links };
+      recalled.length = 0;
       steps = finishPlan(me.id, v, now).map((step): FinishedStep => {
         const w = book.links[step.wire];
         const done: FinishedStep = { ...step, toTitle: titleAcross(now, me.id, step.to) };
+        // held or passed now, a message still queued at the other end is taken back out unpasted, as removing the wire
+        // does; one being pasted is past taking back
+        const queued = (step.does === "holds" || step.does === "passes") && !!w.pending && w.delivery?.id === w.pending.id && w.delivery.state === "queued";
+        if (queued) {
+          const { pending: taken, ...rest } = w;
+          put(links, step.wire, { ...rest, delivery: { ...w.delivery!, state: "failed", at: Date.now(), why: `It was taken back before it was pasted: this step finished again with "${v}".` } });
+          recalled.push(step.wire);
+          return { ...done, withdraws: taken!.id };
+        }
         if (step.withdraws) {
           const { pending: _taken, ...rest } = w;
           put(links, step.wire, rest);
@@ -237,7 +254,8 @@ export class WireDelivery {
       });
       return { book: noted({ ...book, links }) };
     });
-    if ("refused" in r) return { refused: `Nothing was finished: ${r.refused}` };
+    if ("refused" in r) return { refused: verdictWhy ? `This workspace's wires changed while its step was being finished, so nothing was: ${verdictWhy}` : `Nothing was finished: ${r.refused}` };
+    for (const id of recalled) this.takeBack(id, `was taken back: ${me.id}'s step finished again with "${v}"`);
     for (const step of steps) if (step.pending) this.automatic(step.wire, step.pending.id, how, how.origin === "agent" ? prompt : null);
     return { steps, redacted: f.redacted };
   }
@@ -299,11 +317,26 @@ export class WireDelivery {
    * queue unpasted, so an Undo puts back nothing on its way. One being pasted is past taking back: its receipt settles it.
    */
   withdraw(wireId: string, w: Wire): void {
+    if (w.delivery?.state === "queued") this.takeBack(wireId, "was queued when its wire was removed");
+  }
+
+  /** Wire `w` as Undo puts it back (WireService.restore): never still on its way, and never sent again by itself. */
+  restoring(w: Wire): Wire {
+    return restoredWire(w);
+  }
+
+  /** Wire `wireId` is back: what came to its automatic gate while what it had on its way was there is tried now. */
+  restored(wireId: string): void {
+    this.next(wireId);
+  }
+
+  /** The send on its way on wire `wireId`, queued at its other end, comes out of that queue unpasted; `why` is logged. */
+  private takeBack(wireId: string, why: string): void {
     const f = this.flights.get(wireId);
-    if (!f || w.delivery?.state !== "queued") return;
+    if (!f) return;
     this.flights.delete(wireId);
     const out = !!f.receipt && this.o.sessions.withdraw(f.to, f.receipt);
-    this.o.log("wires", `${wireId} was removed with ${f.id} queued for ${f.to}: ${out ? "it was taken out of that queue unpasted" : "it hadn't reached that queue, and won't"}`);
+    this.o.log("wires", `${wireId}'s ${f.id} ${why}: ${out ? `it was taken out of ${f.to}'s queue unpasted` : "it hadn't reached that queue, and won't"}`);
   }
 
   /**

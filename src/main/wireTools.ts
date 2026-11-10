@@ -241,7 +241,14 @@ export class WireTools {
   applyFinish(me: SessionInfo, f: FinishFill, by: PendingsMade["by"], prompt: string | null = null): FinishOutcome {
     const outcome = this.o.offer(me, f, { origin: by === "you" ? "person" : "agent" }, prompt);
     if ("refused" in outcome) return outcome;
-    const pendings = outcome.steps.flatMap((s) => (s.pending ? [{ wire: s.wire, pending: s.pending.id, to: s.to, toTitle: s.toTitle }] : []));
+    // only what still waits for the user: one its gate sent, or has on its way, needs nobody
+    const book = this.o.store.wires().book;
+    const pendings = outcome.steps.flatMap((s) => {
+      if (!s.pending) return [];
+      const d = book ? own(book.links, s.wire)?.delivery : undefined;
+      if (d?.id === s.pending.id && d.state !== "held" && d.state !== "failed") return [];
+      return [{ wire: s.wire, pending: s.pending.id, to: s.to, toTitle: s.toTitle }];
+    });
     if (pendings.length) {
       try {
         this.o.onPendings?.({ from: me.id, fromTitle: me.ticketTitle ?? me.title, by, pendings });
