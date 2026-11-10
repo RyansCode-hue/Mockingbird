@@ -447,6 +447,8 @@ export interface FinishedStep extends FinishStep {
   pending?: { id: string; flags: string[] };
   /** The gate in force where it readied: automatic sends by itself unless something holds it, ask waits for a person. */
   gate?: WireGate;
+  /** What its gate shows once it has run (gateOf): sent, on its way, waiting for a person (held saying why), or blocked. */
+  went?: Pick<Gate, "state" | "why" | "placed">;
 }
 
 /**

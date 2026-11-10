@@ -1135,7 +1135,7 @@ describe("finishing a step, through the one writer", () => {
     const w = t.add(a.id, b.id, "handoff", { gate: "automatic" });
     t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
     const reply = await t.tools.call(t.m.list().find((s) => s.id === a.id)!, "finish_step", { summary: "Built the org filter." });
-    expect(reply).toEqual({ result: expect.stringMatching(/^Step finished.*\n- the handoff wire to "Reviewer": readied\. Its gate is set to send it by itself/) });
+    expect(reply).toEqual({ result: expect.stringMatching(/^Step finished.*\n- the handoff wire to "Reviewer": readied\. Its gate sent it, and it's on its way\.$/) });
     const writes = t.ptyOf(b.id).writes;
     expect(writes).toHaveLength(1);
     expect(writes[0]).toContain("Built the org filter.");
@@ -1153,6 +1153,60 @@ describe("finishing a step, through the one writer", () => {
     await t.offer(w, "again");
     expect(t.wireOf(w).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/without a new prompt/) });
     expect(writes.filter((x) => x !== "\r")).toHaveLength(1);
+  });
+
+  it("finish_step's answer says what each gate did: sent and on its way, held with its reason, or waiting for the user", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const [b, c, e] = [await t.pane("Reviewer"), await t.pane("Tester"), await t.pane("Deployer")];
+    t.idle(b.id);
+    t.idle(e.id);
+    t.add(a.id, b.id, "handoff", { gate: "automatic" });
+    t.add(a.id, c.id, "handoff", { gate: "automatic" });
+    t.add(a.id, e.id, "handoff");
+    t.ptyOf(c.id).exit(0); // Tester has exited: an automatic gate never resumes it
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    const reply = (await t.tools.call(t.m.list().find((s) => s.id === a.id)!, "finish_step", { summary: "Built it." })) as { result: string };
+    expect(reply.result.split("\n")).toEqual([
+      "Step finished: Mockingbird keeps your summary. Along this workspace's wires:",
+      '- the handoff wire to "Reviewer": readied. Its gate sent it, and it\'s on its way.',
+      '- the handoff wire to "Tester": readied. It waits at the wire\'s gate for the user to send: “Tester” isn\'t running: an automatic gate never reopens a workspace, so this waits for you to send it.',
+      '- the handoff wire to "Deployer": readied. It waits at the wire\'s gate for the user to send.',
+    ]);
+    vi.advanceTimersByTime(150);
+    expect(t.ptyOf(b.id).writes.at(-1)).toBe("\r");
+  });
+
+  it("a gate that fails on one wire holds that one, saying why, and the finish is saved and the other wires' gates still run", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const [b, c] = [await t.pane("Reviewer"), await t.pane("Tester")];
+    t.idle(b.id);
+    t.idle(c.id);
+    const wb = t.add(a.id, b.id, "handoff", { gate: "automatic" });
+    const wc = t.add(a.id, c.id, "handoff", { gate: "automatic" });
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    const gate = t.d as unknown as { automatic: (...args: unknown[]) => void };
+    const real = gate.automatic.bind(t.d);
+    let first = true;
+    vi.spyOn(gate, "automatic").mockImplementation((...args: unknown[]) => {
+      if (first) {
+        first = false;
+        throw new Error("the gate broke");
+      }
+      return real(...args);
+    });
+    const reply = (await t.tools.call(t.m.list().find((s) => s.id === a.id)!, "finish_step", { summary: "Built it." })) as { result?: string; error?: string };
+    expect(reply.error).toBeUndefined();
+    expect(reply.result).toMatch(/^Step finished: Mockingbird keeps your summary/);
+    expect(reply.result).toContain('- the handoff wire to "Reviewer": readied. It waits at the wire\'s gate for the user to send: Its gate failed as this step finished (the gate broke), so it waits for you.');
+    expect(reply.result).toContain('- the handoff wire to "Tester": readied. Its gate sent it, and it\'s on its way.');
+    expect(t.wireOf(wb).delivery).toMatchObject({ state: "held", why: "Its gate failed as this step finished (the gate broke), so it waits for you." });
+    expect(t.logged).toContainEqual(expect.stringMatching(/finish readied .* on .*, and its gate failed: the gate broke/));
+    expect(t.book().notes[a.id]).toMatchObject({ summary: { text: "Built it." } });
+    vi.advanceTimersByTime(150);
+    expect(t.wireOf(wc).delivery!.state).toBe("sent");
+    expect(t.ptyOf(b.id).writes).toEqual([]);
   });
 
   it("a fan-out where one branch is refused: the others are readied and go, and each is answered", async () => {

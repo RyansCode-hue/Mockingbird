@@ -256,8 +256,30 @@ export class WireDelivery {
     });
     if ("refused" in r) return { refused: verdictWhy ? `This workspace's wires changed while its step was being finished, so nothing was: ${verdictWhy}` : `Nothing was finished: ${r.refused}` };
     for (const id of recalled) this.takeBack(id, `was taken back: ${me.id}'s step finished again with "${v}"`);
-    for (const step of steps) if (step.pending) this.automatic(step.wire, step.pending.id, how, how.origin === "agent" ? prompt : null);
-    return { steps, redacted: f.redacted };
+    // the finish is saved: each gate runs on its own, and one that fails holds its pending and leaves the rest to go
+    for (const step of steps) {
+      if (!step.pending) continue;
+      try {
+        this.automatic(step.wire, step.pending.id, how, how.origin === "agent" ? prompt : null);
+      } catch (err) {
+        this.o.log(`wires: ${me.id}'s finish readied ${step.pending.id} on ${step.wire}, and its gate failed`, err);
+        this.hold(step.wire, step.pending.id, `Its gate failed as this step finished (${message(err)}), so it waits for you.`);
+      }
+    }
+    return { steps: this.went(steps), redacted: f.redacted };
+  }
+
+  /** `steps` with what each readied wire's gate shows now that it has run, for the finish's answer. */
+  private went(steps: FinishedStep[]): FinishedStep[] {
+    const book = this.o.store.wires().book;
+    if (!book) return steps;
+    const ctx = this.o.context(book);
+    return steps.map((step) => {
+      const w = step.pending ? own(book.links, step.wire) : undefined;
+      if (!w) return step;
+      const g = gateOf(step.wire, w, ctx);
+      return { ...step, went: { state: g.state, ...(g.why ? { why: g.why } : {}), ...(g.placed ? { placed: true } : {}) } };
+    });
   }
 
   /**

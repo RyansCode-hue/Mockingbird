@@ -35,6 +35,7 @@ import {
   verdictRefusal,
   WIRE_VERDICTS,
   wireRefusal,
+  type FinishedStep,
   type FinishOutcome,
   type GateContext,
   type LatestMessage,
@@ -568,15 +569,22 @@ function finishReply(o: FinishOutcome): Reply {
   if ("refused" in o) return { error: o.refused };
   const lines = o.steps.map((s) => {
     const to = `the ${s.type} wire to ${quoted(s.toTitle)}`;
-    if (s.does === "readies") {
-      const gate = s.gate === "automatic" ? "Its gate is set to send it by itself, unless something holds it." : "It waits at the wire's gate for the user to send.";
-      return `- ${to}: readied. ${gate}${s.pending?.flags.length ? ` The user is shown: ${s.pending.flags.join(" ")}` : ""}`;
-    }
+    if (s.does === "readies") return `- ${to}: readied. ${gateSaid(s)}${s.pending?.flags.length ? ` The user is shown: ${s.pending.flags.join(" ")}` : ""}`;
     if (s.does === "keeps") return `- ${to}: it goes when the user sends it, with your summary.`;
     if (s.does === "holds") return `- ${to}: held until your step finishes with "approve".${s.withdraws ? " What was waiting there was taken back." : ""}`;
     if (s.does === "passes") return `- ${to}: nothing goes back on "approve".${s.withdraws ? " The changes waiting there were taken back." : ""}`;
     return `- ${to}: not readied. ${s.why}`;
   });
   const redacted = o.redacted ? ` (${o.redacted} secret-looking value${o.redacted === 1 ? "" : "s"} in it replaced with ${REDACTED})` : "";
-  return { result: [`Step finished: Mockingbird keeps your summary${redacted}. Along this workspace's wires:`, ...lines, "Nothing is sent until a gate opens."].join("\n") };
+  return { result: [`Step finished: Mockingbird keeps your summary${redacted}. Along this workspace's wires:`, ...lines].join("\n") };
+}
+
+/** What a readied wire's gate did, as its gate shows it once it has run (FinishedStep.went). */
+function gateSaid(s: FinishedStep): string {
+  const g = s.went;
+  if (!g) return s.gate === "automatic" ? "Its gate sends it by itself unless something holds it." : "It waits at the wire's gate for the user to send.";
+  if (g.state === "sent") return g.placed ? `Its gate sent it, and it's in ${quoted(s.toTitle)}'s prompt for the user to send.` : "Its gate sent it.";
+  if (g.state === "sending") return "Its gate sent it, and it's on its way.";
+  if (g.state === "blocked") return `It's at the wire's gate, blocked: ${g.why ?? "the rules stop it now"}`;
+  return g.why ? `It waits at the wire's gate for the user to send: ${g.why}` : "It waits at the wire's gate for the user to send.";
 }

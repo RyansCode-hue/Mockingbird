@@ -411,7 +411,6 @@ describe("finish_step", () => {
       "Step finished: Mockingbird keeps your summary. Along this workspace's wires:",
       '- the handoff wire to "Reviewer": readied. It waits at the wire\'s gate for the user to send.',
       '- the handoff wire to "Deployer": it goes when the user sends it, with your summary.',
-      "Nothing is sent until a gate opens.",
     ]);
     expect(((await t.tools.call(t.a, WIRE_TOOL.finishStep, {})) as { error: string }).error).toMatch(/summary is empty/);
   });

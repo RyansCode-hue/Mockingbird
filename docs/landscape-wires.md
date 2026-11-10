@@ -1052,8 +1052,13 @@ changes still touch those fields, and none counts, sends or settles:
   so a fill naming another session's wire is never written. Only a wire whose `when`
   is finished readies; a manual one keeps the summary for a person's Send.
 - Then each new pending's gate runs (`automatic`), with that prompt for an agent's.
-- It answers per wire (`FinishedStep`), so finish_step's reply still says what
-  happened along each.
+- It answers per wire (`FinishedStep`). Each readied wire carries `went`, what its gate
+  shows once it has run (`gateOf`: sent, on its way, waiting for the user with the
+  hold's reason, or blocked). finish_step's reply says that, in those words, instead
+  of what a gate might do.
+- **A gate that throws** holds its pending, saying so ("Its gate failed as this step
+  finished (…), so it waits for you."), logged with the wire and pending. The finish
+  stays saved and its answer says so, and the other wires' gates still run.
 - **Take-back:** `finishPlan` skips a pending whose delivery is on its way (queued or
   pasting under its id). A `held` or `failed` one never reached B and is taken back.
   An `unconfirmed` one is taken back too; its delivery stays unconfirmed for Mark
@@ -1136,9 +1141,11 @@ launch instructions' words; one with none is told nothing.
   - review fixes 1: a verdict reversed both ways with the message queued, a verdict
     written elsewhere stopped at the paste, `gateOf` on both, a feedback wire drawn
     mid-finish, Undo letting what waited go, the notification only for what waits,
-    and the overdue notice keyed.
+    and the overdue notice keyed;
+  - review fixes 2: finish_step's reply for a send on its way, a hold with its reason
+    and an ask gate, and a gate that throws on the first of two wires.
 - Each of the join's 13 guards was reverted in turn, and a test failed for each. So
-  did each of review fixes 1's 11.
+  did each of review fixes 1's 11, and review fixes 2's 4.
 
 **Not checked against real CLIs** (every test runs a mocked pty or the e2e's stand-in
 agent, which never ends a turn):
@@ -1155,7 +1162,7 @@ agent, which never ends a turn):
 
 - `npm run typecheck` and `npm run build` pass.
 - `npm run typecheck` and `npm run build` pass.
-- `CI=true npm test`: 181 files pass and 30 skip; 2892 tests pass and 144 skip. No
+- `CI=true npm test`: 181 files pass and 30 skip; 2894 tests pass and 144 skip. No
   load-only reruns were needed, `appModel` included.
 - `test/uiWiresStub.test.ts` and `test/uiPreview.test.ts` pass alone; the join touches
   no UI test.
