@@ -723,6 +723,47 @@ Member replace the single admin (creator, else longest-standing member).
     (`.claude/settings.local.json`, which room panes don't read). Panes
     outside rooms aren't affected. Each verdict is logged, naming no path
     beyond what the room wrote.
+
+    The answer is checked against what the room wrote, and also against
+    what every room sandbox denies, whatever was written: home's secrets
+    (`~/.ssh`, `~/.aws`, …) can't be read, and what runs code as every pane
+    (`~/.zshrc`, `~/.claude`, `~/.mockingbird`, …) can't be written.
+  - **The file it runs is the one checked.** Claude Code updates itself by
+    pointing its link (`~/.local/bin/claude`) at a new file. A room launch
+    resolves the link once as it begins. The pane and its check both run
+    that file, and the version they're matched on is the one that file
+    gives when run. Each file is run once for its version. So an update
+    takes effect at the next launch, and one that lands mid-launch changes
+    nothing for it.
+  - **The check is started as the pane is:** the same environment, with
+    the room's variables before the binary as the pane's command has them,
+    but without credentials or the pane's own name.
+  - **Checked again when the settings change.** While a room pane runs, the
+    settings it takes beside its own are watched (polled every 2 seconds,
+    acted on once they've been still for a second):
+    - `~/.claude/settings.json`;
+    - an administrator's
+      `/Library/Application Support/ClaudeCode/managed-settings.json` and
+      its `managed-settings.d` drop-ins.
+
+    On a change, each running room pane's Claude Code is asked again, with
+    its own file, settings and environment. An answer that no longer shows
+    its sandbox on closes that pane's line, and Ryan is told once, as above.
+    A pane already outside its sandbox isn't asked again.
+  - **Known gap: an organization's server-managed settings.** A pane signed
+    in to an organization account fetches the organization's settings from
+    Anthropic, and they outrank the room's `--settings`. The check isn't
+    signed in (`--bare`), so it doesn't fetch them. And not being signed in,
+    it doesn't count itself as owed them, so it doesn't report
+    `remote_unknown` either. Claude Code 2.1.322 does keep a copy of them,
+    signature-checked. But where it keeps that copy depends on its storage
+    (a `remote-settings.json` beside the user's settings, or its own state
+    store). Its answer to "none configured" is an empty copy, and no copy at
+    all proves nothing. So no local file says reliably whether they exist,
+    and Mockingbird doesn't check for one. Ryan's account is personal, with
+    no organization settings, so this doesn't arise for him. A teammate on
+    an organization account whose administrator sets sandbox settings
+    could see the check pass while their pane runs under other settings.
   - **Claude Code 2.1.314 or later:** the first release that keeps the file
     tools in the session's folders. An older one starts room sessions
     outside the sandbox, kept off the room's line, and its chip says

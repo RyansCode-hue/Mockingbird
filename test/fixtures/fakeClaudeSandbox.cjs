@@ -5,7 +5,7 @@
 //   extra-socket, all-sockets, excluded, extra-write, remote-unknown, missing-field, version, no-dialog,
 //   dialog-error, non-json, timeout
 // $MB_FAKE_SANDBOX_VERSION is its version (2.1.318); $MB_FAKE_SANDBOX_LOG, when set, gets its arguments, stdin and
-// whether it saw any credential in its environment, as JSON.
+// whether it saw any credential in its environment, and its MB_TEST_* and MOCKINGBIRD* variables, as JSON.
 const fs = require("fs");
 
 const mode = process.env.MB_FAKE_SANDBOX || "good";
@@ -68,7 +68,8 @@ process.stdin.on("data", (d) => (input += d));
 process.stdin.on("end", () => {
   if (process.env.MB_FAKE_SANDBOX_LOG) {
     const creds = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"].filter((v) => v in process.env);
-    fs.writeFileSync(process.env.MB_FAKE_SANDBOX_LOG, JSON.stringify({ argv, input, creds }));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("MB_TEST_") || k.startsWith("MOCKINGBIRD")));
+    fs.writeFileSync(process.env.MB_FAKE_SANDBOX_LOG, JSON.stringify({ argv, input, creds, env }));
   }
   if (mode === "timeout") return setTimeout(() => {}, 600_000);
   if (mode === "non-json") {

@@ -57,6 +57,8 @@ async function manager() {
   };
   const m = new SessionManager(store as any);
   m.scrollbackDir = path.join(tempDir("sb"), "scrollback");
+  // a room launch's file isn't run for its version here (binPins.test.ts runs real files)
+  m.readVersionAt = async () => null;
   return { m, store };
 }
 const agentPane = { repoPath: null, useWorktree: false, agent: "claude" as const, title: "a" };

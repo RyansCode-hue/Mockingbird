@@ -75,6 +75,8 @@ function app(m: LoopbackMember, clone: string, takeoverOpts: Partial<TakeoverDep
   };
   const sessions = new SessionManager(store as any);
   sessions.scrollbackDir = path.join(dir, "scrollback");
+  // a room launch's file isn't run for its version here (binPins.test.ts runs real files)
+  sessions.readVersionAt = async () => null;
   const logs: string[] = [];
   const log = (c: string, e: unknown) => {
     const s = `${c}: ${e instanceof Error ? e.message : String(e)}`;

@@ -1,3 +1,5 @@
+import { sandboxPath } from "./claudeRoomSandbox";
+import { HOME_RUNS_CODE, HOME_SECRETS } from "./secrets";
 import { loginShell, quote, type LoginShellOptions } from "./shell";
 
 /**
@@ -10,8 +12,14 @@ import { loginShell, quote, type LoginShellOptions } from "./shell";
  * runs and no model is called; `--bare` reads no keychain or sign-in (and runs no hooks), so it couldn't call one.
  *
  * The launch counts as sandboxed only when that answer shows the sandbox running, nothing allowed to run outside it,
- * every path the room denies denied, nothing allowed beyond what the room allows, and the version the pane runs. Any
- * other answer, or none within SANDBOX_PROBE_MS, keeps the room's line closed for it, saying why.
+ * every path the room denies denied (and always ALWAYS_DENIED, whatever the room wrote), nothing allowed beyond what
+ * the room allows, and the version the pane runs. Any other answer, or none within SANDBOX_PROBE_MS, keeps the room's
+ * line closed for it, saying why.
+ *
+ * It's started as the pane is: the same file (BinPins), folder and environment, the room's variables before the binary
+ * as the pane has them, but without credentials or the pane's own name (MOCKINGBIRD_SESSION, by which its hooks would
+ * report as the pane; `--bare` runs none). Server-managed settings, which a signed-in pane fetches, aren't seen by a
+ * probe that isn't signed in (docs/team-rooms.md).
  */
 
 export const SANDBOX_PROBE_MS = 10_000;
@@ -49,8 +57,17 @@ export function sandboxProbeArgs(settingsJson: string, extraDirs: readonly strin
   ];
 }
 
-/** Credentials taken from the probe's environment after the user's shell has set it up: it has no use for any. */
-const NO_CREDENTIALS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"];
+/**
+ * Taken from the probe's environment after the user's shell has set it up: credentials, which it has no use for, and
+ * the pane's own name.
+ */
+const NOT_PASSED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "MOCKINGBIRD_SESSION"];
+
+/**
+ * What every room sandbox denies, whatever a launch's settings say: what runs code as every pane can't be written, and
+ * home's secrets can't be read. Checked as well as what the room wrote, so a room that stopped writing them can't pass.
+ */
+export const ALWAYS_DENIED = { denyWrite: HOME_RUNS_CODE.map(sandboxPath), denyRead: HOME_SECRETS.map(sandboxPath) } as const;
 
 /** The paths a room launch wrote into its sandbox: what Claude Code must deny, at least, and allow, at most. */
 export interface WrittenSandbox {
@@ -157,10 +174,11 @@ export function judgeSandbox(out: string, expect: { version: string | null; writ
     return refused(`your organization's managed Claude Code settings couldn't be read, so what they'd change in the sandbox isn't known`, `${cc}: managed settings unknown`);
 
   const w = expect.written;
+  const needed = (wrote: readonly string[], always: readonly string[]) => [...new Set([...wrote, ...always])];
   const unapplied = (
     [
-      ["denyRead", w.denyRead, strings(r.fs_deny_read)],
-      ["denyWrite", w.denyWrite, strings(r.fs_deny_write)],
+      ["denyRead", needed(w.denyRead, ALWAYS_DENIED.denyRead), strings(r.fs_deny_read)],
+      ["denyWrite", needed(w.denyWrite, ALWAYS_DENIED.denyWrite), strings(r.fs_deny_write)],
     ] as const
   )
     .map(([key, wrote, got]) => [key, wrote.filter((p) => !got.includes(p)).length] as const)
@@ -204,23 +222,32 @@ export function judgeSandbox(out: string, expect: { version: string | null; writ
 }
 
 export interface SandboxProbe {
-  /** The binary the pane runs. */
+  /** The file the pane runs (BinPins). */
   bin: string;
   /** The pane's `--settings` value, as passed. */
   settingsJson: string;
   extraDirs: readonly string[];
   cwd: string;
-  /** The version the pane runs. */
+  /** The version the pane runs: its file's. */
   version: string | null;
   written: WrittenSandbox;
+  /** The pane's environment. */
   env?: NodeJS.ProcessEnv;
+  /** What the pane's command sets before its binary (`/usr/bin/env K=V …`): the room's variables. */
+  envFirst?: Readonly<Record<string, string>>;
   timeoutMs?: number;
+}
+
+/** The probe's command line: the pane's, `/usr/bin/env K=V … <bin>`, but with NOT_PASSED taken out first. */
+export function sandboxProbeCommand(p: Pick<SandboxProbe, "bin" | "settingsJson" | "extraDirs" | "envFirst">): string {
+  const set = Object.entries(p.envFirst ?? {}).map(([k, v]) => `${k}=${v}`);
+  return ["/usr/bin/env", ...NOT_PASSED.flatMap((v) => ["-u", v]), ...set, p.bin, ...sandboxProbeArgs(p.settingsJson, p.extraDirs)].map(quote).join(" ");
 }
 
 /** Runs the probe in the user's login shell, as the pane's shell runs Claude Code, and judges its answer. Never rejects. */
 export async function probeRoomSandbox(p: SandboxProbe, run: (cmd: string, o: LoginShellOptions) => ReturnType<typeof loginShell> = loginShell): Promise<SandboxVerdict> {
   const ms = p.timeoutMs ?? SANDBOX_PROBE_MS;
-  const cmd = ["/usr/bin/env", ...NO_CREDENTIALS.flatMap((v) => ["-u", v]), p.bin, ...sandboxProbeArgs(p.settingsJson, p.extraDirs)].map(quote).join(" ");
+  const cmd = sandboxProbeCommand(p);
   let res: Awaited<ReturnType<typeof loginShell>>;
   try {
     res = await run(cmd, { cwd: p.cwd, input: SANDBOX_PROBE_INPUT, timeoutMs: ms, ...(p.env ? { env: p.env } : {}) });

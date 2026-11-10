@@ -96,4 +96,19 @@ describe("a room launch's sandbox watch", () => {
     vi.advanceTimersByTime(60_000);
     expect(ended.told).toEqual([]);
   });
+
+  it("closes a confirmed launch's line when Claude Code's account, asked again, no longer shows its sandbox on: told once, and for good", () => {
+    const { w, told } = watch();
+    w.reported("m1", false);
+    w.sessionStarted();
+    w.proved();
+    expect(w.state).toBe("confirmed");
+    // an account that still shows it on changes nothing
+    w.proved();
+    expect([w.state, told]).toEqual(["confirmed", ["confirmed"]]);
+    w.disproved("after its Claude Code settings changed, it runs docker outside the sandbox");
+    w.disproved("again");
+    w.proved();
+    expect([w.state, told]).toEqual(["failed", ["confirmed", "failed: after its Claude Code settings changed, it runs docker outside the sandbox"]]);
+  });
 });

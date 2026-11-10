@@ -23,6 +23,7 @@ import capture from "./fixtures/codex-folder-notice-0.156.1.json";
 import { git } from "../src/main/git";
 import { quote } from "../src/main/shell";
 import { probeRoomSandbox, type SandboxProbe, type SandboxVerdict } from "../src/main/claudeSandboxProbe";
+import { readVersionAt } from "../src/main/binPins";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; emit(d: string): void; exit(code: number): void };
@@ -47,8 +48,11 @@ const ptyOf = (id: string) => ptys.filter((p) => p.env.MOCKINGBIRD_SESSION === i
 
 const FAST = { publishMs: 80, batchMs: 1, heartbeatMs: 100, viewTtlMs: 3000, leaseMs: 3000, resyncMs: 30, gitMs: 60_000 };
 const running: LivePanes[] = [];
+const managers: SessionManager[] = [];
 afterEach(() => {
   for (const l of running.splice(0)) l.stop();
+  // its panes are fakes that never end: nothing of a finished test's keeps watching Claude Code's settings
+  for (const s of managers.splice(0)) s.killAll();
 });
 
 /** One member's Mockingbird: its sessions, live panes, and what reached its window, notifications and audit log. */
@@ -72,9 +76,12 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
     save() {},
   };
   const sessions = new SessionManager(store as any);
+  managers.push(sessions);
   sessions.scrollbackDir = path.join(dir, m.name, "scrollback");
   // a Claude Code new enough for the room's sandbox, whose own account of it shows it on (its tests below say otherwise)
   sessions.setAgentVersions({ claude: CLAUDE_ROOM_SANDBOX_SINCE });
+  // the file a room launch runs says the version set as installed (binPins.test.ts reads real files)
+  sessions.readVersionAt = async () => sessions.agentVersions.claude ?? null;
   sessions.sandboxProbe = async () => ({ ok: true, why: null, log: "ok: a stand-in Claude Code" });
   const window: unknown[][] = [];
   const notes: { title: string; body: string; paneId: string }[] = [];
@@ -1194,6 +1201,103 @@ describe("room session launch", () => {
     const renamed = await ryan.start({ title: "renamed" });
     await reportIn(ryan, renamed.id);
     expect(ryan.live.state().problems.filter((p) => p.includes("“renamed”"))).toEqual([expect.stringContaining("reads the room's settings with its sandbox off")]);
+  });
+
+  it("runs a Claude room launch, checks it and reads its version from the one file the claude link names as it begins: an update between launches is the next one's, and a link moved mid-launch changes nothing", async () => {
+    const { ryan } = await pair();
+    const dir = tempDir("claude-install");
+    fs.mkdirSync(path.join(dir, "versions"));
+    for (const v of ["2.1.320", "2.1.321", "2.1.322"]) fs.writeFileSync(path.join(dir, "versions", v), `#!/bin/sh\n[ "$1" = --version ] && echo "${v} (Claude Code)"\nexit 0\n`, { mode: 0o755 });
+    const link = path.join(dir, "claude");
+    const point = (v: string) => {
+      fs.rmSync(link, { force: true });
+      fs.symlinkSync(path.join(dir, "versions", v), link);
+    };
+    const file = (v: string) => fs.realpathSync(path.join(dir, "versions", v));
+    point("2.1.320");
+    ryan.settings.claudeBin = link;
+    ryan.sessions.resetBinCache();
+    // the file itself is run for its version
+    ryan.sessions.readVersionAt = readVersionAt;
+    const asked: SandboxProbe[] = [];
+    ryan.sessions.sandboxProbe = async (p) => (asked.push(p), { ok: true, why: null, log: "ok: a stand-in" });
+    const launch = async () => {
+      const s = await ryan.start();
+      return { cmd: ptyOf(s.id).args.join(" "), asked: asked.at(-1)!, version: ryan.sessions.list().find((x) => x.id === s.id)!.agentVersion };
+    };
+    const runs = (l: Awaited<ReturnType<typeof launch>>, v: string) => {
+      expect(l.cmd).toContain(` ${quote(file(v))} `);
+      expect(l.cmd).not.toContain(quote(link));
+      expect(l.asked).toMatchObject({ bin: file(v), version: v });
+      expect(l.version).toBe(v);
+    };
+    runs(await launch(), "2.1.320");
+    // what the link named is the installed version now, so the pane isn't shown as behind it
+    expect(ryan.sessions.agentVersions.claude).toBe("2.1.320");
+    expect(ryan.sessions.updateNotices()).toEqual([]);
+    // Claude Code updated between launches; the version last read for the app is still the one before
+    point("2.1.321");
+    expect(ryan.sessions.agentVersions.claude).toBe("2.1.320");
+    runs(await launch(), "2.1.321");
+    expect(ryan.sessions.agentVersions.claude).toBe("2.1.321");
+    // it updates again while the next launch is being prepared: the file it named as the launch began is the one
+    const roomLaunch = ryan.sessions.roomLaunch!;
+    const chosenFor: (string | null)[] = [];
+    ryan.sessions.roomLaunch = async (t) => {
+      point("2.1.322");
+      chosenFor.push(t.agentVersion);
+      return roomLaunch(t);
+    };
+    runs(await launch(), "2.1.321");
+    expect(chosenFor).toEqual(["2.1.321"]);
+  }, 60_000);
+
+  it("asks a running room pane's Claude Code for its sandbox again when Claude Code's settings change, started as the pane was, and closes its line once if it's no longer on", async () => {
+    const { ryan } = await pair();
+    ryan.sessions.settingsTiming = { pollMs: 20, settleMs: 40 };
+    const asked: SandboxProbe[] = [];
+    let verdict: SandboxVerdict = { ok: true, why: null, log: "ok: a stand-in" };
+    ryan.sessions.sandboxProbe = async (p) => (asked.push(p), verdict);
+    const logged = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await ryan.start({ title: "rechecked" });
+    await reportIn(ryan, s.id);
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
+    // asked with the pane's own environment, and the room's variables its command sets before the binary
+    const pane = ptyOf(s.id);
+    expect(asked[0].env).toEqual(pane.env);
+    expect(asked[0].env!.MOCKINGBIRD_SESSION).toBe(s.id);
+    const first = asked[0].envFirst!;
+    expect(Object.keys(first).length).toBeGreaterThan(0);
+    expect(pane.args[1]).toContain(["/usr/bin/env", ...Object.entries(first).map(([k, v]) => `${k}=${v}`), asked[0].bin].map(quote).join(" "));
+
+    const user = path.join(os.homedir(), ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(user), { recursive: true });
+    try {
+      // a change that leaves it on: asked again as it was asked first, and its line stays open
+      fs.writeFileSync(user, JSON.stringify({ model: "opus" }));
+      await until(() => asked.length === 2, "asked again");
+      expect(asked[1]).toEqual(asked[0]);
+      await until(() => logged.mock.calls.some((c) => String(c[0]) === `[sessions] ${s.id}: sandbox re-check ok: a stand-in`), "the re-check logged");
+      expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
+      // one that adds an excluded command: its line closes, and Ryan is told once
+      const why = `your ~/.claude/settings.json sandbox has excludedCommands ["docker *"] (they run outside the sandbox), which room panes can't run under`;
+      verdict = { ok: false, why, log: "refused: Claude Code 2.1.320: the user's settings add 1 excluded command" };
+      fs.writeFileSync(user, JSON.stringify({ sandbox: { excludedCommands: ["docker *"] } }));
+      await until(() => ryan.sessions.guardsOf(s.id)?.secrets === false, "its line closed");
+      expect(ryan.live.outsideSandbox(s.id)).toBe(true);
+      const told = () => ryan.live.state().problems.filter((p) => p.includes("“rechecked”"));
+      expect(told()).toEqual([
+        `“rechecked” isn't in its team room's sandbox: after its Claude Code settings changed, ${why}. Nothing crosses the room's line for it, and teammates see it as unguarded; restart it to try again.`,
+      ]);
+      expect(warned.mock.calls.map((c) => String(c[0]))).toContain(`[sessions] ${s.id}: sandbox re-check refused: Claude Code 2.1.320: the user's settings add 1 excluded command`);
+      // outside its sandbox now, it isn't asked again, and nothing more is said
+      fs.writeFileSync(user, "{}");
+      await new Promise((r) => setTimeout(r, 200));
+      expect([asked.length, told().length]).toEqual([3, 1]);
+    } finally {
+      fs.rmSync(user, { force: true });
+    }
   });
 
   it("holds git in a room session's worktree to the git folders it started on: rewritten, its folder isn't read for teammates, and Ryan is told once", async () => {

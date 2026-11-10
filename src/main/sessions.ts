@@ -14,6 +14,8 @@ import { which, whichSync, quote } from "./shell";
 import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { RoomSandboxWatch, SANDBOX_REPORT_MS } from "./roomSandboxWatch";
 import { probeRoomSandbox, writtenSandbox, type SandboxProbe, type SandboxVerdict } from "./claudeSandboxProbe";
+import { BinPins, readVersionAt } from "./binPins";
+import { claudeSandboxSources, SettingsWatch, SETTINGS_POLL_MS, SETTINGS_SETTLE_MS } from "./claudeSettingsWatch";
 import { CodexFolderNotice } from "./codexFolderNotice";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
@@ -219,6 +221,7 @@ interface LiveSession {
   rows: number;
   guards: RoomLaunch["guards"] | null; // set when it was started as a room session
   sandbox: RoomSandboxWatch | null; // a Claude room launch's sandbox, until and once it reports in
+  sandboxCheck: SandboxProbe | null; // how its sandbox is checked, asked again when Claude Code's settings change, while it runs
   folderNotice: CodexFolderNotice | null; // a Codex room launch's folder notice: nothing is typed in while it holds
   heldInput: string[]; // a teammate's typing while the folder notice holds, typed once it's gone
   hookEvents: number; // hook events routed to this pty since it started
@@ -339,6 +342,13 @@ export class SessionManager {
   sandboxReportMs = SANDBOX_REPORT_MS;
   /** Asks Claude Code for its own account of a room launch's sandbox (claudeSandboxProbe.ts); a test's stand-in otherwise. */
   sandboxProbe: (p: SandboxProbe) => Promise<SandboxVerdict> = (p) => probeRoomSandbox(p);
+  /** Reads the version of the file a Claude room launch runs, by running it (binPins.ts); a test's stand-in otherwise. */
+  readVersionAt: (file: string) => Promise<string | null> = readVersionAt;
+  private readonly binPins = new BinPins((file) => this.readVersionAt(file));
+  /** How often the settings a room pane takes are looked at, and how long they settle (a test's own otherwise). */
+  settingsTiming = { pollMs: SETTINGS_POLL_MS, settleMs: SETTINGS_SETTLE_MS };
+  /** The user's and an administrator's Claude Code settings, watched while a room pane's sandbox is to be kept checked. */
+  private settingsWatch: SettingsWatch | null = null;
   /**
    * What an agent pane's launch is told on top of its own instructions, beside a room's: its wires (wireTools.ts), so a
    * relaunched workspace knows to finish its step with finish_step. Null when it has nothing to say.
@@ -561,7 +571,13 @@ export class SessionManager {
     // a terminal bringing a conversation back runs that agent under the room's settings too
     const resumes = req.shell ? req.shellResume?.agent ?? null : null;
     const versioned = targetAgent ?? resumes;
-    const agentVersion = versioned && group && this.roomLaunch && !req.debrief ? await this.versionOf(versioned) : null;
+    const roomed = !!versioned && !!group && !!this.roomLaunch && !req.debrief;
+    // a Claude room launch's protections, its pane and its sandbox check are all the one file its link names now
+    const pinned = roomed && versioned === "claude" ? await this.binPins.pin(this.resolveBin(agentFor("claude"))) : null;
+    const agentVersion = !roomed ? null : pinned ? pinned.version : await this.versionOf(versioned!);
+    // the file the link names now is the installed one: a pane started on it isn't behind it (updateNotices)
+    if (pinned?.version && pinned.version !== this.agentVersions.claude) this.setAgentVersions({ claude: pinned.version });
+    const binOf = (a: AgentAdapter) => (pinned && a.binSetting === "claudeBin" ? pinned.bin : this.resolveBin(a));
     const extraDirs = (req.extraDirs ?? []).map(expandHome);
     const room = req.debrief ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs })) ?? null);
     const instructions = [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id)].filter(Boolean).join("\n\n");
@@ -575,7 +591,7 @@ export class SessionManager {
       ...(room && Object.keys(room.agentEnv).length ? { env: room.agentEnv } : {}),
     };
     const envFirst = (env?: Record<string, string>) => (env ? ["/usr/bin/env", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)] : []);
-    const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext, args = a.launchArgs(r, ctx)) => [...envFirst(ctx.env), this.resolveBin(a), ...args].map(quote).join(" ");
+    const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext, args = a.launchArgs(r, ctx)) => [...envFirst(ctx.env), binOf(a), ...args].map(quote).join(" ");
     // an agent pane's own arguments: a room launch's sandbox is checked with the very --settings it was given
     let paneArgs: string[] = [];
     // the agent this pty runs: an agent pane's, or the one a terminal brings back
@@ -586,6 +602,19 @@ export class SessionManager {
     if (req.reuseId) this.mayRun(req.reuseId);
     // this launch's messaging tools and the token they're known by, which go with the launch if it fails from here on
     const mcp = req.shell ? undefined : mcpLaunch(id);
+    const paneEnv = {
+      ...terminalEnv(),
+      MOCKINGBIRD: "1",
+      // inherited by the agent and its hooks — including an agent the user
+      // starts by hand inside a terminal pane — so every hook event names
+      // its pane exactly; a folder alone is ambiguous (see statusFromHook)
+      MOCKINGBIRD_SESSION: id,
+      ...(runs ? agentFor(runs).launchEnv : {}),
+      // debriefs get PAT auth for the az DevOps CLI (AZURE_DEVOPS_EXT_PAT)
+      // so ticket/PR queries work without az login or an MCP server
+      ...(req.debrief ? adoEnv(this.store) : {}),
+      ...(room?.env ?? {}),
+    } as Record<string, string>;
     try {
       if (mcp) {
         const paneCtx: LaunchContext = { mcp, ...roomCtx };
@@ -604,24 +633,12 @@ export class SessionManager {
         cols: 120,
         rows: 32,
         cwd,
-        env: {
-          ...terminalEnv(),
-          MOCKINGBIRD: "1",
-          // inherited by the agent and its hooks — including an agent the user
-          // starts by hand inside a terminal pane — so every hook event names
-          // its pane exactly; a folder alone is ambiguous (see statusFromHook)
-          MOCKINGBIRD_SESSION: id,
-          ...(runs ? agentFor(runs).launchEnv : {}),
-          // debriefs get PAT auth for the az DevOps CLI (AZURE_DEVOPS_EXT_PAT)
-          // so ticket/PR queries work without az login or an MCP server
-          ...(req.debrief ? adoEnv(this.store) : {}),
-          ...(room?.env ?? {}),
-        } as Record<string, string>,
+        env: paneEnv,
       });
     } catch (err) {
       retireMcpLaunch(mcp);
       throw new Error(
-        `Failed to launch ${req.shell ? "a terminal" : `"${this.resolveBin(agent)}"`} in ${cwd}: ${err instanceof Error ? err.message : err}. ` +
+        `Failed to launch ${req.shell ? "a terminal" : `"${binOf(agent)}"`} in ${cwd}: ${err instanceof Error ? err.message : err}. ` +
           `If it isn't found, set its full path in Settings → ${agentLabel(req.agent).toLowerCase()} binary.`
       );
     }
@@ -636,6 +653,10 @@ export class SessionManager {
       exited();
       retireMcpLaunch(mcp);
       started?.sandbox?.stop();
+      if (started?.sandboxCheck) {
+        started.sandboxCheck = null;
+        this.watchSettingsWhileChecked();
+      }
       started?.folderNotice?.stop();
       if (started?.heldInput.length) {
         const bytes = started.heldInput.reduce((n, d) => n + Buffer.byteLength(d), 0);
@@ -689,7 +710,7 @@ export class SessionManager {
         /* already dead */
       }
     }
-    if (!req.shell) info.agentVersion = this.agentVersions[req.agent ?? "claude"];
+    if (!req.shell) info.agentVersion = pinned ? (pinned.version ?? undefined) : this.agentVersions[req.agent ?? "claude"];
     // a relaunch (same id) starts with what the pane showed before, and still
     // owes the messages that were waiting for it
     const earlier = req.reuseId ? this.readScrollback(req.reuseId) : "";
@@ -714,6 +735,7 @@ export class SessionManager {
       rows: 32,
       guards: room?.guards ?? null,
       sandbox: null,
+      sandboxCheck: null,
       folderNotice: null,
       heldInput: [],
       hookEvents: 0,
@@ -730,16 +752,19 @@ export class SessionManager {
     if (sess.sandbox) {
       const at = paneArgs.indexOf("--settings");
       if (at < 0 || !room?.claudeSettings) sess.sandbox.disproved("its launch carried no room sandbox settings to check");
-      else
-        this.proveSandbox(sess, {
-          bin: this.resolveBin(agent),
+      else {
+        sess.sandboxCheck = {
+          bin: binOf(agent),
           settingsJson: paneArgs[at + 1],
           extraDirs,
           cwd,
           version: agentVersion,
           written: writtenSandbox(room.claudeSettings),
-          env: { ...terminalEnv(), ...agent.launchEnv },
-        });
+          env: paneEnv,
+          ...(roomCtx.env ? { envFirst: roomCtx.env } : {}),
+        };
+        this.proveSandbox(sess, sess.sandboxCheck);
+      }
     }
     if (room?.codexFolderNotice) sess.folderNotice = this.watchFolderNotice(sess);
     started = sess;
@@ -885,6 +910,7 @@ export class SessionManager {
    */
   async shutdown(graceMs = 3000): Promise<void> {
     this.quitting = true;
+    this.settingsWatch?.stop();
     const signal = (sig?: string) => {
       for (const p of this.running.keys()) {
         try {
@@ -912,6 +938,7 @@ export class SessionManager {
    */
   killAll(): void {
     this.quitting = true;
+    this.settingsWatch?.stop();
     for (const p of this.running.keys()) {
       try {
         p.kill("SIGKILL");
@@ -1417,6 +1444,7 @@ export class SessionManager {
         failed: (why) => {
           if (!current()) return;
           console.warn(`[sessions] ${sess.info.id} isn't in its team room's sandbox: ${why}`);
+          this.watchSettingsWhileChecked();
           this.emitChanged();
           try {
             this.sandboxLost?.(sess.info, why);
@@ -1431,19 +1459,46 @@ export class SessionManager {
 
   /**
    * Claude Code's own account of a room launch's sandbox, asked beside the pane (it doesn't wait for it): the room's
-   * line opens only once it shows the sandbox on as the room wrote it (RoomSandboxWatch). Each verdict is logged.
+   * line opens only once it shows the sandbox on as the room wrote it (RoomSandboxWatch). It's asked `again` when the
+   * settings the pane also takes change (recheckSandboxes), and closes the line then if it no longer does. Each verdict
+   * is logged.
    */
-  private proveSandbox(sess: LiveSession, p: SandboxProbe): void {
+  private proveSandbox(sess: LiveSession, p: SandboxProbe, again = false): void {
     const current = () => this.live.get(sess.info.id) === sess;
+    // from before it's asked, so a change it didn't see is one the watch does
+    this.settingsWatch ??= new SettingsWatch(claudeSandboxSources(), () => this.recheckSandboxes(), this.settingsTiming);
+    this.settingsWatch.start();
     this.sandboxProbe(p)
       .catch((err): SandboxVerdict => ({ ok: false, why: `Mockingbird's check of its sandbox failed (${(err as Error).message})`, log: `refused: the check threw: ${(err as Error).message}` }))
       .then((v) => {
         if (!current() || !sess.sandbox) return;
-        if (v.ok) console.log(`[sessions] ${sess.info.id}: sandbox check ${v.log}`);
-        else console.warn(`[sessions] ${sess.info.id}: sandbox check ${v.log}`);
+        const what = again ? "sandbox re-check" : "sandbox check";
+        if (v.ok) console.log(`[sessions] ${sess.info.id}: ${what} ${v.log}`);
+        else console.warn(`[sessions] ${sess.info.id}: ${what} ${v.log}`);
         if (v.ok) sess.sandbox.proved();
-        else sess.sandbox.disproved(v.why ?? "Mockingbird's check of its sandbox failed");
+        else {
+          const why = v.why ?? "Mockingbird's check of its sandbox failed";
+          sess.sandbox.disproved(again ? `after its Claude Code settings changed, ${why}` : why);
+        }
       });
+  }
+
+  /** Room panes whose sandbox is still to be kept checked: running, and not already outside it. */
+  private checkedSandboxes(): LiveSession[] {
+    return [...this.live.values()].filter((s) => s.sandboxCheck && s.sandbox && s.sandbox.state !== "failed");
+  }
+
+  /** The settings a room pane takes are watched while one runs whose sandbox is checked (proveSandbox starts it). */
+  private watchSettingsWhileChecked(): void {
+    if (!this.checkedSandboxes().length) this.settingsWatch?.stop();
+  }
+
+  /** The user's or an administrator's Claude Code settings changed: each running room pane's sandbox is asked again. */
+  private recheckSandboxes(): void {
+    const panes = this.checkedSandboxes();
+    if (!panes.length) return this.watchSettingsWhileChecked();
+    console.log(`[sessions] Claude Code's settings changed: checking the sandbox of ${panes.length} room pane(s) again`);
+    for (const s of panes) this.proveSandbox(s, s.sandboxCheck!, true);
   }
 
   /** A Codex room launch's folder notice, answered when it's exactly the one to answer (CodexFolderNotice). */

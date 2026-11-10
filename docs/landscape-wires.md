@@ -3333,11 +3333,11 @@ named.
 **Residual:**
 - `get_sandbox_dialog` is `@internal`: a Claude Code that changes it fails closed,
   saying it no longer reports its sandbox.
-- The probe is a sibling of the pane, not the pane. Its version is checked against
-  the one Mockingbird read for the launch, so an update since then fails closed. An
-  update landing in the moment between the pane's start and the probe's isn't seen.
+- The probe is a sibling of the pane, not the pane. (As first built, each followed
+  the link on its own, and its version was checked against the app's cached reading.
+  Fixes 1, below, pins both to one file.)
 - `--bare` doesn't fetch server-managed settings. `remote_unknown` in
-  `policy_origins` fails closed.
+  `policy_origins` fails closed. (Fixes 1 found it's never reported signed out.)
 
 **Checked:**
 - A mutation check (`mutate-probe.py`): each of 22 guards undone in turn fails its
@@ -3348,6 +3348,106 @@ named.
   to 53. Before the rebase, `teamLiveApp` failed once at load 145: an app took longer
   than 8 s to exit after "quit: exiting". It then passed twice alone at load 40 to 140,
   with no stand-in probe left running.
+
+#### W20 sandbox proof fixes 1 as built
+Goal: the review of the sandbox proof (CLI 2.1.322). Every renamed key kept the line
+closed through Mockingbird's real path, and repository settings couldn't sway it.
+One Medium and four Lows remained.
+
+**M1. One file for the pane, its check and its version** (`binPins.ts`, `sessions.ts`):
+- **Before.** `resolveBin` returns `~/.local/bin/claude`, and the pane and the probe
+  each followed it when they started. The version they were matched on was
+  `versionOf`'s, read every 10 minutes. So after each automatic update, room launches
+  failed closed for up to 10 minutes. And an update landing between the two starts
+  could open the line on the old release's answer.
+- **Now.** A Claude room launch resolves the link once (`realpathSync`) before anything
+  else, to `…/versions/2.1.322` for a native install. The pane's command, a terminal
+  bringing back a Claude conversation, and the probe all run that file. The room's
+  protections, the probe's expected version and the pane's recorded `agentVersion` are
+  the version that file gives when run. It's run once for each file, keyed by path,
+  device, inode, size and times: a native install's versions never change in place, and
+  an npm update rewriting `cli.js` is a new key. A read that fails isn't kept. The
+  version read also becomes the installed one the app knows, so `updateNotices`
+  doesn't show the new pane as behind a stale reading. Codex launches still use the
+  cached version; they have no probe.
+
+**L1. Re-checked when the settings change** (`claudeSettingsWatch.ts`,
+`RoomSandboxWatch.disproved`, `sessions.ts` `recheckSandboxes`):
+- **What's watched.** While a room Claude pane runs with its check, these are watched:
+  - `~/.claude/settings.json`;
+  - `/Library/Application Support/ClaudeCode/managed-settings.json`;
+  - the `managed-settings.d` drop-ins, each file listed.
+- **How.** Polled every 2 s, as `usage.ts` and `hooks.ts` watch theirs. Each file is
+  stamped by device, inode, size and times, so writes in place, renames over the
+  file, removals and new files are all seen. A change is acted on 1 s after the files
+  are still.
+- **On a change.** Every running room pane not already outside its sandbox is probed
+  again, with its own pinned file, `--settings`, folder and environment. A failing
+  answer now closes a confirmed line (`disproved` moves `confirmed` to `failed`).
+  Ryan is told once ("after its Claude Code settings changed, …"), and the pane isn't
+  asked again. The watch stops once no checked pane is left (looked at as each one
+  exits or fails), and on quit.
+
+**L2. The pane's environment** (`sandboxProbeCommand`): the probe gets the pane's own
+environment (`terminalEnv`, `MOCKINGBIRD`, the agent's, the room's) and the same
+`/usr/bin/env K=V` prefix, the room's cache variables. `env -u` takes out the three
+credentials, and also `MOCKINGBIRD_SESSION`, the pane's name, by which its hooks would
+report as the pane if a later `--bare` ran any.
+
+**L3. Server-managed settings** (strings of the 2.1.322 binary; a scratch HOME, never
+signed in, no keychain; control requests only):
+- **The cache.** Claude Code writes the organization's settings to
+  `<config home>/remote-settings.json`, with `.signature.json` and
+  `.signature-iat.json` beside it. With its newer storage backend it writes them to
+  its own state store instead. "None configured" saves an empty copy.
+- **`remote_unknown`.** The field's own description says it's reported only when the
+  session "counts as due server-managed settings and has none". A session that isn't
+  signed in isn't due them. With an unsigned `remote-settings.json` in the scratch
+  HOME, with and without `--bare`, `policy_origins` was `[]` and its
+  `excludedCommands` weren't applied.
+- **Verdict.** No local file reliably says whether an organization has settings, so
+  none is checked. The gap is documented in docs/team-rooms.md, which notes Ryan's
+  account is personal.
+
+**L4. What every room denies** (`ALWAYS_DENIED`): `HOME_RUNS_CODE` must be in
+`fs_deny_write` and `HOME_SECRETS` in `fs_deny_read`, as `claudeRoomSettings` writes
+them, as well as whatever the room wrote.
+
+**Tests:**
+- `binPins.test.ts` (real login shell, stand-in files):
+  - an update between launches;
+  - a burst read once;
+  - an in-place rewrite read again;
+  - a failed read retried;
+  - an unreadable version logged;
+  - a missing or bare binary.
+- `claudeSettingsWatch.test.ts`: the sources; made, written, replaced, removed; drop-ins;
+  a burst settles to one call; a throwing callback logged; stopped means silent.
+- `roomSandboxWatch.test.ts`: a confirmed line closed by a later disproof, once.
+- `claudeSandboxProbe.test.ts`:
+  - `ALWAYS_DENIED` required when a room's lists lack them;
+  - the stand-in sees the pane's variables and the prefix, but neither credentials
+    nor `MOCKINGBIRD_SESSION`;
+  - the command line, exactly.
+- `claudeSandboxProbe.test.ts`, real CLI:
+  - the link pinned to its file at that file's version, which the probe passes;
+  - the room's SessionStart hook not run under `--bare`.
+- `teamLivePanes.test.ts`:
+  - **Pinning, through the real launch path.** Three launches with the link
+    re-pointed between them and once inside `roomLaunch`. Each runs, probes and
+    records the file the link named as it began.
+  - **Re-checking.** A settings change re-asks with identical parameters, and the
+    pane's environment and prefix are asserted. A refusal closes the line, told once.
+    A later change asks nothing.
+  - Each test's managers are `killAll`ed after it, so no finished test's watch acts.
+
+**Checked:**
+- A mutation check (`fix1/mutate.py`, `mutate2.py`): each of 23 guards undone in turn
+  fails its test.
+- The real-CLI tests (Claude Code 2.1.322, not signed in) pass locally.
+- `npm run typecheck` and `npm run build` pass, and `CI=true npm test` exits 0: 191
+  files pass and 30 skip; 3,115 tests pass and 150 skip.
+- `MB_E2E_APP=1`: `wiresApp`, `quitApp` and `teamLiveApp` pass at load 8 to 34.
 
 ## 2. Data model
 

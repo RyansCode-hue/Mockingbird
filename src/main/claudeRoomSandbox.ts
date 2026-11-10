@@ -46,7 +46,7 @@ export interface ClaudeRoomPlaces {
 }
 
 /** A home pattern as a sandbox path: the folder for "~/x/**", the file otherwise. */
-const sandboxPath = (p: string) => p.replace(/\/\*\*$/, "");
+export const sandboxPath = (p: string) => p.replace(/\/\*\*$/, "");
 
 /** Edit rules for an absolute path: "//" starts one in a permission rule; a folder's contents, as well as its name. */
 const editDeny = (abs: string, folder: boolean): string[] => (folder ? [`Edit(/${abs})`, `Edit(/${abs}/**)`] : [`Edit(/${abs})`]);

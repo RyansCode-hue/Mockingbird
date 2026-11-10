@@ -13,7 +13,9 @@
  *
  * That shows the file loaded, not that Claude Code read its sandbox from it: a key it doesn't know is ignored. So the
  * launch also waits for Claude Code's own account of its sandbox (claudeSandboxProbe.ts), asked out of band, which no
- * turn can forge: once the marker and the start have come in order, a turn no longer matters, only that answer.
+ * turn can forge: once the marker and the start have come in order, a turn no longer matters, only that answer. It's
+ * asked again whenever the user's or an administrator's Claude Code settings change, and a failing answer then closes
+ * a confirmed launch's line too.
  */
 
 export type RoomSandboxState = "starting" | "confirmed" | "failed";
@@ -78,8 +80,16 @@ export class RoomSandboxWatch {
     this.settle();
   }
 
-  /** Claude Code's own account of its sandbox wasn't that, or couldn't be had: `why` as for `failed`. */
+  /**
+   * Claude Code's own account of its sandbox wasn't that, or couldn't be had: `why` as for `failed`. Asked again once
+   * the launch is confirmed (its settings changed while it ran), such an answer ends that too.
+   */
   disproved(why: string): void {
+    if (this.state === "confirmed") {
+      this.state = "failed";
+      this.tell.failed(why);
+      return;
+    }
     this.fail(why);
   }
 
