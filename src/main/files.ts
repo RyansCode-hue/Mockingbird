@@ -1,4 +1,5 @@
 import { baseCandidates, branchesOf, git, MAX_DIFF_BYTES } from "./git";
+import { guardedGit } from "./safeGit";
 import * as fs from "fs";
 import { applyTextEdits, type LspTextEdit } from "../shared/textEdits";
 import { lineBreakOf, splitBom } from "../shared/editorText";
@@ -266,7 +267,8 @@ export async function branchFork(root: string, base: string | null): Promise<{ f
 function statRound(key: string, root: string, base: string | null): Promise<BranchStat> {
   const stat = statTurn(async (): Promise<BranchStat> => {
     const { fork, label } = await branchFork(root, base);
-    return { base: label, ...parseShortstatFiles(await git(root, ["diff", "--shortstat", fork])) };
+    // every session's folder, again and again, with no one asking: nothing its repository's config names may run
+    return { base: label, ...parseShortstatFiles(await (await guardedGit(root)).diff(["--shortstat", fork])) };
   });
   const round = { stat, next: null as Promise<BranchStat> | null };
   statRounds.set(key, round);
@@ -286,7 +288,8 @@ function statRound(key: string, root: string, base: string | null): Promise<Bran
  * the merge base to the working tree, its commits and its uncommitted changes to tracked files together. `base` is
  * the area repo's base branch; null takes the repository's own, as Branch vs base does. Shared for a few seconds (or
  * until the folder changes, forgetBranchStat), so every card on one folder starts one round of git; a failed read
- * isn't kept. A round is two gits (where HEAD and the base are, the diff), and merge-base when either moved. A busy
+ * isn't kept. A round is three gits (where HEAD and the base are, the filter drivers guardedGit turns off, the diff),
+ * and merge-base when either moved. A busy
  * folder runs one round and at most one more: asked while one runs (its answer may be out of date by then), the next
  * starts when it ends, and everyone who asks meanwhile shares that.
  */

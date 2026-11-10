@@ -315,6 +315,11 @@ export interface WireContext {
   kept?: Readonly<Record<string, KeptWire>>;
   /** The wire being checked, when it's one that exists: rules across wires leave it out. */
   self?: string;
+  /**
+   * Why it isn't known yet which sessions are in a team room (ROOMS_STARTING), or null once it is. Until then every
+   * wire is refused with it: any of them could cross a room's line.
+   */
+  roomsUnknown?: string | null;
 }
 
 const others = (ctx: WireContext): Wire[] => Object.entries(ctx.links).flatMap(([id, w]) => (id === ctx.self ? [] : [w]));
@@ -324,6 +329,9 @@ const rivals = (ctx: WireContext): KeptWire[] => [...others(ctx), ...Object.entr
 /** Why a wire is refused when its ends are on either side of a team room's line. It names neither end. */
 export const ROOM_LINE =
   "Both ends have to be in the same team room, or neither in one: a wire across the line would carry a room's text out of its guardrails, or private output onto teammates' screens.";
+
+/** Why a wire is refused while Mockingbird hasn't started its team rooms: a room's line can't be seen yet. */
+export const ROOMS_STARTING = "Mockingbird is still starting its team rooms, so it can't tell yet which sessions are in one: try again in a moment.";
 
 export const isSending = (w: Pick<Wire, "delivery">): boolean => w.delivery?.state === "queued" || w.delivery?.state === "pasting";
 
@@ -363,7 +371,8 @@ export function wireRefusal(from: string, to: string, type: WireType, ctx: WireC
   if (!a) return `This Mac has no session "${from}".`;
   const b = ctx.end(to);
   if (!b) return `This Mac has no session "${to}".`;
-  // first, so no refusal across the line names what's on the other side
+  // first, so no refusal across the line names what's on the other side; a line not known yet is refused as one
+  if (ctx.roomsUnknown) return ctx.roomsUnknown;
   if (a.room !== b.room) return ROOM_LINE;
   for (const e of [a, b]) if (e.debrief) return `“${e.title}” is a debrief interview with you, and takes no wires.`;
   for (const e of [a, b]) if (e.takenOver) return e.takenOver;
@@ -432,13 +441,25 @@ export interface LatestMessage {
 }
 
 /**
+ * The most a wire's body holds, as its send takes it (W3 refuses a longer one): a pending is filled in to fit, its
+ * template's own words and the summary first, then {diff} and {files} sharing what's left, each cut saying so.
+ */
+export const WIRE_BODY_MAX = 40_000;
+
+/**
+ * Whether finishing session `id`'s step needs a verdict: it has a feedback wire out. The one answer finish_step, the
+ * launch instructions, a new wire's notice and what a wire sends all go by, so none asks for what another refuses.
+ */
+export const verdictDue = (id: string, links: Readonly<Record<string, Wire>>): boolean => Object.values(links).some((w) => w.from === id && w.type === "feedback");
+
+/**
  * Why finishing session `id`'s step with `verdict` is refused, by the verdict rules alone, or null. A feedback wire
  * out needs one ("changes" sends the work back along it, "approve" lets the handoffs go); without one, "changes"
  * has nowhere to go.
  */
 export function verdictRefusal(id: string, verdict: unknown, links: Readonly<Record<string, Wire>>): string | null {
   if (verdict !== undefined && !WIRE_VERDICTS.includes(verdict as WireVerdict)) return `verdict is "approve" or "changes", not ${JSON.stringify(verdict)}.`;
-  const feedback = Object.values(links).some((w) => w.from === id && w.type === "feedback");
+  const feedback = verdictDue(id, links);
   if (feedback && verdict === undefined) return 'This workspace has a feedback wire out, so finishing its step needs a verdict: "approve" when the work is ready to go on, "changes" to send it back.';
   if (!feedback && verdict === "changes") return 'verdict "changes" sends work back along a feedback wire, and this workspace has none out: leave verdict out, or use "approve".';
   return null;

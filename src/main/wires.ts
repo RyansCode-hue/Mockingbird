@@ -15,6 +15,7 @@ import {
   restoredWire,
   restoreRefusal,
   ROOM_LINE,
+  ROOMS_STARTING,
   sameWire,
   settingsRefusal,
   WIRE_TYPES,
@@ -41,6 +42,11 @@ export interface WireServiceOptions {
   sessions: { list(): SessionInfo[]; resumable(): SessionInfo[] };
   /** The team room a session of this Mac's is in. */
   roomOf: (id: string) => string | null;
+  /**
+   * Whether roomOf can be believed yet: false until team rooms have started (or found they can't), when roomOf says no
+   * room for every session. Until then every wire is refused (ROOMS_STARTING). Left out, it can.
+   */
+  roomsKnown?: () => boolean;
   /** Why a session can't be wired because a teammate took it over; null when none did. */
   takenOver: (id: string) => string | null;
   log: (context: string, err: unknown) => void;
@@ -195,15 +201,16 @@ export class WireService {
         const gate = gateOf(id, w, ctx);
         const otherId = w.from === me.id ? w.to : w.from;
         const other = ctx.end(otherId);
-        // across a room's line, nothing about the far end crosses it but its id
-        const across = !!other && !!mine && other.room !== mine.room;
+        // across a room's line, nothing about the far end crosses it but its id; nor before the line can be seen
+        const across = !!other && !!mine && (!!ctx.roomsUnknown || other.room !== mine.room);
+        const outside = ctx.roomsUnknown ? "not known until team rooms have started" : mine?.room ? "outside this room" : "in a team room";
         return {
           wire: id,
           direction: w.from === me.id ? "out" : "in",
           type: w.type,
-          other: !other ? { id: otherId, gone: true } : across ? { id: otherId, outside: mine!.room ? "outside this room" : "in a team room" } : { id: otherId, title: other.title, where: other.where },
+          other: !other ? { id: otherId, gone: true } : across ? { id: otherId, outside } : { id: otherId, title: other.title, where: other.where },
           state: gate.state,
-          ...(across ? { why: ROOM_LINE } : gate.why ? { why: gate.why } : {}),
+          ...(across ? { why: ctx.roomsUnknown ?? ROOM_LINE } : gate.why ? { why: gate.why } : {}),
         };
       });
     const incomplete = state.problems.map((p) => p.message);
@@ -263,6 +270,13 @@ export class WireService {
       ends.set(id, made);
       return made;
     };
-    return { end, links: book.links, notes: book.notes, ...(kept ? { kept: readableKept(kept) } : {}), fileRefusal: this.o.store.wiresWriteRefusal() };
+    return {
+      end,
+      links: book.links,
+      notes: book.notes,
+      ...(kept ? { kept: readableKept(kept) } : {}),
+      fileRefusal: this.o.store.wiresWriteRefusal(),
+      ...(this.o.roomsKnown && !this.o.roomsKnown() ? { roomsUnknown: ROOMS_STARTING } : {}),
+    };
   }
 }

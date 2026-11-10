@@ -19,6 +19,7 @@ import {
   restoredWire,
   restoreRefusal,
   ROOM_LINE,
+  ROOMS_STARTING,
   settingsRefusal,
   storedWireBook,
   verdictRefusal,
@@ -87,6 +88,13 @@ describe("wireRefusal", () => {
     expect(wireRefusal("a", "r", "handoff", ctxOf([end("a"), far]))).toBe(ROOM_LINE);
     expect(wireRefusal("r", "a", "context", ctxOf([end("a"), far]))).toBe(ROOM_LINE);
     expect(ROOM_LINE).not.toMatch(/Private plan/);
+  });
+  it("refuses every wire while it can't tell which sessions are in a room, as any might cross a line", () => {
+    const unknown = { roomsUnknown: ROOMS_STARTING };
+    for (const type of ["handoff", "context", "feedback"] as const) expect(wireRefusal("a", "b", type, ctxOf(AB, {}, {}, unknown)), type).toBe(ROOMS_STARTING);
+    expect(wireRefusal("a", "t", "worktree", ctxOf([end("a"), end("t", { kind: "terminal" })], {}, {}, unknown))).toBe(ROOMS_STARTING);
+    expect(gateOf("w", wire("a", "b", "handoff", { pending: { id: "p", body: "x", at: 1, flags: [] } }), ctxOf(AB, {}, {}, unknown))).toMatchObject({ state: "blocked", why: ROOMS_STARTING });
+    expect(ROOMS_STARTING).toMatch(/still starting its team rooms/);
   });
   it("counts a kept wire whose ends and type can be read as there already, but not against itself", () => {
     const kept = { k: { from: "a", to: "b", type: "feedback" as const }, h: { from: "b", to: "c", type: "handoff" as const } };

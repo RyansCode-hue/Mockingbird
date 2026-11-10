@@ -570,6 +570,7 @@ app.whenReady().then(() => {
   void pruneBackups();
   setInterval(pruneBackups, 86_400_000).unref();
   livePanes.start(); // team rooms: live panes
+  roomsKnown = true; // started, or found team rooms can't run: either way roomOfSession can be believed from here
   // team rooms: a room left or removed from whose cleanup didn't finish (Mockingbird quit) is cleaned up now
   void team.finishLeftRooms().catch((err) => logError("team: finishing rooms left before", err));
   powerMonitor.on("resume", () => team.wake());
@@ -1364,10 +1365,13 @@ handle("landscape:get", () => landscape.get());
 handle("landscape:update", (patch) => landscape.update(patch));
 
 // ---- wires: typed links between workspaces, kept beside the layout (docs/landscape-wires.md) ----
+/** Whether team rooms have started (livePanes.start, in whenReady): until then no session looks to be in a room. */
+let roomsKnown = false;
 const wires = new WireService({
   store: landscape,
   sessions,
   roomOf: (id) => livePanes.roomOfSession(id),
+  roomsKnown: () => roomsKnown,
   takenOver: (id) => takeover?.takenOverRefusal(id, "wiring it") ?? null,
   log: logError,
   onAdded: (id, w) => wireTools.wired(id, w),

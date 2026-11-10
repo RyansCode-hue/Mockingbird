@@ -103,7 +103,8 @@ export function terminalEnv(): Record<string, string> {
 }
 
 /** A message waiting for its pane's turn to end; `from` is the local session that sent it, `at` when. */
-type Queued = { text: string; submit: boolean; at: number; from?: string; overdueTold?: boolean };
+/** `key`: Mockingbird's own notice (deliverNotice), which a newer one under the same key replaces while it waits. */
+type Queued = { text: string; submit: boolean; at: number; from?: string; overdueTold?: boolean; key?: string };
 
 /** A queued agent message that has waited longer than it should (see SessionManager.overdueMessages). */
 export interface OverdueMessage {
@@ -1329,13 +1330,37 @@ export class SessionManager {
    * it waits for them to send it; see flushQueued.
    */
   deliverAgentMessage(id: string, message: string, submit: boolean, from?: string): string {
+    return this.enqueue(id, { text: message, submit, at: Date.now(), ...(from ? { from } : {}) });
+  }
+
+  /** Whether Mockingbird's notice under `key` still waits in session `id`'s queue (deliverNotice). */
+  noticeWaiting(id: string, key: string): boolean {
+    return !!this.live.get(id)?.queued.some((m) => m.key === key);
+  }
+
+  /**
+   * Mockingbird's own notice to session `id`, under `key`: one still waiting in its queue is replaced where it waits, so
+   * what's said while the agent works reaches it as one prompt at its next idle. Otherwise as deliverAgentMessage.
+   */
+  deliverNotice(id: string, key: string, message: string, submit: boolean): string {
     const s = this.live.get(id);
     if (!s) throw new Error(`session ${id} is not running`);
-    s.queued.push({ text: message, submit, at: Date.now(), ...(from ? { from } : {}) });
+    const waiting = s.queued.find((m) => m.key === key);
+    if (!waiting) return this.enqueue(id, { text: message, submit, at: Date.now(), key });
+    waiting.text = message;
+    waiting.submit = submit;
+    this.emitChanged();
+    return "queued, with what was already waiting for it";
+  }
+
+  private enqueue(id: string, m: Queued): string {
+    const s = this.live.get(id);
+    if (!s) throw new Error(`session ${id} is not running`);
+    s.queued.push(m);
     if (s.info.status === "idle") {
       this.flushQueued(s);
       this.emitChanged();
-      return s.queued.length ? "queued — the user has an unsent draft in that pane" : submit ? "delivered" : "placed in its prompt for the user to send";
+      return s.queued.length ? "queued — the user has an unsent draft in that pane" : m.submit ? "delivered" : "placed in its prompt for the user to send";
     }
     this.emitChanged();
     // pasted now, its Enter would answer the prompt

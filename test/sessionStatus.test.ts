@@ -66,6 +66,22 @@ describe("a pane's status from its agent's hooks", () => {
     expect(pane(m, s.id).info.status).toBe("working"); // submitted: its turn runs
   });
 
+  it("keeps one of Mockingbird's notices waiting under a key, replaced where it waits, and starts another once it's gone", async () => {
+    const m = manager();
+    const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "noticed" });
+    m.deliverNotice(s.id, "wires", "the first wire", true);
+    m.deliverAgentMessage(s.id, "a teammate's message", true, "sender");
+    expect(m.noticeWaiting(s.id, "wires")).toBe(true);
+    expect(m.deliverNotice(s.id, "wires", "the first wire and the second", true)).toMatch(/with what was already waiting/);
+    expect(m.list().find((x) => x.id === s.id)!.queuedCount).toBe(2);
+    await hook("SessionStart", s.id, { source: "startup" });
+    await until("the notice to be typed in", () => typedInto(m, s.id).includes("the first wire and the second"));
+    expect(typedInto(m, s.id).split("the first wire").length).toBe(2); // typed once, as it last read
+    expect(m.noticeWaiting(s.id, "wires")).toBe(false);
+    m.deliverNotice(s.id, "wires", "a third", true);
+    expect(m.list().find((x) => x.id === s.id)!.queuedCount).toBe(2); // the teammate's, and the new notice
+  });
+
   it("delivers what a relaunched pane was owed once it has resumed, with no turn run in it", async () => {
     const m = manager();
     const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "Data Migration" });

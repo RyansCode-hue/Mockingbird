@@ -14,6 +14,7 @@ import {
   readWireFiles,
   REDACTED,
   redactedFlag,
+  redactionsIn,
   redactSecrets,
   wiredNotice,
   wireInstructions,
@@ -31,6 +32,7 @@ import {
   carriesWork,
   finishPlan,
   gateOf,
+  verdictDue,
   verdictRefusal,
   WIRE_VERDICTS,
   wireRefusal,
@@ -64,6 +66,20 @@ export interface PendingsMade {
   pendings: { wire: string; pending: string; to: string; toTitle: string }[];
 }
 
+/** A step's finish worked out and filled in, nothing written yet (WireTools.planFinish); applyFinish writes it. */
+export interface FinishFill {
+  /** The source's note as the finish leaves it: its summary (redacted), and the verdict when one readies anything. */
+  note: { summary: NonNullable<SourceNote["summary"]>; verdict?: WireVerdict };
+  /** How many values redaction took out of the summary: flagged at each gate whose template carries {summary}. */
+  redacted: number;
+  /** The unsent pendings the verdict takes back, by the book as it was read. */
+  withdraws: { wire: string; pending: string }[];
+  /** Each wire that readies: its body filled in, and what it was filled from (its template and files, filledFrom). */
+  fills: { wire: string; from: string; body: Expansion }[];
+  /** Set when the source has no handoff or feedback wire out: only its summary is kept, and the finish says so. */
+  noWireOut: { unread: string } | null;
+}
+
 export interface WireToolsOptions {
   store: Pick<LandscapeStore, "wires" | "editWires">;
   /** The rules' view of the sessions now. */
@@ -71,7 +87,10 @@ export interface WireToolsOptions {
   sessions: {
     list(): SessionInfo[];
     resumable(): SessionInfo[];
-    deliverAgentMessage(id: string, message: string, submit: boolean): string;
+    /** Whether Mockingbird's notice under `key` still waits in its queue (SessionManager.noticeWaiting). */
+    noticeWaiting(id: string, key: string): boolean;
+    /** Mockingbird's notice, replacing the one under `key` still waiting (SessionManager.deliverNotice). */
+    deliverNotice(id: string, key: string, message: string, submit: boolean): string;
     /** A live pane's output so far. */
     buffer(id: string): string;
     /** A closed one's saved output; throws when it can't be read. */
@@ -104,6 +123,19 @@ function onlyArgs(tool: string, args: Record<string, unknown>, allowed: readonly
 const wholeIn = (v: unknown, fallback: number, min: number, max: number): number => (typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, Math.floor(v))) : fallback);
 
 const nOf = (n: number) => n.toLocaleString("en-US");
+
+/** The key a session's notice of its new wires waits under in its queue (SessionManager.deliverNotice). */
+export const WIRES_NOTICE = "wires";
+
+/**
+ * Why a context link or shared worktree can't be read along now, in its gate's words, or null: a read goes by what the
+ * wire shows, so one the window shows blocked (across a room's line, an end closed and off the landscape, a book that
+ * can't be saved) answers nothing.
+ */
+function blockedWhy(id: string, w: Wire, ctx: GateContext): string | null {
+  const g = gateOf(id, w, ctx);
+  return g.state === "blocked" ? (g.why ?? "This wire is blocked now.") : null;
+}
 
 /**
  * The agents' wire tools (finish_step, read_context, read_terminal), the window's Finish step, and what an agent is
@@ -142,6 +174,15 @@ export class WireTools {
    * Answers once it's saved, never waiting on a gate. With no wire out, it's refused and the summary is kept.
    */
   async finish(me: SessionInfo, raw: Record<string, unknown>, by: PendingsMade["by"]): Promise<FinishOutcome> {
+    const fill = await this.planFinish(me, raw);
+    return "refused" in fill ? fill : this.applyFinish(me, fill, by);
+  }
+
+  /**
+   * finish's first half, which writes nothing: the call checked, the summary redacted, what each wire out does by the
+   * book as it's read, and each body that readies filled in with what it was filled from.
+   */
+  async planFinish(me: SessionInfo, raw: Record<string, unknown>): Promise<FinishFill | { refused: string }> {
     const extra = onlyArgs(WIRE_TOOL.finishStep, raw, ["summary", "verdict"]);
     if (extra) return { refused: extra };
     if (typeof raw.summary !== "string" || !raw.summary.trim()) return { refused: "summary is empty: say what this step did." };
@@ -156,32 +197,25 @@ export class WireTools {
     const ctx = this.o.rules.context(state.book);
     const mine = ctx.end(me.id);
     if (mine?.takenOver) return { refused: mine.takenOver };
-    const at = this.now();
     const redacted = redactSecrets(summary);
     const conv = me.conversation?.id ?? conversationsOf(me).at(-1);
-    const noted = (book: WireBook, withVerdict: WireVerdict | undefined): WireBook => {
-      const note: SourceNote = { ...(own(book.notes, me.id) ?? { hops: 0 }), summary: { text: redacted.text, at, ...(conv ? { conversation: conv } : {}) } };
-      if (withVerdict) note.verdict = withVerdict;
-      else delete note.verdict;
-      const notes = { ...book.notes };
-      put(notes, me.id, note);
-      return { ...book, notes };
-    };
+    const note = { summary: { text: redacted.text, at: this.now(), ...(conv ? { conversation: conv } : {}) }, ...(v ? { verdict: v } : {}) };
+    const base = { note, redacted: redacted.count };
 
     if (!Object.values(state.book.links).some((w) => w.from === me.id && carriesWork(w.type))) {
       const unread = state.problems.length ? ` Some of the wires in landscape.json can't be read by this Mockingbird, and may be this workspace's: ${state.problems.map((p) => p.message).join(" ")}` : "";
-      const r = this.o.store.editWires((book) => ({ book: noted(book, undefined) }));
-      if ("refused" in r) return { refused: `This workspace has no handoff or feedback wire out, so finishing its step readies nothing, and its summary couldn't be kept either: ${r.refused}${unread}` };
-      return { refused: `This workspace has no handoff or feedback wire out, so finishing its step readies nothing. Its summary is kept for any workspace that reads its context.${unread}`, kept: true };
+      // nothing readies, so there's no verdict to keep: only the summary, for context readers
+      return { ...base, note: { summary: note.summary }, withdraws: [], fills: [], noWireOut: { unread } };
     }
     const why = verdictRefusal(me.id, v, state.book.links);
     if (why) return { refused: why };
 
     // each wire that readies, filled in now; the diff is the source's folder's, read once for all of them
+    const plan = finishPlan(me.id, v, ctx);
     let diff: Promise<Expansion> | null = null;
     const ticket = me.ticketId ? oneLine(`#${ticketIdOf(me.ticketId)}${me.ticketTitle ? ` — ${me.ticketTitle}` : ""}`) : "";
-    const filled = new Map<string, { as: string; body: Expansion }>();
-    for (const step of finishPlan(me.id, v, ctx)) {
+    const fills: FinishFill["fills"] = [];
+    for (const step of plan) {
       if (step.does !== "readies") continue;
       const w = state.book.links[step.wire];
       const body = await expandTemplate(w.template ?? DEFAULT_TEMPLATE, {
@@ -190,9 +224,34 @@ export class WireTools {
         diff: () => (diff ??= readWireDiff(me.cwd, this.secretFiles())),
         files: () => readWireFiles(me.cwd, w.files, this.secretFiles()),
       });
-      filled.set(step.wire, { as: filledFrom(w), body });
+      fills.push({ wire: step.wire, from: filledFrom(w), body });
+    }
+    const withdraws = plan.flatMap((s) => (s.withdraws ? [{ wire: s.wire, pending: s.withdraws }] : []));
+    return { ...base, withdraws, fills, noWireOut: null };
+  }
+
+  /**
+   * finish's second half: `f` written in one change. The plan is worked out again inside the write, from the book as it
+   * is then: what's taken back and what readies go by that, and a wire whose template or files changed since `f` was
+   * filled in isn't readied with it. With no wire out, only the summary is kept, and the finish is refused saying so.
+   */
+  applyFinish(me: SessionInfo, f: FinishFill, by: PendingsMade["by"]): FinishOutcome {
+    const noted = (book: WireBook): WireBook => {
+      const note: SourceNote = { ...(own(book.notes, me.id) ?? { hops: 0 }), summary: f.note.summary };
+      if (f.note.verdict) note.verdict = f.note.verdict;
+      else delete note.verdict;
+      const notes = { ...book.notes };
+      put(notes, me.id, note);
+      return { ...book, notes };
+    };
+    if (f.noWireOut) {
+      const r = this.o.store.editWires((book) => ({ book: noted(book) }));
+      if ("refused" in r) return { refused: `This workspace has no handoff or feedback wire out, so finishing its step readies nothing, and its summary couldn't be kept either: ${r.refused}${f.noWireOut.unread}` };
+      return { refused: `This workspace has no handoff or feedback wire out, so finishing its step readies nothing. Its summary is kept for any workspace that reads its context.${f.noWireOut.unread}`, kept: true };
     }
 
+    const v = f.note.verdict;
+    const filled = new Map(f.fills.map((x) => [x.wire, x]));
     let steps: FinishedStep[] = [];
     const r = this.o.store.editWires((book) => {
       // the book as it is now: a wire changed while its template was being filled in isn't readied with what was read
@@ -206,16 +265,16 @@ export class WireTools {
           put(links, step.wire, rest);
         }
         if (step.does !== "readies") return done;
-        const f = filled.get(step.wire);
-        if (!f || f.as !== filledFrom(w)) return { ...done, does: "refused", why: "It was changed while this step was being finished: finish again to ready it." };
-        const count = (usesSummary(w) ? redacted.count : 0) + f.body.redacted;
-        const flags = [...(count ? [redactedFlag(count)] : []), ...f.body.flags];
-        const pending: WirePending = { id: (this.o.newId ?? randomUUID)(), body: f.body.text, at, ...(v ? { verdict: v } : {}), flags };
+        const x = filled.get(step.wire);
+        if (!x || x.from !== filledFrom(w)) return { ...done, does: "refused", why: "It was changed while this step was being finished: finish again to ready it." };
+        const count = (usesSummary(w) ? f.redacted : 0) + x.body.redacted;
+        const flags = [...(count ? [redactedFlag(count)] : []), ...x.body.flags];
+        const pending: WirePending = { id: (this.o.newId ?? randomUUID)(), body: x.body.text, at: f.note.summary.at, ...(v ? { verdict: v } : {}), flags };
         const next: Wire = { ...w, pending };
         put(links, step.wire, next);
         return { ...done, pending: { id: pending.id, flags }, gate: gateOf(step.wire, next, { ...now, links }).gate };
       });
-      return { book: noted({ ...book, links }, v) };
+      return { book: noted({ ...book, links }) };
     });
     if ("refused" in r) return { refused: `Nothing was finished: ${r.refused}` };
 
@@ -227,7 +286,7 @@ export class WireTools {
         this.o.log(`wires: ${me.id} finished its step, and telling of its ${pendings.length} pending(s) failed`, err);
       }
     }
-    return { steps, redacted: redacted.count };
+    return { steps, redacted: f.redacted };
   }
 
   /** Session `s`'s latest message, whole, cut to what a summary may hold: what a person's Finish step starts from. */
@@ -265,7 +324,7 @@ export class WireTools {
     if (!found) return refuse(`There's no context link from ${quoted(from)} to this workspace: the user draws those. list_links shows this workspace's wires.${unreadable(state.problems)}`);
     const [id, w] = found;
     const ctx = this.o.rules.context(state.book);
-    const why = wireRefusal(from, me.id, "context", { ...ctx, self: id });
+    const why = blockedWhy(id, w, ctx);
     if (why) return refuse(why);
     const src = this.session(from)!;
     const end = ctx.end(from)!;
@@ -336,7 +395,7 @@ export class WireTools {
     const found = Object.entries(state.book.links).find(([, w]) => w.type === "worktree" && w.from === me.id && w.to === id);
     if (!found) return refuse(`There's no shared worktree wire from this workspace to ${quoted(id)}: the user draws those. list_links shows this workspace's wires.${unreadable(state.problems)}`);
     const ctx = this.o.rules.context(state.book);
-    const why = wireRefusal(me.id, id, "worktree", { ...ctx, self: found[0] });
+    const why = blockedWhy(found[0], found[1], ctx);
     if (why) return refuse(why);
     const term = this.session(id)!;
     const end = ctx.end(id)!;
@@ -348,7 +407,8 @@ export class WireTools {
       this.o.log(`wires: read_terminal couldn't read ${id}'s output for ${me.id}`, err);
       return refuse(`Its output couldn't be read: ${errorText(err)}`);
     }
-    const all = terminalLines(raw);
+    // redacted whole before it's cut: a key whose BEGIN line the cut leaves out is still a key
+    const all = redactSecrets(terminalLines(raw).join("\n")).text.split("\n");
     while (all.length && !all[all.length - 1]) all.pop();
     let tail = all.slice(-want).join("\n");
     const asked = tail ? tail.split("\n").length : 0;
@@ -357,7 +417,7 @@ export class WireTools {
       tail = last.slice(last.indexOf("\n") + 1); // the line the cut went through
     }
     const lines = tail ? tail.split("\n").length : 0;
-    const r = redactSecrets(tail);
+    const r = { text: tail, count: redactionsIn(tail) };
     const shown = !r.text ? "nothing: it hasn't shown any output" : `its last ${nOf(lines)} line${lines === 1 ? "" : "s"}${lines < asked ? `: the last ${nOf(asked)} were more than 32 KB` : ""}`;
     const label = readLabel(
       "Output of",
@@ -373,24 +433,32 @@ export class WireTools {
 
   // ---- telling agents about their wires ------------------------------------------------------
 
+  /** The wires each session's notice still waiting in its queue tells of (wired). */
+  private noticed = new Map<string, WireLine[]>();
+
   /**
    * A wire was made: the agent at its acting end (a handoff's or feedback's source, a context link's reader, a shared
-   * terminal's agent) is told, with one line through its queue, when it's working: the line reaches it as its turn
-   * ends. One that's idle has finished already, and the wire's Send now is there for that; one stopped hears at launch.
+   * terminal's agent) is told through its queue when it's working, so it hears as its turn ends. Wires made while that
+   * notice still waits are folded into it: one prompt, however many wires. One that's idle has finished already, and
+   * the wire's Send now is there for that; one stopped hears at launch.
    */
   wired(id: string, w: Wire): void {
     const acting = w.type === "context" ? w.to : w.from;
     const s = this.o.sessions.list().find((x) => x.id === acting);
     if (!s || s.shell || s.debrief || (s.status !== "working" && s.status !== "waiting")) return;
     const state = this.o.store.wires();
-    if (!state.book) return;
+    if (!state.book) {
+      this.o.log(`wires: ${s.id} couldn't be told of wire ${id}`, state.refused ?? "the wires can't be read");
+      return;
+    }
     const ctx = this.o.rules.context(state.book);
     if (wireRefusal(w.from, w.to, w.type, { ...ctx, self: id })) return; // blocked by the rules: nothing it can use yet
     const otherId = acting === w.from ? w.to : w.from;
     const line: WireLine = { type: w.type, direction: acting === w.from ? "out" : "in", other: { id: otherId, title: ctx.end(otherId)?.title ?? otherId } };
-    const verdictDue = Object.values(state.book.links).some((x) => x.from === acting && x.type === "feedback");
+    const lines = this.o.sessions.noticeWaiting(s.id, WIRES_NOTICE) ? [...(this.noticed.get(s.id) ?? []), line] : [line];
     try {
-      this.o.sessions.deliverAgentMessage(s.id, wiredNotice(line, verdictDue), this.o.submitOnDelivery(s));
+      this.o.sessions.deliverNotice(s.id, WIRES_NOTICE, wiredNotice(lines, verdictDue(acting, state.book.links)), this.o.submitOnDelivery(s));
+      this.noticed.set(s.id, lines);
     } catch (err) {
       this.o.log(`wires: ${s.id} couldn't be told of wire ${id}`, err);
     }
@@ -416,7 +484,7 @@ export class WireTools {
       const otherId = w.from === id ? w.to : w.from;
       return [{ type: w.type, direction: w.from === id ? "out" : "in", other: { id: otherId, title: ctx.end(otherId)?.title ?? otherId } }];
     });
-    return wireInstructions(lines, Object.values(state.book.links).some((w) => w.from === id && w.type === "feedback"));
+    return wireInstructions(lines, verdictDue(id, state.book.links));
   }
 
   /**
@@ -442,7 +510,7 @@ export class WireTools {
         body,
         automatic: o.automatic,
         ...(w.rounds ? { round: { n: w.rounds.used, of: w.rounds.limit } } : {}),
-        next: out.length ? { to: out.map((x) => ctx.end(x.to)?.title ?? x.to), verdictDue: out.some((x) => x.type === "feedback") } : null,
+        next: out.length ? { to: out.map((x) => ctx.end(x.to)?.title ?? x.to), verdictDue: verdictDue(w.to, state.book.links) } : null,
       }),
     };
   }
@@ -472,7 +540,7 @@ const usesSummary = (w: Wire): boolean => (w.template ?? DEFAULT_TEMPLATE).inclu
 function titleAcross(ctx: GateContext, me: string, other: string): string {
   const a = ctx.end(me);
   const b = ctx.end(other);
-  return !b || (a && a.room !== b.room) ? other : b.title;
+  return !b || ctx.roomsUnknown || (a && a.room !== b.room) ? other : b.title;
 }
 
 function labelled(s: SessionInfo, e: WireEnd): LabelledEnd {

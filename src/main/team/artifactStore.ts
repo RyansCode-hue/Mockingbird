@@ -24,9 +24,9 @@ import { MAX_ARTIFACT_FILE, SHA256_RE, ARTIFACT_ID_RE, safeArtifactFileName, typ
 export const MAX_INLINE_PIXELS = 50_000_000;
 /** How much of a file's start sniffing looks at (images' sizes, SVG's root element). */
 const HEAD_BYTES = 1024 * 1024;
-const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 
-/** Whether text (a note's) holds a PEM private key, as file sniffing finds one. */
+/** Whether text (a note's) holds a PEM private key or a PGP private key block, as file sniffing finds one. */
 export const holdsPrivateKey = (text: string): boolean => PRIVATE_KEY_RE.test(text);
 
 /** What a file is, from its content: how the viewer may show it, and whether it holds a private key. */

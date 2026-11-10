@@ -4,10 +4,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { WireService } from "../src/main/wires";
-import { WireTools, type PendingsMade } from "../src/main/wireTools";
+import { WIRES_NOTICE, WireTools, type PendingsMade } from "../src/main/wireTools";
 import { WIRE_TOOL, WIRE_TOOL_SCHEMAS } from "../src/main/wireToolSchemas";
 import type { AgentMessage, SessionInfo } from "../src/shared/types";
-import { gateOf, ROOM_LINE, type FinishOutcome, type Wire, type WireReply, type WireState } from "../src/shared/wires";
+import { gateOf, ROOM_LINE, ROOMS_STARTING, verdictDue, verdictRefusal, type FinishOutcome, type Wire, type WireReply, type WireState } from "../src/shared/wires";
 import { askAs, startServer } from "./mcpClient";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
@@ -51,7 +51,7 @@ function setup() {
     session("term", { title: "dev server", shell: true, cwd: repo }),
     session("t2", { title: "other terminal", shell: true, cwd: "/w/d" }),
   ];
-  const closed = [session("oldterm", { title: "old terminal", shell: true, cwd: repo })];
+  const closed = [session("oldterm", { title: "old terminal", shell: true, cwd: repo }), session("gone", { title: "Closed builder", cwd: repo, conversation: { agent: "claude", id: "conv-gone" } })];
   const rooms: Record<string, string> = {};
   const takenOver: Record<string, string> = {};
   const transcripts: Record<string, string> = {};
@@ -59,15 +59,18 @@ function setup() {
   const buffers: Record<string, string> = {};
   const closedOutput: Record<string, string | Error> = {};
   const delivered: { id: string; text: string; submit: boolean }[] = [];
+  const queue: Record<string, { key: string; text: string }[]> = {};
   const messages: AgentMessage[] = [];
   const made: PendingsMade[] = [];
   const hooks = { duringRead: () => {} };
   let n = 0;
   let k = 0;
+  const flags = { roomsKnown: true };
   const service: WireService = new WireService({
     store,
     sessions: { list: () => running, resumable: () => closed },
     roomOf: (id) => rooms[id] ?? null,
+    roomsKnown: () => flags.roomsKnown,
     takenOver: (id) => takenOver[id] ?? null,
     log,
     onAdded: (id, w) => tools.wired(id, w),
@@ -80,7 +83,16 @@ function setup() {
     sessions: {
       list: () => running,
       resumable: () => closed,
-      deliverAgentMessage: (id, text, submit) => (delivered.push({ id, text, submit }), "queued until its current turn ends"),
+      // a queue as SessionManager keeps one: a notice waiting under its key is replaced where it waits
+      noticeWaiting: (id, key) => (queue[id] ?? []).some((m) => m.key === key),
+      deliverNotice: (id, key, text, submit) => {
+        const q = (queue[id] ??= []);
+        const waiting = q.find((m) => m.key === key);
+        if (waiting) waiting.text = text;
+        else q.push({ key, text });
+        delivered.push({ id, text, submit });
+        return "queued until its current turn ends";
+      },
       buffer: (id) => buffers[id] ?? "",
       closedOutput: (id) => {
         const o = closedOutput[id];
@@ -101,7 +113,7 @@ function setup() {
   const txFile = path.join(dir, "conv-a.jsonl");
   fs.writeFileSync(txFile, TRANSCRIPT + "\n");
   transcripts.a = txFile;
-  return { dir, file, repo, store, service, tools, running, closed, rooms, takenOver, transcripts, refusedHooks, buffers, closedOutput, delivered, messages, made, logged, hooks, a, me: (id: string) => running.find((s) => s.id === id)! };
+  return { dir, file, repo, store, service, tools, running, closed, rooms, flags, takenOver, transcripts, refusedHooks, buffers, closedOutput, delivered, queue, messages, made, logged, hooks, a, me: (id: string) => running.find((s) => s.id === id)! };
 }
 type Setup = ReturnType<typeof setup>;
 
@@ -117,6 +129,11 @@ const done = (o: FinishOutcome) => {
 };
 const refused = (o: FinishOutcome) => ("refused" in o ? o.refused : `not refused: ${JSON.stringify(o)}`);
 const gate = (t: Setup, id: string) => gateOf(id, book(t).links[id], { ...t.service.context(book(t)) });
+/** A closed session's ghost on the landscape, as closing it from there leaves one. */
+const placeGhost = (t: Setup, id: string) => {
+  const s = t.closed.find((x) => x.id === id)!;
+  t.store.update({ ghosts: { [id]: { title: s.title, agent: s.shell ? "terminal" : "claude", cwd: s.cwd, repoPath: s.cwd, placement: { x: 0, y: 0, w: 100, h: 100 }, group: "5101", closedAt: "2026-11-01T00:00:00.000Z" } } });
+};
 
 describe("finish_step", () => {
   it("gives each wire out its own pending, the summary at each gate, and says so once", async () => {
@@ -267,7 +284,7 @@ describe("finish_step", () => {
     fs.writeFileSync(file, JSON.stringify({ v: 3, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {}, wires: { wv: 99, links: {}, notes: {} } }));
     const store = new LandscapeStore({ file, emit: () => {}, log: () => {} });
     const service = new WireService({ store, sessions: { list: () => [session("a")], resumable: () => [] }, roomOf: () => null, takenOver: () => null, log: () => {} });
-    const tools = new WireTools({ store, rules: service, sessions: { list: () => [session("a")], resumable: () => [], deliverAgentMessage: () => "", buffer: () => "", closedOutput: () => "" }, conversationFiles: () => ({ agent: "claude", files: [], refused: null }), submitOnDelivery: () => true, log: () => {} });
+    const tools = new WireTools({ store, rules: service, sessions: { list: () => [session("a")], resumable: () => [], noticeWaiting: () => false, deliverNotice: () => "", buffer: () => "", closedOutput: () => "" }, conversationFiles: () => ({ agent: "claude", files: [], refused: null }), submitOnDelivery: () => true, log: () => {} });
     expect(refused(await tools.finish(session("a"), { summary: "x" }, "agent"))).toMatch(/^Nothing was finished: .*newer Mockingbird/);
     for (const [op, args] of [
       [WIRE_TOOL.readContext, { from: "b" }],
@@ -311,6 +328,33 @@ describe("finish_step", () => {
     const r = done(await t.tools.finish(t.a, { summary: "x" }, "agent"));
     expect(r.steps).toEqual([expect.objectContaining({ wire: ab, does: "refused", why: expect.stringMatching(/changed while this step was being finished/) })]);
     expect(book(t).links[ab].pending).toBeUndefined();
+  });
+
+  it("plans and fills writing nothing, then writes what it planned in one change", async () => {
+    const t = setup();
+    const fb = wire(t.service.add("a", "b", "feedback"));
+    const ac = wire(t.service.add("a", "c", "handoff"));
+    done(await t.tools.finish(t.a, { summary: "first", verdict: "approve" }, "agent"));
+    const before = fs.readFileSync(t.file, "utf8");
+    const fill = await t.tools.planFinish(t.a, { summary: "fix the filter", verdict: "changes" });
+    if ("refused" in fill) throw new Error(fill.refused);
+    expect(fill).toEqual({
+      note: { summary: { text: "fix the filter", at: 1_000_000, conversation: "conv-a" }, verdict: "changes" },
+      redacted: 0,
+      withdraws: [{ wire: ac, pending: "p1" }],
+      fills: [{ wire: fb, from: JSON.stringify(["{summary}", null]), body: { text: "fix the filter", flags: [], redacted: 0 } }],
+      noWireOut: null,
+    });
+    expect(fs.readFileSync(t.file, "utf8")).toBe(before);
+    expect(t.made).toHaveLength(1);
+    const r = done(t.tools.applyFinish(t.a, fill, "agent"));
+    expect(r.steps.map((s) => [s.wire, s.does])).toEqual([
+      [fb, "readies"],
+      [ac, "holds"],
+    ]);
+    expect(book(t).links[fb].pending).toMatchObject({ body: "fix the filter", verdict: "changes" });
+    expect(book(t).links[ac].pending).toBeUndefined();
+    expect(book(t).notes.a).toMatchObject({ summary: { text: "fix the filter" }, verdict: "changes" });
   });
 
   it("answers the agent in Mockingbird's words, what each wire did", async () => {
@@ -396,6 +440,18 @@ describe("read_context", () => {
     ]);
   });
 
+  it("answers nothing along a link its gate shows blocked, in the gate's words: a source closed and off the landscape", async () => {
+    const t = setup();
+    const gb = wire(t.service.add("gone", "b", "context"));
+    const why = gate(t, gb).why;
+    expect(gate(t, gb).state).toBe("blocked");
+    expect((await read(t, "b", { from: "gone" })).error).toBe(why);
+    expect(why).toBe("“Closed builder” is closed and not on the landscape: reopen it from Closed sessions.");
+    // on the landscape, it reads
+    placeGhost(t, "gone");
+    expect((await read(t, "b", { from: "gone" })).result).toMatch(/^\[Context from Mockingbird workspace "Closed builder"/);
+  });
+
   it("refuses across a room's line, saying nothing of the far side", async () => {
     const t = setup();
     wire(t.service.add("a", "b", "context"));
@@ -460,6 +516,31 @@ describe("read_terminal", () => {
     expect(JSON.stringify(t.messages)).not.toMatch(/line \d|API_TOKEN/);
   });
 
+  it("redacts the whole output before it cuts, so a key whose BEGIN line the cut leaves out still goes", async () => {
+    const t = setup();
+    wire(t.service.add("a", "term", "worktree"));
+    const body = Array.from({ length: 20 }, (_, i) => `b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW${i}`);
+    t.buffers.term = ["$ cat ~/.ssh/id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----", ...body, "-----END OPENSSH PRIVATE KEY-----", "$ ls"].join("\r\n");
+    for (const lines of [3, 10, 100]) {
+      const text = (await read(t, "a", { terminal: "term", lines })).result!;
+      expect(text, `${lines} lines`).not.toContain("b3BlbnNzaC1rZXkt");
+      expect(text, `${lines} lines`).toContain("[redacted: a private key]");
+      expect(text).toMatch(/\[1 secret-looking value was replaced/);
+    }
+    // a buffer that holds only the key's end, as a terminal's start can be: its END line anchors it
+    t.buffers.term = [...body.slice(-5), "-----END OPENSSH PRIVATE KEY-----", "$ ls"].join("\n");
+    const text = (await read(t, "a", { terminal: "term" })).result!;
+    expect(text).not.toContain("b3BlbnNzaC1rZXkt");
+    expect(text).toContain("[redacted: the end of a private key]");
+  });
+
+  it("takes terminal and lines only", async () => {
+    const t = setup();
+    wire(t.service.add("a", "term", "worktree"));
+    expect((await read(t, "a", { terminal: "term", from: "b" })).error).toBe('read_terminal takes terminal and lines, nothing else (not "from").');
+    expect((await read(t, "a", {})).error).toMatch(/^terminal is the id of the terminal to read/);
+  });
+
   it("holds to 1000 lines and 32 KB", async () => {
     const t = setup();
     wire(t.service.add("a", "term", "worktree"));
@@ -488,11 +569,21 @@ describe("read_terminal", () => {
 
   it("reads a closed one's saved output, says so, and says when that can't be read", async () => {
     const t = setup();
+    placeGhost(t, "oldterm");
     wire(t.service.add("a", "oldterm", "worktree"));
     t.closedOutput.oldterm = "built ok\n";
     expect((await read(t, "a", { terminal: "oldterm" })).result).toMatch(/; it's closed, so this is what it showed when it closed\. .*\n<terminal-[0-9a-f]+>\nbuilt ok\n<\/terminal-/);
     t.closedOutput.oldterm = new Error("EACCES: permission denied");
     expect((await read(t, "a", { terminal: "oldterm" })).error).toBe("Its output couldn't be read: EACCES: permission denied");
+  });
+
+  it("answers nothing along a wire its gate shows blocked: a closed terminal taken off the landscape", async () => {
+    const t = setup();
+    placeGhost(t, "oldterm");
+    wire(t.service.add("a", "oldterm", "worktree"));
+    t.closedOutput.oldterm = "built ok\n";
+    t.store.update({ ghosts: { oldterm: null } });
+    expect((await read(t, "a", { terminal: "oldterm" })).error).toBe("“old terminal” is closed and not on the landscape: reopen it from Closed sessions.");
   });
 });
 
@@ -521,6 +612,23 @@ describe("telling an agent of a wire made while it works", () => {
     wire(t.service.add("c", "d", "handoff"));
     expect(t.delivered.at(-1)!.id).not.toBe("d");
   });
+  it("folds the wires made while its notice waits into that one prompt, and starts another once it's gone", () => {
+    const t = setup();
+    t.a.status = "working";
+    wire(t.service.add("a", "b", "handoff"));
+    wire(t.service.add("a", "c", "handoff"));
+    expect(t.queue.a).toHaveLength(1);
+    expect(t.queue.a[0].text.split("\n")).toEqual([
+      "[Mockingbird: while you worked, the user made these wires for this workspace:",
+      '- a handoff wire to "Reviewer" (id "b").',
+      '- a handoff wire to "Deployer" (id "c").',
+      "When your current step is done, call the mockingbird finish_step tool once with a summary of what you did; the user decides at each wire's gate what's sent.",
+      "list_links shows your wires.]",
+    ]);
+    t.queue.a = []; // its turn ended, and the notice went with it
+    wire(t.service.add("a", "term", "worktree"));
+    expect(t.queue.a).toEqual([{ key: WIRES_NOTICE, text: expect.stringMatching(/^\[Mockingbird: the user shared the terminal "dev server"/) }]);
+  });
   it("says nothing of a wire the rules refuse by the time it's told", () => {
     const t = setup();
     t.a.status = "working";
@@ -544,6 +652,59 @@ describe("at launch", () => {
     expect(t.tools.launchInstructions("d")).toBeNull();
     t.rooms.b = "R1";
     expect(t.tools.launchInstructions("a")).not.toMatch(/Reviewer/);
+  });
+});
+
+describe("before team rooms have started", () => {
+  it("refuses every wire, read and step along one, saying why, and names nothing at the far end", async () => {
+    const t = setup();
+    const ab = wire(t.service.add("a", "b", "context"));
+    const ac = wire(t.service.add("a", "c", "handoff"));
+    t.flags.roomsKnown = false;
+    expect(t.service.add("a", "d", "handoff")).toEqual({ refused: ROOMS_STARTING });
+    expect(gate(t, ab)).toMatchObject({ state: "blocked", why: ROOMS_STARTING });
+    expect(((await t.tools.call(t.me("b"), WIRE_TOOL.readContext, { from: "a" })) as { error?: string }).error).toBe(ROOMS_STARTING);
+    const r = (await t.tools.call(t.a, WIRE_TOOL.finishStep, { summary: "done" })) as { result: string };
+    expect(r.result).not.toContain("Deployer");
+    expect(book(t).links[ac].pending).toBeUndefined();
+    const listed = (t.service.linksFor(t.a) as { result: { links: { other: Record<string, unknown>; why?: string }[] } }).result.links;
+    expect(listed.map((l) => l.other)).toEqual([
+      { id: "b", outside: "not known until team rooms have started" },
+      { id: "c", outside: "not known until team rooms have started" },
+    ]);
+    expect(listed.every((l) => l.why === ROOMS_STARTING)).toBe(true);
+    // the app says so once its team rooms have started, or found they can't
+    const index = fs.readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+    expect(index).toMatch(/\n {2}livePanes\.start\(\);[^\n]*\n {2}roomsKnown = true;/);
+    expect(index).toMatch(/new WireService\(\{[^}]*roomsKnown: \(\) => roomsKnown,/);
+    // once they have, as before
+    t.flags.roomsKnown = true;
+    expect(((await t.tools.call(t.me("b"), WIRE_TOOL.readContext, { from: "a" })) as { result?: string }).result).toMatch(/^\[Context from/);
+  });
+});
+
+describe("whether a verdict is due", () => {
+  it.each<[string, ("handoff" | "feedback")[], boolean]>([
+    ["a handoff out", ["handoff"], false],
+    ["a feedback wire out", ["feedback"], false],
+    ["both", ["feedback", "handoff"], false],
+    ["both, the feedback wire refused by the rules now", ["feedback", "handoff"], true],
+  ])("is asked alike by finish_step, the launch, a new wire's notice and what a wire sends, with %s", async (_what, types, feedbackAcross) => {
+    const t = setup();
+    const into = wire(t.service.add("d", "a", "handoff"));
+    t.a.status = "working";
+    const ends = ["b", "c"];
+    for (const [i, type] of types.entries()) wire(t.service.add("a", ends[i], type));
+    if (feedbackAcross) t.rooms.b = "R1";
+    const due = verdictDue("a", book(t).links);
+    expect(due).toBe(types.includes("feedback"));
+    const asks = /and a verdict/;
+    expect(verdictRefusal("a", undefined, book(t).links) !== null).toBe(due);
+    expect(asks.test(t.tools.launchInstructions("a")!)).toBe(due);
+    expect(asks.test(t.queue.a.at(-1)!.text)).toBe(due);
+    expect(asks.test((t.tools.messageFor(into, "go", { automatic: false }) as { text: string }).text)).toBe(due);
+    const finished = await t.tools.finish(t.a, { summary: "done" }, "agent");
+    expect("refused" in finished && /needs a verdict/.test(finished.refused)).toBe(due);
   });
 });
 

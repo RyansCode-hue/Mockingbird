@@ -575,6 +575,119 @@ reverted. Not checked here: real `claude` and `codex` sessions calling the tools
 e2e drives the real MCP script and the relaunched argv with stand-in CLIs), and how an
 agent takes the label and fence.
 
+#### W2 review fixes 1 as built
+
+The independent review's findings, a body cap shared with W3, and `finish` split for
+the W3 join.
+
+**Git that runs nothing a repository names** (`src/main/safeGit.ts`, `guardedGit`):
+- `-c filter.<name>.clean=` split at the first `=`, so a driver named `x=y` kept its
+  command and `{diff}` ran it in main. Overrides now go in through
+  `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`: fsmonitor off, every filter driver the config names
+  (read with `-z`) emptied and not required, `core.pager=cat` and `GIT_PAGER=cat`.
+- `diff` adds `SAFE_DIFF`: `--no-color --no-ext-diff --no-textconv
+  --ignore-submodules=all`.
+- A config that can't be read throws, so nothing runs with its filters left on.
+- `{diff}` (its diff and its untracked count) and the card's diff badge (`statRound`'s
+  `--shortstat`, which ran unguarded for every session folder, again and again) both go
+  through it.
+- A badge round is three gits now. It no longer counts a submodule's pointer moving.
+- `test/safeGit.test.ts` plants fsmonitor, a plain driver, an `x=y` driver, a textconv,
+  an external diff and a pager. It shows each runs for a plain git, then runs nothing
+  through the helper or the badge. The `{diff}` test plants the `x=y` driver too.
+
+**Secret names in any case:** `{diff}` excludes with `:(exclude,icase,…)`, as `{files}`'
+`isSecretFileName` already did (`App.ENV`, `config/Secrets.JSON`).
+
+**Redaction:**
+- PGP `PRIVATE KEY BLOCK`s in `redactSecrets` and `holdsPrivateKey`, so the
+  artifacts' sniffing and teammates' changes too.
+- Azure connection strings (Storage, Cosmos DB, Service Bus): `AccountKey`,
+  `SharedAccessKey` and `SharedAccessSignature` are secret names now. A name ending in
+  `Name` (`SharedAccessKeyName`) isn't, as it holds the key's name.
+- Signed URLs' `sig=`, `X-Amz-Signature=` and `X-Goog-Signature=`.
+- A key whose BEGIN line was cut off: its END line and the run of base64-looking lines
+  right before it go as `[redacted: the end of a private key]`.
+
+**read_terminal redacts, then cuts:** the whole buffer (at most 400 KB) is redacted
+before its last lines are taken, so a key whose BEGIN line falls outside `lines` still
+goes. The note counts the redactions in what's shown (`redactionsIn`).
+
+**Reads go by the gate:** `read_context` and `read_terminal` refuse when `gateOf` says
+blocked, in its words: across a room's line, an end closed and off the landscape, a book
+that can't be saved. A closed terminal with a ghost on the landscape still reads.
+
+**One notice per session:**
+- `SessionManager.deliverNotice(id, key, text, submit)` replaces a notice still
+  waiting under `key`, where it waits. `noticeWaiting(id, key)` asks whether it's still
+  there.
+- `WireTools.wired` folds each wire made while its notice (`WIRES_NOTICE`) waits into
+  it, so the agent gets one prompt. Once it's gone, the next wire starts a new one.
+- A book that can't be read when telling is logged.
+- **For the W3 join:** these are Mockingbird's own prompts. Don't count them for "once per
+  prompt", and don't count them as a send.
+
+**One verdict rule:** `verdictDue(id, links)` (shared/wires.ts, any feedback wire out)
+is what `verdictRefusal`, the launch instructions, a new wire's notice and `messageFor`
+all ask. A test holds all four, and finish_step itself, to the same answer. That
+includes a feedback wire the rules refuse now: B is still told it needs a verdict,
+because finish_step will want one.
+
+**The landscape's side files:** `HOME_PRIVATE_DATA` keeps `~/.mockingbird/landscape.json`
+and adds `~/.mockingbird/landscape.json.*`, for a write's `.<pid>.tmp` and an unreadable
+file's `.bad-<time>`. They're two entries, so the file's own deny doesn't hang on how a
+sandbox reads a glob.
+
+**Rooms fail closed until they've started:**
+- `roomOfSession` says "no room" for every session until `livePanes.start()`. In that
+  window the rules saw no line.
+- `WireService` takes `roomsKnown()`, which is `index.ts`' `roomsKnown`. That's set
+  right after `livePanes.start()`, whether rooms started or found they can't.
+- While it's false, `context()` sets `roomsUnknown: ROOMS_STARTING`, and `wireRefusal`
+  refuses every wire with it before the room line. So making a wire, every gate, both
+  reads and each finish step say Mockingbird is still starting its team rooms.
+- `list_links` and finish's reply name no far end then: an id and "not known until team
+  rooms have started".
+- A session launched in that window starts without word of its wires, which fails
+  closed.
+- **For W3 when it rebases:** a send in that window is refused the same way.
+
+**`WIRE_BODY_MAX = 40_000`** (shared/wires.ts, the name and value W3 has):
+- `expandTemplate` fills to fit. The template's own words, `{summary}` (8,000 at most)
+  and `{ticket}` go first. `{diff}` and `{files}` then share what's left in equal shares,
+  one's unused share going to the other, and each is cut at a line where it can be.
+- A cut ends with a marker saying how many characters are left out and how to get them:
+  git in the source's folder (or B's own, if they share it), or `read_context` through a
+  context link. Each cut is flagged.
+- A template whose own words and summaries alone are over the cap is cut whole, saying
+  so.
+- The largest body (an 8,000-character summary, a 40,000-character diff and 40,000 of
+  files) is tested under the cap.
+
+**`finish` in two** (so W3's `offer` can take the second half's place):
+- `planFinish(me, raw)` writes nothing. It returns `FinishFill`:
+  - `note`: the redacted summary, and the verdict when anything readies;
+  - `redacted`;
+  - `withdraws` (`{ wire, pending }`, by the book as read);
+  - `fills` (`{ wire, from, body }`, where `from` is `filledFrom`);
+  - `noWireOut`.
+- `applyFinish(me, fill, by)` writes it in one `editWires`. It plans again against the
+  book as it is then, as before, so a wire changed since the fill isn't readied with it.
+- `finish` is the two in turn, and behaves as before.
+
+**Checked:** each guard this adds was reverted on its own, and its tests caught all 31.
+One more, a regex for connection strings' keys, outlived its revert: the secret names
+and the `sig=` rule already did its work, so it was taken out rather than kept as a
+second way to the same thing.
+
+**Left:**
+- The Source Control view's own diffs (`files.ts`' `fileDiff`, `gitChanges`) still run
+  plain git in the user's repositories. A person asks for those, but the config they read
+  is just as writable by an agent. They could go through `guardedGit` next.
+- `secretPathspecs` is still case-sensitive where room backups use it.
+- A session launched before team rooms start hears nothing of its wires until it's
+  relaunched or wired again.
+
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the
   round limit, starting B, reconciling on start (section 3).
