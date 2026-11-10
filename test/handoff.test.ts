@@ -2,7 +2,21 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { handoffKickoff, handoffPrompt, hookTranscript, lastReplyLine, lastReplyOf, replyFiles, replyOfConversation, repoState, transcriptDigest, transcriptLines } from "../src/main/handoff";
+import {
+  conversationFiles,
+  handoffKickoff,
+  handoffPrompt,
+  hookTranscript,
+  lastReplyLine,
+  lastReplyOf,
+  lastReplyWhole,
+  latestMessageOf,
+  replyFiles,
+  replyOfConversation,
+  repoState,
+  transcriptDigest,
+  transcriptLines,
+} from "../src/main/handoff";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 const spawned: { file: string; args: string[]; cwd: string }[] = [];
@@ -316,7 +330,11 @@ describe("the transcript path a hook named, which comes from a file others could
   });
   it("is checked by main's handler, against the agents' transcript folders, and logged as main logs", () => {
     const index = fs.readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
-    expect(index).toMatch(/replyOfConversation\(agent, conv, \{\s*hook: sessions\.transcriptOf\(s\.id, conv\),\s*roots: \[CLAUDE_PROJECTS, CODEX_SESSIONS\],[^}]*log: logError,/);
+    expect(index).toMatch(/lookup: \{\s*hook: sessions\.transcriptOf\(s\.id, conv\),\s*roots: \[CLAUDE_PROJECTS, CODEX_SESSIONS\],[^}]*log: logError,/);
+    // the card's last reply and the wire tools' reads both go through that one lookup
+    expect(index).toMatch(/const \{ agent, lookup \} = conversationLookup\(s, conv\);\s*return replyOfConversation\(agent, conv, lookup\);/);
+    expect(index).toMatch(/const \{ agent, lookup \} = conversationLookup\(s, conv\);\s*return \{ agent, \.\.\.conversationFiles\(agent, conv, lookup\) \};/);
+    expect(index.match(/hook: sessions\.transcriptOf\(/g)).toHaveLength(1);
   });
   it("still finds the conversation's own file when the path was refused, saying nothing then", async () => {
     const t = setup("hook-fallback");
@@ -346,5 +364,94 @@ describe("reading a transcript picked a moment ago", () => {
     const f = path.join(dir, "c1.jsonl");
     fs.writeFileSync(f, `${claude("assistant", "From the file itself.")}\n`);
     expect(await lastReplyOf([{ path: f, agent: "claude" }], "c1")).toMatchObject({ line: "From the file itself." });
+  });
+});
+
+describe("a digest's tools", () => {
+  const lines = [
+    claude("user", "Check the config"),
+    claude("assistant", [{ type: "text", text: "Reading it." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "cat .env" } }]),
+    claude("user", [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "API_KEY=abc123" }] }]),
+    claude("assistant", "It's set."),
+  ];
+  const codex = [
+    JSON.stringify({ type: "response_item", payload: { type: "function_call", name: "shell", arguments: JSON.stringify({ command: ["ls"] }) } }),
+    JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "c", output: JSON.stringify({ output: "a.txt\nb.txt", metadata: { exit_code: 0 } }) } }),
+    JSON.stringify({ type: "response_item", payload: { type: "custom_tool_call_output", call_id: "d", output: "Success. Updated a.txt" } }),
+  ];
+  it("are the calls alone by default, as a handoff's draft has always read them", () => {
+    expect(transcriptDigest(lines, "claude", "c1")).toBe("USER: Check the config\nAGENT: Reading it.\nTOOL: Bash cat .env\nAGENT: It's set.");
+    expect(transcriptDigest(codex, "codex", "x")).toBe("TOOL: shell ls");
+  });
+  it("are the calls and what each gave back, for a context link's read", () => {
+    expect(transcriptDigest(lines, "claude", "c1", 40_000, { tools: "all" })).toBe("USER: Check the config\nAGENT: Reading it.\nTOOL: Bash cat .env\nOUTPUT: API_KEY=abc123\nAGENT: It's set.");
+    expect(transcriptDigest(codex, "codex", "x", 40_000, { tools: "all" })).toBe("TOOL: shell ls\nOUTPUT: a.txt\nb.txt\nOUTPUT: Success. Updated a.txt");
+  });
+  it("are neither for a link set to leave them out", () => {
+    expect(transcriptDigest(lines, "claude", "c1", 40_000, { tools: "none" })).toBe("USER: Check the config\nAGENT: Reading it.\nAGENT: It's set.");
+  });
+  it("rewrites each entry whole before it's cut to size", () => {
+    const long = [claude("user", [{ type: "tool_result", tool_use_id: "t", content: `${"x".repeat(2500)} SECRET` }])];
+    const seen: number[] = [];
+    const d = transcriptDigest(long, "claude", "c1", 40_000, { tools: "all", entry: (t) => (seen.push(t.length), t.replace("SECRET", "[gone]")) });
+    expect(seen).toEqual([2507]);
+    expect(d).toBe(`OUTPUT: ${"x".repeat(2000)} …`);
+  });
+  it("leave the index alone: a line's outputs are parsed only when asked for", async () => {
+    const { parseClaudeLine, parseCodexLine } = await import("../src/main/transcripts");
+    expect(parseClaudeLine(lines[2], "c1").chunks).toEqual([]);
+    expect(parseClaudeLine(lines[2], "c1", { outputs: true }).chunks.map((c) => c.kind)).toEqual(["output"]);
+    for (const line of codex.slice(1)) {
+      expect(parseCodexLine(line, "x").chunks).toEqual([]);
+      expect(parseCodexLine(line, "x", { outputs: true }).chunks.map((c) => c.kind)).toEqual(["output"]);
+    }
+  });
+});
+
+describe("the latest message, whole", () => {
+  it("is the agent's last run of text, back to the tool call or the request before it", () => {
+    const lines = [
+      claude("user", "Do it"),
+      claude("assistant", [{ type: "text", text: "First I'll look." }, { type: "tool_use", name: "Read", input: { file_path: "a" } }]),
+      claude("assistant", "Done:"),
+      claude("assistant", "- the filter\n- its test"),
+      JSON.stringify({ type: "assistant", isSidechain: true, sessionId: "c1", message: { role: "assistant", content: "a subagent's" } }),
+    ];
+    expect(lastReplyWhole(lines, "claude", "c1")).toEqual({ text: "Done:\n\n- the filter\n- its test", at: Date.parse("2026-10-04T10:00:00Z") });
+    expect(lastReplyWhole([claude("user", "hi")], "claude", "c1")).toBeNull();
+  });
+  it("isn't cut to the index's size", () => {
+    expect(lastReplyWhole([claude("assistant", "z".repeat(6000))], "claude", "c1")!.text.length).toBe(6000);
+  });
+  it("is read from the newest file that has one, refusing a link", async () => {
+    const dir = tempDir("whole");
+    const older = path.join(dir, "1.jsonl");
+    const newer = path.join(dir, "2.jsonl");
+    fs.writeFileSync(older, claude("assistant", "from the older") + "\n");
+    fs.writeFileSync(newer, claude("user", "resumed") + "\n");
+    expect(await latestMessageOf([{ path: older, agent: "claude" }, { path: newer, agent: "claude" }], "c1")).toEqual({ text: "from the older", at: expect.any(Number) });
+    expect(await latestMessageOf([], "c1")).toEqual({ text: null, at: null });
+    fs.symlinkSync(older, path.join(dir, "link.jsonl"));
+    await expect(latestMessageOf([{ path: path.join(dir, "link.jsonl"), agent: "claude" }], "c1")).rejects.toThrow(/ELOOP/);
+  });
+});
+
+describe("a transcript read in lines", () => {
+  it("is opened without following a link or waiting on a FIFO", async () => {
+    const dir = tempDir("lines");
+    const f = path.join(dir, "t.jsonl");
+    fs.writeFileSync(f, "a\nb\n");
+    fs.symlinkSync(f, path.join(dir, "link.jsonl"));
+    await expect(transcriptLines(path.join(dir, "link.jsonl"))).rejects.toThrow(/ELOOP/);
+    execFileSync("mkfifo", [path.join(dir, "fifo.jsonl")]);
+    await expect(transcriptLines(path.join(dir, "fifo.jsonl"))).rejects.toThrow(/isn't a regular file/);
+  });
+});
+
+describe("a conversation's files", () => {
+  it("say why a hook's path was passed over, beside what was found", () => {
+    const log = vi.fn(() => "");
+    const r = conversationFiles("claude", "c1", { hook: "/etc/hosts", roots: [tempDir("roots")], indexed: [], locate: () => null, log });
+    expect(r).toEqual({ files: [], refused: expect.stringMatching(/^its transcript, \/etc\/hosts, is outside /) });
   });
 });

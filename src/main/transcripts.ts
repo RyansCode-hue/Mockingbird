@@ -43,8 +43,18 @@ export interface Parsed {
    * subagent's line written into the conversation's own transcript (Claude's `isSidechain`): it isn't the
    * conversation's own words.
    */
-  chunks: { text: string; at: number; kind: "message" | "tool"; role?: "user" | "assistant"; sidechain?: true }[];
+  chunks: { text: string; at: number; kind: "message" | "tool" | "output"; role?: "user" | "assistant"; sidechain?: true }[];
   usage?: { id: string; at: number; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
+}
+
+/**
+ * What a reader other than the index wants from a line. `outputs` adds what each tool call gave back, as chunks of kind
+ * "output": the index leaves them out, as it's for finding conversations and outputs are where whole files and secrets
+ * land. `maxText` replaces the cut each message's text gets, for a reader that wants a message whole.
+ */
+export interface ParseOptions {
+  outputs?: boolean;
+  maxText?: number;
 }
 
 const ts = (v: unknown): number => epochMs(v) ?? 0;
@@ -74,7 +84,8 @@ function toolInputText(name: string, input: any): string {
 }
 
 /** One line of a Claude Code transcript (~/.claude/projects/<folder>/<session>.jsonl). */
-export function parseClaudeLine(line: string, fileConv: string): Parsed {
+export function parseClaudeLine(line: string, fileConv: string, opts: ParseOptions = {}): Parsed {
+  const maxText = opts.maxText ?? MAX_TEXT;
   let d: any;
   try {
     d = JSON.parse(line);
@@ -95,11 +106,14 @@ export function parseClaudeLine(line: string, fileConv: string): Parsed {
     const side = d.isSidechain ? { sidechain: true as const } : {};
     for (const c of content) {
       if (c?.type === "text" && typeof c.text === "string" && c.text.trim() && !isNoise(c.text)) {
-        out.chunks.push({ text: clip(c.text, MAX_TEXT), at, kind: "message", role: d.type, ...side });
+        out.chunks.push({ text: clip(c.text, maxText), at, kind: "message", role: d.type, ...side });
         if (d.type === "user" && !d.isSidechain && isRealPrompt(c.text)) conv.firstPrompt = clip(firstLine(c.text), TITLE_CHARS);
       } else if (c?.type === "tool_use") {
         const text = toolInputText(String(c.name ?? "tool"), c.input);
         if (text) out.chunks.push({ text, at, kind: "tool", ...side });
+      } else if (c?.type === "tool_result" && opts.outputs) {
+        const text = outputText(c.content);
+        if (text.trim()) out.chunks.push({ text: clip(text, maxText), at, kind: "output", ...side });
       }
     }
     if (d.type === "assistant") {
@@ -127,8 +141,31 @@ function patchFiles(patch: string): string {
   return [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((m) => m[1].trim()).join(" ");
 }
 
+/**
+ * What a tool call gave back, as text: Claude's tool_result content (a string, or blocks, of which only text counts),
+ * or Codex's output (a string, which newer versions wrap as JSON holding `output`).
+ */
+function outputText(v: unknown): string {
+  if (typeof v === "string") {
+    if (!v.startsWith("{")) return v;
+    try {
+      const o = JSON.parse(v);
+      return o && typeof o === "object" && typeof o.output === "string" ? o.output : v;
+    } catch {
+      return v; // output that only starts like JSON
+    }
+  }
+  if (Array.isArray(v)) return v.map((b) => (b && typeof b === "object" && b.type === "text" && typeof b.text === "string" ? b.text : "")).filter(Boolean).join("\n");
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    for (const k of ["output", "content"]) if (typeof o[k] === "string" || Array.isArray(o[k])) return outputText(o[k]);
+  }
+  return "";
+}
+
 /** One line of a Codex rollout (~/.codex/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl). */
-export function parseCodexLine(line: string, fileConv: string): Parsed {
+export function parseCodexLine(line: string, fileConv: string, opts: ParseOptions = {}): Parsed {
+  const maxText = opts.maxText ?? MAX_TEXT;
   let d: any;
   try {
     d = JSON.parse(line);
@@ -167,9 +204,12 @@ export function parseCodexLine(line: string, fileConv: string): Parsed {
     for (const c of Array.isArray(p.content) ? p.content : []) {
       const text = typeof c?.text === "string" ? c.text : "";
       if (!text.trim() || isNoise(text) || /^<(environment_context|user_instructions|permissions)/.test(text.trim())) continue;
-      out.chunks.push({ text: clip(text, MAX_TEXT), at, kind: "message", role: p.role });
+      out.chunks.push({ text: clip(text, maxText), at, kind: "message", role: p.role });
       if (p.role === "user" && isRealPrompt(text)) out.conv!.firstPrompt = clip(firstLine(text), TITLE_CHARS);
     }
+  } else if ((p.type === "function_call_output" || p.type === "custom_tool_call_output") && opts.outputs) {
+    const text = outputText(p.output);
+    if (text.trim()) out.chunks.push({ text: clip(text, maxText), at, kind: "output" });
   } else if (p.type === "function_call" || p.type === "local_shell_call") {
     let args: any = p.arguments ?? p.action;
     if (typeof args === "string") {

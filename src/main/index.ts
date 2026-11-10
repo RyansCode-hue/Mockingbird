@@ -38,7 +38,8 @@ import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summa
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, claudeTranscriptOf, codexRolloutOf } from "./agentFiles";
-import { handoffKickoff, handoffPrompt, replyOfConversation, repoState, transcriptDigest, transcriptLines } from "./handoff";
+import { conversationFiles, handoffKickoff, handoffPrompt, replyOfConversation, repoState, transcriptDigest, transcriptLines, type ConversationLookup } from "./handoff";
+import { WireTools } from "./wireTools";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify, toolsLostNotice } from "./notifications";
@@ -55,7 +56,7 @@ import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, BroadcastRequest, ContextWindow, FileOverlap, LastReply, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
+import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, FileOverlap, LastReply, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { BY_YOU, isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
@@ -632,14 +633,7 @@ app.whenReady().then(() => {
         "Agents paused messaging",
         `${from.ticketTitle ?? from.title} ↔ ${to.ticketTitle ?? to.title} hit the message limit — check on them`
       ),
-    (m) => {
-      try {
-        messageLog.add(m);
-      } catch (err) {
-        logError("message log", err);
-      }
-      toWindow("messages:changed", m);
-    },
+    recordMessage,
     {
       log: logError,
       // Messaging calls this once per pane launch; it shows under the notification settings every pane's notices follow
@@ -654,6 +648,7 @@ app.whenReady().then(() => {
   messaging.start();
   messaging.setRoomHandler((roomId, seat, op, args) => collab.handleRoomRequest(roomId, seat, op, args));
   messaging.setWires(wires);
+  messaging.setWireTools(wireTools);
   // team rooms: team chat
   teamRoom.start(team.transport, messaging);
   const beforeTeamRoom = sessions.onChanged;
@@ -1009,15 +1004,23 @@ handle("transcripts:lastReply", async (id): Promise<LastReply> => {
   if (!s) throw new Error(isRemotePaneId(String(id)) ? "That's a teammate's session: its conversation is on their Mac" : "Session is no longer running");
   const conv = s.shell ? undefined : (s.conversation?.id ?? conversationsOf(s).at(-1));
   if (!conv) return { line: null, at: null };
-  const agent: AgentKind = s.conversation?.id === conv ? s.conversation.agent : (s.agent ?? "claude");
-  return replyOfConversation(agent, conv, {
-    hook: sessions.transcriptOf(s.id, conv),
-    roots: [CLAUDE_PROJECTS, CODEX_SESSIONS],
-    indexed: transcripts?.filesOf(conv) ?? [],
-    locate: () => (agent === "claude" ? claudeTranscriptOf(conv, s.cwd) : codexRolloutOf(conv)),
-    log: logError,
-  });
+  const { agent, lookup } = conversationLookup(s, conv);
+  return replyOfConversation(agent, conv, lookup);
 });
+/** Where session `s`'s conversation `conv` is read from now, and whose agent wrote it. */
+function conversationLookup(s: SessionInfo, conv: string): { agent: AgentKind; lookup: ConversationLookup } {
+  const agent: AgentKind = s.conversation?.id === conv ? s.conversation.agent : (s.agent ?? "claude");
+  return {
+    agent,
+    lookup: {
+      hook: sessions.transcriptOf(s.id, conv),
+      roots: [CLAUDE_PROJECTS, CODEX_SESSIONS],
+      indexed: transcripts?.filesOf(conv) ?? [],
+      locate: () => (agent === "claude" ? claudeTranscriptOf(conv, s.cwd) : codexRolloutOf(conv)),
+      log: logError,
+    },
+  };
+}
 // a session of the same agent in the same folder and group, started from the brief
 handle(
   "usage:briefStart",
@@ -1367,6 +1370,7 @@ const wires = new WireService({
   roomOf: (id) => livePanes.roomOfSession(id),
   takenOver: (id) => takeover?.takenOverRefusal(id, "wiring it") ?? null,
   log: logError,
+  onAdded: (id, w) => wireTools.wired(id, w),
 });
 handle("wires:get", () => wires.get());
 handle("wires:add", (from, to, type, settings) => wires.add(from, to, type, settings));
@@ -1374,6 +1378,38 @@ handle("wires:set", (id, settings) => wires.set(id, settings));
 handle("wires:remove", (id) => wires.remove(id));
 handle("wires:restore", (id) => wires.restore(id));
 handle("wires:rekey", (old, next) => wires.rekey(old, next));
+// the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an
+// agent is told of its wires as it launches
+const wireTools = new WireTools({
+  store: landscape,
+  rules: wires,
+  sessions,
+  conversationFiles: (s, conv) => {
+    const { agent, lookup } = conversationLookup(s, conv);
+    return { agent, ...conversationFiles(agent, conv, lookup) };
+  },
+  secretFiles: () => knownSecretFiles(store.settings.workTrackerPath).files,
+  submitOnDelivery: submitsAgentMessages,
+  onMessage: recordMessage,
+  // W3's delivery takes its pendings from here too; until then a finish only says it's ready. One notice per session
+  // per 30 s, as every pane's (notifySession), with a click that shows the pane
+  onPendings: ({ from, fromTitle, pendings }) => {
+    const s = sessions.list().find((x) => x.id === from);
+    if (!shouldNotify({ settings: store.settings, session: s, kind: "finished", now: new Date() })) return;
+    if (Date.now() - (lastNotified.get(from) ?? 0) < 30_000) return;
+    lastNotified.set(from, Date.now());
+    const n = new Notification({ title: `${fromTitle} → ${pendings.map((p) => p.toTitle).join(", ")}`, body: `${fromTitle} finished its step: ${pendings.length === 1 ? "its wire is" : `${pendings.length} wires are`} ready at the gate.` });
+    n.on("click", () => focusPane(from));
+    n.show();
+  },
+  log: logError,
+});
+sessions.launchInstructions = (id) => wireTools.launchInstructions(id);
+handle(
+  "wires:finish",
+  untakenHandler("wires:finish", untaken, (s, summary: unknown, verdict: unknown) => wireTools.finish(s, { summary, ...(verdict === undefined || verdict === null ? {} : { verdict }) }, "you"))
+);
+handle("wires:lastMessage", (id) => wireTools.latestMessage(sessionOf(String(id))));
 
 // ---- ticket pipeline: each ticket's stage, PRs, feedback and drafted comments ----
 const pipeline = new PipelineStore(path.join(MB_DIR, "pipeline.json"));
@@ -1589,6 +1625,15 @@ handle("presets:start", async (id) => {
 
 // ---- agent messaging: the log, per-group delivery, and asking a group for status ----
 const messageLog = new MessageLog(path.join(MB_DIR, "messages.json"));
+/** An agent message, or a read along a wire, into the log and to the window; a log that can't be written is logged. */
+function recordMessage(m: AgentMessage): void {
+  try {
+    messageLog.add(m);
+  } catch (err) {
+    logError("message log", err);
+  }
+  toWindow("messages:changed", m);
+}
 handle("messages:list", () => messageLog.list());
 handle("messages:groupMode", (group, mode) => {
   const g = topOfKey(String(group));

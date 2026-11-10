@@ -46,6 +46,8 @@ export interface WireServiceOptions {
   log: (context: string, err: unknown) => void;
   /** A new wire id; random unless a test says otherwise. */
   newId?: () => string;
+  /** A wire was made and saved (not restored: its ends heard of it when it was first made). Told after the change counts. */
+  onAdded?: (id: string, wire: Wire) => void;
 }
 
 /**
@@ -72,16 +74,24 @@ export class WireService {
     const settings = this.settingsFrom(settingsRaw ?? {});
     if ("refused" in settings) return settings;
     let id = "";
+    let made: Wire | undefined;
     const reply = this.o.store.editWires((book, kept) => {
       const ctx = this.context(book, kept);
       const refused = wireRefusal(from, to, type, ctx) ?? settingsRefusal({ from, to, type }, settings.settings, ctx);
       if (refused) return { refused };
       id = this.unusedId(book, kept);
+      made = withSettings(newWire(from, to, type, Date.now()), settings.settings);
       const links = { ...book.links };
-      put(links, id, withSettings(newWire(from, to, type, Date.now()), settings.settings));
+      put(links, id, made);
       return { book: { ...book, links } };
     });
-    return "refused" in reply ? reply : { ...reply, id };
+    if ("refused" in reply) return reply;
+    try {
+      this.o.onAdded?.(id, made!);
+    } catch (err) {
+      this.o.log(`wires: wire ${id} was made, and telling its ends failed`, err);
+    }
+    return { ...reply, id };
   }
 
   /** Change what a person can change on a wire: not its ends or type (remove it and make another), nor what it has counted, holds or delivered. */
@@ -227,7 +237,7 @@ export class WireService {
    * The rules' view of the sessions now. Each end is worked out once per check: its folder takes a look at the disk.
    * With `kept`, making or moving a wire counts the kept wires whose ends and type can be read as already there.
    */
-  private context(book: WireBook, kept?: Readonly<KeptEntries>): GateContext {
+  context(book: WireBook, kept?: Readonly<KeptEntries>): GateContext {
     const running = new Map(this.o.sessions.list().map((s) => [s.id, s]));
     const closed = new Map(this.o.sessions.resumable().map((s) => [s.id, s]));
     const ghosts = this.o.store.get().landscape.ghosts;

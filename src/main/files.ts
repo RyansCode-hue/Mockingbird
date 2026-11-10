@@ -253,11 +253,20 @@ export function forgetBranchStat(root: string): void {
 /** Each folder and base's round of git running now, and the one to follow it, shared by whoever asks while it runs. */
 const statRounds = new Map<string, { stat: Promise<BranchStat>; next: Promise<BranchStat> | null }>();
 
+/**
+ * Where the work at `root` forked from `base` (null: the repository's own base branch, as Branch vs base takes it), and
+ * the base's name: what a card's diff badge (branchStat) and a wire's {diff} count from. Throws when there's no base, or
+ * no commit yet.
+ */
+export async function branchFork(root: string, base: string | null): Promise<{ fork: string; label: string }> {
+  const at = base ? await headAndBranch(root, base) : await headAndOwnBase(root);
+  return { fork: await forkOf(root, at), label: at.label };
+}
+
 function statRound(key: string, root: string, base: string | null): Promise<BranchStat> {
   const stat = statTurn(async (): Promise<BranchStat> => {
-    const at = base ? await headAndBranch(root, base) : await headAndOwnBase(root);
-    const fork = await forkOf(root, at);
-    return { base: at.label, ...parseShortstatFiles(await git(root, ["diff", "--shortstat", fork])) };
+    const { fork, label } = await branchFork(root, base);
+    return { base: label, ...parseShortstatFiles(await git(root, ["diff", "--shortstat", fork])) };
   });
   const round = { stat, next: null as Promise<BranchStat> | null };
   statRounds.set(key, round);

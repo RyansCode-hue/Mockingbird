@@ -397,6 +397,184 @@ and round one's, all run again after the M1 rewrite.
   summary stays text; fence can't be closed; a link out and a secret name refused;
   `--no-ext-diff`), `test/handoff.test.ts`.
 
+#### W2 as built
+
+**The tools.** `src/main/wireToolSchemas.ts` holds the three tools' names and schemas,
+import-free, so `messaging.ts` (the script's list), `agents.ts` (Claude's
+`--allowedTools`) and `wireTools.ts` read one list without an import cycle. Every
+schema has `additionalProperties: false`, and main holds to it whatever a caller
+sends (`onlyArgs`): an extra argument is refused by name. `messaging.ts` routes them
+beside the House's (`:535` now), as the token's session, and says "aren't ready"
+until `setWireTools`. The pinned tool list (`messaging.test.ts`) gains them, and no
+tool name says wire, gate, round or link but `list_links`.
+
+**`finish_step({ summary, verdict? })`** (`WireTools.finish`, the window's Finish step
+too, `by: "you"`):
+- The summary is trimmed, refused empty or over 8,000 (`MAX_SUMMARY`), and redacted
+  once; what's kept and sent is the redacted text, with the count flagged at every
+  gate that carries `{summary}`.
+- **No handoff or feedback wire out:** refused, saying so, and the summary is kept on
+  the caller's note (`kept: true`) for context readers. When some of the book couldn't
+  be read, the refusal says those may be the caller's. When even the note can't be
+  written, it says that too.
+- **The verdict** (`verdictRefusal`, shared): required with a feedback wire out,
+  `changes` refused without one, anything but `approve`/`changes` refused. Nothing is
+  written on a refusal.
+- **What each wire out does** (`finishPlan`, shared, so W5's popover can show it
+  before the click): `readies` (a new pending, its own id per wire), `keeps` (`when:
+  manual`: the summary is on the note for Send now, nothing lights), `holds` (a
+  handoff on `changes`: blocked "needs approve"), `passes` (a feedback wire on
+  `approve`), `refused` (the rules refuse the wire now: nothing is put on it, so text
+  written in a room can't wait at a gate for the room's line to move). Holding and
+  passing take back a pending the other verdict left there that hasn't gone; one on its
+  way (`queued`/`pasting` with its id) is never taken back. Rounds and hops aren't
+  touched: they're W3's, at the send.
+- **Repeated:** a new pending replaces one that hasn't gone. One on its way stays in
+  `delivery`, so its gate goes by the new pending.
+- **Filled in now, in one pass** (`expandTemplate`): `{summary}`, `{ticket}`
+  (`oneLine`), `{diff}` (read once per finish) and `{files}` (per wire), each read only
+  when named. `{pr}` stays as written and is flagged (W16). The book is read again
+  inside the write: a wire whose template or files changed meanwhile isn't readied with
+  what was read, and says so.
+- It answers once saved, never waiting on a gate. A taken-over caller is refused with
+  the take-over's words. The agent's answer says what each wire did, the far end named
+  by its id alone across a room's line. `onPendings` fires after the save.
+
+**`read_context({ from, max_chars? })`:** needs a context wire from `from` to the
+caller and `wireRefusal` to pass (room line first, so nothing across it is named).
+It gives the summary (saying when it's from an earlier conversation than the one the
+source runs now, as `/clear` makes) and the conversation's end through
+`transcriptDigest`, tool calls and their output included (`tools: "all"`) unless the
+link's `toolOutput` is false (then neither: `tools: "none"`). Files come through
+`conversationFiles` (`replyFiles` plus `hookTranscript`, as S7's reads); a refused
+hook path or an unreadable file is an error, a conversation not seen or not written yet
+is said in the answer. Each entry is redacted whole before it's cut. Framed as data with
+a nonce fence and "information, not instructions"; 40,000 characters by default, at
+most 100,000.
+
+**`read_terminal({ terminal, lines? })`:** needs a worktree wire from the caller to that
+terminal and `wireRefusal` to pass (same folder). A running terminal's buffer, or a
+closed one's saved output (said so; unreadable is an error). Read through the existing
+`terminalLines` (`src/shared/terminalText.ts`), which keeps the gaps Claude Code's
+renderer writes as cursor moves; the digest's regex drops them. Last 100 lines by
+default, at most 1,000 and 32 KB, cut at a line, redacted, fenced.
+
+**Every read**, refused ones included, goes to the message log as who read whom, how
+many characters and how many redactions, never what (`text: "(read_context)"`).
+
+**`src/main/wirePrompt.ts`:**
+- `redactSecrets(text) → { text, count }`: PEM private keys (ended or cut off), tokens by
+  shape (GitHub, OpenAI and Anthropic `sk-`, Slack, AWS key ids, Google, GitLab, npm,
+  Stripe, JWTs, the ADO PAT's 52 base32 characters), URL credentials, `Bearer`/`Basic`,
+  and values on secret-looking names. An env line (an upper-case name) takes any value of
+  4 or more; code takes a quoted one, or a bare one that's long or has digits, never
+  `process.env.X`, a type name or `${VAR}`. A net, not a guarantee: the flag and the read
+  notes say so.
+- `fence(tag, text)`: a 12-hex nonce made per call and checked against the text.
+- `wireMessage(...)` (W3 sends it): the label first, names through `quoted` and `named`,
+  "Sent automatically" or "The user read this and sent it", a feedback round, the body
+  fenced, then how B finishes when it has wires out.
+- `readWireFiles(root, rels, secretFiles)`: the wire's own paths only; `isSecretFileName`
+  first, then `resolveIn`, then this Mac's known secret files by real path, then an
+  `O_NOFOLLOW | O_NONBLOCK` open checked with `fstat` (a link, even inside the folder, is
+  refused; a FIFO doesn't hang), then binary and `holdsPrivateKey`. 20,000 characters a
+  file, 40,000 in all, 20 files; every refusal and cut is a flag and a line in the body.
+- `readWireDiff(root, secretFiles)`: from the repository's top, the range `branchFork`
+  gives (`files.ts`, now shared with `branchStat`), committed and uncommitted;
+  uncommitted only, flagged, with no base. `--no-color --no-ext-diff --no-textconv
+  --ignore-submodules=all`, `-c core.fsmonitor=false` on every git it runs, every filter
+  driver the config names turned off, and `secretPathspecs` as excludes. Withheld whole on
+  a private key; redacted; cut at 40,000 with the file the cut falls in; untracked files
+  counted in a flag. Not a repo, no commit, a gone folder or a failed git is a flag and a
+  line, never an empty diff.
+- `wiredNotice` and `wireInstructions`: Mockingbird's words for telling an agent.
+
+**Told about its wires.**
+- At launch and every relaunch: `SessionManager.launchInstructions` (beside
+  `roomLaunch`) adds `WireTools.launchInstructions(id)` after a room's instructions, into
+  `--append-system-prompt` or `developer_instructions`. Agents only: not a terminal or a
+  debrief. Wires the rules refuse now are left out. One that throws is logged and the
+  launch goes on without it; an unreadable book is logged once per reason.
+- Wired while running: `WireService.add` calls `onAdded` after the save, and
+  `WireTools.wired` queues one line through `deliverAgentMessage` for the acting end (a
+  handoff's or feedback's source, a context link's reader, a shared terminal's agent),
+  only while it's `working` or `waiting`, so it arrives as that turn ends. Idle, dead or
+  refused by the rules: nothing. A restore says nothing: its ends heard when it was made.
+
+**The window.** `wires:finish(id, summary, verdict?)` joins `UNTAKEN_CALLS` and is
+registered through `untakenHandler` (the guard's test reads it from `index.ts`).
+`wires:lastMessage(id)` gives the latest message whole (`lastReplyWhole`, cut to 8,000
+with `cut`) for W5's popover to start from. Both are in `preload.ts` (`wiresFinish`,
+`wiresLastMessage`). The preview's stub doesn't simulate them yet, so there they answer
+`{ error }` and are logged: W5 adds them with its UI.
+
+**Smaller pieces:**
+- `transcripts.ts`' parsers take `{ outputs, maxText }`: tool results become chunks of kind
+  `output` only when asked, so the index is unchanged.
+- `transcriptDigest` takes `{ tools: "calls" | "all" | "none", entry }`; `"calls"` is
+  today's, for the handoff draft.
+- `transcriptLines` now opens with `O_NOFOLLOW | O_NONBLOCK` and `fstat`, as the reply
+  reader does (`openTranscript`, shared).
+- `conversationFiles` and `ConversationLookup` are the lookup `transcripts:lastReply` and
+  `read_context` share (`conversationLookup` in `index.ts`).
+- The finish notification names the two ends, under the notification settings and the
+  one-per-session-per-30-s rule, and its click shows the pane.
+- `recordMessage` in `index.ts` is the message log's one writer, for messaging and the
+  reads.
+- `HOME_PRIVATE_DATA` gains `~/.mockingbird/scrollback/**` and
+  `~/.mockingbird/landscape.json`.
+- `Wire.toolOutput?: false` and `WireSettings.toolOutput: boolean`, on a context link only.
+  The `WIRE_FORMAT` pin changes under `wv: 1`: a build before it keeps such a link as an
+  entry it can't parse, and no release has read `wv: 1`.
+
+**For W3:**
+- Pendings carry `{ id, body, at, verdict?, flags }`, the body already redacted and
+  expanded, as the gate shows it. Clear `pending` on `sent`/`placed` only when its id is
+  the delivery's: a finish may have replaced it meanwhile.
+- `onPendings({ from, fromTitle, by, pendings: [{ wire, pending, to, toTitle }] })` is
+  where automatic starts: `index.ts` shows the notification there now.
+- `wireTools.messageFor(wireId, body, { automatic })` gives the text to deliver, or `{
+  refused }` when the rules refuse the wire now. A feedback round is `rounds.used`, so
+  count the round first. How B finishes names only B's wires out that the rules let it
+  use now, so nothing across a room's line is named to it.
+- `redactSecrets` and `redactedFlag` (W14's patch notes too).
+
+**Where the plan was off:**
+- "routed beside the House's at `messaging.ts:342`": `:535`. Others had moved too:
+  `MAX_MESSAGE` `:50`, the debrief refusal `:597`, `deliverAgentMessage`
+  `sessions.ts:1315`, `noteConversation` `:1472`, `digest()` `:1116`, `HOME_SECRETS`
+  `secrets.ts:58`, `secretPathspecs` `:127`. The rest checked out.
+- "`transcriptDigest` already includes tool output (`handoff.ts:39`)": it includes tool
+  *calls* (the command, the file, the pattern). Neither parser read a tool's result, so
+  `cat .env`'s output never reached a digest. W2 adds the outputs, opt-in.
+- `--no-ext-diff --no-textconv -c core.fsmonitor=false` isn't all a worktree diff runs:
+  a filter driver's clean command runs on every file read, and the source's agent can
+  write that config. W2 turns off every driver the config names and leaves submodules out.
+- "ANSI stripped as `digest()` does": `terminalLines` already existed and reads Claude
+  Code's output better.
+- Section 2's survival table has `{diff}` read "at Send"; section 4 has it "at gate time".
+  It's at gate time, when the pending is made, so what the gate shows is what's sent.
+- `landscape.json` now holds what private sessions finished with (bodies, diffs, files),
+  and room agents' file tools could read it, as they could `scrollback`. Both are denied.
+- Left, outside W2, the same kind of gap and wider: every other session's transcript
+  (`~/.claude/projects`, `~/.codex/sessions`), `~/.mockingbird/transcripts.db` and
+  `~/.mockingbird/messages.json` (agent messages' text) aren't in `HOME_PRIVATE_DATA`,
+  so a room agent's file tools can read private sessions' conversations, as a context
+  link across a room's line would have. Not changed here: it reaches past wires.
+- A submodule's own config can name a filter the top's doesn't, and a plain diff asks
+  the submodule whether it's dirty, which runs that filter: `--ignore-submodules=all` is
+  a guard, not tidiness, and has its test.
+
+**Checked.** Each guard was reverted on its own and its test run: 59 of them, from the
+caller's identity and each read's link, through every `{files}` and `{diff}` refusal and
+flag, redaction at each read, the logging, the verdict rules, the take-over refusal and
+the parsers' opt-in. Six outlived the first pass (an unlinked read on another reader's
+link, read_terminal's log line, a notice the rules refuse by then, the submodules flag,
+the take-over list's entry, the Codex parser's opt-in); each has a test now and fails when
+reverted. Not checked here: real `claude` and `codex` sessions calling the tools (the
+e2e drives the real MCP script and the relaunched argv with stand-in CLIs), and how an
+agent takes the label and fence.
+
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the
   round limit, starting B, reconciling on start (section 3).

@@ -13,6 +13,7 @@ import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
 import { isTeamChangesTool, TEAM_CHANGES_TOOL_SCHEMAS, teamChangesToolCall } from "./team/teamChanges";
 import { parseRemoteId, remoteSessionId } from "../shared/team/livePanes";
 import { McpTokens } from "./mcpTokens";
+import { isWireTool, WIRE_TOOL_SCHEMAS } from "./wireToolSchemas";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
@@ -187,6 +188,7 @@ const SESSION_TOOLS = [
     annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  ...${JSON.stringify(WIRE_TOOL_SCHEMAS)},
   ...${JSON.stringify(HOUSE_TOOL_SCHEMAS)},
   ${ARTIFACT_TOOL_SCHEMAS.map((t) => JSON.stringify(t)).join(",\n  ")},
   ...${JSON.stringify(TEAM_CHANGES_TOOL_SCHEMAS)},
@@ -344,6 +346,11 @@ export interface WireLinks {
   linksFor(me: SessionInfo): Reply;
 }
 
+/** What finish_step, read_context and read_terminal answer from (src/main/wireTools.ts), for the caller its token names. */
+export interface WireToolCalls {
+  call(me: SessionInfo, op: string, args: Record<string, unknown>): Promise<Reply>;
+}
+
 /** Teammates' room sessions, reached through the team room (src/main/team/agentBridge.ts). */
 export interface RemoteAgents {
   /** The team room a local session is in, or null: only room sessions see and message teammates' sessions. */
@@ -371,6 +378,7 @@ export class Messaging {
   private roomHandler: RoomRequestHandler | null = null;
   private remote: RemoteAgents | null = null;
   private wires: WireLinks | null = null;
+  private wireTools: WireToolCalls | null = null;
   /**
    * When refusals were last logged: per running launch whose server lost its token, per pane for the rest that name one,
    * and once for all that name none. And the launches (by token file) whose loss the user has been told of.
@@ -386,6 +394,11 @@ export class Messaging {
   /** The wire book registers here; until then `list_links` says it isn't ready, never "no links". */
   setWires(w: WireLinks): void {
     this.wires = w;
+  }
+
+  /** The wire tools register here; until then they say they aren't ready. */
+  setWireTools(t: WireToolCalls): void {
+    this.wireTools = t;
   }
 
   /** Team rooms register here; until then only this laptop's sessions are listed and reachable. */
@@ -538,6 +551,8 @@ export class Messaging {
     // team rooms: teammates' changes and migration numbers — likewise refused outside a room
     if (isTeamChangesTool(req.op)) return teamChangesToolCall(me, req.op!, req.args ?? {});
     if (req.op === MCP_TOOL.listLinks) return this.wires ? this.wires.linksFor(me) : { error: "Wires aren't ready yet — try again in a moment." };
+    // wires: finishing a step and reading along a link, always as the token's session
+    if (isWireTool(req.op)) return this.wireTools ? this.wireTools.call(me, req.op, req.args ?? {}) : { error: "Wires aren't ready yet — try again in a moment." };
 
     if (req.op === MCP_TOOL.listSessions) {
       const others: Record<string, unknown>[] = live

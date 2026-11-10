@@ -3,7 +3,7 @@ import * as path from "path";
 import { currentBranch, git, isRepo } from "./git";
 import { isSidechainFile, parseClaudeLine, parseCodexLine } from "./transcripts";
 import type { AgentKind, LastReply } from "../shared/types";
-import { isMissing, readSlice } from "./fileOps";
+import { isMissing } from "./fileOps";
 import { agentLabel } from "./agents";
 import { realpathOr } from "./agentFiles";
 import { inside } from "./files";
@@ -12,32 +12,66 @@ const HEAD_BYTES = 256 * 1024;
 const TAIL_BYTES = 6 * 1024 * 1024;
 const ENTRY_CHARS = 2000;
 
+/** How a transcript file is opened to read: what's read is what's checked, on the one handle (see openTranscript). */
+const TRANSCRIPT_OPEN = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
+
+/**
+ * A transcript file, open for reading: a link or a FIFO swapped in since the file was picked is refused, and O_NONBLOCK
+ * keeps a FIFO from holding the open until something writes to it.
+ */
+async function openTranscript(file: string): Promise<{ fh: fs.promises.FileHandle; size: number; mtime: number }> {
+  const fh = await fs.promises.open(file, TRANSCRIPT_OPEN);
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) throw new Error(`${file} isn't a regular file`);
+    return { fh, size: st.size, mtime: st.mtimeMs };
+  } catch (err) {
+    await fh.close();
+    throw err;
+  }
+}
+
 /**
  * A transcript's lines without reading all of a long one: its start (where
  * the task was set) and its most recent part. A line cut by either window is
  * dropped.
  */
 export async function transcriptLines(file: string): Promise<string[]> {
-  const { size } = await fs.promises.stat(file);
-  if (size <= HEAD_BYTES + TAIL_BYTES) return (await fs.promises.readFile(file, "utf8")).split("\n").filter(Boolean);
-  const h = readSlice(file, "start", HEAD_BYTES).split("\n").slice(0, -1);
-  const t = readSlice(file, "end", TAIL_BYTES).split("\n").slice(1);
-  return [...h, ...t].filter(Boolean);
+  const { fh, size } = await openTranscript(file);
+  try {
+    if (size <= HEAD_BYTES + TAIL_BYTES) return (await tailOf(fh, size, size)).filter(Boolean);
+    const head = Buffer.alloc(HEAD_BYTES);
+    const { bytesRead } = await fh.read(head, 0, HEAD_BYTES, 0);
+    const h = head.toString("utf8", 0, bytesRead).split("\n").slice(0, -1);
+    return [...h, ...(await tailOf(fh, size, TAIL_BYTES))].filter(Boolean);
+  } finally {
+    await fh.close();
+  }
 }
+
+/**
+ * What a digest keeps of the tools: the calls (what ran, as today's handoffs read it), the calls and what each gave
+ * back (a context link's read, by default), or neither (a link set to leave tool output out).
+ */
+export type DigestTools = "calls" | "all" | "none";
 
 /**
  * A conversation condensed for another agent to read: who said what, and the
  * tools that ran. It keeps the first request (the task) and as much of the
- * end as fits, with a marker where the middle was left out.
+ * end as fits, with a marker where the middle was left out. `entry` rewrites each entry's text before it's cut to
+ * size (redaction, which then sees a secret whole).
  */
-export function transcriptDigest(lines: string[], agent: AgentKind, conv: string, maxChars = 40_000): string {
+export function transcriptDigest(lines: string[], agent: AgentKind, conv: string, maxChars = 40_000, o: { tools?: DigestTools; entry?: (text: string) => string } = {}): string {
   const parse = agent === "codex" ? parseCodexLine : parseClaudeLine;
+  const tools = o.tools ?? "calls";
   const entries: string[] = [];
   for (const line of lines) {
-    for (const c of parse(line, conv).chunks) {
+    for (const c of parse(line, conv, { outputs: tools === "all" }).chunks) {
       if (c.sidechain) continue; // a subagent's, not the conversation's
-      const who = c.kind === "tool" ? "TOOL" : c.role === "user" ? "USER" : "AGENT";
-      const text = c.text.length > ENTRY_CHARS ? `${c.text.slice(0, ENTRY_CHARS)} …` : c.text;
+      if (c.kind !== "message" && tools === "none") continue;
+      const who = c.kind === "tool" ? "TOOL" : c.kind === "output" ? "OUTPUT" : c.role === "user" ? "USER" : "AGENT";
+      const said = o.entry ? o.entry(c.text) : c.text;
+      const text = said.length > ENTRY_CHARS ? `${said.slice(0, ENTRY_CHARS)} …` : said;
       entries.push(`${who}: ${text.trim()}`);
     }
   }
@@ -89,6 +123,63 @@ export function lastReplyLine(lines: string[], agent: AgentKind, conv: string): 
   return null;
 }
 
+/**
+ * The agent's latest message among a transcript's `lines` (oldest first), whole: its text blocks from the last one back
+ * to the tool call or the user's message before them, and when it was written; null when the agent hasn't said
+ * anything in them. What a step's summary is drafted from when the agent didn't give one (Finish step).
+ */
+export function lastReplyWhole(lines: string[], agent: AgentKind, conv: string): { text: string; at: number | null } | null {
+  const parse = agent === "codex" ? parseCodexLine : parseClaudeLine;
+  const said: string[] = [];
+  let at: number | null = null;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const chunks = parse(lines[i], conv, { maxText: Infinity }).chunks;
+    for (let j = chunks.length - 1; j >= 0; j--) {
+      const c = chunks[j];
+      if (c.sidechain) continue; // a subagent's lines in the conversation's own transcript aren't what the agent said
+      if (c.kind === "message" && c.role === "assistant") {
+        said.unshift(c.text.trim());
+        at ??= c.at || null;
+      } else if (said.length) return { text: said.join("\n\n"), at };
+    }
+  }
+  return said.length ? { text: said.join("\n\n"), at } : null;
+}
+
+/**
+ * What `pick` finds in the end of one transcript file, the newest of it: its last 1 MB first, then its last 8 MB
+ * (REPLY_WINDOWS). `cut` says the file goes further back than was read, and what was read held nothing.
+ */
+async function pickFromEnd<T>(file: string, pick: (lines: string[]) => T | null): Promise<{ found: T | null; cut: boolean; size: number; mtime: number }> {
+  const { fh, size, mtime } = await openTranscript(file);
+  try {
+    let found: T | null = null;
+    for (const bytes of REPLY_WINDOWS) {
+      found = pick(await tailOf(fh, size, bytes));
+      if (found || bytes >= size) break;
+    }
+    return { found, cut: !found && size > REPLY_WINDOWS[REPLY_WINDOWS.length - 1], size, mtime };
+  } finally {
+    await fh.close();
+  }
+}
+
+const cutWhy = () => `no message from the agent in the last ${Math.round(REPLY_WINDOWS[REPLY_WINDOWS.length - 1] / 1024 / 1024)} MB of its transcript, which a long tool output filled`;
+
+/**
+ * Conversation `conv`'s latest agent message, whole (lastReplyWhole), from its transcript files (oldest first): the
+ * newest file first, an older one only when the newest holds no message at all. `text: null` when it hasn't said
+ * anything yet, with `why` when the newest file was read only in part; a file that can't be read throws.
+ */
+export async function latestMessageOf(files: { path: string; agent: AgentKind }[], conv: string): Promise<{ text: string | null; at: number | null; why?: string }> {
+  for (const f of [...files].reverse()) {
+    const r = await pickFromEnd(f.path, (lines) => lastReplyWhole(lines, f.agent, conv));
+    if (r.found) return r.found;
+    if (r.cut) return { text: null, at: null, why: cutWhy() };
+  }
+  return { text: null, at: null };
+}
+
 /** An open file's last `bytes` as whole lines, read without blocking: a window that starts mid-file drops the line it cuts. */
 async function tailOf(fh: fs.promises.FileHandle, size: number, bytes: number): Promise<string[]> {
   const n = Math.min(size, bytes);
@@ -111,27 +202,12 @@ async function lastReplyIn(f: { path: string; agent: AgentKind }, conv: string):
   const key = `${f.path}\0${conv}`;
   const hit = replyCache.get(key);
   if (hit && hit.size === seen.size && hit.mtime === seen.mtimeMs) return hit.found;
-  // what's read is what's checked, on the one handle: a link or a FIFO swapped in since the file was picked is refused,
-  // and O_NONBLOCK keeps a FIFO from holding the open until something writes to it
-  const fh = await fs.promises.open(f.path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-  try {
-    const st = await fh.stat();
-    if (!st.isFile()) throw new Error(`${f.path} isn't a regular file`);
-    const { size, mtimeMs } = st;
-    let found: LastReply | null = null;
-    for (const bytes of REPLY_WINDOWS) {
-      found = lastReplyLine(await tailOf(fh, size, bytes), f.agent, conv);
-      if (found || bytes >= size) break;
-    }
-    const biggest = REPLY_WINDOWS[REPLY_WINDOWS.length - 1];
-    if (!found && size > biggest) found = { line: null, at: null, why: `no message from the agent in the last ${Math.round(biggest / 1024 / 1024)} MB of its transcript, which a long tool output filled` };
-    replyCache.delete(key);
-    replyCache.set(key, { size, mtime: mtimeMs, found });
-    if (replyCache.size > REPLY_CACHE_MAX) replyCache.delete(replyCache.keys().next().value!);
-    return found;
-  } finally {
-    await fh.close();
-  }
+  const r = await pickFromEnd(f.path, (lines) => lastReplyLine(lines, f.agent, conv));
+  const found: LastReply | null = r.found ?? (r.cut ? { line: null, at: null, why: cutWhy() } : null);
+  replyCache.delete(key);
+  replyCache.set(key, { size: r.size, mtime: r.mtime, found });
+  if (replyCache.size > REPLY_CACHE_MAX) replyCache.delete(replyCache.keys().next().value!);
+  return found;
 }
 
 /**
@@ -222,14 +298,31 @@ export function hookTranscript(file: string | null, roots: readonly string[], lo
  * inside `roots` (hookTranscript). When that was refused and nothing else held a message, `why` says so, rather than
  * looking like an agent that hasn't said anything (an agent with its own config folder keeps its transcripts elsewhere).
  */
-export async function replyOfConversation(
-  agent: AgentKind,
-  conv: string,
-  o: { hook: string | null; roots: readonly string[]; indexed: readonly { path: string }[]; locate: () => string | null; log: (context: string, err: unknown) => string }
-): Promise<LastReply> {
+export async function replyOfConversation(agent: AgentKind, conv: string, o: ConversationLookup): Promise<LastReply> {
+  const { files, refused } = conversationFiles(agent, conv, o);
+  const reply = await lastReplyOf(files, conv);
+  return refused && !reply.line && !reply.why ? { ...reply, why: refused } : reply;
+}
+
+/** Where a conversation's transcript files are looked for (conversationFiles). */
+export interface ConversationLookup {
+  /** The file the pane's hooks named for it, or null. */
+  hook: string | null;
+  /** The folders transcripts are read from: a hook's path anywhere else is refused. */
+  roots: readonly string[];
+  indexed: readonly { path: string }[];
+  locate: () => string | null;
+  log: (context: string, err: unknown) => string;
+}
+
+/**
+ * Conversation `conv`'s transcript files to read now, oldest first (replyFiles), the path its hooks named used only
+ * when it's inside `roots` (hookTranscript): `refused` says why it wasn't, so a caller that finds nothing can say so
+ * rather than look like a conversation with nothing in it.
+ */
+export function conversationFiles(agent: AgentKind, conv: string, o: ConversationLookup): { files: { path: string; agent: AgentKind }[]; refused: string | null } {
   const hook = hookTranscript(o.hook, o.roots, o.log);
-  const reply = await lastReplyOf(replyFiles(agent, conv, { hook: hook.path, indexed: o.indexed, locate: o.locate }), conv);
-  return hook.refused && !reply.line && !reply.why ? { ...reply, why: hook.refused } : reply;
+  return { files: replyFiles(agent, conv, { hook: hook.path, indexed: o.indexed, locate: o.locate }), refused: hook.refused };
 }
 
 /** The worktree as it stands: branch, uncommitted files, recent commits. */

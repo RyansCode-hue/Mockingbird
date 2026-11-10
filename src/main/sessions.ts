@@ -280,6 +280,11 @@ export class SessionManager {
   remote: RemotePanes | null = null;
   /** Extra launch settings for a session in a shared group (team rooms); null outside rooms. */
   roomLaunch: ((target: LaunchTarget) => Promise<RoomLaunch | null>) | null = null;
+  /**
+   * What an agent pane's launch is told on top of its own instructions, beside a room's: its wires (wireTools.ts), so a
+   * relaunched workspace knows to finish its step with finish_step. Null when it has nothing to say.
+   */
+  launchInstructions: ((id: string) => string | null) | null = null;
   /** Why a session mustn't run again here (a teammate continues it: team rooms' take-over), or null when it may. */
   relaunchGuard: ((id: string) => string | null) | null = null;
   /**
@@ -322,6 +327,16 @@ export class SessionManager {
   }
 
   constructor(private store: Store) {}
+
+  /** launchInstructions for session `id`: one that fails is logged, and the agent starts without what it would have said. */
+  private launchNotes(id: string): string | null {
+    try {
+      return this.launchInstructions?.(id) ?? null;
+    } catch (err) {
+      console.error(`[sessions] ${id} starts without its wires' instructions, which couldn't be worked out:`, err);
+      return null;
+    }
+  }
 
   private emitChanged(): void {
     this.wc?.send("sessions:changed", this.list());
@@ -482,10 +497,11 @@ export class SessionManager {
     const targetAgent = req.shell ? null : req.agent ?? "claude";
     const agentVersion = targetAgent && group && this.roomLaunch && !req.debrief ? await this.versionOf(targetAgent) : null;
     const room = req.debrief ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, agentVersion, cwd })) ?? null);
+    const instructions = [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id)].filter(Boolean).join("\n\n");
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
       ...(room?.codexPermissions.length ? { codexPermissions: room.codexPermissions } : {}),
-      ...(room?.instructions ? { instructions: room.instructions } : {}),
+      ...(instructions ? { instructions } : {}),
       ...(room?.allowTools.length ? { allowTools: room.allowTools } : {}),
       ...(room?.inline ? { inline: true } : {}),
     };

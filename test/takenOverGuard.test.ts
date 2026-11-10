@@ -14,7 +14,7 @@ const deps = (refusing = true): UntakenDeps<S> => ({
   refusal: () => (refusing ? (id, doing) => (id === "s1" ? `“Donor entities” continues on Nick's laptop — take it back rather than ${doing}` : null) : null),
 });
 
-/** The four calls registered as index.ts registers them, against a stand-in for ipcMain. */
+/** The calls registered as index.ts registers them, against a stand-in for ipcMain. */
 function registered(d: UntakenDeps<S>) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const ipc = { handle: (channel: string, fn: (...args: unknown[]) => unknown) => void handlers.set(channel, fn) };
@@ -30,6 +30,8 @@ describe("the calls a copy a teammate took over refuses (main)", () => {
       expect(() => invoke(call, "s1", "the brief"), call).toThrow(`“Donor entities” continues on Nick's laptop — take it back rather than ${doing}`);
     }
     expect(ran).not.toHaveBeenCalled();
+    // the window's Finish step readies wires from the copy, so it's one of them
+    expect(() => invoke("wires:finish", "s1", "done")).toThrow("take it back rather than finishing this copy's step");
   });
 
   it("let through a copy from a refused take-over and a session no one took, with the call's own arguments", () => {

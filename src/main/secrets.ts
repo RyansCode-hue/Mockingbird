@@ -60,11 +60,13 @@ export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.ne
 /**
  * Personal data in home: Messages' history and attachments, and Mail's store
  * (macOS keeps them from apps without Full Disk Access, but phone-alert
- * replies need it, and everything Mockingbird runs inherits it); and the
+ * replies need it, and everything Mockingbird runs inherits it); the
  * artifacts this install's areas keep (areaArtifacts.ts), which aren't any
- * room's. Denied to room agents beside HOME_SECRETS.
+ * room's; every pane's saved output; and the landscape, whose wires hold what
+ * private sessions finished with, their diffs and files included. Denied to
+ * room agents beside HOME_SECRETS.
  */
-export const HOME_PRIVATE_DATA = ["~/Library/Messages/**", "~/Library/Mail/**", "~/.mockingbird/artifacts/areas/**"];
+export const HOME_PRIVATE_DATA = ["~/Library/Messages/**", "~/Library/Mail/**", "~/.mockingbird/artifacts/areas/**", "~/.mockingbird/scrollback/**", "~/.mockingbird/landscape.json"];
 
 /** Credential stores in home: HOME_SECRETS, and the folder of the House's env files (each member's builder token). */
 const HOME_SECRET_PLACES = [...HOME_SECRETS, `~/${HOUSE_CONFIG_DIR}/**`];

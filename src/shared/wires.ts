@@ -55,6 +55,8 @@ export interface Wire {
   files?: string[];
   when: WireWhen;
   gate: WireGate;
+  /** A context link set to leave tool output out of what its reader gets (read_context); absent, it's included. */
+  toolOutput?: false;
   /** Feedback wires only, and every feedback wire. */
   rounds?: WireRounds;
   pending?: WirePending;
@@ -109,6 +111,7 @@ const WIRE: Part = {
     files: list(name),
     when: oneOf(WIRE_WHENS),
     gate: oneOf(WIRE_GATES),
+    toolOutput: (v, where) => (v === false ? false : fail(where, "is only ever false")),
     rounds: (v, where) => fields(v, where, ROUNDS),
     pending: (v, where) => fields(v, where, PENDING),
     delivery: (v, where) => fields(v, where, DELIVERY),
@@ -148,6 +151,7 @@ const wire: Check<Wire> = (v, where) => {
   if (w.from === w.to) fail(where, "runs from a session to itself");
   if (w.type === "feedback" && !w.rounds) fail(`${where}.rounds`, "is missing");
   if (w.type !== "feedback" && w.rounds) fail(where, "has rounds, which only a feedback wire counts");
+  if (w.type !== "context" && w.toolOutput !== undefined) fail(where, "has toolOutput, which only a context link reads");
   return w;
 };
 const note: Check<SourceNote> = (v, where) => fields(v, where, NOTE);
@@ -374,10 +378,88 @@ export function wireRefusal(from: string, to: string, type: WireType, ctx: WireC
   return linkRefusal(from, to, type, ctx);
 }
 
+/** Whether a wire of `type` carries its source's work to the other end (has What flows, When and a gate): a handoff or feedback wire. */
+export const carriesWork = (type: WireType): type is "handoff" | "feedback" => type === "handoff" || type === "feedback";
+
 /** A new wire of `type`, its gate asking and, for one that carries a result, set to go when its source says it's finished. */
 export function newWire(from: string, to: string, type: WireType, at: number): Wire {
-  const carries = type === "handoff" || type === "feedback";
-  return { from, to, type, when: carries ? "finished" : "manual", gate: "ask", ...(type === "feedback" ? { rounds: { limit: DEFAULT_ROUNDS, used: 0 } } : {}), createdAt: at };
+  return { from, to, type, when: carriesWork(type) ? "finished" : "manual", gate: "ask", ...(type === "feedback" ? { rounds: { limit: DEFAULT_ROUNDS, used: 0 } } : {}), createdAt: at };
+}
+
+// ---- finishing a step -------------------------------------------------------------------
+
+/** What finishing a step does along one of the workspace's handoff and feedback wires out (finishPlan). */
+export interface FinishStep {
+  wire: string;
+  to: string;
+  type: "handoff" | "feedback";
+  /**
+   * - readies: it gets a pending from this finish, in place of any that hadn't gone;
+   * - keeps: it goes when a person sends it (when: manual): the summary is kept for that, and nothing lights;
+   * - holds: a handoff on "changes", blocked till an approve;
+   * - passes: a feedback wire on "approve": there's nothing to send back;
+   * - refused: the rules refuse the wire now (a room's line, a take-over), so nothing is put on it.
+   */
+  does: "readies" | "keeps" | "holds" | "passes" | "refused";
+  why?: string;
+  /** The pending this finish takes back: one the other verdict left that hasn't gone. One on its way can't be. */
+  withdraws?: string;
+}
+
+/** A FinishStep as it went: the other end's name, and the pending made where it readied. */
+export interface FinishedStep extends FinishStep {
+  /** The other end's title; its id when it's across a room's line, where nothing else about it crosses. */
+  toTitle: string;
+  pending?: { id: string; flags: string[] };
+  /** The gate in force where it readied: automatic sends by itself unless something holds it, ask waits for a person. */
+  gate?: WireGate;
+}
+
+/**
+ * What finishing a step answers (finish_step, wires:finish). Refused, nothing changed but, with `kept`, the summary:
+ * a workspace with no wire out keeps it for the workspaces that read its context.
+ */
+export type FinishOutcome = { steps: FinishedStep[]; redacted: number } | { refused: string; kept?: boolean };
+
+/** A session's latest message, whole, for a person's Finish step to start from (wires:lastMessage). */
+export interface LatestMessage {
+  text: string | null;
+  at: number | null;
+  /** Why there's none to show: no conversation seen yet, its transcript read only in part, a hook's path refused. */
+  why?: string;
+  /** It was longer than a step's summary may be, and was cut to that. */
+  cut?: boolean;
+}
+
+/**
+ * Why finishing session `id`'s step with `verdict` is refused, by the verdict rules alone, or null. A feedback wire
+ * out needs one ("changes" sends the work back along it, "approve" lets the handoffs go); without one, "changes"
+ * has nowhere to go.
+ */
+export function verdictRefusal(id: string, verdict: unknown, links: Readonly<Record<string, Wire>>): string | null {
+  if (verdict !== undefined && !WIRE_VERDICTS.includes(verdict as WireVerdict)) return `verdict is "approve" or "changes", not ${JSON.stringify(verdict)}.`;
+  const feedback = Object.values(links).some((w) => w.from === id && w.type === "feedback");
+  if (feedback && verdict === undefined) return 'This workspace has a feedback wire out, so finishing its step needs a verdict: "approve" when the work is ready to go on, "changes" to send it back.';
+  if (!feedback && verdict === "changes") return 'verdict "changes" sends work back along a feedback wire, and this workspace has none out: leave verdict out, or use "approve".';
+  return null;
+}
+
+/**
+ * What finishing session `id`'s step with `verdict` does along each of its handoff and feedback wires out (FinishStep),
+ * by the rules as they are now: each wire that readies gets its own pending, so a fan-out readies each branch apart.
+ * Context links and shared worktrees carry nothing, so they're not in it.
+ */
+export function finishPlan(id: string, verdict: WireVerdict | undefined, ctx: WireContext): FinishStep[] {
+  return Object.entries(ctx.links).flatMap(([k, w]): FinishStep[] => {
+    if (w.from !== id || !carriesWork(w.type)) return [];
+    const step = { wire: k, to: w.to, type: w.type };
+    const refused = wireRefusal(w.from, w.to, w.type, { ...ctx, self: k });
+    if (refused) return [{ ...step, does: "refused", why: refused }];
+    const unsent = w.pending && !(isSending(w) && w.delivery!.id === w.pending.id) ? { withdraws: w.pending.id } : {};
+    if (w.type === "handoff" && verdict === "changes") return [{ ...step, does: "holds", why: "needs approve", ...unsent }];
+    if (w.type === "feedback" && verdict !== "changes") return [{ ...step, does: "passes", ...unsent }];
+    return [{ ...step, does: w.when === "finished" ? "readies" : "keeps" }];
+  });
 }
 
 // ---- a wire's settings ------------------------------------------------------------------
@@ -392,6 +474,8 @@ export interface WireSettings {
   when?: WireWhen;
   gate?: WireGate;
   limit?: number;
+  /** A context link's "include tool output": false leaves it out of read_context, true puts it back. */
+  toolOutput?: boolean;
 }
 
 const orCleared =
@@ -404,7 +488,14 @@ const insideFile: Check<string> = (v, where) => {
   return f.startsWith("/") || f.startsWith("~") || f.split("/").includes("..") ? fail(where, `(${JSON.stringify(f)}) isn't a path inside the source's folder`) : f;
 };
 const SETTINGS: Part = {
-  checks: { template: orCleared(str), files: orCleared(list(insideFile)), when: oneOf(WIRE_WHENS), gate: oneOf(WIRE_GATES), limit: whole(1) } satisfies Record<keyof WireSettings, Check<unknown>>,
+  checks: {
+    template: orCleared(str),
+    files: orCleared(list(insideFile)),
+    when: oneOf(WIRE_WHENS),
+    gate: oneOf(WIRE_GATES),
+    limit: whole(1),
+    toolOutput: (v, where) => (typeof v === "boolean" ? v : fail(where, "is not true or false")),
+  } satisfies Record<keyof WireSettings, Check<unknown>>,
   required: [],
 };
 
@@ -415,8 +506,9 @@ export function parseWireSettings(v: unknown): WireSettings {
 
 /** Why these settings can't go on this wire, or null. A team room's area never has automatic gates. */
 export function settingsRefusal(w: Pick<Wire, "from" | "to" | "type">, s: WireSettings, ctx: Pick<WireContext, "end">): string | null {
-  const carries = w.type === "handoff" || w.type === "feedback";
+  const carries = carriesWork(w.type);
   if (s.limit !== undefined && w.type !== "feedback") return "Only a feedback wire counts rounds.";
+  if (s.toolOutput !== undefined && w.type !== "context") return "Only a context link reads tool output.";
   if (!carries) {
     if (s.template !== undefined || s.files !== undefined) return `A ${w.type} wire doesn't carry anything to set: only a handoff or feedback wire has What flows.`;
     if (s.when !== undefined) return `A ${w.type} wire doesn't go when anything finishes: only a handoff or feedback wire has When.`;
@@ -448,6 +540,8 @@ export function withSettings(w: Wire, s: WireSettings): Wire {
   if (s.when !== undefined) next.when = s.when;
   if (s.gate !== undefined) next.gate = s.gate;
   if (s.limit !== undefined && w.rounds) next.rounds = { ...w.rounds, limit: s.limit };
+  if (s.toolOutput === false) next.toolOutput = false;
+  else if (s.toolOutput === true) delete next.toolOutput;
   return next;
 }
 

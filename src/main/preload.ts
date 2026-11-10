@@ -1,6 +1,6 @@
 import type { IpcResult, MissingFolder, SessionInfo, UiCommand, WorktreeCleanupMode } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
-import type { WireChange, WireReply, WireSettings, WireState, WireType } from "../shared/wires";
+import type { FinishOutcome, LatestMessage, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api = {
@@ -292,6 +292,9 @@ const api = {
   wiresRemove: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:remove", id),
   wiresRestore: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:restore", id),
   wiresRekey: (old: string, next: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:rekey", old, next),
+  // a person's Finish step: the summary as the popover shows it, from the session's latest message (wiresLastMessage)
+  wiresFinish: (id: string, summary: string, verdict?: WireVerdict): Promise<IpcResult<FinishOutcome>> => ipcRenderer.invoke("wires:finish", id, summary, verdict),
+  wiresLastMessage: (id: string): Promise<IpcResult<LatestMessage>> => ipcRenderer.invoke("wires:lastMessage", id),
   onWiresChanged: (cb: (change: WireChange) => void) => {
     const h = (_e: unknown, change: WireChange) => cb(change);
     ipcRenderer.on("wires:changed", h);

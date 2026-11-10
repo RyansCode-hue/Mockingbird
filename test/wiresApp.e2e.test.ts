@@ -107,6 +107,20 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         expect(parsed(await claude.call("list_links")).links).toEqual([{ wire: made.id, direction: "out", type: "handoff", other: { id: reviewer.id, title: "Reviewer", where: "running" }, state: "idle" }]);
         expect(parsed(await codex.call("list_links")).links[0]).toMatchObject({ wire: made.id, direction: "in" });
         expect(await app.evaluate<{ refused?: string }>(`window.mb.wiresAdd(${JSON.stringify(builder.id)}, "r~abc", "handoff")`)).toEqual({ refused: expect.stringMatching(/teammate's session/) });
+        // the stand-in never reports a turn's end, so it's working: the wire's notice waits in its queue for its next idle
+        const queued = await app.evaluate<{ id: string; queuedCount?: number }[]>(`window.mb.listSessions()`);
+        expect(queued.find((s) => s.id === builder.id)!.queuedCount).toBe(1);
+
+        // finishing its step readies the wire, as the token's pane, through the real script; the window's Finish step too
+        const finished = await claude.call("finish_step", { summary: "Built it." });
+        expect(finished).toMatchObject({ isError: false, content: [{ text: expect.stringMatching(/^Step finished.*\n- the handoff wire to "Reviewer": readied\./) }] });
+        expect(onDisk(home).wires.links[made.id].pending).toMatchObject({ body: "Built it.", flags: [] });
+        expect(onDisk(home).wires.notes[builder.id].summary.text).toBe("Built it.");
+        const byHand = await app.evaluate<{ steps: { does: string; pending?: { id: string } }[] }>(`window.mb.wiresFinish(${JSON.stringify(builder.id)}, "Built it, edited.")`);
+        expect(byHand.steps).toEqual([expect.objectContaining({ does: "readies" })]);
+        expect(onDisk(home).wires.links[made.id].pending).toMatchObject({ id: byHand.steps[0].pending!.id, body: "Built it, edited." });
+        expect(await app.evaluate(`window.mb.wiresLastMessage(${JSON.stringify(reviewer.id)})`)).toEqual({ text: null, at: null, why: "Mockingbird hasn't seen a conversation in it yet" });
+        expect((await codex.call("read_context", { from: builder.id })).content[0].text).toMatch(/^There's no context link from/);
 
         // a window can't write the book through a layout patch
         expect(await app.evaluate<{ error?: string }>(`window.mb.landscapeUpdate({ wires: { wv: 1, links: {}, notes: {} } })`)).toEqual({ error: expect.stringMatching(/doesn't know \(wires\)/) });
@@ -116,6 +130,9 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         expect(await app.evaluate<{ failed: unknown[] }>(`window.mb.restartAllSessions(true)`)).toMatchObject({ failed: [] });
         const again = await launchOf(app, builder.id, seen);
         expect(again.env.MOCKINGBIRD_TOKEN_FILE).not.toBe(claudeLaunch.env.MOCKINGBIRD_TOKEN_FILE);
+        // relaunched, it starts knowing its wires
+        const relaunched = fs.readFileSync(argvFile(app, builder.id), "utf8").split("\0");
+        expect(relaunched[relaunched.indexOf("--append-system-prompt") + 1]).toMatch(/^Mockingbird, which runs this session, has wired it to other workspaces.*\n- a handoff wire to "Reviewer"/);
         const old = await claude.call("list_sessions");
         expect(old.isError).toBe(true);
         expect(old.content[0].text).toMatch(/: its token is from a launch that has ended/);

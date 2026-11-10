@@ -5,6 +5,7 @@ import {
   WIRE_FORMAT,
   WIRE_VERSION,
   emptyWireBook,
+  finishPlan,
   freshWireRead,
   gateOf,
   keptNaming,
@@ -20,6 +21,7 @@ import {
   ROOM_LINE,
   settingsRefusal,
   storedWireBook,
+  verdictRefusal,
   wireRefusal,
   withSettings,
   withoutSession,
@@ -299,11 +301,13 @@ describe("reading a stored book", () => {
 /**
  * The book's stored format, version by version. A field added or made required changes what an older Mockingbird can
  * read: it needs WIRE_VERSION raised and the new format pinned here, or to be an entry an older build keeps verbatim.
+ * A context link's toolOutput is the second kind: a build before it keeps such a link as an entry it can't parse, and
+ * no release has read version 1.
  */
 const FORMATS: Record<number, typeof WIRE_FORMAT> = {
   1: {
     book: { fields: ["links", "notes", "wv"], required: ["links", "notes", "wv"] },
-    wire: { fields: ["createdAt", "delivery", "files", "from", "gate", "pending", "rounds", "template", "to", "type", "when"], required: ["createdAt", "from", "gate", "to", "type", "when"] },
+    wire: { fields: ["createdAt", "delivery", "files", "from", "gate", "pending", "rounds", "template", "to", "toolOutput", "type", "when"], required: ["createdAt", "from", "gate", "to", "type", "when"] },
     rounds: { fields: ["limit", "used"], required: ["limit", "used"] },
     pending: { fields: ["at", "body", "flags", "id", "verdict"], required: ["at", "body", "flags", "id"] },
     delivery: { fields: ["at", "id", "state", "why"], required: ["at", "id", "state"] },
@@ -481,5 +485,59 @@ describe("gateOf", () => {
     expect(gate(w).gate).toBe("automatic");
     expect(gate(w, ctxOf([end("a", { room: "R" }), end("b", { room: "R" })])).gate).toBe("ask");
     expect(gate(w, ctxOf([end("a", { room: "R" }), end("b")])).gate).toBe("ask");
+  });
+});
+
+describe("a context link's tool output", () => {
+  it("is set on a context link alone, false leaving it out and true putting it back", () => {
+    const ctx = ctxOf(AB);
+    expect(settingsRefusal(wire("a", "b", "context"), parseWireSettings({ toolOutput: false }), ctx)).toBeNull();
+    for (const type of ["handoff", "feedback"] as const) expect(settingsRefusal(wire("a", "b", type), { toolOutput: false }, ctx), type).toMatch(/Only a context link reads tool output/);
+    const off = withSettings(wire("a", "b", "context"), { toolOutput: false });
+    expect(off.toolOutput).toBe(false);
+    expect(withSettings(off, { toolOutput: true })).not.toHaveProperty("toolOutput");
+    expect(() => parseWireSettings({ toolOutput: "no" })).toThrow(/toolOutput is not true or false/);
+  });
+  it("is stored only as false, and only on a context link: anything else is kept and does nothing", () => {
+    const read = okRead(parseWireBook({ wv: 1, links: { ok: wire("a", "b", "context", { toolOutput: false }), on: { ...wire("a", "b", "context"), toolOutput: true }, hand: { ...wire("a", "b"), toolOutput: false } }, notes: {} }));
+    expect(Object.keys(read.book.links)).toEqual(["ok"]);
+    expect(Object.keys(read.kept.links).sort()).toEqual(["hand", "on"]);
+  });
+});
+
+describe("finishing a step", () => {
+  const ends = [end("a"), end("b"), end("c"), end("d")];
+  const pending = { id: "p1", body: "x", at: 1, flags: [] };
+  it("needs a verdict only with a feedback wire out, and refuses changes without one", () => {
+    expect(verdictRefusal("a", undefined, { f: wire("a", "b", "feedback") })).toMatch(/needs a verdict/);
+    expect(verdictRefusal("a", "approve", { f: wire("a", "b", "feedback") })).toBeNull();
+    expect(verdictRefusal("a", undefined, { f: wire("b", "a", "feedback"), h: wire("a", "c") })).toBeNull();
+    expect(verdictRefusal("a", "changes", { h: wire("a", "c") })).toMatch(/has none out/);
+    expect(verdictRefusal("a", "yes", {})).toMatch(/not "yes"/);
+  });
+  it("readies each wire out apart, keeps a manual one, and leaves context links and shared terminals out", () => {
+    const links = { h1: wire("a", "b"), h2: wire("a", "c"), m: wire("a", "d", "handoff", { when: "manual" }), x: wire("a", "d", "context"), in: wire("c", "a", "context") };
+    expect(finishPlan("a", undefined, ctxOf(ends, links))).toEqual([
+      { wire: "h1", to: "b", type: "handoff", does: "readies" },
+      { wire: "h2", to: "c", type: "handoff", does: "readies" },
+      { wire: "m", to: "d", type: "handoff", does: "keeps" },
+    ]);
+  });
+  it("on changes readies the feedback wire and holds the handoffs; on approve the reverse; each takes back what the other left", () => {
+    const links = { f: wire("a", "b", "feedback", { pending }), h: wire("a", "c", "handoff", { pending: { ...pending, id: "p2" } }) };
+    expect(finishPlan("a", "changes", ctxOf(ends, links))).toEqual([
+      { wire: "f", to: "b", type: "feedback", does: "readies" },
+      { wire: "h", to: "c", type: "handoff", does: "holds", why: "needs approve", withdraws: "p2" },
+    ]);
+    expect(finishPlan("a", "approve", ctxOf(ends, links))).toEqual([
+      { wire: "f", to: "b", type: "feedback", does: "passes", withdraws: "p1" },
+      { wire: "h", to: "c", type: "handoff", does: "readies" },
+    ]);
+  });
+  it("takes back nothing on its way, and puts nothing on a wire the rules refuse", () => {
+    const sending = wire("a", "b", "feedback", { pending, delivery: { id: "p1", state: "pasting", at: 1 } });
+    expect(finishPlan("a", "approve", ctxOf(ends, { f: sending }))).toEqual([{ wire: "f", to: "b", type: "feedback", does: "passes" }]);
+    const roomed = [end("a"), end("b", { room: "R" })];
+    expect(finishPlan("a", undefined, ctxOf(roomed, { h: wire("a", "b") }))).toEqual([{ wire: "h", to: "b", type: "handoff", does: "refused", why: ROOM_LINE }]);
   });
 });

@@ -9,6 +9,7 @@ export const UNTAKEN_CALLS = {
   "review:start": "having this copy's branch reviewed",
   "turns:restore": "putting this copy's files back",
   "usage:briefStart": "starting a fresh session from this copy",
+  "wires:finish": "finishing this copy's step",
 } as const;
 
 export type UntakenCall = keyof typeof UNTAKEN_CALLS;

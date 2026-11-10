@@ -588,6 +588,46 @@ describe("a session a teammate continues", () => {
   });
 });
 
+describe("what an agent is told of its wires as it launches", () => {
+  const room = { env: {}, denyReads: [], codexPermissions: [], instructions: "ROOM RULES", allowTools: [], inline: false, guards: { secrets: false, coauthors: false } };
+  it("goes in each CLI's instructions, after a room's, at launch and at every relaunch", async () => {
+    const { m } = await manager();
+    const asked: string[] = [];
+    m.launchInstructions = (id) => (asked.push(id), `WIRES OF ${id}`);
+    const s = await m.create(agentPane);
+    expect(ptys.at(-1)!.args.join(" ")).toContain(`'--append-system-prompt' 'WIRES OF ${s.id}'`);
+    m.kill(s.id, false);
+    m.roomLaunch = async () => room;
+    await m.relaunch(s.id);
+    expect(ptys.at(-1)!.args.join(" ")).toContain(`'--append-system-prompt' 'ROOM RULES\n\nWIRES OF ${s.id}'`);
+    m.roomLaunch = null;
+    const codex = await m.create({ ...agentPane, agent: "codex" });
+    expect(ptys.at(-1)!.args.join(" ")).toContain(`'developer_instructions="WIRES OF ${codex.id}"'`);
+    expect(asked).toEqual([s.id, s.id, codex.id]);
+  });
+  it("isn't asked for a terminal or a debrief", async () => {
+    const { m } = await manager();
+    const asked: string[] = [];
+    m.launchInstructions = (id) => (asked.push(id), "WIRES");
+    await m.create({ repoPath: null, useWorktree: false, shell: true, title: "t" });
+    await m.create({ ...agentPane, debrief: true });
+    expect(asked).toEqual([]);
+    expect(ptys.at(-1)!.args.join(" ")).not.toContain("WIRES");
+  });
+  it("costs the launch nothing when it fails, and is logged", async () => {
+    const { m } = await manager();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    m.launchInstructions = () => {
+      throw new Error("the book went away");
+    };
+    m.roomLaunch = async () => room;
+    const s = await m.create(agentPane);
+    expect(s.id).toBeTruthy();
+    expect(ptys.at(-1)!.args.join(" ")).toContain(`'--append-system-prompt' 'ROOM RULES'`);
+    expect(errors).toHaveBeenCalledWith(expect.stringMatching(/starts without its wires' instructions/), expect.objectContaining({ message: "the book went away" }));
+  });
+});
+
 describe("relaunching a session in the checkout itself", () => {
   const branches = (repo: string) => git(repo, "branch", "--format=%(refname:short)").split("\n").sort();
   async function closedInCheckout(over: Record<string, unknown> = {}) {
