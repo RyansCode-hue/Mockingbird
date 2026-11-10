@@ -14,6 +14,7 @@ import { isTeamChangesTool, TEAM_CHANGES_TOOL_SCHEMAS, teamChangesToolCall } fro
 import { parseRemoteId, remoteSessionId } from "../shared/team/livePanes";
 import { McpTokens } from "./mcpTokens";
 import { isWireTool, WIRE_TOOL_SCHEMAS } from "./wireToolSchemas";
+import { systemPeerCheck, type PeerCheck } from "./peerCheck";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
@@ -23,6 +24,7 @@ const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
  */
 const TOKENS_DIR = path.join(MB_DIR, "mcp-tokens");
 const tokens = new McpTokens(TOKENS_DIR);
+const systemPeers = systemPeerCheck();
 
 /**
  * What an agent is told when its tool server has no valid token: why, and that the user has heard. It suggests no
@@ -262,6 +264,15 @@ export function mcpLaunch(sessionId: string, tools?: string[]): McpLaunch {
   };
 }
 
+/**
+ * This launch now runs as process `pid` (a pane's pty, a Council turn's shell): its token works only from that process
+ * or one it started. Called as soon as it's spawned, before it can have started a server; without it every call with
+ * the token is refused.
+ */
+export function bindMcpLaunch(mcp: McpLaunch | undefined, pid: number | undefined): void {
+  if (mcp && pid !== undefined) tokens.bind(mcp.env.MOCKINGBIRD_TOKEN_FILE, systemPeers.root(pid));
+}
+
 /** This launch is over: its token stops working, and its file goes. Safe to repeat. */
 export function retireMcpLaunch(mcp: McpLaunch | undefined): void {
   if (mcp) tokens.retire(mcp.env.MOCKINGBIRD_TOKEN_FILE);
@@ -339,6 +350,8 @@ export interface MessagingHooks {
   log?: (context: string, err: unknown) => unknown;
   /** An agent's tool server has no valid token, logged already: the user is told once per pane launch. */
   onToolsLost?: (e: ToolsLost) => void;
+  /** Who's at the other end of a connection; the system's (ps and lsof) unless a test says otherwise. */
+  peers?: PeerCheck;
 }
 
 /** What the `list_links` tool answers from (src/main/wires.ts). */
@@ -453,7 +466,7 @@ export class Messaging {
           req = null;
         }
         try {
-          reply = isObject(req) ? await this.dispatch(req) : { error: "Bad request: not a JSON object." };
+          reply = isObject(req) ? await this.dispatch(req, conn) : { error: "Bad request: not a JSON object." };
         } catch (err) {
           reply = { error: `Bad request: ${(err as Error).message}` };
         }
@@ -481,11 +494,13 @@ export class Messaging {
    * and a request without a token that's live gets no answer. Room models (tagged collab-<room>.<seat>) go to
    * Collaborate; everything else is a session.
    */
-  private async dispatch(req: Record<string, unknown>): Promise<Reply> {
+  private async dispatch(req: Record<string, unknown>, conn: net.Socket): Promise<Reply> {
     const op = String(req.op ?? "");
     const args = isObject(req.args) ? req.args : {};
     const identity = tokens.identity(req.token);
     if (!identity) return this.noToken(op, req);
+    const notCaller = await this.callerRefusal(op, identity, req.token, conn);
+    if (notCaller) return notCaller;
     const m = /^collab-([^.]+)\.(.+)$/.exec(identity);
     if (!m) return this.handle({ op, from: identity, args });
     if (!this.roomHandler) return { error: "Council isn't ready yet — try again in a moment." };
@@ -513,32 +528,72 @@ export class Messaging {
           : current
             ? "its token isn't the one its launch was given"
             : "its token is from a launch that has ended (its workspace was closed or restarted, or Mockingbird was)";
-    const key = current ? `launch ${file}` : session ? `pane ${session.id}` : "none";
-    const now = Date.now();
-    if (now - (this.lostLogged.get(key) ?? -Infinity) >= NO_TOKEN_LOG_MS) {
-      this.lostLogged.set(key, now);
-      const asked = `(asked for ${JSON.stringify(plainLine(op, 60))})`;
-      const pane = session ? `${quoted(plainLine(titleOf(session)))} (${session.id})` : "";
-      this.log(
-        "messaging",
+    const asked = `(asked for ${JSON.stringify(plainLine(op, 60))})`;
+    const pane = session ? `${quoted(plainLine(titleOf(session)))} (${session.id})` : "";
+    this.report(
+      current ? `launch ${file}` : session ? `pane ${session.id}` : "none",
+      () =>
         current
           ? `The tool server of ${pane} lost its Mockingbird tools: ${why} ${asked}`
           : session
             ? `A tool server naming ${pane}, not from its running launch, was refused: ${why} ${asked}`
             : claimed
               ? `A tool server naming ${quoted(plainLine(claimed, 80))}, which isn't an agent pane here, was refused: ${why} ${asked}`
-              : `A tool server naming no pane was refused: ${why} ${asked}`
-      );
+              : `A tool server naming no pane was refused: ${why} ${asked}`,
+      current && session ? { launch: file!, session, why } : undefined
+    );
+    return { error: noTokenText(why) };
+  }
+
+  /**
+   * A live token, from a process that isn't its launch's or one of its descendants, or with no way to check: refused
+   * (W20). Logged once a minute per launch and kind. The user is told once per launch only when the check couldn't run,
+   * since that stops the pane's own calls; a process outside the pane holding its token isn't the pane's doing, and a
+   * notice for it would be one more thing whoever holds the token could spend.
+   */
+  private async callerRefusal(op: string, identity: string, token: unknown, conn: net.Socket): Promise<Reply | null> {
+    const root = tokens.rootOf(token);
+    const fd = (conn as unknown as { _handle?: { fd?: unknown } })._handle?.fd;
+    const v = root
+      ? await (this.hooks.peers ?? systemPeers).check(fd, root).catch((err: unknown) => {
+          this.log("messaging: checking which process is calling", err);
+          return { ok: false, failed: "the check itself failed" } as const;
+        })
+      : ({ ok: false, failed: "its launch has no process to check against" } as const);
+    if (v.ok) return null;
+    const why =
+      "failed" in v
+        ? `Mockingbird couldn't check which process is calling (${v.failed})`
+        : "gone" in v
+          ? "its workspace's own process has ended"
+          : "the process calling isn't one of its workspace's own";
+    const session = this.sessions.list().find((s) => s.id === identity && !s.shell);
+    const who = session ? `${quoted(plainLine(titleOf(session)))} (${session.id})` : identity;
+    const kind = "failed" in v ? "failed" : "gone" in v ? "gone" : "outside";
+    const launch = `${identity} ${root?.pid ?? "unbound"}`; // a launch's root pid is its own: each launch's pty is a new process
+    this.report(
+      `caller ${kind} ${launch}`,
+      () => `A call with the token of ${who} was refused: ${why} (asked for ${JSON.stringify(plainLine(op, 60))})`,
+      "failed" in v && session ? { launch: `caller ${launch}`, session, why } : undefined
+    );
+    return { error: `Mockingbird refused this call: ${why}. Mockingbird has logged this for the user; tell them if you need these tools.` };
+  }
+
+  /** A refusal for the log, at most once a minute per `key`, and for the user once per `notice.launch`. */
+  private report(key: string, line: () => string, notice?: { launch: string; session: SessionInfo; why: string }): void {
+    const now = Date.now();
+    if (now - (this.lostLogged.get(key) ?? -Infinity) >= NO_TOKEN_LOG_MS) {
+      this.lostLogged.set(key, now);
+      this.log("messaging", line());
     }
-    if (current && session && !this.lostTold.has(file!)) {
-      this.lostTold.add(file!);
+    if (notice && !this.lostTold.has(notice.launch)) {
+      this.lostTold.add(notice.launch);
       try {
-        this.hooks.onToolsLost?.({ session, why });
+        this.hooks.onToolsLost?.({ session: notice.session, why: notice.why });
       } catch (err) {
         this.log("messaging: telling the user a pane lost its tools", err);
       }
     }
-    return { error: noTokenText(why) };
   }
 
   private async handle(req: { op?: string; from?: string; args?: Record<string, unknown> }): Promise<Reply> {

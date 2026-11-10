@@ -7,7 +7,7 @@ import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { WireService } from "../src/main/wires";
 import type { SessionInfo } from "../src/shared/types";
 import { newWire, ROOM_LINE, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
-import { askAs, askRaw, startServer } from "./mcpClient";
+import { askAs, askRaw, startServer, testLaunch } from "./mcpClient";
 import { tempDir } from "./helpers";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
@@ -503,7 +503,7 @@ describe("list_links through the real MCP server", () => {
     relay.setWires(service);
     const ab = made(service.add("a", "b", "handoff")).id;
     const bc = made(service.add("b", "c", "context")).id;
-    const launch = mcpLaunch("a");
+    const launch = testLaunch("a");
     const server = startServer(launch);
     try {
       const r = JSON.parse((await server.call("list_links", { from: "b" })).content[0].text);
@@ -517,7 +517,7 @@ describe("list_links through the real MCP server", () => {
     expect((await askRaw(sock, JSON.stringify({ op: "list_links", from: "a" }))).error).toMatch(/^Mockingbird doesn.t recognise this tool server/);
   });
   it("has no tool that writes a wire", async () => {
-    const launch = mcpLaunch("a");
+    const launch = testLaunch("a");
     const server = startServer(launch);
     try {
       const names: string[] = (await server.request("tools/list")).result.tools.map((t: any) => t.name);
@@ -534,7 +534,7 @@ describe("list_links through the real MCP server", () => {
 describe("the token folder", () => {
   beforeEach(() => vi.restoreAllMocks());
   it("is cleared of what an earlier run left when the app starts, and of nothing a live launch needs", () => {
-    const launch = mcpLaunch("a");
+    const launch = testLaunch("a");
     const live = launch.env.MOCKINGBIRD_TOKEN_FILE;
     const stray = path.join(path.dirname(live), "f".repeat(32));
     fs.writeFileSync(stray, "an earlier run's", { mode: 0o600 });

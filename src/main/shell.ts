@@ -90,6 +90,8 @@ export interface LoginShellOptions {
   signal?: AbortSignal;
   /** Each chunk of stdout and stderr as it arrives, rc-file output included. */
   onOut?: (chunk: string) => void;
+  /** The shell's pid, as soon as it's spawned. */
+  onSpawn?: (pid: number) => void;
 }
 
 /**
@@ -102,6 +104,7 @@ export interface LoginShellOptions {
 export function loginShell(cmd: string, opts: LoginShellOptions = {}): Promise<ShellResult & { stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn("/bin/zsh", ["-ilc", fenced(cmd)], { cwd: opts.cwd, env: opts.env ?? process.env, detached: true });
+    if (child.pid !== undefined) opts.onSpawn?.(child.pid);
     let stdout = "";
     let stderr = "";
     let stopped: string | null = null;
@@ -184,7 +187,7 @@ export const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 export async function userShellWithInput(
   cmd: string,
   input: string,
-  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal } = {}
+  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal; onSpawn?: (pid: number) => void } = {}
 ): Promise<ShellResult> {
   const { code, out } = await loginShell(cmd, { ...opts, input, timeoutMs: opts.timeoutMs ?? 600_000 });
   return { code, out };

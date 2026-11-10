@@ -20,7 +20,7 @@ import { MB_DIR } from "./store";
 import { writeFileAtomic } from "./fileOps";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
-import { MCP_TOOL, claudeToolName, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
+import { MCP_TOOL, bindMcpLaunch, claudeToolName, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { makeTestCopy } from "./testCopy";
 import { codexError, parseClaudeJson, readCodexReply } from "./headless";
 import { agentLabel, claudeMcpConfig, codexMcpSettings, isInstalledBin } from "./agents";
@@ -1005,7 +1005,7 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
       const timeoutMs = p.runsCommands ? 30 * 60_000 : 10 * 60_000;
       if (!isInstalledBin(bin)) throw new Error(`${agentLabel(p.agent)} isn't installed`);
       if (p.agent === "claude") {
-        const r = await userShellWithInput(claudeTurnCommand(bin, p, { mcp, ask: askTool, permit: true, sockets }), prompt, { cwd, env, signal, timeoutMs });
+        const r = await userShellWithInput(claudeTurnCommand(bin, p, { mcp, ask: askTool, permit: true, sockets }), prompt, { cwd, env, signal, timeoutMs, onSpawn: (pid) => bindMcpLaunch(mcp, pid) });
         const { text, sessionId } = parseClaudeJson(r, 400);
         const conversationId = sessionId ?? p.conversationId;
         if (!conversationId) throw new Error("Claude replied without naming its conversation, so the next turn couldn't continue it");
@@ -1014,7 +1014,7 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
       const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mb-collab-"));
       const last = path.join(tmp, "reply.txt");
       try {
-        const r = await userShellWithInput(codexTurnCommand(bin, p, last, askTool ? mcp : undefined, sockets), prompt, { cwd, env, signal, timeoutMs });
+        const r = await userShellWithInput(codexTurnCommand(bin, p, last, askTool ? mcp : undefined, sockets), prompt, { cwd, env, signal, timeoutMs, onSpawn: (pid) => bindMcpLaunch(mcp, pid) });
         const text = await readCodexReply(last, r, 400);
         const thread = /"thread_id":"([^"]+)"/.exec(r.out)?.[1] ?? p.conversationId;
         if (!thread) throw codexError(r, 400);

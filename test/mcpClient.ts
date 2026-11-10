@@ -1,15 +1,25 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import * as fs from "fs";
 import * as net from "net";
-import { mcpLaunch, type McpLaunch } from "../src/main/messaging";
+import { bindMcpLaunch, mcpLaunch, type McpLaunch } from "../src/main/messaging";
 
 const held = new Map<string, string>();
+
+/**
+ * A launch that runs as this test's own process, as a pane's runs as its pty: calls from this process, and from the
+ * servers it starts, pass the caller check (W20).
+ */
+export function testLaunch(id: string, tools?: string[]): McpLaunch {
+  const launch = mcpLaunch(id, tools);
+  bindMcpLaunch(launch, process.pid);
+  return launch;
+}
 
 /** A live token standing for session `id`, read from its file, which then goes: no server is started from it. */
 export function tokenFor(id: string): string {
   let token = held.get(id);
   if (!token) {
-    const file = mcpLaunch(id).env.MOCKINGBIRD_TOKEN_FILE;
+    const file = testLaunch(id).env.MOCKINGBIRD_TOKEN_FILE;
     token = fs.readFileSync(file, "utf8");
     fs.rmSync(file);
     held.set(id, token);

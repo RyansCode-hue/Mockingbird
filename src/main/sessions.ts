@@ -11,7 +11,7 @@ import { currentBranch, git } from "./git";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
-import { mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
+import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
 import { compactBlocker } from "../shared/contextBudget";
@@ -580,6 +580,7 @@ export class SessionManager {
           `If it isn't found, set its full path in Settings → ${agentLabel(req.agent).toLowerCase()} binary.`
       );
     }
+    bindMcpLaunch(mcp, proc.pid);
     let exited!: () => void;
     this.running.set(proc, new Promise<void>((resolve) => (exited = resolve)));
     // its end is handled from the moment it runs, whatever happens below: the pty, and its token, always go with it.

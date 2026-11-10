@@ -2327,6 +2327,109 @@ keep one connection per server. Keep the token as a second factor.
   `mcpTokens.ts` (a launch's pid and start time), `sessions.ts` (the pty's pid into
   its launch), `collab.ts` and `shell.ts` (a turn's pid), tests.
 
+#### W20 as built
+Built on 257d415, as planned: `lsof` and one `ps` per call behind `PeerCheck`, the
+token kept as a second factor, and every failure refused. Section 4 now describes
+it.
+
+**Where it sits.**
+- `dispatch` checks the token first, as before. A call without a live token never
+  runs a tool. With one, `callerRefusal` asks the `PeerCheck` about the connection,
+  and only then does the call reach `handle` or `roomHandler`.
+- The rest of W20's `messaging.ts` change is `bindMcpLaunch` and the `peers` hook.
+  M1's log-and-tell code moved into `report`, shared by both refusals; its wording
+  didn't change.
+
+**The interface.** The plan's `peerOf(conn) → { pid, ancestors }` became
+`check(fd, root) → { ok, pid } | { outside } | { gone } | { failed }` and
+`root(pid) → LaunchRoot`. The check is given the launch's root, so it lists only
+that tree's sockets. The root reads its start time once, when it's bound, and reads
+it again only after a read that failed.
+
+**The order in `peerCheck.ts`:**
+1. No fd, or a root pid of 1 or less: `failed`, and no tool runs. Launchd can't be a
+   root, since everything descends from it.
+2. The root's start, as read when it was bound. If `ps` listed nothing for it (exit
+   1, no output), it's `gone`. If `ps` couldn't say, it's `failed`.
+3. `ps -A -o pid=,ppid=,lstart=`. A line that doesn't parse, or a table without main
+   in it, is `failed`. If the root is missing or started at another time, it's
+   `gone`.
+4. The tree is walked from the root in that one snapshot. More than 2,000 processes
+   is `failed`.
+5. `lsof -a -U -F pfdn -p <main>,<tree>`. Exit 1 with output is kept, because lsof
+   exits 1 when one of the pids has no unix socket. If main's own end isn't in that
+   output, it's `failed`.
+6. The caller is the process in the tree whose `n->0x…` is main's end's `d`, matched
+   only from main's own process and fd. Any other answer is `outside`.
+
+Both tools get one 2 s budget, and the second gets only what the first left. A check
+that throws is refused as `failed`, and what it threw is logged.
+
+**Binding.**
+- `sessions.ts` binds the pty's pid right after the spawn, before the CLI can have
+  started a server.
+- A Council turn binds its login shell's pid through `onSpawn`, which `loginShell`
+  calls once the child exists.
+- Tests mint with `testLaunch` (`test/mcpClient.ts`), which binds to the test's own
+  pid, so the existing tests' servers are their own children.
+
+**Measured.** The cost test in `test/peerCheck.test.ts` logs its numbers when run
+with `--reporter=verbose` and without `CI`. It asserts under the 2 s cap, not the
+plan's 250 ms: a busy CI runner, or this Mac with other sessions' suites running,
+would make 250 ms flaky. The cap is the number that matters.
+These were taken at whatever load the Mac had, from other builders' suites, with
+nothing added. The 1-minute load average is given with each figure:
+- **One call at a time,** three runs at a load average of 32 with 1,280–1,300
+  processes: median 67–83 ms, slowest 74–126 ms of 10. An earlier run at a load
+  average of 10–20 gave a median of 59 ms and a slowest of 62 ms.
+- **Ten calls at once,** each with its own `ps` and `lsof`, at a load average of 32:
+  all answered in 170–248 ms.
+- This matches the plan's estimate of 70–100 ms. A call with no live token runs
+  neither tool.
+
+**Tests:**
+- `test/peerCheck.test.ts` uses real processes, each a `node` stand-in pane with the
+  real mcp.js under it:
+  - a child and a grandchild are answered;
+  - each of these, holding the token, is refused, logged, and the user isn't told:
+    another pane's server, a plain `/bin/sh`'s, and the test itself;
+  - an ended root is refused;
+  - an unbound launch and pid 1 are refused;
+  - an injected failing check, and one that throws, are refused, logged and told
+    once;
+  - the cost.
+
+  With the tools' output stood in for, it also covers every failure mode, pid reuse
+  of the root, leading zeros, a path that looks like an address, a caller's fd that
+  shares main's fd number, the tree cap and the time budget.
+- `test/mcpLaunches.test.ts`: a pane bound to a real stand-in pty refuses the
+  test's call with its token. A Council turn's token, written out mid-turn, is
+  refused from outside, while the turn's own server is answered.
+- App tests:
+  - The stand-in agents start `test/e2e/agentRelay.cjs` under their pane. It starts
+    the real MCP server from the CLI's own arguments, or passes a raw request
+    through, so every tool call in `wiresApp` and `teamLiveApp` comes from inside
+    the pane.
+  - `wiresApp` also starts the Builder's server from the test with the Builder's
+    token. It's refused, and `main.log` says so.
+- The mutation check undid each guard in turn, and the test that keeps it failed
+  every time: 36 guards, all caught.
+
+**Left for real CLIs** (hand checks; none run):
+- **Claude `/mcp` reconnect:** the restarted server is the CLI's child, so it should
+  be answered.
+- **Codex sub-agents:** whether a sub-agent's MCP server is started by the pane's
+  `codex` process or by something outside it.
+- **Claude subagents and in-process teammates:** answered if they share the lead's
+  server or start their own under it.
+- **Claude split-pane teammates:** run under tmux, so expected refused. The
+  refusal's words are what the user sees.
+- **Real Council turns,** Claude and Codex: the CLI under the login shell `onSpawn`
+  names, and its server under that.
+- **A pane's own agent calling its tools from Bash:** expected answered, since it's
+  in the tree.
+- **The cost on Ryan's and Nick's Macs** with a real day's process count.
+
 ## 2. Data model
 
 ### The file
@@ -2631,11 +2734,39 @@ forge another's `finish_step`, approving its own review, or send as someone else
   session's deny rules (`roomSecretReads`) cover only Claude's file tools: its Bash
   can still read the folder.
 
-**What this doesn't do, until W20.** The token is the whole proof.
+**W20.** The token alone no longer proves who's calling. The process at the
+socket's other end also has to be the launch's own process, or descend from it.
+- **Binding.** A pane's launch is bound to its pty's pid as soon as node-pty spawns
+  it (`bindMcpLaunch`, `sessions.ts`). zsh `exec`s the CLI, so the CLI keeps that
+  pid, and everything it starts descends from it: its MCP server, a sub-agent's, and
+  a `/mcp` reconnect's. A Council turn is bound to its login shell's pid (`onSpawn`,
+  `shell.ts`, `collab.ts`). The root's start time is read when it's bound, so a pid
+  the system has handed to a new process isn't taken for the root.
+- **The check** (`peerCheck.ts`) runs on each call that brings a live token. It runs
+  one `ps -A -o pid=,ppid=,lstart=` and one
+  `lsof -a -U -F pfdn -p <main>,<the root's tree>`. Main finds its own end of the
+  connection by its fd. The caller is the process in the tree that lists that end's
+  kernel address as its peer. Nothing a client sends feeds into it: only main's fd,
+  the kernel's addresses and the process table. Both tools run by absolute path,
+  with a fixed `PATH` and `LC_ALL=C`.
+- **Refusals.** Each is said to the agent in Mockingbird's words and logged once a
+  minute per launch.
+  - **A caller outside the tree, or a root that has ended.** The user isn't told. A
+    stolen token isn't the pane's doing, and a notice would be one more thing its
+    holder could spend.
+  - **The check couldn't run.** This covers no root bound; `ps` or `lsof` missing,
+    failing or past the 2 s cap; output that doesn't parse; a tree of more than
+    2,000 processes; and the check throwing. The user is told once for that launch.
+    Nothing falls back to the token alone.
+- **The token stays as a second factor.** It picks the launch and is checked first,
+  so a call without a live token runs no `ps` or `lsof`.
+- **Cost:** about 70–85 ms a call for the two tools, and 0.17–0.25 s for ten calls
+  at once. This was measured at a load average of 32 with 1,280–1,300 processes (see
+  W20 as built).
 
-*Who can read one, and when.* Anything running as the user outside a sandbox can
-read any running launch's token from its file, from its launch until its pane closes
-or restarts, not only at start-up. That includes:
+*Who can still read a token.* The same processes as before W20. Anything running as
+the user outside a sandbox can read any running launch's token from its file, for as
+long as that launch runs. That includes:
 - the user's own shells and apps;
 - every Claude pane's shell, private or in a room. A Claude room session has no OS
   sandbox, only `Read()` deny rules, and those cover its file tools, not its Bash;
@@ -2643,13 +2774,12 @@ or restarts, not only at start-up. That includes:
 - a Codex room session older than `CODEX_ROOM_GUARD_SINCE` (0.138.0,
   `livePanes.ts:71`).
 
-Only a Codex room session on 0.138.0 or later has the folder denied to its commands.
-From an agent it takes a shell command that reads the folder. Claude asks the user
-to approve that, unless its permission mode lets Bash run without asking. The review
-did it from a room pane's shell long after a private pane started, and sent a
-message as the private pane.
+From outside the launch's tree, a token now gets only a refusal. W1's review sent a
+message as a private pane from a room pane's shell. W20's tests do the same from
+another pane's process, from a plain shell and from the test itself, and each one
+is refused.
 
-*What a token lets its holder do, as that pane:*
+*What a token and a place in the pane's tree let a caller do, as that pane:*
 - send messages, labelled with the pane's name;
 - list the sessions it would see and its own wires (`list_links`);
 - use the House, room artifact and team-changes tools as it;
@@ -2662,17 +2792,40 @@ message as the private pane.
 - sends are rate-limited per pair (`PAIR_LIMIT`);
 - nothing writes a wire.
 
-It is still better than before W1, when any socket client could name any pane in
-`from` without reading anything. The rest of the boundary is the agent's own
-permissions and, in a Codex room, its sandbox. Wire scope is a rule on the tool,
-not a wall, and this file shouldn't be read as saying otherwise.
+**What W20 doesn't do.**
+- **It binds a token to a process tree, not to a model or a person.** Every process
+  in the pane's tree passes. The agent's own shell commands, and anything they start
+  that stays under the pane, can call its tools without the CLI's prompt for each
+  MCP call. A process that leaves the tree is refused: a daemon that double-forks
+  ends up under launchd.
+- **Whatever puts code into a pane's tree runs as that pane.** That includes:
+  - the user's shell start-up files (a pane is `zsh -ilc`);
+  - the CLI's own hooks and MCP config;
+  - a binary earlier on its `PATH`.
 
-**W20 removes this:** the socket checks that the calling process descends from the
-launch the token names, so a token taken by another pane's shell, or anything else,
-is refused.
+  These are the user's own files. Any same-uid process can write them, and the next
+  launch runs whatever is there. In a room, the session's sandbox or deny rules
+  decide whether its agent can write them.
+- **A process in the tree can let one outside it through.** It can hand over its
+  connection, or relay for it. It can also bind a socket at a path that reads like
+  main's end's address, so that `lsof` names it as the peer. Any of these takes the
+  inside process's help, and an inside process could make the calls itself.
+- **pid reuse.** The root is pinned by its start time, so its pid going to a new
+  process reads as ended. A descendant's pid isn't pinned. Suppose a descendant ends
+  in the few tens of ms between `ps` and `lsof`, and an outside process that has
+  already connected to the socket takes its pid at once: that caller would pass.
+  The gap can't be aimed. A native `LOCAL_PEERTOKEN` check would close it.
+- **Claude teammates in split-pane mode** run under tmux's server, not under the
+  pane, so they're refused (*inferred*: see "Left for real CLIs" in W20 as built).
+
+Before W1, any socket client could name any pane in `from`. Before W20, any same-uid
+process could read a token and act as its pane. The rest of the boundary is the
+agent's own permissions and, in a Codex room, its sandbox. Wire scope is a rule on
+the tool, not a wall, and this file shouldn't be read as saying otherwise.
 
 **A restarted MCP server** (`/mcp` reconnect, a sub-agent's) reads the same file and
-works while its launch runs. One that can't read the file has every call refused
+works while its launch runs, as long as it runs under the pane. A CLI restarting its
+own server does that. One that can't read the file has every call refused
 saying why, in Mockingbird's words. Main logs it, once a minute per running launch.
 When the server's token file is its pane's running launch's, the user is told once
 for that launch. A server from a launch that has ended is logged and nothing else:
@@ -3081,7 +3234,8 @@ Not verified, to check by hand in the slice named:
 - `ps` showing argv for same-user processes, and Node's `net` offering no peer pid (W1).
 - What W20's process check covers with real CLIs: `/mcp` reconnect, a Codex
   sub-agent's server, Claude's in-process teammates (inside the tree) and split-pane
-  teammates (outside it, so refused) (W20).
+  teammates (outside it, so refused), and real Council turns (W20; the full list is
+  in W20 as built).
 - A pasted prompt starting with `/` or `!` acting as a command in each CLI (W2; the label
   makes it moot either way).
 - How a Codex pane behaves before `/hooks` approval (`hooks.ts:151` says it ignores new

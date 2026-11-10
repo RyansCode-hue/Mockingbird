@@ -5,13 +5,15 @@ import { appE2E, launchApp, mainLog, quitApp, untilTrue, type AppInstance } from
 import type { McpLaunch } from "../src/main/messaging";
 import type { WireChange, WireReply, WireState } from "../src/shared/wires";
 import { askRaw, startServer } from "./mcpClient";
+import { relayLine, relayServer } from "./e2e/agentRelay";
 import { tempDir } from "./helpers";
 
 /**
  * The wire book and who's calling, in the real app (dist/, under Electron): its IPC, the `sessions:kill` hook, the quit
  * step and the start's sweep, none of which a unit test reaches, and the real MCP script run by Electron's own binary
- * from what each CLI's arguments say, as the CLI would. The agents are a stand-in that keeps its arguments: nothing
- * calls a model. Windows open on screen while it runs, so it's opt-in:
+ * from what each CLI's arguments say, as the CLI would. The agents are a stand-in that keeps its arguments and starts
+ * the servers from inside its pane (agentRelay.cjs), as a CLI does: nothing calls a model. Windows open on screen while
+ * it runs, so it's opt-in:
  *
  *   npm run build && MB_E2E_APP=1 npx vitest run test/wiresApp.e2e.test.ts
  */
@@ -22,6 +24,7 @@ if [ -z "$MOCKINGBIRD_SESSION" ]; then exit 0; fi
 mkdir -p "$HOME/argv"
 printf '%s\\0' "$@" > "$HOME/argv/$MOCKINGBIRD_SESSION.tmp"
 mv -f "$HOME/argv/$MOCKINGBIRD_SESSION.tmp" "$HOME/argv/$MOCKINGBIRD_SESSION"
+${relayLine("mcp")}
 echo "agent started"
 while IFS= read -r line; do echo "got: $line"; done
 `;
@@ -67,14 +70,14 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
       const reviewer = await session(app, "codex", "Reviewer");
       expect(builder.error ?? reviewer.error).toBeUndefined();
 
-      // each CLI's arguments hold a path, and the real script, run by Electron's binary, answers as that pane
+      // each CLI's arguments hold a path, and the real script, run by Electron's binary inside the pane, answers as it
       const claudeLaunch = await launchOf(app, builder.id);
       const codexLaunch = await launchOf(app, reviewer.id);
       expect(claudeLaunch.command).toBe(codexLaunch.command);
       const claudeToken = fs.readFileSync(claudeLaunch.env.MOCKINGBIRD_TOKEN_FILE, "utf8");
       expect(fs.readFileSync(argvFile(app, builder.id), "utf8")).not.toContain(claudeToken);
-      const claude = startServer(claudeLaunch);
-      const codex = startServer(codexLaunch);
+      const claude = await relayServer(home, builder.id);
+      const codex = await relayServer(home, reviewer.id);
       try {
         const listed = parsed(await claude.call("list_sessions"));
         expect(listed.you.id).toBe(builder.id);
@@ -86,13 +89,23 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         expect((await askRaw(sockOf(home), JSON.stringify({ op: "list_sessions", from: builder.id }))).error).toMatch(/^Mockingbird doesn't recognise this tool server/);
         // a second and a third server from the same launch (a sub-agent's, a reconnect) answer as it too
         for (let i = 0; i < 2; i++) {
-          const again = startServer(claudeLaunch);
+          const again = await relayServer(home, builder.id);
           try {
             expect(parsed(await again.call("list_sessions")).you.id).toBe(builder.id);
           } finally {
             await again.stop();
           }
         }
+        // the same launch's server, with its token, run from outside the pane: refused, and logged
+        const outside = startServer(claudeLaunch);
+        try {
+          const r = await outside.call("send_message", { to: reviewer.id, message: "from outside" });
+          expect(r.content[0].text).toMatch(/^Mockingbird refused this call: the process calling isn't one of its workspace's own\./);
+          expect((await askRaw(sockOf(home), JSON.stringify({ op: "list_sessions", token: claudeToken }))).error).toMatch(/isn't one of its workspace's own/);
+        } finally {
+          await outside.stop();
+        }
+        await untilTrue("the outside caller logged", async () => /messaging: A call with the token of "Builder" \(.+\) was refused: the process calling isn't one of its workspace's own/.test(mainLog(app)));
 
         // no wires yet, and the tool says so
         expect(parsed(await claude.call("list_links"))).toEqual({ you: { id: builder.id, title: "Builder" }, links: [], note: "This workspace has no wires." });
@@ -129,7 +142,7 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         // a window can't write the book through a layout patch
         expect(await app.evaluate<{ error?: string }>(`window.mb.landscapeUpdate({ wires: { wv: 1, links: {}, notes: {} } })`)).toEqual({ error: expect.stringMatching(/doesn't know \(wires\)/) });
 
-        // a restart rotates the token: the old server is told, a new one works, and the wire doesn't notice
+        // a restart rotates the token: the old pane's servers go with it, a new one works, and the wire doesn't notice
         const seen = fs.readFileSync(argvFile(app, builder.id), "utf8");
         expect(await app.evaluate<{ failed: unknown[] }>(`window.mb.restartAllSessions(true)`)).toMatchObject({ failed: [] });
         const again = await launchOf(app, builder.id, seen);
@@ -137,9 +150,8 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         // relaunched, it starts knowing its wires
         const relaunched = fs.readFileSync(argvFile(app, builder.id), "utf8").split("\0");
         expect(relaunched[relaunched.indexOf("--append-system-prompt") + 1]).toMatch(/^Mockingbird, which runs this session, has wired it to other workspaces.*\n- a handoff wire to "Reviewer"/);
-        const old = await claude.call("list_sessions");
-        expect(old.isError).toBe(true);
-        expect(old.content[0].text).toMatch(/: its token is from a launch that has ended/);
+        // as the old pane's server would ask, had it outlived its pane
+        expect((await askRaw(sockOf(home), JSON.stringify({ op: "list_sessions", token: claudeToken, claimed: builder.id }))).error).toMatch(/: its token is from a launch that has ended/);
         // one started from the ended launch is refused, saying its file has gone; main.log has the old server refused as
         // not from the pane's running launch, which it can't speak for
         const late = startServer(claudeLaunch);
@@ -159,7 +171,7 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
           fs.chmodSync(again.env.MOCKINGBIRD_TOKEN_FILE, 0o600);
         }
         await untilTrue("the lost tools logged", async () => /messaging: The tool server of "Builder" \(.+\) lost its Mockingbird tools: its token file couldn't be read \(EACCES\)/.test(mainLog(app)));
-        const fresh = startServer(again);
+        const fresh = await relayServer(home, builder.id);
         try {
           expect(parsed(await fresh.call("list_links")).links[0]).toMatchObject({ wire: made.id, direction: "out" });
         } finally {

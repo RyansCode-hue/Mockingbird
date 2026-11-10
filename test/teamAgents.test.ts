@@ -7,7 +7,7 @@ import { tempDir } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember, type LoopbackNetwork } from "../src/main/team/loopback";
 import { TeamRoom } from "../src/main/team/teamRoom";
 import { Messaging, mcpLaunch, remoteSessionId } from "../src/main/messaging";
-import { askAs } from "./mcpClient";
+import { askAs, testLaunch } from "./mcpClient";
 import { AGENT_REQUESTS, AgentBridge } from "../src/main/team/agentBridge";
 import type { AgentMessage, SessionInfo } from "../src/shared/types";
 
@@ -27,7 +27,7 @@ let roomId: string;
 let netw: LoopbackNetwork;
 let ryan: Side;
 let nick: Side;
-const launch = mcpLaunch("front");
+const launch = testLaunch("front");
 const sock = launch.env.MOCKINGBIRD_SOCK;
 
 function side(m: LoopbackMember, sessions: SessionInfo[], dir: string, opts: { listen?: boolean; mode?: (s: SessionInfo) => boolean } = {}): Side {

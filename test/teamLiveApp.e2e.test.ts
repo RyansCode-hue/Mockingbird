@@ -1,5 +1,4 @@
 import { execFile, execFileSync } from "child_process";
-import * as net from "net";
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
@@ -9,26 +8,17 @@ import type { LivePanesState } from "../src/shared/team/livePanes";
 import type { TakeoverPlan, TakeoverView } from "../src/shared/team/takeover";
 import type { HouseView } from "../src/shared/team/house";
 import { builderHome, fakeHouse } from "./fakeHouse";
+import { relayLine, relayRaw } from "./e2e/agentRelay";
 import type { RoomChatView as ChatView } from "../src/shared/team/chat";
 import type { MigrationsView } from "../src/shared/team/migrations";
 import type { OverlapsFile } from "../src/shared/team/overlaps";
 
-/** A Mockingbird MCP tool call, as an agent in session `from` makes it: through the app's own socket, with the token its launch was given (FAKE_CLAUDE keeps it). */
-const tool = (a: AppInstance, from: string, op: string, args: Record<string, unknown> = {}) =>
-  new Promise<{ result?: string; error?: string }>((resolve, reject) => {
-    const c = net.createConnection(path.join(a.home, ".mockingbird", "mb.sock"));
-    let buf = "";
-    c.on("data", (d) => (buf += d));
-    c.on("end", () => {
-      try {
-        resolve(JSON.parse(buf));
-      } catch (err) {
-        reject(err);
-      }
-    });
-    c.on("error", reject);
-    c.end(JSON.stringify({ op, args, token: fs.readFileSync(path.join(a.home, "e2e-tokens", from), "utf8") }));
-  });
+/**
+ * A Mockingbird MCP tool call, as an agent in session `from` makes it: from inside that pane (FAKE_CLAUDE's relay), with
+ * the token its launch was given (FAKE_CLAUDE keeps it).
+ */
+const tool = (a: AppInstance, from: string, op: string, args: Record<string, unknown> = {}): Promise<{ result?: string; error?: string }> =>
+  relayRaw(a.home, from, JSON.stringify({ op, args, token: fs.readFileSync(path.join(a.home, "e2e-tokens", from), "utf8") }));
 
 /** An agent's edit (Claude Code's PreToolUse) through an instance's installed hook script: what it answers. */
 const editHook = (a: AppInstance, sessionId: string, cwd: string, toolName: "Edit" | "Write", file: string) =>
@@ -76,6 +66,8 @@ if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code stand-in)"; exit 0; fi
 # reads this launch's token where its MCP server would, leaving it as the server does, so the test can call tools as this session
 token_file=$(printf '%s' "$*" | sed -n 's/.*"MOCKINGBIRD_TOKEN_FILE":"\\([^"]*\\)".*/\\1/p')
 if [ -n "$token_file" ]; then mkdir -p "$HOME/e2e-tokens" && cp "$token_file" "$HOME/e2e-tokens/$MOCKINGBIRD_SESSION"; fi
+# its tool calls are made from inside the pane, as its MCP server's would be
+${relayLine("raw")}
 echo "fake-claude started: $* (inline=\${CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN:-no})"
 cwd=$(pwd -P)
 dir="$HOME/.claude/projects/$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"

@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -7,7 +8,7 @@ import { SessionManager } from "../src/main/sessions";
 import { cliTurnRunner } from "../src/main/collab";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type SessionInfo, type Settings } from "../src/shared/types";
 import type { CollabParticipant } from "../src/shared/types";
-import { askRaw, startServer } from "./mcpClient";
+import { askRaw, startServer, testLaunch } from "./mcpClient";
 import { tempDir, write } from "./helpers";
 
 /**
@@ -18,6 +19,8 @@ import { tempDir, write } from "./helpers";
 type FakePty = { args: string[]; env: Record<string, string>; killed: boolean; exit(code: number): void; data(text: string): void };
 const ptys: FakePty[] = [];
 let spawnFails = false;
+/** The pid a fake pty runs as: this test's own, so the servers it starts descend from it, unless a test says otherwise. */
+let ptyPid = process.pid;
 vi.mock("node-pty", () => ({
   spawn: (_file: string, args: string[], opts: { env: Record<string, string> }) => {
     if (spawnFails) throw new Error("posix_spawnp failed");
@@ -25,7 +28,7 @@ vi.mock("node-pty", () => ({
     let onData: (text: string) => void = () => {};
     const p: FakePty = { args, env: opts.env, killed: false, exit: (exitCode) => onExit({ exitCode }), data: (text) => onData(text) };
     ptys.push(p);
-    return { onData: (cb: any) => ((onData = cb), { dispose() {} }), onExit: (cb: any) => ((onExit = cb), { dispose() {} }), write() {}, resize() {}, kill: () => void (p.killed = true), pid: 1 };
+    return { onData: (cb: any) => ((onData = cb), { dispose() {} }), onExit: (cb: any) => ((onExit = cb), { dispose() {} }), write() {}, resize() {}, kill: () => void (p.killed = true), pid: ptyPid };
   },
 }));
 
@@ -285,6 +288,20 @@ describe("a pane's launch", () => {
     sessions.kill(d.id, true);
   });
 
+  it("runs as its pty's process: its token answers nothing outside that process and what it starts", async () => {
+    const pane = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    ptyPid = pane.pid!;
+    try {
+      const s = await start();
+      expect((await calledWith(tokenIn(ptys.at(-1)!))).error).toMatch(/^Mockingbird refused this call: the process calling isn't one of its workspace's own/);
+      sessions.kill(s.id, true);
+    } finally {
+      ptyPid = process.pid;
+      pane.kill();
+      await new Promise((r) => pane.once("exit", r));
+    }
+  });
+
   it("isn't started without its token, and says why", async () => {
     const before = ptys.length;
     const aside = `${TOKENS}.aside`;
@@ -328,8 +345,8 @@ const retireAllStrays = () => {
 
 describe("quitting", () => {
   it("removes every token file left, whether a server has read it or not", async () => {
-    const launch = mcpLaunch("a");
-    const read = mcpLaunch("b");
+    const launch = testLaunch("a");
+    const read = testLaunch("b");
     const server = startServer(read);
     await server.request("initialize", { protocolVersion: "2025-06-18" });
     await server.stop();
@@ -368,6 +385,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const seen = { server: !!m, argv };
   if (m) {
     seen.token = fs.readFileSync(m.env.MOCKINGBIRD_TOKEN_FILE, "utf8");
+    if (ask.stealTo) fs.writeFileSync(ask.stealTo, seen.token);
     const p = spawn(process.execPath, m.args, { env: { ...process.env, ...m.env }, stdio: ["pipe", "pipe", "inherit"] });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
@@ -443,6 +461,18 @@ describe("a Council turn's launch", () => {
     expect(r.text).toMatch(/says hi/);
     expect(seen("plain").server).toBe(false);
     expect(tokenFiles()).toEqual([]);
+  });
+
+  it("runs as its turn's shell: the token answers the turn's own server, never a process outside it", async () => {
+    roomHandler.mockClear();
+    const stolen = path.join(dir, "stolen");
+    const running = turn({ text: JSON.stringify({ record: record("stolen"), tool: "ask_code_reader", args: { question: "own" }, delay: 1500, stealTo: stolen }) });
+    for (let i = 0; i < 200 && !fs.existsSync(stolen); i++) await new Promise((r) => setTimeout(r, 20));
+    const r = await askRaw(sock, JSON.stringify({ op: "ask_code_reader", token: fs.readFileSync(stolen, "utf8"), args: { question: "from outside" } }));
+    expect(r.error).toMatch(/^Mockingbird refused this call: the process calling isn't one of its workspace's own/);
+    await running;
+    expect(seen("stolen").answer.isError).toBe(false);
+    expect(roomHandler.mock.calls.map((c) => c[3])).toEqual([{ question: "own" }]);
   });
 
   it("keeps two turns of one seat apart: the first ending doesn't stop the second's token", async () => {

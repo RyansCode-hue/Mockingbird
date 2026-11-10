@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import type { LaunchRoot } from "./peerCheck";
 
 const hashOf = (token: string): string => createHash("sha256").update(token).digest("hex");
 
@@ -16,6 +17,8 @@ const hashOf = (token: string): string => createHash("sha256").update(token).dig
 export class McpTokens {
   private readonly identities = new Map<string, string>();
   private readonly hashes = new Map<string, string>();
+  /** Each launch's own process, by its token's hash (bind): a caller has to be it or descend from it (peerCheck.ts). */
+  private readonly roots = new Map<string, LaunchRoot>();
   /** Where a file that can't be listed or removed is said: main.log once the app's relay is made. */
   log: (context: string, err: unknown) => unknown = (context, err) => console.warn(`${context}: ${(err as Error).message}`);
 
@@ -45,6 +48,17 @@ export class McpTokens {
     return hash ? (this.identities.get(hash) ?? null) : null;
   }
 
+  /** The launch `file` runs as `root` (a pane's pty, a Council turn's shell), once it's started. */
+  bind(file: string, root: LaunchRoot): void {
+    const hash = this.hashes.get(file);
+    if (hash) this.roots.set(hash, root);
+  }
+
+  /** The process a token's launch runs as; null when it has none bound, which a caller check refuses. */
+  rootOf(token: unknown): LaunchRoot | null {
+    return typeof token === "string" && token ? (this.roots.get(hashOf(token)) ?? null) : null;
+  }
+
   /** Who a request's token stands for; null for anything else. */
   identity(token: unknown): string | null {
     return typeof token === "string" && token ? (this.identities.get(hashOf(token)) ?? null) : null;
@@ -54,6 +68,7 @@ export class McpTokens {
   retire(file: string): void {
     const hash = this.hashes.get(file);
     if (hash) this.identities.delete(hash);
+    if (hash) this.roots.delete(hash);
     this.hashes.delete(file);
     this.remove(file);
   }
