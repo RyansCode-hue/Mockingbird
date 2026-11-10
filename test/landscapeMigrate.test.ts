@@ -152,6 +152,22 @@ describe("a group bigger than one area the file accepts", () => {
     }
   });
 
+  it("puts what a column tree near the limit doesn't name beside it, where below would pass MAX_EXTENT", () => {
+    // 101 + 4 was the first below made too tall; 110 is squeezed to preset S
+    for (const [n, rest] of [[101, 4], [102, 3], [103, 1], [110, 1], [100, 0]]) {
+      const sessions = many(n + rest);
+      const keys = sessions.slice(0, n).map((s) => s.id);
+      const { l } = migrate({ shown: keys, activeGroup: "5101", trees: { "5101": col(keys) } }, sessions);
+      expect(within(l)).toBe(true);
+      // the tree keeps its order down one column; the rest are right of it
+      const ps = keys.map((k) => l.workspaces[k]);
+      expect(new Set(ps.map((p) => p.x)).size).toBe(1);
+      expect(ps.every((p, i) => i === 0 || p.y > ps[i - 1].y)).toBe(true);
+      const right = ps[0].x + ps[0].w;
+      for (const s of sessions.slice(n)) expect(l.workspaces[s.id].x).toBeGreaterThan(right);
+    }
+  });
+
   it("places a tree too wide to draw even at preset S as if the grid had none, inside MAX_EXTENT", () => {
     const n = Math.ceil(MAX_EXTENT / (S.w + GAP)) + 10;
     const sessions = many(n);

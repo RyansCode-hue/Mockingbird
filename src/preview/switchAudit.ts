@@ -9,7 +9,8 @@
  * bar, problems with room sessions, the tree's rooms, the Team view's stack row. =handoff, =review, =import: what they
  * make, beside what it goes on from (the first free spot elsewhere) and brought into view. =search: a Search window's
  * Match case, set and then read by the next Search window. =tabs (with ?lsCamera at a zoom that draws headers): a
- * right-click on a stack's back tab and on its front one, each tab's Rename… and Close….
+ * right-click on a stack's back tab and on its front one, each tab's Rename… and Close…, and on the front tab of a
+ * stack picked with another workspace.
  */
 import type { Landscape, LandscapeState, Rect } from "../shared/landscape";
 import { AREA_PAD, GAP } from "../shared/landscape";
@@ -426,6 +427,25 @@ async function tabsPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
   };
   await cancelDialog();
   out.frontAfter = node(".ls-tab.on")?.dataset.sid ?? null;
+  // picked with another workspace (s1's header pressed, then the stack's with Shift): its front tab, like its header, is
+  // the stack, so the picked ones' menu, the pick kept
+  const press = async (el: Element | null, shiftKey: boolean) => {
+    if (!el) throw new Error("nothing to press");
+    const r = el.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, composed: true, clientX: r.left + 4, clientY: r.top + r.height / 2, button: 0, buttons: 1, shiftKey, pointerId: 1, isPrimary: true };
+    el.dispatchEvent(new PointerEvent("pointerdown", o));
+    window.dispatchEvent(new PointerEvent("pointerup", { ...o, buttons: 0 }));
+    await sleep(200);
+  };
+  const stack = tab("s2")?.closest(".ls-node") ?? null;
+  await press(node('.ls-node[data-front="s1"] .ls-head'), false);
+  await press(stack?.querySelector(".ls-head .ls-kind") ?? null, true);
+  const picked = () => document.querySelectorAll(".ls-world .ls-node.picked").length;
+  out.pickedBefore = picked();
+  await rightClick(tab("s2"));
+  out.pickedFrontRows = ctxRows()?.slice(0, 2) ?? null;
+  await closeCtx();
+  out.pickedAfter = picked();
 }
 
 export function runSwitchAudit(env: SwitchAuditEnv, part: string): void {

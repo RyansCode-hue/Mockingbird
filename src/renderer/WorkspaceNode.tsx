@@ -10,7 +10,7 @@ import { WorkspaceCard, kindLabel } from "./WorkspaceCard";
 import { PaneChips, PaneRail, holdSize, usePaneGit, usePanePr, type PaneChipProps, type PaneRailProps } from "./TerminalPane";
 import { isRemote } from "./team/RoomLive";
 import { usable, type ModelAction } from "./workspaceActions";
-import { DiffCell } from "./cardBadges";
+import { DiffCell, askBadge } from "./cardBadges";
 
 /** `el` is part of the workspace whose terminal has the keyboard: it's being typed in. */
 export const ownTermHasKeys = (el: Element): boolean => {
@@ -183,20 +183,24 @@ export function WorkspaceNode({
                     {name}
                   </span>
                 )}
-                {tile.members.map((m) => (
-                  <button
-                    key={m.id}
-                    role="tab"
-                    aria-selected={m.id === s.id}
-                    className={`ls-tab ${m.id === s.id ? "on" : ""}`}
-                    data-sid={m.id}
-                    title={`${titleOf(m)} — drag it out to take it out of the stack`}
-                    onClick={() => m.id !== s.id && onTab(tile, m.id)}
-                  >
-                    <StatusDot status={m.status} className="sm" />
-                    <span className="t">{titleOf(m)}</span>
-                  </button>
-                ))}
+                {tile.members.map((m) => {
+                  // a teammate's ask to type in a tab behind: the front one's is on its strip
+                  const ask = m.id !== s.id ? askBadge(m) : null;
+                  return (
+                    <button
+                      key={m.id}
+                      role="tab"
+                      aria-selected={m.id === s.id}
+                      className={`ls-tab${m.id === s.id ? " on" : ""}${ask ? " ask" : ""}`}
+                      data-sid={m.id}
+                      title={ask ? `${titleOf(m)} — ${ask.text}: bring it to the front to answer, or answer in Needs you` : `${titleOf(m)} — drag it out to take it out of the stack`}
+                      onClick={() => m.id !== s.id && onTab(tile, m.id)}
+                    >
+                      <StatusDot status={m.status} className="sm" />
+                      <span className="t">{titleOf(m)}</span>
+                    </button>
+                  );
+                })}
                 {tile.closed?.map((m) => (
                   <button
                     key={m.id}

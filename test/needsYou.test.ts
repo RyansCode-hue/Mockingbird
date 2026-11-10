@@ -334,24 +334,25 @@ describe("Go there", () => {
     expect(go).toHaveBeenCalledTimes(1);
   });
 
-  it("answers a typing ask from its row: Allow and Deny first, off with the reason where Go there would be", () => {
-    const allow = vi.fn();
-    const deny = vi.fn();
+  it("answers a typing ask from its row: Go there first and main, then Allow for 15 min and Deny, each main's call", async () => {
+    const allow = vi.fn(async () => null);
+    const deny = vi.fn(async () => "They aren't a member of this session's room");
     const rows = needsActions({ go: () => {}, goTitle: "Bring it into view at 100%", dismiss: vi.fn(), answer: { who: "Nick", allow, deny } });
     expect(rows.map((r) => [r.key, r.label, !!r.primary])).toEqual([
-      ["allow", "Allow", true],
+      ["go", "Go there", true],
+      ["allow", "Allow for 15 min", false],
       ["deny", "Deny", false],
-      ["go", "Go there", false],
       ["dismiss", "Dismiss", false],
     ]);
-    rows[0].onPick();
-    rows[1].onPick();
+    // the tray runs `answer` and waits on what main says
+    expect(await rows[1].answer!()).toBeNull();
+    expect(await rows[2].answer!()).toBe("They aren't a member of this session's room");
     expect([allow.mock.calls.length, deny.mock.calls.length]).toEqual([1, 1]);
     const off = needsActions({ go: { no: "That session isn't running any more" }, goTitle: "", dismiss: vi.fn(), answer: { who: "Nick", allow: { no: "That session isn't running any more" }, deny: { no: "That session isn't running any more" } } });
-    expect(off.slice(0, 3).map((r) => [r.key, r.disabled, r.title])).toEqual([
-      ["allow", true, "That session isn't running any more"],
-      ["deny", true, "That session isn't running any more"],
-      ["go", true, "That session isn't running any more"],
+    expect(off.slice(0, 3).map((r) => [r.key, r.disabled, r.title, !!r.answer])).toEqual([
+      ["go", true, "That session isn't running any more", false],
+      ["allow", true, "That session isn't running any more", false],
+      ["deny", true, "That session isn't running any more", false],
     ]);
   });
 });

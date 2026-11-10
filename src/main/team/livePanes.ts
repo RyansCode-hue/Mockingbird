@@ -867,7 +867,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       this.asks.set(s.id, asks);
       this.d.remoteAudit?.record("typing.asked", { roomId, member: from, session: s.id, title: s.ticketTitle ?? s.title });
       if (shouldNotify({ settings: this.d.settings(), kind: "other", now: new Date(now) })) {
-        this.d.notify(`${name} wants to type`, `In ${quoted(s.ticketTitle ?? s.title, 80)}: allow it or not in its pane`, s.id);
+        this.d.notify(`${name} wants to type`, `In ${quoted(s.ticketTitle ?? s.title, 80)}: allow it or not in Needs you, or on its workspace`, s.id);
       }
       this.changed();
     }
@@ -889,6 +889,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const who = { roomId, member, session: s.id, title: s.ticketTitle ?? s.title };
     const me = this.selfNameIn(roomId);
     const now = this.now();
+    // an allowance answers an ask: with none pending (answered already, or never made) there's nothing to allow, however
+    // the window came to send it
+    if ((choice === "session" || choice === "minutes") && !this.asks.get(sessionId)?.has(member)) {
+      throw new Error(`${memberName(room.members, member)} isn't asking to type in ${quoted(s.ticketTitle ?? s.title, 80)}: there's nothing to allow`);
+    }
     this.asks.get(sessionId)?.delete(member);
     if (choice === "session" || choice === "minutes") {
       const until = choice === "minutes" ? now + TYPING_MINUTES * 60_000 : null;

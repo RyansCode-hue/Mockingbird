@@ -497,7 +497,7 @@ describe("typing needs the owner's consent", () => {
     // the owner sees who asks, and is notified
     await until(() => ryan.live.state().own[s.id]?.typingAsks?.length === 1, "the ask at Ryan's");
     expect(ryan.live.state().own[s.id].typingAsks![0]).toMatchObject({ member: nick.m.id, name: "Nick" });
-    expect(ryan.notes).toEqual([{ title: "Nick wants to type", body: 'In "donors": allow it or not in its pane', paneId: s.id }]);
+    expect(ryan.notes).toEqual([{ title: "Nick wants to type", body: 'In "donors": allow it or not in Needs you, or on its workspace', paneId: s.id }]);
     // more keys while asked: held here, said so, and never sent
     nick.sessions.write(paneId, "ls\r");
     await settle();
@@ -540,6 +540,24 @@ describe("typing needs the owner's consent", () => {
     // after a no, asking again waits a little
     await nick.live.askToType(paneId);
     expect(remoteOf(nick, s.id)!.room!.typing).toMatchObject({ state: "denied", refused: { why: "Ryan said no a moment ago: ask again in a minute" } });
+  });
+
+  it("allows only an ask that's pending: one never made, or answered already, is refused and grants nothing", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    for (const choice of ["session", "minutes"] as const) expect(() => ryan.live.decideTyping(s.id, nick.m.id, choice)).toThrow(`Nick isn't asking to type in "donors": there's nothing to allow`);
+    expect(ryan.live.state().own[s.id]?.typists ?? []).toEqual([]);
+    // the ask answered with a no, then an allowance sent after it (a second click): still no
+    await nick.live.askToType(remotePaneId(ryan.m.id, s.id));
+    await until(() => ryan.live.state().own[s.id]?.typingAsks?.length === 1, "the ask");
+    ryan.live.decideTyping(s.id, nick.m.id, "deny");
+    expect(() => ryan.live.decideTyping(s.id, nick.m.id, "session")).toThrow(/there's nothing to allow/);
+    await settle();
+    expect(ryan.live.state().own[s.id].typists ?? []).toEqual([]);
+    expect(remoteOf(nick, s.id)!.room!.typing!.state).toBe("denied");
+    expect(await raw(nick, ryan, s.id, "x", 2)).toMatchObject({ ok: false });
+    expect(ptyOf(s.id).writes).toEqual([]);
   });
 
   it("denied: the teammate is told, and nothing they type gets through", async () => {

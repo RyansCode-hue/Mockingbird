@@ -31,6 +31,7 @@ import {
   type Cell,
   type Landscape,
   type Rect,
+  type Size,
   type WorkspaceKind,
 } from "./landscape";
 
@@ -162,6 +163,23 @@ function treeRects(tree: LayoutNode, kindOfKey: (key: string) => WorkspaceKind, 
 }
 
 /**
+ * The frame a tree's area starts from (`r`, the tree's own) for the workspaces the tree doesn't name (`rest`, their
+ * sizes), which placeNew then puts in it, growing it: below the tree, in rows at least its width (about √n of them
+ * wide for more than four); beside it, in columns no taller than it, where those rows would take the area past
+ * MAX_EXTENT; null when neither fits. Each row or column is allowed the 8 px its start can round up by.
+ */
+function restFrame(r: { w: number; h: number }, rest: readonly Size[], wide: (n: number) => number): Rect | null {
+  if (!rest.length) return { x: 0, y: 0, w: r.w, h: r.h };
+  const big = { w: Math.max(...rest.map((s) => s.w)), h: Math.max(...rest.map((s) => s.h)) };
+  const w = rest.length > 4 ? Math.max(r.w, wide(rest.length)) : r.w;
+  const perRow = Math.max(1, Math.floor((w - 2 * AREA_PAD + GAP) / (big.w + GAP)));
+  if (r.h + Math.ceil(rest.length / perRow) * (big.h + GAP + 8) <= MAX_EXTENT) return { x: 0, y: 0, w, h: r.h };
+  const perCol = Math.max(1, Math.floor((r.h - AREA_HEADER - AREA_PAD + GAP) / (big.h + GAP + 8)));
+  const beside = r.w + Math.ceil(rest.length / perCol) * (big.w + GAP + 8);
+  return beside <= MAX_EXTENT ? { x: 0, y: 0, w: beside, h: r.h } : null;
+}
+
+/**
  * The landscape the grid's layout becomes:
  * - each group is an area, the areas in rows in today's group order (the
  *   sidebar's, then room groups only a teammate's sessions are in);
@@ -226,7 +244,7 @@ export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo
     return t;
   };
 
-  /** A group's workspaces laid out in its own frame (corner at 0, 0): its tree's, then the rest by placeNew below them. */
+  /** A group's workspaces laid out in its own frame (corner at 0, 0): its tree's, then the rest by placeNew below or beside them. */
   const layOut = (g: string): { frame: Rect; at: Map<string, Rect> } => {
     const mine = [...tiles.values()].filter((t) => t.group === g);
     const mineKeys = new Set(mine.map((t) => t.key));
@@ -242,11 +260,12 @@ export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo
     let frame: Rect = { x: 0, y: 0, w: wide(mine.length), h: AREA_HEADER + AREA_PAD };
     let at = new Map<string, Rect>();
     const r = tree && treeRects(tree, (k) => tileKind(tiles.get(k)!), cell);
-    if (r) {
+    // what the tree leaves out goes below it, or beside it where below would pass MAX_EXTENT; a tree with no room for
+    // them either way is placed as if there were none
+    const around = r && restFrame(r, mine.filter((t) => !r.rects.has(t.key)).map((t) => presetSize(tileKind(t), "M", cell)), wide);
+    if (r && around) {
       at = r.rects;
-      // what the tree leaves out goes below it, in rows of at least the tree's width
-      const rest = mine.length - at.size;
-      frame = { x: 0, y: 0, w: rest > 4 ? Math.max(r.w, wide(rest)) : r.w, h: r.h };
+      frame = around;
     }
     for (const t of mine) {
       if (at.has(t.key)) continue;

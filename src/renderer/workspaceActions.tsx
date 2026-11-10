@@ -34,10 +34,17 @@ const SECTION_NAME: Record<ActionSection, string | null> = {
 
 export interface ModelAction extends Action {
   section: ActionSection;
+  /**
+   * A teammate's ask to type answered (Needs you): main's call, settling with why it was refused, or null. Where it's
+   * set the tray runs it rather than `onPick`, and only from a pointer's click (NeedsYou.tsx).
+   */
+  answer?: () => Promise<string | null>;
 }
 
 /** A handler, or why it isn't there: a disabled row says so. */
 export type Can = (() => void) | { no: string };
+/** A typing ask's answer (ModelAction.answer), or why it can't be given. */
+export type Answer = (() => Promise<string | null>) | { no: string };
 
 /** The tool windows a workspace opens on itself (docs/landscape.md, Tools). */
 export type WorkspaceTool = "files" | "changes" | "search" | "run";
@@ -415,21 +422,28 @@ export interface NeedsEnv {
   /** "Answer it in its terminal" and such: what Go there leads to, its tooltip. */
   goTitle: string;
   dismiss: () => void;
-  /** A typing ask's answers, the strip's own (Allow while the session runs, Deny), and the teammate's first name. */
-  answer?: { allow: Can; deny: Can; who: string } | null;
+  /** A typing ask's answers (Allow for 15 min, Deny: main's calls, as the strip's), and the teammate's first name. */
+  answer?: { allow: Answer; deny: Answer; who: string } | null;
 }
 
-/** A Needs you item's actions, in the tray's order: a typing ask's Allow and Deny, Go there, then Dismiss (until its state changes). */
+const answerOf = (a: Answer): Pick<ModelAction, "onPick" | "answer" | "disabled" | "title"> =>
+  typeof a === "function" ? { onPick: () => void a(), answer: a } : { onPick: () => {}, disabled: true, title: a.no };
+
+/**
+ * A Needs you item's actions, in the tray's order: Go there, the main one on every row; a typing ask's Allow for 15
+ * min and Deny; then Dismiss (until its state changes). The tray offers only the bounded allowance: one until it's
+ * taken back is given from the strip, with the session in view.
+ */
 export function needsActions(env: NeedsEnv): ModelAction[] {
   const a = env.answer;
   return [
+    { section: "needs", key: "go", label: "Go there", primary: true, title: env.goTitle, ...can(env.go) },
     ...(a
       ? ([
-          { section: "needs", key: "allow", label: "Allow", primary: true, title: `Let ${a.who} type in this session until you take it back, as Allow for this session on its workspace does`, ...can(a.allow) },
-          { section: "needs", key: "deny", label: "Deny", title: `Tell ${a.who} no: they can ask again in a minute`, ...can(a.deny) },
+          { section: "needs", key: "allow", label: "Allow for 15 min", title: `Let ${a.who} type in this session for 15 minutes. Allow for this session is on its strip, with the session in view`, ...answerOf(a.allow) },
+          { section: "needs", key: "deny", label: "Deny", title: `Tell ${a.who} no: they can ask again in a minute`, ...answerOf(a.deny) },
         ] satisfies ModelAction[])
       : []),
-    { section: "needs", key: "go", label: "Go there", primary: !a, title: env.goTitle, ...can(env.go) },
     { section: "needs", key: "dismiss", label: "Dismiss", title: "Take it off the list until its state changes", onPick: env.dismiss },
   ];
 }

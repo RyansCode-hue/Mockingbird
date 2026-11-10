@@ -982,6 +982,18 @@ export function partialMigration(unreadable: readonly string[], ignored: readonl
   return parts.length ? `${parts.join("; ")}. Every session is on the landscape, in its group's area: what those prefs would have placed is where there was room.` : null;
 }
 
+/**
+ * Whether a patch only brings stacks' tabs to the front (a stack's `active`, with the place it's shown at) or opens,
+ * collapses, locks or unlocks areas: nothing that moves a workspace, and what reading the grid's layout in gives anew
+ * (every stack it makes is given whole), so it's saved while that read-in has failed.
+ */
+export function viewOnlyPatch(p: LandscapePatch): boolean {
+  const only = (rec: Record<string, unknown> | undefined, fields: readonly string[]) =>
+    !!rec && Object.values(rec).every((v) => !!v && typeof v === "object" && Object.keys(v).every((f) => fields.includes(f)));
+  const parts = Object.entries(p).filter(([, v]) => v !== undefined);
+  return parts.length > 0 && parts.every(([k]) => (k === "stacks" ? only(p.stacks, ["active", "placement"]) : k === "areas" ? only(p.areas, ["collapsed", "locked"]) : false));
+}
+
 /** A migrated landscape as the patch that puts it in: placements, areas, stacks and migratedAt; whatever else is there stays. */
 export function migrationPatch(m: Landscape): LandscapePatch {
   return { workspaces: m.workspaces, areas: m.areas, stacks: m.stacks, migratedAt: m.migratedAt ?? new Date().toISOString() };

@@ -3572,10 +3572,11 @@ Design O, with Artifacts as a window, and N's workspace header.
     50% and on its card at 20%, and Jump to latest at 80% and 51%.
 - **As built, review fixes 1.**
   - **A teammate's ask to type is in Needs you** (`typing`, "Nick wants to type
-    in …", ranked 0 with the prompts; own sessions only). Its **Allow** (for
-    this session) and **Deny** call `decideTyping`, the main-process call the
-    strip's buttons make (`teamDecideTyping`), and a refusal is said with the
-    teammate's name; the item stays until main says the ask is gone. Its **Go
+    in …", ranked 0 with the prompts; own sessions only). Its answers call
+    `decideTyping`, the main-process call the strip's buttons make
+    (`teamDecideTyping`), and a refusal is said with the teammate's name; the
+    item stays until main says the ask is gone (which answers, and how they're
+    guarded, review fixes 2 below). Its **Go
     there** (`RevealAsk.answer`) lands where the ask can be answered: at 100%,
     centred on the workspace or, when it's bigger than the window, with its
     top left (where the strip is) in view (`answerOn`), whenever it's off
@@ -3609,6 +3610,52 @@ Design O, with Artifacts as a window, and N's workspace header.
     state and several comments no longer name Previous, the grid or the
     Sessions view's rows; the chat chip's group-bar form and an unnameable
     "ungrouped" rename went, and the rename dialog says Rename area.
+- **As built, review fixes 2.**
+  - **The tray's answers can't be given by accident.** A typing row reads Go
+    there (its main, filled button, as on every row), **Allow for 15 min** and
+    **Deny** (outlined), then Dismiss. The tray offers only the bounded
+    allowance: one until it's taken back is given from the strip, with the
+    session in view. The answers take only a pointer's click, as the strip's
+    do: they're no Tab stop and ignore a key's click (`detail` 0); a row that
+    arrived or moved in the last 500 ms takes none (`ANSWER_SETTLE_MS`, from
+    each row's offset after every render); a click within 450 ms of another
+    answer or a Dismiss is a double click's second and is let go; and the
+    row's buttons are off from the click until main has answered and its row
+    has gone (on a refusal they're back). The keyboard moves to the tray
+    first, so N and Esc still work there. Main refuses an allowance with no
+    ask pending ("Nick isn't asking to type in …: there's nothing to allow"),
+    whatever the window sends. `uiTyping` drives each with real presses: a
+    double click whose second lands on the ask that slid up, a click aimed at
+    the top row's Go there as an ask arrives on top, a click on an Allow that
+    just arrived under the pointer, Tab, Enter and Space, the row off while
+    main answers (`?typingAnswerMs`), and N after an answer;
+    `teamLivePanes` tests main's refusal.
+  - **The strip's buttons follow its words** rather than its right end, so
+    a workspace wider than the window, which comes in from its left
+    (`answerOn`), has them in view: tested for L in 1600×1000 and M in
+    1180×800.
+  - **While the read-in has failed, a stack's front tab and an area's
+    collapse or lock are saved** (`viewOnlyPatch`): a notification or Go
+    there can bring a back tab forward. The banner's **Keep them where they
+    are** saves the landscape as shown (the layout's places) with
+    `migratedAt`, so the grid's layout is never read in, which the banner
+    says; a read-in that fails every time no longer leaves nothing saved.
+  - **The migration puts what a column tree near the limit doesn't name
+    beside it**, where below would take the area past `MAX_EXTENT`
+    (`restFrame`), and places the tree's panes as if there were no tree when
+    neither fits: 101 + 4, 102 + 3, 103 + 1 and 110 + 1 are tested.
+  - **A picked stack's front tab, right-clicked,** opens the picked ones'
+    menu and keeps the pick, as its header does.
+  - **✕ on "Nick can type"** says on the chip why main refused it, and logs
+    it; it was the only way to take typing back, and failed silently.
+  - **The peek test** records whether a peek was ever drawn
+    (`window.__mbPeekSeen`), so `peekGone` closing one can't pass for
+    `openPeek` never opening it.
+  - **An ask in a stack's back tab** marks that tab, on the workspace and on
+    its card (`.ask`, its title naming who asks); the front tab's is on its
+    strip and the card's badge.
+  - **The notification** says "allow it or not in Needs you, or on its
+    workspace".
 
 ## Risks
 

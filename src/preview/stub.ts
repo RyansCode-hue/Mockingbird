@@ -966,9 +966,10 @@ const live: LivePanesState = {
     }),
   ],
   own: {
-    // Nick may type in s1 for a few more minutes; ?typingAsk: he's asking to type in s8
+    // Nick may type in s1 for a few more minutes; ?typingAsk: he's asking to type in s8, and ?typingAsk2 in s2 too, a
+    // moment before
     s1: roomTag({ sessionId: "s1", lookers: [{ id: NICK, name: "Nick Smith", focused: true }], typists: [{ member: NICK, name: "Nick Smith", until: now + 12 * min, at: now - 3 * min }] }),
-    s2: roomTag({ sessionId: "s2" }),
+    s2: roomTag({ sessionId: "s2", ...(teamTypingQ.has("typingAsk2") ? { typingAsks: [{ member: NICK, name: "Nick Smith", at: now - 21_000 }] } : {}) }),
     s3: roomTag({ sessionId: "s3", guards: { secrets: false, coauthors: true } }),
     s4: roomTag({ sessionId: "s4", guards: { secrets: false, coauthors: true } }),
     s8: roomTag({ sessionId: "s8", ...(teamTypingQ.has("typingAsk") ? { typingAsks: [{ member: NICK, name: "Nick Smith", at: now - 20_000 }] } : {}) }),
@@ -2503,13 +2504,19 @@ const api: Record<string, (...a: any[]) => any> = {
     emit("onTeamLive", JSON.parse(JSON.stringify(live)));
     return null;
   },
+  // as main decides: an allowance answers a pending ask, and every window hears of it after main's 50 ms debounce;
+  // ?typingRevokeFails: taking typing back is refused, as for a session no longer shared; ?typingAnswerMs=<ms>: main
+  // takes that long to answer
   teamDecideTyping: async (sessionId: string, member: string, choice: "session" | "minutes" | "deny" | "revoke") => {
+    const slow = Number(teamTypingQ.get("typingAnswerMs")) || 0;
+    if (slow > 0) await new Promise((r) => setTimeout(r, slow));
     const tag = live.own[sessionId];
-    if (!tag) return err("That session isn't shared in a room any more");
+    if (!tag || (choice === "revoke" && teamTypingQ.has("typingRevokeFails"))) return err("That session isn't shared in a room any more");
+    if ((choice === "session" || choice === "minutes") && !tag.typingAsks?.some((a) => a.member === member)) return err(`Nick Smith isn't asking to type in "${byId(sessionId)?.title ?? sessionId}": there's nothing to allow`);
     tag.typingAsks = (tag.typingAsks ?? []).filter((a) => a.member !== member);
     tag.typists = (tag.typists ?? []).filter((g) => g.member !== member);
     if (choice === "session" || choice === "minutes") tag.typists.push({ member, name: "Nick Smith", until: choice === "minutes" ? Date.now() + 15 * min : null, at: Date.now() });
-    emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+    setTimeout(() => emit("onTeamLive", JSON.parse(JSON.stringify(live))), 50);
     return null;
   },
   teamAuditRecent: async () => JSON.parse(JSON.stringify(auditEntries)),
@@ -2551,6 +2558,13 @@ w.mb = new Proxy(api, {
   },
 });
 w.__mbEmit = emit; // drive events from a script: __mbEmit("onSessionData", "s1", "text")
+// Nick asks to type in one of this Mac's room sessions now, as main hears it: __mbAskToType("s2")
+w.__mbAskToType = (id: string) => {
+  const tag = live.own[id];
+  if (!tag) throw new Error(`${id} isn't one of this Mac's room sessions here`);
+  tag.typingAsks = [...(tag.typingAsks ?? []).filter((a) => a.member !== NICK), { member: NICK, name: "Nick Smith", at: Date.now() }];
+  emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+};
 
 // a first visit (or ?reset) starts from a useful layout
 const params = new URLSearchParams(location.search);
@@ -2970,6 +2984,12 @@ const lsHover = params.get("lsHover");
 if (lsHover) waitFor(`.ls-world [data-front="${CSS.escape(lsHover)}"] .term-holder`, (el) => el.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })));
 // ?lsPeek=<id> (below 75%): the pointer resting on that session's workspace, so its peek opens; =<id>,pin keeps it open
 const lsPeek = params.get("lsPeek")?.split(",");
+// whether a peek was ever drawn (window.__mbPeekSeen), for a test that none opens: one put away straight after leaves
+// nothing to find later
+if (lsPeek?.[0])
+  new MutationObserver((recs) => {
+    if (recs.some((r) => [...r.addedNodes].some((n) => n instanceof Element && (n.matches(".ls-peek") || !!n.querySelector(".ls-peek"))))) w.__mbPeekSeen = true;
+  }).observe(document.documentElement, { childList: true, subtree: true });
 if (lsPeek?.[0])
   waitFor(`.ls-world [data-front="${CSS.escape(lsPeek[0])}"]`, (el) => {
     setTimeout(() => (el.querySelector(".ls-card, .ls-term") ?? el).dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })), 600);

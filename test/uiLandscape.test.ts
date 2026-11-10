@@ -191,13 +191,73 @@ describe.skipIf(!local)("the landscape", () => {
         : null;
     })()`;
     const r = await page<{ failed: string; said: string; savedWhileFailed: number; after: { migrated: boolean; s1: { w: number; h: number } }; readIns: number }>("landscape=fresh&lsReadInFails&motion=off", read, "ls-read-in-fails");
-    expect(r.failed).toMatch(/^It couldn't be saved: ENOSPC: .*nothing moved, resized or arranged is saved until it's read in\.$/);
+    expect(r.failed).toMatch(/^It couldn't be saved: ENOSPC: .*nothing moved, resized or arranged is saved until it's read in, or until you keep them where they are: the grid's layout is then never read in\.$/);
     expect(r.said).toMatch(/not saved, your grid's layout isn't read in yet/);
     expect(r.savedWhileFailed).toBe(0);
     // read in on the second try, s1 at the size the grid's layout gives it, not the L asked for meanwhile
     expect(r.readIns).toBe(2);
     expect(r.after.migrated).toBe(true);
     expect([r.after.s1.w, r.after.s1.h]).not.toEqual([presetSize("agent", "L").w, presetSize("agent", "L").h]);
+  }, 90_000);
+
+  it("brings a stack's back tab to the front while reading the grid's layout in has failed, so what waits in it can be reached", async () => {
+    const read = `(() => {
+      const t = (window.__t ??= {});
+      const banner = [...document.querySelectorAll(".ls-banner")].find((b) => b.querySelector(".t")?.textContent === "Your grid's layout wasn't read in");
+      if (!t.asked) {
+        if (!banner || !document.querySelector('.ls-world .ls-node[data-front="s2"]')) return null;
+        t.asked = Date.now();
+        window.__mbEmit("onUiCommand", "focus-session", "s3");
+        return null;
+      }
+      if (!document.querySelector('.ls-world .ls-node[data-front="s3"]') && Date.now() - t.asked < 3000) return null;
+      return (window.__got ??= window.mb.landscapeGet().then((s) => (t.stored = Object.values(s.landscape.stacks).map((x) => x.active)))), t.stored
+        ? JSON.stringify({ front: !!document.querySelector('.ls-world .ls-node[data-front="s3"]'), stored: t.stored, note: document.querySelector(".ls-note")?.textContent ?? null, failed: !!banner })
+        : null;
+    })()`;
+    const r = await page<{ front: boolean; stored: string[]; note: string | null; failed: boolean }>("landscape=fresh&lsReadInFails&motion=off", read, "ls-read-in-fails-tab");
+    expect(r).toEqual({ front: true, stored: ["s3"], note: null, failed: true });
+  }, 90_000);
+
+  it("keeps the landscape as it's shown on Keep them where they are, the grid's layout never read in, and saves what's done after", async () => {
+    const read = `(() => {
+      const t = (window.__t ??= {});
+      const banner = () => [...document.querySelectorAll(".ls-banner")].find((b) => b.querySelector(".t")?.textContent === "Your grid's layout wasn't read in");
+      const updates = () => window.__mbCalls.filter((c) => c.fn === "landscapeUpdate").map((c) => c.args[0]);
+      if (!t.kept) {
+        const keep = banner() && [...banner().querySelectorAll("button")].find((b) => b.textContent === "Keep them where they are");
+        if (!keep || !document.querySelector('.ls-world .ls-node[data-front="s1"] .ls-more')) return null;
+        t.kept = true;
+        keep.click();
+        return null;
+      }
+      if (!t.note) {
+        const note = document.querySelector(".ls-note")?.textContent ?? "";
+        if (banner() || !/Kept where they are/.test(note)) return null;
+        t.note = note;
+        document.querySelector('.ls-world .ls-node[data-front="s1"] .ls-more').click();
+        return null;
+      }
+      if (!t.sized) {
+        const row = [...document.querySelectorAll(".mb-ctx button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === "Size L");
+        if (!row) return null;
+        row.click();
+        t.sized = Date.now();
+        return null;
+      }
+      if (Date.now() - t.sized < 1200) return null;
+      return (window.__got ??= window.mb.landscapeGet().then((s) => (t.after = { migrated: !!s.landscape.migratedAt, s1: [s.landscape.workspaces.s1?.w, s.landscape.workspaces.s1?.h], placed: Object.keys(s.landscape.workspaces).length }))), t.after
+        ? JSON.stringify({ note: t.note, ...t.after, readIns: updates().filter((p) => p.migratedAt).length, said: document.querySelector(".ls-note")?.textContent ?? null })
+        : null;
+    })()`;
+    const r = await page<{ note: string; migrated: boolean; s1: number[]; placed: number; readIns: number; said: string | null }>("landscape=fresh&lsReadInFails&motion=off", read, "ls-read-in-keep");
+    expect(r.note).toMatch(/^Kept where they are: your grid's layout wasn't read in, and won't be/);
+    expect(r.migrated).toBe(true);
+    expect(r.placed).toBeGreaterThan(8);
+    // the failed read-in, then the keep: never read in again
+    expect(r.readIns).toBe(2);
+    expect(r.s1).toEqual([presetSize("agent", "L").w, presetSize("agent", "L").h]);
+    expect(r.said ?? "").not.toMatch(/isn't read in yet/);
   }, 90_000);
 
   it("offers a stack's ✕ in the Team view off, saying why, while the layout hasn't loaded", async () => {

@@ -15,6 +15,7 @@ import {
   migrationPatch,
   migrationStep,
   partialMigration,
+  viewOnlyPatch,
   nearestInDirection,
   newer,
   panBy,
@@ -759,5 +760,25 @@ describe("what a migration read in without", () => {
   it("names prefs it couldn't read and prefs not in the grid's shape, and says every session is placed all the same", () => {
     const said = partialMigration(["mb.trees"], ["mb.shown isn't a list"]);
     expect(said).toMatch(/^mb\.trees couldn't be read; mb\.shown isn't a list\. Every session is on the landscape/);
+  });
+});
+
+describe("what's saved while reading the grid's layout in has failed", () => {
+  const at = { x: 24, y: 48, w: 1056, h: 882 };
+  it("is a stack's front tab, and an area opened, collapsed, locked or unlocked", () => {
+    expect(viewOnlyPatch({ stacks: { "5101/api": { active: "s3", placement: at } } })).toBe(true);
+    expect(viewOnlyPatch({ stacks: { "5101/api": { active: "s3" } } })).toBe(true);
+    expect(viewOnlyPatch({ areas: { "5101": { collapsed: true } }, stacks: { "5101/api": { active: "s2" } } })).toBe(true);
+    expect(viewOnlyPatch({ areas: { "5101": { locked: false } } })).toBe(true);
+  });
+
+  it("is never a move, a resize, a removal, an area's place, a ghost or a window, or nothing at all", () => {
+    expect(viewOnlyPatch({ workspaces: { s1: at } })).toBe(false);
+    expect(viewOnlyPatch({ stacks: { "5101/api": null } })).toBe(false);
+    expect(viewOnlyPatch({ areas: { "5101": { collapsed: true, x: 0 } } })).toBe(false);
+    expect(viewOnlyPatch({ areas: { "5101": null } })).toBe(false);
+    expect(viewOnlyPatch({ stacks: { "5101/api": { active: "s3" } }, workspaces: { s1: at } })).toBe(false);
+    expect(viewOnlyPatch({ migratedAt: "2026-11-09T00:00:00.000Z" })).toBe(false);
+    expect(viewOnlyPatch({})).toBe(false);
   });
 });

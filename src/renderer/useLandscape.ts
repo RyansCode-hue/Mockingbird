@@ -124,9 +124,14 @@ export interface Migrating {
   step: MigrationStep;
   /** What of the grid's layout was read in without: a pref that couldn't be read or wasn't in the grid's shape. */
   partial: string | null;
-  /** Why the last attempt failed; it's tried again with retry(). */
+  /** Why the last attempt failed; it's tried again with retry(), or given up with keep(). */
   failed: string | null;
   retry: () => void;
+  /**
+   * The landscape kept as it's shown, the grid's layout never read in: `shown` (the places the layout made for what
+   * had none) saved with migratedAt, so no launch tries again. Why it couldn't be saved, or null.
+   */
+  keep: (shown: LandscapePatch | null) => Promise<string | null>;
   /**
    * Why teammates' sessions couldn't be read, while reading in waits for them:
    * retryRemote() asks again, and withoutRemote() reads in without them. Their
@@ -189,5 +194,13 @@ export function useLandscapeMigration(o: {
     setTries((n) => n + 1);
   }, []);
   const withoutRemote = useCallback(() => setSkipRemote(true), []);
-  return { step, partial, failed, retry, remoteFailed, retryRemote: o.retryRemote, withoutRemote };
+  const keep = useCallback(
+    async (shown: LandscapePatch | null) => {
+      const error = await o.store.update({ ...shown, migratedAt: new Date().toISOString() }, "the landscape as it is, without the grid's layout");
+      if (!error) setFailed(null);
+      return error;
+    },
+    [o.store.update]
+  );
+  return { step, partial, failed, retry, keep, remoteFailed, retryRemote: o.retryRemote, withoutRemote };
 }

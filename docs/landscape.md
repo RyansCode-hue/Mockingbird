@@ -179,8 +179,10 @@ together so work and context flow between them.
   there** (the workspace focused with its terminal's keyboard, or the room's
   area and the admin's prompt) and **Dismiss** (off the list until its state
   changes). Allowing or denying a prompt stays in the terminal; an ask to type
-  also has **Allow** (for this session) and **Deny**, the call its strip's
-  buttons make, and its Go there lands at 100% with the strip in view.
+  also has **Allow for 15 min** and **Deny**, the calls its strip's buttons
+  make, which take only a click (never a key, a row that has just moved, or a
+  double click's second), and its Go there lands at 100% with the strip in
+  view, where Allow for this session is.
   `N` / ⇧N select the
   next or previous item's workspace (or its room's area) and bring it into
   view, leaving the keyboard on the landscape; they work only while the

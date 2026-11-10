@@ -1,6 +1,6 @@
 import React, { useContext, useEffect, useState } from "react";
 import { AGENT_NAME, isErr, ticketIdOf, type SessionInfo, type SessionMeter } from "../shared/types";
-import { BadgeContext, BadgeRow, repeatsDid, useCardBadges } from "./cardBadges";
+import { BadgeContext, BadgeRow, askBadge, repeatsDid, useCardBadges } from "./cardBadges";
 import { lastMeaningfulLine, terminalLines } from "../shared/terminalText";
 import type { Tile } from "./landscapeModel";
 import { needsLabel } from "./needsYouModel";
@@ -125,11 +125,15 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
         {tile.stack && (others.length > 0 || !!tile.closed?.length) && (
           <div className="ls-card-tabs" title={[...tile.members, ...(tile.closed ?? [])].map(titleOf).join("\n")}>
             {need > 0 && <span className="ls-card-needs">{needsLabel(need)}</span>}
-            {others.map((m) => (
-              <span key={m.id} className="ls-card-tab">
-                {titleOf(m)}
-              </span>
-            ))}
+            {others.map((m) => {
+              // a teammate's ask to type in it: the front one's is the card's badge
+              const ask = askBadge(m);
+              return (
+                <span key={m.id} className={ask ? "ls-card-tab ask" : "ls-card-tab"} data-sid={m.id} title={ask ? `${titleOf(m)} — ${ask.text}` : undefined}>
+                  {titleOf(m)}
+                </span>
+              );
+            })}
             {!!tile.closed?.length && <span className="ls-card-tab closed">{tile.closed.length} closed</span>}
           </div>
         )}

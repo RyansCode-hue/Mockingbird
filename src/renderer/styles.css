@@ -2522,10 +2522,13 @@ button.chip.warn { border: 0; cursor: pointer; }
   content: ""; position: absolute; inset: 0; z-index: 6; pointer-events: none;
   border: 2px solid var(--teal); border-radius: inherit;
 }
-.typing-ask .reason { flex: 1 1 140px; min-width: 0; font: 600 10.5px var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the buttons follow the words rather than the strip's right end: a workspace wider than the window comes into view
+   from its left (answerOn), and the answer with it */
+.typing-ask .reason { flex: 0 1 auto; min-width: 0; font: 600 10.5px var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .typing-ask button { padding: 2px 8px; font-size: 10.5px; flex-shrink: 0; }
 .chip.typist { display: inline-flex; align-items: center; gap: 3px; color: var(--teal-text); background: rgba(79, 179, 165, .12); flex-shrink: 0; overflow: visible; }
 .chip.typist .typist-x { padding: 0 2px; border: 0; border-radius: 2px; font-size: 8.5px; line-height: 1.2; color: inherit; }
+.chip.typist .typist-err { color: var(--red); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .chip.typist .typist-x:hover { color: var(--text-1); background: var(--fill-selected); }
 button.chip.view-only { border: 0; cursor: pointer; flex-shrink: 0; }
 button.chip.view-only:hover { color: var(--text-1); background: var(--fill-selected); }
@@ -3199,6 +3202,8 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-tab .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ls-tab:hover { color: var(--text-1); background: var(--fill-subtle); }
 .ls-tab.on { color: var(--text-1); background: var(--fill-selected); }
+/* a tab behind the front one whose session a teammate asks to type in */
+.ls-tab.ask, .ls-card-tab.ask { color: var(--amber-text); box-shadow: inset 0 -2px 0 var(--amber); }
 .ls-term { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 /* the pane's body inside a workspace: the card is its frame, and its terminal starts at the holder's corner */
 .pane.ls-body, .pane.ls-body.st-waiting, .pane.ls-body.st-dead, .pane.ls-body.kind-assistant {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo } from "../shared/types";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import { LOOSE_GROUP } from "../shared/landscape";
@@ -73,21 +73,30 @@ export function useNeedsYou(
 const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", join: "waiting", finished: "idle" };
 
 /**
- * A click in the tray this soon after a Dismiss is a double click's second, landing on whatever slid up under the
- * pointer: it's let go. The tray holds its height this long, so that click lands in it however short it got, rather
- * than on the landscape.
+ * A click in the tray this soon after a Dismiss or an answer is a double click's second, landing on whatever slid up
+ * under the pointer: it's let go. The tray holds its height this long, so that click lands in it however short it got,
+ * rather than on the landscape.
  */
 const DISMISS_GUARD_MS = 450;
+/** A typing ask's Allow and Deny take no click on a row that arrived or moved this recently: it was aimed at what was there. */
+const ANSWER_SETTLE_MS = 500;
+/** The actions that answer a teammate's ask to type (needsActions). */
+const ANSWERS = new Set(["allow", "deny"]);
 
 /** N (1) and ⇧N (-1), or null for any other key. */
 const stepOf = (e: React.KeyboardEvent): 1 | -1 | null => (e.metaKey || e.ctrlKey || e.altKey || e.key.toLowerCase() !== "n" ? null : e.shiftKey ? -1 : 1);
 
 /**
  * The Needs you button in the top bar and the tray it drops down (design D, "Inbox"): every item with its kind and
- * area, how long it has waited, what it is, and its actions (needsActions: a typing ask's Allow and Deny, Go there
- * and Dismiss, through the one model). The item the view is on (N's place) is lit and kept in the list's view. N and ⇧N work in the tray as they do
- * on the landscape, and keep it open; the view keeps the item clear of the tray. They work on the button too, which
- * has the keyboard after Esc. The last Dismiss can be undone from its foot. A dialog opening puts the tray away.
+ * area, how long it has waited, what it is, and its actions (needsActions: Go there, a typing ask's Allow and Deny,
+ * Dismiss, through the one model). The item the view is on (N's place) is lit and kept in the list's view. N and ⇧N
+ * work in the tray as they do on the landscape, and keep it open; the view keeps the item clear of the tray. They work
+ * on the button too, which has the keyboard after Esc. The last Dismiss can be undone from its foot. A dialog opening
+ * puts the tray away.
+ *
+ * Allow and Deny let someone type in a session, so they take only a pointer's click, as the strip's do: never a Tab
+ * stop, Enter or Space; never on a row that has just arrived or moved, or within a double click of another answer or
+ * Dismiss; and the row's buttons are off from the click until main has answered (and its row gone, once it has).
  */
 export function NeedsYou({
   state,
@@ -111,6 +120,30 @@ export function NeedsYou({
   const [last, setLast] = useState<NeedsItem | null>(null);
   const guardUntil = useRef(0);
   const guarded = () => Date.now() < guardUntil.current;
+  // the items answered and waiting on main, by their state (sig): a new ask from the same teammate is a new state
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const free = (sig: string) => setBusy((b) => new Set([...b].filter((x) => x !== sig)));
+  const shownSigs = state.items.map((i) => i.sig).join("\n");
+  // an answered item's state goes once main has it: let go of those no longer listed
+  useEffect(() => {
+    const shown = new Set(shownSigs.split("\n"));
+    setBusy((b) => ([...b].every((s) => shown.has(s)) ? b : new Set([...b].filter((s) => shown.has(s)))));
+  }, [shownSigs]);
+  // where each row is in the tray, and since when: a row that arrived or moved is under a pointer aimed at another
+  const placed = useRef(new Map<string, { top: number; at: number }>());
+  useLayoutEffect(() => {
+    const now = Date.now();
+    const next = new Map<string, { top: number; at: number }>();
+    for (const el of open ? (list.current?.querySelectorAll<HTMLElement>(".ny-item[data-item]") ?? []) : []) {
+      const was = placed.current.get(el.dataset.item!);
+      next.set(el.dataset.item!, was && was.top === el.offsetTop ? was : { top: el.offsetTop, at: now });
+    }
+    placed.current = next;
+  });
+  const settled = (item: NeedsItem) => {
+    const p = placed.current.get(item.id);
+    return !!p && Date.now() - p.at >= ANSWER_SETTLE_MS;
+  };
   const close = (how?: "escape" | "outside" | "away") => {
     setOpen(false);
     // Escape gives the keyboard back to the button that opened it; Go there gives it to the landscape
@@ -140,18 +173,35 @@ export function NeedsYou({
     e.stopPropagation();
     onStep(dir, e.currentTarget.getBoundingClientRect());
   };
-  const onDismiss = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
-    if (guarded()) return;
+  /** A Dismiss or an answer: the guard on, and the keyboard and the tray's height held, as its row will go. */
+  const hold = (e: React.MouseEvent) => {
     guardUntil.current = Date.now() + DISMISS_GUARD_MS;
     const tray = (e.currentTarget as HTMLElement).closest<HTMLElement>(".ny-tray");
-    if (tray) {
-      // its button leaves with it: the keyboard moves to the tray first, so N and Esc still reach it
-      tray.focus({ preventScroll: true });
-      tray.style.minHeight = `${tray.getBoundingClientRect().height}px`;
-      setTimeout(() => (tray.style.minHeight = ""), DISMISS_GUARD_MS);
-    }
+    if (!tray) return;
+    // its button leaves, or is turned off, with it: the keyboard moves to the tray first, so N and Esc still reach it
+    tray.focus({ preventScroll: true });
+    tray.style.minHeight = `${tray.getBoundingClientRect().height}px`;
+    setTimeout(() => (tray.style.minHeight = ""), DISMISS_GUARD_MS);
+  };
+  const onDismiss = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
+    if (guarded()) return;
+    hold(e);
     a.onPick();
     setLast(item);
+  };
+  const onAnswer = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
+    // a key's click on a focused button has no pointer behind it (detail 0)
+    if (!a.answer || e.detail === 0 || guarded() || busy.has(item.sig) || !settled(item)) return;
+    hold(e);
+    setBusy((b) => new Set(b).add(item.sig));
+    // answered, the row stays off until main's word takes it away; refused (said by the answer), it's back on
+    a.answer().then(
+      (error) => error && free(item.sig),
+      (err: unknown) => {
+        console.error(`[mockingbird] answering ${item.id} from Needs you failed:`, err);
+        free(item.sig);
+      }
+    );
   };
   const onUndo = (item: NeedsItem, e: React.MouseEvent) => {
     if (guarded()) return;
@@ -222,20 +272,25 @@ export function NeedsYou({
                   )}
                 </div>
                 <div className="ny-acts">
-                  {actionsFor(item, close).map((a) => (
-                    <button
-                      key={a.key}
-                      type="button"
-                      // the main action is filled only where something waits on you to answer it, as design D does
-                      className={a.primary ? `ny-go ${DOT[item.kind] === "waiting" ? "fill" : ""}` : "ny-dismiss"}
-                      data-action={a.key}
-                      disabled={a.disabled}
-                      title={a.title}
-                      onClick={(e) => (a.key === "dismiss" ? onDismiss(item, a, e) : !guarded() && a.onPick())}
-                    >
-                      {a.label}
-                    </button>
-                  ))}
+                  {actionsFor(item, close).map((a) => {
+                    const answer = ANSWERS.has(a.key);
+                    return (
+                      <button
+                        key={a.key}
+                        type="button"
+                        // the main action is filled only where something waits on you to answer it, as design D does;
+                        // an answer is outlined beside it, never filled
+                        className={a.primary ? `ny-go ${DOT[item.kind] === "waiting" ? "fill" : ""}` : answer ? "ny-go ny-answer" : "ny-dismiss"}
+                        data-action={a.key}
+                        disabled={a.disabled || busy.has(item.sig)}
+                        tabIndex={answer ? -1 : undefined}
+                        title={a.title}
+                        onClick={(e) => (answer ? onAnswer(item, a, e) : a.key === "dismiss" ? onDismiss(item, a, e) : !guarded() && a.onPick())}
+                      >
+                        {a.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ))}

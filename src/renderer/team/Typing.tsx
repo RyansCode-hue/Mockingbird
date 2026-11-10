@@ -83,26 +83,38 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
 /** Whether teammates can type into this session of this Mac's now: its pane is outlined in teal. */
 export const typingOn = (room: RoomSessionTag | null | undefined): boolean => !!room && !room.remote && !!room.typists?.length;
 
-/** The owner's pane header: "Nick can type", for as long as they can, with ✕ to take it back. */
+/**
+ * The owner's pane header: "Nick can type", for as long as they can, with ✕ to take it back. ✕ is the only way to, so
+ * when main refuses it the chip says why (and the console has it) until the next try.
+ */
 export function Typists({ session, room }: { session: SessionInfo; room: RoomSessionTag }) {
   const now = Math.max(useNow(30_000), Date.now()); // an allowance given since the last tick counts from now
+  const [refused, setRefused] = useState<Record<string, string>>({});
   if (room.remote || !room.typists?.length) return null;
+  const revoke = async (g: TypingGrant) => {
+    setRefused(({ [g.member]: _, ...rest }) => rest);
+    const error = await decideTyping(session.id, g.member, "revoke");
+    if (!error) return;
+    console.error(`[mockingbird] taking typing in ${session.id} back from ${g.name} was refused:`, error);
+    setRefused((r) => ({ ...r, [g.member]: error }));
+  };
   const asking = session.status === "waiting";
   return (
     <>
       {room.typists.map((g: TypingGrant) => (
         <span
           key={g.member}
-          className="chip typist"
-          title={`${g.name} can type into this session ${g.until ? `for ${minutesLeft(g.until, now)} more` : "until you close it"}${asking ? ". Not while your agent asks for permission: that answer is yours" : ""}. ✕ stops it now.`}
+          className={refused[g.member] ? "chip typist refused" : "chip typist"}
+          title={`${g.name} can type into this session ${g.until ? `for ${minutesLeft(g.until, now)} more` : "until you close it"}${asking ? ". Not while your agent asks for permission: that answer is yours" : ""}. ${refused[g.member] ? `✕ didn't stop it: ${refused[g.member]}` : "✕ stops it now."}`}
         >
           {firstName(g.name)} can type{g.until ? ` · ${minutesLeft(g.until, now)}` : ""}
+          {refused[g.member] && <span className="typist-err">· couldn't stop it: {refused[g.member]}</span>}
           <button
             className="typist-x"
             aria-label={`Stop ${g.name} typing`}
             onClick={(e) => {
               e.stopPropagation();
-              void decideTyping(session.id, g.member, "revoke");
+              void revoke(g);
             }}
           >
             ✕

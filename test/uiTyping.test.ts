@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
+import { presetSize } from "../src/shared/landscape";
 
 // Typing consent in the UI preview, in real headless Chrome: local only (CI runners have no desktop); the script
 // passes a mock keychain. The fixtures (src/preview/stub.ts): Nick may type in s1 for 12 more minutes; with
@@ -107,6 +108,21 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     expect(r).toMatchObject({ docked: true, overTerminal: true, fullWidth: true });
   }, 90_000);
 
+  it("says why on the chip when ✕ can't take typing back, the chip kept", async () => {
+    const read = `(() => {
+      const chip = document.querySelector('.ls-world [data-front="s1"] .chip.typist');
+      if (!window.__t) {
+        if (!chip) return null;
+        window.__t = true;
+        chip.querySelector(".typist-x").click();
+        return null;
+      }
+      const err = chip?.querySelector(".typist-err");
+      return err ? JSON.stringify({ err: err.textContent, chip: chip.textContent.startsWith("Nick can type") }) : null;
+    })()`;
+    expect(JSON.parse(await result(`${AT}&typingRevokeFails`, read, SIZE))).toEqual({ err: "· couldn't stop it: That session isn't shared in a room any more", chip: true });
+  }, 90_000);
+
   it("✕ takes typing back, and the outline goes with it", async () => {
     const read = `(() => {
       const x = document.querySelector(".chip.typist .typist-x");
@@ -144,6 +160,223 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
 });
 
 /** Nick's ask to type in s8 (?typingAsk), from wherever the view is: a card at 11%, read-only at 50%, live at 100%. */
+describe.skipIf(!local)("a teammate's ask answered from Needs you, with real presses", () => {
+  const NICK = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+  // the driver presses what the page pushes onto window.__mbKeys at the start of its next look, about 250 ms on: what
+  // a look finds under the pointer is what the press just before it hit
+  const common = `
+    const t = (window.__t ??= { step: 0 });
+    const calls = () => window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").map((c) => c.args);
+    const centre = (el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; };
+    const press = (p, clickCount = 1) => (window.__mbKeys ??= []).push({ mouse: { ...p, clickCount } });
+    const key = (k) => (window.__mbKeys ??= []).push({ key: k });
+    const row = (sid) => document.querySelector('.ny-item[data-item^="type:' + sid + ':"]');
+    const under = (p) => { const el = document.elementFromPoint(p.x, p.y); return (el?.closest(".ny-item")?.dataset.item.split(":").slice(0, 2).join(":") ?? "?") + " / " + (el?.closest("button")?.dataset.action ?? "?"); };
+    const typing = () => [...document.querySelectorAll(".ny-item.k-typing")].map((i) => i.dataset.item.split(":")[1]);
+    const open = () => {
+      const btn = document.querySelector(".ny-btn");
+      if (!btn || !document.querySelector(".ls-world .ls-node")) return false;
+      btn.click();
+      t.opened = Date.now();
+      return true;
+    };
+  `;
+
+  it("answers only the ask a double click's first press was on: the second, on the ask that slid up under it, does nothing", async () => {
+    const read = `(() => { ${common}
+      if (t.step === 0) return open() ? ((t.step = 1), null) : null;
+      if (t.step === 1) {
+        const allow = row("s8")?.querySelector('[data-action="allow"]');
+        if (!allow || Date.now() - t.opened < 800) return null;
+        t.below = row("s8").nextElementSibling?.dataset.item.split(":").slice(0, 2).join(":") ?? null;
+        t.at = centre(allow);
+        press(t.at, 1);
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        press(t.at, 2);
+        t.step = 3;
+        return null;
+      }
+      if (t.step === 3) {
+        t.underSecond = under(t.at);
+        t.step = 4;
+        t.done = Date.now();
+        return null;
+      }
+      if (Date.now() - t.done < 1200) return null;
+      return JSON.stringify({ below: t.below, underSecond: t.underSecond, calls: calls(), typing: typing() });
+    })()`;
+    const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.5&typingAsk&typingAsk2", read, "1400x900"));
+    // s2's ask was right below s8's, and slid up under the pointer before the second press
+    expect(r.below).toBe("type:s2");
+    expect(r.underSecond).toBe("type:s2 / allow");
+    expect(r.calls).toEqual([["s8", NICK, "minutes"]]);
+    expect(r.typing).toEqual(["s2"]);
+  }, 90_000);
+
+  it("takes a click aimed at the top row's Go there, when an ask arrives on top just before it lands, as that ask's Go there", async () => {
+    const read = `(() => { ${common}
+      if (t.step === 0) return open() ? ((t.step = 1), null) : null;
+      if (t.step === 1) {
+        const first = document.querySelector(".ny-item");
+        if (!first || Date.now() - t.opened < 800) return null;
+        t.aimed = first.dataset.item;
+        t.at = centre(first.querySelector('[data-action="go"]'));
+        window.__mbAskToType("s2");
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        if (!row("s2")) return null;
+        t.top = document.querySelector(".ny-item").dataset.item.split(":").slice(0, 2).join(":");
+        t.under = under(t.at);
+        press(t.at, 1);
+        t.step = 3;
+        t.done = Date.now();
+        return null;
+      }
+      if (Date.now() - t.done < 1200) return null;
+      return JSON.stringify({ top: t.top, under: t.under, calls: calls(), tray: !!document.querySelector(".ny-tray") });
+    })()`;
+    const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.5", read, "1400x900"));
+    expect(r.top).toBe("type:s2");
+    expect(r.under).toBe("type:s2 / go");
+    // it went there, which puts the tray away; nothing was allowed
+    expect(r.tray).toBe(false);
+    expect(r.calls).toEqual([]);
+  }, 90_000);
+
+  it("lets a click on an Allow that arrived under the pointer a moment ago do nothing", async () => {
+    const read = `(() => { ${common}
+      if (t.step === 0) return open() ? ((t.step = 1), null) : null;
+      if (t.step === 1) {
+        const first = document.querySelector(".ny-item");
+        if (!first || Date.now() - t.opened < 800) return null;
+        t.aimed = first.dataset.item.split(":").slice(0, 2).join(":");
+        t.at = centre(first.querySelector('[data-action="allow"]'));
+        // the new ask goes on top as the press is on its way: it lands within ANSWER_SETTLE_MS of the row arriving
+        window.__mbAskToType("s2");
+        press(t.at, 1);
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        t.under = under(t.at);
+        t.step = 3;
+        t.done = Date.now();
+        return null;
+      }
+      if (Date.now() - t.done < 1200) return null;
+      return JSON.stringify({ aimed: t.aimed, under: t.under, calls: calls(), typing: typing().sort() });
+    })()`;
+    const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.5&typingAsk", read, "1400x900"));
+    expect(r.aimed).toBe("type:s8");
+    expect(r.under).toBe("type:s2 / allow");
+    expect(r.calls).toEqual([]);
+    expect(r.typing).toEqual(["s2", "s8"]);
+  }, 90_000);
+
+  it("never answers from the keyboard: Tab passes Allow and Deny by, and Enter or Space on a focused one does nothing", async () => {
+    const read = `(() => { ${common}
+      if (t.step === 0) return open() ? ((t.step = 1), (t.focus = []), null) : null;
+      if (t.step === 1) {
+        if (!row("s8") || Date.now() - t.opened < 800) return null;
+        // each Tab while focus is still in the tray: past its last stop it would leave, and the tray with it
+        if (t.tabbed) t.focus.push(document.activeElement?.dataset?.action ?? (document.activeElement?.closest(".ny-tray") ? "tray" : document.activeElement?.tagName));
+        const stops = document.querySelectorAll(".ny-tray button:not([tabindex='-1']):not(:disabled)").length;
+        t.tabbed = (t.tabbed ?? 0) + 1;
+        if (t.tabbed < stops) {
+          key("Tab");
+          return null;
+        }
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        if (!row("s8")) return JSON.stringify({ stuck: "the tray went", focus: t.focus });
+        row("s8").querySelector('[data-action="allow"]').focus();
+        t.focused = document.activeElement?.dataset?.action ?? null;
+        key("Enter");
+        t.step = 3;
+        return null;
+      }
+      if (t.step === 3) {
+        key("Space");
+        t.step = 4;
+        t.done = Date.now();
+        return null;
+      }
+      if (Date.now() - t.done < 1000) return null;
+      return JSON.stringify({ focus: t.focus, focused: t.focused, calls: calls(), typing: typing() });
+    })()`;
+    const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.5&typingAsk", read, "1400x900"));
+    expect(r.focus.length).toBeGreaterThan(3);
+    expect(r.focus).toContain("go");
+    expect(r.focus.filter((a: string) => a === "allow" || a === "deny")).toEqual([]);
+    expect(r.focused).toBe("allow");
+    expect(r.calls).toEqual([]);
+    expect(r.typing).toEqual(["s8"]);
+  }, 90_000);
+
+  it("turns the row's buttons off from the click until main answers", async () => {
+    const read = `(() => { ${common}
+      if (t.step === 0) return open() ? ((t.step = 1), null) : null;
+      if (t.step === 1) {
+        if (!row("s8") || Date.now() - t.opened < 800) return null;
+        t.deny = centre(row("s8").querySelector('[data-action="deny"]'));
+        press(centre(row("s8").querySelector('[data-action="allow"]')), 1);
+        t.step = 2;
+        t.clicked = Date.now();
+        return null;
+      }
+      if (t.step === 2) {
+        // past the double click guard, main still answering (?typingAnswerMs): a click on its Deny
+        if (Date.now() - t.clicked < 700) return null;
+        t.off = [...row("s8").querySelectorAll("button")].map((b) => b.disabled);
+        press(t.deny, 1);
+        t.step = 3;
+        return null;
+      }
+      if (row("s8")) return null;
+      return JSON.stringify({ off: t.off, calls: calls() });
+    })()`;
+    const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.5&typingAsk&typingAnswerMs=1500", read, "1400x900"));
+    expect(r.off).toEqual([true, true, true, true]);
+    expect(r.calls).toEqual([["s8", NICK, "minutes"]]);
+  }, 90_000);
+
+  it("leaves the keyboard with the tray once an answer takes its row away, where N still steps", async () => {
+    const read = `(() => { ${common}
+      if (t.step === 0) return open() ? ((t.step = 1), null) : null;
+      if (t.step === 1) {
+        if (!row("s8") || Date.now() - t.opened < 800) return null;
+        press(centre(row("s8").querySelector('[data-action="allow"]')), 1);
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        if (row("s8")) return null;
+        t.keys = document.activeElement?.closest(".ny-tray") ? "tray" : (document.activeElement?.tagName ?? null);
+        t.lit = document.querySelector(".ny-item.on")?.dataset.item ?? null;
+        key("n");
+        t.step = 3;
+        t.done = Date.now();
+        return null;
+      }
+      if (Date.now() - t.done < 1000) return null;
+      return JSON.stringify({ keys: t.keys, lit: t.lit, litAfterN: document.querySelector(".ny-item.on")?.dataset.item ?? null, tray: !!document.querySelector(".ny-tray"), calls: calls() });
+    })()`;
+    const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.5&typingAsk", read, "1400x900"));
+    expect(r.calls).toEqual([["s8", NICK, "minutes"]]);
+    expect(r.keys).toBe("tray");
+    expect(r.tray).toBe(true);
+    expect(r.litAfterN).not.toBeNull();
+    expect(r.litAfterN).not.toBe(r.lit);
+  }, 90_000);
+});
+
 describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
   const ZOOMS = [0.11, 0.5, 1];
   const S8 = `document.querySelector('.ls-world [data-front="s8"]')`;
@@ -183,25 +416,27 @@ describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
     }, 90_000);
 
   for (const zoom of ZOOMS)
-    it(`at ${zoom * 100}%: Needs you lists it with the prompts, and its Allow answers it as the strip's does`, async () => {
+    it(`at ${zoom * 100}%: Needs you lists it with the prompts, Go there first, and a click on its Allow for 15 min answers it`, async () => {
       const read = `(() => {
         if (!window.__t) {
           const btn = document.querySelector(".ny-btn");
           if (!btn || !${S8} || !${PCT}) return null;
-          window.__t = { pct: ${PCT} };
+          window.__t = { pct: ${PCT}, opened: Date.now() };
           btn.click();
           return null;
         }
         if (!window.__t.item) {
           const item = document.querySelector(".ny-item.k-typing");
-          if (!item) return null;
+          if (!item || Date.now() - window.__t.opened < 800) return null;
+          const btn = (a) => item.querySelector('[data-action="' + a + '"]');
           window.__t.item = {
             text: item.querySelector(".ny-text").textContent,
             kind: item.querySelector(".ny-kind").textContent,
-            acts: [...item.querySelectorAll("button")].map((b) => b.dataset.action),
+            acts: [...item.querySelectorAll("button")].map((b) => b.dataset.action + ":" + b.textContent + ":" + b.className.trim()),
             kinds: [...document.querySelectorAll(".ny-item")].map((i) => [...i.classList].find((c) => c.startsWith("k-")).slice(2)),
           };
-          item.querySelector('[data-action="allow"]').click();
+          const r = btn("allow").getBoundingClientRect();
+          (window.__mbKeys ??= []).push({ mouse: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), clickCount: 1 } });
           return null;
         }
         if (document.querySelector(".ny-item.k-typing")) return null;
@@ -211,12 +446,51 @@ describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
       expect(r.pct).toBe(`${Math.round(zoom * 100)}%`);
       expect(r.item.text).toMatch(/^Nick wants to type in /);
       expect(r.item.kind).toMatch(/^Wants to type · /);
-      expect(r.item.acts).toEqual(["allow", "deny", "go", "dismiss"]);
+      // Go there is the row's main, filled button, as on every other row; the answers are outlined beside it
+      expect(r.item.acts).toEqual(["go:Go there:ny-go fill", "allow:Allow for 15 min:ny-go ny-answer", "deny:Deny:ny-go ny-answer", "dismiss:Dismiss:ny-dismiss"]);
       // ranked with what holds someone up: no join request or finished session before it
       const at = r.item.kinds.indexOf("typing");
       expect(r.item.kinds.slice(0, at).every((k: string) => k === "permission" || k === "question" || k === "typing")).toBe(true);
       expect(r.live).toEqual({ asks: 0, typists: ["Nick Smith"] });
-      expect(r.calls).toEqual([["s8", "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "session"]]);
+      expect(r.calls).toEqual([["s8", "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "minutes"]]);
+    }, 90_000);
+
+  for (const [preset, size] of [["L", "1600x1000"], ["M", "1180x800"]] as const)
+    it(`brings all three of the strip's buttons into view from the notification, for ${preset} in a ${size} window`, async () => {
+      const L = presetSize("agent", "L");
+      const read = `(() => {
+        const t = (window.__t ??= { step: 0 });
+        const vp = document.querySelector(".ls-viewport");
+        if (t.step === 0) {
+          if (!${S8} || !${PCT} || !vp) return null;
+          t.step = 0.5;
+          if ("${preset}" === "M") t.step = 1;
+          else
+            void window.mb.landscapeGet().then((s) => window.mb.landscapeUpdate({ workspaces: { s8: { ...s.landscape.workspaces.s8, w: ${L.w}, h: ${L.h} } } })).then((r) => {
+              t.patched = !r?.error;
+              t.step = 1;
+            });
+          return null;
+        }
+        if (t.step === 1) {
+          window.__mbEmit("onUiCommand", "focus-session", "s8");
+          t.step = 2;
+          t.at = Date.now();
+          return null;
+        }
+        const btns = [...(${S8}?.querySelectorAll(".typing-ask button") ?? [])];
+        if (${PCT} !== "100%" || btns.length !== 3 || Date.now() - t.at < 1200) return null;
+        const v = vp.getBoundingClientRect();
+        return JSON.stringify({
+          w: Math.round(${S8}.getBoundingClientRect().width),
+          wider: ${S8}.getBoundingClientRect().width > v.width,
+          inView: btns.map((b) => { const r = b.getBoundingClientRect(); return b.textContent + ":" + (r.left >= v.left && r.right <= v.right && r.top >= v.top && r.bottom <= v.bottom); }),
+        });
+      })()`;
+      const r = JSON.parse(await result(`motion=off&lsCamera=0,0,0.11&typingAsk`, read, size));
+      // wider than the view, so it comes in from its left
+      expect(r.wider).toBe(true);
+      expect(r.inView).toEqual(["Allow for this session:true", "Allow for 15 min:true", "Deny:true"]);
     }, 90_000);
 
   it("Go there from Needs you, from a card, lands at 100% with the strip in view; Deny there says no", async () => {
@@ -254,14 +528,33 @@ describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
 
   for (const zoom of [0.11, 0.5])
     it(`at ${zoom * 100}%: resting on the workspace opens no peek over the ask (one with no ask still peeks)`, async () => {
+      // ever drawn, not only there at the end: one opened and put away straight after would pass
       const read = `(() => {
         window.__t ??= Date.now();
         if (Date.now() - window.__t < 2500) return null;
-        return JSON.stringify(!!document.querySelector(".ls-peek"));
+        return JSON.stringify(!!window.__mbPeekSeen);
       })()`;
       expect(await result(`motion=off&lsCamera=0,0,${zoom}&typingAsk&lsPeek=s8`, read, SIZE)).toBe("false");
       expect(await result(`motion=off&lsCamera=0,0,${zoom}&typingAsk&lsPeek=s2`, read, SIZE)).toBe("true");
     }, 90_000);
+
+  it("marks a stack's tab behind the front one when a teammate asks to type in its session, on the workspace and on its card", async () => {
+    const read = `(() => {
+      if (!window.__t) {
+        if (!document.querySelector('.ls-world [data-sid="s3"]')) return null;
+        window.__t = true;
+        window.__mbAskToType("s3");
+        return null;
+      }
+      const tab = document.querySelector('.ls-world .ls-tab.ask[data-sid="s3"], .ls-world .ls-card-tab.ask[data-sid="s3"]');
+      if (!tab) return null;
+      return JSON.stringify({ kind: tab.className.trim(), title: tab.title, marked: [...document.querySelectorAll(".ls-world .ls-tab.ask, .ls-world .ls-card-tab.ask")].map((t) => t.dataset.sid) });
+    })()`;
+    const live = JSON.parse(await result("motion=off&lsCamera=0,0,0.5", read, "1400x900"));
+    expect(live).toEqual({ kind: "ls-tab ask", title: "API tests — Nick asks to type: bring it to the front to answer, or answer in Needs you", marked: ["s3"] });
+    const card = JSON.parse(await result("motion=off&lsCamera=0,0,0.2", read, "1400x900"));
+    expect(card).toEqual({ kind: "ls-card-tab ask", title: "API tests — Nick asks to type", marked: ["s3"] });
+  }, 90_000);
 
   it("puts away a peek kept open over the workspace once a teammate asks to type in it", async () => {
     const read = `(() => {

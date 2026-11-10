@@ -84,7 +84,7 @@ import { LandscapeTopBar, type TopTab } from "./TopBar";
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type NoteAction } from "./Landscape";
 import { useLandscape, useLandscapeMigration, type LandscapeSave } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
-import { accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { viewOnlyPatch, accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
@@ -740,13 +740,16 @@ function App() {
     remoteError: roomLive.error,
     retryRemote: roomLive.retry,
   });
-  // While reading the grid's layout in has failed, what's done on the landscape isn't saved: reading it in, on a retry
-  // or the next launch, would put those places back. Each save is refused and said, as the banner says; reading it in
-  // saves through the store itself. (A file that can't be read is a stand-in main never saves, and says so.)
+  // While reading the grid's layout in has failed, what moves on the landscape isn't saved: reading it in, on a retry or
+  // the next launch, would put those places back. Each such save is refused and said, as the banner says; a stack's
+  // front tab and an area's collapse or lock are saved (viewOnlyPatch), so a back tab can still be brought forward to
+  // answer what waits in it. Reading it in, or keeping the landscape as it is, saves through the store itself. (A file
+  // that can't be read is a stand-in main never saves, and says so.)
   const readInFailed = useRef(false);
   readInFailed.current = !!migration.failed;
   const lsSaves = useMemo(() => {
-    const save = (patch: LandscapePatch, what: string): Promise<LandscapeSave> => (readInFailed.current ? Promise.resolve({ error: NOT_READ_IN }) : landscapeStore.save(patch, what));
+    const save = (patch: LandscapePatch, what: string): Promise<LandscapeSave> =>
+      readInFailed.current && !viewOnlyPatch(patch) ? Promise.resolve({ error: NOT_READ_IN }) : landscapeStore.save(patch, what);
     const update = async (patch: LandscapePatch, what: string): Promise<string | null> => {
       const r = await save(patch, what);
       return "error" in r ? r.error : null;
@@ -2070,8 +2073,11 @@ function App() {
    * A typing ask answered from the tray: the same main-process call, and checks, as its strip's buttons; what goes
    * wrong is said, and the item stays listed until main says the ask is gone.
    */
-  const answerTyping = (sessionId: string, ask: { member: string; name: string }, choice: "session" | "deny") =>
-    void decideTyping(sessionId, ask.member, choice).then((error) => error && lsSay(`Couldn't answer ${firstName(ask.name)}: ${error}`));
+  const answerTyping = (sessionId: string, ask: { member: string; name: string }, choice: "minutes" | "deny"): Promise<string | null> =>
+    decideTyping(sessionId, ask.member, choice).then((error) => {
+      if (error) lsSay(`Couldn't answer ${firstName(ask.name)}: ${error}`);
+      return error;
+    });
   /** An item's actions (needsActions): a typing ask's answers, Go there and Dismiss, Go there off saying why when it can't be gone to. */
   const needsActionsFor = (item: NeedsItem, close: () => void): ModelAction[] => {
     const target = targetOf(item, sessions);
@@ -2093,8 +2099,8 @@ function App() {
         ask && item.session
           ? {
               who: firstName(ask.name),
-              allow: goCan(target, () => answerTyping(item.session!, ask, "session")),
-              deny: goCan(target, () => answerTyping(item.session!, ask, "deny")),
+              allow: () => answerTyping(item.session!, ask, "minutes"),
+              deny: () => answerTyping(item.session!, ask, "deny"),
             }
           : null,
     });
@@ -2182,6 +2188,9 @@ function App() {
   const landscapeMain = () => (
     <>
       <LandscapeBanners
+        onKeep={() =>
+          void migration.keep(layoutNow.current?.patch ?? null).then((error) => lsSay(error ? `Not kept: ${error}` : "Kept where they are: your grid's layout wasn't read in, and won't be"))
+        }
         problems={landscapeState?.problems ?? []}
         error={landscapeStore.error}
         onReload={landscapeStore.reload}

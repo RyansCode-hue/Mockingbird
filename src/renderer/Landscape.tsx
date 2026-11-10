@@ -2126,7 +2126,8 @@ export function Landscape({
       if (closed) return ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(ghostActions(closed)));
       const tab = t.closest<HTMLElement>(".ls-tab[data-sid]");
       const of = tab ? tile.members.find((m) => m.id === tab.dataset.sid) : undefined;
-      if (!inFocus && !of && pickedNow.current.includes(tile.key)) return ctx.openAt({ x: e.clientX, y: e.clientY }, pickedMenu());
+      // a picked stack's front tab is the stack, as its header is: the picked ones' menu
+      if (!inFocus && !(of && of.id !== tile.front.id) && pickedNow.current.includes(tile.key)) return ctx.openAt({ x: e.clientX, y: e.clientY }, pickedMenu());
       select(tile);
       ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(of && of.id !== tile.front.id ? actionsFor(tile, of) : tileActions(tile)));
       return;
@@ -2434,7 +2435,8 @@ export function Landscape({
  * them, a change it refused, and how reading the grid's layout in is going. Each can be put away for this
  * window; one that changes comes back.
  */
-export function LandscapeBanners({ problems, error, onReload, migration }: { problems: LandscapeProblem[]; error: string | null; onReload: () => void; migration: Migrating }) {
+/** `onKeep`: the landscape kept as it's shown, the grid's layout given up on (Migrating.keep). */
+export function LandscapeBanners({ problems, error, onReload, migration, onKeep }: { problems: LandscapeProblem[]; error: string | null; onReload: () => void; migration: Migrating; onKeep: () => void }) {
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const step = migration.step;
   type Action = { label: string; run: () => void };
@@ -2460,7 +2462,18 @@ export function LandscapeBanners({ problems, error, onReload, migration }: { pro
         }]
       : []),
     ...(migration.partial ? [{ key: `partial:${migration.partial}`, tone: "info" as const, title: "Part of your grid's layout wasn't read in", text: migration.partial }] : []),
-    ...(migration.failed ? [{ key: `migration:${migration.failed}`, tone: "bad" as const, title: "Your grid's layout wasn't read in", text: `${migration.failed}. Workspaces are placed where there's room meanwhile, and nothing moved, resized or arranged is saved until it's read in.`, actions: [{ label: "Try again", run: migration.retry }] }] : []),
+    ...(migration.failed
+      ? [{
+          key: `migration:${migration.failed}`,
+          tone: "bad" as const,
+          title: "Your grid's layout wasn't read in",
+          text: `${migration.failed}. Workspaces are placed where there's room meanwhile, and nothing moved, resized or arranged is saved until it's read in, or until you keep them where they are: the grid's layout is then never read in.`,
+          actions: [
+            { label: "Try again", run: migration.retry },
+            { label: "Keep them where they are", run: onKeep },
+          ],
+        }]
+      : []),
     ...(step.kind === "blocked" ? [{ key: `blocked:${step.why}`, tone: "info" as const, title: "Your grid's layout isn't read in yet", text: "Not while the layout file has the problem above: workspaces are placed where there's room meanwhile, and their places aren't saved." }] : []),
   ];
   const shown = rows.filter((r) => !hidden.has(r.key));

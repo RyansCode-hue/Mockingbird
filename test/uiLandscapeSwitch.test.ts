@@ -136,6 +136,10 @@ describe.skipIf(!local)("a stack's tabs, right-clicked", () => {
     expect(a.close.dialog === null ? a.close.named.length > 0 : /API tests/.test(a.close.dialog)).toBe(true);
     expect(a.close.named.filter((n: string) => n.endsWith(":s2"))).toEqual([]);
     expect(a.frontAfter).toBe("s2");
+    // picked with s1, the stack's front tab opens the picked ones' menu, as its header does, and keeps the pick
+    expect(a.pickedBefore).toBe(2);
+    expect(a.pickedFrontRows[0]).toBe("# 2 selected");
+    expect(a.pickedAfter).toBe(2);
   }, 90_000);
 });
 
