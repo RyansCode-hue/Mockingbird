@@ -1,5 +1,5 @@
 import * as path from "path";
-import { git } from "./git";
+import { guardedGit } from "./safeGit";
 import { quote } from "./shell";
 import { parseClaudeJson, type ShellRunner } from "./headless";
 import { agentLabel, isInstalledBin } from "./agents";
@@ -13,7 +13,7 @@ const CARRY = /(^|\/)(\.env(\.[\w-]+)?|[\w.-]+\.env|local\.settings\.json|\.cert
 
 /** Gitignored files and folders in the main checkout that a worktree would lack, e.g. backend/.env. */
 export async function ignoredCandidates(repo: string): Promise<string[]> {
-  const out = await git(repo, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { trim: false });
+  const out = await (await guardedGit(repo)).run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { trim: false });
   return out
     .split("\0")
     .filter(Boolean)

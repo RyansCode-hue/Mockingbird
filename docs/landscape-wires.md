@@ -686,10 +686,157 @@ second way to the same thing.
 **Left:**
 - The Source Control view's own diffs (`files.ts`' `fileDiff`, `gitChanges`) still run
   plain git in the user's repositories. A person asks for those, but the config they read
-  is just as writable by an agent. They could go through `guardedGit` next.
-- `secretPathspecs` is still case-sensitive where room backups use it.
+  is just as writable by an agent. They could go through `guardedGit` next. (Done in
+  review fixes 2.)
+- `secretPathspecs` is still case-sensitive where room backups use it. (Done in review
+  fixes 2.)
 - A session launched before team rooms start hears nothing of its wires until it's
   relaunched or wired again. (Done in the join: it's told once rooms have started.)
+
+#### W2 review fixes 2 as built
+
+The re-review of 5a7762d, built on main at 6c1f9fd (after the W2+W3 join).
+
+**Every driver, whatever its name (N1):**
+- `driversToTurnOff` keeps a driver named `""` (`[filter ""]`, which git runs for an
+  attribute `filter=` with nothing after it). Its overrides are spelled as git spells
+  them: `filter..clean` and so on.
+- A key it can't take apart throws, so nothing runs with a driver it didn't see.
+  `[filter]` with no name names no driver, and is skipped.
+- git-lfs is left on. A driver whose every command is exactly what `git lfs install`
+  sets (`git-lfs clean -- %f`, `git-lfs smudge -- %f`, `git-lfs filter-process`) stays
+  on. With it off, a probe showed an LFS file that was merely touched reading as
+  changed. Any other command named `lfs` is turned off, as is git-lfs's own command
+  under another name.
+- `test/hostileRepo.ts` makes the repository every guarded read is tested on. It plants
+  fsmonitor, a plain driver, an `x=y` driver, an empty-named driver, a textconv, an
+  external diff, a pager, and `log.showSignature` with a `gpg.program` and a signed
+  commit at the branch's tip.
+
+**Submodules:**
+- `SAFE_DIFF` is `--no-color --no-ext-diff --no-textconv --submodule=short
+  --ignore-submodules=dirty`. Status adds `--ignore-submodules=dirty` (`SAFE_STATUS`).
+  `diff.submodule=short` is among the overrides too.
+- It's `dirty`, not `all`. git runs nothing inside a submodule, whose own config the
+  overrides can't reach, but a submodule's pointer moving still shows. So the badge
+  counts it again.
+
+**Redaction in linear time (N2):**
+- **Key ends.** `KEY_END_RE`'s run of base64 lines before an END line was quadratic
+  when the run had no END. Now one linear pattern finds the END lines, and
+  `redactKeyEnds` walks back from each in code. It walks at most `KEY_LINES_MAX` (200)
+  lines, and stops at the END line before, which is no key line.
+- **The other patterns.** A `\b` before a quantified name let every start retry. Each
+  name now:
+  - starts at a lookbehind (`ASSIGNMENT_RE`'s `(?<![\w.]|[\w.]-)`, the JWT's, URL
+    credentials'), so a run of its characters is tried from its start alone;
+  - has bounded quantifiers (a name 80, JWT segments 8,192, a URL's user 256 and
+    password 512, separators 40).
+- **The ceiling.** `{diff}` redacts at most `DIFF_REDACT_CHARS` (4 × `DIFF_CHARS`) of the
+  raw diff, then cuts at `DIFF_CHARS`. The cut's note still gives the whole diff's
+  length.
+- **Tests** ("what redaction costs") each run under 100 ms:
+  - 20,000 base64 lines with no END;
+  - 400 KB runs built against each pattern (dotted, hyphenated, JWT beginnings, a long
+    word, END lines, names and colons);
+  - `shapeDiff` on megabytes.
+
+  Seen: 3 to 14 ms.
+
+**A race with the config (L-a):** not done the way the review suggested.
+- Setting `GIT_ATTR_SOURCE` to the empty tree (git 2.40 and later) drops every in-tree
+  `.gitattributes`, `text` and `eol` included. A repository checked out under
+  `eol=crlf`, as .NET ones often are, would show each such file as wholly changed, on
+  every badge and in Source Control. And `.git/info/attributes`, as writable as the
+  config, is read regardless.
+- Instead, each guarded run is followed by reading the filter listing again. If it
+  changed while git ran, the run throws and what git gave is set aside, saying why.
+- This detects; it doesn't prevent. A driver added between the listing and the run may
+  already have run, but nothing it gave is used, and the failure says what happened.
+- A driver added and removed within one run goes unseen.
+
+**read_terminal's cut first line (L-d):** a buffer at `BUFFER_MAX` begins partway
+through a line, so a secret's name could arrive cut (`SWORD=…`) and its value go
+unredacted. `SessionManager.bufferFromLine(id)` drops that partial line first.
+
+**{diff}'s failures told apart (L-e):** `readWireDiff` says git's own message and logs
+it with context (`wires: {diff} in <folder>: <what>`).
+- HEAD that can't be read: no diff, saying why.
+- A branch that can't be read: labelled "its branch", and flagged.
+- Untracked files that can't be listed: flagged ("the diff leaves any out"), never
+  counted as none.
+
+**Secret pathspecs in any case:** `secretPathspecs` gives `:(glob,icase)` and
+`:(literal,icase)`. So room backups leave out `App.ENV`, `config/Secrets.JSON` and
+`tools/ADO_PAT.TXT` too, and `{diff}`'s exclude takes its icase from them.
+
+**Reads of a session's folder go through `guardedGit`:**
+- **Source Control** (`scm.ts`): status; the staged, unstaged and untracked diffs; the
+  graph's log; a commit's files and its diff.
+- **Changes** (`files.ts`): `gitChanges`, `fileDiff` and `withRenameSource`. The last now
+  takes the `GuardedGit` its caller made.
+- **Everywhere else:**
+  - the worktree card's dirty count and `--shortstat` (`worktrees.ts`);
+  - overlaps' changed files (`conflicts.ts`);
+  - the handoff's repo state (`handoff.ts`);
+  - the refresh brief (`contextActions.ts`);
+  - the commit message's context (`commitMessage.ts`);
+  - the PR description's log and diff (`pullRequests.ts`);
+  - the test copy's patch and untracked list (`testCopy.ts`, through a new
+    `GuardedGit.bytes`);
+  - take-over's brief and its snapshot reads (`team/takeover.ts`);
+  - a repo artifact's uncommitted check (`team/artifactRepo.ts`);
+  - a snapshot's message (`snapshots.ts`' `skippedIn`).
+- **`ls-files` and `log` too.** Any `ls-files`, even `ls-files -- .`, runs
+  `core.fsmonitor` (probed), so these go through as well:
+  - ⌘P's file list (`find.ts`);
+  - the run profile's ignored candidates (`runDraft.ts`);
+  - the room plan's tracked check (`team/claims.ts`).
+
+  With `log.showSignature` set, `log` and `show -s` run `gpg.program` for each signed
+  commit, whatever the format (probed). That override was already among them.
+- **Outputs.** For a repository with nothing planted they're the same: a test compares
+  each diff and the status with plain git's. Where something is planted they differ, as
+  the badge's already did:
+  - a submodule that is dirty only inside isn't listed;
+  - a file under a filter other than LFS (git-crypt, nbstripout) that was merely touched
+    reads as changed, and its diff is of the file as it is.
+- **Cost.** Each guarded read is two more quick gits: the listing before, and the check
+  after.
+- **Tests.** `test/safeGit.test.ts` runs every read above on `hostileRepo()`, except
+  take-over's and the repo artifact's, which need a room. It names any read that ran
+  something. A submodule with a filter in its own config shows status reads nothing
+  inside it, while its commit moving still lists.
+
+**Checked:** each guard this adds was reverted on its own: the name rules, the LFS
+allowance, the re-read listing, each override and flag, the walk's cap, each
+lookbehind, the ceiling, the log, the cut first line, both icase pathspecs, and each
+file's routing. Its tests caught all 30.
+- The first round left six alive. Four have tests now: an LFS lookalike that starts
+  `git-lfs`, a submodule's status, a secret past the ceiling not counted, and a known
+  file named in another case.
+- Two were taken out as doing nothing the rest didn't. `ASSIGNMENT_RE`'s atomic name
+  (`(?=(…))\2`) was one: with the lookbehind, a name is tried from its start alone, and
+  a shorter one is never followed by a separator. The walk's check against the END line
+  before was the other: that line is never a key line.
+- The walk's `start > from` stays as the bound its slice needs, though nothing reaches
+  it.
+
+**Left:**
+- **Writes still run plain git**, and with it a repository's filters and fsmonitor:
+  - Source Control's stage, commit and discard;
+  - the worktree close's WIP commit;
+  - the turn snapshot (`snapshots.ts`' `treeOfWorktree`: `ls-files -m`, `add -A`
+    and the index work around them).
+
+  The snapshot is the one that matters. It runs for every session after every turn,
+  with nobody asking, so a clean filter or fsmonitor an agent plants runs in main.
+  Turning filters off there changes what a snapshot stores for a filtered repository
+  (the file as it is) and what restoring one gives back. That makes it a decision, not
+  a routing.
+- **Diffs between two commits** that name files only (`teamChanges`, `branchFiles`,
+  take-over's file lists, snapshots' turn changes) run nothing a config names, and stay
+  plain. So does `git grep --untracked` (probed).
 
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the

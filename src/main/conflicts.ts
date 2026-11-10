@@ -1,5 +1,6 @@
-import { currentBranch, git } from "./git";
+import { currentBranch } from "./git";
 import { baseRef } from "./files";
+import { guardedGit } from "./safeGit";
 import { mainCheckout } from "./runProfile";
 import type { FileOverlap } from "../shared/types";
 
@@ -18,7 +19,8 @@ export async function changedFiles(cwd: string): Promise<{ repo: string; branch:
   const repo = await mainCheckout(cwd);
   const branch = await currentBranch(cwd);
   const files = new Set<string>();
-  const status = await git(cwd, ["status", "--porcelain", "-z", "--untracked-files=all"], { trim: false });
+  const g = await guardedGit(cwd);
+  const status = await g.status(["--porcelain", "-z", "--untracked-files=all"], { trim: false });
   const parts = status.split("\0");
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
@@ -28,7 +30,7 @@ export async function changedFiles(cwd: string): Promise<{ repo: string; branch:
   }
   const base = await baseRef(cwd);
   if (base) {
-    const onBranch = await git(cwd, ["diff", "--name-only", "-z", `${base}...HEAD`], { trim: false });
+    const onBranch = await g.diff(["--name-only", "-z", `${base}...HEAD`], { trim: false });
     for (const f of onBranch.split("\0")) if (f) files.add(f);
   }
   return { repo, branch, files: [...files].sort() };

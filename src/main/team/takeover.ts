@@ -13,6 +13,7 @@ import { transcriptRefusal } from "./roomLimits";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
+import { guardedGit } from "../safeGit";
 import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, realpathOr } from "../agentFiles";
@@ -2243,8 +2244,9 @@ export class TakeoverService {
     let base = await baseRef(wt.path);
     const fork = base ? await git(wt.path, ["merge-base", "HEAD", base], { okCodes: [0, 1] }) : "";
     if (!fork) base = null;
-    const stat = await git(wt.path, ["diff", "--stat=160", fork || "HEAD"]);
-    const untracked = await git(wt.path, ["ls-files", "--others", "--exclude-standard"]);
+    const g = await guardedGit(wt.path);
+    const stat = await g.diff(["--stat=160", fork || "HEAD"]);
+    const untracked = await g.run(["ls-files", "--others", "--exclude-standard"]);
     const initialPrompt = takeoverBrief({
       mode: own ? "return" : "fresh",
       owner: this.nameOf(roomId, b.owner),
@@ -2671,7 +2673,7 @@ async function hasCommits(repo: string, shas: string[]): Promise<string[]> {
 /** Whether `commit` (in `repo`) is a room backup snapshot of session `sessionId`. */
 async function isSnapshotOf(repo: string, commit: string, sessionId: string): Promise<boolean> {
   if (!(await hasCommits(repo, [commit])).length) return false;
-  return (await git(repo, ["show", "-s", "--format=%s", commit])) === snapshotSubject(sessionId);
+  return (await (await guardedGit(repo)).run(["show", "-s", "--format=%s", commit])) === snapshotSubject(sessionId);
 }
 
 /** The first line of every backup snapshot's message. */
@@ -2679,7 +2681,7 @@ const snapshotSubject = (sessionId: string) => `Mockingbird: room session ${sess
 
 /** When a backup snapshot was taken: its message's taken-at, else its commit time. */
 async function takenAtOf(repo: string, commit: string): Promise<number> {
-  const out = await git(repo, ["show", "-s", "--format=%ct%n%B", commit]);
+  const out = await (await guardedGit(repo)).run(["show", "-s", "--format=%ct%n%B", commit]);
   const [ct, ...body] = out.split("\n");
   const at = Number(/^taken-at: (\d+)$/m.exec(body.join("\n"))?.[1]);
   return Number.isFinite(at) && at > 0 ? at : Number(ct) * 1000;

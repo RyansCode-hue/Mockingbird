@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { git } from "./git";
+import { guardedGit } from "./safeGit";
 import { askAgent, cleanReply, type ShellRunner } from "./headless";
 import type { AgentKind } from "../shared/types";
 
@@ -36,20 +36,21 @@ const noHead = (err: unknown) => /bad revision|unknown revision|ambiguous argume
  * while it fits). The repository's recent subjects come along to match its style.
  */
 export async function commitContext(root: string): Promise<CommitContext> {
-  const stagedStat = await git(root, ["diff", "--cached", "--stat"]);
+  const g = await guardedGit(root);
+  const stagedStat = await g.diff(["--cached", "--stat"]);
   const scope = stagedStat ? "staged" : "all";
   let stat = stagedStat;
   let diff: string;
   let newFiles: string[] = [];
-  if (scope === "staged") diff = await git(root, ["diff", "--cached"], { trim: false });
+  if (scope === "staged") diff = await g.diff(["--cached"], { trim: false });
   else {
     try {
-      [stat, diff] = await Promise.all([git(root, ["diff", "HEAD", "--stat"]), git(root, ["diff", "HEAD"], { trim: false })]);
+      [stat, diff] = await Promise.all([g.diff(["HEAD", "--stat"]), g.diff(["HEAD"], { trim: false })]);
     } catch (err) {
       if (!noHead(err)) throw err;
       [stat, diff] = ["", ""]; // before the first commit everything is a new file
     }
-    newFiles = (await git(root, ["ls-files", "--others", "--exclude-standard", "-z"], { trim: false })).split("\0").filter(Boolean);
+    newFiles = (await g.run(["ls-files", "--others", "--exclude-standard", "-z"], { trim: false })).split("\0").filter(Boolean);
   }
   if (!stat && !diff && !newFiles.length) throw new Error("There are no changes to describe");
 
@@ -78,7 +79,7 @@ export async function commitContext(root: string): Promise<CommitContext> {
 
   let recent: string[] = [];
   try {
-    recent = (await git(root, ["log", "-12", "--format=%s"])).split("\n").filter(Boolean);
+    recent = (await g.run(["log", "-12", "--format=%s"])).split("\n").filter(Boolean);
   } catch (err) {
     if (!noHead(err)) throw err; // no commits yet: no style to match
   }

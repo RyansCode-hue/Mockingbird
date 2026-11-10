@@ -66,6 +66,18 @@ describe("a pane's status from its agent's hooks", () => {
     expect(pane(m, s.id).info.status).toBe("working"); // submitted: its turn runs
   });
 
+  it("gives a live pane's output from the start of a line once its buffer has been cut", async () => {
+    const m = manager();
+    const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "long output" });
+    pane(m, s.id).buffer = "short\nlines\n";
+    expect(m.bufferFromLine(s.id)).toBe("short\nlines\n");
+    // kept to 400,000 characters, it starts wherever the cut fell: here in the middle of a secret's line
+    const cut = `SECRET_TOKEN=abcd1234\n${"x".repeat(399_990)}\nlast\n`.slice(-400_000);
+    expect(cut.startsWith("234\n")).toBe(true);
+    pane(m, s.id).buffer = cut;
+    expect(m.bufferFromLine(s.id)).toBe(`${"x".repeat(399_990)}\nlast\n`);
+  });
+
   it("keeps one of Mockingbird's notices waiting under a key, replaced where it waits, and starts another once it's gone", async () => {
     const m = manager();
     const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "noticed" });

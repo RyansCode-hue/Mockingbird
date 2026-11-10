@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { git, gitBytes, hasCredentials, headCommit, originUrl, repoIdentity, repoTop } from "../git";
+import { guardedGit } from "../safeGit";
 import { checkRepoPath } from "./artifactEvents";
 import { inside } from "./artifactStore";
 import { originIdentity } from "./roomSessions";
@@ -104,7 +105,7 @@ export class RepoRefs {
       throw err;
     }
     const warnings: string[] = [];
-    if (await git(realTop, ["diff", "--name-only", commit, "--", rel])) warnings.push(`${rel} has uncommitted changes: the reference is HEAD ${short(commit)}, without them`);
+    if (await (await guardedGit(realTop)).diff(["--name-only", commit, "--", rel])) warnings.push(`${rel} has uncommitted changes: the reference is HEAD ${short(commit)}, without them`);
     if (!(await git(realTop, ["branch", "-r", "--contains", commit]))) warnings.push(`${short(commit)} isn't on any remote branch: teammates can't see it until you push`);
     const name = String(req.name ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 200) || repoRefName(rel, lines);
     return { body: { kind: "repo", name, origin, path: rel, commit, ...(lines ? { lines } : {}) }, warnings };
@@ -168,7 +169,7 @@ export class RepoRefs {
       return out;
     }
     try {
-      out.changedSince = !!(await git(dir, ["diff", "--name-only", rec.commit, "--", rec.path]));
+      out.changedSince = !!(await (await guardedGit(dir)).diff(["--name-only", rec.commit, "--", rec.path]));
     } catch (err) {
       this.d.log(`room artifacts: comparing ${rec.path} with ${short(rec.commit)}`, err);
     }

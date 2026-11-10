@@ -1,7 +1,8 @@
 import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { git, isRepo } from "./git";
+import { isRepo } from "./git";
+import { guardedGit } from "./safeGit";
 import type { FileHit, FileList, FileSearch, FileSearchOptions } from "../shared/types";
 
 const MAX_FILES = 50_000;
@@ -22,7 +23,7 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set(["node_modules", "vendor",
  */
 export async function listAllFiles(root: string): Promise<FileList> {
   if (await isRepo(root)) {
-    const out = await git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { trim: false });
+    const out = await (await guardedGit(root)).run(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { trim: false });
     const files = [...new Set(out.split("\0").filter(Boolean))];
     return { files: files.slice(0, MAX_FILES), truncated: files.length > MAX_FILES };
   }

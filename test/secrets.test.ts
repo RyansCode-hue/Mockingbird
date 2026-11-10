@@ -78,6 +78,23 @@ describe("the secret file list", () => {
     expect(secretPathspecs(repo, ["/elsewhere/ado.pat"])).toHaveLength(SECRET_FILE_GLOBS.length);
   });
 
+  it("leaves a secret file out of a backup whatever the case of its name, as a room artifact is refused", async () => {
+    const repo = makeRepo({ "README.md": "hi\n" });
+    const shouting = ["App.ENV", "config/Secrets.JSON", "certs/Server.PEM", "Functions/Local.Settings.json", "tools/ADO_PAT.TXT"];
+    write(repo, Object.fromEntries([...shouting, "src/Env.ts"].map((f) => [f, `${f}\n`])));
+    const tree = git(repo, "ls-tree", "-r", "--name-only", (await snapshotCommit(repo, "backup", { secrets: secretPathspecs(repo) }))!.sha).split("\n");
+    for (const f of shouting) expect(tree, f).not.toContain(f);
+    expect(tree).toContain("src/Env.ts");
+  });
+
+  it("leaves a known secret file out of a backup when its path is named in another case", async () => {
+    const repo = makeRepo({ "README.md": "hi\n" });
+    write(repo, { "tools/WorkTracker/my-token.txt": "secret\n" });
+    const secrets = secretPathspecs(repo, [path.join(repo, "tools/workTracker/MY-TOKEN.txt")]);
+    const tree = git(repo, "ls-tree", "-r", "--name-only", (await snapshotCommit(repo, "backup", { secrets }))!.sha).split("\n");
+    expect(tree).toEqual(["README.md"]);
+  });
+
   it("stays out of a backup staged before the repository's first commit", async () => {
     const repo = path.join(tempDir("code"), "fresh");
     fs.mkdirSync(repo);

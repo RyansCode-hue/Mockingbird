@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import { git, originUrl, withoutCredentials } from "./git";
 import { baseRef } from "./files";
+import { guardedGit } from "./safeGit";
 import { transcriptLines } from "./handoff";
 import { weighted } from "./meters";
 import { takeoverBrief } from "./team/takeoverBrief";
@@ -68,9 +69,10 @@ export async function refreshBrief(
   let base = await baseRef(s.cwd).catch(() => null);
   const fork = base ? await git(s.cwd, ["merge-base", "HEAD", base], { okCodes: [0, 1, 128] }).catch(() => "") : "";
   if (!fork) base = null;
+  const g = await guardedGit(s.cwd);
   const [stat, untracked, origin] = await Promise.all([
-    git(s.cwd, ["diff", "--stat=160", fork || "HEAD"], { okCodes: [0, 128] }),
-    git(s.cwd, ["ls-files", "--others", "--exclude-standard"], { okCodes: [0, 128] }),
+    g.diff(["--stat=160", fork || "HEAD"], { okCodes: [0, 128] }),
+    g.run(["ls-files", "--others", "--exclude-standard"], { okCodes: [0, 128] }),
     originUrl(s.cwd).catch(() => null),
   ]);
   const brief = takeoverBrief({

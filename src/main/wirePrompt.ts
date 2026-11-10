@@ -24,13 +24,18 @@ import { WIRE_BODY_MAX, type WireType } from "../shared/wires";
 /** What a redacted value reads as. */
 export const REDACTED = "[redacted]";
 
+// Every pattern here runs over text an agent wrote (a 400 KB terminal, a diff), on the thread that carries every pane's
+// keystrokes, so none may backtrack across a long run: each one starts only where its match could (a lookbehind, not
+// \b, where its run's characters include ones \b breaks at), and each run that's followed by more is bounded.
+
 /** A PEM private key or a PGP private key block, to its END line or the end of the text when that was cut off. */
-const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
-/**
- * A key whose BEGIN line was cut off (the last lines of a terminal, say): the END line, and the run of base64-looking
- * lines right before it, which is the key itself.
- */
-const KEY_END_RE = /(?:^[ \t]*[A-Za-z0-9+/=]+[ \t]*\r?\n)*^[ \t]*-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/gm;
+const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----|$)/g;
+/** A key's END line, for one whose BEGIN line was cut off (redactKeyEnds). */
+const KEY_END_LINE_RE = /^[ \t]*-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/gm;
+/** A line of a key's body: base64, nothing else. */
+const KEY_LINE_RE = /^[ \t]*[A-Za-z0-9+/=]+[ \t]*\r?$/;
+/** How far back from an END line a key's body is looked for: more lines than any key has. */
+const KEY_LINES_MAX = 200;
 /** A signed URL's signature: Azure's SAS `sig`, AWS's and Google's presigned `X-*-Signature`. */
 const URL_SIGNATURE_RE = /([?&](?:sig|x-amz-signature|x-goog-signature)=)[^&\s"'`#<>]+/gi;
 
@@ -45,20 +50,48 @@ const TOKEN_RES: readonly RegExp[] = [
   /\bglpat-[A-Za-z0-9_-]{20,}/g, // GitLab
   /\bnpm_[A-Za-z0-9]{36}/g,
   /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/g, // Stripe
-  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWTs
+  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,8192}\.eyJ[A-Za-z0-9_-]{8,8192}\.[A-Za-z0-9_-]{8,}/g, // JWTs
   /\b[a-z2-7]{52}\b/g, // Azure DevOps personal access tokens
 ];
 
-const URL_CREDENTIALS_RE = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi;
+const URL_CREDENTIALS_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,30}:\/\/[^\s/:@]{1,256}:)[^\s/@]{1,512}@/gi;
 const AUTH_HEADER_RE = /\b(Bearer|Basic)[ \t]+[A-Za-z0-9._~+/-]{12,}=*/gi;
+
+/**
+ * `text` with each key whose BEGIN line was cut off (the last lines of a terminal, say) replaced: its END line, and the
+ * run of base64-looking lines right before it, which is the key itself, up to KEY_LINES_MAX. Walked back from each END
+ * line in code, so a long run of base64 with no END line costs one pass. A walk stops at the END line before, which is
+ * no key line.
+ */
+function redactKeyEnds(text: string, hit: () => void): string {
+  let out = "";
+  let from = 0;
+  for (const m of text.matchAll(KEY_END_LINE_RE)) {
+    let start = m.index;
+    for (let i = 0; i < KEY_LINES_MAX && start > from; i++) {
+      const lineEnd = start - 1; // the line break ending the line before
+      const lineStart = text.lastIndexOf("\n", lineEnd - 1) + 1;
+      if (!KEY_LINE_RE.test(text.slice(lineStart, lineEnd))) break;
+      start = lineStart;
+    }
+    hit();
+    out += `${text.slice(from, start)}[redacted: the end of a private key]`;
+    from = m.index + m[0].length;
+  }
+  return out + text.slice(from);
+}
 
 /**
  * Names that say their value is a secret: DB_PASSWORD, GITHUB_TOKEN, AZURE_DEVOPS_EXT_PAT, client_secret, apiKey, and
  * Azure connection strings' AccountKey, SharedAccessKey and SharedAccessSignature.
  */
 const SECRET_NAME_RE = /passw(?:or)?d|passphrase|secret|token|api[_-]?key|access[_-]?key|account[_-]?key|access[_-]?signature|private[_-]?key|credential|auth[_-]?key|(?:^|[_.-])(?:pat|pwd)(?:$|[_.-])/i;
-/** `name = value`, `name: value`, `"name": "value"`: not `==`, `=>`, `!=`. */
-const ASSIGNMENT_RE = /(["']?)([A-Za-z_][\w.-]{0,80})\1([ \t]*(?::|=(?![=>]))[ \t]*)("[^"\n]*"|'[^'\n]*'|[^\s"'`,;&)}[\]]+)/g;
+/**
+ * `name = value`, `name: value`, `"name": "value"`, `--name=value`: not `==`, `=>`, `!=`. A name starts where a word
+ * does (not after a dot, or a hyphen inside a word: `a.b-c` is one name, read from its start), so a run of name
+ * characters is tried from its start alone, and at most 80 of them.
+ */
+const ASSIGNMENT_RE = /(["']?)(?<![\w.]|[\w.]-)([A-Za-z_][\w.-]{0,80})\1([ \t]{0,40}(?::|=(?![=>]))[ \t]{0,40})("[^"\n]*"|'[^'\n]*'|[^\s"'`,;&)}[\]]+)/g;
 
 /**
  * Whether `value`, set on a secret-looking `name`, looks like the secret itself rather than code that reads one: an
@@ -85,8 +118,7 @@ function secretValue(name: string, value: string): boolean {
 export function redactSecrets(text: string): { text: string; count: number } {
   let count = 0;
   const hit = (to: string) => () => (count++, to);
-  let out = text.replace(PRIVATE_KEY_RE, hit("[redacted: a private key]"));
-  out = out.replace(KEY_END_RE, hit("[redacted: the end of a private key]"));
+  let out = redactKeyEnds(text.replace(PRIVATE_KEY_RE, hit("[redacted: a private key]")), () => count++);
   for (const re of TOKEN_RES) out = out.replace(re, hit(REDACTED));
   out = out.replace(URL_SIGNATURE_RE, (_m, head: string) => (count++, `${head}${REDACTED}`));
   out = out.replace(URL_CREDENTIALS_RE, (_m, head: string) => (count++, `${head}${REDACTED}@`));
@@ -464,23 +496,49 @@ function fileAt(diff: string, at: number): string | null {
 }
 
 const nOf = (n: number) => n.toLocaleString("en-US");
+const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * How much of a diff is redacted: well past what's carried, so a secret the final cut goes through is still whole when
+ * it's redacted, and never all of what git may give (up to 64 MB), so a huge diff can't hold up the main thread.
+ */
+export const DIFF_REDACT_CHARS = 4 * DIFF_CHARS;
+
+/** A diff as {diff} carries it: its first DIFF_REDACT_CHARS redacted, then cut at DIFF_CHARS, saying where and of how much. */
+export function shapeDiff(raw: string): Expansion {
+  const r = redactSecrets(raw.slice(0, DIFF_REDACT_CHARS));
+  const flags: string[] = [];
+  let text = r.text.trimEnd();
+  if (!text) text = "(No changes.)";
+  else if (text.length > DIFF_CHARS) {
+    const at = fileAt(text, DIFF_CHARS);
+    const where = `${nOf(DIFF_CHARS)} of ${nOf(raw.trimEnd().length)} characters${at ? `, in ${at}` : ""}`;
+    flags.push(`The diff was cut at ${where}.`);
+    text = `${text.slice(0, DIFF_CHARS)}\n[… cut at ${where}]`;
+  }
+  return { text, flags, redacted: r.count };
+}
 
 /**
  * What {diff} reads: the source's work since its branch forked from its base, as a card's diff badge counts it
  * (branchFork), committed and uncommitted tracked files, from the repository's top. Run through guardedGit, so nothing
  * the repository configures runs; secret files (secretPathspecs, in any case) are left out. A diff holding a private key
- * is withheld; the rest is redacted, and cut with a flag saying where. Whatever stops it is a flag and a line in its
- * place, never an empty diff.
+ * is withheld; the rest is shaped by shapeDiff. Whatever stops it is a flag and a line in its place, never an empty
+ * diff; a git that fails says its own words, in the flag and in `log`, never as if there were nothing.
  */
-export async function readWireDiff(root: string, secretFiles: readonly string[] = []): Promise<Expansion> {
+export async function readWireDiff(root: string, secretFiles: readonly string[] = [], log?: (context: string, err: unknown) => void): Promise<Expansion> {
   const none = (why: string): Expansion => ({ text: `[No diff: ${why}.]`, flags: [`The diff isn't included: ${why}.`], redacted: 0 });
   if (!fs.existsSync(root)) return none(`its folder, ${root}, isn't there any more`);
   const opts = { timeoutMs: GIT_TIMEOUT_MS };
+  const failed = (what: string, err: unknown) => {
+    log?.(`wires: {diff} in ${root}: ${what}`, err);
+    return messageOf(err);
+  };
   let top: string;
   try {
     top = await git(root, ["rev-parse", "--show-toplevel"], opts);
   } catch (err) {
-    return /not a git repository/i.test((err as Error).message) ? none("its folder isn't a git repository") : none(`git couldn't read its folder (${(err as Error).message})`);
+    return /not a git repository/i.test(messageOf(err)) ? none("its folder isn't a git repository") : none(`git couldn't read its folder (${failed("finding the repository", err)})`);
   }
   const flags: string[] = [];
   let range = "HEAD";
@@ -490,41 +548,48 @@ export async function readWireDiff(root: string, secretFiles: readonly string[] 
     range = f.fork;
     against = named(f.label);
   } catch (err) {
-    if (!(await headCommit(top).catch(() => null))) return none("its repository has no commit yet");
-    flags.push(`The diff has only its uncommitted changes: ${(err as Error).message}.`);
+    let head: string | null;
+    try {
+      head = await headCommit(top);
+    } catch (headErr) {
+      return none(`git couldn't read its last commit (${failed("reading HEAD", headErr)})`);
+    }
+    if (!head) return none("its repository has no commit yet");
+    flags.push(`The diff has only its uncommitted changes: ${messageOf(err)}.`);
   }
   let g: GuardedGit;
   try {
     g = await guardedGit(top, opts);
   } catch (err) {
-    return none(`its repository's config couldn't be read, so its filters couldn't be turned off (${(err as Error).message})`);
+    return none(`its repository's config couldn't be read, so its filters couldn't be turned off (${failed("reading its filter drivers", err)})`);
   }
-  // a secret file's name in any case, as {files} refuses it
-  const exclude = secretPathspecs(top, secretFiles).map((p) => p.replace(/^:\(/, ":(exclude,icase,"));
+  const exclude = secretPathspecs(top, secretFiles).map((p) => p.replace(/^:\(/, ":(exclude,"));
   let diff: string;
-  let untracked: string | null;
+  let untracked: string | Error;
   try {
     [diff, untracked] = await Promise.all([
       g.diff([range, "--", ".", ...exclude], { trim: false }),
-      g.run(["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }).catch(() => null),
+      g.run(["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }).catch((err: Error) => err),
     ]);
   } catch (err) {
-    return none(`git diff failed (${(err as Error).message})`);
+    return none(`git diff failed (${failed("the diff", err)})`);
   }
   if (holdsPrivateKey(diff)) return { text: "[The diff is withheld: it holds a private key.]", flags: [...flags, "The diff is withheld: it holds a private key."], redacted: 0 };
-  const branch = await currentBranch(top).catch(() => null);
-  const r = redactSecrets(diff);
-  let text = r.text.trimEnd();
-  if (!text) text = "(No changes.)";
-  else if (text.length > DIFF_CHARS) {
-    const at = fileAt(text, DIFF_CHARS);
-    const where = `${nOf(DIFF_CHARS)} of ${nOf(text.length)} characters${at ? `, in ${at}` : ""}`;
-    flags.push(`The diff was cut at ${where}.`);
-    text = `${text.slice(0, DIFF_CHARS)}\n[… cut at ${where}]`;
+  let branch: string;
+  try {
+    const b = await currentBranch(top);
+    branch = b ? `branch ${named(b)}` : "a detached HEAD";
+  } catch (err) {
+    branch = "its branch";
+    flags.push(`Which branch it's on couldn't be read: ${failed("reading its branch", err)}.`);
   }
-  const n = untracked === null ? null : untracked.split("\0").filter(Boolean).length;
-  if (n === null) flags.push("Its untracked files couldn't be counted: the diff leaves any out.");
-  else if (n) flags.push(`${n} untracked file${n === 1 ? " in its folder isn't" : "s in its folder aren't"} in the diff.`);
-  const head = `Diff of ${branch ? `branch ${named(branch)}` : "a detached HEAD"} against ${against}, committed and uncommitted, secret files left out:`;
-  return { text: `${head}\n${text}`, flags, redacted: r.count };
+  const shaped = shapeDiff(diff);
+  flags.push(...shaped.flags);
+  if (untracked instanceof Error) flags.push(`Its untracked files couldn't be counted (${failed("listing its untracked files", untracked)}): the diff leaves any out.`);
+  else {
+    const n = untracked.split("\0").filter(Boolean).length;
+    if (n) flags.push(`${n} untracked file${n === 1 ? " in its folder isn't" : "s in its folder aren't"} in the diff.`);
+  }
+  const head = `Diff of ${branch} against ${against}, committed and uncommitted, secret files left out:`;
+  return { text: `${head}\n${shaped.text}`, flags, redacted: shaped.redacted };
 }

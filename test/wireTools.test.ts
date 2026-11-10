@@ -94,7 +94,7 @@ function setup() {
         delivered.push({ id, text, submit });
         return "queued until its current turn ends";
       },
-      buffer: (id) => buffers[id] ?? "",
+      bufferFromLine: (id) => buffers[id] ?? "",
       closedOutput: (id) => {
         const o = closedOutput[id];
         if (o instanceof Error) throw o;
@@ -329,7 +329,7 @@ describe("finish_step", () => {
     fs.writeFileSync(file, JSON.stringify({ v: 3, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {}, wires: { wv: 99, links: {}, notes: {} } }));
     const store = new LandscapeStore({ file, emit: () => {}, log: () => {} });
     const service = new WireService({ store, sessions: { list: () => [session("a")], resumable: () => [] }, roomOf: () => null, takenOver: () => null, log: () => {} });
-    const tools = new WireTools({ store, rules: service, sessions: { list: () => [session("a")], resumable: () => [], noticeWaiting: () => false, deliverNotice: () => "", buffer: () => "", closedOutput: () => "" }, conversationFiles: () => ({ agent: "claude", files: [], refused: null }), submitOnDelivery: () => true, offer: () => ({ refused: "not reached" }), promptOf: () => null, log: () => {} });
+    const tools = new WireTools({ store, rules: service, sessions: { list: () => [session("a")], resumable: () => [], noticeWaiting: () => false, deliverNotice: () => "", bufferFromLine: () => "", closedOutput: () => "" }, conversationFiles: () => ({ agent: "claude", files: [], refused: null }), submitOnDelivery: () => true, offer: () => ({ refused: "not reached" }), promptOf: () => null, log: () => {} });
     expect(refused(await tools.finish(session("a"), { summary: "x" }, "agent"))).toMatch(/^Nothing was finished: .*newer Mockingbird/);
     for (const [op, args] of [
       [WIRE_TOOL.readContext, { from: "b" }],

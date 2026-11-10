@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { git } from "../git";
+import { guardedGit } from "../safeGit";
 import { appendNoFollow, dirInside, isMissing, readRegularFile, removeDirInside, removeInside, writeGenerated, writeGeneratedInside } from "../fileOps";
 import { MB_DIR } from "../store";
 import { ARTIFACT_TOOL } from "../../shared/team/artifacts";
@@ -75,7 +76,7 @@ export function excludePlanDir(repo: string): Promise<void> {
  */
 export async function excludeInRepo(cwd: string, o: { dir: string; line: string; same?: string[]; comment: string; what: string }): Promise<void> {
   const top = o.dir.split("/")[0];
-  const tracked = await git(cwd, ["ls-files", "--", top]);
+  const tracked = await (await guardedGit(cwd)).run(["ls-files", "--", top]);
   if (tracked) throw new Error(`${cwd} tracks files under ${top}/ (${tracked.split("\n")[0]}…); Mockingbird won't write ${o.what} over them`);
   // joined here, not `--git-path info/exclude`: git answers that with a link's target
   const file = path.join(path.resolve(cwd, await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])), "info", "exclude");

@@ -1,6 +1,7 @@
 import { ADO_API } from "./ado";
 import { BASE_NAMES, branchesOf, currentBranch, git, originRemote, remoteName, type RemoteRepo } from "./git";
 import { dirtyFileCount } from "./scm";
+import { guardedGit } from "./safeGit";
 import { listAllFiles } from "./find";
 import { quote, type ShellResult } from "./shell";
 import type { ShellRunner } from "./headless";
@@ -166,10 +167,11 @@ const MAX_DIFF = 50_000;
 /** The prompt for a pull request description: the branch's commits and diff against its base. */
 export async function prDescriptionPrompt(root: string, base: string, ticket: { id: string; title: string }): Promise<string> {
   const range = `origin/${base}...HEAD`;
+  const g = await guardedGit(root);
   const [log, stat, diff] = await Promise.all([
-    git(root, ["log", "--format=- %s%n%b", `origin/${base}..HEAD`]),
-    git(root, ["diff", "--stat", range]),
-    git(root, ["diff", range], { trim: false }),
+    g.run(["log", "--format=- %s%n%b", `origin/${base}..HEAD`]),
+    g.diff(["--stat", range]),
+    g.diff([range], { trim: false }),
   ]);
   if (!log.trim()) throw new Error(`The branch has no commits that aren't on ${base} yet`);
   return [

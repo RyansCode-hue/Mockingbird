@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import { currentBranch, git, isRepo } from "./git";
+import { currentBranch, isRepo } from "./git";
+import { guardedGit } from "./safeGit";
 import { isSidechainFile, parseClaudeLine, parseCodexLine } from "./transcripts";
 import type { AgentKind, LastReply } from "../shared/types";
 import { isMissing } from "./fileOps";
@@ -328,12 +329,13 @@ export function conversationFiles(agent: AgentKind, conv: string, o: Conversatio
 /** The worktree as it stands: branch, uncommitted files, recent commits. */
 export async function repoState(cwd: string): Promise<string> {
   if (!(await isRepo(cwd))) return "(not a git repository)";
+  const g = await guardedGit(cwd);
   const [branch, status, log, stat] = await Promise.all([
     currentBranch(cwd),
     // untrimmed: the first line's leading space is its "unstaged" column
-    git(cwd, ["status", "--short"], { trim: false }).then((o) => o.trimEnd()),
-    git(cwd, ["log", "--oneline", "-10"], { okCodes: [0, 128] }),
-    git(cwd, ["diff", "--stat", "HEAD"], { okCodes: [0, 128] }),
+    g.status(["--short"], { trim: false }).then((o) => o.trimEnd()),
+    g.run(["log", "--oneline", "-10"], { okCodes: [0, 128] }),
+    g.diff(["--stat", "HEAD"], { okCodes: [0, 128] }),
   ]);
   return [
     `Branch: ${branch || "(detached)"}`,

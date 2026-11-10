@@ -1,11 +1,13 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
+import { guardedGit, SAFE_DIFF } from "./safeGit";
 import type { GitChange, GraphCommit, GraphRef, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
 
 /**
  * Source control for a session's folder, like VS Code's view: what's staged,
  * what isn't, and stage / unstage / discard / commit / push. Every path is
- * checked to stay inside the folder before git sees it.
+ * checked to stay inside the folder before git sees it. What it reads goes
+ * through guardedGit, so nothing the folder's config names runs for a read.
  */
 
 const code = (c: string): ScmStatusCode => (c === "A" ? "A" : c === "D" ? "D" : c === "R" || c === "C" ? "R" : "M");
@@ -43,7 +45,7 @@ function parseStatus(out: string): ScmStatus {
 }
 
 export async function scmStatus(root: string): Promise<ScmStatus> {
-  return parseStatus(await git(root, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"], { trim: false }));
+  return parseStatus(await (await guardedGit(root)).status(["--porcelain=v2", "--branch", "-z", "--untracked-files=all"], { trim: false }));
 }
 
 /**
@@ -177,7 +179,8 @@ export async function scmGraph(root: string, limit = 150): Promise<ScmGraph> {
     git(root, ["remote"]).then((r) => r.split("\n").filter(Boolean)),
   ]);
   const refs = [...new Set(["HEAD", upstream, base].filter((r): r is string => !!r))];
-  const out = await git(root, ["log", "--topo-order", `-n${limit + 1}`, `--format=%H${SEP}%P${SEP}%D${SEP}%s${SEP}%an${SEP}%at${END}`, ...refs, "--"], { trim: false });
+  // guarded for log.showSignature, which runs the config's gpg.program for every signed commit, whatever the format
+  const out = await (await guardedGit(root)).run(["log", "--topo-order", `-n${limit + 1}`, `--format=%H${SEP}%P${SEP}%D${SEP}%s${SEP}%an${SEP}%at${END}`, ...refs, "--"], { trim: false });
   const commits = parseLog(out, remotes);
   return { commits: commits.slice(0, limit), head, refs, more: commits.length > limit };
 }
@@ -194,9 +197,10 @@ async function firstParent(root: string, sha: string): Promise<string | null> {
 /** The files a commit changed. */
 export async function scmCommitFiles(root: string, sha: string): Promise<GitChange[]> {
   const parent = await firstParent(root, sha);
+  const g = await guardedGit(root);
   const out = parent
-    ? await git(root, ["diff", "--name-status", "-z", "-M", parent, sha], { trim: false })
-    : await git(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", sha], { trim: false });
+    ? await g.diff(["--name-status", "-z", "-M", parent, sha], { trim: false })
+    : await g.run(["diff-tree", ...SAFE_DIFF, "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", sha], { trim: false });
   return parseNameStatus(out);
 }
 
@@ -209,16 +213,18 @@ function capped(diff: string): string {
 export async function scmCommitDiff(root: string, sha: string, rel: string): Promise<string> {
   const parent = await firstParent(root, sha);
   await resolveIn(root, rel);
-  if (!parent) return capped(await git(root, ["show", "--format=", sha, "--", rel], { trim: false }));
+  const g = await guardedGit(root);
+  if (!parent) return capped(await g.run(["show", ...SAFE_DIFF, "--format=", sha, "--", rel], { trim: false }));
   const range = [parent, sha];
-  return capped(await git(root, ["diff", "-M", ...range, "--", ...(await withRenameSource(root, range, rel))], { trim: false }));
+  return capped(await g.diff(["-M", ...range, "--", ...(await withRenameSource(g, range, rel))], { trim: false }));
 }
 
 /** The diff for one file as the view shows it: staged against HEAD, or unstaged against the index. */
 export async function scmDiff(root: string, rel: string, staged: boolean, untracked: boolean): Promise<string> {
   await resolveIn(root, rel);
-  if (untracked) return capped(await git(root, ["diff", "--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false }));
+  const g = await guardedGit(root);
+  if (untracked) return capped(await g.diff(["--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false }));
   // renames show only between HEAD and the index; unstaged, a moved file is a deletion and an untracked file
-  const paths = staged ? await withRenameSource(root, ["--cached"], rel) : [rel];
-  return capped(await git(root, ["diff", ...(staged ? ["--cached"] : []), "-M", "--", ...paths], { trim: false }));
+  const paths = staged ? await withRenameSource(g, ["--cached"], rel) : [rel];
+  return capped(await g.diff([...(staged ? ["--cached"] : []), "-M", "--", ...paths], { trim: false }));
 }

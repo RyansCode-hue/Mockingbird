@@ -4,6 +4,7 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import {
   DIFF_CHARS,
+  DIFF_REDACT_CHARS,
   expandTemplate,
   fence,
   FILE_CHARS,
@@ -11,6 +12,7 @@ import {
   readWireFiles,
   REDACTED,
   redactSecrets,
+  shapeDiff,
   wiredNotice,
   wireInstructions,
   wireMessage,
@@ -74,6 +76,18 @@ describe("redaction", () => {
     });
   });
 
+  it("walks back from an END line at most 200 lines, and never into the key before it", () => {
+    const lines = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag}${i}QUJDREVGR0hJSktMTU5PUFFS`);
+    const long = [...lines(300, "a"), "-----END PRIVATE KEY-----"].join("\n");
+    expect(redactSecrets(long).text).toBe([...lines(100, "a"), "[redacted: the end of a private key]"].join("\n"));
+    const two = [...lines(3, "a"), "-----END PRIVATE KEY-----", ...lines(3, "b"), "-----END PRIVATE KEY-----"].join("\n");
+    expect(redactSecrets(two)).toEqual({ text: "[redacted: the end of a private key]\n[redacted: the end of a private key]", count: 2 });
+  });
+
+  it("takes a command line's flag", () => {
+    expect(redactSecrets("mysql --password=hunter22x -h db")).toEqual({ text: `mysql --password=${REDACTED} -h db`, count: 1 });
+  });
+
   it("takes out a key whose BEGIN line was cut off, from its END line back through the key's lines", () => {
     const cut = "$ cat key.pem | tail -3\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n  kqhkiG9w0BAQ==\n-----END PRIVATE KEY-----\n$ ";
     expect(redactSecrets(cut)).toEqual({ text: "$ cat key.pem | tail -3\r\n[redacted: the end of a private key]\n$ ", count: 1 });
@@ -98,6 +112,45 @@ describe("redaction", () => {
     const once = redactSecrets(`GITHUB_TOKEN=ghp_${"x".repeat(36)}\nAPI_KEY="abcd1234"`);
     expect(once.count).toBe(2);
     expect(redactSecrets(once.text)).toEqual({ text: once.text, count: 0 });
+  });
+});
+
+// Redaction runs on the thread that carries every pane's keystrokes, over text an agent wrote. Each pattern reads a long
+// run once, not once per character of it: these are the runs that each one, written the obvious way, read over and over.
+describe("what redaction costs", () => {
+  const ms = (f: () => unknown) => {
+    const t = performance.now();
+    f();
+    return performance.now() - t;
+  };
+  const base64 = "+QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3";
+  it("reads 20,000 base64 lines with no END line in under 100 ms", () => {
+    const text = Array.from({ length: 20_000 }, () => base64).join("\n");
+    redactSecrets(base64); // compiled before it's timed
+    expect(ms(() => redactSecrets(text))).toBeLessThan(100);
+  });
+  it.each([
+    ["a dotted run, as a URL's scheme begins", "a.".repeat(200_000)],
+    ["a hyphenated run, as a name begins", "a-".repeat(200_000)],
+    ["a run of JWT beginnings", "eyJa-".repeat(80_000)],
+    ["one long word", "a".repeat(400_000)],
+    ["END lines with nothing before them", "-----END PRIVATE KEY-----\n".repeat(15_000)],
+    ["names and colons with no value", "ab: :".repeat(80_000)],
+  ])("reads 400 KB of %s in under 100 ms", (_what, text) => {
+    redactSecrets(text.slice(0, 100));
+    expect(ms(() => redactSecrets(text))).toBeLessThan(100);
+  });
+  it("shapes a diff of megabytes in under 100 ms: only what could be carried is redacted", () => {
+    const raw = `diff --git a/big.txt b/big.txt\n${"+line of the diff\n".repeat(400_000)}API_KEY=${"z".repeat(30)}\n`;
+    let r: Expansion = { text: "", flags: [], redacted: 0 };
+    expect(ms(() => (r = shapeDiff(raw)))).toBeLessThan(100);
+    expect(r.text.length).toBeLessThan(DIFF_CHARS + 200);
+    expect(r.flags).toEqual([`The diff was cut at 40,000 of ${(raw.length - 1).toLocaleString("en-US")} characters, in big.txt.`]);
+    // the secret past what's redacted isn't read, and is past what's carried too
+    expect(r.redacted).toBe(0);
+    expect(r.text).not.toContain("API_KEY");
+    expect(DIFF_REDACT_CHARS).toBeGreaterThan(DIFF_CHARS);
+    expect(shapeDiff(`API_KEY=${"z".repeat(30)}\n`).redacted).toBe(1);
   });
 });
 
@@ -371,24 +424,35 @@ describe("{diff}", { timeout: 300_000 }, () => {
     expect(r.text).toContain("+hello again");
     expect(r.text).not.toMatch(/App\.ENV|Secrets\.JSON/);
   });
-  it("leaves submodules out, so nothing a submodule's own config names runs", async () => {
+  it("reads no submodule's working tree, so nothing a submodule's own config names runs, and still shows its commit", async () => {
     const dir = repo();
-    const sub = makeRepo({ "x.txt": "x\n", ".gitattributes": "*.txt filter=subevil\n" }, "sub");
+    const sub = makeRepo({ "x.txt": "x\n", ".gitattributes": "*.txt filter=subevil diff=subconv\n" }, "sub");
     git(dir, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", sub, "vendor/sub");
     git(dir, "commit", "-qm", "sub");
     const inner = path.join(dir, "vendor", "sub");
     git(inner, "config", "filter.subevil.clean", script(dir, "subclean", "cat"));
     git(inner, "config", "filter.subevil.smudge", "cat");
+    git(inner, "config", "diff.subconv.textconv", script(dir, "subconv", 'cat "$1"'));
+    // the superproject asks for the submodule's own diff: it would run there, with the submodule's config
+    git(dir, "config", "diff.submodule", "diff");
     // the same size, so git reads the file through its filter to tell whether it changed
     write(inner, { "x.txt": "y\n" });
     const plain = spawnSync("git", ["-C", dir, "diff", "main"], { encoding: "utf8" });
     expect(plain.status, plain.stderr).toBe(0);
     expect(fs.existsSync(marker(dir, "subclean")), "a plain git diff asks the submodule, which runs its filter").toBe(true);
     fs.rmSync(marker(dir, "subclean"));
+    // committed there, the superproject's diff now goes into the submodule's own
+    git(inner, "commit", "-qam", "moved");
+    write(inner, { "x.txt": "z\n" });
+    expect(spawnSync("git", ["-C", dir, "diff", "main"], { encoding: "utf8" }).status).toBe(0);
+    expect(fs.existsSync(marker(dir, "subconv")), "a plain git diff runs the submodule's text conversion").toBe(true);
+    fs.rmSync(marker(dir, "subconv"));
+    fs.rmSync(marker(dir, "subclean"), { force: true });
     const r = await readWireDiff(dir);
     expect(r.text).toContain("+hello again");
-    expect(r.text).not.toContain("Subproject commit");
+    expect(r.text).toMatch(/^\+Subproject commit [0-9a-f]{40}$/m);
     expect(fs.existsSync(marker(dir, "subclean"))).toBe(false);
+    expect(fs.existsSync(marker(dir, "subconv"))).toBe(false);
   });
   it("has no colour, whatever the repository sets", async () => {
     const dir = repo();
@@ -424,6 +488,48 @@ describe("{diff}", { timeout: 300_000 }, () => {
     const fresh = tempDir("fresh");
     execFileSync("git", ["-c", "init.defaultBranch=main", "init", "-q", fresh]);
     expect((await readWireDiff(fresh)).flags).toEqual([expect.stringMatching(/no commit yet/)]);
+  });
+  it("says a git that failed in its own words, and logs it, never as if there were nothing", async () => {
+    // a git on PATH that fails the one call named, and is git for every other
+    const failing = (call: string) => {
+      const bin = tempDir("failing-git");
+      const real = execFileSync("/usr/bin/which", ["git"], { encoding: "utf8" }).trim();
+      fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh\ncase " $* " in *" ${call} "*) echo "fatal: ${call} broke" >&2; exit 128;; esac\nexec '${real}' "$@"\n`, { mode: 0o755 });
+      return bin;
+    };
+    const withGit = async (bin: string, f: () => Promise<void>) => {
+      const before = process.env.PATH;
+      process.env.PATH = `${bin}:${before}`;
+      try {
+        await f();
+      } finally {
+        process.env.PATH = before;
+      }
+    };
+    const dir = repo();
+    const logged: string[] = [];
+    const log = (context: string, err: unknown) => void logged.push(`${context}: ${(err as Error).message}`);
+    await withGit(failing("symbolic-ref"), async () => {
+      const r = await readWireDiff(dir, [], log);
+      expect(r.text).toMatch(/^Diff of its branch against main, /);
+      expect(r.flags).toContain("Which branch it's on couldn't be read: git symbolic-ref: fatal: symbolic-ref broke.");
+    });
+    await withGit(failing("ls-files"), async () => {
+      const r = await readWireDiff(dir, [], log);
+      expect(r.text).toContain("+a changed");
+      expect(r.flags).toContain("Its untracked files couldn't be counted (git ls-files: fatal: ls-files broke): the diff leaves any out.");
+    });
+    const trunk = makeRepo({ "a.txt": "a\n" });
+    git(trunk, "branch", "-q", "-m", "main", "trunk-of-mine");
+    await withGit(failing("--verify"), async () => {
+      const r = await readWireDiff(trunk, [], log);
+      expect(r.flags).toEqual([expect.stringMatching(/^The diff isn't included: git couldn't read its last commit \(git rev-parse: fatal: --verify broke\)\.$/)]);
+    });
+    expect(logged).toEqual([
+      `wires: {diff} in ${dir}: reading its branch: git symbolic-ref: fatal: symbolic-ref broke`,
+      `wires: {diff} in ${dir}: listing its untracked files: git ls-files: fatal: ls-files broke`,
+      `wires: {diff} in ${trunk}: reading HEAD: git rev-parse: fatal: --verify broke`,
+    ]);
   });
   it("falls back to uncommitted changes when there's no base branch, and says so", async () => {
     const dir = makeRepo({ "a.txt": "a\n" });

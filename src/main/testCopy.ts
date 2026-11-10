@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import { git, gitBytes } from "./git";
+import { git } from "./git";
+import { guardedGit, SAFE_DIFF } from "./safeGit";
 
 // a large repository's checkout can take minutes on a slow disk
 const COPY_TIMEOUT_MS = 5 * 60_000;
@@ -19,6 +20,7 @@ const COPY_TIMEOUT_MS = 5 * 60_000;
  * command: unlike `git diff` it ignores the user's diff settings (colour,
  * prefixes, external diff tools, textconv), so the patch is always one `git
  * apply` takes. It's passed on as bytes, so files that aren't UTF-8 arrive intact.
+ * The repo's reads go through guardedGit: nothing its config names runs for them.
  */
 export async function makeTestCopy(repo: string, dest: string): Promise<string> {
   const head = await git(repo, ["rev-parse", "HEAD"]);
@@ -27,9 +29,10 @@ export async function makeTestCopy(repo: string, dest: string): Promise<string> 
   try {
     await git(path.dirname(dest), ["clone", "--quiet", "--shared", "--no-checkout", repo, dest], { timeoutMs: COPY_TIMEOUT_MS });
     await git(dest, ["checkout", "--quiet", "--detach", head], { timeoutMs: COPY_TIMEOUT_MS });
-    const patch = await gitBytes(repo, ["diff-index", "-p", "--binary", "HEAD"], { timeoutMs: COPY_TIMEOUT_MS });
+    const g = await guardedGit(repo, { timeoutMs: COPY_TIMEOUT_MS });
+    const patch = await g.bytes(["diff-index", ...SAFE_DIFF, "-p", "--binary", "HEAD"]);
     if (patch.length) await git(dest, ["apply", "--whitespace=nowarn", "-"], { input: patch, timeoutMs: COPY_TIMEOUT_MS });
-    const untracked = (await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"], { trim: false })).split("\0").filter(Boolean);
+    const untracked = (await g.run(["ls-files", "--others", "--exclude-standard", "-z"], { trim: false })).split("\0").filter(Boolean);
     for (const rel of untracked) {
       fs.mkdirSync(path.dirname(path.join(dest, rel)), { recursive: true });
       fs.cpSync(path.join(repo, rel), path.join(dest, rel), { verbatimSymlinks: true });

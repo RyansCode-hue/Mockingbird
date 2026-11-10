@@ -1,6 +1,7 @@
 import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
 import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
 import { dirtyFileCount } from "./scm";
+import { guardedGit } from "./safeGit";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -253,7 +254,7 @@ async function readState(wtPath: string): Promise<WorktreeStateInfo> {
       counts: upstream ? await git(wtPath, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]) : "0 0",
     })),
     // before the first commit there's no HEAD to diff against: nothing to count yet
-    git(wtPath, ["diff", "--shortstat", "HEAD"]).catch((err: Error) => {
+    guardedGit(wtPath).then((g) => g.diff(["--shortstat", "HEAD"])).catch((err: Error) => {
       if (/bad revision|unknown revision|ambiguous argument 'HEAD'/i.test(err.message)) return "";
       throw err;
     }),

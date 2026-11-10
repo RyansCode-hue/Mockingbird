@@ -1269,6 +1269,15 @@ export class SessionManager {
     return this.live.get(id)?.buffer ?? "";
   }
 
+  /**
+   * A live pane's output from the start of a line: a buffer kept to BUFFER_MAX starts wherever that cut fell, and a
+   * line cut through (`…WORD=value`) reads as something it isn't. What a closed pane's saved output gives, as closedOutput.
+   */
+  bufferFromLine(id: string): string {
+    const b = this.buffer(id);
+    return b.length >= BUFFER_MAX ? fromLineStart(b) : b;
+  }
+
   /** What a pane's terminal starts from: its scrollback, or for a teammate's session, its owner's. */
   paneBuffer(id: string): string | Promise<string> {
     if (!this.live.has(id) && this.remote?.has(id)) return this.remote.buffer(id);

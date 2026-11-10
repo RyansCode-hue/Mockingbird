@@ -1,5 +1,5 @@
 import { baseCandidates, branchesOf, git, MAX_DIFF_BYTES } from "./git";
-import { guardedGit } from "./safeGit";
+import { guardedGit, type GuardedGit } from "./safeGit";
 import * as fs from "fs";
 import { applyTextEdits, type LspTextEdit } from "../shared/textEdits";
 import { lineBreakOf, splitBom } from "../shared/editorText";
@@ -308,8 +308,8 @@ export function branchStat(root: string, base: string | null): Promise<BranchSta
  * diffed together with its old path, so -M shows the rename rather than a
  * whole new file.
  */
-export async function withRenameSource(root: string, range: string[], rel: string): Promise<string[]> {
-  const from = parseNameStatus(await git(root, ["diff", "--name-status", "-z", "-M", ...range], { trim: false })).find((c) => c.path === rel)?.from;
+export async function withRenameSource(g: GuardedGit, range: string[], rel: string): Promise<string[]> {
+  const from = parseNameStatus(await g.diff(["--name-status", "-z", "-M", ...range], { trim: false })).find((c) => c.path === rel)?.from;
   return from ? [from, rel] : [rel];
 }
 
@@ -334,9 +334,10 @@ export function parseNameStatus(z: string): GitChange[] {
  */
 export async function gitChanges(root: string, scope: ChangeScope): Promise<GitChanges> {
   const base = scope === "branch" ? await branchBase(root) : { sha: "HEAD", name: "HEAD" };
+  const g = await guardedGit(root);
   const [tracked, untracked] = await Promise.all([
-    git(root, ["diff", "--name-status", "-z", "-M", base.sha], { trim: false }),
-    git(root, ["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }),
+    g.diff(["--name-status", "-z", "-M", base.sha], { trim: false }),
+    g.run(["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }),
   ]);
   const changes = parseNameStatus(tracked);
   for (const p of untracked.split("\0").filter(Boolean)) changes.push({ path: p, status: "U" });
@@ -346,11 +347,12 @@ export async function gitChanges(root: string, scope: ChangeScope): Promise<GitC
 
 export async function fileDiff(root: string, rel: string, scope: ChangeScope, untracked: boolean): Promise<string> {
   await resolveIn(root, rel);
+  const g = await guardedGit(root);
   let out: string;
-  if (untracked) out = await git(root, ["diff", "--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false });
+  if (untracked) out = await g.diff(["--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false });
   else {
     const range = [scope === "branch" ? (await branchBase(root)).sha : "HEAD"];
-    out = await git(root, ["diff", "-M", ...range, "--", ...(await withRenameSource(root, range, rel))], { trim: false });
+    out = await g.diff(["-M", ...range, "--", ...(await withRenameSource(g, range, rel))], { trim: false });
   }
   if (out.length > MAX_DIFF_BYTES) throw new Error("Diff is too large to display");
   return out;

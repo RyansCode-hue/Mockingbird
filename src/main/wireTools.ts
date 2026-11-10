@@ -89,9 +89,9 @@ export interface WireToolsOptions {
     noticeWaiting(id: string, key: string): boolean;
     /** Mockingbird's notice, replacing the one under `key` still waiting (SessionManager.deliverNotice). */
     deliverNotice(id: string, key: string, message: string, submit: boolean): string;
-    /** A live pane's output so far. */
-    buffer(id: string): string;
-    /** A closed one's saved output; throws when it can't be read. */
+    /** A live pane's output so far, from the start of a line (SessionManager.bufferFromLine). */
+    bufferFromLine(id: string): string;
+    /** A closed one's saved output, from the start of a line; throws when it can't be read. */
     closedOutput(id: string): string;
   };
   /** A conversation's transcript files, found now (handoff.ts' conversationFiles), and whose agent wrote them. */
@@ -226,7 +226,7 @@ export class WireTools {
       const body = await expandTemplate(w.template ?? DEFAULT_TEMPLATE, {
         summary: redacted.text,
         ticket,
-        diff: () => (diff ??= readWireDiff(me.cwd, this.secretFiles())),
+        diff: () => (diff ??= readWireDiff(me.cwd, this.secretFiles(), this.o.log)),
         files: () => readWireFiles(me.cwd, w.files, this.secretFiles()),
       });
       fills.push({ wire: step.wire, from: filledFrom(w), body });
@@ -373,7 +373,7 @@ export class WireTools {
     const running = this.o.sessions.list().some((s) => s.id === id);
     let raw: string;
     try {
-      raw = running ? this.o.sessions.buffer(id) : this.o.sessions.closedOutput(id);
+      raw = running ? this.o.sessions.bufferFromLine(id) : this.o.sessions.closedOutput(id);
     } catch (err) {
       this.o.log(`wires: read_terminal couldn't read ${id}'s output for ${me.id}`, err);
       return refuse(`Its output couldn't be read: ${errorText(err)}`);

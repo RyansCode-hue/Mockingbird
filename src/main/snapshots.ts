@@ -4,6 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { parseNameStatus } from "./files";
 import { git, headCommit, repoTop } from "./git";
+import { guardedGit } from "./safeGit";
 import { SNAPSHOT_MAX_FILE_BYTES, type TurnChange, type TurnSnapshot } from "../shared/types";
 
 /**
@@ -147,7 +148,7 @@ export async function worktreeCommitOn(cwd: string, parent: string, message: str
 
 /** The files a snapshot commit left out for being too big (from its message). */
 export async function skippedIn(cwd: string, sha: string): Promise<string[]> {
-  return parseMessage(await git(cwd, ["show", "-s", "--format=%B", sha])).skipped;
+  return parseMessage(await (await guardedGit(cwd)).run(["show", "-s", "--format=%B", sha])).skipped;
 }
 
 /**
