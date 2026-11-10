@@ -572,6 +572,7 @@ app.whenReady().then(() => {
   setInterval(pruneBackups, 86_400_000).unref();
   livePanes.start(); // team rooms: live panes
   roomsKnown = true; // started, or found team rooms can't run: either way roomOfSession can be believed from here
+  wireTools.roomsStarted(); // what launched before now heard nothing of its wires
   // team rooms: a room left or removed from whose cleanup didn't finish (Mockingbird quit) is cleaned up now
   void team.finishLeftRooms().catch((err) => logError("team: finishing rooms left before", err));
   powerMonitor.on("resume", () => team.wake());
@@ -1388,7 +1389,7 @@ handle("wires:restore", (id) => wires.restore(id));
 handle("wires:rekey", (old, next) => wires.rekey(old, next));
 // the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an
 // agent is told of its wires as it launches
-const wireTools = new WireTools({
+const wireTools: WireTools = new WireTools({
   store: landscape,
   rules: wires,
   sessions,
@@ -1399,8 +1400,8 @@ const wireTools = new WireTools({
   secretFiles: () => knownSecretFiles(store.settings.workTrackerPath).files,
   submitOnDelivery: submitsAgentMessages,
   onMessage: recordMessage,
-  // W3's delivery takes its pendings from here too; until then a finish only says it's ready. One notice per session
-  // per 30 s, as every pane's (notifySession), with a click that shows the pane
+  // what a finish readied, once delivery has written it and sent what its gate sends. One notice per session per 30 s,
+  // as every pane's (notifySession), with a click that shows the pane
   onPendings: ({ from, fromTitle, pendings }) => {
     const s = sessions.list().find((x) => x.id === from);
     if (!shouldNotify({ settings: store.settings, session: s, kind: "finished", now: new Date() })) return;
@@ -1410,6 +1411,9 @@ const wireTools = new WireTools({
     n.on("click", () => focusPane(from));
     n.show();
   },
+  // delivery is the one writer of pendings, deliveries, rounds and hops
+  offer: (me, f, how, prompt) => delivery.offer(me, f, how, prompt),
+  promptOf: (id) => delivery.promptOf(id),
   log: logError,
 });
 sessions.launchInstructions = (id) => wireTools.launchInstructions(id);
@@ -1419,13 +1423,18 @@ handle(
 );
 handle("wires:lastMessage", (id) => wireTools.latestMessage(sessionOf(String(id))));
 // what waits at a gate reaching the other end: a person's Send, an automatic gate, and settling what a run left on its way
-const delivery = new WireDelivery({
+const delivery: WireDelivery = new WireDelivery({
   store: landscape,
   context: (book) => wires.context(book),
   sessions,
   reopen: reopenSession,
   submits: submitsAgentMessages,
-  frame: null,
+  // Mockingbird's label and fence around what's sent; a refusal fails the send, saying why
+  frame: ({ wireId, body, automatic }) => {
+    const m = wireTools.messageFor(wireId, body, { automatic });
+    if ("refused" in m) throw new Error(m.refused);
+    return m.text;
+  },
   takenOver: () => (takeover ? (sid, doing) => takeover!.takenOverRefusal(sid, doing) : null),
   log: logError,
   notify: (id, title, body) => notifySession(id, title, body),

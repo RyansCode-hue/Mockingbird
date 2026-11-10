@@ -119,6 +119,10 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         const byHand = await app.evaluate<{ steps: { does: string; pending?: { id: string } }[] }>(`window.mb.wiresFinish(${JSON.stringify(builder.id)}, "Built it, edited.")`);
         expect(byHand.steps).toEqual([expect.objectContaining({ does: "readies" })]);
         expect(onDisk(home).wires.links[made.id].pending).toMatchObject({ id: byHand.steps[0].pending!.id, body: "Built it, edited." });
+        // a person's Send of it: labelled and fenced by messageFor, as index.ts frames it, and queued for the reviewer mid-turn
+        const pendingId = byHand.steps[0].pending!.id;
+        expect(await app.evaluate<{ refused?: string }>(`window.mb.wiresSend(${JSON.stringify(made.id)}, ${JSON.stringify(pendingId)}, "Built it, edited.")`)).not.toHaveProperty("refused");
+        expect(onDisk(home).wires.links[made.id].delivery).toMatchObject({ id: pendingId, state: "queued" });
         expect(await app.evaluate(`window.mb.wiresLastMessage(${JSON.stringify(reviewer.id)})`)).toEqual({ text: null, at: null, why: "Mockingbird hasn't seen a conversation in it yet" });
         expect((await codex.call("read_context", { from: builder.id })).content[0].text).toMatch(/^There's no context link from/);
 
@@ -222,9 +226,9 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
       const state = await app.evaluate<WireState>(`window.mb.wiresGet()`);
       expect(state.book!.links.queued.delivery!.state).toBe("failed");
 
-      // this build has no framing yet: a Send is refused before anything is written
+      // its ends aren't this Mac's sessions: a Send is refused before anything is written
       const before = fs.readFileSync(path.join(home, ".mockingbird", "landscape.json"), "utf8");
-      expect(await app.evaluate<{ refused?: string }>(`window.mb.wiresSend("queued", "p1", "again")`)).toEqual({ refused: expect.stringMatching(/can't send along wires yet/) });
+      expect(await app.evaluate<{ refused?: string }>(`window.mb.wiresSend("queued", "p1", "again")`)).toEqual({ refused: expect.stringMatching(/no session "q-a"|still starting its team rooms/) });
       expect(fs.readFileSync(path.join(home, ".mockingbird", "landscape.json"), "utf8")).toBe(before);
       // a person's acts on the ledger: Mark sent, one more round, reset
       expect(await app.evaluate<WireReply>(`window.mb.wiresMarkSent("pasting", "p1")`)).not.toHaveProperty("refused");
@@ -233,7 +237,7 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
       expect(onDisk(home).wires.links.pasting.rounds).toEqual({ limit: 2, used: 1 });
       expect(await app.evaluate<WireReply>(`window.mb.wiresResetRounds("pasting")`)).not.toHaveProperty("refused");
       expect(onDisk(home).wires.links.pasting.rounds).toEqual({ limit: 2, used: 0 });
-      expect(await app.evaluate<{ refused?: string }>(`window.mb.wiresSendAgain("queued", "p1", "x")`)).toEqual({ refused: expect.stringMatching(/can't send along wires yet/) });
+      expect(await app.evaluate<{ refused?: string }>(`window.mb.wiresSendAgain("queued", "p1", "x")`)).toEqual({ refused: expect.stringMatching(/can simply be sent/) });
     } finally {
       app.close();
       await quitApp(app.child);

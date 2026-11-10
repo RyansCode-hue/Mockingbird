@@ -200,7 +200,8 @@ interface LiveSession {
   kickoff: boolean; // its initial prompt is still to be typed in
   startTimer: NodeJS.Timeout | null; // delivers queued messages once a just-started agent has drawn its prompt
   compactSentAt: number | null; // when Compact (usage warnings) last sent /compact here
-  prompts: number; // prompts its agent has taken this launch (UserPromptSubmit)
+  prompts: number; // prompts its agent has taken this launch (UserPromptSubmit), Mockingbird's own notices not counted
+  ownPrompts: number; // notices submitted whose UserPromptSubmit hasn't come yet: those prompts aren't counted
 }
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
@@ -658,6 +659,7 @@ export class SessionManager {
       startTimer: null,
       compactSentAt: null,
       prompts: 0,
+      ownPrompts: 0,
       mcp,
     };
     sess.total = sess.buffer.length;
@@ -1362,6 +1364,20 @@ export class SessionManager {
     return true;
   }
 
+  /**
+   * Mockingbird's own notice going in as a prompt: once its Enter has gone, the prompt its hooks report next is that
+   * notice, not one its agent was given, so it isn't counted (promptCount: an automatic wire sends once per prompt).
+   */
+  private ownPrompt(s: LiveSession, inner?: QueueReceipt): QueueReceipt {
+    return {
+      pasting: () => (inner ? inner.pasting() : true),
+      settled: (outcome, why) => {
+        if (outcome === "sent") s.ownPrompts++;
+        inner?.settled(outcome, why);
+      },
+    };
+  }
+
   /** Reads the hook events written so far, at once (hooks.ts's watcher sets it while it runs). */
   hooksCatchUp: (() => void) | null = null;
 
@@ -1530,7 +1546,8 @@ export class SessionManager {
 
   /**
    * Which prompt live pane `id`'s agent is on: its pty's epoch and the prompts its hooks have reported this launch (0
-   * when they never do). An automatic wire sends once per prompt by it (wireDelivery.ts). Null when it isn't running.
+   * when they never do), Mockingbird's own notices left out. An automatic wire sends once per prompt by it
+   * (wireDelivery.ts). Null when it isn't running.
    */
   promptCount(id: string): { epoch: string; seq: number } | null {
     const s = this.live.get(id);
@@ -1572,7 +1589,10 @@ export class SessionManager {
     // must not bring its dead pane back to life
     if (!s || s.info.status === "dead") return null;
     s.hookEvents++;
-    if (ev.prompted) s.prompts++;
+    if (ev.prompted) {
+      if (s.ownPrompts > 0) s.ownPrompts--;
+      else s.prompts++;
+    }
     if (s.info.hooksSilent) {
       s.info.hooksSilent = false;
       this.emitChanged();
@@ -1684,7 +1704,7 @@ export class SessionManager {
     // one submitted per turn; one its receipt kept out of the pane (it couldn't be written down) leaves the turn to the next
     for (let next = s.queued.findIndex((m) => m.submit); next >= 0; next = s.queued.findIndex((m) => m.submit)) {
       const [m] = s.queued.splice(next, 1);
-      if (!this.sendMessage(s.info.id, m.text, true, m.receipt)) continue;
+      if (!this.sendMessage(s.info.id, m.text, true, m.key ? this.ownPrompt(s, m.receipt) : m.receipt)) continue;
       this.setStatus(s.info.id, "working");
       return;
     }

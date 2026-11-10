@@ -4,12 +4,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { SessionManager } from "../src/main/sessions";
-import { AUTOMATIC_HOPS, NO_FRAME, START_WAIT_MS, WireDelivery, type FrameWire, type OfferHow, type PendingOffer } from "../src/main/wireDelivery";
+import { AUTOMATIC_HOPS, START_WAIT_MS, WireDelivery, type FrameWire, type OfferHow } from "../src/main/wireDelivery";
+import { WireTools } from "../src/main/wireTools";
 import { WireService } from "../src/main/wires";
 import type { SessionInfo } from "../src/shared/types";
-import { gateOf, ROOM_LINE, WIRE_BODY_MAX, type SendReply, type Wire, type WireReply } from "../src/shared/wires";
+import { gateOf, ROOM_LINE, WIRE_BODY_MAX, type FinishedStep, type FinishOutcome, type SendReply, type Wire, type WireReply, type WireVerdict } from "../src/shared/wires";
 import { askAs, startServer } from "./mcpClient";
-import { tempDir } from "./helpers";
+import { git, makeRepo, tempDir, write } from "./helpers";
 
 /** Every pty the manager starts, which session it's for, what was written to it, and the wire's delivery on disk at each write. */
 type FakePty = { session: string; writes: string[]; onDisk: (string | undefined)[]; killed: boolean; emit(d: string): void; exit(code: number): void };
@@ -56,7 +57,8 @@ interface Setup {
   records?: SessionInfo[];
   /** landscape.json as a run before this one left it. */
   file?: string;
-  frame?: FrameWire | null;
+  /** What the other end is sent: the stand-in below, or "real" for W2's label and fence (WireTools.messageFor). */
+  frame?: FrameWire | "real";
   /** How a closed session is reopened; the manager's relaunch unless a test holds it back. */
   reopen?: (id: string, m: SessionManager) => Promise<SessionInfo | null>;
 }
@@ -101,10 +103,28 @@ function setup(o: Setup = {}) {
       return o.reopen ? o.reopen(id, m) : m.relaunch(id);
     },
     submits: () => opts.submit,
-    frame: o.frame === undefined ? frame : o.frame,
+    frame:
+      o.frame === "real"
+        ? ({ wireId, body, automatic }) => {
+            const r = tools.messageFor(wireId, body, { automatic });
+            if ("refused" in r) throw new Error(r.refused);
+            return r.text;
+          }
+        : (o.frame ?? frame),
     takenOver: () => (sid, doing) => (takenOver[sid] ? `${takenOver[sid]} — take it back rather than ${doing}` : null),
     log,
     notify: (id, title, body) => void told.push({ id, title, body }),
+  });
+  // W2's finishing, which plans and fills a finish and has delivery write it: the one way a pending lands
+  const tools: WireTools = new WireTools({
+    store,
+    rules: service,
+    sessions: m,
+    conversationFiles: () => ({ agent: "claude", files: [], refused: null }),
+    submitOnDelivery: () => opts.submit,
+    offer: (me, f, how, prompt) => d.offer(me, f, how, prompt),
+    promptOf: (id) => d.promptOf(id),
+    log,
   });
 
   const pane = async (title: string, over: Record<string, unknown> = {}) => m.create({ repoPath: null, useWorktree: false, agent: "claude", title, ...over });
@@ -119,17 +139,38 @@ function setup(o: Setup = {}) {
   const book = () => store.wires().book!;
   const wireOf = (id: string) => book().links[id];
   const gate = (id: string) => gateOf(id, wireOf(id), service.context(book()));
-  const offer = (wire: string, body = "the summary", how: OfferHow = { origin: "agent" }, more: Partial<PendingOffer> = {}) => {
-    const r = d.offer([{ wire, body, flags: [], ...more }], how);
+  /**
+   * Finish wire `wire`'s source's step with `body` as its summary (the wire's template is the summary alone): as its agent
+   * (finish_step), a person (Finish step), or a merge (delivery's offer with the fill, as W16 will). What it did along `wire`.
+   */
+  const finishing = async (wire: string, body = "the summary", how: OfferHow = { origin: "agent" }, more: { verdict?: WireVerdict } = {}): Promise<FinishedStep> => {
+    const from = wireOf(wire).from;
+    const me = [...m.list(), ...m.resumable()].find((s) => s.id === from)!;
+    // a feedback wire readies on "changes", which its source's finish says unless told otherwise
+    const verdict = more.verdict ?? (wireOf(wire).type === "feedback" ? "changes" : undefined);
+    const raw = { summary: body, ...(verdict ? { verdict } : {}) };
+    let r: FinishOutcome;
+    if (how.origin === "merge") {
+      const prompt = d.promptOf(me.id);
+      const fill = await tools.planFinish(me, raw);
+      if ("refused" in fill) throw new Error(fill.refused);
+      r = d.offer(me, fill, how, prompt);
+    } else r = await tools.finish(me, raw, how.origin === "person" ? "you" : "agent");
     if ("refused" in r) throw new Error(r.refused);
-    return r.offered[0].pending;
+    return r.steps.find((x) => x.wire === wire)!;
+  };
+  /** The same, answering the pending it readied on `wire`. */
+  const offer = async (wire: string, body = "the summary", how: OfferHow = { origin: "agent" }, more: { verdict?: WireVerdict } = {}): Promise<string> => {
+    const step = await finishing(wire, body, how, more);
+    if (!step.pending) throw new Error(`not readied: ${JSON.stringify(step)}`);
+    return step.pending.id;
   };
   const onDisk = () => JSON.parse(fs.readFileSync(file, "utf8"));
   const placeGhost = (id: string, title: string) => {
     store.update({ ghosts: { [id]: ghost(title) } });
     store.flush();
   };
-  return { dir, file, m, store, service, d, rooms, takenOver, told, logged, opts, reopened, pane, ptyOf, idle, add, book, wireOf, gate, offer, onDisk, placeGhost };
+  return { dir, file, m, store, service, d, tools, finishing, rooms, takenOver, told, logged, opts, reopened, pane, ptyOf, idle, add, book, wireOf, gate, offer, onDisk, placeGhost };
 }
 
 const refusal = (r: WireReply | SendReply | { refused: string } | { offered: unknown }) => ("refused" in r ? r.refused : `not refused: ${JSON.stringify(r).slice(0, 200)}`);
@@ -142,7 +183,7 @@ async function ready(o: Setup = {}, type: "handoff" | "feedback" = "handoff", se
   const b = await t.pane("Reviewer");
   t.idle(b.id);
   const w = t.add(a.id, b.id, type, settings);
-  const p = t.offer(w);
+  const p = await t.offer(w);
   return { ...t, a, b, w, p };
 }
 
@@ -233,7 +274,7 @@ describe("a person's Send, by where the other end is", () => {
     const a = await t.pane("Builder");
     const b = await t.pane("Reviewer"); // working from its start, no hook yet
     const w = t.add(a.id, b.id);
-    const p = t.offer(w);
+    const p = await t.offer(w);
     await t.d.send(w, p, "the summary");
     expect(t.ptyOf(b.id).writes).toEqual([]);
     t.idle(b.id, { started: true });
@@ -297,7 +338,7 @@ describe("a person's Send, by where the other end is", () => {
     const a = await t.pane("Builder");
     const b = await t.pane("Reviewer"); // working from its start, and its hooks never report
     const w = t.add(a.id, b.id);
-    const p = t.offer(w);
+    const p = await t.offer(w);
     await t.d.send(w, p, "the summary");
     expect(t.gate(w).state).toBe("sending");
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -307,7 +348,7 @@ describe("a person's Send, by where the other end is", () => {
     t.m.clearWaiting(b.id);
     vi.advanceTimersByTime(150);
     expect(t.wireOf(w).delivery!.state).toBe("sent");
-    const p2 = t.offer(w);
+    const p2 = await t.offer(w);
     expect(t.gate(w)).toMatchObject({ state: "blocked", why: expect.stringMatching(/hooks aren't reporting, so a message might never go/) });
     expect(refusal(await t.d.send(w, p2, "the next"))).toMatch(/hooks aren't reporting/);
   });
@@ -326,24 +367,20 @@ describe("a person's Send, by where the other end is", () => {
     expect(refusal(await t.d.send("d", "p", "x"))).toMatch(/debrief/);
     expect(refusal(await t.d.send("r", "p", "x"))).toMatch(/teammate's session/);
     const w = t.add(a.id, b.id);
-    const p = t.offer(w);
+    const p = await t.offer(w);
     t.takenOver[b.id] = "“Reviewer” continues on Nick's laptop";
     expect(refusal(await t.d.send(w, p, "x"))).toBe("“Reviewer” continues on Nick's laptop — take it back rather than sending along this copy's wire");
     for (const id of ["t", "d", "r", w]) expect(t.wireOf(id).delivery).toBeUndefined();
     expect(ptys.filter((x) => [term.id, brief.id, b.id].includes(x.session)).flatMap((x) => x.writes)).toEqual([]);
   });
 
-  it("refuses a context wire, a body that's empty or too long, and one with no framing built yet", async () => {
+  it("refuses a context wire, a body that's empty or too long, or one that isn't text", async () => {
     const t = await ready();
     const ctxWire = t.add(t.a.id, t.b.id, "context");
     expect(refusal(await t.d.send(ctxWire, "p", "x"))).toMatch(/context wire carries nothing/);
     expect(refusal(await t.d.send(t.w, t.p, "  "))).toMatch(/nothing to send/);
     expect(refusal(await t.d.send(t.w, t.p, "x".repeat(WIRE_BODY_MAX + 1)))).toBe(`It's ${WIRE_BODY_MAX + 1} characters; the limit is ${WIRE_BODY_MAX}.`);
-    expect(refusal(t.d.offer([{ wire: t.w, body: "x".repeat(WIRE_BODY_MAX + 1), flags: [] }], { origin: "agent" }))).toMatch(/the limit is/);
     expect(refusal(await t.d.send(t.w, t.p, 42))).toMatch(/isn't text/);
-    const bare = await ready({ frame: null });
-    expect(refusal(await bare.d.send(bare.w, bare.p, "x"))).toBe(NO_FRAME);
-    expect(bare.wireOf(bare.w).delivery).toBeUndefined();
   });
 });
 
@@ -397,13 +434,13 @@ describe("receipts: every way a queued message ends is told, never left as queue
     const t = await ready({}, "handoff");
     t.opts.submit = false;
     t.service.set(t.w, { gate: "automatic" });
-    const p2 = t.offer(t.w, "automatic");
+    const p2 = await t.offer(t.w, "automatic");
     expect(p2).toBeTruthy();
     expect(t.wireOf(t.w).delivery).toMatchObject({ state: "placed", why: expect.stringMatching(/leaves agents' messages there/) });
     t.m.write(t.b.id, "\r"); // the person sends what was left there
     t.idle(t.b.id);
     t.service.set(t.w, { gate: "ask" });
-    const p3 = t.offer(t.w, "by hand");
+    const p3 = await t.offer(t.w, "by hand");
     await t.d.send(t.w, p3, "by hand");
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.w).delivery).toMatchObject({ id: p3, state: "sent" });
@@ -421,8 +458,8 @@ describe("no double sends", () => {
     vi.advanceTimersByTime(150);
     expect(t.ptyOf(t.b.id).writes.filter((x) => x !== "\r")).toHaveLength(1);
     expect(refusal(await t.d.send(t.w, t.p, "the summary"))).toMatch(/sent to “Reviewer” already/);
-    const p2 = t.offer(t.w, "newer");
-    const p3 = t.offer(t.w, "newest");
+    const p2 = await t.offer(t.w, "newer");
+    const p3 = await t.offer(t.w, "newest");
     expect(refusal(await t.d.send(t.w, p2, "newer"))).toMatch(/replaced by something newer/);
     expect(refusal(await t.d.send(t.w, "made-up", "x"))).toMatch(/replaced by something newer/);
     expect((await t.d.send(t.w, p3, "newest")) as object).not.toHaveProperty("refused");
@@ -432,7 +469,7 @@ describe("no double sends", () => {
     const t = await ready();
     t.m.statusFromHook({ paneId: t.b.id, status: "working" });
     await t.d.send(t.w, t.p, "first");
-    const p2 = t.offer(t.w, "second");
+    const p2 = await t.offer(t.w, "second");
     expect(t.gate(t.w)).toMatchObject({ state: "sending", pendingId: p2 });
     expect(refusal(await t.d.send(t.w, p2, "second"))).toMatch(/still on its way/);
     t.idle(t.b.id);
@@ -603,7 +640,7 @@ describe("the round limit", () => {
     vi.advanceTimersByTime(1700 + 150);
     expect(t.wireOf(t.w).delivery!.state).toBe("sent");
     // the next round is past the limit
-    const p2 = t.offer(t.w, "round two");
+    const p2 = await t.offer(t.w, "round two");
     expect(t.gate(t.w)).toMatchObject({ state: "blocked", atLimit: true });
     expect(refusal(await t.d.send(t.w, p2, "round two"))).toMatch(/At the limit: 1 of 1/);
     expect(refusal(t.d.resetRounds("nope"))).toMatch(/no wire/);
@@ -622,7 +659,7 @@ describe("the round limit", () => {
     await t.d.send(t.w, t.p, "round one");
     vi.advanceTimersByTime(150);
     await t.m.restart(t.b.id);
-    t.offer(t.w, "round two");
+    await t.offer(t.w, "round two");
     expect(t.wireOf(t.w).rounds).toEqual({ limit: 2, used: 1 });
     const again = new WireDelivery({ store: new LandscapeStore({ file: t.file, emit: () => {}, log: () => {} }), context: (bk) => t.service.context(bk), sessions: t.m, reopen: async () => null, submits: () => true, frame, takenOver: () => null, log: () => {}, notify: () => {} });
     again.reconcile();
@@ -645,7 +682,7 @@ describe("an automatic gate", () => {
 
   it("sends what its source finished with no one pressing Send, as Mockingbird's own, and counts the hop", async () => {
     const t = await chain(2);
-    const p = t.offer(t.wires[0], "done");
+    const p = await t.offer(t.wires[0], "done");
     expect(t.ptyOf(t.ids[1]).writes).toEqual(["|[automatic from Step 0 to Step 1] done|"]);
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.wires[0]).delivery).toMatchObject({ id: p, state: "sent" });
@@ -655,7 +692,7 @@ describe("an automatic gate", () => {
   it(`stops after ${AUTOMATIC_HOPS} automatic hops in a row, and a person's Send starts the count again`, async () => {
     const t = await chain(5);
     for (let i = 0; i < 4; i++) {
-      t.offer(t.wires[i], `step ${i}`);
+      await t.offer(t.wires[i], `step ${i}`);
       vi.advanceTimersByTime(150);
     }
     expect(t.wires.slice(0, 3).map((w) => t.wireOf(w).delivery!.state)).toEqual(["sent", "sent", "sent"]);
@@ -669,11 +706,11 @@ describe("an automatic gate", () => {
   it("never reopens a stopped workspace: exited or closed, it waits for a person, saying why", async () => {
     const t = await chain(3);
     t.ptyOf(t.ids[1]).exit(0);
-    t.offer(t.wires[0]);
+    await t.offer(t.wires[0]);
     expect(t.wireOf(t.wires[0]).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/“Step 1” isn't running: an automatic gate never reopens a workspace/) });
     t.m.kill(t.ids[2], false);
     t.placeGhost(t.ids[2], "Step 2");
-    t.offer(t.wires[1]);
+    await t.offer(t.wires[1]);
     expect(t.wireOf(t.wires[1]).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/never reopens/) });
     expect(t.reopened).toEqual([]);
     expect(ptys.filter((p) => p.session === t.ids[1] || p.session === t.ids[2])).toHaveLength(2);
@@ -681,54 +718,60 @@ describe("an automatic gate", () => {
 
   it("sends once per prompt its source took: a second finish without a new prompt waits; one after a new prompt goes", async () => {
     const t = await chain(2);
-    t.offer(t.wires[0], "first");
+    await t.offer(t.wires[0], "first");
     vi.advanceTimersByTime(150);
     t.idle(t.ids[1]);
     // no prompt reported since (its hooks silent, or it called finish_step twice in one turn): the second asks
-    t.offer(t.wires[0], "again, same prompt");
+    await t.offer(t.wires[0], "again, same prompt");
     expect(t.wireOf(t.wires[0]).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/finished again without a new prompt/) });
     t.m.statusFromHook({ paneId: t.ids[0], status: "working", prompted: true });
-    t.offer(t.wires[0], "after a new prompt");
+    await t.offer(t.wires[0], "after a new prompt");
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.wires[0]).delivery!.state).toBe("sent");
     expect(t.ptyOf(t.ids[1]).writes.filter((x) => x !== "\r")).toEqual(["|[automatic from Step 0 to Step 1] first|", "|[automatic from Step 0 to Step 1] after a new prompt|"]);
     // a person's Finish step is theirs, not the agent's: no prompt to go by
     t.idle(t.ids[1]);
-    t.offer(t.wires[0], "a person finished it", { origin: "person" });
+    await t.offer(t.wires[0], "a person finished it", { origin: "person" });
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.wires[0]).delivery!.state).toBe("sent");
     // three automatic arrivals at Step 1 now: a person's Send starts its count again
     t.idle(t.ids[1]);
-    const yours = t.offer(t.wires[0], "yours", { origin: "agent", hold: "for you" });
+    const yours = await t.offer(t.wires[0], "yours", { origin: "agent", hold: "for you" });
     await t.d.send(t.wires[0], yours, "yours");
     vi.advanceTimersByTime(150);
     expect(t.book().notes[t.ids[1]]).toEqual({ hops: 0 });
     // relaunched, its prompts count from nothing again, as a new launch
     await t.m.restart(t.ids[0]);
     t.idle(t.ids[1]);
-    t.offer(t.wires[0], "after a restart");
+    await t.offer(t.wires[0], "after a restart");
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.wires[0]).delivery!.state).toBe("sent");
   });
 
-  it("holds what's flagged, what came while blocked, what a merge after a start brings, and with no framing", async () => {
+  it("holds what redaction flagged, what came while blocked, and what a merge after a start brings; what the rules refuse isn't readied", async () => {
     const t = await chain(2);
-    t.offer(t.wires[0], "with a key", { origin: "agent" }, { flags: ["a secret-like value"] });
-    expect(t.wireOf(t.wires[0]).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/flagged \(a secret-like value\)/) });
-    t.offer(t.wires[0], "merged", { origin: "merge", hold: "Its PR merged while Mockingbird was closed, so it asks." });
+    await t.offer(t.wires[0], "used DB_PASSWORD=hunter2xx to test");
+    expect(t.wireOf(t.wires[0]).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/^It was flagged \(.*secret-looking/) });
+    t.m.statusFromHook({ paneId: t.ids[0], status: "working", prompted: true });
+    await t.offer(t.wires[0], "merged", { origin: "merge", hold: "Its PR merged while Mockingbird was closed, so it asks." });
     expect(t.wireOf(t.wires[0]).delivery).toMatchObject({ state: "held", why: "Its PR merged while Mockingbird was closed, so it asks." });
+    // an end whose hooks never reported: what comes then is held, saying the wire was blocked
+    const silent = await t.pane("Silent");
+    const toSilent = t.add(t.ids[1], silent.id, "handoff", { gate: "automatic" });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    t.m.checkStalls(Date.now() + 10 * 60_000, 5 * 60_000);
+    t.m.statusFromHook({ paneId: t.ids[1], status: "working", prompted: true });
+    await t.offer(toSilent, "while it's blocked");
+    expect(t.wireOf(toSilent).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/came while this wire was blocked \(“Silent”: its hooks aren't reporting/) });
     t.takenOver[t.ids[1]] = "“Step 1” continues on Nick's laptop";
-    t.offer(t.wires[0], "taken");
-    expect(t.wireOf(t.wires[0]).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/came while this wire was blocked \(“Step 1” continues on Nick's laptop/) });
+    expect(await t.finishing(t.wires[0], "taken")).toMatchObject({ does: "refused", why: expect.stringMatching(/continues on Nick's laptop/) });
     expect(t.ptyOf(t.ids[1]).writes).toEqual([]);
-    const bare = await ready({ frame: null }, "handoff", { gate: "automatic" });
-    expect(bare.wireOf(bare.w).delivery).toMatchObject({ state: "held", why: NO_FRAME });
   });
 
   it("is never automatic in a room's area: it asks, and nothing is written", async () => {
     const t = await chain(2);
     t.rooms[t.ids[0]] = t.rooms[t.ids[1]] = "R1";
-    const p = t.offer(t.wires[0]);
+    const p = await t.offer(t.wires[0]);
     expect(t.gate(t.wires[0])).toMatchObject({ state: "ready", gate: "ask", pendingId: p });
     expect(t.wireOf(t.wires[0]).delivery).toBeUndefined();
     expect(t.ptyOf(t.ids[1]).writes).toEqual([]);
@@ -743,9 +786,9 @@ describe("an automatic gate", () => {
   it("one at a time: what comes while one's on its way goes once that's settled", async () => {
     const t = await chain(2);
     t.m.statusFromHook({ paneId: t.ids[1], status: "working" });
-    t.offer(t.wires[0], "first");
+    await t.offer(t.wires[0], "first");
     t.m.statusFromHook({ paneId: t.ids[0], status: "working", prompted: true });
-    const p2 = t.offer(t.wires[0], "second");
+    const p2 = await t.offer(t.wires[0], "second");
     expect(t.wireOf(t.wires[0]).delivery!.state).toBe("queued");
     expect(t.gate(t.wires[0]).state).toBe("sending");
     t.idle(t.ids[1]); // the first is pasted
@@ -763,7 +806,7 @@ describe("an automatic gate", () => {
     for (let i = 0; i < 6; i++) {
       // a prompt reported each time, as a hook event written by the source's own shell would be
       t.m.statusFromHook({ paneId: t.ids[0], status: "working", prompted: true });
-      t.offer(t.wires[0], `round ${i}`);
+      await t.offer(t.wires[0], `round ${i}`);
       vi.advanceTimersByTime(150);
       states.push(t.wireOf(t.wires[0]).delivery!.state);
       t.idle(t.ids[1], { finished: true });
@@ -776,7 +819,7 @@ describe("an automatic gate", () => {
     expect(t.book().notes[t.ids[1]]).toEqual({ hops: 0 });
     t.idle(t.ids[1], { finished: true });
     t.m.statusFromHook({ paneId: t.ids[0], status: "working", prompted: true });
-    t.offer(t.wires[0], "after yours");
+    await t.offer(t.wires[0], "after yours");
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.wires[0]).delivery!.state).toBe("sent");
   });
@@ -786,12 +829,12 @@ describe("an automatic gate", () => {
     const a = await t.pane("Step 0");
     const b = await t.pane("Step 1"); // working from its start, and its hooks never report
     const w = t.add(a.id, b.id, "handoff", { gate: "automatic" });
-    t.offer(w, "first");
+    await t.offer(w, "first");
     vi.spyOn(console, "warn").mockImplementation(() => {});
     t.m.checkStalls(Date.now() + 10 * 60_000, 5 * 60_000);
     expect(t.gate(w)).toMatchObject({ state: "blocked", stalled: true });
     t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
-    const p2 = t.offer(w, "second");
+    const p2 = await t.offer(w, "second");
     expect(t.wireOf(w).delivery).toMatchObject({ state: "queued" });
     t.m.clearWaiting(b.id);
     vi.advanceTimersByTime(150);
@@ -803,9 +846,9 @@ describe("an automatic gate", () => {
     if (asRoot) return;
     const t = await chain(2);
     t.m.statusFromHook({ paneId: t.ids[1], status: "working", prompted: true });
-    t.offer(t.wires[0], "first");
+    await t.offer(t.wires[0], "first");
     t.m.statusFromHook({ paneId: t.ids[0], status: "working", prompted: true });
-    const p2 = t.offer(t.wires[0], "second");
+    const p2 = await t.offer(t.wires[0], "second");
     vi.spyOn(console, "error").mockImplementation(() => {});
     fs.chmodSync(t.dir, 0o555);
     try {
@@ -1007,7 +1050,7 @@ describe("what's queued answers to its own send", () => {
     t.idle(t.b.id, { finished: true });
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.w).delivery!.state).toBe("sent");
-    const p2 = t.offer(t.w, "next");
+    const p2 = await t.offer(t.w, "next");
     vi.spyOn(t.m, "deliverAgentMessage").mockImplementation(() => {
       throw new Error("refused before queueing");
     });
@@ -1068,7 +1111,7 @@ describe("the rules, again just before the paste", () => {
       const b = await t.pane("Reviewer");
       t.m.statusFromHook({ paneId: b.id, status: "working", prompted: true });
       const w = t.add(a.id, b.id, "handoff", { gate: "automatic" });
-      t.offer(w, "by itself");
+      await t.offer(w, "by itself");
       expect(t.wireOf(w).delivery).toMatchObject({ state: "queued", automatic: true });
       if (change === "room") t.rooms[a.id] = t.rooms[b.id] = "R1";
       else expect(t.service.set(w, { gate: "ask" })).not.toHaveProperty("refused");
@@ -1078,6 +1121,171 @@ describe("the rules, again just before the paste", () => {
       expect(t.ptyOf(b.id).writes).toEqual([]);
       expect(t.wireOf(w).delivery).toMatchObject({ state: "failed", why: expect.stringMatching(change === "room" ? /Automatic is off in a team room's area/ : /gate was set to ask/) });
     }
+  });
+});
+
+describe("finishing a step, through the one writer", () => {
+  it("an automatic handoff, end to end: finish_step writes it, its gate sends it with Mockingbird's label, and it's pasted once", async () => {
+    const t = setup({ frame: "real" });
+    const a = await t.pane("Builder");
+    const b = await t.pane("Reviewer");
+    t.idle(b.id);
+    const w = t.add(a.id, b.id, "handoff", { gate: "automatic" });
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    const reply = await t.tools.call(t.m.list().find((s) => s.id === a.id)!, "finish_step", { summary: "Built the org filter." });
+    expect(reply).toEqual({ result: expect.stringMatching(/^Step finished.*\n- the handoff wire to "Reviewer": readied\. Its gate is set to send it by itself/) });
+    const writes = t.ptyOf(b.id).writes;
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain("Built the org filter.");
+    expect(writes[0]).toMatch(/Builder/);
+    expect(t.ptyOf(b.id).onDisk).toEqual(["pasting"]);
+    vi.advanceTimersByTime(150);
+    expect(writes.slice(1)).toEqual(["\r"]);
+    expect(t.wireOf(w)).toMatchObject({ delivery: { state: "sent", automatic: true } });
+    expect(t.wireOf(w).pending).toBeUndefined();
+    expect(t.book().notes[a.id]).toMatchObject({ summary: { text: "Built the org filter." } });
+    expect(t.book().notes[b.id]).toEqual({ hops: 1 });
+    // nothing more goes for it: a second finish in the same prompt waits
+    t.idle(b.id);
+    await t.offer(w, "again");
+    expect(t.wireOf(w).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/without a new prompt/) });
+    expect(writes.filter((x) => x !== "\r")).toHaveLength(1);
+  });
+
+  it("a fan-out where one branch is refused: the others are readied and go, and each is answered", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const [b, c, e] = [await t.pane("Reviewer"), await t.pane("Tester"), await t.pane("Deployer")];
+    for (const s of [b, c, e]) t.idle(s.id);
+    const [wb, wc, we] = [b, c, e].map((s) => t.add(a.id, s.id, "handoff", { gate: "automatic" }));
+    t.takenOver[e.id] = "“Deployer” continues on Nick's laptop";
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    const r = await t.tools.finish(t.m.list().find((s) => s.id === a.id)!, { summary: "one finish" }, "agent");
+    if ("refused" in r) throw new Error(r.refused);
+    const steps = new Map(r.steps.map((s) => [s.wire, s]));
+    expect(steps.get(wb)).toMatchObject({ does: "readies", gate: "automatic" });
+    expect(steps.get(wc)).toMatchObject({ does: "readies", gate: "automatic" });
+    expect(steps.get(we)).toMatchObject({ does: "refused", why: expect.stringMatching(/continues on Nick's laptop/) });
+    vi.advanceTimersByTime(150);
+    expect([t.wireOf(wb).delivery!.state, t.wireOf(wc).delivery!.state]).toEqual(["sent", "sent"]);
+    expect(t.wireOf(we).pending).toBeUndefined();
+    expect(t.ptyOf(e.id).writes).toEqual([]);
+  });
+
+  it('"changes" holds the handoffs and readies the feedback in one write: never one without the other', async () => {
+    const t = setup();
+    const a = await t.pane("Reviewer");
+    const [back, on] = [await t.pane("Builder"), await t.pane("Deployer")];
+    const fb = t.add(a.id, back.id, "feedback");
+    const ho = t.add(a.id, on.id, "handoff");
+    await t.offer(ho, "looks fine", { origin: "agent" }, { verdict: "approve" });
+    expect(t.wireOf(ho).pending).toBeDefined();
+    const real = t.store.editWires.bind(t.store);
+    const written: { handoff: unknown; feedback: unknown }[] = [];
+    vi.spyOn(t.store, "editWires").mockImplementation((fn) => {
+      const r = real(fn);
+      const links = t.onDisk().wires.links;
+      written.push({ handoff: links[ho].pending, feedback: links[fb].pending });
+      return r;
+    });
+    const step = await t.finishing(fb, "fix the null case", { origin: "agent" }, { verdict: "changes" });
+    expect(step).toMatchObject({ does: "readies" });
+    expect(written).toEqual([{ handoff: undefined, feedback: expect.objectContaining({ body: "fix the null case", verdict: "changes" }) }]);
+    expect(t.gate(ho)).toMatchObject({ state: "blocked", why: "needs approve" });
+    expect(t.book().notes[a.id]).toMatchObject({ verdict: "changes" });
+  });
+
+  it("a {diff} body filled in near the limit is readied and sent whole", async () => {
+    const repo = makeRepo({ "big.txt": "start\n" });
+    git(repo, "switch", "-q", "-c", "4182-big");
+    write(repo, { "big.txt": Array.from({ length: 3000 }, (_, i) => `changed line ${i} of the big file, long enough to count`).join("\n") });
+    const t = setup({ frame: "real" });
+    const a = await t.pane("Builder", { cwd: repo });
+    const b = await t.pane("Reviewer");
+    t.idle(b.id);
+    const w = t.add(a.id, b.id, "handoff", { template: "{diff}" });
+    const p = await t.offer(w, "the diff");
+    const body = t.wireOf(w).pending!.body;
+    expect(body.length).toBeGreaterThan(WIRE_BODY_MAX - 2_000);
+    expect(body.length).toBeLessThanOrEqual(WIRE_BODY_MAX);
+    expect(await t.d.send(w, p, body)).not.toHaveProperty("refused");
+    expect(t.ptyOf(b.id).writes[0]).toContain(body.slice(-200));
+    vi.advanceTimersByTime(150);
+    expect(t.wireOf(w).delivery!.state).toBe("sent");
+  });
+
+  it("Mockingbird's own notices aren't prompts: two of them, then two more finishes in that prompt, send nothing more", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const b = await t.pane("Reviewer");
+    t.idle(b.id);
+    const w = t.add(a.id, b.id, "handoff", { gate: "automatic" });
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    await t.offer(w, "the work");
+    vi.advanceTimersByTime(150);
+    expect(t.wireOf(w).delivery!.state).toBe("sent");
+    for (const n of [1, 2]) {
+      t.idle(a.id);
+      t.idle(b.id);
+      t.m.deliverNotice(a.id, "wires", `[Mockingbird: notice ${n}]`, true);
+      vi.advanceTimersByTime(150); // its Enter
+      t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true }); // its hooks report that prompt
+      t.idle(a.id);
+      await t.offer(w, `finished again ${n}`);
+      expect(t.wireOf(w).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/without a new prompt/) });
+    }
+    expect(t.ptyOf(b.id).writes.filter((x) => x !== "\r")).toHaveLength(1);
+    // a prompt it was given counts
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    t.idle(b.id);
+    await t.offer(w, "after a real prompt");
+    vi.advanceTimersByTime(150);
+    expect(t.wireOf(w).delivery!.state).toBe("sent");
+  });
+
+  it("a prompt that comes in while a finish is being filled in isn't that finish's: it answers the prompt it began in", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const b = await t.pane("Reviewer");
+    t.idle(b.id);
+    const w = t.add(a.id, b.id, "handoff", { gate: "automatic" });
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
+    await t.offer(w, "the work");
+    vi.advanceTimersByTime(150);
+    t.idle(b.id);
+    const me = t.m.list().find((s) => s.id === a.id)!;
+    const finishing = t.tools.finish(me, { summary: "finished again" }, "agent");
+    t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true }); // while its template is filled in
+    expect(await finishing).toMatchObject({ steps: [{ does: "readies" }] });
+    expect(t.wireOf(w).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/without a new prompt/) });
+    expect(t.ptyOf(b.id).writes.filter((x) => x !== "\r")).toHaveLength(1);
+  });
+
+  it("a finish's pending is known as this run's: the reconcile tick never holds it as one from before, even once its gate turns automatic", async () => {
+    const t = await ready();
+    expect(t.wireOf(t.w).pending).toBeDefined();
+    expect(t.service.set(t.w, { gate: "automatic" })).not.toHaveProperty("refused");
+    t.d.reconcile();
+    expect(t.wireOf(t.w).delivery).toBeUndefined();
+    expect(t.gate(t.w)).toMatchObject({ state: "ready", gate: "automatic", pendingId: t.p });
+  });
+
+  it("refuses a body over the limit on its wire alone, and a framing that refuses fails the send with its reason", async () => {
+    const t = await ready();
+    const me = t.m.list().find((s) => s.id === t.a.id)!;
+    const fill = await t.tools.planFinish(me, { summary: "fits" });
+    if ("refused" in fill) throw new Error(fill.refused);
+    const over = { ...fill, fills: fill.fills.map((x) => ({ ...x, body: { ...x.body, text: "x".repeat(WIRE_BODY_MAX + 1) } })) };
+    const r = t.d.offer(me, over, { origin: "person" }, null);
+    expect(r).toMatchObject({ steps: [{ wire: t.w, does: "refused", why: `It's ${WIRE_BODY_MAX + 1} characters; the limit is ${WIRE_BODY_MAX}.` }] });
+    const u = await ready({
+      frame: () => {
+        throw new Error("“Reviewer” can't be labelled now");
+      },
+    });
+    expect(refusal(await u.d.send(u.w, u.p, "the summary"))).toBe("“Reviewer” can't be labelled now");
+    expect(u.wireOf(u.w).delivery).toMatchObject({ state: "failed", why: "“Reviewer” can't be labelled now" });
+    expect(u.ptyOf(u.b.id).writes).toEqual([]);
   });
 });
 

@@ -3,6 +3,7 @@ import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
+import { WireDelivery } from "../src/main/wireDelivery";
 import { WireService } from "../src/main/wires";
 import { WIRES_NOTICE, WireTools, type PendingsMade } from "../src/main/wireTools";
 import { WIRE_TOOL, WIRE_TOOL_SCHEMAS } from "../src/main/wireToolSchemas";
@@ -105,15 +106,43 @@ function setup() {
     submitOnDelivery: () => true,
     onMessage: (m) => messages.push(m),
     onPendings: (e) => made.push(e),
+    offer: (me, f, how, prompt) => delivery.offer(me, f, how, prompt),
+    promptOf: (id) => delivery.promptOf(id),
     log,
-    newId: () => `p${++n}`,
     now: () => 1_000_000,
+  });
+  // the one writer of pendings: these sessions are records, not panes, so it sends nothing (no pane is running to send to)
+  const delivery: WireDelivery = new WireDelivery({
+    store,
+    context: (bk) => service.context(bk),
+    sessions: {
+      list: () => running,
+      resumable: () => closed,
+      promptCount: () => null,
+      resume: async () => ({ refused: "not in these tests" }),
+      deliverAgentMessage: () => {
+        throw new Error("nothing is sent in these tests");
+      },
+      withdraw: () => false,
+      holds: () => false,
+    },
+    reopen: async () => null,
+    submits: () => true,
+    frame: ({ wireId, body, automatic }) => {
+      const r = tools.messageFor(wireId, body, { automatic });
+      if ("refused" in r) throw new Error(r.refused);
+      return r.text;
+    },
+    takenOver: () => (sid) => takenOver[sid] ?? null,
+    log,
+    notify: () => {},
+    newId: () => `p${++n}`,
   });
   const a = running[0];
   const txFile = path.join(dir, "conv-a.jsonl");
   fs.writeFileSync(txFile, TRANSCRIPT + "\n");
   transcripts.a = txFile;
-  return { dir, file, repo, store, service, tools, running, closed, rooms, flags, takenOver, transcripts, refusedHooks, buffers, closedOutput, delivered, queue, messages, made, logged, hooks, a, me: (id: string) => running.find((s) => s.id === id)! };
+  return { dir, file, repo, store, service, tools, delivery, running, closed, rooms, flags, takenOver, transcripts, refusedHooks, buffers, closedOutput, delivered, queue, messages, made, logged, hooks, a, me: (id: string) => running.find((s) => s.id === id)! };
 }
 type Setup = ReturnType<typeof setup>;
 
@@ -134,6 +163,22 @@ const placeGhost = (t: Setup, id: string) => {
   const s = t.closed.find((x) => x.id === id)!;
   t.store.update({ ghosts: { [id]: { title: s.title, agent: s.shell ? "terminal" : "claude", cwd: s.cwd, repoPath: s.cwd, placement: { x: 0, y: 0, w: 100, h: 100 }, group: "5101", closedAt: "2026-11-01T00:00:00.000Z" } } });
 };
+
+describe("a launch before team rooms started", () => {
+  it("is told of its wires once rooms have, once, through its queue; one launched after hears nothing more", () => {
+    const t = setup();
+    wire(t.service.add("a", "b", "handoff"));
+    t.flags.roomsKnown = false;
+    expect(t.tools.launchInstructions("a")).toBeNull();
+    t.flags.roomsKnown = true;
+    expect(t.tools.launchInstructions("c")).toBeNull(); // no wires
+    t.tools.roomsStarted();
+    expect(t.delivered).toEqual([{ id: "a", text: expect.stringMatching(/^\[Mockingbird, which runs this session, has wired it to other workspaces[\s\S]*a handoff wire to "Reviewer"[\s\S]*\]$/), submit: true }]);
+    expect(t.queue.a).toEqual([{ key: WIRES_NOTICE, text: t.delivered[0].text }]);
+    t.tools.roomsStarted();
+    expect(t.delivered).toHaveLength(1);
+  });
+});
 
 describe("finish_step", () => {
   it("gives each wire out its own pending, the summary at each gate, and says so once", async () => {
@@ -284,7 +329,7 @@ describe("finish_step", () => {
     fs.writeFileSync(file, JSON.stringify({ v: 3, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {}, wires: { wv: 99, links: {}, notes: {} } }));
     const store = new LandscapeStore({ file, emit: () => {}, log: () => {} });
     const service = new WireService({ store, sessions: { list: () => [session("a")], resumable: () => [] }, roomOf: () => null, takenOver: () => null, log: () => {} });
-    const tools = new WireTools({ store, rules: service, sessions: { list: () => [session("a")], resumable: () => [], noticeWaiting: () => false, deliverNotice: () => "", buffer: () => "", closedOutput: () => "" }, conversationFiles: () => ({ agent: "claude", files: [], refused: null }), submitOnDelivery: () => true, log: () => {} });
+    const tools = new WireTools({ store, rules: service, sessions: { list: () => [session("a")], resumable: () => [], noticeWaiting: () => false, deliverNotice: () => "", buffer: () => "", closedOutput: () => "" }, conversationFiles: () => ({ agent: "claude", files: [], refused: null }), submitOnDelivery: () => true, offer: () => ({ refused: "not reached" }), promptOf: () => null, log: () => {} });
     expect(refused(await tools.finish(session("a"), { summary: "x" }, "agent"))).toMatch(/^Nothing was finished: .*newer Mockingbird/);
     for (const [op, args] of [
       [WIRE_TOOL.readContext, { from: "b" }],

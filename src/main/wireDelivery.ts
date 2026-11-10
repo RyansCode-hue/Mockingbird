@@ -2,25 +2,30 @@ import { randomBytes } from "crypto";
 import type { LandscapeStore } from "./landscape";
 import type { QueueOutcome, QueueReceipt, SessionManager } from "./sessions";
 import { refuseTakenOver, type UntakenWireCall } from "./takenOverGuard";
+import { redactedFlag } from "./wirePrompt";
+import { filledFrom, titleAcross, usesSummary, type FinishFill } from "./wireTools";
 import { isObj, own, put } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
 import {
+  carriesWork,
   countedFor,
+  finishPlan,
   gateOf,
   isSending,
   queuedRefusal,
   WIRE_BODY_MAX,
-  WIRE_VERDICTS,
   type DeliveryState,
+  type FinishedStep,
+  type FinishOutcome,
   type Gate,
   type GateContext,
   type SendReply,
+  type SourceNote,
   type Wire,
   type WireBook,
   type WireDelivery as Delivery,
   type WirePending,
   type WireReply,
-  type WireVerdict,
 } from "../shared/wires";
 
 /**
@@ -49,16 +54,8 @@ export const START_WAIT_MS = 60_000;
  */
 export type FrameWire = (o: { wireId: string; wire: Wire; from: SessionInfo; to: SessionInfo; body: string; automatic: boolean }) => string;
 
-/** What waits at a wire's gate, as its maker built it (W2: finish_step, Finish step; W16: a PR merging). */
-export interface PendingOffer {
-  wire: string;
-  body: string;
-  verdict?: WireVerdict;
-  flags: string[];
-}
-
 /**
- * Who made a pending: the source's agent (finish_step), a person (Finish step, Send now), or a PR merging. An automatic
+ * Who finished a step: the source's agent (finish_step), a person (Finish step), or a PR merging (W16). An automatic
  * gate sends an agent's once per prompt the source took; a person's and a merge's as they come.
  */
 export type OfferOrigin = "agent" | "person" | "merge";
@@ -67,7 +64,6 @@ export interface OfferHow {
   /** Why an automatic gate mustn't send this one, and it waits for a person (a merge found as the app started). */
   hold?: string;
 }
-export type OfferReply = { offered: { wire: string; pending: string }[] } | { refused: string };
 
 export interface WireDeliveryOptions {
   store: Pick<LandscapeStore, "wires" | "editWires" | "wiresWriteRefusal">;
@@ -78,8 +74,8 @@ export interface WireDeliveryOptions {
   reopen: (id: string) => Promise<SessionInfo | null>;
   /** Whether a message to this session is submitted or left in its prompt: its area's message mode. A person's Send always submits. */
   submits: (target: SessionInfo) => boolean;
-  /** W2's; until it's there nothing is sent, saying so. */
-  frame: FrameWire | null;
+  /** What the other end is sent (WireTools.messageFor, in index.ts); a throw fails the send with its message. */
+  frame: FrameWire;
   /** The take-over check (TakeoverService.takenOverRefusal); null when team rooms didn't start. */
   takenOver: () => ((id: string, doing: string) => string | null) | null;
   log: (context: string, err: unknown) => void;
@@ -87,8 +83,6 @@ export interface WireDeliveryOptions {
   notify: (sessionId: string, title: string, body: string) => void;
   newId?: () => string;
 }
-
-export const NO_FRAME = "This build of Mockingbird can't send along wires yet: what the other end would be sent isn't built.";
 
 /** A send checked and written ahead, ready to go to its other end. */
 interface Go {
@@ -116,7 +110,6 @@ interface Flight {
   receipt?: QueueReceipt;
 }
 
-const carries = (w: Pick<Wire, "type">): boolean => w.type === "handoff" || w.type === "feedback";
 const withWire = (book: WireBook, id: string, w: Wire): WireBook => {
   const links = { ...book.links };
   put(links, id, w);
@@ -140,13 +133,6 @@ function bodyRefusal(body: unknown): string | null {
   if (!body.trim()) return "There's nothing to send.";
   if (body.length > WIRE_BODY_MAX) return `It's ${body.length} characters; the limit is ${WIRE_BODY_MAX}.`;
   return null;
-}
-
-function offerRefusal(p: PendingOffer): string | null {
-  if (!p || typeof p !== "object" || typeof p.wire !== "string" || !p.wire) return "A pending has to name its wire.";
-  if (!Array.isArray(p.flags) || p.flags.some((f) => typeof f !== "string")) return "A pending's flags have to be a list of text.";
-  if (p.verdict !== undefined && !WIRE_VERDICTS.includes(p.verdict)) return `There's no verdict ${JSON.stringify(p.verdict)}.`;
-  return bodyRefusal(p.body);
 }
 
 /**
@@ -201,33 +187,59 @@ export class WireDelivery {
   }
 
   /**
-   * Put what's waiting at each wire's gate, replacing what waited there (whatever is on its way goes on), and send it
-   * at once where the gate is automatic and its guards hold. Answers at once: a tool call never waits on a gate.
+   * A step's finish (WireTools.planFinish's fill), written in one change: the source's note, the pendings its verdict
+   * takes back (one on its way stays), and a new pending on each wire that readies, the plan worked out again inside
+   * the write from the book as it is then. Each wire is answered alone: one the rules refuse now, one changed since it
+   * was filled in, or one whose body is over the limit is refused, and the rest go on. Only the caller's own wires are
+   * in the plan, and only those set to go when it finishes ready. Then each new pending's gate runs: an automatic one
+   * sends it, or holds it saying why. `prompt` is the source's prompt as its finish began, for once per prompt.
+   * Answers at once: a finish never waits on a gate.
    */
-  offer(offers: readonly PendingOffer[], how: OfferHow): OfferReply {
-    if (!Array.isArray(offers) || !offers.length) return { refused: "There's nothing to offer." };
-    for (const p of offers) {
-      const bad = offerRefusal(p);
-      if (bad) return { refused: bad };
+  offer(me: SessionInfo, f: FinishFill, how: OfferHow, prompt: string | null): FinishOutcome {
+    const noted = (book: WireBook): WireBook => {
+      const note: SourceNote = { ...(own(book.notes, me.id) ?? { hops: 0 }), summary: f.note.summary };
+      if (f.note.verdict) note.verdict = f.note.verdict;
+      else delete note.verdict;
+      const notes = { ...book.notes };
+      put(notes, me.id, note);
+      return { ...book, notes };
+    };
+    if (f.noWireOut) {
+      const r = this.o.store.editWires((book) => ({ book: noted(book) }));
+      if ("refused" in r) return { refused: `This workspace has no handoff or feedback wire out, so finishing its step readies nothing, and its summary couldn't be kept either: ${r.refused}${f.noWireOut.unread}` };
+      return { refused: `This workspace has no handoff or feedback wire out, so finishing its step readies nothing. Its summary is kept for any workspace that reads its context.${f.noWireOut.unread}`, kept: true };
     }
-    if (new Set(offers.map((p) => p.wire)).size !== offers.length) return { refused: "Each wire takes one pending at a time." };
-    const at = Date.now();
-    const made: { wire: string; pending: string; from: string }[] = [];
+    const v = f.note.verdict;
+    const filled = new Map(f.fills.map((x) => [x.wire, x]));
+    let steps: FinishedStep[] = [];
     const r = this.o.store.editWires((book) => {
+      // the book as it is now: a wire changed while its template was being filled in isn't readied with what was read
+      const now = this.o.context(book);
       const links = { ...book.links };
-      for (const p of offers) {
-        const w = own(links, p.wire);
-        if (!w) return { refused: `There's no wire ${JSON.stringify(p.wire)}.` };
-        if (!carries(w)) return { refused: `A ${w.type} wire carries nothing to wait at a gate.` };
-        const pending: WirePending = { id: this.newId(), body: p.body, at, ...(p.verdict ? { verdict: p.verdict } : {}), flags: [...p.flags] };
-        put(links, p.wire, { ...w, pending });
-        made.push({ wire: p.wire, pending: pending.id, from: w.from });
-      }
-      return { book: { ...book, links } };
+      steps = finishPlan(me.id, v, now).map((step): FinishedStep => {
+        const w = book.links[step.wire];
+        const done: FinishedStep = { ...step, toTitle: titleAcross(now, me.id, step.to) };
+        if (step.withdraws) {
+          const { pending: _taken, ...rest } = w;
+          put(links, step.wire, rest);
+        }
+        if (step.does !== "readies") return done;
+        const x = filled.get(step.wire);
+        if (!x || x.from !== filledFrom(w)) return { ...done, does: "refused", why: "It was changed while this step was being finished: finish again to ready it." };
+        const tooLong = bodyRefusal(x.body.text);
+        if (tooLong) return { ...done, does: "refused", why: tooLong };
+        const count = (usesSummary(w) ? f.redacted : 0) + x.body.redacted;
+        const flags = [...(count ? [redactedFlag(count)] : []), ...x.body.flags];
+        const pending: WirePending = { id: this.newId(), body: x.body.text, at: f.note.summary.at, ...(v ? { verdict: v } : {}), flags };
+        const next: Wire = { ...w, pending };
+        put(links, step.wire, next);
+        return { ...done, pending: { id: pending.id, flags }, gate: gateOf(step.wire, next, { ...now, links }).gate };
+      });
+      return { book: noted({ ...book, links }) };
     });
-    if ("refused" in r) return r;
-    for (const m of made) this.automatic(m.wire, m.pending, how, how.origin === "agent" ? this.promptOf(m.from) : null);
-    return { offered: made.map(({ wire, pending }) => ({ wire, pending })) };
+    if ("refused" in r) return { refused: `Nothing was finished: ${r.refused}` };
+    for (const step of steps) if (step.pending) this.automatic(step.wire, step.pending.id, how, how.origin === "agent" ? prompt : null);
+    return { steps, redacted: f.redacted };
   }
 
   /**
@@ -355,8 +367,8 @@ export class WireDelivery {
     return next;
   }
 
-  /** Which prompt session `id` is on, for once-per-prompt: null when it isn't running. */
-  private promptOf(id: string): string | null {
+  /** Which prompt session `id` is on, for once per prompt: null when it isn't running. Read as a finish begins. */
+  promptOf(id: string): string | null {
     const p = this.o.sessions.promptCount(id);
     return p ? `${p.epoch}:${p.seq}` : null;
   }
@@ -394,7 +406,6 @@ export class WireDelivery {
     if ((own(ctx.notes, w.to)?.hops ?? 0) >= AUTOMATIC_HOPS) return `${AUTOMATIC_HOPS} automatic sends in a row reached “${b.title}”: the next one waits for you.`;
     if (how.origin === "agent" && !prompt) return `“${a.title}” isn't running, so which prompt this answers can't be told: it waits for you.`;
     if (how.origin === "agent" && this.fired.get(wireId) === prompt) return `“${a.title}” finished again without a new prompt since this wire last sent by itself: an automatic gate sends once per prompt, so this waits for you.`;
-    if (!this.o.frame) return NO_FRAME;
     return null;
   }
 
@@ -426,14 +437,13 @@ export class WireDelivery {
     body: unknown,
     how: { automatic: boolean; again?: boolean; start?: boolean; call?: UntakenWireCall },
   ): Go | { refused: string; start?: "resume" | "reopen" } {
-    if (!this.o.frame) return { refused: NO_FRAME };
     const fileRefused = this.o.store.wiresWriteRefusal();
     if (fileRefused) return { refused: fileRefused };
     const state = this.o.store.wires();
     if (!state.book) return { refused: state.refused ?? "Wires can't be read right now." };
     const w = own(state.book.links, wireId);
     if (!w) return { refused: `There's no wire ${JSON.stringify(wireId)}.` };
-    if (!carries(w)) return { refused: `A ${w.type} wire carries nothing to send.` };
+    if (!carriesWork(w.type)) return { refused: `A ${w.type} wire carries nothing to send.` };
     if (how.call) {
       try {
         for (const end of [w.from, w.to]) refuseTakenOver(end, how.call, this.o.takenOver());
@@ -499,7 +509,7 @@ export class WireDelivery {
       if (!to) return this.fail(go, `“${target.ticketTitle ?? target.title}” stopped running before this reached it.`);
       const from = [...this.o.sessions.list(), ...this.o.sessions.resumable()].find((s) => s.id === go.from);
       if (!from) return this.fail(go, "Its source isn't one of this Mac's sessions any more.");
-      text = this.o.frame!({ wireId: go.wireId, wire: w, from, to, body: go.body, automatic: go.automatic });
+      text = this.o.frame({ wireId: go.wireId, wire: w, from, to, body: go.body, automatic: go.automatic });
       submit = go.automatic ? this.o.submits(to) : true;
     } catch (err) {
       return this.fail(go, message(err));

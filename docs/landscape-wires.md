@@ -399,6 +399,8 @@ and round one's, all run again after the M1 rewrite.
 
 #### W2 as built
 
+(Joined with W3 since: see "W2+W3 joined" below W3 for what changed.)
+
 **The tools.** `src/main/wireToolSchemas.ts` holds the three tools' names and schemas,
 import-free, so `messaging.ts` (the script's list), `agents.ts` (Claude's
 `--allowedTools`) and `wireTools.ts` read one list without an import cycle. Every
@@ -531,8 +533,8 @@ with `cut`) for W5's popover to start from. Both are in `preload.ts` (`wiresFini
 - Pendings carry `{ id, body, at, verdict?, flags }`, the body already redacted and
   expanded, as the gate shows it. Clear `pending` on `sent`/`placed` only when its id is
   the delivery's: a finish may have replaced it meanwhile.
-- `onPendings({ from, fromTitle, by, pendings: [{ wire, pending, to, toTitle }] })` is
-  where automatic starts: `index.ts` shows the notification there now.
+- `onPendings({ from, fromTitle, by, pendings: [{ wire, pending, to, toTitle }] })`
+  shows the notification. (Joined: automatic starts in delivery's `offer`.)
 - `wireTools.messageFor(wireId, body, { automatic })` gives the text to deliver, or `{
   refused }` when the rules refuse the wire now. A feedback round is `rounds.used`, so
   count the round first. How B finishes names only B's wires out that the rules let it
@@ -625,7 +627,7 @@ that can't be saved. A closed terminal with a ghost on the landscape still reads
   it, so the agent gets one prompt. Once it's gone, the next wire starts a new one.
 - A book that can't be read when telling is logged.
 - **For the W3 join:** these are Mockingbird's own prompts. Don't count them for "once per
-  prompt", and don't count them as a send.
+  prompt", and don't count them as a send. (Done in the join.)
 
 **One verdict rule:** `verdictDue(id, links)` (shared/wires.ts, any feedback wire out)
 is what `verdictRefusal`, the launch instructions, a new wire's notice and `messageFor`
@@ -673,6 +675,7 @@ sandbox reads a glob.
   - `noWireOut`.
 - `applyFinish(me, fill, by)` writes it in one `editWires`. It plans again against the
   book as it is then, as before, so a wire changed since the fill isn't readied with it.
+  (Joined: delivery's `offer` writes it now, and `applyFinish` calls it.)
 - `finish` is the two in turn, and behaves as before.
 
 **Checked:** each guard this adds was reverted on its own, and its tests caught all 31.
@@ -686,7 +689,7 @@ second way to the same thing.
   is just as writable by an agent. They could go through `guardedGit` next.
 - `secretPathspecs` is still case-sensitive where room backups use it.
 - A session launched before team rooms start hears nothing of its wires until it's
-  relaunched or wired again.
+  relaunched or wired again. (Done in the join: it's told once rooms have started.)
 
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the
@@ -703,6 +706,8 @@ second way to the same thing.
   a prompt appearing before Enter, exit, forget).
 
 #### W3 as built
+
+(Joined with W2 since: see "W2+W3 joined" below for what changed.)
 
 **The queue's receipt** (`sessions.ts`). `Queued` gains `receipt?: QueueReceipt`:
 `pasting()` is asked just before the paste and may say no; then `settled(outcome,
@@ -866,7 +871,7 @@ along a wire then and agents' messages shouldn't stop for landscape.json.
 counts only for a running pane: a closed record kept its last run's flag and
 blocked a Send that would start it afresh. `remove` calls `removed` (above).
 
-**What W2 must provide:**
+**What W2 must provide** (provided in the join: see "W2+W3 joined"):
 - **`frame: FrameWire`**, passed to `WireDelivery` in `index.ts`, which passes
   `null` until then, so every Send is refused with `NO_FRAME`:
   ```ts
@@ -887,7 +892,7 @@ blocked a Send that would start it afresh. `remove` calls `removed` (above).
 - The fan-out notification naming the two ends is W2's (W3 notifies only for
   placed, failed and unconfirmed).
 
-**The join with W2 (next round, once W2 is on main).** WireDelivery becomes the
+**The join with W2** (done: see "W2+W3 joined"). WireDelivery becomes the
 only writer of pending, delivery, rounds and hops:
 - `offer` becomes one transaction taking the source note (summary, verdict), the
   pendings to take back (skipping any on its way), and the filled bodies with what
@@ -1017,6 +1022,113 @@ Every guard was reverted in turn, and a test failed for each but two. That was W
 - Not run: real `claude` or `codex` panes (the pty is mocked), so the catch-up
   before the Enter is checked against hook event files, not a real permission
   prompt.
+
+#### W2+W3 joined
+
+W3 rebased onto W2 (5a7762d), its own commits and review fixes as one. Then the join:
+`WireDelivery` is the one writer of `pending`, `delivery`, `rounds.used` and `hops`.
+Nothing else in main writes them. W2's notes and W3's above still hold except where
+this section says otherwise.
+
+**One transaction per finish** (`WireDelivery.offer(me, fill, how, prompt)`):
+- It takes W2's `FinishFill` (from `planFinish`), the origin (`agent` for finish_step,
+  `person` for the window's Finish step, `merge` kept for W16) and A's prompt.
+- In one `editWires` it plans again against the book as it is then (`finishPlan`,
+  the rules, `titleAcross`). It takes back what the verdict withdraws, writes the note,
+  and gives each wire that readies a pending whose id it made, so the reconcile tick
+  knows it as this run's.
+- **Wire by wire:** a wire the rules refuse now, one changed since it was filled in
+  (`filledFrom`), or one whose body is over `WIRE_BODY_MAX` is refused on its own, and
+  the rest go on.
+- **Only the caller's wires:** the plan walks only wires whose `from` is the caller,
+  so a fill naming another session's wire is never written. Only a wire whose `when`
+  is finished readies; a manual one keeps the summary for a person's Send.
+- Then each new pending's gate runs (`automatic`), with that prompt for an agent's.
+- It answers per wire (`FinishedStep`), so finish_step's reply still says what
+  happened along each.
+- **Take-back:** `finishPlan` skips a pending whose delivery is on its way (queued or
+  pasting under its id). A `held` or `failed` one never reached B and is taken back.
+  An `unconfirmed` one is taken back too; its delivery stays unconfirmed for Mark
+  sent.
+- `carriesWork` (W2's) replaced W3's `carries`. The one body cap is `WIRE_BODY_MAX` in
+  `shared/wires.ts`, and W3's copy went.
+
+**W2's finish, on that writer** (`wireTools.ts`):
+- `finish` reads A's prompt (`promptOf`) first, before anything is awaited, so a prompt
+  that comes in while templates are filled in isn't this finish's.
+- `applyFinish(me, fill, by, prompt)` calls `offer`, with `by` mapped to `origin`
+  (`you` is `person`), then `onPendings` for the notification. W2's `newId` went: a
+  pending's id is delivery's.
+- `filledFrom`, `usesSummary` and `titleAcross` are exported for `offer`.
+- The window's Finish step (`wires:finish`), finish_step, and `wires:send` and
+  `wires:sendAgain` all reach the same writer. Their take-over guards stay:
+  `UNTAKEN_CALLS` for `wires:finish`, `UNTAKEN_WIRE_CALLS` for the sends.
+
+**Framing:** `index.ts` passes `frame` as W2's `messageFor`, throwing its refusal, so
+`deliver` fails the send with that reason. `NO_FRAME` and `frame: null` are gone.
+
+**Mockingbird's own notices aren't prompts:**
+- A queued message with a `key` (W2's `deliverNotice`, the wires notice) gets a receipt
+  wrapper as it's flushed. Once its Enter goes, the session's `ownPrompts` rises, and
+  the next `UserPromptSubmit` its hooks report takes one off instead of counting.
+- So `promptCount` counts only prompts the agent was given, and two notices can't let
+  one finish send twice (W2's L4).
+
+**A launch before team rooms started:** `launchInstructions` notes each session that
+launched while `roomsUnknown` (every wire refused then). `index.ts` calls
+`wireTools.roomsStarted()` right after `roomsKnown = true`. Each such agent still
+running is told its wires once, through `deliverNotice` under `WIRES_NOTICE`, in its
+launch instructions' words; one with none is told nothing.
+
+**Tests, ported and new:**
+- W2's finish tests run against the real writer (`wireTools.test.ts` builds a
+  `WireDelivery`; its sessions are records, so nothing sends).
+- W3's delivery tests make every pending by finishing the source's step: `t.offer`
+  is `WireTools.finish`, or `planFinish` and `offer` for a merge's hold. A feedback
+  wire's finish says "changes". A wire the rules refuse isn't readied (W2's rule)
+  rather than held, and the flagged case is a redacted summary.
+- New:
+  - an automatic handoff end to end through `finish_step`, the real `messageFor`
+    framing, the receipt and one paste;
+  - a fan-out with one branch taken over, the rest readied and sent;
+  - "changes" holding the handoff and readying the feedback in one write, checked at
+    the write;
+  - a `{diff}` body filled in near `WIRE_BODY_MAX` sent whole;
+  - two notices, then two finishes in one prompt, sending once;
+  - a prompt arriving mid-finish not counting for it;
+  - the reconcile tick leaving a finish's pending alone after its gate turns
+    automatic;
+  - an over-long body refused on its wire;
+  - a framing that refuses failing the send;
+  - a pre-rooms launch told once;
+  - in `wiresApp.e2e`, a person's Send of a finish's pending, framed by `index.ts`'s
+    `messageFor` and queued.
+- Each of the join's 13 guards was reverted in turn, and a test failed for each.
+
+**Not checked against real CLIs** (every test runs a mocked pty or the e2e's stand-in
+agent, which never ends a turn):
+- that `claude` and `codex` fire `UserPromptSubmit` once for a pasted, Entered
+  notice, which the own-prompt count relies on (if one doesn't, the next real prompt
+  goes uncounted and a finish asks instead of sending);
+- that a real permission prompt's hook event is written before the Enter's catch-up
+  reads;
+- what a real agent does with the framed prompt, and a real paste of a 40,000-character
+  body;
+- resume and reopen of a real conversation from a Send.
+
+**Checked:**
+
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test`: 181 files pass and 30 skip; 2886 tests pass and 144 skip. No
+  load-only reruns were needed, `appModel` included.
+- `test/uiWiresStub.test.ts` and `test/uiPreview.test.ts` pass alone; the join touches
+  no UI test.
+- `MB_E2E_APP=1`: `wiresApp.e2e` (with the framed Send) and `quitApp.e2e` pass.
+
+**Left:**
+- W16's merge uses `offer` with `origin: "merge"` and `hold`, with a fill it builds;
+  nothing makes one yet.
+- The notification (`onPendings`) still fires for a pending its gate sent at once.
 
 ### W4a · Wires drawn. Size M
 - `WireLayer.tsx`, `wiresModel.ts`: one SVG in `.ls-world` (`Landscape.tsx:1933`),
