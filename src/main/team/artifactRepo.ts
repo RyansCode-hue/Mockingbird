@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { git, gitBytes, hasCredentials, headCommit, originUrl, repoIdentity, repoTop } from "../git";
-import { guardedGit, OWN_WRITE_ENV } from "../safeGit";
+import { guardedGit, ownFetch } from "../safeGit";
 import { checkRepoPath } from "./artifactEvents";
 import { inside } from "./artifactStore";
 import { originIdentity } from "./roomSessions";
@@ -156,7 +156,7 @@ export class RepoRefs {
     const recentMiss = missedAt !== undefined && Date.now() - missedAt < MISS_TTL_MS;
     if (!out.commitPresent && (policy === "always" || (policy === "unless-missed" && !recentMiss))) {
       try {
-        await git(dir, ["fetch", "origin"], { timeoutMs: FETCH_CAP_MS, env: OWN_WRITE_ENV });
+        await ownFetch(dir, ["origin"], { timeoutMs: FETCH_CAP_MS });
       } catch (err) {
         this.d.log(`room artifacts: fetching ${want} for ${short(rec.commit)}`, err);
       }

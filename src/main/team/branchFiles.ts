@@ -1,6 +1,6 @@
 import { git, parseRemote, publicUrl } from "../git";
 import { baseRef } from "../files";
-import { OWN_WRITE_ENV } from "../safeGit";
+import { ownFetch } from "../safeGit";
 
 /**
  * Teammates' branches as this Mac can see them: pushed to origin and fetched
@@ -20,12 +20,9 @@ export function originKey(url: string): string {
     .toLowerCase();
 }
 
-/**
- * Fetch origin's branches into the clone (remote-tracking refs only). A fetch reads the clone's index (for its
- * submodules), which runs core.fsmonitor: it runs with OWN_WRITE_ENV, as Mockingbird fetches on its own.
- */
+/** Fetch origin's branches into the clone (remote-tracking refs only), as Mockingbird fetches on its own (ownFetch). */
 export async function fetchOrigin(repo: string): Promise<void> {
-  await git(repo, ["fetch", "-q", "--prune", "--no-tags", "origin"], { env: OWN_WRITE_ENV });
+  await ownFetch(repo, ["-q", "--prune", "--no-tags", "origin"]);
 }
 
 /**

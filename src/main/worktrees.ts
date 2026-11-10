@@ -1,7 +1,7 @@
 import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
 import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
 import { dirtyFileCount } from "./scm";
-import { guardedGit, OWN_WRITE_ENV, WRITE_ENV } from "./safeGit";
+import { guardedGit, OWN_LS_REMOTE, ownFetch, ownNetworkEnv, WRITE_ENV } from "./safeGit";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -26,7 +26,7 @@ async function onOrigin(repo: string, branch: string): Promise<{ has: boolean; u
   if (!(await originUrl(repo))) return { has: false, unreachable: false };
   try {
     // exit 2: origin has no such branch
-    return { has: !!(await git(repo, ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS })), unreachable: false };
+    return { has: !!(await git(repo, ["ls-remote", ...OWN_LS_REMOTE, "--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS, env: await ownNetworkEnv(repo) })), unreachable: false };
   } catch (err) {
     console.error(`[worktrees] couldn't ask origin about ${branch}, going by the last fetch:`, err);
     return { has: !!(await git(repo, ["branch", "-r", "--list", `origin/${branch}`])), unreachable: true };
@@ -55,11 +55,11 @@ async function startPoint(repo: string, branch: string, base?: string, mustExist
   if (await git(repo, ["branch", "--list", branch])) return { existing: true };
   const there = await onOrigin(repo, branch);
   if (there.has) {
-    if (!mustExist) await git(repo, ["fetch", "origin", branch], { env: OWN_WRITE_ENV });
+    if (!mustExist) await ownFetch(repo, ["origin", branch]);
     // origin just didn't answer: a fetch would only wait out its timeout to fail, and the last fetch's ref is there
     else if (!there.unreachable) {
       try {
-        await git(repo, ["fetch", "origin", branch], { env: OWN_WRITE_ENV });
+        await ownFetch(repo, ["origin", branch]);
       } catch (err) {
         if (!(await lastFetched(repo, branch))) throw err;
         console.error(`[worktrees] couldn't fetch ${branch}, going by the last fetch:`, err);
@@ -75,7 +75,7 @@ async function startPoint(repo: string, branch: string, base?: string, mustExist
   }
   if (!base) return { existing: false, track: false };
   try {
-    await git(repo, ["fetch", "origin", base], { env: OWN_WRITE_ENV }); // freshest dev/uat
+    await ownFetch(repo, ["origin", base]); // freshest dev/uat
     return { existing: false, track: false, from: `origin/${base}` };
   } catch (err) {
     // offline or no origin — fall back to the local base branch, loudly

@@ -1091,6 +1091,93 @@ its test each time.
 - **A `.lfsconfig` extension `priority`** makes git-lfs's clean fail, so the read
   throws in git's words, and nothing runs (see 2c).
 
+#### W2 review fixes 3 as built
+
+The re-review of 2c and 2d (merged at 4fc1f18) found Mockingbird's own network gits
+still ran what a clone's local config names, and a few Low items.
+
+**Mockingbird's own network gits (N1).** Each fetch Mockingbird makes on its own now
+goes through `ownFetch` (safeGit.ts): the room's background fetch and
+`reserve_migration_number`'s (`fetchOrigin`), a new worktree's fetches, a repo
+artifact's, and take-over's three. Take-over's ls-remotes and pushes, and a new
+worktree's ls-remote, get the same treatment by hand. Each one gets:
+- `protocol.ext.allow=never` (now in `OWN_WRITE_ENV`). An `ext::` URL runs the
+  command it names, and a local `url.*.insteadOf` can make one of origin. Probed: the
+  fetch fails with "transport 'ext' not allowed", and nothing runs.
+- `--upload-pack=git-upload-pack` on fetches and ls-remotes, and
+  `--receive-pack=git-receive-pack` on pushes. An override in the environment doesn't
+  reach these: git keeps the first `remote.*.uploadpack` it reads, and the local one
+  comes first (probed). These are also git's defaults.
+- `GIT_SSH_COMMAND` set to the user's own ssh, never the local core.sshCommand. In
+  order:
+  - main's own `GIT_SSH_COMMAND`, if set (left alone, as it already wins);
+  - core.sshCommand from the user's global or system config (includes followed, an
+    `includeIf` on the repository among them);
+  - main's `GIT_SSH`, quoted for sh;
+  - plain `ssh`.
+- `--recurse-submodules=no`. Probed: a plain fetch whose new commits move a
+  submodule's pointer goes on to fetch in the submodule, under the submodule's own
+  config, and ran its fsmonitor.
+- The backup push still runs `pre-push`, but from the user's global core.hooksPath,
+  or else the repository's own hooks folder (`<git-common-dir>/hooks`). Never from a
+  folder the local config names.
+
+Credential helpers (and `core.askPass`) stay, as a remote may need them. So do
+`core.gitProxy` (git:// only; a multi-valued, per-host setting that one environment
+variable can't stand in for) and the user's own Source Control push, pull and fetch.
+
+Tests (`safeGit.test.ts`, "Mockingbird's own network gits", on a watched clone), each
+first showing that a plain git runs the planted command:
+- a planted upload-pack, for `fetchOrigin` and a new worktree's ls-remote and fetch;
+- an `ext::` insteadOf;
+- a submodule's fsmonitor;
+- a local core.sshCommand against a global one (via `GIT_CONFIG_GLOBAL`), with the
+  fallbacks checked directly.
+
+In `teamTakeover.test.ts`, the backup push runs the default `.git/hooks/pre-push`, not
+the one in the folder the local config names. With a global hooksPath it runs the
+user's. A planted receive-pack never runs.
+
+**Expressions aren't secrets (N3).** A bare value holding `(`, `?.` or `??` is read as
+code, not a secret: `const secret = isSecretFileName(name)`, `tokens: tokens(900_000,
+…`, `session?.credentials ?? …`. An env file's line can't hold one unquoted either.
+Quoted values are still taken, and so are bare ones without these characters.
+- Over `src/` and `docs/`, 19 lines are still changed. They are numeric constants
+  under token-named keys (`tokens: 6_000_000`, `NO_TOKEN_LOG_MS = 60_000`), type
+  annotations, and examples in comments.
+- Left as known: telling a numeric literal from a numeric password needs more than
+  the line.
+
+**The ceiling's note in one unit (N4).** The note counts what's carried in redacted
+characters. Past the ceiling, it also says how many of the diff's own characters were
+read and what they were redacted to, for example: "cut at 190 characters, in s.env:
+the first 160,000 of its 235,016 were read, redacted to 190". Below the ceiling it
+reads "cut at 40,000 of 41,970 characters", both redacted. I picked this over filling
+the budget with more chunks: it's simpler.
+
+**Overlaps compare repositories by real path (N5).** `overlapReport` keys each
+session's `repoPath` by its real path. So a trailing slash or a symlink no longer
+splits a repository's unread count. A path that can't be resolved is compared as
+resolved; its read already reports its own failure.
+
+**The listing compares what decides what runs (N6).** Only `filter.*`,
+`lfs.extension.*` (in any case) and `lfs.storage` are compared before and after a
+read. git-lfs's own writes no longer set a read aside: its format version, a server's
+`access` and `locksverify`. The `lfs.repositoryformatversion` exception is gone.
+
+**The key-body rule (N2)** stays as it is. Known:
+- three SHA-256 hex lines in a row, or three 64-character comment banners, are
+  replaced with its marker;
+- a key wrapped at 76 (MIME, .NET's `InsertLineBreaks`) isn't caught.
+
+The review found no hit in this repository's sources or in its `git log -p`.
+
+**Checked:** each change was reverted on its own, 14 in all, and a test failed for each:
+`ext::` allowed, each of the upload-pack, receive-pack and submodule flags, the clone's
+ssh, pre-push not run or run from the local folder or without the global one, the
+listing's LFS keys and their case, repositories as spelled, expressions as secrets,
+and the note in mixed units.
+
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the
   round limit, starting B, reconciling on start (section 3).

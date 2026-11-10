@@ -105,14 +105,15 @@ const ASSIGNMENT_RE = /(["']?)(?<![\w.]|[\w.]-)(?!(?<=\$)[Ee][Nn][Vv]:)([A-Za-z_
 /**
  * Whether `value`, set on a secret-looking `name`, looks like the secret itself rather than code that reads one: an
  * env file's line (an upper-case name) takes any value of 4 or more; code takes a quoted one of 4 or more, or a bare
- * one that's long or has digits in it, and never a reference like `process.env.API_KEY`, a type like `AccessToken`, or
- * another variable (`${TOKEN}`).
+ * one that's long or has digits in it, and never a reference like `process.env.API_KEY`, a type like `AccessToken`,
+ * another variable (`${TOKEN}`), or an expression: a bare value holding `(`, `?.` or `??` (`isSecretFileName(name)`,
+ * `opts?.token`), which an env file's line can't hold unquoted either.
  */
 function secretValue(name: string, value: string): boolean {
   const isQuoted = /^["']/.test(value);
   const inner = isQuoted ? value.slice(1, -1) : value;
   if (inner.length < 4 || inner.includes(REDACTED) || /^\$\{?\w/.test(inner)) return false;
-  if (!isQuoted && /^[A-Za-z_$][\w$]*(?:\.[\w$]+)+(?:\(\))?$/.test(inner)) return false;
+  if (!isQuoted && (/^[A-Za-z_$][\w$]*(?:\.[\w$]+)+(?:\(\))?$/.test(inner) || /\(|\?\.|\?\?/.test(inner))) return false;
   if (/^[A-Z][A-Z0-9_]*$/.test(name) || isQuoted) return true;
   return inner.length >= 20 || (inner.length >= 8 && /\d/.test(inner));
 }
@@ -518,7 +519,9 @@ export const DIFF_REDACT_CHARS = 4 * DIFF_CHARS;
 /**
  * A diff as {diff} carries it: its whole lines within DIFF_REDACT_CHARS redacted, then cut at DIFF_CHARS, saying where
  * and of how much whenever anything of the diff is left out. The redacted part ends at a line's end: a secret's line cut
- * in two might no longer read as one, and its first half would go through.
+ * in two might no longer read as one, and its first half would go through. The note counts what's carried in redacted
+ * characters; past the ceiling it says how many of the diff's own were read and what they were redacted to, as
+ * redaction can shrink them.
  */
 export function shapeDiff(raw: string): Expansion {
   const whole = raw.trimEnd();
@@ -528,7 +531,11 @@ export function shapeDiff(raw: string): Expansion {
   if (read.length === whole.length && text.length <= DIFF_CHARS) return { text: text || "(No changes.)", flags: [], redacted: r.count };
   const kept = Math.min(text.length, DIFF_CHARS);
   const at = fileAt(text, kept);
-  const where = `${nOf(kept)} of ${nOf(whole.length)} characters${at ? `, in ${at}` : ""}`;
+  const inFile = at ? `, in ${at}` : "";
+  const where =
+    read.length < whole.length
+      ? `${nOf(kept)} characters${inFile}: the first ${nOf(read.length)} of its ${nOf(whole.length)} were read, redacted to ${nOf(text.length)}`
+      : `${nOf(kept)} of ${nOf(text.length)} characters${inFile}`;
   // a first line longer than the ceiling leaves nothing redacted to carry, only the note
   return { text: [text.slice(0, kept), `[… cut at ${where}]`].filter(Boolean).join("\n"), flags: [`The diff was cut at ${where}.`], redacted: r.count };
 }

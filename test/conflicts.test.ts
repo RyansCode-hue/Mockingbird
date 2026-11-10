@@ -47,6 +47,17 @@ describe("worktrees overlaps couldn't read", () => {
       bySession: { a: [{ other: "b", otherTitle: "b", otherBranch: null, files: ["x.ts"] }, { other: "b2", otherTitle: "b2", otherBranch: null, files: ["x.ts"] }], b: [{ other: "a", otherTitle: "a", otherBranch: null, files: ["x.ts"] }], b2: [{ other: "a", otherTitle: "a", otherBranch: null, files: ["x.ts"] }] },
       unread: {},
     });
+    // its repository named another way (a trailing slash, a symlink) is the same repository
+    const real = tempDir("repo");
+    const link = path.join(tempDir("links"), "repo");
+    fs.symlinkSync(real, link);
+    const spelled = [
+      { sessionId: "x", title: "x", repoPath: real, cwd: "/q/wt/x" },
+      { sessionId: "y", title: "y", repoPath: `${link}/`, cwd: "/q/wt/y" },
+      { sessionId: "z", title: "z", repoPath: "/r/", cwd: "/r/wt/z" },
+    ];
+    const both: WorktreeReads = { changes: new Map(), unread: new Map([["/q/wt/x", "x"], ["/r/wt/b", "b"]]) };
+    expect(overlapReport([...live, ...spelled], both, []).unread).toEqual({ a: 1, b: 1, b2: 1, z: 1, x: 1, y: 1 });
     // a folder no longer live is forgotten, read or not
     reads.unread.set("/gone", "x");
     await rereadWorktrees(["/o"], reads, new Set(), log, read);

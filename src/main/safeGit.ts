@@ -51,14 +51,70 @@ const NO_HOOKS: Pair = ["core.hooksPath", "/dev/null"];
  */
 export const WRITE_ENV: Readonly<Record<string, string>> = configEnv(NEUTRAL_OVERRIDES);
 
+/** No `ext::` transport: its URL names a command, which a repository's `url.*.insteadOf` could make of any remote. */
+const NO_EXT: Pair = ["protocol.ext.allow", "never"];
+
 /**
- * WRITE_ENV with no hooks: for the writes Mockingbird makes on its own, which nobody asked to run a hook for: a turn's
- * snapshot (its throwaway index, its refs), a fetch it makes (a room's of origin, a new worktree's branch or base, a
- * repo artifact's commit, take-over's backups) and take-over's own refs (backups, pins, copies). A fetch reads the
- * index (for submodules), so fsmonitor off matters there too. Filters stay on, as for WRITE_ENV; ssh and credential
- * helpers stay too, as a fetch needs them.
+ * WRITE_ENV with no hooks and no `ext::` transport: for the writes Mockingbird makes on its own, which nobody asked to
+ * run a hook for: a turn's snapshot (its throwaway index, its refs), take-over's own refs (backups, pins, copies), and
+ * under ownNetworkEnv its own fetches. A fetch reads the index (for submodules), so fsmonitor off matters there too.
+ * Filters stay on, as for WRITE_ENV.
  */
-export const OWN_WRITE_ENV: Readonly<Record<string, string>> = configEnv([...NEUTRAL_OVERRIDES, NO_HOOKS]);
+export const OWN_WRITE_ENV: Readonly<Record<string, string>> = configEnv([...NEUTRAL_OVERRIDES, NO_HOOKS, NO_EXT]);
+
+/**
+ * What each fetch Mockingbird makes on its own adds: git's own upload-pack, never the one a remote's config names (an
+ * override in the environment doesn't reach that: git keeps the first it reads, the repository's), and no submodule's
+ * fetch, which would run in the submodule's own config.
+ */
+export const OWN_FETCH = ["--upload-pack=git-upload-pack", "--recurse-submodules=no"] as const;
+/** What each ls-remote Mockingbird makes on its own adds: git's own upload-pack, as OWN_FETCH. */
+export const OWN_LS_REMOTE = ["--upload-pack=git-upload-pack"] as const;
+/** What each push Mockingbird makes on its own adds: git's own receive-pack, as OWN_FETCH, and no submodule's push. */
+export const OWN_PUSH = ["--receive-pack=git-receive-pack", "--recurse-submodules=no"] as const;
+
+/**
+ * A setting as the user's own config has it, global or system (their includes followed, an `includeIf` on `cwd`'s
+ * repository among them), never the repository's: null when it's unset.
+ */
+async function userSetting(cwd: string, scope: "--global" | "--system", key: string, o: { path?: boolean } = {}): Promise<string | null> {
+  // exits 1 when it's unset
+  const out = await git(cwd, ["config", scope, "--includes", ...(o.path ? ["--type=path"] : []), "--get", key], { okCodes: [0, 1] });
+  return out || null;
+}
+
+/** `s` as one word for sh. */
+const shellWord = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+
+/**
+ * The ssh Mockingbird's own network gits run in `cwd`: the user's own, never a command the repository's config names.
+ * GIT_SSH_COMMAND in main's environment wins over any config already; otherwise core.sshCommand from their global or
+ * system config, else GIT_SSH from main's environment, else plain ssh, as git would choose with no local config.
+ */
+async function userSsh(cwd: string): Promise<Record<string, string>> {
+  if (process.env.GIT_SSH_COMMAND) return {};
+  const ssh = (await userSetting(cwd, "--global", "core.sshCommand")) ?? (await userSetting(cwd, "--system", "core.sshCommand")) ?? (process.env.GIT_SSH ? shellWord(process.env.GIT_SSH) : "ssh");
+  return { GIT_SSH_COMMAND: ssh };
+}
+
+/**
+ * The environment for Mockingbird's own network gits in `cwd` (with OWN_FETCH, OWN_LS_REMOTE or OWN_PUSH): OWN_WRITE_ENV,
+ * with the user's ssh (userSsh). Hooks stay off, unless `prePush` is set, for a push whose pre-push is to run (a
+ * backup's, which a secret scanner reads first): then from the user's global core.hooksPath, else from the
+ * repository's own hooks folder, never a folder its config names. Credential helpers stay as they are: a remote may
+ * need them.
+ */
+export async function ownNetworkEnv(cwd: string, o: { prePush?: boolean } = {}): Promise<Record<string, string>> {
+  const ssh = await userSsh(cwd);
+  if (!o.prePush) return { ...OWN_WRITE_ENV, ...ssh };
+  const hooks = (await userSetting(cwd, "--global", "core.hooksPath", { path: true })) ?? path.join(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks");
+  return { ...configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", hooks], NO_EXT]), ...ssh };
+}
+
+/** `git fetch` as Mockingbird makes it on its own, in `cwd`: OWN_FETCH before `args`, with ownNetworkEnv. */
+export async function ownFetch(cwd: string, args: readonly string[], opts: GitOptions = {}): Promise<string> {
+  return git(cwd, ["fetch", ...OWN_FETCH, ...args], { ...opts, env: { ...opts.env, ...(await ownNetworkEnv(cwd)) } });
+}
 
 /**
  * Settings that would run a command for a read: NEUTRAL_OVERRIDES', a hook (post-index-change, when a diff refreshes
@@ -80,19 +136,26 @@ const COMMANDS = ["clean", "smudge", "process"] as const;
  */
 const LFS_COMMANDS: Readonly<Record<(typeof COMMANDS)[number], string>> = { clean: "git-lfs clean -- %f", smudge: "git-lfs smudge -- %f", process: "git-lfs filter-process" };
 
-/** A key git-lfs writes itself, on its first run in a repository (a read's clean included), and that names no command. */
-const LFS_OWN_KEY = "lfs.repositoryformatversion";
+/**
+ * Whether a setting decides what a guarded read runs: a filter driver's, an LFS extension's (in any case: git spells a
+ * subsection as written), or LFS's storage folder. git-lfs writes others of its own while it runs (its format version
+ * on its first clean, a server's access and lock settings on a push), which mustn't set a read aside.
+ */
+function decidesWhatRuns(key: string): boolean {
+  const k = key.toLowerCase();
+  return k.startsWith("filter.") || k.startsWith("lfs.extension.") || k === "lfs.storage";
+}
 
 /**
- * The config's filter and LFS settings as git lists them (`key\nvalue`, each ending in a NUL), to be read and compared
- * again: every one but LFS_OWN_KEY, which a read that's git-lfs's first in the repository would add.
+ * The config's settings that decide what a guarded read runs (decidesWhatRuns) as git lists them (`key\nvalue`, each
+ * ending in a NUL), to be read and compared again.
  */
 async function guardedListing(cwd: string, timeoutMs?: number): Promise<string> {
   // exits 1 when there are none
   const out = await git(cwd, ["config", "-z", "--get-regexp", "^(filter|lfs)\\."], { okCodes: [0, 1], trim: false, ...(timeoutMs ? { timeoutMs } : {}) });
   return out
     .split("\0")
-    .filter((entry) => entry && entry.split("\n", 1)[0].toLowerCase() !== LFS_OWN_KEY)
+    .filter((entry) => entry && decidesWhatRuns(entry.split("\n", 1)[0]))
     .map((entry) => `${entry}\0`)
     .join("");
 }

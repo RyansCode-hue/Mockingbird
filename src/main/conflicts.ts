@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import { currentBranch } from "./git";
 import { baseRef } from "./files";
 import { guardedGit } from "./safeGit";
@@ -142,6 +144,18 @@ export async function rereadWorktrees(
   }
 }
 
+/**
+ * A folder as one key however it's spelled (a trailing slash, a symlink): its real path. One that can't be resolved
+ * (gone, or unreadable) is compared as resolved: its own read reports why it failed, and nothing else rests on the key.
+ */
+function sameFolder(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 /** A live session overlaps are worked out for: its folder, and the repository it's a worktree of. */
 export interface LiveWorktree {
   sessionId: string;
@@ -160,8 +174,9 @@ export function overlapReport(live: readonly LiveWorktree[], reads: WorktreeRead
     return c ? [{ sessionId: s.sessionId, title: s.title, branch: c.branch, repo: c.repo, cwd: s.cwd, files: c.files }] : [];
   });
   const unread: Record<string, number> = {};
+  const repo = new Map(live.map((s) => [s.sessionId, sameFolder(s.repoPath)]));
   for (const s of live) {
-    const n = new Set(live.filter((o) => o.repoPath === s.repoPath && reads.unread.has(o.cwd)).map((o) => o.cwd)).size;
+    const n = new Set(live.filter((o) => repo.get(o.sessionId) === repo.get(s.sessionId) && reads.unread.has(o.cwd)).map((o) => o.cwd)).size;
     if (n) unread[s.sessionId] = n;
   }
   return { bySession: mergeOverlaps(overlaps(list), teammateOverlaps(list, teammates)), unread };

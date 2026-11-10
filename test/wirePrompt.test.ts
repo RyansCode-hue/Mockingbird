@@ -131,8 +131,19 @@ describe("redaction", () => {
     ["an arrow", "tokens.map((token) => token.trim())"],
     ["a short word", "token: string"],
     ["a git sha", "commit 3f786850e387550fdab836ed7e6dc881de23001b"],
+    ["a call", "const secret = isSecretFileName(name);"],
+    ["a call with arguments", "  tokens: tokens(900_000, 32),"],
+    ["an optional chain", "const token = session?.credentials ?? fallbackToken;"],
+    ["a nullish default", "apiKey = configured??defaultKeyForTests"],
   ])("leaves %s alone", (_what, text) => {
     expect(redactSecrets(text)).toEqual({ text, count: 0 });
+  });
+
+  it("still takes a value holding a bracket or a question mark when it's quoted, or an env file's", () => {
+    expect(redactSecrets('API_KEY="fake(key)not-real-1"').text).toBe(`API_KEY="${REDACTED}"`);
+    expect(redactSecrets("const token = 'abc(def)123-not-real';").text).toBe(`const token = '${REDACTED}';`);
+    expect(redactSecrets("client_secret: s3cr3t-v4lue-9x-fake").text).toBe(`client_secret: ${REDACTED}`);
+    expect(redactSecrets("DB_PASSWORD=not?real!pass1").text).toBe(`DB_PASSWORD=${REDACTED}`);
   });
 
   it("counts each one, and never counts what it put there itself", () => {
@@ -176,7 +187,8 @@ describe("what redaction costs", () => {
     let r: Expansion = { text: "", flags: [], redacted: 0 };
     expect(ms(() => (r = shapeDiff(raw)))).toBeLessThan(100);
     expect(r.text.length).toBeLessThan(DIFF_CHARS + 200);
-    expect(r.flags).toEqual([`The diff was cut at 40,000 of ${(raw.length - 1).toLocaleString("en-US")} characters, in big.txt.`]);
+    const read = raw.lastIndexOf("\n", DIFF_REDACT_CHARS - 1) + 1;
+    expect(r.flags).toEqual([`The diff was cut at 40,000 characters, in big.txt: the first ${read.toLocaleString("en-US")} of its ${(raw.length - 1).toLocaleString("en-US")} were read, redacted to ${(read - 1).toLocaleString("en-US")}.`]);
     // the secret past what's redacted isn't read, and is past what's carried too
     expect(r.redacted).toBe(0);
     expect(r.text).not.toContain("API_KEY");
@@ -197,15 +209,18 @@ describe("{diff}'s ceiling", () => {
     const r = shapeDiff(raw);
     expect(r.text).not.toContain("not-a-real");
     expect(r.text).not.toContain("DB_PASSWORD");
-    expect(r.text).toBe(`diff --git a/s.env b/s.env\n+TOKEN ${REDACTED}\n[… cut at 44 of ${(raw.length - 1).toLocaleString("en-US")} characters, in s.env]`);
-    expect(r.flags).toEqual([`The diff was cut at 44 of ${(raw.length - 1).toLocaleString("en-US")} characters, in s.env.`]);
+    // the note counts what's carried as redacted, and says what the diff's own characters read came to
+    const where = `44 characters, in s.env: the first ${raw.indexOf("+DB_PASSWORD").toLocaleString("en-US")} of its ${(raw.length - 1).toLocaleString("en-US")} were read, redacted to 44`;
+    expect(r.text).toBe(`diff --git a/s.env b/s.env\n+TOKEN ${REDACTED}\n[… cut at ${where}]`);
+    expect(r.flags).toEqual([`The diff was cut at ${where}.`]);
     expect(r.redacted).toBe(1);
   });
   it("carries a diff within it whole, with no flag, and a first line longer than it as only the note", () => {
     expect(shapeDiff("diff --git a/x b/x\n+one\n")).toEqual({ text: "diff --git a/x b/x\n+one", flags: [], redacted: 0 });
     expect(shapeDiff("")).toEqual({ text: "(No changes.)", flags: [], redacted: 0 });
     const long = "x".repeat(DIFF_REDACT_CHARS + 5);
-    expect(shapeDiff(long)).toEqual({ text: `[… cut at 0 of ${long.length.toLocaleString("en-US")} characters]`, flags: [`The diff was cut at 0 of ${long.length.toLocaleString("en-US")} characters.`], redacted: 0 });
+    const where = `0 characters: the first 0 of its ${long.length.toLocaleString("en-US")} were read, redacted to 0`;
+    expect(shapeDiff(long)).toEqual({ text: `[… cut at ${where}]`, flags: [`The diff was cut at ${where}.`], redacted: 0 });
   });
 });
 

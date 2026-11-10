@@ -1118,6 +1118,37 @@ describe("backups to origin (the admin's opt-in)", () => {
     expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
   });
 
+  it("runs pre-push from the user's global hooks folder, else the repository's own, never a folder its config names", async () => {
+    const t = await setup();
+    const w = watchRepo(t.ryanClone);
+    w.plant("planted-pre-push", "cat >/dev/null", path.join(w.hooks, "pre-push"));
+    w.plant("default-pre-push", "cat >/dev/null", path.join(t.ryanClone, ".git", "hooks", "pre-push"));
+    // and git's own receive-pack and upload-pack, never the ones the clone's config names
+    git(t.ryanClone, "config", "remote.origin.receivepack", w.plant("receivepack", 'exec git-receive-pack "$@"'));
+    git(t.ryanClone, "config", "remote.origin.uploadpack", w.plant("uploadpack", 'exec git-upload-pack "$@"'));
+    const ref = roomBackupRef(t.roomId, "s1");
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
+    expect(w.ran()).toContain("default-pre-push");
+    expect(w.ran().filter((n) => ["planted-pre-push", "receivepack", "uploadpack"].includes(n))).toEqual([]);
+    w.clear();
+    const userHooks = tempDir("user-hooks");
+    w.plant("user-pre-push", "cat >/dev/null", path.join(userHooks, "pre-push"));
+    const global = path.join(tempDir("global"), "gitconfig");
+    fs.writeFileSync(global, `[core]\n\thooksPath = ${userHooks}\n`);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    try {
+      write(t.wt, { "src/a.ts": "another turn\n" });
+      await t.ryan.svc.turnEnded("s1");
+      await t.ryan.svc.settled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
+    expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual(["user-pre-push"]);
+  });
+
   it("turned on: what each owner has goes to origin at once, without waiting for a turn", async () => {
     const t = await setup(["Ryan", "Nick"], { backupsToOrigin: false });
     await t.ryan.svc.turnEnded("s1");

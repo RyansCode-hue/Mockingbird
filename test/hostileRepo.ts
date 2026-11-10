@@ -9,10 +9,12 @@ export const PLANTED = ["fsmonitor", "plain", "equals", "empty", "textconv", "ex
  * Commands planted in `dir`, each touching `<name>-ran` there when it runs and adding a line for the git that ran it
  * (its parent's command line) to `ran-by`: `ran` says which ran, `ranBy` which git ran them.
  */
-function planter(dir: string, names: readonly string[]) {
+function planter(dir: string, planted: readonly string[]) {
+  const names = [...planted];
   const marker = (name: string) => path.join(dir, `${name}-ran`);
   const log = path.join(dir, "ran-by");
   const script = (name: string, then = "", file = path.join(dir, `${name}.sh`)) => {
+    if (!names.includes(name)) names.push(name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, `#!/bin/sh\ntouch '${marker(name)}'\nprintf '%s\\t%s\\n' '${name}' "$(/bin/ps -o command= -p $PPID)" >> '${log}'\n${then}\n`, { mode: 0o755 });
     return file;
@@ -32,17 +34,19 @@ export const WATCHED = ["fsmonitor", "hook", "refhook"] as const;
 
 /**
  * Plants in an existing repository's config what hostileRepo plants for its index and its refs: fsmonitor, and in a
- * folder core.hooksPath names by its whole path (so a linked worktree's gits find it too) post-index-change ("hook")
- * and reference-transaction ("refhook"). `ranBy` says which git ran each.
+ * folder core.hooksPath names by its whole path (`hooks`, so a linked worktree's gits find it too) post-index-change
+ * ("hook") and reference-transaction ("refhook"). `ranBy` says which git ran each. `plant` makes another command that
+ * marks it ran, for a test to name in the config, or in `hooks` as another hook.
  */
 export function watchRepo(repo: string) {
   const dir = tempDir(`watch-${path.basename(repo)}`);
+  const hooks = path.join(dir, "hooks");
   const p = planter(dir, WATCHED);
   git(repo, "config", "core.fsmonitor", p.script("fsmonitor", "exit 1"));
-  p.script("hook", "", path.join(dir, "hooks", "post-index-change"));
-  p.script("refhook", "cat >/dev/null", path.join(dir, "hooks", "reference-transaction"));
-  git(repo, "config", "core.hooksPath", path.join(dir, "hooks"));
-  return { ran: p.ran, ranBy: p.ranBy, clear: p.clear };
+  p.script("hook", "", path.join(hooks, "post-index-change"));
+  p.script("refhook", "cat >/dev/null", path.join(hooks, "reference-transaction"));
+  git(repo, "config", "core.hooksPath", hooks);
+  return { hooks, plant: p.script, ran: p.ran, ranBy: p.ranBy, clear: p.clear };
 }
 
 /**

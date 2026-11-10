@@ -10,16 +10,16 @@ import { listAllFiles } from "../src/main/find";
 import { repoState } from "../src/main/handoff";
 import { prDescriptionPrompt } from "../src/main/pullRequests";
 import { ignoredCandidates } from "../src/main/runDraft";
-import { driversToTurnOff, guardedGit, programOnPath } from "../src/main/safeGit";
+import { driversToTurnOff, guardedGit, ownNetworkEnv, programOnPath } from "../src/main/safeGit";
 import { scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
 import { dropSnapshots, skippedIn, snapshotCommit, takeSnapshot } from "../src/main/snapshots";
 import { fetchOrigin } from "../src/main/team/branchFiles";
 import { excludeInRepo } from "../src/main/team/claims";
 import { makeTestCopy } from "../src/main/testCopy";
-import { worktreeState } from "../src/main/worktrees";
+import { createWorktree, worktreeState } from "../src/main/worktrees";
 import type { SessionInfo } from "../src/shared/types";
 import { git, makeRepo, tempDir, write } from "./helpers";
-import { hostileRepo } from "./hostileRepo";
+import { hostileRepo, watchRepo } from "./hostileRepo";
 
 // each makes a repository and runs a dozen gits, which a busy machine takes a while to start
 describe("git run through guardedGit", { timeout: 300_000 }, () => {
@@ -109,15 +109,18 @@ describe("git run through guardedGit", { timeout: 300_000 }, () => {
     await expect(g.diff(["dev"])).rejects.toThrow(/filter drivers or LFS settings changed while it ran, so a command Mockingbird hadn't turned off may have run/);
   });
 
-  it("sets it aside when an LFS setting was added, but not for the one git-lfs writes itself on its first run", async () => {
+  it("sets it aside when an LFS extension or storage folder was set, never for the settings git-lfs writes itself", async () => {
     const h = hostileRepo();
+    const config = path.join(h.repo, ".git", "config");
     let g = await guardedGit(h.repo);
-    // git-lfs's own clean adds it to a repository that hasn't one, a read's clean included
-    fs.appendFileSync(path.join(h.repo, ".git", "config"), "[lfs]\n\trepositoryformatversion = 0\n");
+    // git-lfs adds its format version on its first clean (a read's included), a server's access and lock settings on a push
+    fs.appendFileSync(config, `[lfs]\n\trepositoryformatversion = 0\n[lfs "https://example.invalid/app.git/info/lfs"]\n\taccess = basic\n\tlocksverify = false\n`);
     expect(await g.diff(["dev"])).toContain("+two");
-    g = await guardedGit(h.repo);
-    fs.appendFileSync(path.join(h.repo, ".git", "config"), `[lfs "extension.late"]\n\tclean = cat\n`);
-    await expect(g.diff(["dev"])).rejects.toThrow(/filter drivers or LFS settings changed while it ran/);
+    for (const late of [`[lfs "extension.late"]\n\tclean = cat\n`, `[lfs "Extension.later"]\n\tpriority = 1\n`, `[lfs]\n\tstorage = /elsewhere\n`]) {
+      g = await guardedGit(h.repo);
+      fs.appendFileSync(config, late);
+      await expect(g.diff(["dev"]), late).rejects.toThrow(/filter drivers or LFS settings changed while it ran/);
+    }
   });
 
   it("throws when the config can't be read, rather than run with nothing turned off", async () => {
@@ -238,6 +241,99 @@ describe("main-process writes of a session's folder", { timeout: 300_000 }, () =
     expect(git(h.repo, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/")).toContain("refs/remotes/origin/feature");
     expect(git(h.repo, "for-each-ref", "refs/mockingbird/")).toBe("");
     expect(git(h.repo, "show", "HEAD:a.txt")).toBe("two");
+  });
+});
+
+describe("Mockingbird's own network gits", { timeout: 300_000 }, () => {
+  /** A bare origin and a clone of it, watched. */
+  function watchedClone() {
+    const seed = makeRepo({ "a.txt": "a\n" }, "seed");
+    const origin = path.join(path.dirname(seed), "origin.git");
+    git(path.dirname(seed), "clone", "-q", "--bare", seed, origin);
+    const clone = path.join(path.dirname(seed), "clone");
+    git(path.dirname(seed), "clone", "-q", origin, clone);
+    return { origin, clone, w: watchRepo(clone) };
+  }
+  const plainFetch = (clone: string) => spawnSync("git", ["-C", clone, "fetch", "-q", "origin"], { encoding: "utf8" });
+
+  it("run git's own upload-pack, never the one the clone's config names, for a fetch and an ls-remote", async () => {
+    const { clone, w } = watchedClone();
+    git(clone, "config", "remote.origin.uploadpack", w.plant("uploadpack", 'exec git-upload-pack "$@"'));
+    expect(plainFetch(clone).status).toBe(0);
+    expect(w.ran()).toContain("uploadpack");
+    w.clear();
+    await fetchOrigin(clone);
+    // a new worktree asks origin for its branch (ls-remote), then fetches its base
+    await createWorktree(clone, "feat/x", "main");
+    expect(w.ran()).not.toContain("uploadpack");
+    expect(w.ranBy(/ (fetch|ls-remote) /)).toEqual([]);
+  });
+
+  it("refuse an ext:: transport, which runs the command its URL names, made of origin by the clone's config", async () => {
+    const { origin, clone, w } = watchedClone();
+    git(clone, "config", "protocol.ext.allow", "always");
+    git(clone, "config", `url.ext::${w.plant("ext", "exit 1")} %S.insteadOf`, origin);
+    plainFetch(clone);
+    expect(w.ran()).toContain("ext");
+    w.clear();
+    await expect(fetchOrigin(clone)).rejects.toThrow(/transport 'ext' not allowed/);
+    expect(w.ran()).not.toContain("ext");
+  });
+
+  it("fetch no submodule, which would run in the submodule's own config, out of the overrides' reach", async () => {
+    const subSeed = makeRepo({ "s.txt": "s\n" }, "sub-seed");
+    const subOrigin = path.join(path.dirname(subSeed), "sub.git");
+    git(path.dirname(subSeed), "clone", "-q", "--bare", subSeed, subOrigin);
+    const seed = makeRepo({ "a.txt": "a\n" }, "super-seed");
+    git(seed, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", subOrigin, "sub");
+    git(seed, "commit", "-qm", "sub");
+    const origin = path.join(path.dirname(seed), "super.git");
+    git(path.dirname(seed), "clone", "-q", "--bare", seed, origin);
+    const clone = path.join(tempDir("clone"), "super");
+    git(path.dirname(clone), "-c", "protocol.file.allow=always", "clone", "-q", "--recurse-submodules", origin, clone);
+    const w = watchRepo(path.join(clone, "sub"));
+    // the submodule moves upstream, and the superproject's pointer with it
+    write(subSeed, { "s.txt": "s2\n" });
+    git(subSeed, "commit", "-qam", "s2");
+    git(subSeed, "push", "-q", subOrigin, "HEAD:main");
+    git(path.join(seed, "sub"), "-c", "protocol.file.allow=always", "pull", "-q", "origin", "main");
+    git(seed, "commit", "-qam", "move sub");
+    git(seed, "push", "-q", origin, "HEAD:main");
+    await fetchOrigin(clone);
+    expect(w.ran()).toEqual([]);
+    // a plain fetch goes on into the submodule, for the commits its new pointer names, running its fsmonitor
+    git(clone, "update-ref", "refs/remotes/origin/main", "HEAD");
+    expect(spawnSync("git", ["-C", clone, "fetch", "-q", "origin"], { encoding: "utf8" }).status).toBe(0);
+    expect(w.ranBy(/ fetch .*--submodule-prefix=sub\//).map((l) => l.split("\t")[0])).toContain("fsmonitor");
+  });
+
+  it("run the user's ssh, from their global config or else ssh itself, never the clone's core.sshCommand", async () => {
+    const { origin, clone, w } = watchedClone();
+    git(clone, "config", "core.sshCommand", w.plant("localssh", "exit 1"));
+    git(clone, "config", "url.ssh://git@example.invalid/app.git.insteadOf", origin);
+    plainFetch(clone);
+    expect(w.ran()).toContain("localssh");
+    w.clear();
+    const global = path.join(tempDir("global"), "gitconfig");
+    fs.writeFileSync(global, `[core]\n\tsshCommand = ${w.plant("userssh", "exit 1")}\n`);
+    vi.stubEnv("GIT_SSH_COMMAND", undefined);
+    vi.stubEnv("GIT_SSH", undefined);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    try {
+      await expect(fetchOrigin(clone)).rejects.toThrow(/Could not read from remote repository/);
+      expect(w.ran()).toEqual(["userssh"]);
+      // with none set by the user: ssh's own, as git picks it with no config
+      vi.stubEnv("GIT_CONFIG_GLOBAL", path.join(tempDir("none"), "gitconfig"));
+      vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+      expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe("ssh");
+      vi.stubEnv("GIT_SSH", "/opt/my ssh/ssh");
+      expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe("'/opt/my ssh/ssh'");
+      // main's own GIT_SSH_COMMAND wins over any config already
+      vi.stubEnv("GIT_SSH_COMMAND", "ssh -i key");
+      expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
