@@ -1018,14 +1018,17 @@ function App() {
       if (sub) setWsTabs((p) => ({ ...p, [`${topOf(s)}/${sub}`]: s.id })); // front its workspace tab
     }
     setFocused(s.id);
-    if (since !== undefined && inputStamp() !== since) return;
-    // The keyboard goes to its terminal, at once when that's already there: a palette or menu closing as it's picked
-    // gives none back to what had it meanwhile, or a key typed straight after would land in the session left.
+    const stale = () => since !== undefined && inputStamp() !== since;
+    if (stale()) return;
+    // A palette or menu closing as it's picked gives none back to what had it meanwhile, or a key typed straight after
+    // would land in the session left.
     keyboardMoves();
-    focusTerm(s.id);
-    if (!termHasKeys(s.id))
+    // its terminal gets the keyboard, or 50 ms later once it's there
+    const give = () => {
+      focusTerm(s.id);
+      if (termHasKeys(s.id)) return;
       setTimeout(() => {
-        if (since !== undefined && inputStamp() !== since) return;
+        if (stale()) return;
         focusTerm(s.id);
         if (termHasKeys(s.id) || !keyboardNowhere() || s.debrief || !landscapeOn) return;
         // its terminal isn't there to take it (the landscape zoomed out past it): the keyboard waits on the holder
@@ -1033,6 +1036,12 @@ function App() {
         toNowhere();
         console.warn(`[mockingbird] ${s.id}'s terminal couldn't take the keyboard as it was gone to: it waits on the holder until a click or ⌘E`);
       }, 50);
+    };
+    // At once, unless something is open over the app (OVERLAYS). A palette or a menu row picked is closing as this runs:
+    // looked at again the task after, once it has gone. A dialog still open then (a notification's jump came while one
+    // was up) or the tour keeps the keyboard; the session is shown all the same.
+    if (!document.querySelector(OVERLAYS)) return give();
+    setTimeout(() => void (!document.querySelector(OVERLAYS) && !stale() && give()), 0);
   };
   const jumpTo = (id: string) => {
     const s = sessions.find((x) => x.id === id);

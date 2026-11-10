@@ -3379,12 +3379,40 @@ Design O, with Artifacts as a window, and N's workspace header.
     holder and the walk starts at the top bar; s32 keeps it in the prompt;
     s28 comes back disarmed; s25 keeps it in s1; s31 at 20% is on the holder
     with the new log line; no session is written to by any of them.
-  - **Seen in the code, not run:** a notification's jump (`focus-session`)
-    while a dialog is open reads as if it would still give the session's
-    terminal the keyboard behind the dialog: `jumpToSession` focuses at
-    once, with no overlay check. The palette's own jump goes through the
-    same call while the palette is still on screen, so a check there would
-    need the palette told apart.
+  - **Seen in the code, not run (fixed in 5b, below):** a notification's
+    jump (`focus-session`) while a dialog is open read as if it would still
+    give the session's terminal the keyboard behind the dialog:
+    `jumpToSession` focused at once, with no overlay check. The palette's
+    own jump goes through the same call while the palette is still on
+    screen, so a check there needed the palette told apart.
+- **S8a review fixes (round 5b) — As built:**
+  - **A jump under something open:** `jumpToSession` gives the keyboard at
+    once only while nothing in `OVERLAYS` is open. Otherwise it looks again
+    the task after: a palette or a menu row picked has gone by then, so ⌘K's
+    Enter still puts the keyboard in the session's terminal; a dialog still
+    open (a notification's jump came while one was up), or the tour, keeps
+    it. The session is revealed and flown to either way, and the claim
+    (`keyboardMoves`) is made at once, so what closes as the row is picked
+    gives nothing back meanwhile.
+  - **Tests** (=a jumpOver, at 75% with s2 on screen): a notification's
+    jump to s2 under a join prompt that came up on its own selects s2, the
+    prompt keeps the keyboard and y writes nothing; with nothing open, s2's
+    terminal gets it and y; ⌘K's jump to s2, the same. Each part checked
+    by reverting: jumping at once whatever is open (the prompt loses the
+    keyboard), and skipping without looking again (⌘K's jump leaves it on
+    the page).
+  - **A later option, not built: one choke point for bursts.** keyArm.ts's
+    window-level keydown already sees every key first. It could note, on
+    each `focusin`, whether the move was the user's (made while `acting`)
+    or code's, and swallow a key that comes within `TYPING_MS` of the last
+    one on a different target reached by a code move, until keys pause,
+    saying why once. "A programmatic focus move never carries a typing
+    burst into a new target" would then hold for every path (reveals,
+    jumps, hand-backs, the tour, band changes), with `inputStamp` kept only
+    to skip a move outright. About 20 lines; held back because the moves a
+    frame or a timer after the user's own Enter or Esc (⌘K's jump, a
+    menu's hand-back) would count as code's, so every typing test would
+    need re-reading against it.
 
 ## Risks
 

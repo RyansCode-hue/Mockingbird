@@ -840,6 +840,27 @@ describe.skipIf(!local)("the top bar", () => {
   }, 120_000);
 });
 
+describe.skipIf(!local)("a jump to a session", () => {
+  it("from a notification while a dialog is open shows the session but leaves the dialog its keyboard", async () => {
+    const a = await run("a", "case=jumpOver&how=dialog&joinRequest=later&lsCamera=500,0,0.75&needsMany");
+    expect(a.promptUp).toEqual({ prompt: true, keyboard: "dialog" });
+    expect(a.jumped).toEqual({ keyboard: "dialog", in: null, selected: "s2", prompt: true });
+    expect(a.after).toEqual({ writes: [] });
+  }, 120_000);
+
+  it("from a notification with nothing open gives its terminal the keyboard", async () => {
+    const a = await run("a", "case=jumpOver&how=none&lsCamera=500,0,0.75&needsMany");
+    expect(a.jumped).toEqual({ keyboard: "terminal", in: "s2", selected: "s2", prompt: false });
+    expect(a.after).toEqual({ writes: ["s2:y"] });
+  }, 120_000);
+
+  it("from ⌘K gives its terminal the keyboard once the palette has gone, as before", async () => {
+    const a = await run("a", "case=jumpOver&how=palette&lsCamera=500,0,0.75&needsMany");
+    expect(a.jumped).toEqual({ keyboard: "terminal", in: "s2", selected: "s2", prompt: false });
+    expect(a.after).toEqual({ writes: ["s2:y"] });
+  }, 120_000);
+});
+
 describe.skipIf(!local)("the right-click menu", () => {
   it("gives the landscape its keyboard back armed when the user left it with Esc, though it does so a frame later", async () => {
     const a = await run("a", "case=menuEsc&lsCamera=0,0,0.4");

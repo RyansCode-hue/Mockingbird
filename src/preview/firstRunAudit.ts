@@ -1494,6 +1494,9 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
  *   more than a key's);
  * - menuEsc (with ?lsCamera=0,0,0.4): the landscape armed by a press, the right-click menu opened on it and left with
  *   Esc, then ?;
+ * - jumpOver (&how=dialog|none|palette, with ?lsCamera=500,0,0.75&needsMany): a notification's jump to s2 (on screen)
+ *   while a join prompt that came up on its own is open (dialog, with ?joinRequest=later), or with nothing open (none);
+ *   or ⌘K's jump to s2 (palette); then y;
  * - join (&how=withdrawn|enter|esc, with ?joinRequest=later&lsCamera=0,0,1): Go there on Lee's request, then the
  *   request going from under its prompt, or Accept with Enter, or Esc;
  * - tabWalk (&how=fresh|palette|reopen): Tab from a fresh window (&tab=dashboard, &tab=settings, ?labsOff), after
@@ -2254,6 +2257,32 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await press("?", { shift: true });
     await sleep(300);
     out.armed = { sheet: !!q(".ls-keys") };
+  } else if (which === "jumpOver") {
+    const how = params.get("how") ?? "dialog";
+    if (how === "dialog") {
+      const team = window as unknown as { mb: { teamStatus: () => Promise<{ rooms: { requests?: Record<string, unknown>[] }[] }> }; __mbEmit: (ev: string, ...a: unknown[]) => void };
+      const st = await team.mb.teamStatus();
+      const room = st.rooms.find((r) => r.requests?.length);
+      if (!room?.requests) throw new Error("no join request to copy");
+      const lee = room.requests[0];
+      room.requests = [lee, { ...lee, id: "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b", name: "Max", at: Number(lee.at) + 1000 }];
+      team.__mbEmit("onTeamChanged", st);
+      await sleep(600);
+      out.promptUp = { prompt: !!q(".join-ask"), keyboard: keyboard() };
+    }
+    const mark = env.calls.length;
+    if (how === "palette") {
+      await press("k", { meta: true });
+      await sleep(300);
+      await typeKeys([..."last org per user"], 30);
+      await sleep(150);
+      await press("Enter");
+    } else (window as unknown as { __mbEmit: (ev: string, ...a: unknown[]) => void }).__mbEmit("onUiCommand", "focus-session", "s2");
+    await sleep(600);
+    out.jumped = { keyboard: keyboard(), in: document.activeElement?.closest<HTMLElement>(".ls-node")?.dataset.front ?? null, selected: selected(), prompt: !!q(".join-ask") };
+    await press("y");
+    await sleep(300);
+    out.after = { writes: env.calls.slice(mark).filter((c) => c.fn === "sessionWrite").map((c) => `${String(c.args[0])}:${String(c.args[1])}`) };
   } else if (which === "escMask") {
     // the app's own Esc cut off: Esc reaches nothing of it, so the sheet stays open, the page in front all along
     let blurs = 0;
