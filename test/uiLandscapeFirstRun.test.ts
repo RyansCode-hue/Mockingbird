@@ -20,7 +20,8 @@ async function run(part: string, query = "", size = "1440x900", limitMs?: number
   const id = "mb-landscape-first-run-audit";
   const json: string | null = await pageResult({
     size,
-    query: `labs=landscape${/motion=/.test(query) ? "" : "&motion=off"}&landscapeFirstRunAudit=${part}${query ? `&${query}` : ""}`,
+    // ?labsOff: the grid, the landscape left off in Labs
+    query: `${/(^|&)labsOff(&|$)/.test(query) ? "labs=none" : "labs=landscape"}${/motion=/.test(query) ? "" : "&motion=off"}&landscapeFirstRunAudit=${part}${query ? `&${query}` : ""}`,
     outDir: path.join(tempDir(`${id}-${part}`), "out"),
     read: `document.getElementById(${JSON.stringify(id)})?.textContent ?? null`,
     limitMs,
@@ -34,7 +35,8 @@ async function run(part: string, query = "", size = "1440x900", limitMs?: number
 const CREATE = ["Claude…", "Codex…", "Terminal…", "From a ticket…", "Import…"];
 /** What swallowed keys say (once), with nothing selected and with a workspace selected. */
 const HINT = "Click the landscape, or press ⌘E, to use its keys";
-const HINT_SELECTED = "Click the landscape to use its keys, or press ⌘E to type in the selected workspace";
+/** With a workspace selected: naming the tab ⌘E types in. */
+const hintSelected = (title: string) => `Click the landscape to use its keys; ⌘E types in ${title}`;
 
 describe.skipIf(!local)("the shortcuts sheet", () => {
   it("lists only what a real key press was seen to do, every row driven", async () => {
@@ -60,8 +62,9 @@ describe.skipIf(!local)("the shortcuts sheet", () => {
     expect(k.keyboardAtStart).toBe("landscape");
     // the palette clicked away gives the keyboard back to the landscape, so `?` works straight after
     expect(k.afterScrim).toEqual({ palette: false, keyboard: "landscape", sheet: true });
-    // with the keyboard nowhere (on the holder, keyArm.ts), keys do nothing and leave it there
-    expect(k.nowhere).toEqual({ at: "nowhere", keyboard: "nowhere", sheet: false, selected: true, focus: false, writes: 0 });
+    // with the keyboard on the page (the landscape blurred: no typing target went, so not the holder), keys do nothing
+    // and leave it there
+    expect(k.nowhere).toEqual({ at: "body", keyboard: "body", sheet: false, selected: true, focus: false, writes: 0 });
     // in a text field and in a terminal, `?` is theirs
     expect(k.questionInField.sheet).toBe(false);
     expect(k.questionInField.value).toBe("?");
@@ -416,7 +419,7 @@ describe.skipIf(!local)("the landscape armed as it mounts only by the user's cho
     expect(a.startedOn).toEqual({ landscape: false, tab: "dashboard" });
     expect(a.mounted).toEqual({ landscape: true, keyboard: "landscape", selected: "s4" });
     // "?", then N, Enter and y: no sheet, no session moved to, focused or written to; said once
-    expect(a.after).toEqual({ ...disarmed, note: HINT_SELECTED });
+    expect(a.after).toEqual({ ...disarmed, note: hintSelected("test runner") });
   }, 120_000);
 
   it("isn't armed mounted by a notification's jump, though nothing was pressed since the window opened", async () => {
@@ -457,13 +460,110 @@ describe.skipIf(!local)("the landscape's buttons and swallowed keys", () => {
   }, 120_000);
 
   it("says once why typed keys do nothing, disarmed and with the keyboard nowhere, and ⌘E with nothing selected arms it", async () => {
-    const a = await run("a", "case=hint&needsMany");
+    // the camera with both s1's and the API stack's terminals on screen, clear of the side bar
+    const a = await run("a", "case=hint&needsMany&lsCamera=500,0,0.75");
     expect(a.start).toEqual({ keyboard: "landscape", selected: null });
     // N, T, Tab and X: said once
     expect(a.disarmed).toEqual({ notes: [HINT], keyboard: "landscape", selected: null });
     expect(a.cmdE).toEqual({ sheet: true });
     // armed since, then the keyboard nowhere: X, Y and Z said once more
     expect(a.nowhere).toEqual({ notes: [HINT, HINT], keyboard: "nowhere" });
+    // and once more the next time it goes there, though nothing was armed between (s2 closed as it's typed in, its
+    // selection going with it)
+    expect(a.inS2).toBe(true);
+    expect(a.s2Selected).toBe("s2");
+    expect(a.again).toEqual({ notes: [HINT, HINT, HINT], keyboard: "nowhere", selected: null, front: "s3" });
+  }, 120_000);
+});
+
+describe.skipIf(!local)("a landscape button pressed while a terminal is typed in", () => {
+  const none = { others: [], moved: false, sheet: false, dialog: false, menu: false, palette: false };
+  for (const btn of ["hud", "chip", "typist"] as const)
+    it(`leaves the keyboard in the terminal, which gets the rest of the line (${btn})`, async () => {
+      const a = await run("a", `case=button&btn=${btn}&lsCamera=0,0,1`);
+      expect(a.before).toBe(true);
+      expect(a.pressed).toEqual({ keyboard: "terminal", inS1: true });
+      // "ok ", the press, then n, Enter and y: all of it s1's, nothing anyone else's; the diff chip opens its window
+      expect(a.after).toMatchObject({ ...none, keyboard: "terminal", s1Got: "ok n\ry", focus: false });
+      if (btn !== "chip") expect(a.after.changes).toEqual([]);
+    }, 120_000);
+
+  it("leaves the keyboard in the terminal in focus, its frame's button pressed, and Esc after it the terminal's", async () => {
+    const a = await run("a", "case=frameButton&lsCamera=0,0,1");
+    expect(a.inFocus).toEqual({ focus: true, keyboard: "terminal" });
+    expect(a.pressed).toEqual({ keyboard: "terminal", inS1: true });
+    expect(a.after).toMatchObject({ ...none, keyboard: "terminal", s1Got: "ok \u001bn\ry", focus: true, changes: [] });
+  }, 120_000);
+});
+
+describe.skipIf(!local)("a move of the keyboard that waited on main", () => {
+  for (const how of ["go", "side"] as const)
+    it(`is dropped once the user typed in a terminal meanwhile (${how === "go" ? "Go there" : "a double-click in the side bar"}, main is slow)`, async () => {
+      const a = await run("a", `case=lag&how=${how}&lsCamera=0,0,1${how === "go" ? "&needsMany" : ""}`);
+      expect(a.before).toBe(true);
+      // s3 brought forward late takes neither the keyboard nor focus: every key typed reached s1
+      expect(a.afterLag).toEqual({ keyboard: "terminal", inS1: true, focus: false });
+      expect(a.after).toEqual({ others: [], s1Got: how === "go" ? "abn\ry" : "please run the testsn\ry", focus: false });
+    }, 120_000);
+});
+
+describe.skipIf(!local)("the join prompt gives the landscape its keyboard", () => {
+  const disarmed = { sheet: false, moved: false, writes: [], focus: false };
+  it("disarmed when the request goes from under it", async () => {
+    const a = await run("a", "case=join&how=withdrawn&joinRequest=later&lsCamera=0,0,1");
+    expect(a.prompt).toBe(true);
+    expect(a.closed).toEqual({ prompt: false, keyboard: "landscape" });
+    // ?, then N, Enter and y: no sheet, nothing moved to, focused or written to
+    expect(a.after).toEqual(disarmed);
+  }, 120_000);
+
+  it("disarmed when Accept is pressed with Enter", async () => {
+    const a = await run("a", "case=join&how=enter&joinRequest=later&lsCamera=0,0,1");
+    expect(a.onAccept).toBe(true);
+    expect(a.closed).toEqual({ prompt: false, keyboard: "landscape" });
+    expect(a.after).toEqual(disarmed);
+  }, 120_000);
+
+  it("armed when the user leaves it with Esc", async () => {
+    const a = await run("a", "case=join&how=esc&joinRequest=later&lsCamera=0,0,1");
+    expect(a.closed).toEqual({ prompt: false, keyboard: "landscape" });
+    expect(a.after).toMatchObject({ sheet: true, moved: true });
+  }, 120_000);
+});
+
+describe.skipIf(!local)("Tab with nothing typed in gone", () => {
+  for (const [label, query] of [
+    ["a fresh window on Dashboard", "case=tabWalk&how=fresh&tab=dashboard"],
+    ["a fresh window on Settings", "case=tabWalk&how=fresh&tab=settings"],
+    ["a fresh window with the landscape off in Labs", "case=tabWalk&how=fresh&labsOff"],
+    ["⌘K's Dashboard row", "case=tabWalk&how=palette"],
+    ["the side bar's Reopen pressed with Enter", "case=tabWalk&how=reopen"],
+  ] as const)
+    it(`walks the window's controls as any browser's, after ${label}`, async () => {
+      const a = await run("a", query);
+      expect(a.start.keyboard).toBe("body");
+      // never held: four Tabs reach at least two controls
+      expect(a.walked).not.toContain("nowhere");
+      expect(new Set(a.walked.filter((k: string) => k !== "body")).size).toBeGreaterThanOrEqual(2);
+    }, 120_000);
+});
+
+describe.skipIf(!local)("the holder", () => {
+  for (const shift of [false, true])
+    it(`leaves the holder for the top bar's ${shift ? "last" : "first"} control at ${shift ? "Shift+Tab" : "Tab"} once keys pause, never where the terminal was`, async () => {
+      const a = await run("a", `case=escape&how=${shift ? "shift" : "tab"}&lsCamera=0,0,1`);
+      expect(a.before).toBe(true);
+      // x, Tab and y straight after s1 went: held
+      expect(a.held).toBe("nowhere");
+      expect(a.left).toMatchObject({ isStart: true });
+      expect(a.left.keyboard).toMatch(/^topbar:/);
+    }, 120_000);
+
+  it("isn't there without the landscape: the grid's terminal gone as it's typed in leaves the keyboard on the page", async () => {
+    const a = await run("a", "case=escape&how=grid&labsOff");
+    expect(a.before).toBe(true);
+    expect(a.gone).toEqual({ keyboard: "body" });
+    expect(a.tabbed).toBe(true);
   }, 120_000);
 });
 

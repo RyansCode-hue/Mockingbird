@@ -49,13 +49,14 @@ export function JoinRequestPrompt({
   /** The request is still waiting (not answered from Settings → Team, not expired). */
   stillAsked: boolean;
   onLater: () => void;
-  onDone: () => void;
+  /** It's gone: `byUser` when the user's own answer or close ended it, not the request going from under it. */
+  onDone: (byUser: boolean) => void;
 }) {
   const [busy, setBusy] = useState<"accept" | "decline" | null>(null);
   const [error, setError] = useState("");
   const [declined, setDeclined] = useState<JoinAnswerOutcome | null>(null);
   useEffect(() => {
-    if (!stillAsked && !busy && !declined) onDone();
+    if (!stillAsked && !busy && !declined) onDone(false);
   }, [stillAsked, busy, declined, onDone]);
   const go = async (accept: boolean) => {
     setBusy(accept ? "accept" : "decline");
@@ -68,18 +69,18 @@ export function JoinRequestPrompt({
     // declined, and the Worker couldn't drop them at the door: said before the prompt goes
     if (!accept && out.outcome?.worker) setDeclined(out.outcome);
     setBusy(null);
-    if (accept || !out.outcome?.worker) onDone();
+    if (accept || !out.outcome?.worker) onDone(true);
   };
   if (declined) {
     return (
-      <Modal className="modal team-dlg join-ask" onClose={onDone}>
+      <Modal className="modal team-dlg join-ask" onClose={() => onDone(true)}>
         <h3>You declined {declined.name}</h3>
         <ul className="team-effects">
           <li>They're told, and get nothing of {room.name}. The code they used is used up.</li>
           <li className="warn">{declined.worker}</li>
         </ul>
         <div className="row">
-          <button className="primary" onClick={onDone}>
+          <button className="primary" onClick={() => onDone(true)}>
             Close
           </button>
         </div>

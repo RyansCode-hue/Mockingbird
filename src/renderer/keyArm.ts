@@ -1,3 +1,5 @@
+import { OVERLAYS, ownsKeys } from "./keys";
+
 /**
  * Arming: a surface that takes typed keys as commands (the landscape: its letters, ?, Enter, Space, Esc, ⌥ keys, and
  * its peek's keys; any key without ⌘ or Ctrl, `typed`) acts on them only while it's armed. The keyboard landing on it
@@ -5,7 +7,8 @@
  * ending), and whatever is typed on then was meant for somewhere else, often another session's prompt.
  *
  * Only an act of the user's aimed at the surface arms it:
- * - a press on it (`armOnPress`: the canvas, a card, a button of its own, anything of it but a terminal or a field);
+ * - a press on it (`armOnPress`: the canvas, a card, anything of it but a terminal or a field), or on a button of its
+ *   own while it or nothing has the keyboard (a terminal or a field being typed in keeps it);
  * - a command that leaves a terminal for it (⌘E, ⌘Esc), or goes to it (Go there, ⌘E with nothing selected), and its
  *   tab's button pressed (`tabChosen`) or the window opening on it before any input (`untouched`) (`armFocus`);
  * - the user leaving what they opened from it while it was armed (`userLeft`: Esc, or a press): a palette, a dialog, a
@@ -14,16 +17,28 @@
  * Anything else that gives it the keyboard leaves it disarmed, and the keyboard going anywhere else disarms it,
  * however that happens: a terminal or a field taking it, a dialog opening, focus falling to the page. A disarmed
  * surface swallows typed keys (Tab too, so a burst can't walk onto a button and press it); ⌘ and Ctrl chords still
- * work. Every key handler of such a surface asks `isArmed` before acting on a typed key.
+ * work. Every key handler of such a surface asks `isArmed` before acting on a typed key. A move of the keyboard that
+ * waits on something (a reveal waiting for main) is dropped if the user did anything meanwhile (`inputStamp`).
  *
- * Nowhere: when what had the keyboard goes (removed, hidden, blurred) it isn't left on the page, where Tab would walk
- * on from the place of what went, into the controls beside it, and a burst typed on would press them. It goes to an
- * inert holder (`toNowhere`), never armed, which swallows typed keys, Tab and Shift+Tab, Space and Enter included; Esc
- * still reaches what closes on it, and ⌘ and Ctrl chords work. Said as `KEYS_SWALLOWED`. A press on anything leaves
- * it. A press on nothing (a bare stretch of the side bar or the top bar) isn't nowhere: the user put the keyboard on the
- * page there, and Tab goes on from the press, as in any browser. `keyboardNowhere` is the one test for nothing having
- * the keyboard, the page and the holder alike.
+ * Nowhere: a terminal or a text field being typed in that goes from under the user (removed, hidden) while the
+ * landscape is up (`holdNowhere`) doesn't leave the keyboard on the page, where Tab would walk on from where it was,
+ * into the controls beside it, and a burst typed on would press them. It goes to an inert holder (`toNowhere`), never
+ * armed, which swallows typed keys, Tab, Shift+Tab, Space and Enter included, and says why once (`KEYS_SWALLOWED`); Esc
+ * and ⌘ and Ctrl chords go through. Once keys have paused (`TYPING_MS`), Tab and Shift+Tab leave it for a fixed start,
+ * the top bar's first or last control (`setKeyboardStart`), never the place of what went. A press anywhere leaves it.
+ * Nothing else goes there: the window opening, a dialog or the palette closing, a press on nothing, a button that goes,
+ * a tab without the landscape all leave the keyboard on the page, as any browser does. `keyboardNowhere` is the one
+ * test for nothing having the keyboard, the page and the holder alike.
  */
+
+/** Keys closer together than this are typing: a pause this long ends a burst. */
+export const TYPING_MS = 1000;
+/** Keys that call for no word when swallowed: a modifier on its own, and Esc, which closes things rather than typing. */
+export const QUIET_KEYS: ReadonlySet<string> = new Set(["Shift", "Alt", "Meta", "Control", "CapsLock", "Fn", "Escape"]);
+/** Said on `document` (detail: the key) the first time a key is swallowed with the keyboard on the holder, each time it goes there. */
+export const KEYS_SWALLOWED = "mb-keys-swallowed";
+/** What a typing target lost can have been inside and not count: a dialog, the palette, a menu, the tour. */
+const OVER = `${OVERLAYS}, .palette, .mb-ctx, .ls-tour-card`;
 
 let armed: Element | null = null;
 /** A press on a surface, until the keyboard arrives there as the press's own focus move (in the same task). */
@@ -36,10 +51,16 @@ let lastKeyAt = -Infinity;
 let touched = false;
 /** A pointer press is being dispatched: a focus move to nothing now is the press's own. */
 let pressing = false;
-/** The page has the keyboard because the user pressed on nothing: Tab goes on from the press. */
-let placedByPress = false;
-/** Said on `document` each time a key is swallowed because the keyboard is nowhere. */
-export const KEYS_SWALLOWED = "mb-keys-swallowed";
+/** Keys and presses so far: a deferred move of the keyboard made before a change of this is out of date. */
+let inputs = 0;
+/** Moves of the keyboard so far: a surface says why it swallowed keys once for each place the keyboard comes to. */
+let spells = 0;
+/** The holder's spell already said why it swallowed keys. */
+let saidSpell = -1;
+/** How many surfaces want a typing target that goes caught by the holder (the landscape, while it's up). */
+let holders = 0;
+/** The fixed start Tab and Shift+Tab leave the holder for. */
+let start: (() => HTMLElement[]) | null = null;
 let holderEl: HTMLElement | null = null;
 
 /** The keyboard's place when nothing has it: focusable by code only, out of sight, taking no pointer. */
@@ -48,7 +69,7 @@ function holder(): HTMLElement {
     holderEl = document.createElement("div");
     holderEl.className = "mb-keys-nowhere";
     holderEl.tabIndex = -1;
-    holderEl.setAttribute("aria-label", "Nothing has the keyboard: click where you want to type");
+    holderEl.setAttribute("aria-label", "Nothing has the keyboard: click where you want to type, or Tab to the top bar");
     Object.assign(holderEl.style, { position: "fixed", left: "0", top: "0", width: "1px", height: "1px", opacity: "0", pointerEvents: "none", outline: "none" });
   }
   if (!holderEl.isConnected) document.body.appendChild(holderEl);
@@ -60,28 +81,61 @@ export const isNowhere = (el: Element | null | undefined): boolean => !el || el 
 /** Nothing has the keyboard: the page, or the holder. */
 export const keyboardNowhere = (): boolean => isNowhere(document.activeElement);
 
-/** The keyboard nowhere, on purpose (the tour's hold at its cap). */
-export function toNowhere(): void {
+/**
+ * The keyboard to the holder, on purpose: the tour hid the terminal being typed in, or its hold ran to its cap.
+ * `quiet`: what it swallows says nothing (the tour's hold, which gives the keyboard back itself).
+ */
+export function toNowhere(quiet = false): void {
   holder().focus({ preventScroll: true });
+  saidSpell = quiet ? spells : -1;
+}
+
+/** A surface wants a typing target that goes from under the user caught by the holder while it's up; returns its release. */
+export function holdNowhere(): () => void {
+  holders++;
+  return () => {
+    holders--;
+    // no surface left to hold it for: the keyboard goes back to the page, as on any other tab
+    if (!holders && holderEl && document.activeElement === holderEl) holderEl.blur();
+  };
+}
+
+/** Where Tab (the first) and Shift+Tab (the last) go from the holder; returns its release. */
+export function setKeyboardStart(get: () => HTMLElement[]): () => void {
+  start = get;
+  return () => {
+    if (start === get) start = null;
+  };
+}
+
+/** Tab or Shift+Tab off the holder, to the fixed start: whether there was one to go to. */
+function leaveHolder(back: boolean): boolean {
+  const all = (start?.() ?? []).filter((el) => el.isConnected && el.getClientRects().length > 0 && !(el as HTMLButtonElement).disabled);
+  const to = back ? all[all.length - 1] : all[0];
+  to?.focus();
+  return !!to && document.activeElement === to;
 }
 
 if (typeof document !== "undefined") {
-  // first on the window, so nothing else sees a key typed with the keyboard nowhere; listeners on the window itself
-  // still run (⌥⇥ goes on to the waiting sessions), but nothing in the page does
+  // first on the window, so nothing else sees a key typed on the holder; listeners on the window itself still run (⌥⇥
+  // goes on to the waiting sessions), but nothing in the page does
   window.addEventListener(
     "keydown",
     (e) => {
+      const paused = performance.now() - lastKeyAt >= TYPING_MS;
       lastKey = e.key;
       lastKeyAt = performance.now();
       touched = true;
+      inputs++;
       // a key goes to what has the keyboard, so for one typed these are the same; one dispatched by code at an element
       // (the preview's) is that element's
-      if (!keyboardNowhere() || !isNowhere(e.target as Element | null)) return;
-      if (placedByPress && document.activeElement === document.body) return;
-      if (document.activeElement !== holderEl) toNowhere();
+      if (!holderEl || document.activeElement !== holderEl || e.target !== holderEl) return;
       if (!typed(e) || e.key === "Escape") return;
       e.preventDefault();
       e.stopPropagation();
+      if (e.key === "Tab" && paused && leaveHolder(e.shiftKey)) return;
+      if (saidSpell === spells || QUIET_KEYS.has(e.key)) return;
+      saidSpell = spells;
       document.dispatchEvent(new CustomEvent(KEYS_SWALLOWED, { detail: e.key }));
     },
     true
@@ -91,6 +145,7 @@ if (typeof document !== "undefined") {
     () => {
       lastKey = null;
       touched = true;
+      inputs++;
       pressing = true;
       setTimeout(() => (pressing = false), 0);
     },
@@ -103,26 +158,34 @@ if (typeof document !== "undefined") {
       if (t && t === pressed) armed = t;
       else if (t !== armed) armed = null;
       pressed = null;
-      placedByPress = false;
+      spells++;
     },
     true
   );
-  // to nothing while the window is in front: the keyboard fell to the page, and goes to the holder once the move is
-  // over (a frame or a webview taking it shows only then), unless a press on nothing put it there. A window going
-  // behind another keeps it.
+  // To nothing while the window is in front. A terminal or a field being typed in that went from under the user (a
+  // task later it's gone or hidden, and nothing took the keyboard: a frame or a webview taking it shows only then) puts
+  // it on the holder while a surface holds for it. A press's own move, something inside a dialog, the palette, a menu
+  // or the tour, and anything else, leave it on the page. A window going behind another keeps it.
   document.addEventListener(
     "focusout",
     (e) => {
       if (e.relatedTarget || !document.hasFocus()) return;
       armed = null;
-      if (pressing) return void (placedByPress = true);
+      const t = e.target as HTMLElement | null;
+      if (pressing || !holders || !t || !ownsKeys(t) || t.closest(OVER)) return;
       setTimeout(() => {
-        if (document.hasFocus() && keyboardNowhere() && document.activeElement !== holderEl) toNowhere();
+        if (!holders || !document.hasFocus() || !keyboardNowhere() || document.activeElement === holderEl) return;
+        if (t.isConnected && t.getClientRects().length > 0) return;
+        toNowhere();
       }, 0);
     },
     true
   );
 }
+
+/** What swallowed keys say on the landscape: how to get its keys, and whose terminal ⌘E types in (`typesIn`), if any. */
+export const swallowedNote = (typesIn: string | null): string =>
+  typesIn ? `Click the landscape to use its keys; ⌘E types in ${typesIn}` : "Click the landscape, or press ⌘E, to use its keys";
 
 /** A key a surface acts on only while armed: anything typed, so everything but ⌘ and Ctrl chords. */
 export const typed = (e: { metaKey: boolean; ctrlKey: boolean }): boolean => !e.metaKey && !e.ctrlKey;
@@ -130,20 +193,17 @@ export const typed = (e: { metaKey: boolean; ctrlKey: boolean }): boolean => !e.
 /** `el` has the keyboard, and the user gave it it. */
 export const isArmed = (el: Element | null | undefined): boolean => !!el && armed === el && document.activeElement === el;
 
-/** How many times something has been armed: a surface that swallowed keys says why once per change of this. */
-let armings = 0;
-export const armingCount = (): number => armings;
+/** Which place the keyboard is in, counted: changes each time it moves (a surface says why it swallows keys once per). */
+export const keyboardSpell = (): number => spells;
+
+/** Keys and presses so far: a deferred keyboard move made at one count is out of date at another. */
+export const inputStamp = (): number => inputs;
 
 /** The keyboard to `el`, armed: for a user's command that goes to it. */
 export function armFocus(el: HTMLElement | null | undefined): void {
   if (!el?.isConnected) return;
   el.focus({ preventScroll: true });
-  if (document.activeElement === el) arm(el);
-}
-
-function arm(el: Element): void {
-  if (armed !== el) armings++;
-  armed = el;
+  if (document.activeElement === el) armed = el;
 }
 
 /**
@@ -162,7 +222,7 @@ export const untouched = (): boolean => !touched;
 export function armOnPress(el: Element | null | undefined): void {
   if (!el) return;
   if (document.activeElement === el) {
-    arm(el);
+    armed = el;
     return;
   }
   pressed = el;

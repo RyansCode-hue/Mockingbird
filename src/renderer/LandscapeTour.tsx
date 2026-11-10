@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { OVER_TOUR, ownsKeys } from "./keys";
 import { useDialogFocus } from "./Modal";
-import { keyboardNowhere } from "./keyArm";
+import { TYPING_MS, keyboardNowhere } from "./keyArm";
 import { fromKeyboard, usePresence } from "./motion";
 import { ringAround, tourCardAt, tourNext, type Box, type TourStep, type TourTarget } from "./landscapeFirstRun";
 import type { Camera } from "../shared/landscape";
@@ -14,8 +14,6 @@ const RING_INSET = 2;
 
 const inset = (b: Box, by: number): Box => ({ x: b.x + by, y: b.y + by, w: b.w - 2 * by, h: b.h - 2 * by });
 
-/** Keys closer together than this are typing. */
-export const TYPING_MS = 1000;
 /** A terminal on the landscape (not a peek's, nor the bottom panel's). */
 const LANDSCAPE_TERM = ".ls-world .xterm";
 

@@ -10,7 +10,7 @@
  * =u: the tour against what else is going on, by &case=terminal|typing|dropped|keys|field|ring|undo|dialog|palette|focus|tray.
  * =c: the camera the tour moves, by &case=esc|skip|tab|restart|goto (cameraPart).
  * =a: typed keys against the landscape's arming (keyArm.ts), by &case=tour|peekLog|peekGone|jumpInTour|jumpKeys|press|zoomOut|cap|frame|
- * walk|pressNothing|mount|hud|hint.
+ * walk|pressNothing|mount|hud|hint|button|frameButton|lag|join|tabWalk|escape.
  * =e (with ?lsOnly=…): what's in the empty landscape's place, right-clicks all over it, its tiles and its links.
  * =b: the top bar's boxes at this window's width, + New's menu and its »; &case=tab for + New on another tab, &case=fold
  * for what folds, &case=sheet for the sheet at this size and beside the tray and the palette.
@@ -1474,7 +1474,17 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
  *   ⌘K's Landscape row, or by its tab;
  * - hud (with ?lsCamera=0,0,0.625): the zoom HUD's Zoom out pressed, then a peek's Space, then Tab;
  * - hint (with ?needsMany): typed keys swallowed by the landscape disarmed, and with the keyboard nowhere, and ⌘E;
- * - pressNothing: a press on the top bar's bare middle, then Tab.
+ * - pressNothing: a press on the top bar's bare middle, then Tab;
+ * - button (&btn=hud|chip|typist, with ?lsCamera=0,0,1): s1's terminal typed in, a landscape button pressed, typing on;
+ * - frameButton (with ?lsCamera=0,0,1): the same in focus on s1, a button on its frame, then Esc;
+ * - lag (&how=go|side, with ?lsCamera=0,0,1): Go there on s3 (a stack's back tab), or a double-click on its side bar
+ *   row, while main is slow to bring it to the front; meanwhile s1's terminal clicked into and typed in;
+ * - join (&how=withdrawn|enter|esc, with ?joinRequest=later&lsCamera=0,0,1): Go there on Lee's request, then the
+ *   request going from under its prompt, or Accept with Enter, or Esc;
+ * - tabWalk (&how=fresh|palette|reopen): Tab from a fresh window (&tab=dashboard, &tab=settings, ?labsOff), after
+ *   ⌘K's Dashboard row, after the side bar's Reopen went with Enter;
+ * - escape (&how=tab|shift, with ?lsCamera=0,0,1): s1's terminal gone as it's typed in, then a pause, then Tab or
+ *   Shift+Tab; (&how=grid, with ?labsOff) the grid's first terminal gone as it's typed in, then Tab.
  */
 async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<void> {
   const which = params.get("case");
@@ -1485,12 +1495,21 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
       await sleep(gap);
     }
   };
-  /** A real click into a session's terminal: the keyboard is that terminal's. */
+  /** A real click into a session's terminal, on a part of it nothing covers: the keyboard is that terminal's. */
   const intoTerm = async (id: string) => {
     const screen = q(`.ls-world .ls-node[data-front="${id}"] .xterm-screen`);
     if (!screen) throw new Error(`no terminal on screen for ${id}`);
     const r = screen.getBoundingClientRect();
-    await act([{ mouse: { x: r.left + Math.min(200, r.width / 2), y: r.top + Math.min(120, r.height / 2), clickCount: 1 } }]);
+    let at: { x: number; y: number } | null = null;
+    for (let y = r.top + Math.min(120, r.height / 2); !at && y < r.bottom - 4; y += 24)
+      for (let x = r.left + Math.min(200, r.width / 2); !at && x < r.right - 4; x += 40)
+        if (x > 0 && y > 0 && x < innerWidth && y < innerHeight && screen.closest(".term-holder")?.contains(document.elementFromPoint(x, y))) at = { x, y };
+    if (!at) {
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      const over = document.elementFromPoint(x, y);
+      throw new Error(`no uncovered part of ${id}'s terminal (${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}; its middle under ${over ? nameOf(over) : "nothing"})`);
+    }
+    await act([{ mouse: { ...at, clickCount: 1 } }]);
     await sleep(300);
     return document.activeElement?.closest<HTMLElement>(".ls-node")?.dataset.front === id && keyboard() === "terminal";
   };
@@ -1508,13 +1527,15 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
       .slice(mark)
       .filter((c) => /Write$|^landscapeUpdate|^setGroup|^kill|^create|^relaunch|^resume|^forget/.test(c.fn))
       .map((c) => `${c.fn} ${JSON.stringify(c.args[0]) ?? ""}`);
-  /** The note on the landscape, and what each one put up since `watchNotes` began said. */
+  /** The note on the landscape, and what each one put up since `watchNotes` began said. Only the viewport's own
+   *  children are watched (the note is one): the terminals under it change all the time, and a subtree observer
+   *  over them slows the page to a crawl. */
   const notesSaid: string[] = [];
   const watchNotes = () => {
     const mo = new MutationObserver((ms) => {
       for (const m of ms) for (const n of m.addedNodes) if (n instanceof HTMLElement && n.classList.contains("ls-note")) notesSaid.push(n.textContent?.trim() ?? "");
     });
-    mo.observe(vp(), { childList: true, subtree: true });
+    mo.observe(vp(), { childList: true });
     return () => mo.disconnect();
   };
   const noteText = () => q(".ls-note")?.textContent?.trim() ?? null;
@@ -1816,14 +1837,14 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
       await press("Enter");
       await sleep(2200);
       await press("Escape");
-      await sleep(1500);
+      await sleep(300);
       out.ended = { tour: !!q(".ls-tour-card"), keyboard: keyboard() };
     } else {
       // s1 closed elsewhere as its terminal is typed in
       await press("a");
       await sleep(100);
       env.setSession("s1", null);
-      await sleep(800);
+      await sleep(300);
       out.gone = { s1: !card("s1"), keyboard: keyboard() };
     }
     // a control or a terminal given the keyboard from here on
@@ -1846,6 +1867,169 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await sleep(600);
     document.removeEventListener("focusin", onFocus, true);
     out.after = { walked: [...new Set(walked)], reached, keyboard: keyboard(), acts: actsSince(mark), ...opened() };
+  } else if (which === "button" || which === "frameButton") {
+    // typing in s1's terminal, a press on a button of the landscape's, then the rest of the line
+    out.before = await intoTerm("s1");
+    if (which === "frameButton") {
+      await press("e", { meta: true });
+      await sleep(500);
+      out.inFocus = { focus: !!q(".ls-focus"), keyboard: keyboard() };
+    }
+    const mark = env.calls.length;
+    const sel0 = selected();
+    await typeKeys(["o", "k", " "], 60);
+    const s1 = (sel: string) => q(`.ls-world .ls-node[data-front="s1"] ${sel}, .ls-focus ${sel}`);
+    // in focus, the frame's Stop … typing ×: a button that leaves focus (its ← or ⋯) is a move of its own
+    const btn =
+      which === "frameButton"
+        ? q(".ls-focus button.typist-x")
+        : params.get("btn") === "chip"
+          ? qs<HTMLElement>('.ls-world .ls-node[data-front="s1"] button').find((b) => /\bfiles?\b/.test(b.textContent ?? ""))
+          : params.get("btn") === "typist"
+            ? s1("button.typist-x")
+            : q(".ls-hud-btn.pct");
+    if (!btn) throw new Error(`no button to press (${params.get("btn") ?? which})`);
+    out.button = btn.getAttribute("aria-label") ?? btn.textContent?.trim().slice(0, 30) ?? "";
+    await clickOn(btn);
+    await sleep(250);
+    out.pressed = { keyboard: keyboard(), inS1: !!document.activeElement?.closest('.ls-node[data-front="s1"], .ls-focus') };
+    // Esc in focus is Claude's (interrupt); n, Enter and y as at a prompt
+    await typeKeys(which === "frameButton" ? ["Escape", "n", "Enter", "y"] : ["n", "Enter", "y"], 150);
+    await sleep(500);
+    out.after = { keyboard: keyboard(), others: writesSince(mark).filter((id) => id !== "s1"), s1Got: dataTo("s1", mark), changes: changesSince(mark), moved: selected() !== sel0, ...opened() };
+  } else if (which === "lag") {
+    // main slow to answer a change to the landscape (a stack's front tab brought forward)
+    const w = window as unknown as { mb: Record<string, unknown> };
+    const real = w.mb;
+    w.mb = new Proxy(real, {
+      get: (t, n) => (n === "landscapeUpdate" ? async (...a: unknown[]) => (await sleep(1500), (t.landscapeUpdate as (...x: unknown[]) => unknown)(...a)) : t[n as string]),
+    });
+    if (params.get("how") === "side") {
+      // a double-click on s3's row in the side bar (its stack opened first): focus on it, once it's in front
+      const head = qs(".lt-row.lt-stack").find((r) => r.dataset.sid === "s2" || /api/i.test(r.textContent ?? ""));
+      if (!q('.lt-row[data-sid="s3"]') && head) await clickOn(head.querySelector("[class*=caret], button") ?? head);
+      await sleep(300);
+      const row = q('.lt-row[data-sid="s3"]');
+      if (!row) throw new Error("no side bar row for s3");
+      const at = middle(row);
+      await act([{ mouse: { ...at, clickCount: 1 } }, { mouse: { ...at, clickCount: 2 } }]);
+    } else {
+      document.querySelector<HTMLElement>(".ny-btn")?.click();
+      await sleep(400);
+      const go = q('.ny-tray .ny-item[data-item="s:s3"] button[data-action="go"]');
+      if (!go) throw new Error("no Go there for s3");
+      await clickOn(go);
+    }
+    await sleep(150);
+    out.before = await intoTerm("s1");
+    const mark = env.calls.length;
+    const words = params.get("how") === "side" ? [..."please run the tests"] : ["a", "b"];
+    await typeKeys(words, 110);
+    await sleep(1900);
+    out.afterLag = { keyboard: keyboard(), inS1: !!document.activeElement?.closest('.ls-node[data-front="s1"]'), focus: !!q(".ls-focus") };
+    await typeKeys(["n", "Enter", "y"], 120);
+    await sleep(500);
+    out.after = { others: writesSince(mark).filter((id) => id !== "s1"), s1Got: dataTo("s1", mark), focus: !!q(".ls-focus") };
+    w.mb = real;
+  } else if (which === "join") {
+    const how = params.get("how") ?? "withdrawn";
+    document.querySelector<HTMLElement>(".ny-btn")?.click();
+    await sleep(400);
+    const go = qs(".ny-tray .ny-item").find((i) => !(i.dataset.item ?? "").startsWith("s:"))?.querySelector<HTMLElement>('button[data-action="go"]');
+    if (!go) throw new Error("no Go there on a join request");
+    await clickOn(go);
+    await sleep(700);
+    out.prompt = !!q(".join-ask");
+    if (how === "withdrawn") {
+      // the user reads it and Tabs toward Accept; the request is answered elsewhere and goes
+      await press("Tab");
+      await sleep(100);
+      const w = window as unknown as { mb: { teamStatus: () => Promise<{ rooms: { requests?: unknown[] }[] }> }; __mbEmit: (ev: string, ...a: unknown[]) => void };
+      const st = await w.mb.teamStatus();
+      for (const r of st.rooms) r.requests = [];
+      w.__mbEmit("onTeamChanged", st);
+    } else if (how === "enter") {
+      for (let i = 0; i < 6 && document.activeElement?.textContent?.trim() !== "Accept"; i++) {
+        await press("Tab");
+        await sleep(80);
+      }
+      out.onAccept = document.activeElement?.textContent?.trim() === "Accept";
+      await press("Enter");
+    } else await press("Escape");
+    await sleep(700);
+    out.closed = { prompt: !!q(".join-ask"), keyboard: keyboard() };
+    const mark = env.calls.length;
+    const sel0 = selected();
+    await press("?", { shift: true });
+    await sleep(300);
+    const sheet = !!q(".ls-keys");
+    if (sheet) {
+      await press("Escape");
+      await sleep(300);
+    }
+    await typeKeys(["n", "Enter", "y"], 150);
+    await sleep(500);
+    out.after = { sheet, moved: selected() !== sel0, writes: writesSince(mark), focus: !!q(".ls-focus") };
+  } else if (which === "tabWalk") {
+    const how = params.get("how") ?? "fresh";
+    if (how === "palette") {
+      await press("k", { meta: true });
+      await sleep(300);
+      await typeKeys([..."Dashboard"], 30);
+      await sleep(200);
+      await press("Enter");
+      await sleep(600);
+    } else if (how === "reopen") {
+      // keyboard only: the side bar's Reopen on a closed session, Tabbed to (given the keyboard here) and pressed
+      const reopen = qs<HTMLButtonElement>('.lt-closed-act[data-act="reopen"]').find((b) => b.getClientRects().length && !b.disabled);
+      if (!reopen) throw new Error("no Reopen in the side bar");
+      out.reopen = reopen.getAttribute("aria-label") ?? "";
+      reopen.focus();
+      await press("Enter");
+      await sleep(600);
+    }
+    out.start = { keyboard: keyboard(), tab: q(".topbar .tab.on")?.dataset.tab ?? q(".tab.on")?.textContent?.trim() ?? null };
+    const walked: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      await press("Tab");
+      await sleep(120);
+      walked.push(keyboard());
+    }
+    out.walked = walked;
+  } else if (which === "escape" && params.get("how") === "grid") {
+    // the grid (?labsOff), no landscape to hold for: a terminal gone as it's typed in leaves the keyboard on the page
+    const term = qs(".term-holder").find((el) => el.getClientRects().length > 0);
+    if (!term) throw new Error("no terminal in the grid");
+    await clickOn(term);
+    await sleep(300);
+    out.before = keyboard() === "terminal";
+    const mark = env.calls.length;
+    await press("a");
+    await sleep(150);
+    const id = writesSince(mark)[0];
+    if (!id) throw new Error("the grid's terminal took no key");
+    env.setSession(id, null);
+    await sleep(300);
+    out.gone = { keyboard: keyboard() };
+    await press("Tab");
+    await sleep(150);
+    out.tabbed = !["body", "nowhere"].includes(keyboard());
+  } else if (which === "escape") {
+    // the keyboard on the holder (s1's terminal gone as it's typed in); a burst is swallowed, Tab with it
+    out.before = await intoTerm("s1");
+    await press("a");
+    env.setSession("s1", null);
+    await sleep(300);
+    await typeKeys(["x", "Tab", "y"], 100);
+    out.held = keyboard();
+    // a pause, then Tab or Shift+Tab: the top bar's first or its last control, never where s1 was
+    await sleep(1300);
+    const shift = params.get("how") === "shift";
+    const bar = qs(".topbar button, .topbar a[href], .topbar input, .topbar select, .topbar [tabindex]:not([tabindex='-1'])").filter((el) => el.getClientRects().length && !(el as HTMLButtonElement).disabled);
+    const want = shift ? bar[bar.length - 1] : bar[0];
+    await press("Tab", { shift });
+    await sleep(150);
+    out.left = { keyboard: keyboard(), isStart: !!want && document.activeElement === want };
   } else if (which === "pressNothing") {
     // a press on nothing puts the keyboard on the page by the user's own act: Tab goes on from the press
     const s = box(q(".topbar > .spacer"));
@@ -1952,12 +2136,24 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     out.cmdE = { sheet: !!q(".ls-keys") };
     await press("Escape");
     await sleep(300);
-    // with the keyboard nowhere, typed keys say why once more, and only once
-    vp().blur();
-    await sleep(100);
+    // s1's terminal typed in and closed elsewhere: the keyboard nowhere, typed keys say why once more, and only once
+    await intoTerm("s1");
+    await press("a");
+    env.setSession("s1", null);
+    await sleep(300);
     await typeKeys(["x", "y", "z"], 120);
     await sleep(200);
     out.nowhere = { notes: [...notesSaid], keyboard: keyboard() };
+    // and again for the next time, though nothing was armed between: s2's terminal typed in and closed (the selection
+    // going with it)
+    out.inS2 = await intoTerm("s2");
+    out.s2Selected = selected();
+    await press("b");
+    env.setSession("s2", null);
+    await sleep(300);
+    await typeKeys(["g", "h"], 120);
+    await sleep(200);
+    out.again = { notes: [...notesSaid], keyboard: keyboard(), selected: selected(), front: q('.ls-world .ls-node[data-ws="ws:5101/api"]')?.dataset.front ?? null };
     stop();
   }
 }
@@ -1970,8 +2166,10 @@ export function runFirstRunAudit(env: FirstRunEnv, part: string): void {
     el.textContent = JSON.stringify(out);
     document.body.appendChild(el);
   };
-  // =b, and =a&case=mount (which may open on another tab), start once the top bar is there; the rest, the landscape
-  env.waitFor(part === "b" || (part === "a" && params.get("case") === "mount") ? ".topbar" : ".ls-viewport", async () => {
+  // =b, and =a&case=mount|tabWalk (which may open on another tab) or the grid's escape, start once the top bar is there;
+  // the rest, the landscape
+  const fromBar = part === "b" || (part === "a" && (["mount", "tabWalk"].includes(params.get("case") ?? "") || params.get("how") === "grid"));
+  env.waitFor(fromBar ? ".topbar" : ".ls-viewport", async () => {
     const out: Record<string, unknown> = {};
     try {
       if (part === "k") await keysPart(env, out);

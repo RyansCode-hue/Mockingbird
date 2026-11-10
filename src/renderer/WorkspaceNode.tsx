@@ -83,7 +83,10 @@ export function WorkspaceNode({
   /** The front session's actions: what its chips, ⋯ and right-click do. */
   actions: ModelAction[];
   chrome: WorkspaceChrome;
-  /** A press on it; `header` when it was on the header (or a card), which leaves the keyboard with the landscape. */
+  /**
+   * A press on it; `header` when it was on the header (or a card), off its buttons, which leaves the keyboard with the
+   * landscape. A button's press is the button's: what had the keyboard (a terminal being typed in) keeps it.
+   */
   onSelect: (tile: Tile, header: boolean) => void;
   onFocus: (tile: Tile) => void;
   onBack?: () => void;
@@ -134,7 +137,10 @@ export function WorkspaceNode({
       style={card ? { ...style, ["--ls-inv" as string]: inv } : { ...style, gridTemplateRows: `${WORKSPACE_HEAD}px minmax(0, 1fr) ${WORKSPACE_FOOT}px` }}
       data-ws={tile.key}
       data-front={s.id}
-      onPointerDown={(e) => onSelect(tile, card || !!(e.target as Element).closest?.(".ls-head"))}
+      onPointerDown={(e) => {
+        const t = e.target as Element;
+        onSelect(tile, !t.closest?.("button, [role=button], a[href]") && (card || !!t.closest?.(".ls-head")));
+      }}
       onDoubleClick={card ? () => onFocus(tile) : undefined}
     >
       {card ? (

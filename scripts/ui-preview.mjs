@@ -189,6 +189,8 @@ async function pressAsked(ask) {
     const base = { modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, nativeVirtualKeyCode: d.keyCode };
     if (k.hold !== "up") await ask("Input.dispatchKeyEvent", { type: typed ? "keyDown" : "rawKeyDown", ...base, ...(typed ? { text: d.text, unmodifiedText: d.text } : {}) });
     if (k.hold !== "down") await ask("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    // headless Chrome hides the page on Esc, which slows its timers to a crawl and stops its animation frames
+    if (k.key === "Escape") await ask("Page.bringToFront", {});
   }
   if (keys.length) await ask("Runtime.evaluate", { expression: `window.__mbKeysDone = (window.__mbKeysDone || 0) + ${keys.length}` });
 }

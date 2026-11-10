@@ -7,7 +7,7 @@ import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
 import { QuickOpen } from "./QuickOpen";
 import { keyboardMoves } from "./Modal";
-import { keyboardNowhere } from "./keyArm";
+import { KEYS_SWALLOWED, keyboardNowhere, userLeft } from "./keyArm";
 import { EMPTY_EDITOR, closeTab, openTab, tabKey, updateTab } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
@@ -409,7 +409,12 @@ function App() {
   useEffect(() => {
     if (!joinShown && joinAsk) setJoinShown(joinAsk);
   }, [joinShown, joinAsk]);
-  const joinDone = useCallback(() => setJoinShown(null), []);
+  /** The join prompt was closed by the user's own press or Esc: the landscape it was gone to from gets its keyboard armed. */
+  const joinLeft = useRef(false);
+  const joinDone = useCallback((byUser: boolean) => {
+    joinLeft.current = byUser && userLeft();
+    setJoinShown(null);
+  }, []);
   // team rooms: rooms whose admin made backups to origin available and this member hasn't answered for theirs; Not now is an answer, closing asks again next start
   const [laterConsents, setLaterConsents] = useState<string[]>([]);
   // team rooms: the House board — the room whose board is open
@@ -1919,6 +1924,13 @@ function App() {
     if (barNoteTimer.current) clearTimeout(barNoteTimer.current);
     barNoteTimer.current = setTimeout(() => setStatusNote(""), 6000);
   };
+  // keys swallowed with the keyboard nowhere (keyArm.ts's holder) say why once each time it goes there: the landscape
+  // says it itself while it's up, the status bar anywhere else
+  useEffect(() => {
+    const on = () => void (!landscapeOnScreen.current && lsSay("Nothing has the keyboard: click where you want to type, or Tab to the top bar"));
+    document.addEventListener(KEYS_SWALLOWED, on);
+    return () => document.removeEventListener(KEYS_SWALLOWED, on);
+  }, []);
   /** A change to the landscape; what stopped it is said over the landscape. */
   const lsChange = async (patch: LandscapePatch | null, what: string) => {
     if (!patch) return;
@@ -2738,15 +2750,19 @@ function App() {
     if (showJoinAsk(t.requestKey)) keysAfterJoin.current = true;
     else {
       lsSay("That join request has been answered");
-      setLandscapeKeys((k) => k + 1);
+      setLandscapeKeys((k) => ({ n: k.n + 1, armed: true }));
     }
   };
-  const [landscapeKeys, setLandscapeKeys] = useState(0);
+  const [landscapeKeys, setLandscapeKeys] = useState({ n: 0, armed: false });
   const keysAfterJoin = useRef(false);
+  // the prompt answered or put off: the landscape gets the keyboard, armed only when the user's own press or Esc closed
+  // it (never the request going from under it, nor Enter, after which keys may still be coming)
   useEffect(() => {
     if (joinShown || !keysAfterJoin.current) return;
     keysAfterJoin.current = false;
-    setLandscapeKeys((k) => k + 1);
+    const armed = joinLeft.current;
+    joinLeft.current = false;
+    setLandscapeKeys((k) => ({ n: k.n + 1, armed }));
   }, [joinShown]);
   const stepNeeds = (dir: 1 | -1, avoid: ScreenBox | null = null) => {
     const next = stepItem(needs.items, needsAt, dir);
@@ -4485,6 +4501,7 @@ function App() {
           self={teamStatus && !isErr(teamStatus) ? teamStatus.self?.id : undefined}
           stillAsked={joinAsks.some((a) => joinKey(a.request) === joinKey(joinShown.request))}
           onLater={() => {
+            joinLeft.current = userLeft();
             setLaterJoins((l) => [...l, joinKey(joinShown.request)]);
             setJoinShown(null);
           }}

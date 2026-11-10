@@ -101,9 +101,9 @@ import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
 import { OVERLAYS, OVER_TOUR, escapeLeavesFullscreen, ownsKeys } from "./keys";
 import { keyboardClaimed, useKeyboardHome } from "./Modal";
-import { KEYS_SWALLOWED, armFocus, armOnPress, armingCount, isArmed, isNowhere, keyboardNowhere, sinceKey, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
+import { KEYS_SWALLOWED, QUIET_KEYS, TYPING_MS, armFocus, armOnPress, holdNowhere, inputStamp, isArmed, isNowhere, keyboardNowhere, keyboardSpell, sinceKey, swallowedNote, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
 import { LandscapeEmpty } from "./LandscapeEmpty";
-import { LandscapeTour, TYPING_MS } from "./LandscapeTour";
+import { LandscapeTour } from "./LandscapeTour";
 import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
@@ -117,8 +117,6 @@ export const CAMERA_PREF = "mb.landscape.camera";
 export const TOUR_CAMERA_PREF = "mb.landscape.tourCamera";
 /** The landscape has been on screen in this window: once it has, it's mounted again armed only by its tab pressed. */
 let landscapeShownBefore = false;
-/** Keys that call for no word when swallowed: a modifier on its own, and Esc, which closes things rather than typing. */
-const QUIET_KEYS = new Set(["Shift", "Alt", "Meta", "Control", "CapsLock", "Fn", "Escape"]);
 const CAMERA_SAVE_MS = 250;
 const ARROWS: Record<string, Direction> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
 /**
@@ -315,7 +313,7 @@ export function Landscape({
   ghostStatus,
   needs,
   onNeeds,
-  keysTo = 0,
+  keysTo = { n: 0, armed: false },
   emptyState,
   onJoinRoom,
   onShortcuts,
@@ -389,8 +387,11 @@ export function Landscape({
   needs?: ReadonlyMap<string, number>;
   /** N (1) and ⇧N (-1): the view to the next or previous thing that needs you. */
   onNeeds?: (dir: 1 | -1) => void;
-  /** Going up gives the landscape the keyboard: a prompt shown from the Needs you tray has closed, the tray long gone. */
-  keysTo?: number;
+  /**
+   * Going up gives the landscape the keyboard: a prompt shown from the Needs you tray has closed, the tray long gone.
+   * Armed only when the user closed it (a press, Esc); the prompt going on its own, or Enter, gives it disarmed.
+   */
+  keysTo?: { n: number; armed: boolean };
   /** What's known of a landscape with nothing drawn on it (emptyStateOf). */
   emptyState: EmptyState;
   /** The dialog to join a teammate's room. */
@@ -894,6 +895,8 @@ export function Landscape({
   };
   const gaveUp = (p: PendingReveal) => console.warn(`[mockingbird] the landscape couldn't bring ${p.id} into view: no workspace holds it after ${REVEAL_WAIT_MS} ms`);
   const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The user's keys and presses as the pending reveal was asked for (keyArm.ts's `inputStamp`). */
+  const revealStamp = useRef(0);
   useEffect(() => () => void (revealTimer.current && clearTimeout(revealTimer.current)), []);
   useEffect(() => {
     if (!reveal) return;
@@ -910,6 +913,7 @@ export function Landscape({
     revealFocus.current = !!reveal.focus;
     revealOpts.current = { keys: !!reveal.keys, avoid: reveal.avoid ?? null };
     const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
+    revealStamp.current = inputStamp();
     if (revealTimer.current) clearTimeout(revealTimer.current);
     revealTimer.current = setTimeout(() => {
       if (pendingReveal.current !== p) return;
@@ -956,6 +960,13 @@ export function Landscape({
     if (t === "expired") return gaveUp(p);
     const room = roomClearOf(revealOpts.current.avoid);
     const seen = !vpNow.current.w || inView(cam.current, t.rect, room);
+    // The user did something while it waited (main slow to bring a stack's tab to the front, or to open an area): it
+    // moves no keyboard and enters no focus, which would take what's being typed now or hide it. It's still brought
+    // into view, unless that would move the view from under a terminal or a field being typed in.
+    if (inputStamp() !== revealStamp.current) {
+      if (!seen && !ownsKeys(document.activeElement)) flyTo(centreOn(cam.current, t.rect, room));
+      return;
+    }
     if (revealFocus.current) {
       // under the focus overlay, so there's no flight to see: the landscape is there when focus ends
       if (!seen) {
@@ -977,12 +988,13 @@ export function Landscape({
   }, [reveal?.n, layout]);
 
   // after Go there's join request, answered
-  const keysGiven = useRef(keysTo);
+  const keysGiven = useRef(keysTo.n);
   useEffect(() => {
-    if (keysGiven.current === keysTo) return;
-    keysGiven.current = keysTo;
-    armFocus(surfaceEl());
-  }, [keysTo]);
+    if (keysGiven.current === keysTo.n) return;
+    keysGiven.current = keysTo.n;
+    if (keysTo.armed) armFocus(surfaceEl());
+    else surfaceEl()?.focus({ preventScroll: true });
+  }, [keysTo.n]);
 
   // a tool window just opened or placed again comes into view, with its workspace when both fit
   const placedWindows = useRef<Set<string> | null>(null);
@@ -1115,22 +1127,33 @@ export function Landscape({
     if (a.disabled) say(a.title ?? `${a.label} can't be done now`);
     else a.onPick();
   };
+  /** Why typed keys did nothing here, naming the terminal ⌘E types in: the selected workspace's front tab, as it is now. */
+  const sayWhy = () => {
+    const tile = selKey.current ? layoutNow.current.tiles.find((x) => x.key === selKey.current) : undefined;
+    say(swallowedNote(tile ? titleOf(tile.front) : null));
+  };
   /**
-   * Typed keys swallowed (by the landscape disarmed, or with the keyboard nowhere) say why, once until something is
-   * armed again: never on each key, nor during the tour's hold, which gives the keyboard back itself.
+   * Typed keys the landscape swallowed, disarmed, say why: once each time the keyboard comes to it, never on each key,
+   * nor during the tour's hold, which gives the keyboard back itself. The holder's (keyArm.ts) say it once each time
+   * the keyboard goes there, here while the landscape is up, and in the status bar elsewhere (main.tsx).
    */
   const hintedAt = useRef(-1);
   const hintKeys = (key: string) => {
-    if (QUIET_KEYS.has(key) || tourHold.current || hintedAt.current === armingCount()) return;
-    hintedAt.current = armingCount();
-    say(selKey.current ? "Click the landscape to use its keys, or press ⌘E to type in the selected workspace" : "Click the landscape, or press ⌘E, to use its keys");
+    if (QUIET_KEYS.has(key) || tourHold.current || hintedAt.current === keyboardSpell()) return;
+    hintedAt.current = keyboardSpell();
+    sayWhy();
   };
-  const hintNow = useRef(hintKeys);
-  hintNow.current = hintKeys;
+  const sayWhyNow = useRef(sayWhy);
+  sayWhyNow.current = sayWhy;
   useEffect(() => {
-    const on = (e: Event) => hintNow.current(String((e as CustomEvent<string>).detail));
+    // a terminal or a field being typed in that goes from under the user leaves the keyboard on the holder, not the page
+    const release = holdNowhere();
+    const on = () => sayWhyNow.current();
     document.addEventListener(KEYS_SWALLOWED, on);
-    return () => document.removeEventListener(KEYS_SWALLOWED, on);
+    return () => {
+      document.removeEventListener(KEYS_SWALLOWED, on);
+      release();
+    };
   }, []);
   // the surface's own keys: only while it has the keyboard itself, and what's typed only while the user armed it
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -1366,12 +1389,17 @@ export function Landscape({
   const tourClosed = () => {
     const { jumped, asked } = tourJump.current;
     const id = asked ?? (jumped ? null : tourTerm.current);
+    // the tour came up over a terminal being typed in, or one asked for the keyboard under it: with nothing to give it
+    // back to yet, it waits on the holder (keyArm.ts), never the page, where Tab walks on from the tour's card
+    const hid = tourTerm.current !== null || asked !== null;
+    const park = (quiet: boolean) => void (hid && keyboardNowhere() && toNowhere(quiet));
     tourTerm.current = null;
     tourJump.current = { jumped: false, asked: null };
-    if (!id || !layoutNow.current.tiles.some((t) => t.members.some((m) => m.id === id))) return;
+    if (!id || !layoutNow.current.tiles.some((t) => t.members.some((m) => m.id === id))) return park(false);
     const coming = () => takesKeys(bandNow.current) || !!flight.current || !!bandWait.current;
     const there = () => takesKeys(bandNow.current) && !bandWait.current && !flight.current;
-    if (!coming()) return;
+    if (!coming()) return park(false);
+    park(true);
     const closedAt = performance.now();
     let keyAt = closedAt - sinceKey();
     const onKey = (e: KeyboardEvent) => {
@@ -1395,7 +1423,10 @@ export function Landscape({
         focusTerm(id);
         if (termHasKeys(id)) return stop();
       }
-      if (!coming()) return stop();
+      if (!coming()) {
+        stop();
+        return park(false);
+      }
       if (now - Math.max(keyAt, closedAt) < TOUR_KEYS_BACK_MS) return;
       stop();
       toNowhere();
@@ -1951,13 +1982,17 @@ export function Landscape({
     };
     // a middle-button press would otherwise paste (Linux) or start autoscroll
     const onAux = (e: MouseEvent) => e.button === 1 && !inFocus(e.target) && e.preventDefault();
-    // A press on a button of the landscape's own (the zoom HUD's, the selection bar's, a header's, a ghost's) arms the
-    // landscape, or focus's frame, as a press beside it does, rather than leaving the keyboard on the button, where a
-    // Space meant for a peek would press it again. Tab still reaches them from the armed landscape.
+    // A press on a button of the landscape's own (the zoom HUD's, the selection bar's, a header's, a ghost's) never
+    // gives the button the keyboard, where a Space meant for a peek would press it again. A terminal or a field being
+    // typed in keeps it (the press is the button's, and what's typed next is still the terminal's: Esc still reaches
+    // Claude in focus); from the landscape itself, or from nowhere, the press arms the landscape, or focus's frame, as
+    // a press beside it does. Tab still reaches the buttons from the armed landscape.
     const onButtonDown = (e: MouseEvent) => {
       const b = e.button === 0 ? (e.target as Element | null)?.closest?.("button, [role=button], a[href]") : null;
       if (!b || b.closest(".xterm, .ls-peek, input, textarea, select, [contenteditable]")) return;
       e.preventDefault();
+      const a = document.activeElement;
+      if (ownsKeys(a) || (!keyboardNowhere() && !v.contains(a))) return;
       armFocus(inFocus(b) ? overlay.current : viewport.current);
     };
     v.addEventListener("wheel", onWheel, { capture: true, passive: false });

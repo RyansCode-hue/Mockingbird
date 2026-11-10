@@ -4,7 +4,7 @@ import { DIALOG_OPENED, useDialogFocus, type DialogOpened } from "./Modal";
 import { AnchoredPopover } from "./Popover";
 import { SHEET_FOOT, SHORTCUTS } from "./landscapeShortcuts";
 import { foldBar } from "./selectionBarModel";
-import { keyboardNowhere, tabChosen } from "./keyArm";
+import { keyboardNowhere, setKeyboardStart, tabChosen } from "./keyArm";
 import type { Tab } from "./tabs";
 
 /** A tab of the top bar: its name, what it draws beside it, and what that says when the tab is folded into the menu. */
@@ -122,6 +122,11 @@ export function LandscapeTopBar({
   const keysBtn = useRef<HTMLButtonElement>(null);
   const moreBtn = useRef<HTMLButtonElement>(null);
   const ctx = useContextMenu("More in the top bar");
+  // Tab and Shift+Tab from the holder (the keyboard nowhere, keyArm.ts) come here, to the bar's first or last control
+  useEffect(
+    () => setKeyboardStart(() => [...(bar.current?.querySelectorAll<HTMLElement>("button, a[href], input, select, [tabindex]:not([tabindex='-1'])") ?? [])]),
+    []
+  );
   /** A tab's button or its row in » pressed: the user chose it, which the landscape mounting for it takes up (keyArm.ts). */
   const choose = (id: Tab) => {
     if (id !== tab) tabChosen(id);
