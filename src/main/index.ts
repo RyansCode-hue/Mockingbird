@@ -48,6 +48,7 @@ import { composeRollup, weekBounds } from "./rollup";
 import { fmtElapsed } from "../shared/format";
 import { MessageLog } from "./messageLog";
 import { overlapReport, rereadWorktrees, type WorktreeReads } from "./conflicts";
+import { logOwnGitFailuresTo } from "./safeGit";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
 import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
@@ -110,6 +111,7 @@ function logLine(line: string): void {
   }
 }
 process.on("uncaughtException", (e) => logError("uncaughtException", e));
+logOwnGitFailuresTo(logError);
 process.on("unhandledRejection", (e) => logError("unhandledRejection", e));
 guardNavigation(app, shell, (msg) => void logError("navigation", msg));
 

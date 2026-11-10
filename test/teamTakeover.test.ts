@@ -703,6 +703,24 @@ describe("take-over's own fetches and refs", () => {
     expect(await t.ryan.svc.roomLeft((await t.ryanM.team.leave(t.roomId)).room)).toEqual([]);
     expect(byOwnGits()).toEqual([]);
   }, 60_000);
+
+  it("say on the copy left behind why the snapshot it was continued from isn't here, when fetching it failed", async () => {
+    const t = await setup();
+    const ryanOther = path.join(tempDir("ryan-other"), "app");
+    sh(path.dirname(ryanOther), "clone", "-q", t.bare, ryanOther);
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
+    await t.nick.svc.takeOver(t.roomId, "s1");
+    // Ryan's session is in a clone without the snapshot by the time he hears of it, and its origin can't be read
+    t.ryan.sessions.set("s1", { ...t.ryan.sessions.get("s1")!, repoPath: ryanOther, cwd: ryanOther });
+    sh(ryanOther, "remote", "set-url", "origin", path.join(tempDir("gone"), "app.git"));
+    t.net.setOnline(t.ryanM.id, true);
+    await until(() => !!t.ryan.svc.view().left[0]?.unsent, "Ryan's copy to be counted");
+    expect(t.ryan.svc.view().left[0].unsent).toEqual({ error: expect.stringMatching(/isn't in this clone, so what they lack can't be told: fetching it from origin failed: git fetch: fatal: /) });
+    expect(t.ryan.logs.some((l) => /fetching the snapshot session s1 was continued from/.test(l))).toBe(true);
+  }, 60_000);
 });
 
 describe("cleaning up backups", () => {
@@ -1147,6 +1165,24 @@ describe("backups to origin (the admin's opt-in)", () => {
     }
     expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
     expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual(["user-pre-push"]);
+    w.clear();
+    // a work identity's hooks, included by the global config for this clone's folder only, are the user's
+    // too: the session's linked worktree, kept elsewhere, is matched by its clone's .git
+    const workHooks = tempDir("work-hooks");
+    w.plant("work-pre-push", "cat >/dev/null", path.join(workHooks, "pre-push"));
+    const included = path.join(path.dirname(global), "work.gitconfig");
+    fs.writeFileSync(included, `[core]\n\thooksPath = ${workHooks}\n`);
+    fs.writeFileSync(global, `[core]\n\thooksPath = ${userHooks}\n[includeIf "gitdir:${fs.realpathSync(t.ryanClone)}/"]\n\tpath = ${included}\n`);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    try {
+      write(t.wt, { "src/a.ts": "a third turn\n" });
+      await t.ryan.svc.turnEnded("s1");
+      await t.ryan.svc.settled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
+    expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual(["work-pre-push"]);
   });
 
   it("turned on: what each owner has goes to origin at once, without waiting for a turn", async () => {

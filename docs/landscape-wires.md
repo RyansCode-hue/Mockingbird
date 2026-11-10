@@ -1178,6 +1178,92 @@ ssh, pre-push not run or run from the local folder or without the global one, th
 listing's LFS keys and their case, repositories as spelled, expressions as secrets,
 and the note in mixed units.
 
+#### W2 review fixes 3b as built
+
+Ryan has work and personal git identities: a global `[includeIf "gitdir:…"]` file sets
+core.sshCommand (or a per-host key, or hooks) for the work folders only. That only
+applies when git reads its config inside the repository.
+
+**The user's own settings, read in the repository by scope.** `scopedValues`
+(safeGit.ts) runs `git config -z --show-scope --includes --get-all <key>` in the
+repository, and `usersOwn` takes the last value whose scope is `global` or `system`.
+That's the one git itself would use among those files. Scopes `local`, `worktree` and
+`command` (GIT_CONFIG_COUNT, `git -c`) are never taken. Probed (git 2.49, a global
+config with a default key and an includeIf for `gitdir:<work>/` giving a work key,
+plus a local and a worktree sshCommand):
+- in the repository: `global` default, `global` work, `local` planted. A file an
+  includeIf pulls in reports its including file's scope;
+- in a linked worktree kept outside the work folder: the same. `gitdir:` matches the
+  worktree by its clone's `.git` (`.git/worktrees/<name>`);
+- in a repository outside the work folder: the default alone;
+- `--type=path` expands `~/` in a hooksPath; `-z` gives `scope\0value\0` pairs;
+- GIT_CONFIG_COUNT shows as `command`, `--worktree` as `worktree`, both after `local`.
+
+The ssh rule is unchanged otherwise: main's GIT_SSH_COMMAND, else `usersOwn`, else
+main's GIT_SSH quoted, else `ssh`. The backup push's pre-push now uses the same rule:
+the user's core.hooksPath from global or system scope, includeIf-included ones too,
+else `<git-common-dir>/hooks`, never a folder the local config names.
+
+**Own network gits fail visibly.** Every fetch, ls-remote and push Mockingbird makes on
+its own now goes through `ownNetworkGit`. Take-over's and a new worktree's ls-remotes
+and pushes no longer build their flags by hand. A failure is logged centrally
+(`logOwnGitFailuresTo(logError)` in index.ts) as `Mockingbird's own git in <folder>: git
+<the whole command>`, with git's message, and then thrown in git's words. When the
+message looks like ssh's and the repository's own core.sshCommand was set aside, the
+error says so: it names the ssh run and the one set aside, and says to set it in the
+global config under an includeIf for the folder. Each place a failure lands:
+- **House board** (background `fetchOrigin`): a room note, "Teammates' branches couldn't
+  be fetched into <clone>, so their claimed files may be out of date: …", kept until a
+  fetch works. Unchanged.
+- **reserve_migration_number**: the tool's problems say origin couldn't be fetched and
+  the branches are as last fetched. Unchanged.
+- **New worktree and checkout** (`startPoint`): the three fallbacks used to go to the
+  console only. They now reach the session's pane through a `warn` callback, which
+  `create()` and a relaunch's `whereAgain` collect into the pane notice:
+  - origin couldn't be asked whether it has the branch, so it went by what was last
+    fetched;
+  - a relaunch's branch couldn't be fetched, so it's as last fetched;
+  - origin's base couldn't be fetched, so the branch was made off the local base,
+    which may be behind.
+  A failure with nothing to fall back on still fails the create.
+- **Repo artifact**: a commit missing after a failed fetch said "not pushed yet?". It
+  now says "isn't in your clone, and fetching origin failed: <git's words>".
+- **Take-over**:
+  - the origin copy's fetch becomes `originProblem` (a missing ref is benign only when
+    nothing was pushed);
+  - the backup push becomes `PushOutcome.error`;
+  - a deletion becomes the cleanup row's problem, retried on the next prune;
+  - a mirror's bundle fetch throws to the sender, and the receiver logs it;
+  - the continued-from snapshot's pin fetch: the left copy's row now says why the
+    snapshot isn't there ("fetching it from origin failed: …"), not just that it isn't.
+
+Tests:
+- `safeGit.test.ts`: a global includeIf for the clone's folder sets sshCommand. The
+  clone and its linked worktree (kept elsewhere) run it, never the local one or one
+  set with `--worktree`, and a repository outside gets the global default. A failure is
+  logged with the folder, the whole command and git's words, and the set-aside note
+  appears only when there was one.
+- `teamTakeover.test.ts`: the backup push runs the includeIf-included hooks folder's
+  pre-push for the session's linked worktree. A left copy whose snapshot couldn't be
+  fetched says why, and the failure is logged.
+- `worktrees.test.ts`: each of the three fallbacks warns in its own words, and the
+  ls-remote's failure is logged with its command.
+- `sessionLifecycle.test.ts`: a relaunch and a new session show them in the pane.
+- `teamArtifactAgents.test.ts`: a fetch that fails says so.
+
+The left copy's `fetchFailed` is a new optional field on its local record. An older
+Mockingbird ignores it.
+
+**Checked:** each change was reverted on its own, 20 in all, and a test failed for each:
+- local or worktree scope taken as the user's, the first value taken instead of the
+  last, includes not followed (for ssh and hooksPath), and the same for hooksPath alone;
+- no central log, a log without the command, the set-aside note dropped or given for
+  any failure;
+- each of the three worktree fallbacks silent, `create()`'s and a relaunch's warnings
+  not shown or not kept;
+- the artifact's fetch failure said as "not pushed", and the pin's failure not kept or
+  not shown.
+
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the
   round limit, starting B, reconciling on start (section 3).

@@ -120,6 +120,31 @@ describe("a repo reference's fetch", () => {
     git(nickRepo, "fetch", "-q", "origin");
     expect(w.ranBy(/ fetch /).map((l) => l.split("\t")[0]), "a plain fetch runs fsmonitor").toContain("fsmonitor");
   });
+
+  it("says it failed, in git's words, rather than that the commit wasn't pushed", async () => {
+    const { roomId, sides: [ryan, nick] } = await sides(["Ryan", "Nick"]);
+    const { url, ryanRepo, nickRepo } = repos();
+    ryan.sessions.push(session("r1", { cwd: ryanRepo, repoPath: ryanRepo }));
+    write(ryanRepo, { "src/y.ts": "pushed\n" });
+    git(ryanRepo, "add", "-A");
+    git(ryanRepo, "commit", "-qm", "pushed");
+    git(ryanRepo, "push", "-q", "origin", "main");
+    const ref = await ryan.arts.addRepo(roomId, { sessionId: "r1", path: "src/y.ts" });
+    await until(() => items(nick.m.team.room(roomId)).length === 1, "Nick to have the reference");
+    nick.repos.push(nickRepo);
+    // origin can't be read from here just now
+    const bare = new URL(url).pathname;
+    fs.renameSync(bare, `${bare}.away`);
+    try {
+      expect(await nick.arts.resolveRepo(roomId, ref.id, null)).toMatchObject({
+        clone: nickRepo,
+        commitPresent: false,
+        problem: expect.stringMatching(new RegExp(`^Commit ${git(ryanRepo, "rev-parse", "HEAD").slice(0, 7)} isn't in your clone, and fetching origin failed: .*does not appear to be a git repository`)),
+      });
+    } finally {
+      fs.renameSync(`${bare}.away`, bare);
+    }
+  });
 });
 
 describe("room agents' artifact tools", () => {

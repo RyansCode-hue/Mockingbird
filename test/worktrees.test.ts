@@ -352,15 +352,17 @@ describe("a relaunch's worktree, its branch only on origin", () => {
     return { origin, clone, head: git(clone, "rev-parse", "origin/feat") };
   }
 
-  it("is made from the last fetch when origin can't be reached, without trying a fetch that would only time out", async () => {
+  it("is made from the last fetch when origin can't be reached, without trying a fetch that would only time out, and says so", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { origin, clone, head } = fetched();
     fs.renameSync(origin, `${origin}-moved`);
-    const wt = await createWorktree(clone, "feat", undefined, { mustExist: true });
+    const warned: string[] = [];
+    const wt = await createWorktree(clone, "feat", undefined, { mustExist: true, warn: (t) => warned.push(t) });
     expect(git(wt, "rev-parse", "HEAD")).toBe(head);
     expect(git(wt, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/feat");
-    expect(log.mock.calls.some((c) => /couldn't ask origin about feat/.test(String(c[0])))).toBe(true);
-    expect(log.mock.calls.some((c) => /couldn't fetch/.test(String(c[0])))).toBe(false);
+    expect(warned).toEqual([expect.stringMatching(/^Origin couldn't be asked whether it has feat, so this went by what was last fetched: git ls-remote: .*does not appear to be a git repository/)]);
+    // and the ls-remote's own failure is logged, with the folder and the command
+    expect(log.mock.calls.map((c) => String(c[0]))).toEqual([`[git] Mockingbird's own git in ${clone}: git ls-remote --upload-pack=git-upload-pack --exit-code --heads origin refs/heads/feat:`]);
     log.mockRestore();
   });
 
@@ -372,10 +374,23 @@ describe("a relaunch's worktree, its branch only on origin", () => {
     fs.writeFileSync(fetchHead, "");
     fs.chmodSync(fetchHead, 0o444);
     await expect(createWorktree(clone, "feat")).rejects.toThrow(/FETCH_HEAD/);
-    const wt = await createWorktree(clone, "feat", undefined, { mustExist: true });
+    const warned: string[] = [];
+    const wt = await createWorktree(clone, "feat", undefined, { mustExist: true, warn: (t) => warned.push(t) });
     expect(git(wt, "rev-parse", "HEAD")).toBe(head);
-    expect(log.mock.calls.some((c) => /couldn't fetch feat, going by the last fetch/.test(String(c[0])))).toBe(true);
+    expect(warned).toEqual([expect.stringMatching(/^feat couldn't be fetched from origin, so it's as it was last fetched: git fetch: .*FETCH_HEAD/)]);
     log.mockRestore();
+  });
+
+  it("is branched off the local base when origin's can't be fetched, and says so; with no local base it fails aloud", async () => {
+    const { origin, clone } = fetched();
+    fs.renameSync(origin, `${origin}-moved`);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const warned: string[] = [];
+    const wt = await createWorktree(clone, "fresh", "main", { warn: (t) => warned.push(t) });
+    expect(git(wt, "rev-parse", "HEAD")).toBe(git(clone, "rev-parse", "main"));
+    expect(warned[1]).toMatch(/^origin\/main couldn't be fetched, so fresh was branched off the local main, which may be behind origin's: git fetch: /);
+    await expect(createWorktree(clone, "fresh2", "feat", { warn: (t) => warned.push(t) })).rejects.toThrow(/does not appear to be a git repository/);
+    vi.restoreAllMocks();
   });
 
   it("says to try again, not to start fresh, when it's not here and origin couldn't be asked", async () => {

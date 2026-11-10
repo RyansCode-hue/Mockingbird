@@ -234,7 +234,7 @@ export async function folderGone(s: Pick<SessionInfo, "cwd" | "repoPath" | "bran
 }
 
 /** Where a persisted session runs again (SessionManager.whereAgain), and what to tell it when its folder has moved to another branch. */
-type PlaceAgain = { where: Pick<NewSessionRequest, "cwd" | "branchName" | "useWorktree">; moved?: string };
+type PlaceAgain = { where: Pick<NewSessionRequest, "cwd" | "branchName" | "useWorktree">; moved?: string; warnings?: string[] };
 
 /** What relaunching a persisted session resumes (relaunchPlan). */
 type RelaunchPlan = {
@@ -476,6 +476,12 @@ export class SessionManager {
     let cwd: string;
     let branch: string | null = null;
     let repoPath = req.repoPath ? expandHome(req.repoPath) : null;
+    // what the branch was made from when origin couldn't be asked or fetched from: shown in the pane, with opts.notice
+    const warnings: string[] = [];
+    const warn = (text: string) => {
+      console.warn(`[sessions] ${text}`);
+      warnings.push(text);
+    };
 
     const wanted =
       req.branchName?.trim() ||
@@ -486,14 +492,14 @@ export class SessionManager {
       branch = req.branchName?.trim() || null;
     } else if (repoPath && req.useWorktree) {
       branch = wanted || `mb-${Date.now().toString(36)}`;
-      cwd = await createWorktree(repoPath, branch, req.baseBranch);
+      cwd = await createWorktree(repoPath, branch, req.baseBranch, { warn });
     } else if (repoPath && wanted) {
       // ticket branch in the checkout itself — one branch per checkout, so
       // another live session there on a different branch blocks this. One with
       // no branch of its own runs on whatever's out, and would be moved all the same
       const other = [...this.live.values()].find((s) => s.info.cwd === repoPath && s.info.status !== "dead" && s.info.branch !== wanted);
       const occupiedBy = other && (other.info.branch ?? (await currentBranch(repoPath)) ?? "a detached HEAD");
-      await checkoutBranch(repoPath, wanted, req.baseBranch, occupiedBy === wanted ? undefined : occupiedBy);
+      await checkoutBranch(repoPath, wanted, req.baseBranch, occupiedBy === wanted ? undefined : occupiedBy, warn);
       branch = wanted;
       cwd = repoPath;
     } else {
@@ -636,7 +642,8 @@ export class SessionManager {
     const earlier = req.reuseId ? this.readScrollback(req.reuseId) : "";
     const owed = [...this.withoutReceipts(prior?.queued ?? [], `${paneName(info)} was started again before this reached it`), ...(this.undelivered.get(info.id) ?? [])];
     this.undelivered.delete(info.id);
-    const lead = (earlier ? earlier + restartDivider(new Date(), earlier) : "") + (opts.notice ? paneNotice(opts.notice) : "");
+    const notice = [opts.notice, ...warnings].filter(Boolean).join("\n");
+    const lead = (earlier ? earlier + restartDivider(new Date(), earlier) : "") + (notice ? paneNotice(notice) : "");
     const sess: LiveSession = {
       info,
       proc,
@@ -1100,8 +1107,9 @@ export class SessionManager {
     const repo = old.repoPath ? expandHome(old.repoPath) : null;
     if (!fs.existsSync(old.cwd)) {
       if (!repo || old.cwd === repo || !old.branch) throw new Error(`${old.cwd} doesn't exist any more`);
-      const cwd = await createWorktree(repo, old.branch, undefined, { mustExist: true, at: old.cwd });
-      return { where: { cwd, branchName: old.branch, useWorktree: false } };
+      const warnings: string[] = [];
+      const cwd = await createWorktree(repo, old.branch, undefined, { mustExist: true, at: old.cwd, warn: (text) => warnings.push(text) });
+      return { where: { cwd, branchName: old.branch, useWorktree: false }, ...(warnings.length ? { warnings } : {}) };
     }
     const where = { cwd: old.cwd, useWorktree: false };
     // a folder with no branch on record, in the repo's own place or in none, may be no repository at all
@@ -1119,7 +1127,7 @@ export class SessionManager {
 
   /** Start persisted session `old` again under its id, resuming what `plan` says, where `place` says; `freed` and where it's moved are shown in its pane. */
   private async launchAgain(old: SessionInfo, plan: RelaunchPlan, place: PlaceAgain, freed: string | undefined): Promise<SessionInfo> {
-    const notice = [freed, place.moved].filter(Boolean).join("\n") || undefined;
+    const notice = [freed, place.moved, ...(place.warnings ?? [])].filter(Boolean).join("\n") || undefined;
     if (notice) console.warn(`[sessions] ${old.id}: ${notice}`);
     const { conv, sameAgent, resume } = plan;
     // create() re-adds the record; only forget the old one once it has, or a

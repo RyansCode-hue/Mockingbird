@@ -13,7 +13,7 @@ import { transcriptRefusal } from "./roomLimits";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
-import { guardedGit, OWN_LS_REMOTE, OWN_PUSH, OWN_WRITE_ENV, ownFetch, ownNetworkEnv } from "../safeGit";
+import { guardedGit, OWN_WRITE_ENV, ownFetch, ownNetworkGit } from "../safeGit";
 import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, realpathOr } from "../agentFiles";
@@ -555,6 +555,8 @@ interface LeftRecord {
   at: number;
   /** The changes last sent: a commit on top of `base` (or of the send before), kept under SENT_ROOT. */
   sent?: { sha: string; at: number; files: number };
+  /** Why `base`, not here, couldn't be fetched from origin: git's words. */
+  fetchFailed?: string;
 }
 /**
  * A teammate's conversation saved in one of this Mac's worktrees at a
@@ -971,8 +973,8 @@ export class TakeoverService {
    * leave a backup on origin for good. Throws when it couldn't.
    */
   private async deleteOnOrigin(repo: string, ref: string): Promise<void> {
-    const there = (await git(repo, ["ls-remote", ...OWN_LS_REMOTE, "origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000, env: await ownNetworkEnv(repo) })).split("\t")[0];
-    if (there) await git(repo, ["push", ...OWN_PUSH, "--no-verify", "--quiet", `--force-with-lease=${ref}:${there}`, "origin", `:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000, env: await ownNetworkEnv(repo) });
+    const there = (await ownNetworkGit(repo, "ls-remote", ["origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 })).split("\t")[0];
+    if (there) await ownNetworkGit(repo, "push", ["--no-verify", "--quiet", `--force-with-lease=${ref}:${there}`, "origin", `:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000 });
   }
 
   /**
@@ -1209,13 +1211,14 @@ export class TakeoverService {
    * Set origin's backup ref, only if it still holds what this install last
    * put there. A pre-push hook runs, as for any push: a secret scanner sees
    * the snapshot first, and one that refuses it fails the push, which the
-   * session's backup shows. It's the user's own (their global core.hooksPath)
-   * or the repository's in .git/hooks, never one a folder the repository's
-   * config names (ownNetworkEnv).
+   * session's backup shows. It's the user's own (their core.hooksPath from
+   * global or system config, an includeIf for the folder's among them) or the
+   * repository's in .git/hooks, never one in a folder the repository's config
+   * names (ownNetworkGit).
    */
   private async push(top: string, ref: string, rec: OwnRecord, sessionId: string): Promise<PushOutcome> {
-    const lease = async (expect: string) => git(top, ["push", ...OWN_PUSH, "--quiet", `--force-with-lease=${ref}:${expect}`, "origin", `${rec.sha}:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000, env: await ownNetworkEnv(top, { prePush: true }) });
-    const onOrigin = async () => (await git(top, ["ls-remote", ...OWN_LS_REMOTE, "origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000, env: await ownNetworkEnv(top) })).split("\t")[0];
+    const lease = (expect: string) => ownNetworkGit(top, "push", ["--quiet", `--force-with-lease=${ref}:${expect}`, "origin", `${rec.sha}:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000, prePush: true });
+    const onOrigin = async () => (await ownNetworkGit(top, "ls-remote", ["origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 })).split("\t")[0];
     try {
       try {
         // without a record (a lost takeover.json), origin's value is the session's own earlier backup
@@ -1643,6 +1646,9 @@ export class TakeoverService {
           await ownFetch(repo, ["--no-tags", "--no-write-fetch-head", "origin", `+${roomBackupRef(roomId, sessionId)}:${pin}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 });
         } catch (err) {
           this.d.log(`team: fetching the snapshot session ${sessionId} was continued from`, err);
+          const why = withoutCredentials((err as Error).message).replace(/\s+/g, " ").trim();
+          local.left[sessionId] = { ...local.left[sessionId], fetchFailed: why.slice(0, 300) };
+          this.saveLocal(roomId);
         }
       }
       if ((await hasCommits(repo, [base])).length) await git(repo, ["update-ref", pin, base], { env: OWN_WRITE_ENV });
@@ -1661,7 +1667,10 @@ export class TakeoverService {
         const top = await repoTop(rec.cwd);
         if (!top) throw new Error(`${rec.cwd} isn't in a git repository any more`);
         const base = rec.sent?.sha ?? rec.base;
-        if (!(await hasCommits(top, [base])).length) throw new Error(`the snapshot ${by} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told`);
+        if (!(await hasCommits(top, [base])).length) {
+          const why = !rec.sent && rec.fetchFailed ? `: fetching it from origin failed: ${rec.fetchFailed}` : "";
+          throw new Error(`the snapshot ${by} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told${why}`);
+        }
         const now = await worktreeTree(top, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []), base });
         const files = await changedFiles(top, `${base}^{tree}`, now!.tree);
         this.unsent.set(sessionId, { files: files.map((f) => f.path), checkedAt: this.now() });

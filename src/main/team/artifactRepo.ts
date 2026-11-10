@@ -154,18 +154,22 @@ export class RepoRefs {
     const missKey = `${dir}\n${rec.commit}`;
     const missedAt = this.misses.get(missKey);
     const recentMiss = missedAt !== undefined && Date.now() - missedAt < MISS_TTL_MS;
+    let fetchFailed: string | null = null;
     if (!out.commitPresent && (policy === "always" || (policy === "unless-missed" && !recentMiss))) {
       try {
         await ownFetch(dir, ["origin"], { timeoutMs: FETCH_CAP_MS });
       } catch (err) {
-        this.d.log(`room artifacts: fetching ${want} for ${short(rec.commit)}`, err);
+        fetchFailed = this.d.log(`room artifacts: fetching ${want} for ${short(rec.commit)}`, err);
       }
       out.commitPresent = await hasCommit(dir, rec.commit);
       if (out.commitPresent) this.misses.delete(missKey);
       else this.misses.set(missKey, Date.now());
     }
     if (!out.commitPresent) {
-      out.problem = `Commit ${short(rec.commit)} isn't in your clone — not pushed yet?`;
+      // a fetch that failed says so: the commit may well be on origin
+      out.problem = fetchFailed
+        ? `Commit ${short(rec.commit)} isn't in your clone, and fetching origin failed: ${fetchFailed}`
+        : `Commit ${short(rec.commit)} isn't in your clone — not pushed yet?`;
       return out;
     }
     try {

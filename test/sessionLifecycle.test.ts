@@ -1047,6 +1047,19 @@ describe("relaunching a worktree session whose worktree was removed", () => {
     expect(git(s.cwd, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
   });
 
+  it("says in the pane when origin couldn't be reached, for a relaunch from what was last fetched and a new worktree off the local base", async () => {
+    const { m, s, clone, work } = await removedWorktree();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    git(clone, "remote", "set-url", "origin", path.join(tempDir("gone"), "origin"));
+    await m.relaunch(s.id);
+    expect(git(s.cwd, "rev-parse", "HEAD")).toBe(work);
+    expect(m.buffer(s.id)).toMatch(/Origin couldn't be asked whether it has feat, so this went by what was last fetched: git ls-remote: .*does not appear to be a git repository/);
+    const fresh = await m.create({ repoPath: clone, useWorktree: true, branchName: "fresh", baseBranch: "main", agent: "claude", title: "f" });
+    const shown = m.buffer(fresh.id);
+    expect(shown).toContain("Origin couldn't be asked whether it has fresh");
+    expect(shown).toMatch(/origin\/main couldn't be fetched, so fresh was branched off the local main, which may be behind origin's: git fetch: /);
+  });
+
   it("refuses, starting nothing and keeping the session, when its branch is gone from here and origin alike", async () => {
     const { m, store, s, origin, clone } = await removedWorktree();
     git(origin, "branch", "-q", "-D", "feat");

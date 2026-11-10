@@ -1,9 +1,18 @@
 import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
 import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
 import { dirtyFileCount } from "./scm";
-import { guardedGit, OWN_LS_REMOTE, ownFetch, ownNetworkEnv, WRITE_ENV } from "./safeGit";
+import { guardedGit, ownFetch, ownNetworkGit, WRITE_ENV } from "./safeGit";
 import * as fs from "fs";
 import * as path from "path";
+
+/**
+ * Says what a worktree or checkout was made from when origin couldn't be asked or fetched from, and it went by what
+ * was last fetched or by a local branch instead: shown in the session's pane (sessions.ts). The git that failed is in
+ * main's log already (ownNetworkGit).
+ */
+export type Warn = (text: string) => void;
+const warnInConsole: Warn = (text) => console.warn(`[worktrees] ${text}`);
+const why = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim();
 
 /** Worktrees live in one folder beside the repos: `<parent>/worktrees/<repo>/<branch>`. */
 export function worktreeRoot(repoPath: string): string {
@@ -22,13 +31,13 @@ const PROBE_TIMEOUT_MS = 15_000;
  * out, not made anew. When origin can't be reached the last fetch has to do
  * (logged), and `unreachable` says so.
  */
-async function onOrigin(repo: string, branch: string): Promise<{ has: boolean; unreachable: boolean }> {
+async function onOrigin(repo: string, branch: string, warn: Warn): Promise<{ has: boolean; unreachable: boolean }> {
   if (!(await originUrl(repo))) return { has: false, unreachable: false };
   try {
     // exit 2: origin has no such branch
-    return { has: !!(await git(repo, ["ls-remote", ...OWN_LS_REMOTE, "--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS, env: await ownNetworkEnv(repo) })), unreachable: false };
+    return { has: !!(await ownNetworkGit(repo, "ls-remote", ["--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS })), unreachable: false };
   } catch (err) {
-    console.error(`[worktrees] couldn't ask origin about ${branch}, going by the last fetch:`, err);
+    warn(`Origin couldn't be asked whether it has ${branch}, so this went by what was last fetched: ${why(err)}`);
     return { has: !!(await git(repo, ["branch", "-r", "--list", `origin/${branch}`])), unreachable: true };
   }
 }
@@ -51,9 +60,9 @@ type StartPoint = { existing: true } | { existing: false; track: boolean; from?:
  * none of that it throws, so the session isn't resumed on a branch holding none of its work: saying to try again when
  * it's origin that didn't answer, as the branch may well be there.
  */
-async function startPoint(repo: string, branch: string, base?: string, mustExist = false): Promise<StartPoint> {
+async function startPoint(repo: string, branch: string, base: string | undefined, mustExist: boolean, warn: Warn): Promise<StartPoint> {
   if (await git(repo, ["branch", "--list", branch])) return { existing: true };
-  const there = await onOrigin(repo, branch);
+  const there = await onOrigin(repo, branch, warn);
   if (there.has) {
     if (!mustExist) await ownFetch(repo, ["origin", branch]);
     // origin just didn't answer: a fetch would only wait out its timeout to fail, and the last fetch's ref is there
@@ -62,7 +71,7 @@ async function startPoint(repo: string, branch: string, base?: string, mustExist
         await ownFetch(repo, ["origin", branch]);
       } catch (err) {
         if (!(await lastFetched(repo, branch))) throw err;
-        console.error(`[worktrees] couldn't fetch ${branch}, going by the last fetch:`, err);
+        warn(`${branch} couldn't be fetched from origin, so it's as it was last fetched: ${why(err)}`);
       }
     }
     return { existing: false, track: true, from: `origin/${branch}` };
@@ -80,7 +89,7 @@ async function startPoint(repo: string, branch: string, base?: string, mustExist
   } catch (err) {
     // offline or no origin — fall back to the local base branch, loudly
     if (!(await git(repo, ["branch", "--list", base]))) throw err;
-    console.error(`[worktrees] fetch origin/${base} failed, branching off local ${base}:`, err);
+    warn(`origin/${base} couldn't be fetched, so ${branch} was branched off the local ${base}, which may be behind origin's: ${why(err)}`);
     return { existing: false, track: false, from: base };
   }
 }
@@ -156,9 +165,10 @@ function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
  * Create a worktree for a session on `branch`, made as startPoint says (`mustExist`: a relaunch, which never makes
  * the branch anew), at the usual place or, with `at`, at that folder (a relaunch's own, whatever it's called). Returns
  * its path. A folder that's there is reused only if it's a checkout of `branch`: a session never runs in a folder on
- * another branch. One folder's are made one at a time: the next finds it made and reuses it.
+ * another branch. One folder's are made one at a time: the next finds it made and reuses it. `warn` hears what it
+ * went by when origin couldn't be asked or fetched from.
  */
-export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean; at?: string } = {}): Promise<string> {
+export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean; at?: string; warn?: Warn } = {}): Promise<string> {
   const target = opts.at ?? path.join(worktreeRoot(repoPath), branch);
   return oneAtATime(target, async () => {
     // a branch can only be checked out once: if the old layout already holds it,
@@ -174,7 +184,7 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
     }
     await unregisterMissing(repoPath, target);
 
-    const sp = await startPoint(repoPath, branch, baseBranch, opts.mustExist);
+    const sp = await startPoint(repoPath, branch, baseBranch, !!opts.mustExist, opts.warn ?? warnInConsole);
     // worktree add makes the folders above it, so a refusal leaves nothing behind
     await git(
       repoPath,
@@ -400,7 +410,7 @@ export async function removeWorktree(repoPath: string, wtPath: string): Promise<
  * on a different branch there (a checkout has one branch at a time — that is
  * the one thing worktrees exist to solve). The branch is made as startPoint says.
  */
-export async function checkoutBranch(repoPath: string, branch: string, baseBranch?: string, occupiedBy?: string): Promise<void> {
+export async function checkoutBranch(repoPath: string, branch: string, baseBranch?: string, occupiedBy?: string, warn: Warn = warnInConsole): Promise<void> {
   if (occupiedBy) {
     throw new Error(
       `${path.basename(repoPath)} is already checked out on ${occupiedBy} by a running session. ` +
@@ -416,7 +426,7 @@ export async function checkoutBranch(repoPath: string, branch: string, baseBranc
         `Commit or stash before switching to ${branch}, or tick "isolated worktree".`
     );
   }
-  const sp = await startPoint(repoPath, branch, baseBranch);
+  const sp = await startPoint(repoPath, branch, baseBranch, false, warn);
   await git(repoPath, sp.existing ? ["switch", branch] : ["switch", ...(sp.track ? ["--track"] : []), "-c", branch, ...(sp.from ? [sp.from] : [])]);
 }
 
