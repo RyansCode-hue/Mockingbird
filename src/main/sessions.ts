@@ -102,9 +102,29 @@ export function terminalEnv(): Record<string, string> {
   return { ...paneEnv(), COLORTERM: "truecolor" };
 }
 
+/** How a queued message ended: submitted, left in the prompt unsent, or never submitted. */
+export type QueueOutcome = "sent" | "placed" | "failed";
+
+/**
+ * What a queued message's sender hears of it (a wire's delivery, wireDelivery.ts). `pasting` is asked just before its
+ * paste, so the sender can write that down first: false keeps it out of the pane, and nothing more is told. Then
+ * `settled` once, with why for placed and failed. A message with a receipt is never kept for a later launch: closing,
+ * restarting or replacing its pane, or its agent exiting, fails it.
+ */
+export interface QueueReceipt {
+  pasting(): boolean;
+  settled(outcome: QueueOutcome, why?: string): void;
+}
+
+/** A pane as a receipt's reason names it. */
+const paneName = (i: Pick<SessionInfo, "title" | "ticketTitle">): string => `“${i.ticketTitle ?? i.title}”`;
+
 /** A message waiting for its pane's turn to end; `from` is the local session that sent it, `at` when. */
-/** `key`: Mockingbird's own notice (deliverNotice), which a newer one under the same key replaces while it waits. */
-type Queued = { text: string; submit: boolean; at: number; from?: string; overdueTold?: boolean; key?: string };
+/**
+ * `key`: Mockingbird's own notice (deliverNotice), which a newer one under the same key replaces while it waits.
+ * `receipt`: what becomes of it is told there (QueueReceipt).
+ */
+type Queued = { text: string; submit: boolean; at: number; from?: string; overdueTold?: boolean; key?: string; receipt?: QueueReceipt };
 
 /** A queued agent message that has waited longer than it should (see SessionManager.overdueMessages). */
 export interface OverdueMessage {
@@ -180,6 +200,7 @@ interface LiveSession {
   kickoff: boolean; // its initial prompt is still to be typed in
   startTimer: NodeJS.Timeout | null; // delivers queued messages once a just-started agent has drawn its prompt
   compactSentAt: number | null; // when Compact (usage warnings) last sent /compact here
+  prompts: number; // prompts its agent has taken this launch (UserPromptSubmit)
 }
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
@@ -612,7 +633,7 @@ export class SessionManager {
     // a relaunch (same id) starts with what the pane showed before, and still
     // owes the messages that were waiting for it
     const earlier = req.reuseId ? this.readScrollback(req.reuseId) : "";
-    const owed = [...(prior?.queued ?? []), ...(this.undelivered.get(info.id) ?? [])];
+    const owed = [...this.withoutReceipts(prior?.queued ?? [], `${paneName(info)} was started again before this reached it`), ...(this.undelivered.get(info.id) ?? [])];
     this.undelivered.delete(info.id);
     const lead = (earlier ? earlier + restartDivider(new Date(), earlier) : "") + (opts.notice ? paneNotice(opts.notice) : "");
     const sess: LiveSession = {
@@ -636,6 +657,7 @@ export class SessionManager {
       kickoff: false,
       startTimer: null,
       compactSentAt: null,
+      prompts: 0,
       mcp,
     };
     sess.total = sess.buffer.length;
@@ -1282,7 +1304,7 @@ export class SessionManager {
       if (s.startTimer) clearTimeout(s.startTimer);
       this.live.delete(id);
     }
-    const owed = [...(this.undelivered.get(id) ?? []), ...(s?.queued ?? [])];
+    const owed = [...(this.undelivered.get(id) ?? []), ...(s ? this.withoutReceipts(s.queued, `${paneName(s.info)} was closed before this reached it`) : [])];
     this.undelivered.delete(id);
     if (owed.length && !forget) this.undelivered.set(id, owed);
     else if (owed.length) {
@@ -1303,34 +1325,104 @@ export class SessionManager {
    * Inject a chat message into a session (paste, then submit unless told not
    * to). Callers paste only into a pane at its prompt; should its agent start
    * asking for permission before the Enter, the Enter isn't sent — it would
-   * answer that — and the message waits in the prompt as a draft.
+   * answer that — and the message waits in the prompt as a draft. `receipt` hears how it went (QueueReceipt); `placed`
+   * says why a message not submitted was left there. Returns whether it was pasted.
    */
-  sendMessage(id: string, message: string, submit = true): void {
+  sendMessage(id: string, message: string, submit = true, receipt?: QueueReceipt, placed?: string): boolean {
     const s = this.live.get(id);
-    if (!s) return;
+    if (!s) {
+      this.settle(receipt, "failed", "its pane isn't running");
+      return false;
+    }
+    if (receipt && !this.mayPaste(receipt, id)) return false;
     // bracketed paste so multi-line messages arrive as one prompt
     s.proc.write(`\x1b[200~${pasteText(message)}\x1b[201~`);
-    if (!submit) return;
+    if (!submit) {
+      this.settle(receipt, "placed", placed ?? `It's in ${paneName(s.info)}'s prompt for you to send: its area leaves agents' messages there`);
+      return true;
+    }
     setTimeout(() => {
-      if (this.live.get(id) !== s || s.info.status === "dead") return;
+      // hook events reach main every POLL_MS: read what's written so far, so a permission prompt that came up since the
+      // paste is seen before its Enter would answer it
+      this.catchUpHooks();
+      if (this.live.get(id) !== s || s.info.status === "dead") {
+        this.settle(receipt, "failed", `${paneName(s.info)} stopped after this was pasted and before its Enter, so it wasn't submitted`);
+        return;
+      }
       if (s.info.status === "waiting") {
         s.draft = true;
         s.lastInput = Date.now();
         console.warn(`[sessions] ${id} started asking for permission as a message was pasted: it stays in the prompt, unsent`);
+        this.settle(receipt, "placed", `${paneName(s.info)} started asking for permission as this was pasted, so it's in its prompt unsent: press Enter there once that's answered`);
         return;
       }
       s.proc.write("\r");
+      this.settle(receipt, "sent");
     }, 120);
+    return true;
+  }
+
+  /** Reads the hook events written so far, at once (hooks.ts's watcher sets it while it runs). */
+  hooksCatchUp: (() => void) | null = null;
+
+  private catchUpHooks(): void {
+    try {
+      this.hooksCatchUp?.();
+    } catch (err) {
+      console.error("[sessions] couldn't read hook events before a message's Enter:", err);
+    }
+  }
+
+  /** Take the queued message with `receipt` out of session `id`'s queue, unpasted: whether it was there. */
+  withdraw(id: string, receipt: QueueReceipt): boolean {
+    const s = this.live.get(id);
+    const i = s?.queued.findIndex((m) => m.receipt === receipt) ?? -1;
+    if (!s || i < 0) return false;
+    s.queued.splice(i, 1);
+    this.emitChanged();
+    return true;
+  }
+
+  /** Whether session `id`'s queue holds the message with `receipt`, still unpasted. */
+  holds(id: string, receipt: QueueReceipt): boolean {
+    return !!this.live.get(id)?.queued.some((m) => m.receipt === receipt);
+  }
+
+  /** Whether a receipt lets its message be pasted now; one that throws doesn't, and is logged. */
+  private mayPaste(receipt: QueueReceipt, id: string): boolean {
+    try {
+      return receipt.pasting() === true;
+    } catch (err) {
+      console.error(`[sessions] ${id}: a message's receipt failed as it was to be pasted, so it wasn't:`, err);
+      return false;
+    }
+  }
+
+  /** Tell a receipt how its message ended; one that throws is logged, never the queue's problem. */
+  private settle(receipt: QueueReceipt | undefined, outcome: QueueOutcome, why?: string): void {
+    if (!receipt) return;
+    try {
+      receipt.settled(outcome, why);
+    } catch (err) {
+      console.error(`[sessions] a message's receipt failed hearing it was ${outcome}:`, err);
+    }
+  }
+
+  /** `queue` without the messages that have receipts, each failed with `why`: those are never kept for a later launch. */
+  private withoutReceipts(queue: Queued[], why: string): Queued[] {
+    for (const m of queue) if (m.receipt) this.settle(m.receipt, "failed", why);
+    return queue.filter((m) => !m.receipt);
   }
 
   /**
    * Deliver a message from another agent session. An idle session gets it now;
    * a busy or blocked one gets it when its turn ends (Enter would otherwise answer
    * a pending permission prompt). While the user has unsent text in that prompt
-   * it waits for them to send it; see flushQueued.
+   * it waits for them to send it; see flushQueued. With a `receipt`, what becomes of it is told there (QueueReceipt),
+   * and a pane that has exited refuses it, as nothing would deliver it.
    */
-  deliverAgentMessage(id: string, message: string, submit: boolean, from?: string): string {
-    return this.enqueue(id, { text: message, submit, at: Date.now(), ...(from ? { from } : {}) });
+  deliverAgentMessage(id: string, message: string, submit: boolean, from?: string, receipt?: QueueReceipt): string {
+    return this.enqueue(id, { text: message, submit, at: Date.now(), ...(from ? { from } : {}), ...(receipt ? { receipt } : {}) });
   }
 
   /** Whether Mockingbird's notice under `key` still waits in session `id`'s queue (deliverNotice). */
@@ -1356,7 +1448,12 @@ export class SessionManager {
   private enqueue(id: string, m: Queued): string {
     const s = this.live.get(id);
     if (!s) throw new Error(`session ${id} is not running`);
+    if (s.info.status === "dead" && m.receipt) throw new Error(`${paneName(s.info)} has exited`);
     s.queued.push(m);
+    if (s.info.status === "dead") {
+      this.emitChanged();
+      return "queued: it has exited, and it's delivered if it's reopened";
+    }
     if (s.info.status === "idle") {
       this.flushQueued(s);
       this.emitChanged();
@@ -1431,6 +1528,15 @@ export class SessionManager {
     return outcomes;
   }
 
+  /**
+   * Which prompt live pane `id`'s agent is on: its pty's epoch and the prompts its hooks have reported this launch (0
+   * when they never do). An automatic wire sends once per prompt by it (wireDelivery.ts). Null when it isn't running.
+   */
+  promptCount(id: string): { epoch: string; seq: number } | null {
+    const s = this.live.get(id);
+    return s && s.info.status !== "dead" ? { epoch: s.epoch, seq: s.prompts } : null;
+  }
+
   /** The transcript file a live pane's hooks named for conversation `conv`, or null when they haven't. */
   transcriptOf(id: string, conv: string): string | null {
     return this.live.get(id)?.transcripts.get(conv) ?? null;
@@ -1454,6 +1560,8 @@ export class SessionManager {
     started?: boolean;
     /** Its turn ended (the Stop hook). */
     finished?: boolean;
+    /** It took a prompt (the UserPromptSubmit hook). */
+    prompted?: boolean;
     /** The transcript file the agent is writing the conversation to (the hook's `transcript_path`). */
     transcriptPath?: string;
   }): SessionInfo | null {
@@ -1464,6 +1572,7 @@ export class SessionManager {
     // must not bring its dead pane back to life
     if (!s || s.info.status === "dead") return null;
     s.hookEvents++;
+    if (ev.prompted) s.prompts++;
     if (s.info.hooksSilent) {
       s.info.hooksSilent = false;
       this.emitChanged();
@@ -1567,20 +1676,24 @@ export class SessionManager {
         }, Math.min(RECHECK_MS, DRAFT_GIVE_UP_MS - idleFor));
         return;
       }
-      for (const m of s.queued.splice(0)) this.sendMessage(s.info.id, m.text, false);
+      const after = `You had unsent text in ${paneName(s.info)}'s prompt, so this was put after it, unsent: press Enter there to send both`;
+      for (const m of s.queued.splice(0)) this.sendMessage(s.info.id, m.text, false, m.receipt, after);
       this.emitChanged();
       return;
     }
-    const next = s.queued.findIndex((m) => m.submit);
-    if (next >= 0) {
+    // one submitted per turn; one its receipt kept out of the pane (it couldn't be written down) leaves the turn to the next
+    for (let next = s.queued.findIndex((m) => m.submit); next >= 0; next = s.queued.findIndex((m) => m.submit)) {
       const [m] = s.queued.splice(next, 1);
-      this.sendMessage(s.info.id, m.text, true);
+      if (!this.sendMessage(s.info.id, m.text, true, m.receipt)) continue;
       this.setStatus(s.info.id, "working");
       return;
     }
-    for (const m of s.queued.splice(0)) this.sendMessage(s.info.id, m.text, false);
-    s.draft = true;
-    s.lastInput = Date.now();
+    let placed = false;
+    for (const m of s.queued.splice(0)) placed = this.sendMessage(s.info.id, m.text, false, m.receipt) || placed;
+    if (placed) {
+      s.draft = true;
+      s.lastInput = Date.now();
+    }
     this.emitChanged();
   }
 
@@ -1600,6 +1713,8 @@ export class SessionManager {
     const before = s.info.status;
     s.info.status = status;
     s.info.finishedAt = finished;
+    // nothing delivers to an exited agent until a relaunch, which a message with a receipt doesn't wait for
+    if (status === "dead") s.queued = this.withoutReceipts(s.queued, `${paneName(s.info)} stopped running before this reached it`);
     if (status !== "working") s.info.stalledSince = null;
     if (status === "waiting") {
       s.info.waitingReason = reason ?? s.info.waitingReason ?? null;

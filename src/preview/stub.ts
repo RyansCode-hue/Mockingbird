@@ -8329,6 +8329,7 @@ import {
   wireRefusal,
   withSettings,
   withoutSession,
+  type SendReply,
   type Wire,
   type WireBook,
   type WireContext,
@@ -8421,6 +8422,12 @@ Object.assign(api, {
     const refused = rekeyRefusal(wireBook, moved, old, next, wireEnds());
     return refused ? { refused } : wireChanged(moved);
   },
+  // a gate's acts: nothing in the preview runs an agent to send to, and nothing waits at a gate here
+  wiresSend: async (_id: string, _pendingId: string, _body: string, _opts?: { start?: boolean }): Promise<SendReply> => ({ refused: "The preview doesn't send along wires." }),
+  wiresSendAgain: async (_id: string, _pendingId: string, _body: string, _opts?: { start?: boolean }): Promise<SendReply> => ({ refused: "The preview doesn't send along wires." }),
+  wiresMarkSent: async (): Promise<WireReply> => ({ refused: "Only what may have reached the other end can be marked sent." }),
+  wiresMoreRounds: async (): Promise<WireReply> => ({ refused: "The preview doesn't count rounds." }),
+  wiresResetRounds: async (): Promise<WireReply> => ({ refused: "The preview doesn't count rounds." }),
 });
 // a forgotten session's wires go with it, as main drops them at sessions:kill once the kill has gone through
 const killSessionBeforeWires = api.killSession;

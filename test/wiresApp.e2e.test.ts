@@ -197,4 +197,46 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
       await quitApp(app.child);
     }
   }, 120_000);
+
+  it("settles what the last run left on its way as it starts, sending nothing, and answers a gate's acts through its IPC", async () => {
+    const home = tempDir("wires-delivery");
+    const pending = { id: "p1", body: "from the last run", at: 1, flags: [] };
+    const link = (from: string, to: string, over: Record<string, unknown>) => ({ from, to, type: "handoff", when: "finished", gate: "ask", createdAt: 1, ...over });
+    const links = {
+      queued: link("q-a", "q-b", { pending, delivery: { id: "p1", state: "queued", at: 1 } }),
+      pasting: link("p-a", "p-b", { type: "feedback", rounds: { limit: 1, used: 1 }, pending, delivery: { id: "p1", state: "pasting", at: 1 } }),
+      auto: link("a-a", "a-b", { gate: "automatic", pending }),
+    };
+    fs.mkdirSync(path.join(home, ".mockingbird"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".mockingbird", "landscape.json"), JSON.stringify({ v: 3, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {}, wires: { wv: 1, links, notes: {} } }));
+    const app = await launchApp("Wires", "", { home });
+    try {
+      // as it starts, not at the first 30 s check
+      await untilTrue("what was on its way settled", async () => onDisk(home).wires.links.pasting.delivery.state === "unconfirmed", 10_000);
+      const disk = onDisk(home).wires.links;
+      expect(disk.queued.delivery).toMatchObject({ id: "p1", state: "failed", why: expect.stringMatching(/^Mockingbird stopped before this was pasted/) });
+      expect(disk.pasting.delivery).toMatchObject({ id: "p1", state: "unconfirmed", why: expect.stringMatching(/may have reached it/) });
+      expect(disk.auto.delivery).toMatchObject({ id: "p1", state: "held", why: expect.stringMatching(/waiting from before Mockingbird started/) });
+      expect(disk.pasting.rounds).toEqual({ limit: 1, used: 1 });
+      expect(mainLog(app)).toMatch(/wires: pasting's delivery p1 is unconfirmed/);
+      const state = await app.evaluate<WireState>(`window.mb.wiresGet()`);
+      expect(state.book!.links.queued.delivery!.state).toBe("failed");
+
+      // this build has no framing yet: a Send is refused before anything is written
+      const before = fs.readFileSync(path.join(home, ".mockingbird", "landscape.json"), "utf8");
+      expect(await app.evaluate<{ refused?: string }>(`window.mb.wiresSend("queued", "p1", "again")`)).toEqual({ refused: expect.stringMatching(/can't send along wires yet/) });
+      expect(fs.readFileSync(path.join(home, ".mockingbird", "landscape.json"), "utf8")).toBe(before);
+      // a person's acts on the ledger: Mark sent, one more round, reset
+      expect(await app.evaluate<WireReply>(`window.mb.wiresMarkSent("pasting", "p1")`)).not.toHaveProperty("refused");
+      expect(onDisk(home).wires.links.pasting).toMatchObject({ delivery: { id: "p1", state: "sent", why: "Marked sent by you." } });
+      expect(await app.evaluate<WireReply>(`window.mb.wiresMoreRounds("pasting")`)).not.toHaveProperty("refused");
+      expect(onDisk(home).wires.links.pasting.rounds).toEqual({ limit: 2, used: 1 });
+      expect(await app.evaluate<WireReply>(`window.mb.wiresResetRounds("pasting")`)).not.toHaveProperty("refused");
+      expect(onDisk(home).wires.links.pasting.rounds).toEqual({ limit: 2, used: 0 });
+      expect(await app.evaluate<{ refused?: string }>(`window.mb.wiresSendAgain("queued", "p1", "x")`)).toEqual({ refused: expect.stringMatching(/can't send along wires yet/) });
+    } finally {
+      app.close();
+      await quitApp(app.child);
+    }
+  }, 120_000);
 });

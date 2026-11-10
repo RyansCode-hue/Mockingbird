@@ -318,7 +318,8 @@ const FORMATS: Record<number, typeof WIRE_FORMAT> = {
     wire: { fields: ["createdAt", "delivery", "files", "from", "gate", "pending", "rounds", "template", "to", "toolOutput", "type", "when"], required: ["createdAt", "from", "gate", "to", "type", "when"] },
     rounds: { fields: ["limit", "used"], required: ["limit", "used"] },
     pending: { fields: ["at", "body", "flags", "id", "verdict"], required: ["at", "body", "flags", "id"] },
-    delivery: { fields: ["at", "id", "state", "why"], required: ["at", "id", "state"] },
+    // attempt and automatic came before any release wrote a wire book; a W1-only dev build keeps such a wire verbatim
+    delivery: { fields: ["at", "attempt", "automatic", "id", "state", "why"], required: ["at", "id", "state"] },
     note: { fields: ["hops", "stage", "summary", "verdict"], required: ["hops"] },
     summary: { fields: ["at", "conversation", "text"], required: ["at", "text"] },
   },
@@ -370,10 +371,9 @@ describe("changes to the book", () => {
     });
   });
 
-  it("brings back a wire that was sending as unconfirmed, and any other as it was", () => {
-    for (const state of ["queued", "pasting"] as const) {
-      expect(restoredWire(wire("a", "b", "handoff", { delivery: { id: "p", state, at: 3 } })).delivery).toEqual({ id: "p", state: "unconfirmed", at: 3, why: expect.stringMatching(/may have reached the other end/) });
-    }
+  it("brings back a wire that was being pasted as unconfirmed, one still queued as failed (it's never pasted once its wire goes), and any other as it was", () => {
+    expect(restoredWire(wire("a", "b", "handoff", { delivery: { id: "p", state: "pasting", at: 3 } })).delivery).toEqual({ id: "p", state: "unconfirmed", at: 3, why: expect.stringMatching(/may have reached the other end/) });
+    expect(restoredWire(wire("a", "b", "handoff", { delivery: { id: "p", state: "queued", at: 3 } })).delivery).toEqual({ id: "p", state: "failed", at: 3, why: expect.stringMatching(/removed before it was pasted, so it never reached the other end/) });
     const sent = wire("a", "b", "handoff", { delivery: { id: "p", state: "sent", at: 3 } });
     expect(restoredWire(sent)).toBe(sent);
     const none = wire("a", "b");
@@ -420,10 +420,42 @@ describe("gateOf", () => {
   it("is ready with something waiting, naming it", () => {
     expect(gate(wire("a", "b", "handoff", { pending }))).toEqual({ state: "ready", gate: "ask", pendingId: "p1" });
   });
-  it.each(["queued", "pasting"] as const)("is sending while %s, whatever else has changed", (state) => {
+  it.each(["queued", "pasting"] as const)("is sending while %s, a newer pending beside it included", (state) => {
     const w = wire("a", "b", "handoff", { pending, delivery: { id: "p1", state, at: 1 } });
     expect(gate(w).state).toBe("sending");
-    expect(gate(w, ctxOf([end("a")], {}, {}, { fileRefusal: "read-only" })).state).toBe("sending");
+    expect(gate(wire("a", "b", "handoff", { pending: { ...pending, id: "p2" }, delivery: { id: "p1", state, at: 1 } }))).toEqual({ state: "sending", gate: "ask", pendingId: "p2" });
+  });
+  it("is blocked while queued once the rules refuse the wire, or an automatic send's gate asks, as it won't be pasted; sending once it's being pasted", () => {
+    const queued = wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "queued", at: 1 } });
+    const roomB = ctxOf([end("a"), end("b", { room: "R1" })]);
+    expect(gate(queued, roomB)).toMatchObject({ state: "blocked", why: ROOM_LINE, pendingId: "p1" });
+    expect(gate(queued, ctxOf([end("a", { takenOver: "“a” continues on Nick's laptop" }), end("b")]))).toMatchObject({ state: "blocked", why: "“a” continues on Nick's laptop" });
+    expect(gate(queued, ctxOf([end("a")]))).toMatchObject({ state: "blocked", why: 'This Mac has no session "b".' });
+    expect(gate({ ...queued, delivery: { id: "p1", state: "pasting", at: 1 } }, roomB).state).toBe("sending");
+    const auto = wire("a", "b", "handoff", { gate: "automatic", pending, delivery: { id: "p1", state: "queued", at: 1, automatic: true } });
+    expect(gate(auto)).toMatchObject({ state: "sending", gate: "automatic" });
+    expect(gate(auto, ctxOf([end("a", { room: "R1" }), end("b", { room: "R1" })]))).toMatchObject({ state: "blocked", why: expect.stringMatching(/Automatic is off in a team room's area/) });
+    expect(gate({ ...auto, gate: "ask" })).toMatchObject({ state: "blocked", why: expect.stringMatching(/gate was set to ask/) });
+    // a person's Send at a gate that asks is theirs to make
+    expect(gate({ ...auto, gate: "ask", delivery: { id: "p1", state: "queued", at: 1 } }).state).toBe("sending");
+  });
+  it("is blocked while sending when the book can't be written, as no delivery goes further then", () => {
+    const w = wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "pasting", at: 1 } });
+    expect(gate(w, ctxOf(AB, {}, {}, { fileRefusal: "read-only" }))).toMatchObject({ state: "blocked", why: "read-only" });
+  });
+  it("is blocked and stalled when what's queued waits at an end whose hooks aren't reporting, and sending once it's pasting", () => {
+    const silent = ctxOf([end("a"), end("b", { hooksSilent: true })]);
+    expect(gate(wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "queued", at: 1 } }), silent)).toMatchObject({ state: "blocked", stalled: true, pendingId: "p1", why: expect.stringMatching(/Mark it idle/) });
+    expect(gate(wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "pasting", at: 1 } }), silent).state).toBe("sending");
+  });
+  it("is ready after an automatic gate held it, saying why", () => {
+    expect(gate(wire("a", "b", "handoff", { pending, delivery: { id: "p1", state: "held", at: 1, why: "3 automatic sends in a row" } }))).toEqual({ state: "ready", gate: "ask", pendingId: "p1", why: "3 automatic sends in a row" });
+  });
+  it("isn't stopped at the limit by a pending whose round was counted already (it went, then failed)", () => {
+    const at = { limit: 2, used: 2 };
+    expect(gate(wire("a", "b", "feedback", { rounds: at, pending, delivery: { id: "p1", state: "failed", at: 1, why: "it exited" } }))).toMatchObject({ state: "ready", atLimit: true, why: "it exited" });
+    expect(gate(wire("a", "b", "feedback", { rounds: at, pending, delivery: { id: "p1", state: "held", at: 1, why: "flagged" } }))).toMatchObject({ state: "blocked", atLimit: true });
+    expect(gate(wire("a", "b", "feedback", { rounds: at, pending, delivery: { id: "p0", state: "failed", at: 1 } }))).toMatchObject({ state: "blocked", atLimit: true });
   });
   it("is sent once delivered, and says when it was left in the prompt", () => {
     expect(gate(wire("a", "b", "handoff", { delivery: { id: "p1", state: "sent", at: 1 } }))).toEqual({ state: "sent", gate: "ask" });

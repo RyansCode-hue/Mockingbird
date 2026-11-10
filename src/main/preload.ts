@@ -1,6 +1,6 @@
 import type { IpcResult, MissingFolder, SessionInfo, UiCommand, WorktreeCleanupMode } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
-import type { FinishOutcome, LatestMessage, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
+import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api = {
@@ -295,6 +295,13 @@ const api = {
   // a person's Finish step: the summary as the popover shows it, from the session's latest message (wiresLastMessage)
   wiresFinish: (id: string, summary: string, verdict?: WireVerdict): Promise<IpcResult<FinishOutcome>> => ipcRenderer.invoke("wires:finish", id, summary, verdict),
   wiresLastMessage: (id: string): Promise<IpcResult<LatestMessage>> => ipcRenderer.invoke("wires:lastMessage", id),
+  // a person's acts at a gate (wireDelivery.ts): Send what's waiting as shown, Send again or Mark sent what may have arrived, rounds.
+  // A stopped other end is started only with { start: true }, once its cost is agreed (renderer/wireSend.ts).
+  wiresSend: (id: string, pendingId: string, body: string, opts?: { start?: boolean }): Promise<IpcResult<SendReply>> => ipcRenderer.invoke("wires:send", id, pendingId, body, opts),
+  wiresSendAgain: (id: string, pendingId: string, body: string, opts?: { start?: boolean }): Promise<IpcResult<SendReply>> => ipcRenderer.invoke("wires:sendAgain", id, pendingId, body, opts),
+  wiresMarkSent: (id: string, pendingId: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:markSent", id, pendingId),
+  wiresMoreRounds: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:moreRounds", id),
+  wiresResetRounds: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:resetRounds", id),
   onWiresChanged: (cb: (change: WireChange) => void) => {
     const h = (_e: unknown, change: WireChange) => cb(change);
     ipcRenderer.on("wires:changed", h);

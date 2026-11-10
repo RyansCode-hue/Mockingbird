@@ -228,6 +228,22 @@ describe("hook script", () => {
   });
 });
 
+describe("watchEvents' catching up", () => {
+  it("reads the events written so far at once when the sessions ask, and stops answering once it's stopped", () => {
+    const seen: any[] = [];
+    const sessions: any = { statusFromHook: (ev: any) => (seen.push(ev), { id: ev.paneId, title: "t" }) };
+    const stop = watchEvents(sessions, () => {});
+    fs.mkdirSync(eventsDir, { recursive: true });
+    drop(event("Notification", { message: "Claude needs your permission to use Bash" }));
+    expect(seen).toEqual([]);
+    sessions.hooksCatchUp();
+    expect(seen).toEqual([expect.objectContaining({ paneId: "p1", status: "waiting" })]);
+    expect(fs.readdirSync(eventsDir)).toEqual([]);
+    stop();
+    expect(sessions.hooksCatchUp).toBeNull();
+  });
+});
+
 describe("watchEvents", () => {
   it("turns hook events into session statuses, routed by pane and conversation", async () => {
     const prompts: string[] = [];
@@ -251,6 +267,8 @@ describe("watchEvents", () => {
     ]);
     // a submitted prompt starts a turn: its files are recorded first (undo a turn)
     expect(prompts).toEqual(["p1: Add the dropdown"]);
+    // and it's counted as one, as nothing else is (an automatic wire sends once per prompt its source took)
+    expect(seen.map((ev) => !!ev.prompted)).toEqual([true, false, false, false, false, false]);
   });
 
   it("marks an agent that has just started, resumed or cleared idle at its prompt — without a 'Finished' alert, and not for a compaction", async () => {

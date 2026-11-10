@@ -702,6 +702,322 @@ second way to the same thing.
   `test/sessionLifecycle.test.ts` (real queue: receipts for idle, draft give-up,
   a prompt appearing before Enter, exit, forget).
 
+#### W3 as built
+
+**The queue's receipt** (`sessions.ts`). `Queued` gains `receipt?: QueueReceipt`:
+`pasting()` is asked just before the paste and may say no; then `settled(outcome,
+why)` once, `sent`, `placed` or `failed`. `deliverAgentMessage(id, text, submit,
+from?, receipt?)` and `sendMessage(…, receipt?, placed?)` carry it; `sendMessage`
+now answers whether it pasted.
+- **sent:** the Enter went, 120 ms after the paste.
+- **placed:** pasted with no Enter. Three reasons, each said: the area leaves agents'
+  messages in the prompt (automatic only), the user's unsent text was given up on
+  after 120 s, or a permission prompt came up before the Enter.
+- **failed:** never submitted. Its pane closed, restarted or forgotten with it
+  queued (`kill`, with or without forget); its agent exited or was stopped (the
+  move to `dead` in `setStatus`); its pane taken by a new launch under its id
+  (`create`'s `prior`); or its pane gone in the 120 ms after the paste.
+- **The Enter reads the hook events first.** Hook events reach main every
+  `POLL_MS` (500 ms), so the old check, a permission prompt in the 120 ms before
+  the Enter, saw one only when a poll happened to fall in that window.
+  `watchEvents` now lends its drain as `SessionManager.hooksCatchUp`, and the
+  Enter's timer runs it first: a prompt whose hook event is written by then is
+  seen, and the message is placed instead. What it can't see is a prompt whose
+  hook hasn't run yet.
+- **A message with a receipt is never kept for a later launch.** Without one,
+  messages behave as before: `undelivered` and the relaunch's `owed`. With one, a
+  closed B might never reopen, and nothing would ever settle it.
+- **A dead pane refuses a message with a receipt** (it throws), as nothing would
+  deliver it. Without one, its answer says so ("queued: it has exited, and it's
+  delivered if it's reopened") instead of "until its current turn ends".
+- **A receipt that says not to paste**, or throws (logged), keeps its message out
+  of the pane, and the turn goes to the next queued message.
+- `withdraw(id, receipt)` takes a queued message back out unpasted; `holds(id,
+  receipt)` says whether the queue still has it.
+- `promptCount(id)`: the pty's epoch and the `UserPromptSubmit`s its hooks reported
+  this launch. `statusFromHook` takes `prompted`, which `hooks.ts` sets for that
+  event alone: it couldn't tell a prompt from a tool use before.
+
+**The ledger** (`src/main/wireDelivery.ts`, `WireDelivery`):
+- **`offer(offers, { origin, hold? })`.** The one way a pending lands: each wire
+  gets a new pending id, replacing whatever waited (what's on its way goes on).
+  Then an automatic gate sends, or holds saying why. `origin` is `agent`
+  (finish_step), `person` (Finish step, Send now) or `merge` (W16); `hold` forces it
+  to ask (W16's merge found after a start).
+- **`wires:send(wire, pendingId, body, { start? })`.** A person's Send, always
+  submitted. Everything is checked and written ahead with nothing awaited:
+  - checks: framing built, `wiresWriteRefusal()`, the take-over of either end
+    (`UNTAKEN_WIRE_CALLS`), `sendRefusal`, and the body (non-empty, at most
+    `WIRE_BODY_MAX`);
+  - **a stopped B is refused** with `start: "resume" | "reopen"` unless the call
+    says `{ start: true }`, so nothing is counted or started before the window has
+    asked about its cost. `src/renderer/wireSend.ts`'s `sendAlongWire` is that
+    window side: main first, then the cost question (`useCostGate().resume`), then
+    the send again with `start`. W4c's popover calls it; nothing in the window
+    sends along a wire yet;
+  - the write: `delivery: queued` under the pending's id with an **`attempt`** of
+    this send's own (and `automatic: true` for an automatic gate's), the round
+    counted unless `countedFor` says this pending's already was, and
+    `notes[B].hops` (0 for a person; for automatic, one more than the most of A's
+    and B's).
+  - So a second Send of the same pending finds it on its way. A failed write sends
+    nothing and says "Nothing was sent: …".
+  - Then a stopped B is started: `sessions.resume` for an exited pane, and
+    `reopen` for a closed one (index.ts's `reopenSession`, the old
+    `sessions:relaunch` body, which that handler now calls too). A start that
+    hasn't returned after `START_WAIT_MS` (60 s) fails the send, saying so; one
+    that ends later is only logged. Then the wire, its delivery (this attempt,
+    still queued), the rules (`queuedRefusal`) and B's running are checked again,
+    and the body is framed and queued with a receipt.
+  - Once the queue holds the message (or has asked to paste it), a throw from the
+    queue after that is logged and nothing more: the receipt reports what became
+    of it. Only a throw before then fails the send.
+- **The receipt** answers to its own send: the delivery's id and attempt.
+  - `pasting()` checks the delivery is still this attempt and queued, then runs
+    `queuedRefusal` again: the rules on the wire (a room's line, a take-over of
+    either end, a debrief), and for an automatic send, that its gate is still
+    automatic (no room's area, not set to ask). Refused, it's failed in that same
+    write, "It wasn't pasted, as the rules changed while it waited: …", nothing is
+    pasted, and the user is told. Otherwise it writes `pasting`. A write that fails
+    pastes nothing, and is notified and logged; the book still says queued.
+  - `settled` writes the outcome only over its own attempt, drops the pending on
+    sent or placed (only its own, so a newer one waiting beside it stays), and
+    notifies on placed and failed.
+- **A wire removed while its message is queued**: `WireService.remove` calls its
+  `removed` option, `WireDelivery.withdraw`, which takes the message out of B's
+  queue. `remove` records the wire for Undo first, so a throw from that is logged
+  and the removal and its Undo stand. Undo then brings the wire back failed
+  (`restoredWire`). One removed while
+  being pasted comes back unconfirmed, and its Enter, when it comes, settles it as
+  sent. Without the withdraw, the attempt alone keeps an earlier send's message
+  from being pasted for a later one.
+- **`wires:sendAgain`** is only for unconfirmed: a new pending id, so a new round.
+  **`wires:markSent`** settles unconfirmed as sent. **`wires:moreRounds`** (at the
+  limit, `limit = used + 1`) and **`wires:resetRounds`** (`used = 0`). All four are
+  IPC only. `preload.ts` exposes all five calls; `stub.ts` refuses them, as the
+  preview runs no agent (simulating them is W4c's).
+- **One at a time per wire.** A person's Send while an earlier delivery is on its
+  way is refused, saying so. An automatic pending that comes while one is on its
+  way waits in memory, whatever that one's gate shows (blocked while queued
+  included), and is tried once it settles (in a microtask, never from inside the
+  queue).
+- **`reconcile()`**, at start (past the single-instance lock, in the health
+  block's `whenReady`) and every 30 s.
+  - It settles every queued or pasting delivery whose attempt isn't on its way
+    this run: queued becomes failed ("never reached it"), pasting becomes
+    unconfirmed ("may have"). The why goes by the delivery's attempt: one made this
+    run was left by a write that failed ("couldn't be written down"); any other,
+    by a run that ended ("Mockingbird stopped"). It then tries what waited behind
+    each one it settled.
+  - A pending from before this run at an automatic gate is held, "waiting from
+    before Mockingbird started". Rounds, hops and sent or placed wires are left
+    alone, and nothing is sent.
+  - A book it can't write is logged once while that lasts, and tried again next
+    time.
+
+**What an automatic gate sends.** All of these must hold, else it's `held` with
+why, or left as gateOf already blocks it:
+- the gate in force is automatic (`gateInForce`, so never in a room);
+- it's ready (if blocked, held "it came while blocked (why)");
+- no flags;
+- B is running (never resumed or reopened);
+- `notes[A].hops < 3` and `notes[B].hops < 3` (`AUTOMATIC_HOPS`). B's counts the
+  automatic arrivals in a row there, whichever wire brought them, so no stream of
+  prompts at A keeps one wire sending; a person's Send to B sets it to 0;
+- for an agent's pending, a prompt of A's this launch it hasn't already sent for
+  (`epoch:seq`, in memory: a relaunch is a new epoch);
+- the framing is built.
+
+It follows the area's message mode (`submitsAgentMessages`). A person's Finish
+step and a merge skip the prompt check; their sends count as automatic hops.
+
+**`send_message`** between a feedback wire's two ends, either way, is refused
+(`WireService.messageRefusal`, through `WireLinks`), logged as refused, before the
+pair limit counts it. A book that can't be read refuses nothing, since nothing runs
+along a wire then and agents' messages shouldn't stop for landscape.json.
+
+**`shared/wires.ts`**:
+- `DELIVERY_STATES` gains `held`: an automatic gate didn't send it, and `why` says
+  why. That's a stored state for what section 4 says ("the wire goes ready and
+  says why") that survives a restart.
+- A delivery gains `attempt` (the send it belongs to) and `automatic`. Both are
+  optional, so version 1's format pin gained two fields rather than `wv` rising:
+  no release has written a wire book yet, and a W1-only dev build keeps such a
+  wire verbatim and inert.
+- `WIRE_BODY_MAX = 40_000`, the one limit for a pending's body and a Send's, which
+  W2 defines under the same name and value. The window needs no limit of its own
+  for a typed body: one over it is refused, with its length.
+- `gateInForce` (the gate in force, asking in a room) and `queuedRefusal` (why
+  a queued message mustn't be pasted now), shared by `gateOf` and delivery.
+- `gateOf`:
+  - a book that can't be written blocks every wire first, even one in flight: a
+    delivery's next step is a write, and an orphan can't be settled till then;
+  - queued is blocked with `queuedRefusal`'s reason, as it won't be pasted; then
+    queued at a B whose hooks are silent is blocked, `stalled`, "Mark it idle";
+    otherwise in flight is sending whatever the pending, so a newer pending can't
+    hide one on its way;
+  - held reads ready with its why, as failed does;
+  - the limit doesn't block a pending whose round was counted already
+    (`countedFor`: it went, then failed).
+- `restoredWire`: a wire removed while queued comes back **failed**, as its message
+  left B's queue with it. Only pasting comes back unconfirmed.
+
+**`WireService`**: `context` is public (delivery's gates use it). `hooksSilent`
+counts only for a running pane: a closed record kept its last run's flag and
+blocked a Send that would start it afresh. `remove` calls `removed` (above).
+
+**What W2 must provide:**
+- **`frame: FrameWire`**, passed to `WireDelivery` in `index.ts`, which passes
+  `null` until then, so every Send is refused with `NO_FRAME`:
+  ```ts
+  type FrameWire = (o: { wireId: string; wire: Wire; from: SessionInfo; to: SessionInfo;
+                         body: string; automatic: boolean }) => string;
+  ```
+  It answers section 4's label and nonce fence around `body`, with the "B has wires
+  out" ending if it wants one (it reads the book itself). A throw fails the send
+  with its message, so a refusal can be thrown.
+- **finish_step and `wires:finish` call `delivery.offer([...], { origin })`**, one
+  entry per wire (`{ wire, body, verdict?, flags }`), `origin: "agent"` for the
+  tool and `"person"` for the window. They write `notes[A].summary` and `.verdict`
+  first, in their own edit, so the gate reads the verdict. W2 writes no
+  `pending`, `delivery`, `rounds.used` or `hops`. The tool answers from `offer`'s
+  reply at once, including `refused`.
+- `WIRE_BODY_MAX` from `shared/wires.ts` (W2 adds the same constant; the rebase
+  keeps one).
+- The fan-out notification naming the two ends is W2's (W3 notifies only for
+  placed, failed and unconfirmed).
+
+**The join with W2 (next round, once W2 is on main).** WireDelivery becomes the
+only writer of pending, delivery, rounds and hops:
+- `offer` becomes one transaction taking the source note (summary, verdict), the
+  pendings to take back (skipping any on its way), and the filled bodies with what
+  they were filled from. Inside its own edit it re-runs `finishPlan` and the rules,
+  refuses wire by wire, refuses a wire whose `from` isn't the caller (and, for an
+  agent, a `when` other than finished), gives each new pending an id it knows is
+  this run's, and answers per wire.
+- W2's `finish` stops writing and calls `offer`, its `by` mapped to `origin`
+  (`agent` for the tool, `person` for the window).
+- `frame` wraps W2's `messageFor` and throws its refusal, so `deliver` fails the
+  send with it.
+- A's prompt is read when `finish` starts, before anything is awaited, and
+  Mockingbird's own notice prompts don't count for once-per-prompt.
+- W2's `carriesWork`, `finishPlan` and `toolOutput` meet `held` and `countedFor`;
+  `carriesWork` replaces `carries`.
+
+**Where the plan was wrong:**
+- **Its line numbers are from before W1.** On 257d415:
+  - `sessions:relaunch` is `index.ts:766`, not `:753`, and
+    `submitsAgentMessages` is `:1652`, not `:1622`;
+  - in `sessions.ts`, section 3's are about 30–35 lines later than cited:
+    `deliverAgentMessage` `:1315`, `sendMessage` `:1291`, `flushQueued` `:1515`
+    (draft hold `:1520–1531`, take-out `:1535`), `statusFromHook` `:1405` (start
+    settle `:1444–1450`), `resume` `:982`, `whereAgain` `:1058`, `checkStalls`
+    `:887`, `clearWaiting` `:1133`, `kill`'s log `:1271`, and the "until its
+    current turn ends" answer `:1327`;
+  - `messaging.ts`'s debrief refusal is `:597`, and `PAIR_LIMIT` is `:48`.
+  - `Queued` at `:106` and `UNTAKEN_CALLS` at `takenOverGuard.ts:7` were right.
+- **`wires:send` can't join `UNTAKEN_CALLS`.** `untakenHandler` looks up a running
+  session by the call's first argument, and a test pins every entry to it. A wire
+  call names a wire, and B may be closed. So `UNTAKEN_WIRE_CALLS` holds `wires:send`
+  and `wires:sendAgain`; delivery checks both ends with `refuseTakenOver`, which
+  takes either.
+- **"`{ refused }` goes blocked" / "Throws go blocked"** (dead and closed rows):
+  built as failed with why, which reads ready, since blocked would need a stored
+  state `gateOf` can't derive. Sending again works once the cause clears.
+- **"Send again, after unconfirmed or failed, makes a new id"**: only after
+  unconfirmed. A failed one never reached B, so it goes again under its own id (a
+  new attempt) and its round isn't counted twice.
+- **"`queued` → back to ready"** is failed with why, its round still counted.
+- **"A failed flush… goes blocked, 'couldn't save'"** can't be written: that's
+  what failed. What it does: nothing pasted, the user notified, logged, and the
+  next reconcile that can write settles it.
+- **`promptSeq`** needed `hooks.ts` (not in the file list), and the epoch: a
+  relaunch counts from 0 again.
+- **Restoring a wire removed mid-send** (W1's L2) is failed for queued, as above.
+- **Files outside the list:** `src/shared/wires.ts`, `src/main/wires.ts`,
+  `src/main/hooks.ts`, `src/main/preload.ts`, `src/preview/stub.ts`,
+  `src/renderer/wireSend.ts`, and `test/landscapeAreas.test.ts` (it read the
+  relaunch handler's text).
+
+**Left, and why:**
+- **Hops on a failed automatic send stay counted**, and a person typing into A or
+  B doesn't reset hops; only a person's Send does.
+- **A same-uid process** can write hook event files under `~/.mockingbird/events`,
+  so it can forge `UserPromptSubmit` for its pane and get past once-per-prompt.
+  What still holds: automatic arrivals at one session stop at 3 in a row whatever
+  the prompts, rounds stop a feedback wire, and automatic is a person's choice per
+  wire. A process could also edit landscape.json for the next start, where what it
+  wrote is a pending from before, which never sends by itself. Ryan has chosen to
+  sandbox Claude panes in team rooms (W20), so room agents can't write the events
+  folder; his own local panes are trusted as his.
+- **A message queued at a B that never idles** (its hooks silent) shows
+  stalled with Mark idle. One on a long permission prompt, or mid-turn, shows
+  sending, and the window says why from B's status.
+- **An outcome that can't be written down** after its paste is logged, and the book
+  says pasting until the next reconcile that can write turns it unconfirmed and
+  tells the user.
+- **A permission prompt whose hook hasn't run by the Enter** isn't seen: the Enter
+  answers it. Only the CLI's own ordering could close that.
+
+**Tests:**
+- `test/wireDelivery.test.ts`, through the real `SessionManager` (pty mocked, each
+  write noting the wire's delivery on disk at that moment), the real
+  `LandscapeStore` and `WireService`, and a stand-in framer. It covers:
+  - every row of section 3's table: idle, idle with a draft, mid-turn, on a
+    permission prompt and one coming up before the Enter, just starting, exited
+    (refused until starting is agreed, then resumed), closed (the same, then
+    reopened; refused with no place; failing to reopen; a reopen that never
+    returns), hooks silent (stalled, then Mark idle), a terminal, a debrief, a
+    teammate's, taken over;
+  - receipts: closed, exited, forgotten, gone before the Enter, the area's
+    leave-in-prompt mode, the queue failing after it holds the message or before;
+  - no double sends: Send twice, an older id, a replaced one, one beside one in
+    flight, a write-ahead that can't be written (a read-only file, a read-only
+    folder), a paste that can't be written down, a wire removed while queued, a
+    wire removed and put back then sent edited (only the edit is pasted, with or
+    without the withdraw, and with a withdraw that throws), one settled by another
+    writer, an older send ending after a newer one began;
+  - a restart in each state, Send again, Mark sent;
+  - the round limit counted once per pending, held, raised and reset, and
+    surviving a restart;
+  - an automatic gate: the hop, 3 hops along a chain, 3 arrivals at one session
+    however many prompts, never reopening, once per prompt, flags, blocked, a
+    merge's hold, no framing, a room, one at a time, one behind a blocked one, one
+    behind a paste that couldn't be written down;
+  - the rules again at the paste: B moved into a room, A taken over, an automatic
+    send whose ends went into a room's area or whose gate was set to ask;
+  - races: a take-over during a reopen, your own Reopen racing a Send's, a
+    take-over once queued, the wire removed and restored during a reopen;
+  - what an agent can reach, through the real `Messaging` and `mcp.js`:
+    `send_message` refused both ways between feedback ends, and no tool that
+    sends, settles or counts.
+- `test/sessionLifecycle.test.ts`: the real queue's receipts (sent, draft
+  give-up, a prompt before the Enter, one only the hook catch-up reports, exit,
+  close, forget, a new launch under its id, gone before the Enter, a receipt that
+  says no or throws), `withdraw` and `holds`, and `promptCount`.
+- `test/wires.test.ts`: `gateOf`'s changes (queued blocked by the rules or an
+  automatic gate that asks) and `restoredWire`. `test/hooks.test.ts`: `prompted`,
+  and the watcher lending its drain. `test/landscapeAreas.test.ts`: the relaunch
+  handler and Send share `reopenSession`. `test/wireSend.test.ts`: the window's
+  Send asking the cost only when B must start.
+- `test/wiresApp.e2e.test.ts` (`MB_E2E_APP=1`): the real app settles a book left
+  queued, pasting and automatic as it starts, within 10 s, not at the first 30 s
+  check. It refuses a Send with no framing before writing anything, and answers
+  Mark sent, more rounds and reset through its IPC.
+
+Every guard was reverted in turn, and a test failed for each but two. That was W3's first 48, then the 31 the review fixes added and 12 of the first again (the review's list among them). The first round's note said all but one failed a test; three didn't: `pasting()`'s check that the delivery is still queued, `deliver`'s re-check after a start, and `fail` writing only over queued. Each has a test now, as does `settled` writing only over its own send, which the first round couldn't reach. The two left are guards against what nothing reaches today: `hold` not writing over a wire that's sending (an automatic gate waits behind anything sending before it can hold), and `prepare`'s re-check of the pending inside its write-ahead (that edit runs on the book just read, in the same tick).
+
+**Checked:**
+
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test`: 178 files pass and 30 skip; 2734 tests pass and 144 skip.
+- `test/uiWiresStub.test.ts` and `test/uiPreview.test.ts` pass alone (the preview
+  stub's Send changed). The first round ran all 26 `test/ui*.test.ts` files alone.
+- `MB_E2E_APP=1`: `wiresApp.e2e` and `quitApp.e2e` pass.
+- Not run: real `claude` or `codex` panes (the pty is mocked), so the catch-up
+  before the Enter is checked against hook event files, not a real permission
+  prompt.
+
 ### W4a · Wires drawn. Size M
 - `WireLayer.tsx`, `wiresModel.ts`: one SVG in `.ls-world` (`Landscape.tsx:1933`),
   over area frames and under nodes. Curves as Main.dc.html:67–73;

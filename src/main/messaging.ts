@@ -344,6 +344,8 @@ export interface MessagingHooks {
 /** What the `list_links` tool answers from (src/main/wires.ts). */
 export interface WireLinks {
   linksFor(me: SessionInfo): Reply;
+  /** Why `send_message` from `from` to `to` is off (a feedback wire joins them, so its rounds would go uncounted), or null. */
+  messageRefusal(from: SessionInfo, to: SessionInfo): string | null;
 }
 
 /** What finish_step, read_context and read_terminal answer from (src/main/wireTools.ts), for the caller its token names. */
@@ -612,6 +614,11 @@ export class Messaging {
       if (target.debrief) return { error: "That session is a debrief interview with the user and does not take agent messages." };
 
       const logged = { at: Date.now(), from: me.id, fromTitle: titleOf(me), to, toTitle: titleOf(target), text };
+      const looped = this.wires?.messageRefusal(me, target) ?? null;
+      if (looped) {
+        this.onMessage({ ...logged, outcome: `refused: ${looped}`, refused: true });
+        return { error: looped };
+      }
       const limited = this.paced(me, target, logged);
       if (limited) return limited;
 

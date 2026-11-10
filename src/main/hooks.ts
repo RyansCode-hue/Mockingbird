@@ -242,7 +242,7 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
     evt.event === "Notification" ? msg
     : evt.event === "PermissionRequest" ? `Codex needs your permission to use ${tool}`
     : undefined;
-  const info = sessions.statusFromHook({ ...route, status, reason, finished: evt.event === "Stop" });
+  const info = sessions.statusFromHook({ ...route, status, reason, finished: evt.event === "Stop", prompted: evt.event === "UserPromptSubmit" });
   if (info && (status === "idle" || status === "waiting")) onStatus(info, status);
   if (info && evt.event === "UserPromptSubmit") onPrompt?.(info, typeof evt.payload?.prompt === "string" ? evt.payload.prompt : "");
 }
@@ -314,6 +314,7 @@ export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, o
     }
   };
   const timer = setInterval(drain, POLL_MS);
+  sessions.hooksCatchUp = drain;
 
   // A hook script from an older build appends lines to one file instead. A
   // line still being written waits in `carry` for the rest of it.
@@ -350,6 +351,7 @@ export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, o
 
   return () => {
     clearInterval(timer);
+    if (sessions.hooksCatchUp === drain) sessions.hooksCatchUp = null;
     fs.unwatchFile(LEGACY_EVENTS_FILE, readLegacy);
   };
 }

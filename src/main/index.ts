@@ -33,6 +33,7 @@ import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
 import { WireService } from "./wires";
+import { WireDelivery } from "./wireDelivery";
 import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
@@ -759,7 +760,8 @@ handle("sessions:create", async (req) => {
   if (req?.ticketId && pipeline.startCoding(String(req.ticketId), req.ticketTitle ?? undefined, BY_YOU)) pipelineChanged();
   return info;
 });
-handle("sessions:relaunch", async (id) => {
+/** Reopen closed session `id`, as the window's Reopen and a wire's Send to it do; null when it has no record. */
+async function reopenSession(id: string): Promise<SessionInfo | null> {
   const info = await sessions.relaunch(id);
   if (!info) return info;
   // it's running again, so it belongs in its own area; logged rather than refused, as it's reopened either way
@@ -769,7 +771,8 @@ handle("sessions:relaunch", async (id) => {
     logError(`landscape: placing ${info.id} again`, err);
   }
   return info;
-});
+}
+handle("sessions:relaunch", (id) => reopenSession(id));
 handle("sessions:resume", (id) => sessions.resume(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {
@@ -1375,6 +1378,7 @@ const wires = new WireService({
   takenOver: (id) => takeover?.takenOverRefusal(id, "wiring it") ?? null,
   log: logError,
   onAdded: (id, w) => wireTools.wired(id, w),
+  removed: (id, w) => delivery.withdraw(id, w),
 });
 handle("wires:get", () => wires.get());
 handle("wires:add", (from, to, type, settings) => wires.add(from, to, type, settings));
@@ -1414,6 +1418,23 @@ handle(
   untakenHandler("wires:finish", untaken, (s, summary: unknown, verdict: unknown) => wireTools.finish(s, { summary, ...(verdict === undefined || verdict === null ? {} : { verdict }) }, "you"))
 );
 handle("wires:lastMessage", (id) => wireTools.latestMessage(sessionOf(String(id))));
+// what waits at a gate reaching the other end: a person's Send, an automatic gate, and settling what a run left on its way
+const delivery = new WireDelivery({
+  store: landscape,
+  context: (book) => wires.context(book),
+  sessions,
+  reopen: reopenSession,
+  submits: submitsAgentMessages,
+  frame: null,
+  takenOver: () => (takeover ? (sid, doing) => takeover!.takenOverRefusal(sid, doing) : null),
+  log: logError,
+  notify: (id, title, body) => notifySession(id, title, body),
+});
+handle("wires:send", (id, pending, body, opts) => delivery.send(id, pending, body, opts));
+handle("wires:sendAgain", (id, pending, body, opts) => delivery.sendAgain(id, pending, body, opts));
+handle("wires:markSent", (id, pending) => delivery.markSent(id, pending));
+handle("wires:moreRounds", (id) => delivery.moreRounds(id));
+handle("wires:resetRounds", (id) => delivery.resetRounds(id));
 
 // ---- ticket pipeline: each ticket's stage, PRs, feedback and drafted comments ----
 const pipeline = new PipelineStore(path.join(MB_DIR, "pipeline.json"));
@@ -1763,10 +1784,21 @@ app.whenReady().then(() => {
   void versions();
   // the CLIs update themselves in the background
   setInterval(versions, 10 * 60_000);
+  // what the last run left on its way along wires is settled as the app starts, sending nothing; then every 30 s, for
+  // what a write that failed this run left
+  const settleWires = () => {
+    try {
+      delivery.reconcile();
+    } catch (err) {
+      logError("wires: settling what was on its way", err);
+    }
+  };
+  settleWires();
   setInterval(() => {
     sessions.checkStalls(Date.now(), STALL_MS);
     for (const o of sessions.overdueMessages(Date.now(), MESSAGE_OVERDUE_MS)) tellOverdue(o);
     healthChanged();
+    settleWires();
   }, 30_000);
 });
 

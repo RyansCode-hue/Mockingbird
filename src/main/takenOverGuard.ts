@@ -14,6 +14,18 @@ export const UNTAKEN_CALLS = {
 
 export type UntakenCall = keyof typeof UNTAKEN_CALLS;
 
+/**
+ * The same for calls that name a wire, not a session: main refuses them when either end is a copy a teammate took over
+ * (wireDelivery.ts checks both, before anything is written or started). They aren't untakenHandler's, which looks a
+ * running session up by the call's first argument.
+ */
+export const UNTAKEN_WIRE_CALLS = {
+  "wires:send": "sending along this copy's wire",
+  "wires:sendAgain": "sending along this copy's wire",
+} as const;
+
+export type UntakenWireCall = keyof typeof UNTAKEN_WIRE_CALLS;
+
 /** What the guarded handlers need: a session by id (throwing once it's gone), and the take-over check (null when team rooms didn't start). */
 export interface UntakenDeps<S extends { id: string }> {
   sessionOf: (id: string) => S;
@@ -37,7 +49,7 @@ export function untakenHandler<S extends { id: string }, A extends unknown[], R>
  * takenOverRefusal; null when team rooms didn't start, so nothing was taken over). A copy from a take-over its owner
  * refused isn't taken over: it's this install's own, and may.
  */
-export function refuseTakenOver(id: string, call: UntakenCall, refusal: ((id: string, doing: string) => string | null) | null): void {
-  const why = refusal?.(id, UNTAKEN_CALLS[call]);
+export function refuseTakenOver(id: string, call: UntakenCall | UntakenWireCall, refusal: ((id: string, doing: string) => string | null) | null): void {
+  const why = refusal?.(id, call in UNTAKEN_CALLS ? UNTAKEN_CALLS[call as UntakenCall] : UNTAKEN_WIRE_CALLS[call as UntakenWireCall]);
   if (why) throw new Error(why);
 }

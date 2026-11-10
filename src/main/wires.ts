@@ -50,6 +50,11 @@ export interface WireServiceOptions {
   /** Why a session can't be wired because a teammate took it over; null when none did. */
   takenOver: (id: string) => string | null;
   log: (context: string, err: unknown) => void;
+  /**
+   * Wire `id` was removed as `w`: its message still queued at the other end comes out of that queue unpasted
+   * (WireDelivery.withdraw), so an Undo never finds it there.
+   */
+  removed?: (id: string, w: Wire) => void;
   /** A new wire id; random unless a test says otherwise. */
   newId?: () => string;
   /** A wire was made and saved (not restored: its ends heard of it when it was first made). Told after the change counts. */
@@ -136,12 +141,19 @@ export class WireService {
       if (this.removed.size <= RESTORABLE) break;
       this.removed.delete(k);
     }
+    try {
+      this.o.removed?.(id, taken!);
+    } catch (err) {
+      // it's removed and can be restored all the same; a message it left queued isn't pasted once its wire is gone
+      this.o.log(`wires: ${id} was removed, but what it had queued couldn't be taken back out`, err);
+    }
     return { ...reply, id };
   }
 
   /**
    * Put a removed wire back as it was, counters included, unless the rules on making one now refuse it. One removed
-   * while its message was on the way comes back unconfirmed (restoredWire).
+   * while its message was queued comes back failed, that message out of the other end's queue since the removal; one
+   * removed while it was being pasted comes back unconfirmed (restoredWire).
    */
   restore(idRaw: unknown): WireReply {
     const id = String(idRaw ?? "");
@@ -241,8 +253,22 @@ export class WireService {
   }
 
   /**
-   * The rules' view of the sessions now. Each end is worked out once per check: its folder takes a look at the disk.
-   * With `kept`, making or moving a wire counts the kept wires whose ends and type can be read as already there.
+   * `send_message` between the two ends of a feedback wire, either way, is refused: what the reviewer found goes back
+   * through finish_step, so the wire's rounds count it. A book that can't be read refuses nothing here: nothing runs
+   * along a wire while it can't be, and agents' messages don't stop because landscape.json can't be read.
+   */
+  messageRefusal(from: SessionInfo, to: SessionInfo): string | null {
+    const book = this.o.store.wires().book;
+    if (!book) return null;
+    const loop = Object.values(book.links).some((w) => w.type === "feedback" && ((w.from === from.id && w.to === to.id) || (w.from === to.id && w.to === from.id)));
+    if (!loop) return null;
+    return `“${to.ticketTitle ?? to.title}” and this workspace are the two ends of a feedback wire, so send_message between them is off: finish your step with finish_step instead, which counts the wire's rounds.`;
+  }
+
+  /**
+   * The rules' view of the sessions now, which delivery's gates go by too (wireDelivery.ts). Each end is worked out once
+   * per check: its folder takes a look at the disk. With `kept`, making or moving a wire counts the kept wires whose
+   * ends and type can be read as already there.
    */
   context(book: WireBook, kept?: Readonly<KeptEntries>): GateContext {
     const running = new Map(this.o.sessions.list().map((s) => [s.id, s]));
@@ -264,7 +290,8 @@ export class WireService {
             where: !running.has(id) ? "closed" : s.status === "dead" ? "dead" : "running",
             placed: running.has(id) || Object.hasOwn(ghosts, id),
             folder: canonical(s.cwd),
-            hooksSilent: !!s.hooksSilent,
+            // a closed or exited session's record may still say so from its last run; its next launch starts afresh
+            hooksSilent: running.has(id) && s.status !== "dead" && !!s.hooksSilent,
           }
         : null;
       ends.set(id, made);

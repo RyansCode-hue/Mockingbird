@@ -387,8 +387,13 @@ describe("a closed session reopened", () => {
 
   it("with no place has nothing to let go; and main asks each time one reopens", () => {
     expect(reopenPatch(withAreas(), { id: "s", taskGroup: "G" })).toBeNull();
-    const handler = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8").split('handle("sessions:relaunch"')[1].split("\nhandle(")[0];
-    expect(handler).toContain("landscape.sessionReopened(info)");
+    // the window's Reopen and a wire's Send to a closed session both go through reopenSession
+    const src = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8");
+    expect(src).toMatch(/\bhandle\(\s*"sessions:relaunch"\s*,\s*\(id\)\s*=>\s*reopenSession\(id\)\s*\)/);
+    expect(src).toMatch(/\breopen:\s*reopenSession\b/);
+    const reopen = src.split("async function reopenSession(")[1].split("\n}\n")[0];
+    expect(reopen).toContain("await sessions.relaunch(id)");
+    expect(reopen).toContain("landscape.sessionReopened(info)");
   });
 });
 

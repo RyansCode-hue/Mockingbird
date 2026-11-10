@@ -171,6 +171,182 @@ describe("messages waiting for a pane", () => {
   });
 });
 
+describe("a queued message's receipt", () => {
+  /** A receipt that writes down what it hears, and the pane's writes as it heard each. */
+  function receipt(p: () => FakePty, opts: { paste?: boolean } = {}) {
+    const heard: string[] = [];
+    return {
+      heard,
+      pasting: () => {
+        heard.push(`pasting (${p().writes.length} written)`);
+        return opts.paste ?? true;
+      },
+      settled: (outcome: string, why?: string) => void heard.push(why ? `${outcome}: ${why}` : outcome),
+    };
+  }
+
+  it("is asked just before the paste, then told sent once its Enter has gone", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Reviewer" });
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    const r = receipt(() => ptys.at(-1)!);
+    expect(m.deliverAgentMessage(s.id, "the summary", true, undefined, r)).toBe("delivered");
+    expect(r.heard).toEqual(["pasting (0 written)"]);
+    vi.advanceTimersByTime(150);
+    expect(ptys.at(-1)!.writes).toEqual(["|the summary|", "\r"]);
+    expect(r.heard).toEqual(["pasting (0 written)", "sent"]);
+  });
+
+  it("reads the hook events written by its Enter: a permission prompt they report keeps it in the prompt, placed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Reviewer" });
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    // its permission event was written after the paste, and the poll hasn't read it yet
+    let caughtUp = 0;
+    m.hooksCatchUp = () => {
+      caughtUp++;
+      m.statusFromHook({ paneId: s.id, status: "waiting", reason: "Claude needs your permission to use Bash" });
+    };
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(s.id, "the summary", true, undefined, r);
+    expect(caughtUp).toBe(0);
+    vi.advanceTimersByTime(150);
+    expect(caughtUp).toBe(1);
+    expect(ptys.at(-1)!.writes).toEqual(["|the summary|"]);
+    expect(r.heard.at(-1)).toMatch(/^placed: “Reviewer” started asking for permission as this was pasted/);
+  });
+
+  it("is taken back out of its queue unpasted on request, saying whether it was there; the queue says whether it holds it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Reviewer" });
+    m.statusFromHook({ paneId: s.id, status: "working" });
+    const r = receipt(() => ptys.at(-1)!);
+    const other = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(s.id, "taken back", true, undefined, r);
+    m.deliverAgentMessage(s.id, "left", true, undefined, other);
+    expect([m.holds(s.id, r), m.holds(s.id, other)]).toEqual([true, true]);
+    expect(m.withdraw(s.id, r)).toBe(true);
+    expect(m.withdraw(s.id, r)).toBe(false);
+    expect([m.holds(s.id, r), m.holds(s.id, other), m.holds("nope", other)]).toEqual([false, true, false]);
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    vi.advanceTimersByTime(150);
+    expect(ptys.at(-1)!.writes).toEqual(["|left|", "\r"]);
+    expect(r.heard).toEqual([]);
+  });
+
+  it("is told placed when the user's unsent text there is given up on, with no Enter", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Reviewer" });
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    m.write(s.id, "half typed");
+    const r = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(s.id, "the summary", true, undefined, r);
+    vi.advanceTimersByTime(119_000);
+    expect(r.heard).toEqual([]);
+    vi.advanceTimersByTime(2_000);
+    expect(r.heard).toEqual(["pasting (1 written)", "placed: You had unsent text in “Reviewer”'s prompt, so this was put after it, unsent: press Enter there to send both"]);
+    expect(ptys.at(-1)!.writes).toEqual(["half typed", "|the summary|"]);
+  });
+
+  it("is told placed when a permission prompt comes up before its Enter, which would answer it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await m.create({ ...agentPane, title: "Reviewer" });
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    const r = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(s.id, "the summary", true, undefined, r);
+    m.statusFromHook({ paneId: s.id, status: "waiting", reason: "Claude needs your permission to use Bash" });
+    vi.advanceTimersByTime(150);
+    expect(ptys.at(-1)!.writes).toEqual(["|the summary|"]);
+    expect(r.heard[1]).toMatch(/^placed: “Reviewer” started asking for permission as this was pasted/);
+  });
+
+  it("is told failed when its agent exits with it queued, when its pane is closed (kept for no relaunch) or forgotten, and when its pane closes before its Enter", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Reviewer" }); // working: messages wait
+    const exited = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(s.id, "one", true, undefined, exited);
+    m.broadcast("status?", [s.id], true); // a message with no receipt is kept for its relaunch, as before
+    ptys.at(-1)!.exit(1);
+    expect(exited.heard).toEqual(["failed: “Reviewer” stopped running before this reached it"]);
+    expect(() => m.deliverAgentMessage(s.id, "to a dead pane", true, undefined, receipt(() => ptys.at(-1)!))).toThrow(/has exited/);
+    expect(m.deliverAgentMessage(s.id, "to a dead pane, no receipt", true)).toMatch(/^queued: it has exited/);
+    await m.relaunch(s.id);
+    const closed = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(s.id, "two", true, undefined, closed);
+    m.kill(s.id, false);
+    expect(closed.heard).toEqual(["failed: “Reviewer” was closed before this reached it"]);
+    await m.relaunch(s.id);
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    vi.advanceTimersByTime(200);
+    // what had no receipt still arrives, after its relaunch; what had one doesn't
+    expect(ptys.at(-1)!.writes).toEqual(["|status?|", "\r"]);
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(ptys.at(-1)!.writes.slice(2)).toEqual(["|to a dead pane, no receipt|", "\r"]);
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    const cut = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(s.id, "three", true, undefined, cut);
+    m.kill(s.id, false);
+    vi.advanceTimersByTime(150);
+    expect(cut.heard).toEqual(["pasting (4 written)", "failed: “Reviewer” stopped after this was pasted and before its Enter, so it wasn't submitted"]);
+    const forgotten = await m.create({ ...agentPane, title: "Forgotten" });
+    const gone = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(forgotten.id, "four", true, undefined, gone);
+    m.kill(forgotten.id, true);
+    expect(gone.heard).toEqual(["failed: “Forgotten” was closed before this reached it"]);
+    // a launch that takes over a running pane's id doesn't inherit what that pane was given with a receipt
+    const replaced = await m.create({ ...agentPane, title: "Replaced" });
+    const taken = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(replaced.id, "five", true, undefined, taken);
+    await m.create({ ...agentPane, title: "Replaced", reuseId: replaced.id });
+    expect(taken.heard).toEqual(["failed: “Replaced” was started again before this reached it"]);
+    m.statusFromHook({ paneId: replaced.id, status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(ptys.at(-1)!.writes).toEqual([]);
+  });
+
+  it("keeps its message out of the pane when it says not to paste, and the turn goes to the next one", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const s = await m.create({ ...agentPane, title: "Reviewer" });
+    const refused = receipt(() => ptys.at(-1)!, { paste: false });
+    const throwing = { pasting: () => { throw new Error("broken"); }, settled: () => {} };
+    m.deliverAgentMessage(s.id, "kept out", true, undefined, refused);
+    m.deliverAgentMessage(s.id, "kept out too", true, undefined, throwing);
+    m.deliverAgentMessage(s.id, "goes", true);
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    vi.advanceTimersByTime(150);
+    expect(ptys.at(-1)!.writes).toEqual(["|goes|", "\r"]);
+    expect(refused.heard).toEqual(["pasting (0 written)"]);
+    expect(errors.mock.calls.some((c) => String(c[0]).includes("receipt failed as it was to be pasted"))).toBe(true);
+    expect(m.list().find((x) => x.id === s.id)!.queuedCount).toBe(0);
+  });
+
+  it("counts the prompts its agent takes this launch, from nothing again after a relaunch", async () => {
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Builder" });
+    const first = m.promptCount(s.id)!;
+    expect(first.seq).toBe(0);
+    m.statusFromHook({ paneId: s.id, status: "working", prompted: true });
+    m.statusFromHook({ paneId: s.id, status: "working" }); // a tool use is no prompt
+    expect(m.promptCount(s.id)).toEqual({ epoch: first.epoch, seq: 1 });
+    await m.restart(s.id);
+    expect(m.promptCount(s.id)!.seq).toBe(0);
+    expect(m.promptCount(s.id)!.epoch).not.toBe(first.epoch);
+    ptys.at(-1)!.exit(0);
+    expect(m.promptCount(s.id)).toBeNull();
+  });
+});
+
 describe("scrollback files", () => {
   it("are written for panes that can be resumed", async () => {
     const { m } = await manager();

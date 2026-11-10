@@ -19,7 +19,12 @@ export const WIRE_GATES = ["ask", "automatic"] as const;
 export type WireGate = (typeof WIRE_GATES)[number];
 export const WIRE_VERDICTS = ["approve", "changes"] as const;
 export type WireVerdict = (typeof WIRE_VERDICTS)[number];
-export const DELIVERY_STATES = ["queued", "pasting", "sent", "placed", "unconfirmed", "failed"] as const;
+/**
+ * What became of a pending (src/main/wireDelivery.ts). queued: written ahead, waiting in the other end's queue; pasting:
+ * written just before its paste; sent, placed (in the prompt, unsent); unconfirmed: it may have reached the other end;
+ * failed: it never did; held: an automatic gate didn't send it, and it waits for a person, `why` saying why.
+ */
+export const DELIVERY_STATES = ["queued", "pasting", "sent", "placed", "unconfirmed", "failed", "held"] as const;
 export type DeliveryState = (typeof DELIVERY_STATES)[number];
 
 /** A feedback wire's rounds until a person says otherwise. */
@@ -43,7 +48,15 @@ export interface WireDelivery {
   state: DeliveryState;
   at: number;
   why?: string;
+  /**
+   * This send of it, of all sends of the same pending: what's in the other end's queue answers to this, so a message
+   * from an earlier send (its wire removed and put back meanwhile) never passes for a later one.
+   */
+  attempt?: string;
+  /** Sent by an automatic gate, not a person: it isn't pasted once that gate asks. */
+  automatic?: true;
 }
+
 export interface Wire {
   /** Session ids, never a teammate's. A worktree wire runs from an agent to a terminal. */
   from: string;
@@ -98,8 +111,9 @@ const PENDING: Part = {
   checks: { id: name, body: str, at: num, verdict: oneOf(WIRE_VERDICTS), flags: list(str) } satisfies Record<keyof WirePending, Check<unknown>>,
   required: ["id", "body", "at", "flags"],
 };
+const yes: Check<true> = (v, where) => (v === true ? true : fail(where, "is not true"));
 const DELIVERY: Part = {
-  checks: { id: name, state: oneOf(DELIVERY_STATES), at: num, why: str } satisfies Record<keyof WireDelivery, Check<unknown>>,
+  checks: { id: name, state: oneOf(DELIVERY_STATES), at: num, why: str, attempt: name, automatic: yes } satisfies Record<keyof WireDelivery, Check<unknown>>,
   required: ["id", "state", "at"],
 };
 const WIRE: Part = {
@@ -285,6 +299,11 @@ export interface WireChange extends WireState {
 
 /** A `wires:*` change's answer: it's done and saved, or it isn't and nothing changed. */
 export type WireReply = { state: WireState; id?: string } | { refused: string };
+/**
+ * A person's Send: refused with `start` when its other end is stopped and starting it wasn't agreed to. The window
+ * asks about its cost, then sends again with `{ start: true }` (renderer/wireSend.ts).
+ */
+export type SendReply = { state: WireState; id?: string } | { refused: string; start?: "resume" | "reopen" };
 
 // ---- the rules on making and using a wire -------------------------------------------------
 
@@ -334,6 +353,12 @@ export const ROOM_LINE =
 export const ROOMS_STARTING = "Mockingbird is still starting its team rooms, so it can't tell yet which sessions are in one: try again in a moment.";
 
 export const isSending = (w: Pick<Wire, "delivery">): boolean => w.delivery?.state === "queued" || w.delivery?.state === "pasting";
+
+/**
+ * Whether pending `pendingId`'s round has been counted: it went from ready to queued, which counts it, and has a delivery
+ * of its own since (any but held, which never went). Sending it again after it failed doesn't count it twice.
+ */
+export const countedFor = (w: Pick<Wire, "delivery">, pendingId: string): boolean => w.delivery?.id === pendingId && w.delivery.state !== "held";
 
 /** Whether handoffs lead from `start` to `goal`. */
 function handoffsLead(links: readonly KeptWire[], start: string, goal: string): boolean {
@@ -441,7 +466,7 @@ export interface LatestMessage {
 }
 
 /**
- * The most a wire's body holds, as its send takes it (W3 refuses a longer one): a pending is filled in to fit, its
+ * The most a wire's body holds, waiting or sent (delivery refuses a longer one): a pending is filled in to fit, its
  * template's own words and the summary first, then {diff} and {files} sharing what's left, each cut saying so.
  */
 export const WIRE_BODY_MAX = 40_000;
@@ -611,12 +636,14 @@ export function restoreRefusal(book: WireBook, id: string, w: Wire, ctx: Pick<Wi
 }
 
 /**
- * A removed wire as Undo puts it back. A message on its way when the wire was removed may or may not have reached the
- * other end, and nothing is following it any more, so it comes back unconfirmed for a person to settle (Send again, or
- * Mark sent), never as still sending and never sent again by itself.
+ * A removed wire as Undo puts it back, never as still sending and never sent again by itself. A message still queued
+ * when its wire went is never pasted (delivery checks its wire just before the paste), so it comes back failed and
+ * ready to send; one being pasted may or may not have reached the other end, so it comes back unconfirmed for a person
+ * to settle (Send again, or Mark sent).
  */
 export function restoredWire(w: Wire): Wire {
   if (!isSending(w)) return w;
+  if (w.delivery!.state === "queued") return { ...w, delivery: { ...w.delivery!, state: "failed", why: "Its wire was removed before it was pasted, so it never reached the other end." } };
   return { ...w, delivery: { ...w.delivery!, state: "unconfirmed", why: "It was being sent when its wire was removed, so it may have reached the other end." } };
 }
 
@@ -649,6 +676,8 @@ export interface Gate {
   unconfirmed?: boolean;
   /** A feedback wire with no rounds left. */
   atLimit?: boolean;
+  /** Still queued at the other end, whose hooks aren't reporting: marking it idle lets the queue go. */
+  stalled?: boolean;
 }
 
 export interface GateContext extends WireContext {
@@ -657,24 +686,53 @@ export interface GateContext extends WireContext {
   fileRefusal: string | null;
 }
 
+/** The gate in force on `w`: one set automatic asks once either end is in a team room. */
+export function gateInForce(w: Pick<Wire, "from" | "to" | "gate">, ctx: Pick<WireContext, "end">): WireGate {
+  return w.gate === "automatic" && !ctx.end(w.from)?.room && !ctx.end(w.to)?.room ? "automatic" : "ask";
+}
+
+/**
+ * Why a message queued on wire `id` mustn't be pasted now, or null: the rules on using the wire refuse it (a room's
+ * line, a take-over), or an automatic gate sent it and that gate asks now. Checked again just before the paste.
+ */
+export function queuedRefusal(id: string, w: Wire, ctx: WireContext): string | null {
+  const refused = wireRefusal(w.from, w.to, w.type, { ...ctx, self: id });
+  if (refused) return refused;
+  if (!w.delivery?.automatic || gateInForce(w, ctx) === "automatic") return null;
+  return ctx.end(w.from)?.room || ctx.end(w.to)?.room
+    ? "Automatic is off in a team room's area, so what its automatic gate sent waits for you."
+    : "This wire's gate was set to ask, so what its automatic gate sent waits for you.";
+}
+
 /**
  * What wire `id` shows now. Blocked isn't stored: it's worked out here, from the rules, the wire's counters and how
- * its ends are, so it clears by itself when its reason does. In flight is a fact whatever else has changed.
+ * its ends are, so it clears by itself when its reason does. In flight is a fact whatever else has changed, but for a
+ * book that can't be written: a delivery goes no further then. A failed or held delivery shows ready, saying why.
  */
 export function gateOf(id: string, w: Wire, ctx: GateContext): Gate {
   const here: GateContext = { ...ctx, self: id };
   const a = ctx.end(w.from);
   const b = ctx.end(w.to);
-  const inRoom = !!a?.room || !!b?.room;
-  const gate: WireGate = w.gate === "automatic" && !inRoom ? "automatic" : "ask";
+  const gate = gateInForce(w, ctx);
   const atLimit = !!w.rounds && w.rounds.used >= w.rounds.limit;
   const base: Pick<Gate, "gate" | "atLimit"> = { gate, ...(atLimit ? { atLimit } : {}) };
   const blocked = (why: string, more: Partial<Gate> = {}): Gate => ({ ...base, state: "blocked", why, ...more });
 
-  const delivery = w.delivery && (!w.pending || w.delivery.id === w.pending.id) ? w.delivery : null;
-  if (delivery?.state === "queued" || delivery?.state === "pasting") return { ...base, state: "sending", ...(w.pending ? { pendingId: w.pending.id } : {}) };
-
+  // a delivery's every step is written down before it's taken (wireDelivery.ts): while the book can't be, none is
   if (ctx.fileRefusal) return blocked(ctx.fileRefusal);
+  // in flight, a newer pending beside it or not. Queued, it isn't pasted once the rules refuse it, and may never go
+  // at an end whose hooks are silent.
+  if (isSending(w)) {
+    const pendingId = w.pending ? { pendingId: w.pending.id } : {};
+    if (w.delivery!.state === "queued") {
+      const refused = queuedRefusal(id, w, ctx);
+      if (refused) return blocked(refused, pendingId);
+      if (b?.hooksSilent) return blocked(`“${b.title}”: its hooks aren't reporting, so what's queued for it may never go. Mark it idle once it's at its prompt.`, { stalled: true, ...pendingId });
+    }
+    return { ...base, state: "sending", ...pendingId };
+  }
+  const delivery = w.delivery && (!w.pending || w.delivery.id === w.pending.id) ? w.delivery : null;
+
   const refused = wireRefusal(w.from, w.to, w.type, here);
   if (refused) return blocked(refused);
   for (const e of [a!, b!]) if (e.where === "closed" && !e.placed) return blocked(`“${e.title}” is closed and not on the landscape: reopen it from Closed sessions.`);
@@ -683,9 +741,11 @@ export function gateOf(id: string, w: Wire, ctx: GateContext): Gate {
   if (delivery?.state === "unconfirmed") return blocked(delivery.why ?? `It may have reached “${b!.title}”.`, { unconfirmed: true, ...(w.pending ? { pendingId: w.pending.id } : {}) });
   if (w.type === "handoff" && own(ctx.notes, w.from)?.verdict === "changes" && others(here).some((x) => x.type === "feedback" && x.from === w.from)) return blocked("needs approve");
   if (w.pending) {
-    if (atLimit) return blocked(`At the limit: ${w.rounds!.used} of ${w.rounds!.limit} rounds.`, { pendingId: w.pending.id });
+    // a round already counted for this pending (it went, then failed) isn't counted again
+    if (atLimit && !countedFor(w, w.pending.id)) return blocked(`At the limit: ${w.rounds!.used} of ${w.rounds!.limit} rounds.`, { pendingId: w.pending.id });
     if (b!.hooksSilent) return blocked(`“${b!.title}”: its hooks aren't reporting, so a message might never go.`, { pendingId: w.pending.id });
-    return { ...base, state: "ready", pendingId: w.pending.id, ...(delivery?.state === "failed" && delivery.why ? { why: delivery.why } : {}) };
+    const again = (delivery?.state === "failed" || delivery?.state === "held") && delivery.why ? { why: delivery.why } : {};
+    return { ...base, state: "ready", pendingId: w.pending.id, ...again };
   }
   if (delivery?.state === "sent") return { ...base, state: "sent" };
   if (delivery?.state === "placed") return { ...base, state: "sent", placed: true };
