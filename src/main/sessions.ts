@@ -13,6 +13,7 @@ import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents
 import { which, whichSync, quote } from "./shell";
 import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { RoomSandboxWatch, SANDBOX_REPORT_MS } from "./roomSandboxWatch";
+import { probeRoomSandbox, writtenSandbox, type SandboxProbe, type SandboxVerdict } from "./claudeSandboxProbe";
 import { CodexFolderNotice } from "./codexFolderNotice";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
@@ -336,6 +337,8 @@ export class SessionManager {
   folderNoticeTiming: { waitMs?: number; settleMs?: number; retryMs?: number; stallMs?: number } = {};
   /** How long a room launch's sandbox has to report in; SANDBOX_REPORT_MS unless a test says otherwise. */
   sandboxReportMs = SANDBOX_REPORT_MS;
+  /** Asks Claude Code for its own account of a room launch's sandbox (claudeSandboxProbe.ts); a test's stand-in otherwise. */
+  sandboxProbe: (p: SandboxProbe) => Promise<SandboxVerdict> = (p) => probeRoomSandbox(p);
   /**
    * What an agent pane's launch is told on top of its own instructions, beside a room's: its wires (wireTools.ts), so a
    * relaunched workspace knows to finish its step with finish_step. Null when it has nothing to say.
@@ -572,7 +575,9 @@ export class SessionManager {
       ...(room && Object.keys(room.agentEnv).length ? { env: room.agentEnv } : {}),
     };
     const envFirst = (env?: Record<string, string>) => (env ? ["/usr/bin/env", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)] : []);
-    const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext) => [...envFirst(ctx.env), this.resolveBin(a), ...a.launchArgs(r, ctx)].map(quote).join(" ");
+    const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext, args = a.launchArgs(r, ctx)) => [...envFirst(ctx.env), this.resolveBin(a), ...args].map(quote).join(" ");
+    // an agent pane's own arguments: a room launch's sandbox is checked with the very --settings it was given
+    let paneArgs: string[] = [];
     // the agent this pty runs: an agent pane's, or the one a terminal brings back
     const runs = req.shell ? req.shellResume?.agent : req.agent ?? "claude";
     let proc: pty.IPty;
@@ -583,7 +588,9 @@ export class SessionManager {
     const mcp = req.shell ? undefined : mcpLaunch(id);
     try {
       if (mcp) {
-        claudeArgs = ["-ilc", `exec ${commandFor(agent, req, { mcp, ...roomCtx })}`];
+        const paneCtx: LaunchContext = { mcp, ...roomCtx };
+        paneArgs = agent.launchArgs(req, paneCtx);
+        claudeArgs = ["-ilc", `exec ${commandFor(agent, req, paneCtx, paneArgs)}`];
       } else if (req.shellResume) {
         // a terminal that had an agent running in it: bring the conversation
         // back, and leave the user at the shell prompt when they quit it. It
@@ -720,6 +727,20 @@ export class SessionManager {
     };
     sess.total = sess.buffer.length;
     if (room?.sandboxMarker) sess.sandbox = this.watchSandbox(sess, room.sandboxMarker);
+    if (sess.sandbox) {
+      const at = paneArgs.indexOf("--settings");
+      if (at < 0 || !room?.claudeSettings) sess.sandbox.disproved("its launch carried no room sandbox settings to check");
+      else
+        this.proveSandbox(sess, {
+          bin: this.resolveBin(agent),
+          settingsJson: paneArgs[at + 1],
+          extraDirs,
+          cwd,
+          version: agentVersion,
+          written: writtenSandbox(room.claudeSettings),
+          env: { ...terminalEnv(), ...agent.launchEnv },
+        });
+    }
     if (room?.codexFolderNotice) sess.folderNotice = this.watchFolderNotice(sess);
     started = sess;
     this.live.set(info.id, sess);
@@ -1406,6 +1427,23 @@ export class SessionManager {
       },
       this.sandboxReportMs
     );
+  }
+
+  /**
+   * Claude Code's own account of a room launch's sandbox, asked beside the pane (it doesn't wait for it): the room's
+   * line opens only once it shows the sandbox on as the room wrote it (RoomSandboxWatch). Each verdict is logged.
+   */
+  private proveSandbox(sess: LiveSession, p: SandboxProbe): void {
+    const current = () => this.live.get(sess.info.id) === sess;
+    this.sandboxProbe(p)
+      .catch((err): SandboxVerdict => ({ ok: false, why: `Mockingbird's check of its sandbox failed (${(err as Error).message})`, log: `refused: the check threw: ${(err as Error).message}` }))
+      .then((v) => {
+        if (!current() || !sess.sandbox) return;
+        if (v.ok) console.log(`[sessions] ${sess.info.id}: sandbox check ${v.log}`);
+        else console.warn(`[sessions] ${sess.info.id}: sandbox check ${v.log}`);
+        if (v.ok) sess.sandbox.proved();
+        else sess.sandbox.disproved(v.why ?? "Mockingbird's check of its sandbox failed");
+      });
   }
 
   /** A Codex room launch's folder notice, answered when it's exactly the one to answer (CodexFolderNotice). */

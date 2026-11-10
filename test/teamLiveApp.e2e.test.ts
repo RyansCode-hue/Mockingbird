@@ -8,7 +8,7 @@ import type { LivePanesState } from "../src/shared/team/livePanes";
 import type { TakeoverPlan, TakeoverView } from "../src/shared/team/takeover";
 import type { HouseView } from "../src/shared/team/house";
 import { builderHome, fakeHouse } from "./fakeHouse";
-import { relayLine, relayRaw } from "./e2e/agentRelay";
+import { relayLine, relayRaw, sandboxAnswerLine } from "./e2e/agentRelay";
 import type { RoomChatView as ChatView } from "../src/shared/team/chat";
 import type { MigrationsView } from "../src/shared/team/migrations";
 import type { OverlapsFile } from "../src/shared/team/overlaps";
@@ -63,6 +63,7 @@ const FAKE_CLAUDE = `#!/bin/bash
 conv="e2e-$MOCKINGBIRD_SESSION"
 if [ "$1" = "--resume" ]; then conv="$2"; fi
 if [ "$1" = "--version" ]; then echo "2.1.400 (Claude Code stand-in)"; exit 0; fi
+${sandboxAnswerLine("2.1.400")}
 # reads this launch's token where its MCP server would, leaving it as the server does, so the test can call tools as this session
 token_file=$(printf '%s' "$*" | sed -n 's/.*"MOCKINGBIRD_TOKEN_FILE":"\\([^"]*\\)".*/\\1/p')
 if [ -n "$token_file" ]; then mkdir -p "$HOME/e2e-tokens" && cp "$token_file" "$HOME/e2e-tokens/$MOCKINGBIRD_SESSION"; fi

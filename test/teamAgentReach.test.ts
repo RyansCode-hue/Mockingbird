@@ -59,6 +59,8 @@ function side(m: LoopbackMember, dir: string, listen = false) {
   const sessions = new SessionManager(store as any);
   sessions.scrollbackDir = path.join(dir, m.name, "scrollback");
   sessions.setAgentVersions({ claude: CLAUDE_ROOM_SANDBOX_SINCE });
+  // its Claude Code's own account of the room's sandbox shows it on (claudeSandboxProbe.test.ts asks a stand-in)
+  sessions.sandboxProbe = async () => ({ ok: true, why: null, log: "ok: a stand-in Claude Code" });
   const base = path.join(dir, m.name, "live");
   const live = new LivePanes({
     team: () => m.team,
@@ -108,6 +110,8 @@ function side(m: LoopbackMember, dir: string, listen = false) {
     if (marker) {
       sessions.roomSandboxReported(s.id, marker, false);
       sessions.statusFromHook({ paneId: s.id, status: "idle", started: true });
+      // and Claude Code's own account of its sandbox, which comes in its own time
+      await until(() => !sessions.guardsOf(s.id)?.starting, "its sandbox settled");
     }
     return s;
   };

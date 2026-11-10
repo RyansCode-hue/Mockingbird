@@ -696,6 +696,33 @@ Member replace the single admin (creator, else longest-standing member).
     itself), or nothing comes within a minute, it's outside the sandbox for
     the rest of its life: teammates see it unguarded, its guard chip offers
     the restart, and the reason is listed above the session list once.
+  - **Claude Code says its sandbox is on.** The marker shows the file
+    loaded, but Claude Code ignores a setting it doesn't know: a renamed
+    `sandbox.enabled` would load, report in, and run Bash unsandboxed. So
+    beside each launch Mockingbird starts the same Claude Code headless in
+    the same folder with the same `--settings` (`-p --bare`, stream-json) and
+    asks it what its /sandbox dialog shows (`get_sandbox_dialog`), and its
+    version (`initialize`). It sends no user message, so no turn runs and no
+    model is called; `--bare` reads no keychain or sign-in, and runs no
+    hooks. The pane doesn't wait for it, but its line opens only once the
+    answer shows all of these:
+    - the sandbox on in the settings and started, no fallback outside it,
+      and nothing missing it needs;
+    - every path the room denies, denied;
+    - nothing allowed beyond what the room allows: no excluded commands,
+      unix sockets, or extra readable or writable paths;
+    - the pane's own Claude Code version;
+    - no organization settings it couldn't read.
+
+    Any other answer, or none within 10 seconds, keeps the line closed and
+    says why, as above. The likeliest is the user's own
+    `~/.claude/settings.json` adding to every sandbox what a room pane can't
+    run under (`excludedCommands`, `allowUnixSockets`, `allowWrite`). Room
+    launches read the user's settings, so those would apply there. The
+    message names them and says to move them to the projects that need them
+    (`.claude/settings.local.json`, which room panes don't read). Panes
+    outside rooms aren't affected. Each verdict is logged, naming no path
+    beyond what the room wrote.
   - **Claude Code 2.1.314 or later:** the first release that keeps the file
     tools in the session's folders. An older one starts room sessions
     outside the sandbox, kept off the room's line, and its chip says

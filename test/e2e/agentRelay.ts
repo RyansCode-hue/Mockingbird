@@ -18,6 +18,13 @@ const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 export const relayLine = (mode: "raw" | "mcp") =>
   `if [ -t 0 ]; then ELECTRON_RUN_AS_NODE=1 ${q(electronBin ?? "electron")} ${q(RELAY)} ${mode} $$ "$@" </dev/null >/dev/null 2>&1 & fi`;
 
+/**
+ * The line a stand-in Claude Code's bash script runs first: Mockingbird's check of a room launch's sandbox
+ * (claudeSandboxProbe.ts) is answered as Claude Code `version` answers it, the sandbox on as its --settings write it.
+ */
+export const sandboxAnswerLine = (version: string) =>
+  `if [[ " $* " == *" --bare "* ]]; then MB_FAKE_SANDBOX_VERSION=${q(version)} ELECTRON_RUN_AS_NODE=1 exec ${q(electronBin ?? "electron")} ${q(path.join(__dirname, "..", "fixtures", "fakeClaudeSandbox.cjs"))} "$@"; fi`;
+
 const sockOf = (home: string, pane: string) => path.join(home, "relay", `${pane}.sock`);
 
 /** A connection to pane `pane`'s relay, once it's listening: the pane's relay before it is a stale file, refused. */

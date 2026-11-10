@@ -1,5 +1,6 @@
 import { execFileSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRepo, tempDir } from "./helpers";
@@ -20,6 +21,8 @@ import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
 import { RemoteAudit } from "../src/main/team/remoteAudit";
 import capture from "./fixtures/codex-folder-notice-0.156.1.json";
 import { git } from "../src/main/git";
+import { quote } from "../src/main/shell";
+import { probeRoomSandbox, type SandboxProbe, type SandboxVerdict } from "../src/main/claudeSandboxProbe";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; emit(d: string): void; exit(code: number): void };
@@ -70,8 +73,9 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
   };
   const sessions = new SessionManager(store as any);
   sessions.scrollbackDir = path.join(dir, m.name, "scrollback");
-  // a Claude Code new enough for the room's sandbox
+  // a Claude Code new enough for the room's sandbox, whose own account of it shows it on (its tests below say otherwise)
   sessions.setAgentVersions({ claude: CLAUDE_ROOM_SANDBOX_SINCE });
+  sessions.sandboxProbe = async () => ({ ok: true, why: null, log: "ok: a stand-in Claude Code" });
   const window: unknown[][] = [];
   const notes: { title: string; body: string; paneId: string }[] = [];
   const audits: string[] = [];
@@ -120,11 +124,15 @@ async function pair(over: Partial<LivePanesDeps> = {}) {
   return { dir, roomId, net, ryan, nick };
 }
 
-/** What a Claude room launch's settings and Mockingbird's own SessionStart hook report as it starts (RoomSandboxWatch). */
-function reportIn(s: ReturnType<typeof side>, id: string, o: { late?: boolean; marker?: string } = {}) {
+/**
+ * What a Claude room launch's settings and Mockingbird's own SessionStart hook report as it starts (RoomSandboxWatch),
+ * and the launch settled: Claude Code's own account of its sandbox (claudeSandboxProbe.ts) comes in its own time.
+ */
+async function reportIn(s: ReturnType<typeof side>, id: string, o: { late?: boolean; marker?: string } = {}) {
   const marker = o.marker ?? /room-sandbox\.sh\\" ([0-9a-f]+)/.exec(ptyOf(id).args.join(" "))![1];
   s.sessions.roomSandboxReported(id, marker, !!o.late);
   s.sessions.statusFromHook({ paneId: id, status: "idle", started: true });
+  await until(() => !s.sessions.guardsOf(id)?.starting, "its sandbox settled");
 }
 
 /** The room one of this install's own sessions is in, as its window's state tags it; undefined until it does. */
@@ -741,9 +749,9 @@ describe("room session launch", () => {
     for (const rule of ["Read(**/.env)", "Read(**/.env.*)", "Read(//**/.env)", "Read(**/*.pem)", "Read(**/*.key)", "Read(**/credentials.json)", "Read(~/.mockingbird/team/**)"]) expect(command).toContain(rule);
     expect(command).toContain(`Read(/${path.join(ryan.settings.workTrackerPath, "secrets/ado.pat")})`);
     expect(p.env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
-    // starting until its sandbox reports in
+    // starting until its sandbox reports in, and Claude Code's own account of it (a stand-in's, here) has come
     expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true, starting: true });
-    reportIn(ryan, s.id);
+    await reportIn(ryan, s.id);
     expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
   });
 
@@ -1001,7 +1009,7 @@ describe("room session launch", () => {
     const s = await ryan.start({ taskGroup: "private" });
     const local = await ryan.start({ taskGroup: "private" });
     const inRoom = await ryan.start();
-    reportIn(ryan, inRoom.id);
+    await reportIn(ryan, inRoom.id);
     expect(ryan.live.outsideSandbox(s.id)).toBe(false);
     ryan.sessions.setGroup(s.id, "5110");
     await until(() => !!remoteOf(nick, s.id), "the record");
@@ -1013,7 +1021,7 @@ describe("room session launch", () => {
     const again = await ryan.sessions.restart(s.id);
     expect(ptyOf(again.id).args.join(" ")).toContain('"sandbox":{"enabled":true');
     expect(ryan.live.outsideSandbox(again.id)).toBe(true);
-    reportIn(ryan, again.id);
+    await reportIn(ryan, again.id);
     expect(ryan.live.outsideSandbox(again.id)).toBe(false);
   });
 
@@ -1112,14 +1120,14 @@ describe("room session launch", () => {
     const early = await ryan.start({ title: "early" });
     ryan.sessions.statusFromHook({ paneId: early.id, status: "idle", started: true });
     ryan.sessions.statusFromHook({ paneId: early.id, status: "working", prompted: true });
-    reportIn(ryan, early.id);
+    await reportIn(ryan, early.id);
     expect(ryan.sessions.guardsOf(early.id)).toEqual({ secrets: false, coauthors: true });
     expect(ryan.live.outsideSandbox(early.id)).toBe(true);
     await until(() => remoteOf(nick, early.id)?.room?.guards.secrets === false, "teammates see it unguarded");
 
     // read beside a turn's event, the marker can't be told from one the turn wrote
     const late = await ryan.start({ title: "late" });
-    reportIn(ryan, late.id, { late: true });
+    await reportIn(ryan, late.id, { late: true });
     expect(ryan.sessions.guardsOf(late.id)).toMatchObject({ secrets: false });
 
     // a rejected settings file runs none of its hooks: nothing reports in, and the time runs out
@@ -1133,6 +1141,59 @@ describe("room session launch", () => {
     expect(ryan.live.state().problems.filter((p) => p.includes("“early”"))).toEqual([expect.stringMatching(/first turn began before its sandbox settings reported in/)]);
     // a session refused across the line says why
     expect(ryan.live.outsideSandbox(silent.id)).toBe(true);
+  });
+
+  it("opens a Claude launch's line only once Claude Code's own account shows its sandbox on: the marker and the start alone don't, and a turn between them and it changes nothing", async () => {
+    const { ryan } = await pair();
+    let answer!: (v: SandboxVerdict) => void;
+    ryan.sessions.sandboxProbe = () => new Promise((r) => (answer = r));
+    const s = await ryan.start();
+    ryan.sessions.roomSandboxReported(s.id, /room-sandbox\.sh\\" ([0-9a-f]+)/.exec(ptyOf(s.id).args.join(" "))![1], false);
+    ryan.sessions.statusFromHook({ paneId: s.id, status: "idle", started: true });
+    ryan.sessions.statusFromHook({ paneId: s.id, status: "working", prompted: true });
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true, starting: true });
+    expect(ryan.live.outsideSandbox(s.id)).toBe(true);
+    answer({ ok: true, why: null, log: "ok: a stand-in" });
+    await until(() => !ryan.sessions.guardsOf(s.id)?.starting, "its sandbox confirmed");
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
+    expect(ryan.live.outsideSandbox(s.id)).toBe(false);
+  });
+
+  it("asks Claude Code with the pane's own binary, --settings, folder and version, and keeps the line closed when its account says otherwise, telling Ryan once what to change; the log has no path of his", async () => {
+    const { ryan } = await pair();
+    const asked: SandboxProbe[] = [];
+    const fake = path.join(tempDir("fake-claude"), "claude");
+    const fakeOf = (mode: string) => `#!/bin/bash\nMB_FAKE_SANDBOX=${mode} MB_FAKE_SANDBOX_VERSION=${CLAUDE_ROOM_SANDBOX_SINCE} exec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(__dirname, "fixtures", "fakeClaudeSandbox.cjs"))} "$@"\n`;
+    // the pane runs /bin/echo here: the account comes from a stand-in Claude Code given what the pane was given
+    ryan.sessions.sandboxProbe = (p) => (asked.push(p), probeRoomSandbox({ ...p, bin: fake }));
+    const logged = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    fs.writeFileSync(fake, fakeOf("extra-write"), { mode: 0o755 });
+    const s = await ryan.start({ title: "extras", extraDirs: ["/extra/dir"] });
+    await reportIn(ryan, s.id);
+    const args = ptyOf(s.id).args.join(" ");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ bin: "/bin/echo", cwd: os.homedir(), version: CLAUDE_ROOM_SANDBOX_SINCE, extraDirs: ["/extra/dir"] });
+    expect(args).toContain(quote(asked[0].settingsJson));
+    expect(asked[0].written.denyRead.length).toBeGreaterThan(5);
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: false, coauthors: true });
+    expect(ryan.live.outsideSandbox(s.id)).toBe(true);
+    expect(ryan.live.state().problems.filter((p) => p.includes("“extras”"))).toEqual([
+      `“extras” isn't in its team room's sandbox: your ~/.claude/settings.json sandbox has filesystem.allowWrite ["~/Documents/private-notes"], which room panes can't run under. Move them to the settings of the projects that need them (.claude/settings.local.json there), which room panes don't read. Your panes outside rooms aren't affected. Nothing crosses the room's line for it, and teammates see it as unguarded; restart it to try again.`,
+    ]);
+    const verdicts = logged.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("sandbox check"));
+    expect(verdicts).toEqual([`[sessions] ${s.id}: sandbox check refused: Claude Code ${CLAUDE_ROOM_SANDBOX_SINCE}: the user's settings add 1 allowWrite path`]);
+
+    // the sandbox on as written: the line opens
+    fs.writeFileSync(fake, fakeOf("good"), { mode: 0o755 });
+    const ok = await ryan.start({ title: "good" });
+    await reportIn(ryan, ok.id);
+    expect(ryan.sessions.guardsOf(ok.id)).toEqual({ secrets: true, coauthors: true });
+    // a renamed sandbox.enabled: closed, saying so
+    fs.writeFileSync(fake, fakeOf("enabled-renamed"), { mode: 0o755 });
+    const renamed = await ryan.start({ title: "renamed" });
+    await reportIn(ryan, renamed.id);
+    expect(ryan.live.state().problems.filter((p) => p.includes("“renamed”"))).toEqual([expect.stringContaining("reads the room's settings with its sandbox off")]);
   });
 
   it("holds git in a room session's worktree to the git folders it started on: rewritten, its folder isn't read for teammates, and Ryan is told once", async () => {

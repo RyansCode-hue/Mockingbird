@@ -3234,6 +3234,121 @@ spawn is the only one: a rewritten `.git` refuses the search, saying why.
 - `MB_E2E_APP=1`: `wiresApp`, `quitApp` and `teamLiveApp` pass, with no relays left.
 - Load averages ran 35 to 58 throughout.
 
+#### W20 sandbox proof as built
+Goal: close the re-review's M-new. The report-in proves a Claude room launch's settings
+file loaded, not that its sandbox is enforcing. Claude Code ignores an unknown key, so
+a renamed `sandbox.enabled` loads, the marker fires, and Bash runs unsandboxed
+(the reviewer's run 2).
+
+**What was found** (Claude Code 2.1.318, a scratch HOME, never signed in):
+- No startup debug line, `claude doctor` line or hook payload says whether the
+  sandbox is on.
+- Sandboxed Bash runs as `env … /usr/bin/sandbox-exec -p <profile> <shell> -c …`.
+  Sampling the process tree for that is racy: a tripwire at best.
+- The stream-json control protocol's `get_sandbox_dialog` (marked `@internal`)
+  returns what the terminal's /sandbox dialog shows:
+  - `enabled` ("on in the settings, and the sandbox started");
+  - `enabled_in_settings`, `unsandboxed_fallback`, the dependency check;
+  - `excluded_commands`, `policy_origins`;
+  - the restrictions as enforced, the user's own settings merged in.
+
+  It answers in `-p --bare` with no user message. With the API pointed at a local
+  logger, the only request was `HEAD /api/hello`. `initialize` gives
+  `claude_code_version`; `get_sandbox_dialog` alone doesn't, so both are sent.
+
+Against a real room launch's settings:
+
+| Settings | `get_sandbox_dialog` |
+| :- | :- |
+| as written | `enabled`, no fallback; all four path lists equal to what the room wrote |
+| `enabled` renamed | `enabled: false`, `mode: disabled` |
+| `filesystem` renamed | every path list empty |
+| `denyRead` renamed | `fs_deny_read` empty |
+| `allowUnsandboxedCommands` renamed | `unsandboxed_fallback: true` |
+| the user's settings adding `allowWrite`, a Docker socket, `excludedCommands` | all three merged into the room's |
+
+The last row was a gap of its own: the room's `--settings` can't take away what the
+user's settings add. Room launches read them (`--setting-sources user`), so
+`excludedCommands` ran outside the sandbox there, and a Docker socket reaches every
+folder.
+
+**Built** (`claudeSandboxProbe.ts`; `RoomSandboxWatch.proved` and `.disproved`;
+`sessions.ts` `proveSandbox`):
+- **The probe.** Each Claude room launch with a sandbox marker runs it beside the
+  pane, which doesn't wait. It runs in the user's login shell, as the pane's does:
+  - the pane's binary, folder, `--add-dir` folders and `--settings` string, the very
+    argument the pane got;
+  - `-p --input-format stream-json --output-format stream-json --verbose --bare
+    --strict-mcp-config --no-session-persistence --setting-sources user`;
+  - `env -u` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
+    `CLAUDE_CODE_OAUTH_TOKEN` after the shell's rc files;
+  - stdin is the two control requests, then closed.
+- **When the line opens.** The watch confirms only once the marker, the start and the
+  probe's proof have all come. A turn after the marker and the start no longer fails
+  it: only the out-of-band answer is left, which a turn can't forge. The probe's
+  answer passes only when all of these hold:
+  - `enabled` and `enabled_in_settings`;
+  - no `unsandboxed_fallback`, and no dependency errors;
+  - `policy_origins` without `remote_unknown`;
+  - every `denyRead` and `denyWrite` path the room wrote, in the enforced lists;
+  - no `excluded_commands` and no `allow_all_unix_sockets`;
+  - `fs_allow_write`, `fs_allow_read` and `unix_sockets` within the room's;
+  - `claude_code_version` equal to the pane's.
+- **Failing closed.** Any error, missing field, mismatch, non-JSON answer or no answer
+  within 10 s keeps the line closed. Ryan is told once, as for a sandbox that didn't
+  report in, with the exact reason ("Claude Code 2.1.318 reads the room's settings
+  with its sandbox off", "… no longer reports its sandbox", the version mismatch).
+  For the user's own extras, the message names them, says to move them to the
+  projects that need them (`.claude/settings.local.json`, which room panes don't
+  read), and says panes outside rooms aren't affected.
+- **Logging.** The verdict is logged per launch with counts, never a path the user's
+  settings added.
+
+**Real runs** (`claudeSandboxProbe.test.ts`, the installed Claude Code, the test's
+throwaway HOME, skipped under CI): the room's settings pass; renamed `sandbox.enabled`
+is refused; `excludedCommands` from the throwaway HOME's own settings are refused,
+named.
+
+**Tests:**
+- `claudeSandboxProbe.test.ts`, through the real login shell, against a stand-in
+  Claude Code (`test/fixtures/fakeClaudeSandbox.cjs`):
+  - the arguments (`--bare` asserted) and the input, only control requests;
+  - no credential reaching it;
+  - the good answer, and each renamed key probed;
+  - a sandbox that didn't start, missing dependencies, unknown managed settings, a
+    missing field;
+  - a version mismatch, no dialog answer, an error answer, non-JSON, a timeout;
+  - each user extra, with the log's counts;
+  - the room's own sockets allowed.
+- `roomSandboxWatch.test.ts`: the proof in any order, a turn after the reports, a
+  disproof, and the time running out on the proof alone.
+- `teamLivePanes.test.ts`: the line waits for the proof. The probe gets the pane's
+  own binary, `--settings`, folder, `--add-dir` and version. An extra `allowWrite`
+  is refused and told once, its log line with counts only. Good opens the line; a
+  renamed `enabled` doesn't.
+- The other room harnesses (`teamLivePanes`, `teamAgentReach`) answer the probe with a
+  stand-in's proof. `teamLiveApp.e2e`'s stand-in Claude Code answers it as the fake
+  does.
+
+**Residual:**
+- `get_sandbox_dialog` is `@internal`: a Claude Code that changes it fails closed,
+  saying it no longer reports its sandbox.
+- The probe is a sibling of the pane, not the pane. Its version is checked against
+  the one Mockingbird read for the launch, so an update since then fails closed. An
+  update landing in the moment between the pane's start and the probe's isn't seen.
+- `--bare` doesn't fetch server-managed settings. `remote_unknown` in
+  `policy_origins` fails closed.
+
+**Checked:**
+- A mutation check (`mutate-probe.py`): each of 22 guards undone in turn fails its
+  test.
+- `npm run typecheck` and `npm run build` pass, and `CI=true npm test` exits 0: 189
+  files pass and 30 skip; 3,102 tests pass and 149 skip (rebased onto 866566c).
+- `MB_E2E_APP=1`: `wiresApp`, `quitApp` and `teamLiveApp` pass on 866566c at load 30
+  to 53. Before the rebase, `teamLiveApp` failed once at load 145: an app took longer
+  than 8 s to exit after "quit: exiting". It then passed twice alone at load 40 to 140,
+  with no stand-in probe left running.
+
 ## 2. Data model
 
 ### The file

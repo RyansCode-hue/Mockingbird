@@ -10,6 +10,10 @@
  * shows those hooks run for this launch, so its prompts would be seen. Until both have come the launch is starting,
  * and nothing crosses the room's line for it; once a turn's event comes first, or they haven't come in time, it's
  * outside the sandbox for the rest of its life.
+ *
+ * That shows the file loaded, not that Claude Code read its sandbox from it: a key it doesn't know is ignored. So the
+ * launch also waits for Claude Code's own account of its sandbox (claudeSandboxProbe.ts), asked out of band, which no
+ * turn can forge: once the marker and the start have come in order, a turn no longer matters, only that answer.
  */
 
 export type RoomSandboxState = "starting" | "confirmed" | "failed";
@@ -27,6 +31,8 @@ export class RoomSandboxWatch {
   state: RoomSandboxState = "starting";
   private marked = false;
   private started = false;
+  /** Claude Code's own account of its sandbox showed it on, as the room wrote it (claudeSandboxProbe.ts). */
+  private proven = false;
   private timer: ReturnType<typeof setTimeout> | null;
   /** The whole second it was launched in: hook events stamped before it are the pane's earlier launch's. */
   private readonly since: number;
@@ -45,7 +51,8 @@ export class RoomSandboxWatch {
   private missing(ms: number): string {
     const s = `${Math.round(ms / 1000)} seconds`;
     if (!this.marked) return `its sandbox settings didn't report in within ${s} of its start — Claude Code may have rejected them (its pane says so as it starts)`;
-    return `Mockingbird's hooks didn't report it starting within ${s}, so Mockingbird can't tell its sandbox started before its first turn — install its status hooks (Settings → Agents)`;
+    if (!this.started) return `Mockingbird's hooks didn't report it starting within ${s}, so Mockingbird can't tell its sandbox started before its first turn — install its status hooks (Settings → Agents)`;
+    return `Mockingbird's check of its sandbox didn't finish within ${s}`;
   }
 
   /** The launch's marker came; `late`: in the same read of the events as something a turn leaves (hooks.ts turnsIn). */
@@ -64,9 +71,23 @@ export class RoomSandboxWatch {
     this.settle();
   }
 
+  /** Claude Code's own account of its sandbox: on, as the room wrote it. */
+  proved(): void {
+    if (this.state !== "starting") return;
+    this.proven = true;
+    this.settle();
+  }
+
+  /** Claude Code's own account of its sandbox wasn't that, or couldn't be had: `why` as for `failed`. */
+  disproved(why: string): void {
+    this.fail(why);
+  }
+
   /** Something only a turn leaves came (a prompt, a tool, a stop), stamped `at` (whole seconds) when known. */
   turn(at?: number): void {
     if (this.state !== "starting" || (at !== undefined && at < this.since)) return;
+    // both came first: what's still awaited is asked out of band, which a turn can't answer
+    if (this.marked && this.started) return;
     this.fail(this.marked ? "its first turn began before Mockingbird's hooks reported it starting" : "its first turn began before its sandbox settings reported in");
   }
 
@@ -76,7 +97,7 @@ export class RoomSandboxWatch {
   }
 
   private settle(): void {
-    if (!this.marked || !this.started) return;
+    if (!this.marked || !this.started || !this.proven) return;
     this.state = "confirmed";
     this.stop();
     this.tell.confirmed();
