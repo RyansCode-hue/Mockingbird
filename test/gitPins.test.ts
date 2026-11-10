@@ -6,6 +6,8 @@ import { git } from "../src/main/git";
 import { clearGitPins, gitPinRefusal, onGitPinRefused, pinGitDirs, readGitPointer } from "../src/main/gitPins";
 import { roomGitDirs } from "../src/main/codexRoomSandbox";
 import { worktreeState } from "../src/main/worktrees";
+import { guardedGit, OWN_WRITE_ENV, WRITE_ENV } from "../src/main/safeGit";
+import { searchFiles } from "../src/main/find";
 import { tempDir } from "./helpers";
 
 /** git in a room session's folder held to the git data it started on, whatever its agent writes there. */
@@ -43,6 +45,7 @@ describe("git in a room session's folder", () => {
     expect(pinGitDirs(t.wt, (await roomGitDirs(t.wt))!, t.repo)).toBeNull();
     expect(readGitPointer(t.wt)).toEqual({ common: path.join(t.repo, ".git"), own: path.join(t.repo, ".git", "worktrees", "wt") });
     expect((await worktreeState(t.wt)).branch).toBe("5110");
+    expect(await (await guardedGit(t.wt)).status(["--porcelain"])).toBe("");
     const told: string[] = [];
     const off = onGitPinRefused((top, why) => told.push(`${top}: ${why}`));
 
@@ -51,6 +54,12 @@ describe("git in a room session's folder", () => {
     await expect(git(t.wt, ["status", "--porcelain"])).rejects.toThrow(/won't run git in .*its \.git now leads to .*evilwt/);
     await expect(git(t.wt, ["commit", "--allow-empty", "-m", "x"])).rejects.toThrow(/won't run git/);
     await expect(git(path.join(t.wt), ["checkout", "--", "."])).rejects.toThrow(/won't run git/);
+    // guarded reads, and writes with the repository's settings overridden, as well
+    await expect(guardedGit(t.wt).then((g) => g.status(["--porcelain"]))).rejects.toThrow(/won't run git/);
+    await expect(git(t.wt, ["add", "-A"], { env: WRITE_ENV })).rejects.toThrow(/won't run git/);
+    await expect(git(t.wt, ["fetch", "origin"], { env: OWN_WRITE_ENV })).rejects.toThrow(/won't run git/);
+    // the one git main starts itself, Find's streamed git grep, waits on isRepo's git, which is refused
+    await expect(searchFiles(t.wt, "x", { regex: false, matchCase: false })).rejects.toThrow(/won't run git/);
     expect(fs.existsSync(t.ran)).toBe(false);
     expect(told).toHaveLength(1);
     off();

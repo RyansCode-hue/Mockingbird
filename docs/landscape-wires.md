@@ -3063,6 +3063,21 @@ argument (above) or `codex exec`. The user's own typing isn't held.
 fail their tests. The one that doesn't is `stop()` cancelling its timers, which is
 inert: each timer checks the watcher still holds.
 
+**Rebased onto W2 2c+2d** (main `4fc1f18`). One conflict: `worktrees.ts`'s imports
+(W2's `guardedGit`, `WRITE_ENV` and `OWN_WRITE_ENV`; W20's `unpinGitDirs`), both
+kept. The git-pin check stays in `git.ts` `run()`, under `git()` and `gitBytes()`, so
+W2's `guardedGit` (its config listing too) and every write with `WRITE_ENV` or
+`OWN_WRITE_ENV` pass through it. `gitPins.test.ts` now also has a guarded status, an
+`add` with `WRITE_ENV` and a `fetch` with `OWN_WRITE_ENV` refused in a rewritten
+folder. The one git `src/main` starts outside `git.ts`, Find's streamed `git grep`
+(`find.ts`), starts only once `isRepo` has run through it, and is refused with it; the
+test checks that too.
+
+**Checked on the rebased head** (load 9 to 16):
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0: 187 files pass and 30 skip; 3,054 tests pass and 147 skip.
+- `MB_E2E_APP=1`: `wiresApp`, `quitApp` and `teamLiveApp` pass, with no relays left.
+
 ## 2. Data model
 
 ### The file
