@@ -291,6 +291,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     s.roomLaunch = (target) => this.roomLaunch(target);
     s.sandboxLost = (info, why) =>
       this.problem(`“${info.ticketTitle ?? info.title}” isn't in its team room's sandbox: ${why}. Nothing crosses the room's line for it, and teammates see it as unguarded; restart it to try again.`);
+    s.folderNoticeSeen = (info, what, why) => {
+      const title = info.ticketTitle ?? info.title;
+      if (what === "answered") this.d.log(`team: room session ${info.id}`, `answered its Codex's folder notice for “${title}” with “Open restricted” (Enter)`);
+      else this.problem(`“${title}” is waiting on its Codex: ${why}. Answer its folder notice in its pane if it's still up; nothing is typed into the pane until its Codex has opened.`);
+    };
     const ownFolder = (top: string) => [...s.list(), ...s.resumable()].some((x) => x.cwd === top || x.cwd.startsWith(top + path.sep));
     this.offs.push(onGitPinRefused((top, why) => ownFolder(top) && this.problem(why)));
     setRoomSessionLookup(this);
@@ -539,6 +544,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       guards: { secrets: target.agent !== null && (claudeSandboxed || (codexGuarded && codexServers !== null && codexFoldersKnown)), coauthors: this.hooksReady },
       sandboxMarker,
       agentEnv: caches ? roomCacheEnv(caches) : {},
+      // its folders are named untrusted (codexOutsideOff), so an interactive Codex opens on its folder notice
+      codexFolderNotice: codexGuarded && codexFoldersKnown,
     };
   }
 

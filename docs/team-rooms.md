@@ -600,11 +600,27 @@ Member replace the single admin (creator, else longest-standing member).
       once pulled. Codex 0.156.1 already ignores a project's `notify`. What
       untrusted costs: Codex leaves out the repository's `AGENTS.md`, so the
       session is told to read them itself; an interactive Codex opens with a
-      "Folder access" notice ("Open restricted"), dismissed with Enter on each
-      launch; and approvals become `on-request`, what a trusted folder gets,
+      "Folder access" notice ("Open restricted" or "Quit"); and approvals
+      become `on-request`, what a trusted folder gets,
       whatever `approval_policy` the user's config sets (untrusted alone would
       ask before every command). The sandbox, not the approval, decides what
       runs.
+    - **The folder notice is answered for it** (`codexFolderNotice.ts`). No
+      setting skips it, and Codex holds everything behind it: a ticket's or a
+      take-over's brief, given as Codex's argument, waits, and no hook fires.
+      Mockingbird reads the pane's screen and presses Enter only on exactly
+      that notice with "Open restricted" highlighted, once the pane has been
+      still for 0.3 seconds (Codex drops a key that arrives as the notice is
+      drawn). An Enter that draws nothing in 2 seconds, the notice still up,
+      is pressed again, three times at most. Each Enter is logged. Any other
+      folder question (another default, wording or choice), a notice that
+      outlasts its Enters, or a Codex that hasn't opened 15 seconds after one,
+      is left to the user, who is told once above the session list. Until
+      Codex draws its composer after the notice (or its hooks report), nothing
+      is typed into the pane: wires and other queued messages wait (and say
+      so), a broadcast sent now waits with them, and Compact is refused. A
+      Codex that shows no notice within a minute is no longer waited for.
+      Council's turns run `codex exec`, which has no notice.
     - **`notify`**, the user's program run after each turn with the turn's last
       message, is set to nothing.
     - **Apps, plugins, computer and browser use**, and skills installing the MCP

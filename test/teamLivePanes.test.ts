@@ -18,6 +18,7 @@ import { ROOM_CONTEXT_ENV } from "../src/shared/team/claims";
 import { HOUSE_READ_TOOLS, HOUSE_TOOL_NAMES, HOUSE_WRITE_TOOLS } from "../src/shared/team/house";
 import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
 import { RemoteAudit } from "../src/main/team/remoteAudit";
+import capture from "./fixtures/codex-folder-notice-0.156.1.json";
 import { git } from "../src/main/git";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
@@ -883,6 +884,35 @@ describe("room session launch", () => {
     expect(told).toEqual([expect.stringContaining("(`codex mcp list` exited with code 1)")]);
     await until(() => !!remoteOf(nick, a.id), "the record");
     expect(remoteOf(nick, a.id)!.room!.guards).toEqual({ secrets: false, coauthors: true });
+  });
+
+  it("answers a Codex room session's folder notice, logged, typing nothing else into it till Codex has opened; a folder question it doesn't answer is Ryan's, told once", async () => {
+    const { ryan } = await pair();
+    ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
+    ryan.sessions.folderNoticeTiming = { settleMs: 20 };
+    const s = await ryan.start({ agent: "codex" });
+    expect(ryan.sessions.deliverAgentMessage(s.id, "the wire", true)).toMatch(/until its Codex has opened its folder/);
+    ptyOf(s.id).emit(capture.fresh.beforeEnter);
+    await until(() => ptyOf(s.id).writes.length > 0, "the Enter");
+    expect(ptyOf(s.id).writes).toEqual(["\r"]);
+    expect(ryan.logs.filter((l) => l.includes("folder notice"))).toEqual([`team: room session ${s.id}: answered its Codex's folder notice for “donors” with “Open restricted” (Enter)`]);
+    ptyOf(s.id).emit(capture.fresh.afterEnter);
+    ryan.sessions.statusFromHook({ paneId: s.id, status: "idle" });
+    await until(() => ptyOf(s.id).writes.join("").includes("the wire"), "the wire");
+
+    const asks = await ryan.start({ agent: "codex", title: "asks" });
+    ptyOf(asks.id).emit(capture.fresh.beforeEnter.replace("› 1. Open restricted", "  1. Open restricted").replace("  2. Quit", "› 2. Quit"));
+    await until(() => ryan.live.state().problems.some((p) => p.includes("“asks”")), "Ryan told");
+    await new Promise((r) => setTimeout(r, 100));
+    expect(ryan.live.state().problems.filter((p) => p.includes("“asks”"))).toEqual([
+      "“asks” is waiting on its Codex: its Codex is asking a folder question Mockingbird doesn't answer for it. Answer its folder notice in its pane if it's still up; nothing is typed into the pane until its Codex has opened.",
+    ]);
+    expect(ptyOf(asks.id).writes).toEqual([]);
+
+    // a Claude room session opens on no such notice
+    const claude = await ryan.start({ title: "claude" });
+    ryan.sessions.clearWaiting(claude.id);
+    expect(ryan.sessions.deliverAgentMessage(claude.id, "to claude", true)).toBe("delivered");
   });
 
   it("leaves a Codex older than the permission profile unguarded, and says so", async () => {

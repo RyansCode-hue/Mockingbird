@@ -13,6 +13,7 @@ import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents
 import { which, whichSync, quote } from "./shell";
 import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { RoomSandboxWatch, SANDBOX_REPORT_MS } from "./roomSandboxWatch";
+import { CodexFolderNotice } from "./codexFolderNotice";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
 import { compactBlocker } from "../shared/contextBudget";
@@ -173,6 +174,8 @@ export interface RoomLaunch {
   sandboxMarker: string | null;
   /** Environment on the agent's own command, not its pane's shell: the room's caches (roomCacheEnv). */
   agentEnv: Record<string, string>;
+  /** A Codex that opens its folders untrusted, so with its folder notice to answer first (CodexFolderNotice). */
+  codexFolderNotice: boolean;
 }
 
 /** Where a session would run, for deciding its room launch. */
@@ -213,6 +216,7 @@ interface LiveSession {
   rows: number;
   guards: RoomLaunch["guards"] | null; // set when it was started as a room session
   sandbox: RoomSandboxWatch | null; // a Claude room launch's sandbox, until and once it reports in
+  folderNotice: CodexFolderNotice | null; // a Codex room launch's folder notice: nothing is typed in while it holds
   hookEvents: number; // hook events routed to this pty since it started
   transcripts: Map<string, string>; // conversation id → the transcript file its hooks named, the newest few
   kickoff: boolean; // its initial prompt is still to be typed in
@@ -323,6 +327,10 @@ export class SessionManager {
   roomLaunch: ((target: LaunchTarget) => Promise<RoomLaunch | null>) | null = null;
   /** A Claude room launch whose sandbox didn't report in (RoomSandboxWatch): told once per launch. */
   sandboxLost: ((info: SessionInfo, why: string) => void) | null = null;
+  /** A Codex room launch's folder notice: answered (for the log), or left to the user (told once, why). */
+  folderNoticeSeen: ((info: SessionInfo, what: "answered" | "asking", why?: string) => void) | null = null;
+  /** A Codex room launch's folder-notice timings (CodexFolderNotice's defaults unless a test says otherwise). */
+  folderNoticeTiming: { waitMs?: number; settleMs?: number; retryMs?: number; stallMs?: number } = {};
   /** How long a room launch's sandbox has to report in; SANDBOX_REPORT_MS unless a test says otherwise. */
   sandboxReportMs = SANDBOX_REPORT_MS;
   /**
@@ -620,6 +628,7 @@ export class SessionManager {
       exited();
       retireMcpLaunch(mcp);
       started?.sandbox?.stop();
+      started?.folderNotice?.stop();
       if (this.quitting || !started || this.live.get(started.info.id) !== started) return;
       started.info.exitCode = exitCode;
       this.setStatus(started.info.id, "dead");
@@ -692,6 +701,7 @@ export class SessionManager {
       rows: 32,
       guards: room?.guards ?? null,
       sandbox: null,
+      folderNotice: null,
       hookEvents: 0,
       transcripts: new Map(),
       kickoff: false,
@@ -703,6 +713,7 @@ export class SessionManager {
     };
     sess.total = sess.buffer.length;
     if (room?.sandboxMarker) sess.sandbox = this.watchSandbox(sess, room.sandboxMarker);
+    if (room?.codexFolderNotice) sess.folderNotice = this.watchFolderNotice(sess);
     started = sess;
     this.live.set(info.id, sess);
     const records = [...this.store.state.sessions];
@@ -743,6 +754,7 @@ export class SessionManager {
       }
       this.wc?.send("session:data", info.id, data);
       this.tell("output", this.outputListeners, info.id, data, sess.total, sess.epoch);
+      sess.folderNotice?.output(data);
     });
     // kickoff prompt (e.g. the ADO ticket) — sent once claude has had time to boot
     if (req.initialPrompt && !req.shell && !agent.promptInArgs) {
@@ -1372,6 +1384,41 @@ export class SessionManager {
     );
   }
 
+  /** A Codex room launch's folder notice, answered when it's exactly the one to answer (CodexFolderNotice). */
+  private watchFolderNotice(sess: LiveSession): CodexFolderNotice {
+    const current = () => this.live.get(sess.info.id) === sess;
+    const tell = (what: "answered" | "asking", why?: string) => {
+      try {
+        this.folderNoticeSeen?.(sess.info, what, why);
+      } catch (err) {
+        console.error(`[sessions] telling the user about ${sess.info.id}'s folder notice failed:`, err);
+      }
+    };
+    return new CodexFolderNotice({
+      press: () => {
+        if (current()) sess.proc.write("\r");
+      },
+      answered: (press) => {
+        if (!current()) return;
+        console.log(`[sessions] ${sess.info.id}: answered its Codex's folder notice with “Open restricted” (Enter, press ${press})`);
+        tell("answered");
+      },
+      asking: (why) => {
+        if (!current()) return;
+        console.warn(`[sessions] ${sess.info.id}: its Codex's folder notice is left to the user: ${why}`);
+        tell("asking", why);
+      },
+      cleared: (by) => {
+        if (!current()) return;
+        // a hook's event goes on to deliver what waited as its status says (statusFromHook): flushed here too, a second
+        // message would go while the first one's turn runs
+        if (by !== "hook" && sess.info.status === "idle") this.flushQueued(sess);
+        this.emitChanged();
+      },
+      ...this.folderNoticeTiming,
+    });
+  }
+
   /**
    * Close a pane. Unless `forget`, it stays resumable: its scrollback and undelivered messages are kept for its relaunch.
    * Forgetting one that's being resumed or relaunched is refused: its relaunch would write its record back, history gone.
@@ -1556,6 +1603,10 @@ export class SessionManager {
       this.emitChanged();
       return "queued: it has exited, and it's delivered if it's reopened";
     }
+    if (s.folderNotice?.holding()) {
+      this.emitChanged();
+      return "queued until its Codex has opened its folder (its folder notice is still up)";
+    }
     if (s.info.status === "idle") {
       this.flushQueued(s);
       this.emitChanged();
@@ -1576,7 +1627,7 @@ export class SessionManager {
       status: s.info.status,
       shell: !!s.info.shell,
       draft: s.draft,
-      starting: s.kickoff || !!s.startTimer,
+      starting: s.kickoff || !!s.startTimer || !!s.folderNotice?.holding(),
       compactSentAt: s.compactSentAt,
     });
   }
@@ -1612,7 +1663,8 @@ export class SessionManager {
         outcomes.push({ id, outcome: "skipped" });
         continue;
       }
-      if (!whenIdle) {
+      // sent now into a Codex's folder notice, it would answer it: it waits with the queue for the notice's end
+      if (!whenIdle && !s.folderNotice?.holding()) {
         this.sendMessage(id, message);
         outcomes.push({ id, outcome: "delivered" });
         continue;
@@ -1682,6 +1734,8 @@ export class SessionManager {
       if (ev.started) s.sandbox.sessionStarted();
       else s.sandbox.turn(ev.at);
     }
+    // Codex fires no hook until its folder notice is answered: its own event says it's past it
+    if (s.folderNotice && ev.paneId === s.info.id) s.folderNotice.hookEvent();
     if (ev.prompted) {
       if (s.ownPrompts > 0) s.ownPrompts--;
       else s.prompts++;
@@ -1777,6 +1831,8 @@ export class SessionManager {
    */
   private flushQueued(s: LiveSession): void {
     if (!s.queued.length || s.info.status === "dead") return;
+    // typed into Codex's folder notice, a message would answer it (a "2" quits): the notice's end flushes instead
+    if (s.folderNotice?.holding()) return;
     const DRAFT_GIVE_UP_MS = 120_000;
     const RECHECK_MS = 5_000;
     const idleFor = Date.now() - s.lastInput;

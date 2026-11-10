@@ -2974,6 +2974,95 @@ home's are refused.
 - The TUI's notice with an initial prompt (a ticket start): whether the prompt
   waits for the Enter.
 
+#### W20 review fixes 2c as built
+Goal: the folder notice 2b brought costs Ryan nothing per launch, and no first
+input lands in it.
+
+**No setting skips it.** Codex 0.156.1's `notice` table has eight keys
+(`hide_full_access_warning`, `hide_world_writable_warning`, `fast_default_opt_out`,
+`hide_rate_limit_model_nudge`, the two migration prompts, `model_migrations`,
+`external_config_migration_prompts`), none for it. No `tui` key or flag skips it
+either. The notice is drawn whenever the folder is explicitly untrusted, fresh or on
+`resume`.
+
+**What Codex does behind it** (the TUI in a pty, a stand-in Responses API, the
+scratch user's hooks recording when they fire):
+- An argument prompt (a ticket start's brief, a take-over's, Council's implement
+  session) isn't sent until the notice is answered. Left unanswered, nothing reached
+  the model and no hook fired, fresh or resumed.
+- SessionStart fires only once the first prompt runs.
+- An Enter sent the moment the notice is drawn is dropped (Codex flushes its input
+  then, `tcflush`). Sent 10 ms or more later it's taken.
+- Text typed the moment the composer is drawn after the notice is taken.
+- `codex exec` (Council's turns) shows no notice.
+
+**Answered automatically** (`codexFolderNotice.ts`, `sessions.ts`
+`watchFolderNotice`). A Codex room launch whose folders were named untrusted
+(`RoomLaunch.codexFolderNotice`) reads its pane's output by synchronized frame
+(`ESC[?2026h` … `ESC[?2026l`), as `terminalLines` reads a screen.
+- Enter is pressed only while the latest frame with text is exactly the notice:
+  - its headline, rules line and "Opening will not change saved trust.";
+  - "Open restricted" highlighted (`› 1.`);
+  - "Quit" the only other choice, unmarked, with no third;
+  - no trust prompt words;
+  - "enter continue · esc quit".
+- It's pressed once the pane has drawn nothing for 0.3 seconds. An Enter followed by
+  2 seconds of nothing drawn, the notice still up, is pressed again, three Enters at
+  most. An Enter Codex takes is drawn at once.
+- Each Enter is logged by sessions, and in the room's log.
+- Anything else is left to Ryan, told once above the session list:
+  - another folder question (another default, wording or choice, Codex's trust
+    prompt, a highlight moved);
+  - a notice still up after three Enters;
+  - no composer 15 seconds after the notice or an Enter.
+- The composer Codex draws before its notice doesn't count. A launch with no notice
+  within a minute stops holding.
+
+**Nothing typed until it has opened.** While the watcher holds (until Codex draws
+its composer after the notice, or its hooks report):
+- `flushQueued` delivers nothing: wires (W3 deliveries, `deliverNotice`), messages,
+  phone and index notices. `enqueue` says it's queued until Codex has opened its
+  folder.
+- A broadcast sent now waits with the queue.
+- Compact is refused (`compactRefusal`, as starting).
+
+When it ends on the composer, what waited goes if the pane is idle. When a hook
+ends it, `statusFromHook` delivers as the hook's status says, so a second message
+never goes while the first one's turn runs. The other first inputs are Codex's
+argument (above) or `codex exec`. The user's own typing isn't held.
+
+**Real runs** (scratch HOME, Codex never signed in, the stand-in model):
+
+| Run | Result |
+| :- | :- |
+| Fresh, with an initial prompt; the watcher deciding | Enter 0.3 s after the notice, taken; the prompt reached the model only after it, then a message typed once the watcher let go |
+| `resume --last` with a prompt, the watcher's Enters not delivered | three Enters 2 s apart, then told once; for 12 s nothing reached the model and no hook fired |
+| `resume --last` with a prompt; the watcher deciding | Enter taken; the resume prompt, then the message |
+| The five 2b captures replayed in chunks | Enter at each notice, released at the composer; the trusted folder's capture: nothing |
+
+**Tests.**
+- `codexFolderNotice.test.ts`, on a fresh and a resumed capture of 0.156.1
+  (`test/fixtures/codex-folder-notice-0.156.1.json`, the folder renamed
+  `/Users/me/Code/app`), read in chunks of 1 to 1 MB:
+  - pressed once, only after quiet;
+  - quiet restarts on any frame;
+  - pressed again only while nothing is drawn, three at most, then told;
+  - nothing more once anything else is drawn;
+  - eleven notice variants never answered;
+  - the wait, hooks, and an ended pane.
+- `sessionLifecycle.test.ts`, a scripted fake Codex screen through the fake pty:
+  - the brief in Codex's arguments;
+  - a wire, a broadcast sent now and Compact held while the pane reads idle;
+  - `\r` the only write until the composer, then one message per turn;
+  - a variant left to the user, then a hook releasing it;
+  - no hold without the flag.
+- `teamLivePanes.test.ts`: a room's Codex launch is watched and logged, a variant
+  is told to Ryan once, and a Claude launch isn't held.
+
+**Checked:** a mutation check (`w20rf2b/mutate2c.py`): 41 guards undone in turn, 40
+fail their tests. The one that doesn't is `stop()` cancelling its timers, which is
+inert: each timer checks the watcher still holds.
+
 ## 2. Data model
 
 ### The file

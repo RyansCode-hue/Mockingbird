@@ -4,6 +4,8 @@ import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { git, makeRepo, tempDir } from "./helpers";
 import { legacyWorktreeRoot, worktreeRoot } from "../src/main/worktrees";
+import { FOLDER_NOTICE_SETTLE_MS, FOLDER_NOTICE_WAIT_MS } from "../src/main/codexFolderNotice";
+import capture from "./fixtures/codex-folder-notice-0.156.1.json";
 
 /** Every pty the manager starts: what it was asked to run and with what environment, what was written to it, and a way to end it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; killed: boolean; signals: string[]; emit(d: string): void; exit(code: number): void };
@@ -765,7 +767,7 @@ describe("a session a teammate continues", () => {
 });
 
 describe("what an agent is told of its wires as it launches", () => {
-  const room = { env: {}, denyReads: [], codexPermissions: [], claudeSettings: null, sandboxMarker: null, agentEnv: {}, instructions: "ROOM RULES", allowTools: [], inline: false, guards: { secrets: false, coauthors: false } };
+  const room = { env: {}, denyReads: [], codexPermissions: [], claudeSettings: null, sandboxMarker: null, agentEnv: {}, codexFolderNotice: false, instructions: "ROOM RULES", allowTools: [], inline: false, guards: { secrets: false, coauthors: false } };
   it("goes in each CLI's instructions, after a room's, at launch and at every relaunch", async () => {
     const { m } = await manager();
     const asked: string[] = [];
@@ -801,6 +803,88 @@ describe("what an agent is told of its wires as it launches", () => {
     expect(s.id).toBeTruthy();
     expect(ptys.at(-1)!.args.join(" ")).toContain(`'--append-system-prompt' 'ROOM RULES'`);
     expect(errors).toHaveBeenCalledWith(expect.stringMatching(/starts without its wires' instructions/), expect.objectContaining({ message: "the book went away" }));
+  });
+});
+
+describe("a Codex room launch's folder notice", () => {
+  const room = { env: {}, denyReads: [], codexPermissions: [], claudeSettings: null, sandboxMarker: null, agentEnv: {}, codexFolderNotice: true, instructions: null, allowTools: [], inline: true, guards: { secrets: true, coauthors: false } };
+  const codexPane = { ...agentPane, agent: "codex" as const };
+  /** Codex's own notice frame, the highlight moved to Quit. */
+  const quitHighlighted = capture.fresh.beforeEnter.replace("› 1. Open restricted", "  1. Open restricted").replace("  2. Quit", "› 2. Quit");
+
+  it("is answered with Enter alone, and nothing else is typed until Codex has opened: a wire, a broadcast sent now, Compact; a ticket's brief waits in Codex's own arguments", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    m.roomLaunch = async () => room;
+    const seen: string[] = [];
+    m.folderNoticeSeen = (_info, what, why) => seen.push(why ? `${what}: ${why}` : what);
+    const logged = vi.spyOn(console, "log").mockImplementation(() => {});
+    const s = await m.create({ ...codexPane, initialPrompt: "the brief" });
+    const p = ptys.at(-1)!;
+    // Codex holds an argument prompt behind its notice: Mockingbird types nothing for it
+    expect(p.args.join(" ")).toMatch(/'--' 'the brief'$/);
+    expect(m.deliverAgentMessage(s.id, "the wire", true)).toBe("queued until its Codex has opened its folder (its folder notice is still up)");
+    p.emit(capture.fresh.beforeEnter);
+    // the pane reads as idle (Codex draws its prompt mark under the notice): still nothing goes
+    m.clearWaiting(s.id);
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("idle");
+    expect(m.broadcast("sent now", [s.id], false)).toEqual([{ id: s.id, outcome: "queued" }]);
+    expect(m.compactRefusal(s.id)).toBeTruthy();
+    expect(() => m.compact(s.id)).toThrow();
+    vi.advanceTimersByTime(FOLDER_NOTICE_SETTLE_MS - 1);
+    expect(p.writes).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(p.writes).toEqual(["\r"]);
+    expect(seen).toEqual(["answered"]);
+    expect(logged).toHaveBeenCalledWith(`[sessions] ${s.id}: answered its Codex's folder notice with “Open restricted” (Enter, press 1)`);
+    vi.advanceTimersByTime(100);
+    expect(p.writes).toEqual(["\r"]);
+    // Codex opens: what waited goes, one prompt per turn
+    p.emit(capture.fresh.afterEnter);
+    vi.advanceTimersByTime(200);
+    expect(p.writes).toEqual(["\r", "|the wire|", "\r"]);
+    expect(m.list().find((x) => x.id === s.id)?.queuedCount).toBe(1);
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(p.writes).toEqual(["\r", "|the wire|", "\r", "|sent now|", "\r"]);
+    expect(seen).toEqual(["answered"]);
+  });
+
+  it("isn't answered when it isn't exactly the notice: the user is told once, and what waits goes once Codex has opened", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    m.roomLaunch = async () => room;
+    const seen: string[] = [];
+    m.folderNoticeSeen = (_info, what, why) => seen.push(why ? `${what}: ${why}` : what);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await m.create(codexPane);
+    const p = ptys.at(-1)!;
+    m.deliverAgentMessage(s.id, "the wire", true);
+    m.deliverAgentMessage(s.id, "the next wire", true);
+    p.emit(quitHighlighted);
+    m.clearWaiting(s.id);
+    vi.advanceTimersByTime(FOLDER_NOTICE_WAIT_MS * 2);
+    expect(p.writes).toEqual([]);
+    expect(seen).toEqual(["asking: its Codex is asking a folder question Mockingbird doesn't answer for it"]);
+    // the user answers it in the pane; Codex's first hook says it's past it, and what waited goes one turn at a time
+    m.write(s.id, "\r");
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(p.writes).toEqual(["\r", "|the wire|", "\r"]);
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(p.writes).toEqual(["\r", "|the wire|", "\r", "|the next wire|", "\r"]);
+  });
+
+  it("isn't waited for by a pane that isn't a Codex opening its folders untrusted", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    m.roomLaunch = async () => ({ ...room, codexFolderNotice: false });
+    const s = await m.create(codexPane);
+    m.clearWaiting(s.id);
+    expect(m.deliverAgentMessage(s.id, "the wire", true)).toBe("delivered");
+    vi.advanceTimersByTime(200);
+    expect(ptys.at(-1)!.writes).toEqual(["|the wire|", "\r"]);
   });
 });
 
