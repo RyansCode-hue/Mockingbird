@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFile } from "child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { git, makeRepo, tempDir, write } from "./helpers";
+import { git, makeRepo, ownGitLog, tempDir, write } from "./helpers";
 import { builderHome, fakeHouse, PROJECT_ID, type FakeHouse } from "./fakeHouse";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { houseOfRoom } from "../src/main/team/board";
@@ -700,9 +700,12 @@ describe("teammates' branches", () => {
 
     // origin can't be reached from Ryan's clone: the board says so
     git(clones.ryan, "remote", "set-url", "origin", path.join(path.dirname(bare), "gone.git"));
+    const own = ownGitLog();
     nick.team.publish(roomId, "session.upsert", record("n3", "5110-third", bare));
     await until(() => !!r.svc.view(roomId).branchProblems?.some((p) => /^Teammates' branches couldn't be fetched into \S*\/ryan, so their claimed files may be out of date: /.test(p)), "the fetch failure on the board");
-    expect(r.logs.some((l) => /^team House board: fetching teammates' branches into \S*\/ryan: /.test(l))).toBe(true);
+    // logged by the fetch itself, with its command, and by nothing else
+    expect(own.some((l) => /^Mockingbird's own git in \S*\/ryan: git fetch .*origin: git fetch: /.test(l))).toBe(true);
+    expect(r.logs.some((l) => /fetching teammates' branches/.test(l))).toBe(false);
   }, 20_000);
 });
 

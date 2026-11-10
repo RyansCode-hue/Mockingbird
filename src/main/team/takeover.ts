@@ -13,7 +13,7 @@ import { transcriptRefusal } from "./roomLimits";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
-import { guardedGit, OWN_WRITE_ENV, ownFetch, ownNetworkGit } from "../safeGit";
+import { guardedGit, loggedAlready, OWN_WRITE_ENV, ownFetch, ownNetworkGit, prePushNote, type SetAside, shownFailure } from "../safeGit";
 import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, realpathOr } from "../agentFiles";
@@ -646,6 +646,8 @@ export class TakeoverService {
   private transcriptAt = new Map<string, number>();
   /** Problems sending a session to teammates, by session. */
   private problems = new Map<string, string>();
+  /** A pre-push the backup push to origin set aside, by session, as its last push found. */
+  private prePushSkipped = new Map<string, SetAside>();
   private unbacked = new Map<string, { roomId: RoomId; title: string; problem: string }>();
   private lastPublished = new Map<string, string>();
   private presence = new Map<RoomId, Set<MemberId>>();
@@ -796,7 +798,7 @@ export class TakeoverService {
       this.unbacked.delete(sessionId);
     } catch (err) {
       const problem = withoutCredentials(err instanceof Error ? err.message : String(err));
-      this.d.log(`team: backing up session ${sessionId}`, problem);
+      if (!loggedAlready(err)) this.d.log(`team: backing up session ${sessionId}`, problem);
       this.unbacked.set(sessionId, { roomId, title: s.ticketTitle ?? s.title, problem });
     }
     this.changed();
@@ -960,7 +962,7 @@ export class TakeoverService {
 
   private cleanupFailed(roomId: RoomId, sessionId: string, title: string, err: unknown): string {
     const problem = withoutCredentials(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim().slice(0, 300);
-    this.d.log(`team: deleting the backup of session ${sessionId}`, problem);
+    if (!loggedAlready(err)) this.d.log(`team: deleting the backup of session ${sessionId}`, problem);
     this.cleanupProblems.set(sessionId, { roomId, title, problem });
     this.changed();
     return problem;
@@ -1167,7 +1169,7 @@ export class TakeoverService {
         await this.deleteOnOrigin(rec.repo, ref);
       } catch (err) {
         const why = withoutCredentials(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim().slice(0, 300);
-        this.d.log(`team: deleting the backup of session ${sessionId} from origin after leaving the room`, why);
+        if (!loggedAlready(err)) this.d.log(`team: deleting the backup of session ${sessionId} from origin after leaving the room`, why);
         problems.push(`The backup of “${rec.title}” couldn't be deleted from origin (${ref}): ${why}`);
       }
     }
@@ -1188,6 +1190,7 @@ export class TakeoverService {
     for (const m of [this.unbacked, this.cleanupProblems]) for (const [k, v] of m) if (v.roomId === room.id) m.delete(k);
     for (const id of sessions) {
       this.problems.delete(id);
+      this.prePushSkipped.delete(id);
       this.unsent.delete(id);
       this.lastPublished.delete(id);
       this.held.delete(id);
@@ -1217,7 +1220,11 @@ export class TakeoverService {
    * names (ownNetworkGit).
    */
   private async push(top: string, ref: string, rec: OwnRecord, sessionId: string): Promise<PushOutcome> {
-    const lease = (expect: string) => ownNetworkGit(top, "push", ["--quiet", `--force-with-lease=${ref}:${expect}`, "origin", `${rec.sha}:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000, prePush: true });
+    const prePushSkipped = (skipped: SetAside | null) => {
+      if (skipped) this.prePushSkipped.set(sessionId, skipped);
+      else this.prePushSkipped.delete(sessionId);
+    };
+    const lease = (expect: string) => ownNetworkGit(top, "push", ["--quiet", `--force-with-lease=${ref}:${expect}`, "origin", `${rec.sha}:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000, prePush: true, prePushSkipped });
     const onOrigin = async () => (await ownNetworkGit(top, "ls-remote", ["origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 })).split("\t")[0];
     try {
       try {
@@ -1234,7 +1241,7 @@ export class TakeoverService {
       return { ok: true, at: this.now() };
     } catch (err) {
       const error = withoutCredentials((err as Error).message).replace(/\s+/g, " ").trim().slice(0, 300);
-      this.d.log(`team: pushing the backup of session ${sessionId} to origin`, error);
+      if (!loggedAlready(err)) this.d.log(`team: pushing the backup of session ${sessionId} to origin`, error);
       return { ok: false, at: this.now(), error };
     }
   }
@@ -1645,8 +1652,8 @@ export class TakeoverService {
         try {
           await ownFetch(repo, ["--no-tags", "--no-write-fetch-head", "origin", `+${roomBackupRef(roomId, sessionId)}:${pin}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 });
         } catch (err) {
-          this.d.log(`team: fetching the snapshot session ${sessionId} was continued from`, err);
-          const why = withoutCredentials((err as Error).message).replace(/\s+/g, " ").trim();
+          // logged by ownFetch
+          const why = shownFailure(err);
           local.left[sessionId] = { ...local.left[sessionId], fetchFailed: why.slice(0, 300) };
           this.saveLocal(roomId);
         }
@@ -2214,7 +2221,7 @@ export class TakeoverService {
         // origin never got a backup of this session: nothing to compare, unless the room says it did
         if (!/couldn't find remote ref/i.test(msg) || b.pushed) {
           originProblem = msg.replace(/\s+/g, " ").trim().slice(0, 300);
-          this.d.log(`team: reading origin's backup of session ${b.sessionId}`, originProblem);
+          if (!loggedAlready(err)) this.d.log(`team: reading origin's backup of session ${b.sessionId}`, originProblem);
         }
       }
     }
@@ -2426,6 +2433,7 @@ export class TakeoverService {
         const m = mirrored[b.sessionId];
         const meta = self ? null : this.transcriptMeta(room.id, b.sessionId);
         const sameConv = !!meta && (!b.session.conversationId || meta.conversationId === b.session.conversationId);
+        const skipped = this.prePushSkipped.get(b.sessionId);
         sessions.push({
           ...b,
           roomId: room.id,
@@ -2438,6 +2446,7 @@ export class TakeoverService {
           heldBy: self ? [...(this.held.get(b.sessionId) ?? [])].filter(([peer, sha]) => sha === b.latest.sha && room.members.some((x) => x.id === peer)).map(([peer]) => this.nameOf(room.id, peer)) : [],
           transcript: meta ? { have: fileSizeSync(path.join(this.transcriptDir(room.id, b.sessionId), meta.file)), of: sameConv ? Math.max(meta.total, b.transcriptBytes ?? 0) : null } : null,
           problem: this.problems.get(b.sessionId) ?? null,
+          ...(self && skipped ? { prePushSkipped: { folder: skipped.value, note: prePushNote(skipped) } } : {}),
         });
       }
     }

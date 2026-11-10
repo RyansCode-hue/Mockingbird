@@ -1,6 +1,7 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
-import { git, gitBytes, type GitOptions } from "./git";
+import { git, gitBytes, type GitOptions, withoutCredentials } from "./git";
 
 /**
  * What every diff run through GuardedGit adds: no colour, no external diff, no text conversion, a submodule shown as
@@ -87,41 +88,132 @@ async function scopedValues(cwd: string, key: string, o: { path?: boolean } = {}
   return values;
 }
 
-/** The value the user's own config gives: the last of the global and system ones, never the repository's (local, worktree) or a command line's. */
-const usersOwn = (values: { scope: string; value: string }[]): string | null => values.filter((v) => v.scope === "global" || v.scope === "system").at(-1)?.value ?? null;
+type Scoped = { scope: string; value: string };
+
+/** The user's own config, not the repository's (local, worktree) or a command line's. */
+const isUsers = (v: Scoped) => v.scope === "global" || v.scope === "system";
 
 /** `s` as one word for sh. */
 const shellWord = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+
+/** The program an sh command line runs: its first word after any NAME=value, unquoted. */
+function programOf(command: string): string {
+  let rest = command;
+  for (;;) {
+    const m = /^\s*(?:"([^"]*)"|'([^']*)'|(\S+))/.exec(rest);
+    if (!m) return "";
+    rest = rest.slice(m[0].length);
+    if (m[3] !== undefined && /^[A-Za-z_]\w*=/.test(m[3]) && rest.trim()) continue;
+    return m[1] ?? m[2] ?? m[3];
+  }
+}
+
+const realOr = (p: string) => {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p); // a path that isn't there yet is compared as written
+  }
+};
+
+/** Where `cwd`'s git runs what a setting names (its working tree's top), and each working tree of its repository. */
+interface Trees {
+  top: string;
+  trees: string[];
+}
+async function treesOf(cwd: string): Promise<Trees> {
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  const listed = await git(cwd, ["worktree", "list", "--porcelain", "-z"], { env: OWN_WRITE_ENV, trim: false });
+  const trees = listed.split("\0").filter((l) => l.startsWith("worktree ")).map((l) => realOr(l.slice("worktree ".length)));
+  return { top: realOr(top), trees: [...new Set([realOr(top), ...trees])] };
+}
+
+/**
+ * The working tree `p` (a program or a folder a setting names) is in, when it is: relative, it's found from the top
+ * of the working tree git runs in. A session's agent can write there, sandboxed or not, and Mockingbird's own gits run
+ * in main, outside any sandbox.
+ */
+function treeHolding(p: string, t: Trees): string | null {
+  const abs = realOr(path.resolve(t.top, p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p));
+  return t.trees.find((tree) => abs === tree || abs.startsWith(tree + path.sep)) ?? null;
+}
+
+/** What one of Mockingbird's own network gits set aside of what the repository's config names, and why. */
+export interface SetAside {
+  /** The setting's value, as configured. */
+  value: string;
+  why: string;
+}
 
 interface OwnNetwork {
   env: Record<string, string>;
   /** The ssh run, when it's set here. */
   ssh: string | null;
-  /** A core.sshCommand of the repository's own that was set aside for `ssh`. */
-  setAside: string | null;
+  /** The core.sshCommand git would have run, set aside for `ssh`. */
+  sshSetAside: SetAside | null;
+  /** With `prePush`: a pre-push in the hooks folder git would have run from, not run (its folder is the value). */
+  prePushSkipped: SetAside | null;
 }
 
 /**
- * The environment for Mockingbird's own network gits in `cwd`: OWN_WRITE_ENV, with the user's own ssh, never a command
- * the repository's config names. GIT_SSH_COMMAND in main's environment wins over any config already; otherwise the
- * user's core.sshCommand (usersOwn), else GIT_SSH from main's environment, else plain ssh, as git would choose with no
- * repository config. Hooks stay off, unless `prePush` is set, for a push whose pre-push is to run (a backup's, which a
- * secret scanner reads first): then from the user's core.hooksPath (usersOwn), else from the repository's own hooks
- * folder, never a folder its config names. Credential helpers stay as they are: a remote may need them.
+ * The ssh for Mockingbird's own network gits: the core.sshCommand git would run (the last of any scope, an includeIf
+ * for the folder among them, the repository's own too: its config is written by the user's own tools, as room agents
+ * are kept off it), unless its program is in one of the repository's working trees, relative paths included. Then the
+ * one before it, and so on; with none, GIT_SSH from main's environment, quoted, else plain ssh, as git would choose.
+ */
+async function ownSsh(cwd: string): Promise<{ command: string; setAside: SetAside | null }> {
+  const values = await scopedValues(cwd, "core.sshCommand");
+  let t: Trees | null = null;
+  let setAside: SetAside | null = null;
+  for (const v of [...values].reverse()) {
+    const program = programOf(v.value);
+    // a bare name is found on PATH, as for any command main runs
+    const tree = program.includes("/") ? treeHolding(program, (t ??= await treesOf(cwd))) : null;
+    if (!tree) return { command: v.value, setAside };
+    setAside ??= { value: v.value, why: `its program, ${program}, is in ${tree}, a working tree of this repository, which a session there can change` };
+  }
+  return { command: process.env.GIT_SSH ? shellWord(process.env.GIT_SSH) : "ssh", setAside };
+}
+
+/**
+ * The hooks folder for a push whose pre-push is to run: the user's core.hooksPath (the last global or system value,
+ * an includeIf for the folder among them), else the repository's own hooks folder (`<git-common-dir>/hooks`). Never a
+ * folder the repository's own config names (Husky's `.husky/_`), nor one in a working tree, the user's own included:
+ * hooks there can be written by the session's agent, and this push runs in main, outside any sandbox. When the folder
+ * git would have run from is set aside and holds a pre-push, `skipped` says so.
+ */
+async function ownHooks(cwd: string): Promise<{ folder: string; skipped: SetAside | null }> {
+  const values = await scopedValues(cwd, "core.hooksPath", { path: true });
+  let t: Trees | null = null;
+  const users = values.filter(isUsers).at(-1);
+  const folder =
+    users && !treeHolding(users.value, (t ??= await treesOf(cwd)))
+      ? users.value
+      : path.join(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks");
+  const wanted = values.at(-1);
+  if (!wanted) return { folder, skipped: null };
+  t ??= await treesOf(cwd);
+  const wantedAt = realOr(path.resolve(t.top, wanted.value));
+  if (wantedAt === realOr(folder) || !fs.existsSync(path.join(wantedAt, "pre-push"))) return { folder, skipped: null };
+  const why = treeHolding(wanted.value, t)
+    ? "hooks in the working tree can be changed by the session"
+    : "Mockingbird's own pushes run hooks only from your global git config or the repository's .git/hooks";
+  return { folder, skipped: { value: wanted.value, why } };
+}
+
+/**
+ * The environment for Mockingbird's own network gits in `cwd`: OWN_WRITE_ENV, with ssh as ownSsh says (GIT_SSH_COMMAND
+ * in main's environment wins over any config already, and is left as it is). Hooks stay off, unless `prePush` is set,
+ * for a push whose pre-push is to run (a backup's, which a secret scanner reads first): then from ownHooks' folder.
+ * Credential helpers stay as they are: a remote may need them.
  */
 async function ownNetwork(cwd: string, o: { prePush?: boolean } = {}): Promise<OwnNetwork> {
-  let ssh: Record<string, string> = {};
-  let setAside: string | null = null;
-  if (!process.env.GIT_SSH_COMMAND) {
-    const values = await scopedValues(cwd, "core.sshCommand");
-    const command = usersOwn(values) ?? (process.env.GIT_SSH ? shellWord(process.env.GIT_SSH) : "ssh");
-    const local = values.filter((v) => v.scope === "local" || v.scope === "worktree").at(-1)?.value ?? null;
-    ssh = { GIT_SSH_COMMAND: command };
-    setAside = local !== null && local !== command ? local : null;
-  }
-  if (!o.prePush) return { env: { ...OWN_WRITE_ENV, ...ssh }, ssh: ssh.GIT_SSH_COMMAND ?? null, setAside };
-  const hooks = usersOwn(await scopedValues(cwd, "core.hooksPath", { path: true })) ?? path.join(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks");
-  return { env: { ...configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", hooks], NO_EXT]), ...ssh }, ssh: ssh.GIT_SSH_COMMAND ?? null, setAside };
+  const ssh = process.env.GIT_SSH_COMMAND ? null : await ownSsh(cwd);
+  const sshEnv: Record<string, string> = ssh ? { GIT_SSH_COMMAND: ssh.command } : {};
+  const common = { ssh: ssh?.command ?? null, sshSetAside: ssh?.setAside ?? null };
+  if (!o.prePush) return { env: { ...OWN_WRITE_ENV, ...sshEnv }, ...common, prePushSkipped: null };
+  const hooks = await ownHooks(cwd);
+  return { env: { ...configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", hooks.folder], NO_EXT]), ...sshEnv }, ...common, prePushSkipped: hooks.skipped };
 }
 
 /** ownNetwork's environment, for a test to read. */
@@ -129,34 +221,60 @@ export const ownNetworkEnv = async (cwd: string, o: { prePush?: boolean } = {}):
 
 type OwnGitLog = (context: string, err: unknown) => void;
 let ownGitLog: OwnGitLog = (context, err) => console.error(`[git] ${context}:`, err);
-/** Where each failure of Mockingbird's own network gits is logged: main's log, once the app says so. Gives the one it replaces. */
+/** Where each failure of Mockingbird's own network gits is logged, and what they set aside: main's log, once the app says so. Gives the one it replaces. */
 export function logOwnGitFailuresTo(log: OwnGitLog): OwnGitLog {
   const before = ownGitLog;
   ownGitLog = log;
   return before;
 }
 
+/** What was set aside, logged once a folder: it's the same at every turn. */
+const toldOf = new Set<string>();
+function tellOnce(cwd: string, note: string): void {
+  const key = `${cwd}\n${note}`;
+  if (toldOf.has(key)) return;
+  toldOf.add(key);
+  ownGitLog(`Mockingbird's own git in ${cwd}`, note);
+}
+
+/** A failure of one of Mockingbird's own network gits, logged already (ownNetworkGit): its caller reports it, without logging it again. */
+export class OwnGitError extends Error {}
+export const loggedAlready = (err: unknown): boolean => err instanceof OwnGitError;
+/** A failure as a user is shown it: on one line, with no credentials a URL in it carried. */
+export const shownFailure = (err: unknown): string => withoutCredentials(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim();
+
+/** What a pre-push set aside says, on a backup's status and in the log. */
+export const prePushNote = (s: SetAside): string => `pre-push in ${s.value} not run for backups: ${s.why}`;
+
 /**
- * One of Mockingbird's own network gits in `cwd`: `command` with its OWN_FLAGS before `args`, under ownNetwork. A
- * failure is logged (logOwnGitFailuresTo) with the folder and the whole command, then thrown in git's own words. When
- * it looks like ssh's and the repository's own core.sshCommand was set aside, it says so: a key only that names may be
- * the one the remote wants, and the user's global config (under an includeIf for the folder) is where it now goes.
+ * One of Mockingbird's own network gits in `cwd`: `command` with its OWN_FLAGS before `args`, under ownNetwork. What
+ * it set aside is logged once (logOwnGitFailuresTo), and a skipped pre-push told to `prePushSkipped` (null: none) at
+ * each run. A failure is logged with the folder and the whole command, then thrown in git's own words (OwnGitError);
+ * when it looks like ssh's and a core.sshCommand was set aside, it says which and why.
  */
-export async function ownNetworkGit(cwd: string, command: keyof typeof OWN_FLAGS, args: readonly string[], opts: GitOptions & { trim?: boolean; prePush?: boolean } = {}): Promise<string> {
-  const { prePush, ...gitOpts } = opts;
+export async function ownNetworkGit(
+  cwd: string,
+  command: keyof typeof OWN_FLAGS,
+  args: readonly string[],
+  opts: GitOptions & { trim?: boolean; prePush?: boolean; prePushSkipped?: (s: SetAside | null) => void } = {}
+): Promise<string> {
+  const { prePush, prePushSkipped, ...gitOpts } = opts;
   const all = [command, ...OWN_FLAGS[command], ...args];
   let n: OwnNetwork | null = null;
   try {
     n = await ownNetwork(cwd, { prePush });
+    if (n.sshSetAside) tellOnce(cwd, `core.sshCommand ${n.sshSetAside.value} set aside for ${n.ssh}: ${n.sshSetAside.why}`);
+    if (n.prePushSkipped) tellOnce(cwd, prePushNote(n.prePushSkipped));
+    if (prePush) prePushSkipped?.(n.prePushSkipped);
     return await git(cwd, all, { ...gitOpts, env: { ...gitOpts.env, ...n.env } });
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     const note =
-      n?.setAside && /ssh|publickey|could not read from remote/i.test(why)
-        ? ` (Mockingbird runs your own ssh, ${n.ssh}, not the core.sshCommand this repository's config sets, ${n.setAside}: set that in your global git config, under an includeIf for this folder, for Mockingbird's own fetches to use it)`
+      n?.sshSetAside && /ssh|publickey|could not read from remote/i.test(why)
+        ? ` (Mockingbird ran ${n.ssh}, not this repository's core.sshCommand, ${n.sshSetAside.value}: ${n.sshSetAside.why})`
         : "";
     ownGitLog(`Mockingbird's own git in ${cwd}: git ${all.join(" ")}`, `${why}${note}`);
-    throw note ? new Error(`${why}${note}`) : err;
+    throw new OwnGitError(`${why}${note}`);
   }
 }
 

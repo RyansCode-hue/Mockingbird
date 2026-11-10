@@ -3,7 +3,7 @@ import * as path from "path";
 import { git, originUrl } from "../git";
 import { baseRef } from "../files";
 import { mainCheckout } from "../runProfile";
-import { guardedGit } from "../safeGit";
+import { guardedGit, shownFailure } from "../safeGit";
 import { changedFiles, type TeammateChanges } from "../conflicts";
 import { isSecretFileName } from "../secrets";
 import { isMissing } from "../fileOps";
@@ -725,7 +725,8 @@ export class TeamChanges {
     try {
       await fetchOrigin(clone);
     } catch (err) {
-      problems.push(`origin couldn't be fetched, so the base branch and teammates' branches are as last fetched: ${this.d.log(`team changes: fetching origin into ${clone} to reserve a migration number`, err)}`);
+      // logged by fetchOrigin
+      problems.push(`origin couldn't be fetched, so the base branch and teammates' branches are as last fetched: ${shownFailure(err)}`);
     }
     const det = await this.detected(clone, true);
     if (det.problem) problems.push(`the migration folders couldn't be read: ${det.problem}`);

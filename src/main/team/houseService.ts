@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { houseOfRoom } from "./board";
 import { fetchOrigin, originKey, pushedBranchFiles } from "./branchFiles";
+import { shownFailure } from "../safeGit";
 import { agentContextText, excludePlanDir, pruneWarned, removeRoomCopy, worktreesOf, writeRoomCopy } from "./claims";
 import { HouseClient, HouseSetupError, readHouseEnv, scrub, type HouseEnv } from "./house";
 import { checkTags, houseToolOp, type HouseListFilter, type HouseToolOp } from "./houseTools";
@@ -1359,7 +1360,8 @@ export class HouseService {
           await fetchOrigin(clone);
           this.fetchProblems.delete(clone);
         } catch (err) {
-          this.fetchProblems.set(clone, this.d.log(`team House board: fetching teammates' branches into ${clone}`, err));
+          // logged by fetchOrigin
+          this.fetchProblems.set(clone, shownFailure(err));
         }
       }
       for (const clone of [...this.fetchProblems.keys()]) if (!now.has(clone)) this.fetchProblems.delete(clone);

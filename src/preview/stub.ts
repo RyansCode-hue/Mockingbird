@@ -760,7 +760,15 @@ const takeoverView: TakeoverView = (() => {
   return {
     sessions: [
       base({ sessionId: "n1", owner: NICK, ownerName: "Nick Smith", session: { ...base({ sessionId: "", owner: NICK, ownerName: "" }).session, title: "Donor export: CSV writer", branch: "5101-csvExport" } }),
-      mine({ sessionId: "s1", latest: { sha: sha("e5"), takenAt: now - 1 * min }, push: { ok: true, at: now - 1 * min, sha: sha("e5") }, pushed: { sha: sha("e5"), takenAt: now - 1 * min, at: now - 1 * min }, heldBy: ["Nick Smith"] }),
+      mine({
+        sessionId: "s1",
+        latest: { sha: sha("e5"), takenAt: now - 1 * min },
+        push: { ok: true, at: now - 1 * min, sha: sha("e5") },
+        pushed: { sha: sha("e5"), takenAt: now - 1 * min, at: now - 1 * min },
+        heldBy: ["Nick Smith"],
+        // ?husky: its repository's hooks are Husky's, in the working tree, so the backup push ran no pre-push
+        ...(teamQuery.has("husky") ? { prePushSkipped: { folder: ".husky/_", note: "pre-push in .husky/_ not run for backups: hooks in the working tree can be changed by the session" } } : {}),
+      }),
       mine({ sessionId: "s2", latest: { sha: sha("f6"), takenAt: now - 5 * min }, push: { ok: false, at: now - 5 * min, error: "fatal: unable to access origin: Could not resolve host", sha: sha("f6") }, pushed: { sha: sha("e5"), takenAt: now - 40 * min, at: now - 40 * min } }),
       base({ roomId: "R5110bbbbbbbbbbbbbbbbb", sessionId: "n7", owner: NICK, ownerName: "Nick Smith", session: { ...base({ sessionId: "", owner: NICK, ownerName: "" }).session, title: "Donor entity model", branch: "5110-donor-entities", originUrl: "git@github.com:acme/donors.git" }, latest: { sha: sha("d5"), takenAt: now - 3 * min }, peerCopy: { sha: sha("d5"), takenAt: now - 3 * min } }),
       base({

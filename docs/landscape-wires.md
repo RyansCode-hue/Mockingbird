@@ -1264,6 +1264,119 @@ Mockingbird ignores it.
 - the artifact's fetch failure said as "not pushed", and the pin's failure not kept or
   not shown.
 
+#### W2 review fixes 3c as built
+
+The post-merge check of e992b83 found two Mediums and two Lows.
+
+**Secrets with brackets go through no more (M1).** Round 3's expression rule let an
+unquoted value holding `(`, `?.` or `??` through whole. That let these through:
+`DB_PASSWORD=Hunter2(abc)xyz`, `SA_PASSWORD=Pa(ss)w0rd!2024`, `API_KEY=k9Zq??x7Wm2pLr` and
+`db_password: Zx9v(Q2mL7pR4)`. Now (`wirePrompt.ts`):
+- **An env file's name takes its value whole.** That's an upper-case name, as
+  before. It gets no code rule, with one exception: a name that code declares
+  (`const TOKEN = readToken(TOKEN_FILE)`, `let`, `var`) is read as code.
+- **Other names: code only when it looks like code** (`CODE_RE`). That's a call (a
+  lower-case identifier, perhaps after `obj.` or `!`, then `(`) or optional chaining
+  from a lower-case identifier (`opts?.token`).
+- **A bare value ends at a space.** So `a ?? b` is read as `a`, and a spaced `??`
+  never reaches the rule.
+- **A reference stays code for every name**, now with a call on it too:
+  `process.env.X`, `path.join(MB_DIR`.
+- **An unquoted value no longer stops at `)`.** The part after a bracket isn't left
+  behind. `closingParens` gives back the `)`s at its end that it didn't open, so
+  `connect(password=hunter22)` keeps its `)`.
+- **Bounded.** The chaining test reads each identifier from its start alone. Without
+  that, 40,000 letters under a secret's name took 1.5 s; a test now reads 400 KB of one
+  in under 100 ms.
+- **Over `src/` and `docs/`, 15 lines change, down from 19.** Against e992b83, one line
+  is newly changed: a regular-expression literal (`SECRET_NAME_RE = /passw(?:or)?d…`).
+  Five fewer lines are changed.
+- **Known limit:** a lower-case name whose unquoted value starts like a call
+  (`db_password: hunter2(abc)`) is read as code.
+
+**Husky's pre-push, set aside and said (M2).** The backup push still never runs a
+`pre-push` from a hooks folder the repository's own config names (Husky's `.husky/_`).
+Nor does it run one from any folder in one of the repository's working trees, the
+user's own included (a relative global hooksPath lands there). The agent can write
+hooks there, sandboxed room agents included, and the push runs in main outside any
+sandbox. The skip is visible now:
+- **When it's said.** `ownHooks` (safeGit.ts) notes when the folder git would have run
+  from is set aside and holds a `pre-push`. A set-aside folder with no `pre-push` says
+  nothing.
+- **In the log**, once a folder: "pre-push in .husky/_ not run for backups: hooks in
+  the working tree can be changed by the session".
+- **On the session's own backup status.** take-over keeps it per session
+  (`prePushSkipped` on `RoomSessionBackupView`). The status reads "backed up 1m ago ·
+  pre-push in .husky/_ not run", with the reason in its tooltip. `?husky` shows it in
+  the UI preview.
+- **Folder outside every working tree.** A local hooksPath there is set aside too, as
+  before. Its note says Mockingbird's own pushes run hooks only from the global config
+  or `.git/hooks`.
+- **`.git/hooks` stays the default**, though a main checkout's `.git` sits in its
+  folder. Room sessions can't write it: W20's sandbox denies writes to `<cwd>/.git` and
+  `.git/**` for Claude rooms (sandbox `denyWrite` plus Edit deny rules), and Codex
+  rooms' writable git data leaves out hooks. Local sessions are trusted.
+
+**A repository's own core.sshCommand, honoured again.** The repository's local
+config is written only by the user's own processes: room agents are kept off git
+config (W20's sandbox for Claude, Codex's write rules). Ignoring it broke a common
+multi-account setup. `ownSsh` now takes the value git itself would use, the last of
+any scope, local and worktree included. The exception is a value whose program (its
+first word after any `NAME=value`) is a relative path or sits in one of the
+repository's working trees. The working trees come from `git worktree list`, so a
+program in a linked worktree elsewhere counts too. That value is set aside for the
+one before it, and so on, then GIT_SSH, then `ssh`. A set-aside is logged once a
+folder. It's also named in a failure's message when that looks like ssh's: which
+command was run, which was set aside, and why. A bare program name (`ssh -i ~/.ssh/work`)
+is found on PATH, as for any command main runs. Options naming another program
+(`-o ProxyCommand=…`) aren't read. These stay: `protocol.ext.allow=never`,
+`--upload-pack`/`--receive-pack` and `--recurse-submodules=no`.
+
+**Logged once.** `ownNetworkGit`'s line is the only log of an own network git's
+failure. It throws an `OwnGitError`; its callers check `loggedAlready(err)`, so they log
+only what came from elsewhere. Their user-facing reporting is unchanged:
+- the House board note, the reservation's problems, the artifact's problem and the
+  left copy's reason no longer log their own line;
+- take-over's push, deletions, backup and origin-copy paths skip the log for an
+  `OwnGitError`;
+- `create()`'s worktree warnings go to the pane alone.
+
+`shownFailure` gives the one-line, credential-free text each of them shows.
+
+Tests:
+- `wirePrompt.test.ts`: the four secrets and `DB_PASSWORD=hunter2(abc)xyz` are redacted
+  whole. `isSecretFileName(name)`, `opts?.token ?? fallbackToken`,
+  `const TOKEN = readToken(TOKEN_FILE)` and `path.join(MB_DIR, …)` are kept. Brackets a
+  value didn't open are given back. Long values are read in linear time.
+- `safeGit.test.ts`:
+  - a local sshCommand outside the tree runs;
+  - `./tools/ssh`, `tools/ssh -v`, a whole path into the clone and one into a linked
+    worktree are each set aside for the global one, and each is logged once;
+  - an includeIf gives the clone and its linked worktree the work key, and a
+    `--worktree` value wins for its worktree;
+  - a failure names the set-aside command and why.
+- `teamTakeover.test.ts`: with Husky's `.husky/_` (local) and then a global relative
+  hooksPath, the default pre-push runs and the Husky one doesn't. The backup's view
+  carries the note, logged once over two pushes. With no pre-push in the folder there's
+  no note.
+- `teamTakeover`, `teamChanges` and `teamHouseService`: each failure is logged once, by
+  the own git (the `ownGitLog()` test helper), and not by its caller.
+
+**Checked:** each change was reverted on its own, 22 in all, and a test failed for each:
+- a bare value stopping at `)`, its closing brackets kept, any `(`/`?.`/`??` read as
+  code, the code rule for env names, declared constants read as env lines, and dotted
+  calls read as secrets;
+- the repository's own ssh ignored, a program in a working tree or by a relative path
+  run, linked worktrees not looked at, a set-aside logged every time;
+- a plain Error thrown (so callers log again);
+- for hooks: the repository's own run, the user's in a working tree run, the skip not
+  said, said with no pre-push there, not passed on, or not shown;
+- each caller's duplicate log line put back (push, deletion, House board,
+  reservation).
+
+The chaining test's lookbehind was timed by hand instead, since a test without it runs
+for minutes: 0 ms with it and 1.5 s without, on 40,000 letters.
+
 ### W3 · Delivery (main, no UI). Size L
 - `src/main/wireDelivery.ts`: the ledger, gates, automatic and its guards, the
   round limit, starting B, reconciling on start (section 3).

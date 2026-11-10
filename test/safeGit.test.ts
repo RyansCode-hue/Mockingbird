@@ -1,7 +1,7 @@
 import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { commitContext } from "../src/main/commitMessage";
 import { changedFiles } from "../src/main/conflicts";
 import { refreshBrief } from "../src/main/contextActions";
@@ -10,7 +10,7 @@ import { listAllFiles } from "../src/main/find";
 import { repoState } from "../src/main/handoff";
 import { prDescriptionPrompt } from "../src/main/pullRequests";
 import { ignoredCandidates } from "../src/main/runDraft";
-import { driversToTurnOff, guardedGit, logOwnGitFailuresTo, ownNetworkEnv, programOnPath } from "../src/main/safeGit";
+import { driversToTurnOff, guardedGit, ownNetworkEnv, programOnPath } from "../src/main/safeGit";
 import { scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
 import { dropSnapshots, skippedIn, snapshotCommit, takeSnapshot } from "../src/main/snapshots";
 import { fetchOrigin } from "../src/main/team/branchFiles";
@@ -18,7 +18,7 @@ import { excludeInRepo } from "../src/main/team/claims";
 import { makeTestCopy } from "../src/main/testCopy";
 import { createWorktree, worktreeState } from "../src/main/worktrees";
 import type { SessionInfo } from "../src/shared/types";
-import { git, makeRepo, tempDir, write } from "./helpers";
+import { git, makeRepo, ownGitLog, tempDir, write } from "./helpers";
 import { hostileRepo, watchRepo } from "./hostileRepo";
 
 // each makes a repository and runs a dozen gits, which a busy machine takes a while to start
@@ -307,103 +307,116 @@ describe("Mockingbird's own network gits", { timeout: 300_000 }, () => {
     expect(w.ranBy(/ fetch .*--submodule-prefix=sub\//).map((l) => l.split("\t")[0])).toContain("fsmonitor");
   });
 
-  it("run the user's ssh, from their global config or else ssh itself, never the clone's core.sshCommand", async () => {
-    const { origin, clone, w } = watchedClone();
-    git(clone, "config", "core.sshCommand", w.plant("localssh", "exit 1"));
-    git(clone, "config", "url.ssh://git@example.invalid/app.git.insteadOf", origin);
-    plainFetch(clone);
-    expect(w.ran()).toContain("localssh");
-    w.clear();
+  /** A watched clone whose origin is reached over ssh, so a fetch runs the ssh the config gives, and a global config of the test's own. */
+  function overSsh() {
+    const c = watchedClone();
+    git(c.clone, "config", "url.ssh://git@example.invalid/app.git.insteadOf", c.origin);
     const global = path.join(tempDir("global"), "gitconfig");
-    fs.writeFileSync(global, `[core]\n\tsshCommand = ${w.plant("userssh", "exit 1")}\n`);
+    fs.writeFileSync(global, "");
     vi.stubEnv("GIT_SSH_COMMAND", undefined);
     vi.stubEnv("GIT_SSH", undefined);
     vi.stubEnv("GIT_CONFIG_GLOBAL", global);
-    try {
-      await expect(fetchOrigin(clone)).rejects.toThrow(/Could not read from remote repository/);
-      expect(w.ran()).toEqual(["userssh"]);
-      // with none set by the user: ssh's own, as git picks it with no config
-      vi.stubEnv("GIT_CONFIG_GLOBAL", path.join(tempDir("none"), "gitconfig"));
-      vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
-      expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe("ssh");
-      vi.stubEnv("GIT_SSH", "/opt/my ssh/ssh");
-      expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe("'/opt/my ssh/ssh'");
-      // main's own GIT_SSH_COMMAND wins over any config already
-      vi.stubEnv("GIT_SSH_COMMAND", "ssh -i key");
-      expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBeUndefined();
-    } finally {
-      vi.unstubAllEnvs();
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+    onTestFinished(() => void vi.unstubAllEnvs());
+    return { ...c, global };
+  }
+  const unreachable = /Could not read from remote repository/;
+
+  it("run the ssh git would, the repository's own too, but never a program in one of its working trees", async () => {
+    const { clone, w, global } = overSsh();
+    const userSsh = w.plant("userssh", "exit 1");
+    fs.writeFileSync(global, `[core]\n\tsshCommand = ${userSsh}\n`);
+    // the repository's own, set by the user's tools for a second account: git's choice, and Mockingbird's
+    git(clone, "config", "core.sshCommand", `${w.plant("localssh", "exit 1")} -i ~/.ssh/work`);
+    await expect(fetchOrigin(clone)).rejects.toThrow(unreachable);
+    expect(w.ran()).toEqual(["localssh"]);
+    w.clear();
+    // a program in the working tree, which the session's agent can write: by a relative path or a whole one
+    const own = ownGitLog();
+    w.plant("treessh", "exit 1", path.join(clone, "tools", "ssh"));
+    for (const named of ["./tools/ssh", "tools/ssh -v", path.join(fs.realpathSync(clone), "tools", "ssh")]) {
+      git(clone, "config", "core.sshCommand", named);
+      await expect(fetchOrigin(clone)).rejects.toThrow(unreachable);
+      expect(w.ran(), named).toEqual(["userssh"]);
+      w.clear();
     }
+    // or in another of its working trees, wherever that is
+    const linked = path.join(tempDir("elsewhere"), "linked");
+    git(clone, "worktree", "add", "-q", "-b", "linked", linked);
+    w.clear();
+    const inLinked = w.plant("linkedssh", "exit 1", path.join(linked, "ssh"));
+    git(clone, "config", "core.sshCommand", inLinked);
+    expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe(userSsh);
+    // each set aside is logged once, however often it's run
+    await expect(fetchOrigin(clone)).rejects.toThrow(unreachable);
+    await expect(fetchOrigin(clone)).rejects.toThrow(unreachable);
+    const setAside = own.filter((l) => / set aside /.test(l));
+    expect(setAside).toHaveLength(4);
+    expect(setAside[0]).toBe(`Mockingbird's own git in ${clone}: core.sshCommand ./tools/ssh set aside for ${userSsh}: its program, ./tools/ssh, is in ${fs.realpathSync(clone)}, a working tree of this repository, which a session there can change`);
+    expect(setAside[3]).toContain(`its program, ${inLinked}, is in ${fs.realpathSync(linked)}`);
+    // with none the user's own: GIT_SSH, quoted, else ssh itself, as git picks them
+    git(clone, "config", "--unset", "core.sshCommand");
+    fs.writeFileSync(global, "");
+    expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe("ssh");
+    git(clone, "config", "core.sshCommand", "./tools/ssh");
+    vi.stubEnv("GIT_SSH", "/opt/my ssh/ssh");
+    expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe("'/opt/my ssh/ssh'");
+    // main's own GIT_SSH_COMMAND wins over any config already
+    vi.stubEnv("GIT_SSH_COMMAND", "ssh -i key");
+    expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBeUndefined();
   });
 
-  it("run the ssh the user's global config gives this folder, through an includeIf, for the clone and its linked worktrees", async () => {
-    const { origin, clone, w } = watchedClone();
-    git(clone, "config", "core.sshCommand", w.plant("localssh", "exit 1"));
-    git(clone, "config", "url.ssh://git@example.invalid/app.git.insteadOf", origin);
-    const elsewhere = path.join(tempDir("elsewhere"), "linked");
-    git(clone, "worktree", "add", "-q", "-b", "linked", elsewhere);
+  it("run the ssh a global includeIf gives this folder, for the clone and its linked worktrees, and a worktree's own", async () => {
+    const { clone, w, global } = overSsh();
+    const linked = path.join(tempDir("elsewhere"), "linked");
+    git(clone, "worktree", "add", "-q", "-b", "linked", linked);
     const personal = makeRepo({ "p.txt": "p\n" }, "personal");
     // a work identity: the global config's own ssh for everything, a work key's for this clone's folder
-    const dir = tempDir("global");
-    const included = path.join(dir, "work.gitconfig");
     const workSsh = w.plant("workssh", "exit 1");
+    const included = path.join(path.dirname(global), "work.gitconfig");
     fs.writeFileSync(included, `[core]\n\tsshCommand = ${workSsh}\n`);
-    const global = path.join(dir, "gitconfig");
     const defaultSsh = w.plant("defaultssh", "exit 1");
     fs.writeFileSync(global, `[core]\n\tsshCommand = ${defaultSsh}\n[includeIf "gitdir:${fs.realpathSync(clone)}/"]\n\tpath = ${included}\n`);
-    vi.stubEnv("GIT_SSH_COMMAND", undefined);
-    vi.stubEnv("GIT_SSH", undefined);
-    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
     w.clear();
-    try {
-      await expect(fetchOrigin(clone)).rejects.toThrow(/Could not read from remote repository/);
-      expect(w.ran()).toEqual(["workssh"]);
-      w.clear();
-      // a linked worktree is matched by its clone's .git, wherever the worktree is
-      await expect(fetchOrigin(elsewhere)).rejects.toThrow(/Could not read from remote repository/);
-      expect(w.ran()).toEqual(["workssh"]);
-      // the clone's own, set in local or worktree config, or on a command line, is never taken
-      git(clone, "config", "extensions.worktreeConfig", "true");
-      git(elsewhere, "config", "--worktree", "core.sshCommand", w.plant("worktreessh", "exit 1"));
-      expect((await ownNetworkEnv(elsewhere)).GIT_SSH_COMMAND).toBe(workSsh);
-      // and a folder the includeIf doesn't match gets the global config's own
-      expect((await ownNetworkEnv(personal)).GIT_SSH_COMMAND).toBe(defaultSsh);
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    await expect(fetchOrigin(clone)).rejects.toThrow(unreachable);
+    expect(w.ran()).toEqual(["workssh"]);
+    w.clear();
+    // a linked worktree is matched by its clone's .git, wherever the worktree is
+    await expect(fetchOrigin(linked)).rejects.toThrow(unreachable);
+    expect(w.ran()).toEqual(["workssh"]);
+    // a worktree's own setting is the repository's own config, and git's last word for it
+    git(clone, "config", "extensions.worktreeConfig", "true");
+    const worktreeSsh = w.plant("worktreessh", "exit 1");
+    git(linked, "config", "--worktree", "core.sshCommand", worktreeSsh);
+    expect((await ownNetworkEnv(linked)).GIT_SSH_COMMAND).toBe(worktreeSsh);
+    expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe(workSsh);
+    // and a folder the includeIf doesn't match gets the global config's own
+    expect((await ownNetworkEnv(personal)).GIT_SSH_COMMAND).toBe(defaultSsh);
   });
 
-  it("log a failure with the repository, the whole command and git's words, and say when the clone's own ssh was set aside", async () => {
-    const { origin, clone, w } = watchedClone();
-    const localSsh = w.plant("localssh", "exit 1");
-    git(clone, "config", "core.sshCommand", localSsh);
-    git(clone, "config", "url.ssh://git@example.invalid/app.git.insteadOf", origin);
-    const global = path.join(tempDir("global"), "gitconfig");
-    fs.writeFileSync(global, `[core]\n\tsshCommand = ${w.plant("userssh", "echo 'Permission denied (publickey).' >&2; exit 255")}\n`);
-    vi.stubEnv("GIT_SSH_COMMAND", undefined);
-    vi.stubEnv("GIT_SSH", undefined);
-    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
-    const logged: [string, unknown][] = [];
-    const before = logOwnGitFailuresTo((context, err) => logged.push([context, err]));
-    try {
-      const failure = await fetchOrigin(clone).then(
-        () => null,
-        (err: Error) => err.message,
-      );
-      expect(failure).toMatch(/Permission denied \(publickey\)/);
-      expect(failure).toContain(`not the core.sshCommand this repository's config sets, ${localSsh}`);
-      expect(logged).toHaveLength(1);
-      expect(logged[0][0]).toBe(`Mockingbird's own git in ${clone}: git fetch --upload-pack=git-upload-pack --recurse-submodules=no -q --prune --no-tags origin`);
-      expect(String(logged[0][1])).toMatch(/Permission denied \(publickey\).*not the core\.sshCommand/s);
-      // a failure with nothing set aside is git's words alone
-      git(clone, "config", "--unset", "core.sshCommand");
-      logged.length = 0;
-      await expect(fetchOrigin(clone)).rejects.toThrow(/Permission denied \(publickey\)/);
-      expect(String(logged[0][1])).not.toContain("core.sshCommand");
-    } finally {
-      vi.unstubAllEnvs();
-      logOwnGitFailuresTo(before);
-    }
+  it("log a failure with the repository, the whole command and git's words, and say which ssh was set aside and why", async () => {
+    const { clone, w, global } = overSsh();
+    const userSsh = w.plant("userssh", "echo 'Permission denied (publickey).' >&2; exit 255");
+    fs.writeFileSync(global, `[core]\n\tsshCommand = ${userSsh}\n`);
+    w.plant("treessh", "exit 1", path.join(clone, "tools", "ssh"));
+    git(clone, "config", "core.sshCommand", "./tools/ssh");
+    const own = ownGitLog();
+    const failure = await fetchOrigin(clone).then(
+      () => null,
+      (err: Error) => err.message
+    );
+    expect(failure).toMatch(/Permission denied \(publickey\)/);
+    expect(failure).toContain(`(Mockingbird ran ${userSsh}, not this repository's core.sshCommand, ./tools/ssh: its program, ./tools/ssh, is in ${fs.realpathSync(clone)}`);
+    const failed = own.filter((l) => / git fetch /.test(l));
+    expect(failed).toHaveLength(1);
+    expect(failed[0].startsWith(`Mockingbird's own git in ${clone}: git fetch --upload-pack=git-upload-pack --recurse-submodules=no -q --prune --no-tags origin: git fetch: `)).toBe(true);
+    expect(failed[0]).toMatch(/Permission denied \(publickey\)[\s\S]*not this repository's core\.sshCommand/);
+    // a failure with nothing set aside is git's words alone
+    git(clone, "config", "--unset", "core.sshCommand");
+    own.length = 0;
+    await expect(fetchOrigin(clone)).rejects.toThrow(/Permission denied \(publickey\)/);
+    expect(own).toHaveLength(1);
+    expect(own[0]).not.toContain("core.sshCommand");
   });
 });
 

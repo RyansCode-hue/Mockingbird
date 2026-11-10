@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { git, gitBytes, hasCredentials, headCommit, originUrl, repoIdentity, repoTop } from "../git";
-import { guardedGit, ownFetch } from "../safeGit";
+import { guardedGit, ownFetch, shownFailure } from "../safeGit";
 import { checkRepoPath } from "./artifactEvents";
 import { inside } from "./artifactStore";
 import { originIdentity } from "./roomSessions";
@@ -159,7 +159,8 @@ export class RepoRefs {
       try {
         await ownFetch(dir, ["origin"], { timeoutMs: FETCH_CAP_MS });
       } catch (err) {
-        fetchFailed = this.d.log(`room artifacts: fetching ${want} for ${short(rec.commit)}`, err);
+        // logged by ownFetch
+        fetchFailed = shownFailure(err);
       }
       out.commitPresent = await hasCommit(dir, rec.commit);
       if (out.commitPresent) this.misses.delete(missKey);

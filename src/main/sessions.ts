@@ -510,11 +510,9 @@ export class SessionManager {
     let branch: string | null = null;
     let repoPath = req.repoPath ? expandHome(req.repoPath) : null;
     // what the branch was made from when origin couldn't be asked or fetched from: shown in the pane, with opts.notice
+    // (the git that failed is logged by ownNetworkGit)
     const warnings: string[] = [];
-    const warn = (text: string) => {
-      console.warn(`[sessions] ${text}`);
-      warnings.push(text);
-    };
+    const warn = (text: string) => void warnings.push(text);
 
     const wanted =
       req.branchName?.trim() ||

@@ -2,6 +2,8 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { onTestFinished } from "vitest";
+import { logOwnGitFailuresTo } from "../src/main/safeGit";
 import { removeAtEnd } from "./leaks";
 
 export const git = (cwd: string, ...args: string[]) =>
@@ -35,4 +37,15 @@ export function write(root: string, files: Record<string, string>): void {
     fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
     fs.writeFileSync(path.join(root, rel), content);
   }
+}
+
+/**
+ * What Mockingbird's own network gits log (logOwnGitFailuresTo) for the rest of the test, each as "<context>: <what>":
+ * their failures, and what they set aside.
+ */
+export function ownGitLog(): string[] {
+  const lines: string[] = [];
+  const before = logOwnGitFailuresTo((context, err) => lines.push(`${context}: ${err instanceof Error ? err.message : String(err)}`));
+  onTestFinished(() => void logOwnGitFailuresTo(before));
+  return lines;
 }

@@ -134,7 +134,12 @@ describe("redaction", () => {
     ["a call", "const secret = isSecretFileName(name);"],
     ["a call with arguments", "  tokens: tokens(900_000, 32),"],
     ["an optional chain", "const token = session?.credentials ?? fallbackToken;"],
-    ["a nullish default", "apiKey = configured??defaultKeyForTests"],
+    ["an optional chain with a default", "const token = opts?.token ?? fallbackToken;"],
+    ["a nullish default", "apiKey = configured ?? defaultKeyForTests"],
+    ["a call on an object", "if (!token) token = this.store.readToken(sessionId);"],
+    ["a constant code declares, from a call", "const TOKEN = readToken(TOKEN_FILE);"],
+    ["a call on a module, cut at its comma", "const TOKENS_DIR = path.join(MB_DIR, \"mcp-tokens\");"],
+    ["an env key in code, set from a call on an object", "env: { MOCKINGBIRD_TOKEN_FILE: tokens.mint(sessionId), MOCKINGBIRD_SOCK: SOCK }"],
   ])("leaves %s alone", (_what, text) => {
     expect(redactSecrets(text)).toEqual({ text, count: 0 });
   });
@@ -144,6 +149,28 @@ describe("redaction", () => {
     expect(redactSecrets("const token = 'abc(def)123-not-real';").text).toBe(`const token = '${REDACTED}';`);
     expect(redactSecrets("client_secret: s3cr3t-v4lue-9x-fake").text).toBe(`client_secret: ${REDACTED}`);
     expect(redactSecrets("DB_PASSWORD=not?real!pass1").text).toBe(`DB_PASSWORD=${REDACTED}`);
+  });
+
+  it.each([
+    ["an env file's password with brackets", "DB_PASSWORD=Hunter2(abc)xyz", "DB_PASSWORD="],
+    ["one with brackets mid-word", "SA_PASSWORD=Pa(ss)w0rd!2024", "SA_PASSWORD="],
+    ["one that starts like a call", "DB_PASSWORD=hunter2(abc)xyz", "DB_PASSWORD="],
+    ["an env file's key with question marks", "API_KEY=k9Zq??x7Wm2pLr", "API_KEY="],
+    ["a YAML password ending in a bracket", "db_password: Zx9v(Q2mL7pR4)", "db_password: "],
+    ["a key with a question mark and a dot", "apiKey = Q7x?.z9Wm2pLr8k", "apiKey = "],
+  ])("takes the whole of %s, past its brackets", (_what, text, kept) => {
+    expect(redactSecrets(text)).toEqual({ text: `${kept}${REDACTED}`, count: 1 });
+  });
+
+  it("reads an upper-case name as an env file's unless code declares it, and a quoted value as a secret either way", () => {
+    expect(redactSecrets("export DB_PASSWORD=Hunter2(abc)xyz").text).toBe(`export DB_PASSWORD=${REDACTED}`);
+    expect(redactSecrets("const API_KEY = 'k9Zq(x7Wm2pLr'").text).toBe(`const API_KEY = '${REDACTED}'`);
+    expect(redactSecrets("let DB_PASSWORD = Hunter2abc9xyz").text).toBe(`let DB_PASSWORD = ${REDACTED}`);
+  });
+
+  it("gives back the brackets a value closes but didn't open", () => {
+    expect(redactSecrets("connect(password=hunter22)").text).toBe(`connect(password=${REDACTED})`);
+    expect(redactSecrets("(export DB_PASSWORD=Hunter2(abc)x))").text).toBe(`(export DB_PASSWORD=${REDACTED}))`);
   });
 
   it("counts each one, and never counts what it put there itself", () => {
@@ -177,6 +204,8 @@ describe("what redaction costs", () => {
     ["names each after a double hyphen, as a flag's is", "a--".repeat(133_000)],
     ["URL beginnings with long credentials", `a://${"u".repeat(900)}:${"p".repeat(9000)} `.repeat(40)],
     ["84-character words with no signature", `${"x".repeat(83)} `.repeat(4_800)],
+    ["one long value under a secret's name, read for code", `token=${"a".repeat(400_000)}`],
+    ["one long value of dotted words under a secret's name", `token=${"a.".repeat(200_000)}`],
     ["lines a key's width, two at a time", `${"QUJD".repeat(16)}\n${"QUJD".repeat(16)}\nx\n`.repeat(3_000)],
   ])("reads 400 KB of %s in under 100 ms", (_what, text) => {
     redactSecrets(text.slice(0, 100));

@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFile } from "child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { git, makeRepo, tempDir, write } from "./helpers";
+import { git, makeRepo, ownGitLog, tempDir, write } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { HouseService } from "../src/main/team/houseService";
 import { TeamChanges } from "../src/main/team/teamChanges";
@@ -346,9 +346,11 @@ describe("migration number reservations", () => {
     const plain = makeRepo({ "README.md": "x\n" });
     git(plain, "remote", "add", "origin", path.join(tempDir("nowhere"), "x.git"));
     const loner = { ...ryanS, id: "r9", cwd: plain, repoPath: plain };
+    const own = ownGitLog();
     const none = await r.changes.toolCall(loner, "reserve_migration_number", {});
     expect(none).toEqual({ error: expect.stringMatching(/^Mockingbird found no numbered migration folder in this repository/) });
-    // the failed fetch was logged, not swallowed
-    expect(r.logs.some((l) => /fetching origin into .* to reserve a migration number/.test(l))).toBe(true);
+    // the failed fetch was logged once, with its command, not swallowed
+    expect(own).toEqual([expect.stringMatching(/^Mockingbird's own git in \S*: git fetch .*origin: git fetch: /)]);
+    expect(r.logs.some((l) => /fetching origin/.test(l))).toBe(false);
   }, 30_000);
 });

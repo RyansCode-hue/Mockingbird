@@ -98,23 +98,49 @@ const SECRET_NAME_RE = /passw(?:or)?d|passphrase|secret|token|api[_-]?key|access
  * `!=`. A name starts where a word does (not after a dot, or a hyphen inside a word: `a.b-c` is one name, read from its
  * start), so a run of name characters is tried from its start alone, and at most 256 of them. A name may start after
  * `--` (a flag), so it ends before one: no run is read from more than one start. `$env:` is no name of its own, so the
- * name after it is read.
+ * name after it is read. A bare value runs on past `)`, as a password can hold one (closingParens gives back those
+ * that close what's around it).
  */
-const ASSIGNMENT_RE = /(["']?)(?<![\w.]|[\w.]-)(?!(?<=\$)[Ee][Nn][Vv]:)([A-Za-z_](?:[\w.]|-(?!-)){0,255})\1([ \t]{0,40}(?::|=(?![=>]))[ \t]{0,40})("[^"\n]*"|'[^'\n]*'|[^\s"'`,;&)}[\]]+)/g;
+const ASSIGNMENT_RE = /(["']?)(?<![\w.]|[\w.]-)(?!(?<=\$)[Ee][Nn][Vv]:)([A-Za-z_](?:[\w.]|-(?!-)){0,255})\1([ \t]{0,40}(?::|=(?![=>]))[ \t]{0,40})("[^"\n]*"|'[^'\n]*'|[^\s"'`,;&}[\]]+)/g;
+
+/** A bare value without the `)`s at its end that it didn't open (`f(token=abc123)`'s), and those `)`s. */
+function closingParens(value: string): [string, string] {
+  let open = 0;
+  let close = 0;
+  for (const c of value) {
+    if (c === "(") open++;
+    else if (c === ")") close++;
+  }
+  let end = value.length;
+  while (close > open && value[end - 1] === ")") {
+    end--;
+    close--;
+  }
+  return [value.slice(0, end), value.slice(end)];
+}
+
+/**
+ * Code, not a secret: a call (a lower-case identifier, maybe after `obj.` or `!`, then `(`), or optional chaining
+ * from a lower-case identifier (`opts?.token`). An identifier is tried from its start alone, so a long run is read once.
+ */
+const CODE_RE = /^!?(?:[A-Za-z_$][\w$]*\.)*[a-z_$][\w$]*\(|(?<![\w$])[a-z_$][\w$]*\?\.[A-Za-z_$]/;
 
 /**
  * Whether `value`, set on a secret-looking `name`, looks like the secret itself rather than code that reads one: an
- * env file's line (an upper-case name) takes any value of 4 or more; code takes a quoted one of 4 or more, or a bare
- * one that's long or has digits in it, and never a reference like `process.env.API_KEY`, a type like `AccessToken`,
- * another variable (`${TOKEN}`), or an expression: a bare value holding `(`, `?.` or `??` (`isSecretFileName(name)`,
- * `opts?.token`), which an env file's line can't hold unquoted either.
+ * env file's line (an upper-case name, not one code declares: `const TOKEN = …`) takes any value of 4 or more, `(` and
+ * `??` in it too (`Pa(ss)w0rd`); code takes a quoted one of 4 or more, or a bare one that's long or has digits in it.
+ * Never a reference like `process.env.API_KEY` or a call on one (`path.join(dir`), another variable (`${TOKEN}`), nor
+ * in code a type like `AccessToken` or an expression that looks like one (CODE_RE: `isSecretFileName(name)`,
+ * `opts?.token`). A bare value ends at a space, so `a ?? b` is read as `a`.
  */
-function secretValue(name: string, value: string): boolean {
+function secretValue(name: string, value: string, declared: boolean): boolean {
   const isQuoted = /^["']/.test(value);
   const inner = isQuoted ? value.slice(1, -1) : value;
   if (inner.length < 4 || inner.includes(REDACTED) || /^\$\{?\w/.test(inner)) return false;
-  if (!isQuoted && (/^[A-Za-z_$][\w$]*(?:\.[\w$]+)+(?:\(\))?$/.test(inner) || /\(|\?\.|\?\?/.test(inner))) return false;
-  if (/^[A-Z][A-Z0-9_]*$/.test(name) || isQuoted) return true;
+  if (!isQuoted && /^[A-Za-z_$][\w$]*(?:\.[\w$]+)+(?:\(.*)?$/.test(inner)) return false;
+  if (/^[A-Z][A-Z0-9_]*$/.test(name) && !declared) return true;
+  if (isQuoted) return true;
+  if (CODE_RE.test(inner)) return false;
   return inner.length >= 20 || (inner.length >= 8 && /\d/.test(inner));
 }
 
@@ -135,12 +161,14 @@ export function redactSecrets(text: string): { text: string; count: number } {
   out = out.replace(URL_SIGNATURE_RE, (_m, head: string) => (count++, `${head}${REDACTED}`));
   out = out.replace(URL_CREDENTIALS_RE, (_m, head: string) => (count++, `${head}${REDACTED}@`));
   out = out.replace(AUTH_HEADER_RE, (_m, scheme: string) => (count++, `${scheme} ${REDACTED}`));
-  out = out.replace(ASSIGNMENT_RE, (m, q: string, name: string, sep: string, value: string) => {
+  out = out.replace(ASSIGNMENT_RE, (m, q: string, name: string, sep: string, read: string, at: number, whole: string) => {
+    const quote = /^["']/.test(read) ? read[0] : "";
+    const [value, after] = quote ? [read, ""] : closingParens(read);
+    const declared = /\b(?:const|let|var)\s+$/.test(whole.slice(Math.max(0, at - 12), at));
     // a name naming another (SharedAccessKeyName=RootManageSharedAccessKey) holds an identifier, not the secret
-    if (!SECRET_NAME_RE.test(name) || /name$/i.test(name) || !secretValue(name, value)) return m;
+    if (!SECRET_NAME_RE.test(name) || /name$/i.test(name) || !secretValue(name, value, declared)) return m;
     count++;
-    const quote = /^["']/.test(value) ? value[0] : "";
-    return `${q}${name}${q}${sep}${quote}${REDACTED}${quote}`;
+    return `${q}${name}${q}${sep}${quote}${REDACTED}${quote}${after}`;
   });
   return { text: out, count };
 }

@@ -289,6 +289,8 @@ export interface RoomSessionBackupView extends RoomSessionBackup {
   transcript: { have: number; of: number | null } | null;
   /** Something on this side went wrong (sending to teammates, or storing what they sent). */
   problem: string | null;
+  /** This install's session: its last push to origin ran no pre-push from `folder`, the hooks folder git would have run it from; `note` says why. */
+  prePushSkipped?: { folder: string; note: string };
 }
 
 /** A room's backup setting as Settings → Team shows it. */

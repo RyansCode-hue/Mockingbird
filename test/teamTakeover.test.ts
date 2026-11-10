@@ -2,7 +2,7 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { git, makeRepo, tempDir, write } from "./helpers";
+import { git, makeRepo, ownGitLog, tempDir, write } from "./helpers";
 import { watchRepo } from "./hostileRepo";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { liveRoomHost, TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
@@ -304,13 +304,16 @@ describe("room session backups", () => {
   it("records a failed push in the room and shows it, without stopping the copy to teammates", async () => {
     const t = await setup();
     rejectPushes(t.bare, true);
+    const own = ownGitLog();
     await t.ryan.svc.turnEnded("s1");
     await t.ryan.svc.settled();
     const b = backupIn(t.ryanM, t.roomId)!;
     expect(b.push.ok).toBe(false);
     expect(b.push.ok === false && b.push.error).toMatch(/backups are switched off here|pre-receive hook declined/);
     expect(b.pushed).toBeNull();
-    expect(t.ryan.logs.some((l) => /pushing the backup of session s1/.test(l))).toBe(true);
+    // logged once, by the push itself
+    expect(own.filter((l) => / git push /.test(l))).toEqual([expect.stringMatching(/^Mockingbird's own git in \S+: git push --receive-pack=git-receive-pack .*: git push: /)]);
+    expect(t.ryan.logs.some((l) => /pushing the backup of session s1/.test(l))).toBe(false);
     // Ryan sees it on his own session; Nick, who got the snapshot directly, sees it's safe on his Mac
     const mine = t.ryan.svc.view().sessions.find((s) => s.sessionId === "s1")!;
     expect(backupFreshness(mine).text).toMatch(/^backup failed: /);
@@ -716,10 +719,11 @@ describe("take-over's own fetches and refs", () => {
     // Ryan's session is in a clone without the snapshot by the time he hears of it, and its origin can't be read
     t.ryan.sessions.set("s1", { ...t.ryan.sessions.get("s1")!, repoPath: ryanOther, cwd: ryanOther });
     sh(ryanOther, "remote", "set-url", "origin", path.join(tempDir("gone"), "app.git"));
+    const own = ownGitLog();
     t.net.setOnline(t.ryanM.id, true);
     await until(() => !!t.ryan.svc.view().left[0]?.unsent, "Ryan's copy to be counted");
     expect(t.ryan.svc.view().left[0].unsent).toEqual({ error: expect.stringMatching(/isn't in this clone, so what they lack can't be told: fetching it from origin failed: git fetch: fatal: /) });
-    expect(t.ryan.logs.some((l) => /fetching the snapshot session s1 was continued from/.test(l))).toBe(true);
+    expect(own).toEqual([expect.stringMatching(new RegExp(`^Mockingbird's own git in ${ryanOther}: git fetch .*refs/mockingbird/rooms-left/.*: git fetch: fatal: `))]);
   }, 60_000);
 });
 
@@ -753,11 +757,13 @@ describe("cleaning up backups", () => {
     await t.ryan.svc.settled();
     const ref = roomBackupRef(t.roomId, "s1");
     rejectPushes(t.bare, true);
+    const own = ownGitLog();
     await t.ryan.svc.sessionForgotten("s1");
     expect(refIn(t.bare, ref)).not.toBeNull();
     expect(backupIn(t.ryanM, t.roomId)!.dropped).toBeNull();
     expect(t.ryan.svc.view().cleanup).toEqual([{ roomId: t.roomId, sessionId: "s1", title: "Donor entities", problem: expect.stringMatching(/backups are switched off here|declined/) }]);
-    expect(t.ryan.logs.some((l) => /deleting the backup of session s1/.test(l))).toBe(true);
+    expect(own.filter((l) => / git push /.test(l))).toHaveLength(1);
+    expect(t.ryan.logs.some((l) => /deleting the backup of session s1/.test(l))).toBe(false);
     expect(nickCopy(t).ref).not.toBeNull(); // members keep theirs until origin's is gone
     rejectPushes(t.bare, false);
     await t.ryan.svc.prune();
@@ -1185,6 +1191,47 @@ describe("backups to origin (the admin's opt-in)", () => {
     expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual(["work-pre-push"]);
   });
 
+  it("runs no pre-push from a hooks folder in the working tree (Husky's), and says so on the backup and once in the log", async () => {
+    const t = await setup();
+    const w = watchRepo(t.ryanClone);
+    git(t.ryanClone, "config", "core.hooksPath", ".husky/_");
+    w.plant("husky-pre-push", "cat >/dev/null", path.join(t.wt, ".husky", "_", "pre-push"));
+    w.plant("default-pre-push", "cat >/dev/null", path.join(t.ryanClone, ".git", "hooks", "pre-push"));
+    const own = ownGitLog();
+    const ref = roomBackupRef(t.roomId, "s1");
+    const turn = async (text: string) => {
+      write(t.wt, { "src/a.ts": text });
+      await t.ryan.svc.turnEnded("s1");
+      await t.ryan.svc.settled();
+      expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
+    };
+    const skipped = () => t.ryan.svc.view().sessions.find((s) => s.sessionId === "s1")!.prePushSkipped;
+    const note = "pre-push in .husky/_ not run for backups: hooks in the working tree can be changed by the session";
+    await turn("one\n");
+    await turn("two\n");
+    expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual(["default-pre-push"]);
+    expect(skipped()).toEqual({ folder: ".husky/_", note });
+    expect(own.filter((l) => l.endsWith(note))).toEqual([`Mockingbird's own git in ${fs.realpathSync(t.wt)}: ${note}`]);
+    // nor from one the user's own config names there
+    git(t.ryanClone, "config", "--unset", "core.hooksPath");
+    const global = path.join(tempDir("global"), "gitconfig");
+    fs.writeFileSync(global, "[core]\n\thooksPath = .husky/_\n");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    try {
+      w.clear();
+      await turn("three\n");
+      expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual(["default-pre-push"]);
+      expect(skipped()).toEqual({ folder: ".husky/_", note });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    // a hooks folder set aside with no pre-push in it costs nothing, and says nothing
+    git(t.ryanClone, "config", "core.hooksPath", ".husky/_");
+    fs.rmSync(path.join(t.wt, ".husky", "_", "pre-push"));
+    await turn("four\n");
+    expect(skipped()).toBeUndefined();
+  });
+
   it("turned on: what each owner has goes to origin at once, without waiting for a turn", async () => {
     const t = await setup(["Ryan", "Nick"], { backupsToOrigin: false });
     await t.ryan.svc.turnEnded("s1");
@@ -1207,11 +1254,13 @@ describe("backups to origin (the admin's opt-in)", () => {
     const ref = roomBackupRef(t.roomId, "s1");
     expect(refIn(t.bare, ref)).not.toBeNull();
     rejectPushes(t.bare, true);
+    const own = ownGitLog();
     t.ryan.svc.setBackupsToOrigin(t.roomId, false);
     await t.ryan.svc.settled();
     expect(refIn(t.bare, ref)).not.toBeNull();
     expect(t.ryan.svc.view().cleanup).toEqual([{ roomId: t.roomId, sessionId: "s1", title: "Donor entities", problem: expect.stringMatching(/backups are switched off here|declined/) }]);
-    expect(t.ryan.logs.some((l) => /deleting the backup of session s1/.test(l))).toBe(true);
+    expect(own.filter((l) => / git push /.test(l))).toHaveLength(1);
+    expect(t.ryan.logs.some((l) => /deleting the backup of session s1/.test(l))).toBe(false);
     rejectPushes(t.bare, false);
     await t.ryan.svc.prune();
     expect(refIn(t.bare, ref)).toBeNull();

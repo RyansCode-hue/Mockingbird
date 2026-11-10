@@ -81,6 +81,7 @@ export function BackupFreshness({ view }: { view: RoomSessionBackupView }) {
     view.self && view.heldBy.length ? `Copied to ${view.heldBy.join(", ")}` : "",
     !view.self && view.peerCopy ? `Copied to this Mac: ${short(view.peerCopy.sha)}, taken ${ago(view.peerCopy.takenAt, now)}` : "",
     view.problem ?? "",
+    view.prePushSkipped?.note ?? "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -88,6 +89,7 @@ export function BackupFreshness({ view }: { view: RoomSessionBackupView }) {
     <span className={`tk-fresh ${f.tone}`} title={tip}>
       {f.text}
       {view.problem && !view.takenOver && <span className="tk-fresh warn"> · not sent to teammates</span>}
+      {view.prePushSkipped && view.toOrigin && !view.takenOver && <span className="tk-fresh warn"> · pre-push in {view.prePushSkipped.folder} not run</span>}
     </span>
   );
 }
