@@ -17,7 +17,8 @@ import { OVERLAYS, ownsKeys } from "./keys";
  * Anything else that gives it the keyboard leaves it disarmed, and the keyboard going anywhere else disarms it,
  * however that happens: a terminal or a field taking it, a dialog opening, focus falling to the page. A disarmed
  * surface swallows typed keys (Tab too, so a burst can't walk onto a button and press it); ⌘ and Ctrl chords still
- * work. Every key handler of such a surface asks `isArmed` before acting on a typed key. A move of the keyboard that
+ * work. Once keys have paused (`afterPause`), Tab and Shift+Tab leave it, past all it holds (`tabPast`), so the
+ * keyboard alone gets on. Every key handler of such a surface asks `isArmed` before acting on a typed key. A move of the keyboard that
  * waits on something (a reveal or a jump waiting for main) is dropped if the user did anything meanwhile, or a dialog
  * opened (`inputStamp`). What closing gives the keyboard back armed asks `userLeft`, which holds only while the user's
  * own key or press is being handled: a dialog going on its own, later, isn't the user leaving it.
@@ -54,6 +55,8 @@ let pressed: Element | null = null;
 let lastKey: string | null = null;
 /** When the user last pressed a key (performance.now()). */
 let lastKeyAt = -Infinity;
+/** The key being handled came after a pause in typing (`TYPING_MS`): it's no part of a burst. */
+let keyPaused = true;
 /** Whether the user has pressed anything, key or pointer, since the window opened. */
 let touched = false;
 /** A pointer press is being dispatched: a focus move to nothing now is the press's own. */
@@ -138,6 +141,7 @@ if (typeof document !== "undefined") {
     "keydown",
     (e) => {
       const paused = performance.now() - lastKeyAt >= TYPING_MS;
+      keyPaused = paused;
       lastKey = e.key;
       lastKeyAt = performance.now();
       touched = true;
@@ -233,6 +237,26 @@ export function armFocus(el: HTMLElement | null | undefined): void {
  * for what closes on its own later (a request answered elsewhere), whatever the user did last.
  */
 export const userLeft = (): boolean => acting && (lastKey === null || lastKey === "Escape" || lastKey === "?");
+
+/** The key being handled came after keys had paused (`TYPING_MS`), so it's no part of a burst. */
+export const afterPause = (): boolean => keyPaused;
+
+/** The page's Tab stops, in its order. */
+const STOPS = "button, a[href], input, select, textarea, [tabindex]";
+
+/**
+ * Tab (Shift+Tab: `back`) past `el` and all it holds: the keyboard to the first stop after it in the page's order, or
+ * the last before it, wrapping round as a browser does. Whether a stop took it.
+ */
+export function tabPast(el: Element, back: boolean): boolean {
+  const all = [...document.querySelectorAll<HTMLElement>(STOPS)].filter(
+    (x) => !el.contains(x) && !x.contains(el) && x.tabIndex >= 0 && !(x as HTMLButtonElement).disabled && x.getClientRects().length > 0 && !x.closest("[inert], .mb-ghost")
+  );
+  const after = (x: Element) => !!(el.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const to = back ? (all.filter((x) => !after(x)).pop() ?? all[all.length - 1]) : (all.find(after) ?? all[0]);
+  to?.focus();
+  return !!to && document.activeElement === to;
+}
 
 /** Milliseconds since the user's last key. */
 export const sinceKey = (): number => performance.now() - lastKeyAt;

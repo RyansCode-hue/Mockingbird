@@ -14,6 +14,7 @@ import { useAction } from "./useAction";
 import { initialsOf, InviteCode, ShareError } from "./Team";
 import { localTops, newRoomOf, newRoomPlan, repoChoices, repoOfFolder, seedWhere, workspacesOf, type NewRoom } from "./newSessionModel";
 import type { TeamRoomSummary } from "../shared/team/types";
+import { inputStamp } from "./keyArm";
 
 /** Starting sessions: New session (⌘N) and Import. */
 
@@ -66,7 +67,11 @@ export function NewSessionModal({
   /** Join a teammate's room with an invite code (closes this dialog for Join a room). */
   onJoinRoom?: () => void;
   onClose: () => void;
-  onCreated: (s: SessionInfo) => void;
+  /**
+   * The session started. `since`: the user's input as they pressed Start (keyArm.ts's `inputStamp`), for the jump to
+   * it, which waited on main: typed past meanwhile, it leaves the keyboard where it is.
+   */
+  onCreated: (s: SessionInfo, since?: number) => void;
 }) {
   const [launch, setLaunch] = useState<LaunchKind>(initialLaunch ?? "claude");
   const isAgent = launch !== "shell";
@@ -257,6 +262,7 @@ export function NewSessionModal({
    * protections are set at launch — and the invite code shows once it runs.
    */
   const startIn = async (what: string, start: () => Promise<SessionInfo | { error: string }>) => {
+    const since = inputStamp();
     const r = await run(what, async () => {
       let madeHere = intoNewRoom && plan.kind !== "unnamed" && made.current?.key === plan.key ? made.current : null;
       if (newRoom && !madeHere) {
@@ -270,7 +276,7 @@ export function NewSessionModal({
     });
     if (isErr(r)) return;
     if (r.room) setDone({ info: r.info, room: r.room });
-    else onCreated(r.info);
+    else onCreated(r.info, since);
   };
 
   // a closed Mockingbird session is restored as it was; any other conversation
@@ -1042,7 +1048,8 @@ export function ImportModal({
   onDone,
 }: {
   onClose: () => void;
-  onOpened: (opened: SessionInfo[]) => void;
+  /** Those opened, and the user's input as they pressed Open (`inputStamp`), for the jump to the first: see onCreated. */
+  onOpened: (opened: SessionInfo[], since: number) => void;
   onDone: () => void;
 }) {
   const [q, setQ] = useState("");
@@ -1059,6 +1066,7 @@ export function ImportModal({
     });
 
   const importSelected = async () => {
+    const since = inputStamp();
     const opened: SessionInfo[] = [];
     const failures: string[] = [];
     const r = await run("import", async () => {
@@ -1071,7 +1079,7 @@ export function ImportModal({
       }
     });
     if (isErr(r)) failures.push(`✕ ${r.error}`);
-    if (opened.length) onOpened(opened);
+    if (opened.length) onOpened(opened, since);
     if (failures.length) {
       setError(`Opened ${opened.length}, failed ${failures.length}:\n\n${failures.join("\n")}`);
       setSel(new Map());

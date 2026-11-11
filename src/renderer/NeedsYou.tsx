@@ -1,10 +1,11 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo } from "../shared/types";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import { LOOSE_GROUP } from "../shared/landscape";
 import { agoShort, plural } from "../shared/format";
 import { DIALOG_OPENED, type DialogOpened } from "./Modal";
 import { AnchoredPopover } from "./Popover";
+import { ANSWER_GUARD_MS, keyClick, useSettledRows } from "./answerGuard";
 import { usePersisted } from "./prefs";
 import { shortAreaName } from "./landscapeModel";
 import { KIND_LABEL, dismiss, dismissedFrom, needsByArea, needsItems, needsLabel, shownItems, undismiss, type NeedsItem } from "./needsYouModel";
@@ -72,14 +73,6 @@ export function useNeedsYou(
 /** The dot before an item's kind: amber while something waits on you, grey for what's only done. */
 const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", join: "waiting", finished: "idle" };
 
-/**
- * A click in the tray this soon after a Dismiss or an answer is a double click's second, landing on whatever slid up
- * under the pointer: it's let go. The tray holds its height this long, so that click lands in it however short it got,
- * rather than on the landscape.
- */
-const DISMISS_GUARD_MS = 450;
-/** A typing ask's Allow and Deny take no click on a row that arrived or moved this recently: it was aimed at what was there. */
-const ANSWER_SETTLE_MS = 500;
 /** The actions that answer a teammate's ask to type (needsActions). */
 const ANSWERS = new Set(["allow", "deny"]);
 
@@ -129,21 +122,9 @@ export function NeedsYou({
     const shown = new Set(shownSigs.split("\n"));
     setBusy((b) => ([...b].every((s) => shown.has(s)) ? b : new Set([...b].filter((s) => shown.has(s)))));
   }, [shownSigs]);
-  // where each row is in the tray, and since when: a row that arrived or moved is under a pointer aimed at another
-  const placed = useRef(new Map<string, { top: number; at: number }>());
-  useLayoutEffect(() => {
-    const now = Date.now();
-    const next = new Map<string, { top: number; at: number }>();
-    for (const el of open ? (list.current?.querySelectorAll<HTMLElement>(".ny-item[data-item]") ?? []) : []) {
-      const was = placed.current.get(el.dataset.item!);
-      next.set(el.dataset.item!, was && was.top === el.offsetTop ? was : { top: el.offsetTop, at: now });
-    }
-    placed.current = next;
-  });
-  const settled = (item: NeedsItem) => {
-    const p = placed.current.get(item.id);
-    return !!p && Date.now() - p.at >= ANSWER_SETTLE_MS;
-  };
+  // a row that arrived or moved is under a pointer aimed at another
+  const settledRow = useSettledRows(list, ".ny-item[data-item]", (el) => el.dataset.item);
+  const settled = (item: NeedsItem) => settledRow(item.id);
   const close = (how?: "escape" | "outside" | "away") => {
     setOpen(false);
     // Escape gives the keyboard back to the button that opened it; Go there gives it to the landscape
@@ -173,15 +154,18 @@ export function NeedsYou({
     e.stopPropagation();
     onStep(dir, e.currentTarget.getBoundingClientRect());
   };
-  /** A Dismiss or an answer: the guard on, and the keyboard and the tray's height held, as its row will go. */
+  /**
+   * A Dismiss or an answer: the guard on (a click straight after is a double click's second), and the keyboard and the
+   * tray's height held, as its row will go: that click lands in the tray however short it got, not on the landscape.
+   */
   const hold = (e: React.MouseEvent) => {
-    guardUntil.current = Date.now() + DISMISS_GUARD_MS;
+    guardUntil.current = Date.now() + ANSWER_GUARD_MS;
     const tray = (e.currentTarget as HTMLElement).closest<HTMLElement>(".ny-tray");
     if (!tray) return;
     // its button leaves, or is turned off, with it: the keyboard moves to the tray first, so N and Esc still reach it
     tray.focus({ preventScroll: true });
     tray.style.minHeight = `${tray.getBoundingClientRect().height}px`;
-    setTimeout(() => (tray.style.minHeight = ""), DISMISS_GUARD_MS);
+    setTimeout(() => (tray.style.minHeight = ""), ANSWER_GUARD_MS);
   };
   const onDismiss = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
     if (guarded()) return;
@@ -190,8 +174,7 @@ export function NeedsYou({
     setLast(item);
   };
   const onAnswer = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
-    // a key's click on a focused button has no pointer behind it (detail 0)
-    if (!a.answer || e.detail === 0 || guarded() || busy.has(item.sig) || !settled(item)) return;
+    if (!a.answer || keyClick(e) || guarded() || busy.has(item.sig) || !settled(item)) return;
     hold(e);
     setBusy((b) => new Set(b).add(item.sig));
     // answered, the row stays off until main's word takes it away; refused (said by the answer), it's back on

@@ -2309,7 +2309,7 @@ function App() {
     setPlaceHint((h) => (h?.created ? h : null));
   }, [modal]);
 
-  const onCreated = async (s: SessionInfo) => {
+  const onCreated = async (s: SessionInfo, since?: number) => {
     setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
     // the lone pane joins its new workspace — unless the dialog put the session elsewhere
     const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
@@ -2318,7 +2318,7 @@ function App() {
       else lsSay(`${titleOf(s)} isn't stacked with ${titleOf(lone)}: ${LAYOUT_LOADING}. Select both and press ⌘G once it has`);
     }
     refresh();
-    jumpToSession(s);
+    jumpToSession(s, since);
     setModal(null);
   };
 
@@ -3354,10 +3354,10 @@ function App() {
       {modal === "import" && (
         <ImportModal
           onClose={() => setModal(null)}
-          onOpened={(opened) => {
+          onOpened={(opened, since) => {
             refresh();
             // every one is on the landscape: the first is brought into view
-            if (opened[0]) jumpToSession(opened[0]);
+            if (opened[0]) jumpToSession(opened[0], since);
           }}
           onDone={() => setModal(null)}
         />

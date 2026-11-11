@@ -100,8 +100,8 @@ together so work and context flow between them.
     tokens and the ticket.
   - Cards read the existing cached terminal buffer, so no second xterm is
     needed.
-- **Focus.** Double-click a workspace, or select it and press ⌘E or Enter, and
-  it fills the window. Esc returns to where you were.
+- **Focus.** Double-click a workspace (both clicks on it), or select it and
+  press ⌘E or Enter, and it fills the window. Esc returns to where you were.
 - **Move and arrange.**
   - Drag the title bar to move a workspace, and its edges or corners to
     resize it.

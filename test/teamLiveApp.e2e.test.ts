@@ -219,8 +219,16 @@ describe("team rooms between two Mockingbird instances", () => {
         await ryan.evaluate(`${teamRow("shared shell")}?.click()`); // its workspace into view, as the ask's notification brings it
         await untilTrue("the ask on Ryan's pane", async () => /Nick wants to type in “shared shell”/.test(await ryan.evaluate<string>(`document.querySelector(".typing-ask")?.textContent ?? ""`)), 30_000);
         expect(await buffer(ryan, sh.id)).not.toContain("refused-");
-        // Ryan allows it from the prompt; Nick's typing then goes through
-        await ryan.evaluate(`[...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session").click()`);
+        // Ryan allows it from the prompt with a click of his own: the room's row again, now that his window has the ask, brings
+        // the strip into view at 100%, and the click waits until it has been there a moment (the strip takes no click made by
+        // code, nor one on an ask that has just arrived or moved). Nick's typing then goes through
+        await ryan.evaluate(`${teamRow("shared shell")}?.click()`);
+        const allowAt = `(() => { const b = [...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session"); if (!b) return null; const r = b.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; return document.elementFromPoint(x, y) === b ? { x, y } : null; })()`;
+        await untilTrue("Allow in view at Ryan's", async () => !!(await ryan.evaluate(allowAt)));
+        await new Promise((r) => setTimeout(r, 900));
+        const at = await ryan.evaluate<{ x: number; y: number } | null>(allowAt);
+        if (!at) throw new Error("Allow for this session went out of view at Ryan's");
+        for (const type of ["mousePressed", "mouseReleased"]) await ryan.send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
         await untilTrue("Nick told he can type", async () => (await live(nick)).remote.find((x) => x.id === paneId)?.room?.typing?.state === "allowed");
         await untilTrue("Ryan's pane says Nick can type", async () => /Nick can type/.test(await ryan.evaluate<string>(`document.querySelector(".chip.typist")?.textContent ?? ""`)));
         await typeAsNick("echo from-nick-$((6*7))");
@@ -246,7 +254,10 @@ describe("team rooms between two Mockingbird instances", () => {
         // cat -v shows whatever arrives: a mouse report or an arrow key as ^[[…
         const term = `window.__mbTerms.get(${JSON.stringify(paneId)}).term`;
         // a terminal on the landscape scrolls its history where it takes the mouse: Nick focuses his copy first
-        await nick.evaluate(`document.querySelector('.ls-world .ls-node[data-front=${JSON.stringify(paneId)}] .ls-head').dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`);
+        // both presses of the double click on its header: a double click focuses only the workspace it was aimed at
+        await nick.evaluate(
+          `(() => { const h = document.querySelector('.ls-world .ls-node[data-front=${JSON.stringify(paneId)}] .ls-head'); for (let i = 0; i < 2; i++) h.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true })); h.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); })()`
+        );
         await untilTrue("Nick's copy in focus", async () => nick.evaluate<boolean>(`!!${term}.element.closest(".ls-focus")`));
         const copyView = () => nick.evaluate<{ viewportY: number; baseY: number; type: string }>(`(() => { const b = ${term}.buffer.active; return { viewportY: b.viewportY, baseY: b.baseY, type: b.type }; })()`);
         const wheel = async (deltaY: number) => {

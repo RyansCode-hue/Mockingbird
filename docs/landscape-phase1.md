@@ -3688,6 +3688,29 @@ Design O, with Artifacts as a window, and N's workspace header.
     again and stopped says "continued on Nick's laptop" on its row in the
     room; one refused at once (the room caught up first) stays closed, and
     its Closed sessions row says "Continued by Nick on their laptop".
+- **As built, review fixes 3.**
+  - **A session started from a dialog keeps what's typed meanwhile out of
+    it.** Import conversations, Resume a conversation… and New session take
+    the input stamp as Start or Open is pressed (`onCreated`'s and
+    `onOpened`'s `since`), and the jump to what they started gives its
+    terminal the keyboard only if the user did nothing since. `?createMs`
+    keeps the preview's main busy that long; `uiLandscapeFirstRun` types
+    through the wait in each dialog.
+  - **The strip has the tray's guards** (`answerGuard.ts`, shared): an ask
+    that arrived or moved under the pointer in the last 500 ms takes no
+    click, a click within 450 ms of an answer is let go, its buttons are no
+    Tab stops, and a key's click (`detail` 0) does nothing. The choices are
+    as they were. `uiTyping` presses where Allow for this session would be
+    as Nick's ask arrives at 80%, and Enter and Space on a focused button.
+  - **A double-click focuses only the workspace both its presses were on:**
+    the landscape records the workspace (or peek) under every press in the
+    window, so a double-click whose first press was Go there in the tray
+    focuses nothing it flies in under the pointer. `uiTyping` double-clicks
+    Go there with motion on and types `y` after.
+  - **Tab leaves a disarmed landscape once keys have paused** (`TYPING_MS`):
+    to the first stop after it, or with Shift the last before it, past all it
+    holds (keyArm.ts's `afterPause` and `tabPast`); in a burst it's swallowed
+    with the rest, as on the holder.
 
 ## Risks
 

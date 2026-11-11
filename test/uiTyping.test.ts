@@ -30,13 +30,27 @@ async function result(query: string, read: string, size: string): Promise<string
 const SIZE = "3200x2400";
 const AT = "lsCamera=0,0,1";
 
+/**
+ * In the page: `pressSettled(el, key)`, a real press at `el`'s middle once `key` has been seen there 600 ms (the strip
+ * takes no click on an ask that just arrived or moved, nor a click made by code); whether it was asked for.
+ */
+const PRESS_SETTLED = `
+  const pressSettled = (el, key) => {
+    const seen = (window.__seen ??= {});
+    seen[key] ??= Date.now();
+    if (Date.now() - seen[key] < 600) return false;
+    const r = el.getBoundingClientRect();
+    (window.__mbKeys ??= []).push({ mouse: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), clickCount: 1 } });
+    return true;
+  };`;
+
 describe.skipIf(!local)("typing into teammates' sessions, in the window", () => {
   it("asks the owner on the workspace, and shows who can type with a way to stop it", async () => {
     const html = await dom(`${AT}&typingAsk&typingRefused`, SIZE);
     const t = text(html);
     expect(t).toContain("Nick wants to type in “Release notes for #5101” Allow for this session Allow for 15 min Deny");
     // docked as a strip over the top of s8's terminal (the first of its pane notes), never a modal
-    expect(html).toMatch(/<div class="pane-notes"><div class="typing-strip"><div class="typing-ask" role="alert"/);
+    expect(html).toMatch(/<div class="pane-notes"><div class="typing-strip"><div class="typing-ask" data-ask="[^"]+" role="alert"/);
     expect(html).not.toMatch(/class="modal/);
     expect(html).toMatch(/class="chip typist"[^>]*>Nick can type · 12 min<button class="typist-x" aria-label="Stop Nick Smith typing">/);
     // s1, which Nick may type into, is outlined; s8, where he only asks, and his own session here aren't
@@ -52,12 +66,11 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
   }, 90_000);
 
   it("Allow for 15 min turns the ask into “Nick can type · 15 min”", async () => {
-    const read = `(() => {
+    const read = `(() => { ${PRESS_SETTLED}
       const allow = [...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for 15 min");
       if (!window.__asked) {
-        if (!allow) return null;
+        if (!allow || !pressSettled(allow, "allow")) return null;
         window.__asked = true;
-        allow.click();
         return null;
       }
       const chips = [...document.querySelectorAll(".chip.typist")].map((c) => c.textContent);
@@ -67,12 +80,11 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
   }, 90_000);
 
   it("takes Allow below 100%, where the terminal under the strip doesn't take the mouse", async () => {
-    const read = `(() => {
+    const read = `(() => { ${PRESS_SETTLED}
       const allow = [...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for 15 min");
       if (!window.__asked) {
-        if (!allow || !document.querySelector(".ls-viewport.ls-mouse-off")) return null;
+        if (!allow || !document.querySelector(".ls-viewport.ls-mouse-off") || !pressSettled(allow, "allow")) return null;
         window.__asked = true;
-        allow.click();
         return null;
       }
       return document.querySelector(".typing-ask") ? null : JSON.stringify([...document.querySelectorAll(".chip.typist")].map((c) => c.textContent).sort());
@@ -131,6 +143,70 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
       const at = from === "terminal" ? "terminal:s1" : "landscape";
       expect(r).toEqual({ before: at, after: at, pct: "80%", sheet: from === "landscape", wrote: from === "terminal" ? ["s1"] : [], answered: ["minutes"] });
     }, 90_000);
+
+  it("takes no click on an ask that arrived under the pointer a moment ago, and answers one aimed at it after", async () => {
+    // where s8's strip puts Allow for this session (?typingAsk's ask, taken back first), then a new ask with the press
+    // straight after it, as a click aimed at the workspace lands as the ask arrives
+    const read = `(() => { ${PRESS_SETTLED}
+      const t = (window.__t ??= { step: 0 });
+      const calls = () => window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").map((c) => c.args[2]);
+      const allow = () => [...document.querySelectorAll('.ls-world [data-front="s8"] .typing-ask button')].find((b) => b.textContent === "Allow for this session");
+      if (t.step === 0) {
+        if (!allow() || !document.querySelector(".ls-viewport.ls-mouse-off")) return null;
+        const r = allow().getBoundingClientRect();
+        t.at = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        t.step = 1;
+        void window.mb.teamDecideTyping("s8", "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "deny").then(() => (t.step = 2));
+        return null;
+      }
+      if (t.step === 1) return null;
+      if (t.step === 2) {
+        if (allow()) return null;
+        t.mark = calls().length;
+        window.__mbAskToType("s8");
+        (window.__mbKeys ??= []).push({ mouse: { ...t.at, clickCount: 1 } });
+        t.step = 3;
+        t.asked = Date.now();
+        return null;
+      }
+      if (t.step === 3) {
+        if (Date.now() - t.asked < 900) return null;
+        t.early = { calls: calls().slice(t.mark), strip: !!allow() };
+        t.step = 4;
+        return null;
+      }
+      if (t.step === 4) {
+        if (!allow() || !pressSettled(allow(), "allow")) return null;
+        t.step = 5;
+        return null;
+      }
+      if (allow()) return null;
+      return JSON.stringify({ early: t.early, after: calls().slice(t.mark) });
+    })()`;
+    const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.8&typingAsk", read, SIZE));
+    expect(r.early).toEqual({ calls: [], strip: true });
+    expect(r.after).toEqual(["session"]);
+  }, 90_000);
+
+  it("never answers from the keyboard: the strip's buttons are no Tab stops, and Enter or Space on a focused one does nothing", async () => {
+    const read = `(() => {
+      const t = (window.__t ??= { step: 0 });
+      const btns = () => [...document.querySelectorAll(".typing-ask button")];
+      if (t.step === 0) {
+        if (btns().length !== 3) return null;
+        t.tabIndex = btns().map((b) => b.tabIndex);
+        btns()[0].focus();
+        t.focused = document.activeElement === btns()[0];
+        (window.__mbKeys ??= []).push({ key: "Enter" }, { key: "Space" });
+        t.step = 1;
+        t.at = Date.now();
+        return null;
+      }
+      if (Date.now() - t.at < 1200) return null;
+      return JSON.stringify({ tabIndex: t.tabIndex, focused: t.focused, calls: window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").length, strip: btns().length });
+    })()`;
+    expect(JSON.parse(await result(`motion=off&${AT}&typingAsk`, read, SIZE))).toEqual({ tabIndex: [-1, -1, -1], focused: true, calls: 0, strip: 3 });
+  }, 90_000);
 
   it("shows the strip over the terminal: no re-fit, no pty resize", async () => {
     // runs once in the page (Runtime.evaluate doesn't await): it leaves its answer in window.__done
@@ -427,6 +503,39 @@ describe.skipIf(!local)("a teammate's ask answered from Needs you, with real pre
     expect(r.litAfterN).not.toBeNull();
     expect(r.litAfterN).not.toBe(r.lit);
   }, 90_000);
+
+  it("enters no focus when a double click on Go there lands its second press on the workspace flying in, and y after reaches nothing", async () => {
+    const read = `(() => { ${common}
+      if (t.step === 0) return open() ? ((t.step = 1), null) : null;
+      if (t.step === 1) {
+        if (!row("s2") || Date.now() - t.opened < 800) return null;
+        t.go = centre(row("s2").querySelector('[data-action="go"]'));
+        t.mark = window.__mbCalls.length;
+        press(t.go, 1);
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        // the first press went at the start of this look: the second, as the view flies in under it
+        press(t.go, 2);
+        t.step = 3;
+        t.at = Date.now();
+        return null;
+      }
+      if (t.step === 3) {
+        if (Date.now() - t.at < 1200) return null;
+        t.focus = !!document.querySelector(".ls-focus");
+        key("y");
+        t.step = 4;
+        t.at = Date.now();
+        return null;
+      }
+      if (Date.now() - t.at < 700) return null;
+      return JSON.stringify({ focus: t.focus, writes: window.__mbCalls.slice(t.mark).filter((c) => c.fn === "sessionWrite").map((c) => c.args[0]), calls: calls() });
+    })()`;
+    const r = JSON.parse(await result("motion=full&typingAsk2&lsCamera=0,0,0.4", read, "1440x900"));
+    expect(r).toEqual({ focus: false, writes: [], calls: [] });
+  }, 90_000);
 });
 
 describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
@@ -439,7 +548,7 @@ describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
 
   for (const zoom of ZOOMS)
     it(`at ${zoom * 100}%: the notification brings it in at 100%, its strip in view, and Allow there answers it`, async () => {
-      const read = `(() => {
+      const read = `(() => { ${PRESS_SETTLED}
         const allow = () => [...(${S8}?.querySelectorAll(".typing-ask button") ?? [])].find((b) => b.textContent === "Allow for this session");
         if (!window.__t) {
           if (!${S8} || !${PCT}) return null;
@@ -450,8 +559,8 @@ describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
         if (!window.__t.at) {
           if (${PCT} !== "100%" || !allow()) return null;
           const r = allow().getBoundingClientRect(), v = document.querySelector(".ls-viewport").getBoundingClientRect();
+          if (!pressSettled(allow(), "allow")) return null;
           window.__t.at = { pct: ${PCT}, inView: r.left >= v.left && r.right <= v.right && r.top >= v.top && r.bottom <= v.bottom };
-          allow().click();
           return null;
         }
         if (${S8}?.querySelector(".typing-ask")) return null;
@@ -546,7 +655,7 @@ describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
     }, 90_000);
 
   it("Go there from Needs you, from a card, lands at 100% with the strip in view; Deny there says no", async () => {
-    const read = `(() => {
+    const read = `(() => { ${PRESS_SETTLED}
       if (!window.__t) {
         const btn = document.querySelector(".ny-btn");
         if (!btn || !${S8}) return null;
@@ -565,8 +674,8 @@ describe.skipIf(!local)("a teammate's ask to type, at any zoom", () => {
         const deny = [...(${S8}?.querySelectorAll(".typing-ask button") ?? [])].find((b) => b.textContent === "Deny");
         if (${PCT} !== "100%" || !deny) return null;
         const r = deny.getBoundingClientRect(), v = document.querySelector(".ls-viewport").getBoundingClientRect();
+        if (!pressSettled(deny, "deny")) return null;
         window.__t.at = { pct: ${PCT}, inView: r.left >= v.left && r.right <= v.right && r.top >= v.top && r.bottom <= v.bottom, tray: !!document.querySelector(".ny-tray") };
-        deny.click();
         return null;
       }
       if (${S8}?.querySelector(".typing-ask")) return null;

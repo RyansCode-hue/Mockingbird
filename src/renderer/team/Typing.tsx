@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { isErr, type SessionInfo } from "../../shared/types";
 import type { RoomSessionTag, TypingAsk, TypingGrant } from "../../shared/team/livePanes";
 import { initialsOf } from "../Team";
 import { firstName } from "./connectedModel";
 import { settled } from "../settled";
+import { ANSWER_GUARD_MS, keyClick, useSettledRows } from "../answerGuard";
 
 /**
  * Typing into a teammate's session (docs/team-rooms.md, "Typing"): a
@@ -37,25 +38,36 @@ export async function decideTyping(sessionId: string, member: string, choice: "s
  * The owner's prompt on its pane: a strip docked under the pane header,
  * "Nick wants to type in “Export API”", with Allow for this session / Allow
  * for 15 min / Deny. It lies over the terminal's top rows rather than taking
- * room from it: the pty is never resized for it. Only a click answers it:
- * it never takes focus or a key, so typing in the pane can't answer it.
+ * room from it: the pty is never resized for it. Only a click aimed at it
+ * answers it, with the Needs you tray's guards (answerGuard.ts): it's no Tab
+ * stop and a key's click does nothing, so typing in the pane can't answer it;
+ * an ask that just arrived or moved under the pointer takes no click, nor
+ * does a double click's second once one answer is given.
  */
 export function TypingAsks({ session, room }: { session: SessionInfo; room: RoomSessionTag }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const strip = useRef<HTMLDivElement>(null);
+  const settledAsk = useSettledRows(strip, ".typing-ask[data-ask]", (el) => el.dataset.ask);
+  const guardUntil = useRef(0);
   if (room.remote || !room.typingAsks?.length) return null;
   const title = session.ticketTitle ?? session.title;
-  const answer = async (a: TypingAsk, choice: "session" | "minutes" | "deny") => {
+  // a new ask from the same teammate is a new state, as the tray's rows are
+  const askId = (a: TypingAsk) => `${a.member}:${a.at}`;
+  const answer = async (e: MouseEvent, a: TypingAsk, choice: "session" | "minutes" | "deny") => {
+    if (keyClick(e) || Date.now() < guardUntil.current || !settledAsk(askId(a))) return;
+    guardUntil.current = Date.now() + ANSWER_GUARD_MS;
     setBusy(a.member);
     setError((await decideTyping(session.id, a.member, choice)) ?? "");
     setBusy("");
   };
   return (
-    <div className="typing-strip">
+    <div className="typing-strip" ref={strip}>
       {room.typingAsks.map((a) => (
         <div
           key={a.member}
           className="typing-ask"
+          data-ask={askId(a)}
           role="alert"
           title={`${a.name} would type into this session on your Mac, as you. A \`!\` command typed at its prompt runs in your shell, outside the room's sandbox, as anything typed into a terminal does. Even then, only you can answer your agent's permission prompts: their keys wait while it asks.`}
           onMouseDown={(e) => e.stopPropagation()}
@@ -64,13 +76,13 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
           <span className="reason">
             {firstName(a.name)} wants to type in “{title}”
           </span>
-          <button className="outline" disabled={busy === a.member} onClick={() => answer(a, "session")}>
+          <button className="outline" tabIndex={-1} disabled={busy === a.member} onClick={(e) => answer(e, a, "session")}>
             Allow for this session
           </button>
-          <button className="outline" disabled={busy === a.member} onClick={() => answer(a, "minutes")}>
+          <button className="outline" tabIndex={-1} disabled={busy === a.member} onClick={(e) => answer(e, a, "minutes")}>
             Allow for 15 min
           </button>
-          <button className="outline" disabled={busy === a.member} onClick={() => answer(a, "deny")}>
+          <button className="outline" tabIndex={-1} disabled={busy === a.member} onClick={(e) => answer(e, a, "deny")}>
             Deny
           </button>
         </div>

@@ -103,7 +103,7 @@ import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
 import { OVERLAYS, OVER_TOUR, escapeLeavesFullscreen, ownsKeys } from "./keys";
 import { keyboardClaimed, useKeyboardHome } from "./Modal";
-import { HOLDS_KEYS, KEYS_SWALLOWED, QUIET_KEYS, TYPING_MS, armFocus, armOnPress, holdNowhere, inputStamp, isArmed, isNowhere, keyboardNowhere, keyboardSpell, sinceKey, swallowedNote, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
+import { HOLDS_KEYS, KEYS_SWALLOWED, QUIET_KEYS, TYPING_MS, afterPause, armFocus, armOnPress, holdNowhere, inputStamp, isArmed, isNowhere, keyboardNowhere, keyboardSpell, sinceKey, swallowedNote, tabPast, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
 import { LandscapeEmpty } from "./LandscapeEmpty";
 import { LandscapeTour } from "./LandscapeTour";
 import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
@@ -834,6 +834,22 @@ export function Landscape({
    * move of the keyboard here that isn't the user's own command (a band change, a terminal that took no keys, a reveal).
    */
   const surface = () => surfaceEl()?.focus({ preventScroll: true });
+  /**
+   * The workspaces the last two presses anywhere in the window were on (null: none). A double-click focuses a workspace
+   * only when both its presses were on it: one whose first press was elsewhere (Go there in the tray, say) lands its
+   * second on whatever flew in under the pointer, which it wasn't aimed at.
+   */
+  const pressedOn = useRef<[string | null, string | null]>([null, null]);
+  useEffect(() => {
+    const onPress = (e: PointerEvent) => {
+      const at = (e.target as Element | null)?.closest?.<HTMLElement>(".ls-node[data-ws], .ls-peek[data-peek]");
+      pressedOn.current = [pressedOn.current[1], at ? (at.dataset.ws ?? at.dataset.peek ?? null) : null];
+    };
+    document.addEventListener("pointerdown", onPress, true);
+    return () => document.removeEventListener("pointerdown", onPress, true);
+  }, []);
+  /** Both presses of the double-click just made were on workspace `key`. */
+  const pairOn = (key: string) => pressedOn.current[0] === key && pressedOn.current[1] === key;
   // focus, its own terminal and leaving it, are always the user's commands (Enter, ⌘E, ⌘Esc, a double-click, Focus)
   const enterFocus = (t: Tile) => {
     stopHover();
@@ -1130,6 +1146,11 @@ export function Landscape({
   };
   const sayWhyNow = useRef(sayWhy);
   sayWhyNow.current = sayWhy;
+  /**
+   * Tab or Shift+Tab on the landscape disarmed: once keys have paused it leaves the landscape, for the first stop after
+   * it or the last before it, so the keyboard alone gets past it; in a burst it's swallowed with the rest.
+   */
+  const tabbedOff = (e: React.KeyboardEvent) => e.key === "Tab" && !e.altKey && afterPause() && !!viewport.current && tabPast(viewport.current, e.shiftKey);
   useEffect(() => {
     // a terminal or a field being typed in that goes from under the user leaves the keyboard on the holder, not the page
     const release = holdNowhere();
@@ -1150,6 +1171,7 @@ export function Landscape({
     };
     if (typed(e) && !isArmed(viewport.current)) {
       handled();
+      if (tabbedOff(e)) return;
       return hintKeys(e.key);
     }
     if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -1952,7 +1974,7 @@ export function Landscape({
       e.stopPropagation();
       if (e.type !== "dblclick" || e.button !== 0) return;
       const tile = layoutNow.current.tiles.find((x) => x.key === off.dataset.ws);
-      if (tile) enterRef.current(tile);
+      if (tile && pairOn(tile.key)) enterRef.current(tile);
     };
     const MOUSE = ["mousedown", "mouseup", "click", "dblclick", "auxclick"] as const;
     // the hint for a terminal that doesn't take the mouse, while the pointer is over one
@@ -2222,7 +2244,7 @@ export function Landscape({
       inv={1 / cam.current.zoom}
       gen={termKey(t.front.id)}
       onSelect={pick}
-      onFocus={enterFocus}
+      onFocus={(tile, doubled) => (!doubled || pairOn(tile.key)) && enterFocus(tile)}
       onBack={leaveFocus}
       onTab={onTab}
       actions={tileActions(t)}
@@ -2327,7 +2349,7 @@ export function Landscape({
             pinned={peek.pinned}
             meters={meters}
             onKeep={() => setPeek((p) => (p && p.key === peekTile.key && !p.pinned ? { ...p, pinned: true } : p))}
-            onFocus={() => enterFocus(peekTile)}
+            onFocus={() => pairOn(peekTile.key) && enterFocus(peekTile)}
             onKeys={surface}
           />
         )}
@@ -2394,6 +2416,7 @@ export function Landscape({
               if (e.target === overlay.current && !isArmed(overlay.current)) {
                 e.preventDefault();
                 e.stopPropagation();
+                tabbedOff(e);
                 return;
               }
               if (e.key !== "Escape" || !escapeLeavesFullscreen(e.target as Element, !!document.querySelector(OVERLAYS))) return;

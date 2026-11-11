@@ -31,6 +31,15 @@ async function run(part: string, query = "", size = "1440x900", limitMs?: number
   return out;
 }
 
+/** Run `read` in the preview with `query` until it answers something other than null: its answer, parsed. */
+async function look(query: string, read: string, size = "1440x900"): Promise<Out> {
+  // @ts-expect-error — a plain .mjs build script, no type declarations
+  const { pageResult } = await import("../scripts/ui-preview.mjs");
+  const json: string | null = await pageResult({ size, query, outDir: path.join(tempDir("mb-arming-look"), "out"), read });
+  if (!json) throw new Error(`the preview gave nothing for ${query}`);
+  return JSON.parse(json) as Out;
+}
+
 const CREATE = ["Claude…", "Codex…", "Terminal…", "From a ticket…", "Resume a conversation…", "Import conversations…"];
 /** What swallowed keys say (once), with nothing selected and with a workspace selected. */
 const HINT = "Click the landscape, or press ⌘E, to use its keys";
@@ -868,5 +877,135 @@ describe.skipIf(!local)("the preview's driver", () => {
     expect(a.afterEsc).toEqual({ open: true, visibility: "visible", blurs: 0 });
     // and the app's own Esc, once it's let through, closes it
     expect(a.closed).toBe(true);
+  }, 120_000);
+});
+
+describe.skipIf(!local)("a session started from a dialog while main is slow to start it", () => {
+  // The New menu's row, the dialog's row to pick and its button that starts it, and its field to type in meanwhile.
+  const flows = [
+    ["Import conversations…", ".import-dlg .pick-list .item:not(.blocked)", ".import-dlg button.primary", ".import-dlg .import-search"],
+    ["Resume a conversation…", ".modal.ns .pick-list .item:not(.blocked)", ".modal.ns button.primary.cta", ".modal.ns input[type=text]"],
+  ] as const;
+  for (const [row, pick, go, field] of flows)
+    it(`leaves what's typed meanwhile out of it after ${row}: the jump to it moves no keyboard`, async () => {
+      const read = `(() => {
+        const t = (window.__t ??= { step: 0, typed: 0 });
+        const push = (k) => (window.__mbKeys ??= []).push(k);
+        const pressOn = (el) => { const r = el.getBoundingClientRect(); push({ mouse: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), clickCount: 1 } }); };
+        if (t.step === 0) {
+          const b = document.querySelector(".topbar > button.primary");
+          if (!b || !document.querySelector(".ls-world .ls-node")) return null;
+          pressOn(b);
+          t.step = 1;
+          return null;
+        }
+        if (t.step === 1) {
+          const r = [...document.querySelectorAll(".mb-ctx:not(.mb-ghost) button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === ${JSON.stringify(row)});
+          if (!r) return null;
+          pressOn(r);
+          t.step = 2;
+          return null;
+        }
+        if (t.step === 2) {
+          const item = document.querySelector(${JSON.stringify(pick)});
+          if (!item) return null;
+          pressOn(item);
+          t.step = 3;
+          return null;
+        }
+        if (t.step === 3) {
+          const b = document.querySelector(${JSON.stringify(go)});
+          if (!b || b.disabled) return null;
+          t.mark = window.__mbCalls.length;
+          pressOn(b);
+          t.step = 4;
+          return null;
+        }
+        if (t.step === 4) {
+          // started (?createMs keeps main busy 1.5 s): the user goes on typing in the dialog, through its closing
+          const f = document.querySelector(${JSON.stringify(field)});
+          if (f) pressOn(f);
+          t.step = 5;
+          return null;
+        }
+        if (t.step === 5) {
+          if (t.typed < 12) {
+            push({ key: "abcdefghijkl"[t.typed++] });
+            return null;
+          }
+          t.step = 6;
+          t.at = Date.now();
+          return null;
+        }
+        if (Date.now() - t.at < 600) return null;
+        const since = window.__mbCalls.slice(t.mark);
+        return JSON.stringify({ started: since.filter((c) => c.fn === "createSession" || c.fn === "relaunchSession").length, dialog: !!document.querySelector(".modal-back:not(.mb-ghost)"), writes: since.filter((c) => c.fn === "sessionWrite").map((c) => c.args[0]) });
+      })()`;
+      const r = await look("motion=off&lsCamera=0,0,1&createMs=1500", read);
+      expect(r).toEqual({ started: 1, dialog: false, writes: [] });
+    }, 120_000);
+});
+
+describe.skipIf(!local)("Tab on the landscape disarmed", () => {
+  it("leaves it once keys have paused, for the stop after it or, with Shift, the one before; a burst's stays swallowed", async () => {
+    const read = `(() => {
+      const t = (window.__t ??= { step: 0 });
+      const vp = document.querySelector(".ls-viewport");
+      const push = (...k) => (window.__mbKeys ??= []).push(...k);
+      const where = () => {
+        const a = document.activeElement;
+        if (!a || a === document.body) return "body";
+        if (a === vp) return "landscape";
+        if (vp.contains(a)) return "in the landscape";
+        return vp.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING ? "after" : "before";
+      };
+      // the keyboard on the landscape by code: disarmed
+      const disarmed = () => {
+        vp.blur();
+        vp.focus();
+        t.at = Date.now();
+      };
+      if (t.step === 0) {
+        if (!vp || !document.querySelector(".ls-world .ls-node")) return null;
+        disarmed();
+        t.start = where();
+        t.step = 1;
+        return null;
+      }
+      if (t.step === 1) {
+        if (Date.now() - t.at < 1300) return null;
+        push({ key: "Tab" });
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        t.tab = where();
+        disarmed();
+        t.step = 3;
+        return null;
+      }
+      if (t.step === 3) {
+        if (Date.now() - t.at < 1300) return null;
+        push({ key: "Tab", shift: true });
+        t.step = 4;
+        return null;
+      }
+      if (t.step === 4) {
+        t.shiftTab = where();
+        disarmed();
+        t.step = 5;
+        return null;
+      }
+      if (t.step === 5) {
+        if (Date.now() - t.at < 1300) return null;
+        push({ key: "a" }, { key: "Tab" }, { key: "Tab", shift: true });
+        t.step = 6;
+        t.at = Date.now();
+        return null;
+      }
+      if (Date.now() - t.at < 500) return null;
+      return JSON.stringify({ start: t.start, tab: t.tab, shiftTab: t.shiftTab, burst: where(), writes: window.__mbCalls.filter((c) => c.fn === "sessionWrite").length });
+    })()`;
+    expect(await look("motion=off&lsCamera=0,0,1", read)).toEqual({ start: "landscape", tab: "after", shiftTab: "before", burst: "landscape", writes: 0 });
   }, 120_000);
 });

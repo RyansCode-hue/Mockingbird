@@ -831,8 +831,10 @@ terminals, `!` commands, the agent's permission prompts.
   for 15 min** and **Deny**, and a desktop notification brings the pane up.
   The strip lies over the terminal's top rows (the first of the pane's
   notes), so the terminal is never re-fitted and the pty never resized for
-  it. Only a click answers it: it never takes focus or a key, so your own
-  typing can't. While anyone may type, the whole pane is outlined in teal
+  it. Only a click aimed at it answers it: it never takes focus or a key,
+  so your own typing can't, and an ask that has just arrived or moved under
+  the pointer takes no click for half a second, nor does a double click's
+  second (the Needs you tray's guards). While anyone may type, the whole pane is outlined in teal
   (at least 3:1 against what's on either side, both themes), and the header
   says **"Nick can type"** (with the minutes left), whose ✕ takes it back at
   once. Chosen by Ryan, 2026-10-23, from three mocked options (an in-pane

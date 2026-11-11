@@ -95,7 +95,8 @@ export function WorkspaceNode({
    * had the keyboard (its terminal) keeps it.
    */
   onSelect: (tile: Tile, header: boolean) => void;
-  onFocus: (tile: Tile) => void;
+  /** Focus it: Focus pressed, or a double-click on its header or card (`doubled`), which focuses only when aimed at it. */
+  onFocus: (tile: Tile, doubled?: boolean) => void;
   onBack?: () => void;
   onTab: (tile: Tile, id: string) => void;
   /** ⋯ pressed: its menu, under the button. */
@@ -148,7 +149,7 @@ export function WorkspaceNode({
         const t = e.target as Element;
         onSelect(tile, !t.closest?.("button, [role=button], a[href]") && (card || !!t.closest?.(".ls-head")) && !ownTermHasKeys(t));
       }}
-      onDoubleClick={card ? () => onFocus(tile) : undefined}
+      onDoubleClick={card ? () => onFocus(tile, true) : undefined}
     >
       {card ? (
         <WorkspaceCard key={gen} tile={tile} name={name} meters={meters} actions={actions} more={more} />
@@ -159,7 +160,7 @@ export function WorkspaceNode({
             title={mode === "focus" ? undefined : "double-click to focus · right-click for its actions"}
             onDoubleClick={(e) => {
               if ((e.target as Element).closest("button")) return;
-              if (mode !== "focus" && mode !== "placeholder") onFocus(tile);
+              if (mode !== "focus" && mode !== "placeholder") onFocus(tile, true);
             }}
           >
             {mode === "focus" && onBack && (

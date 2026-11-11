@@ -1345,6 +1345,9 @@ const unifiedDiff = (path: string) => {
 /** How long a group rename's landscape change trails its sessions' (an audit sets it; 0: at once). */
 let renameLag = 0;
 
+/** ?createMs=<ms>: main takes this long to start a session (createSession, relaunchSession), as a slow Mac's does. */
+const startLag = () => new Promise<void>((r) => setTimeout(r, Number(new URLSearchParams(location.search).get("createMs")) || 0));
+
 const api: Record<string, (...a: any[]) => any> = {
   // sessions
   listSessions: async () => {
@@ -1456,6 +1459,7 @@ const api: Record<string, (...a: any[]) => any> = {
     sessionsChanged();
   },
   createSession: async (req: any) => {
+    await startLag();
     const id = `n${Date.now().toString(36)}`;
     const s = session(id, { title: req.title ?? (req.ticketTitle ? `#${req.ticketId} — ${req.ticketTitle}` : "new session"), taskGroup: req.taskGroup ?? req.ticketId ?? null, agent: req.shell ? undefined : req.agent ?? "claude", shell: req.shell || undefined, status: req.shell ? "idle" : "working", createdAt: Date.now() });
     sessions = [...sessions, s];
@@ -1482,6 +1486,7 @@ const api: Record<string, (...a: any[]) => any> = {
   // a relaunch starts a new process under the same id, stamped with a new createdAt, as main's create() does; refused,
   // as main's is, for a copy a teammate continues (relaunchGuard) and for one that's running
   relaunchSession: async (id: string) => {
+    await startLag();
     const taken = takenOverRefusal(id);
     if (taken) return err(taken);
     const running = byId(id);
