@@ -13,7 +13,8 @@ export const WIRE_VERSION = 1;
 
 export const WIRE_TYPES = ["handoff", "context", "feedback", "worktree"] as const;
 export type WireType = (typeof WIRE_TYPES)[number];
-export const WIRE_WHENS = ["finished", "manual"] as const;
+/** When a wire's pending comes: its source says it's finished, a person sends it, or its source's pull request merges (W16). */
+export const WIRE_WHENS = ["finished", "manual", "pr-merged"] as const;
 export type WireWhen = (typeof WIRE_WHENS)[number];
 export const WIRE_GATES = ["ask", "automatic"] as const;
 export type WireGate = (typeof WIRE_GATES)[number];
@@ -67,6 +68,11 @@ export interface Wire {
   /** What {files} reads, set by a person, relative to `from`'s folder. */
   files?: string[];
   when: WireWhen;
+  /**
+   * when: pr-merged. The pull request ids it has had a pending for, or that had merged before it watched: each merge
+   * readies it once (prWatch.ts).
+   */
+  fired?: number[];
   gate: WireGate;
   /** A context link set to leave tool output out of what its reader gets (read_context); absent, it's included. */
   toolOutput?: false;
@@ -124,6 +130,7 @@ const WIRE: Part = {
     template: str,
     files: list(name),
     when: oneOf(WIRE_WHENS),
+    fired: list(whole(1)),
     gate: oneOf(WIRE_GATES),
     toolOutput: (v, where) => (v === false ? false : fail(where, "is only ever false")),
     rounds: (v, where) => fields(v, where, ROUNDS),
@@ -326,6 +333,9 @@ export interface WireEnd {
   folder: string;
   /** Its agent's hooks never reported, so its status can't be trusted. */
   hooksSilent: boolean;
+  /** The ticket it's on (ticketOfSession) and its branch: a pr-merged wire watches that ticket's pull requests from that branch. */
+  ticket?: string | null;
+  branch?: string | null;
 }
 
 export interface WireContext {
@@ -529,7 +539,24 @@ export function finishPlan(id: string, verdict: WireVerdict | undefined, ctx: Wi
     const unsent = w.pending && !(isSending(w) && w.delivery!.id === w.pending.id) ? { withdraws: w.pending.id } : {};
     if (w.type === "handoff" && verdict === "changes") return [{ ...step, does: "holds", why: "needs approve", ...unsent }];
     if (w.type === "feedback" && verdict !== "changes") return [{ ...step, does: "passes", ...unsent }];
+    if (w.when === "pr-merged") return [{ ...step, does: "keeps", why: "it goes when its pull request merges" }];
     return [{ ...step, does: w.when === "finished" ? "readies" : "keeps" }];
+  });
+}
+
+/**
+ * What pull request `pr` merging does along session `id`'s wires out: each handoff set to go when its PR merges that
+ * hasn't had a pending for that PR readies, in place of one that hasn't gone, unless the rules refuse it now. A merge
+ * has no verdict and leaves the source's note alone.
+ */
+export function mergePlan(id: string, pr: number, ctx: WireContext): FinishStep[] {
+  return wiresInOrder(ctx.links).flatMap(([k, w]): FinishStep[] => {
+    if (w.from !== id || w.when !== "pr-merged" || !carriesWork(w.type) || w.fired?.includes(pr)) return [];
+    const step = { wire: k, to: w.to, type: w.type };
+    const refused = wireRefusal(w.from, w.to, w.type, { ...ctx, self: k });
+    if (refused) return [{ ...step, does: "refused", why: refused }];
+    const unsent = w.pending && !(isSending(w) && w.delivery!.id === w.pending.id) ? { withdraws: w.pending.id } : {};
+    return [{ ...step, does: "readies", ...unsent }];
   });
 }
 
@@ -584,6 +611,11 @@ export function settingsRefusal(w: Pick<Wire, "from" | "to" | "type">, s: WireSe
     if (s.template !== undefined || s.files !== undefined) return `A ${w.type} wire doesn't carry anything to set: only a handoff or feedback wire has What flows.`;
     if (s.when !== undefined) return `A ${w.type} wire doesn't go when anything finishes: only a handoff or feedback wire has When.`;
     if (s.gate === "automatic") return `A ${w.type} wire has no gate to make automatic.`;
+  }
+  if (s.when === "pr-merged") {
+    if (w.type !== "handoff") return 'Only a handoff goes when its pull request merges: a feedback wire goes back on a "changes" verdict.';
+    const a = ctx.end(w.from);
+    if (!a?.ticket || !a.branch) return `${a ? `“${a.title}”` : "Its source"} isn't on ${a?.ticket ? "a branch" : "a ticket"}, so it has no pull request to wait for: "When its PR merges" needs its source on a ticket and a branch.`;
   }
   if (s.gate === "automatic") {
     const a = ctx.end(w.from);
@@ -689,7 +721,7 @@ export type GateState = "idle" | "ready" | "sending" | "sent" | "blocked";
 
 export interface Gate {
   state: GateState;
-  /** Why it's blocked, or what went wrong last time when it's ready again. */
+  /** Why it's blocked, what went wrong last time when it's ready again, or, idle on a pr-merged wire, what it waits for. */
   why?: string;
   /** The gate in force: a wire set automatic asks once either end is in a team room. */
   gate: WireGate;
@@ -705,10 +737,18 @@ export interface Gate {
   stalled?: boolean;
 }
 
+/**
+ * What a pr-merged wire's source's pull requests say while nothing waits at its gate (prWatch.ts' mergeViewOf): blocked
+ * saying why (one can't be read, or was closed without merging), or idle saying what it waits for.
+ */
+export type MergeView = { blocked: string } | { waits: string };
+
 export interface GateContext extends WireContext {
   notes: Readonly<Record<string, SourceNote>>;
   /** Why the book can't be saved now: nothing is sent on a change that couldn't be written first. */
   fileRefusal: string | null;
+  /** A pr-merged wire's pull requests as the merge watch has them; left out, such a wire shows idle and says nothing. */
+  mergeView?: (w: Wire) => MergeView | null;
 }
 
 /** The gate in force on `w`: one set automatic asks once either end is in a team room. */
@@ -784,7 +824,10 @@ export function gateOf(id: string, w: Wire, ctx: GateContext): Gate {
     const again = (delivery?.state === "failed" || delivery?.state === "held") && delivery.why ? { why: delivery.why } : {};
     return { ...base, state: "ready", pendingId: w.pending.id, ...again };
   }
+  // waiting on a merge: a pull request that can't be read, or was closed, blocks it; otherwise it says what it waits for
+  const merge = w.when === "pr-merged" ? (ctx.mergeView?.(w) ?? null) : null;
+  if (merge && "blocked" in merge) return blocked(merge.blocked);
   if (delivery?.state === "sent") return { ...base, state: "sent" };
   if (delivery?.state === "placed") return { ...base, state: "sent", placed: true };
-  return { ...base, state: "idle" };
+  return { ...base, state: "idle", ...(merge ? { why: merge.waits } : {}) };
 }

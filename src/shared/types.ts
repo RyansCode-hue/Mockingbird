@@ -1043,6 +1043,8 @@ export const stageLabel = (s: StoredStage): string => TICKET_STAGES.find((x) => 
 export const stageStep = (s: StoredStage): number | null => TICKET_STAGES.find((x) => x.id === s)?.step ?? null;
 /** `by` for a move or a tick made in the window. */
 export const BY_YOU = "you";
+/** `by` for a move a pull request merging made (prWatch.ts): neither the user's nor an agent's. */
+export const BY_MERGE = "merge";
 
 export type PrTarget = "dev" | "main";
 
@@ -1062,6 +1064,38 @@ export interface PipelinePr {
    * approval's line goes there (pipeline:approve). Absent on PRs from before it was kept.
    */
   by?: string;
+  /** The folder it was opened from, where the merge watch reads it (prWatch.ts). Absent on PRs from before W16. */
+  root?: string;
+  /** When it merged, as its provider says (or when the user marked it merged), and its merge commit when that's known. */
+  mergedAt?: number;
+  mergeCommit?: string;
+  /** Set when the user marked it merged (BY_YOU) rather than the provider saying so. */
+  mergedBy?: string;
+  /** When it was closed without merging. */
+  closedAt?: number;
+  /** The merge watch's failed reads in a row, the last one's reason and when: gone once a read works. */
+  watch?: PrWatchFailure;
+}
+
+/** The merge watch couldn't read a pull request: how many times in a row, why the last time, and when. */
+export interface PrWatchFailure {
+  failures: number;
+  why: string;
+  at: number;
+}
+
+/** Failed reads in a row after which a pull request the merge watch can't read needs the user (Needs you, a notice). */
+export const PR_WATCH_NEEDS_YOU = 3;
+
+/**
+ * Whether pull request `pr` on ticket `p` needs the user: the merge watch failed to read it PR_WATCH_NEEDS_YOU times in a
+ * row, or it was closed without merging and no later one from its branch to its target has replaced it. Check now and
+ * Mark merged… are its actions (pipelinePrCheck, pipelinePrMarkMerged). A Done ticket's never do.
+ */
+export function prNeedsYou(p: TicketPipeline, pr: PipelinePr): boolean {
+  if (p.stage === "done" || pr.mergedAt) return false;
+  if ((pr.watch?.failures ?? 0) >= PR_WATCH_NEEDS_YOU) return true;
+  return !!pr.closedAt && !p.prs.some((x) => x !== pr && x.branch === pr.branch && x.target === pr.target && x.at > pr.at);
 }
 
 /** An agent's request for a pull request (request_pr), held until the user opens it or dismisses it. One per target. */
@@ -1270,6 +1304,11 @@ export interface PrState {
   conflicts: boolean;
   /** Reviewers and where each stands, e.g. "Sam: approved". */
   reviews: string[];
+  /** Merged: its merge commit (ADO's lastMergeCommit, GitHub's mergeCommit) and when, where the provider says. */
+  mergeCommit?: string;
+  mergedAt?: number;
+  /** Closed without merging: when, where the provider says. */
+  closedAt?: number;
 }
 
 /** The lookup for a pane: its PR, none (`pr: null`), or why it couldn't be checked. */

@@ -1747,6 +1747,7 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .pl-draft { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
 .pl-draft:first-of-type { border-top: none; }
 .pl-item { font: 400 11px var(--ui); color: var(--text-2); display: flex; gap: 8px; align-items: baseline; }
+.pl-item .pl-warn { color: var(--amber-text); font: 400 10.5px var(--ui); }
 .pl-modal { width: 720px; }
 .chip.stage { border: none; cursor: default; color: var(--teal-text); background: rgba(79, 179, 165, .12); }
 button.chip.stage[data-tip] { cursor: pointer; }

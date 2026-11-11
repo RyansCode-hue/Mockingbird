@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { openLink } from "./uiUtil";
 import { GATES, clearsGates, gateTicks, stageLabel, stageStep, tickOf, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
-import { nextSteps, railOf } from "./ticketPipelineModel";
+import { nextSteps, prMergeNote, railOf } from "./ticketPipelineModel";
 import { ago, plural } from "../shared/format";
 import { createIpcStore } from "./ipcStore";
 import { useAction } from "./useAction";
@@ -446,14 +446,19 @@ export function PipelinePanel(props: PipelineProps) {
       {prs.length > 0 && (
         <div className="pl-list">
           <div className="pl-h">Pull requests</div>
-          {prs.map((r) => (
-            <div key={r.url} className="pl-item">
-              <a onClick={() => openLink(r.url)}>{r.provider === "ado" ? `PR ${r.id}` : `#${r.id}`}</a>
-              <span className="pl-dim">
-                {r.branch} → {r.base} · {ago(r.at)}
-              </span>
-            </div>
-          ))}
+          {prs.map((r) => {
+            const merge = prMergeNote(r);
+            return (
+              <div key={r.url} className="pl-item">
+                <a onClick={() => openLink(r.url)}>{r.provider === "ado" ? `PR ${r.id}` : `#${r.id}`}</a>
+                <span className="pl-dim">
+                  {r.branch} → {r.base} · {ago(r.at)}
+                  {merge && !merge.problem && ` · ${merge.text}`}
+                </span>
+                {merge?.problem && <span className="pl-warn">{merge.text}</span>}
+              </div>
+            );
+          })}
         </div>
       )}
       {p && p.feedback.length > 0 && (

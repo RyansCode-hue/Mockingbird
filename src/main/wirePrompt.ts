@@ -8,8 +8,8 @@ import { guardedGit, type GuardedGit } from "./safeGit";
 import { isSecretFileName, secretPathspecs } from "./secrets";
 import { holdsPrivateKey } from "./team/artifactStore";
 import { WIRE_TOOL } from "./wireToolSchemas";
-import { named, quoted } from "../shared/team/agentText";
-import type { AgentKind } from "../shared/types";
+import { named, oneLine, quoted } from "../shared/team/agentText";
+import type { AgentKind, PipelinePr } from "../shared/types";
 import { WIRE_BODY_MAX, type WireType } from "../shared/wires";
 
 /**
@@ -337,9 +337,14 @@ export interface TemplateSources {
   ticket: string;
   diff: () => Promise<Expansion>;
   files: () => Promise<Expansion>;
+  /** The pull request whose merge readied the wire (prText); absent when it went on anything else. */
+  pr?: string;
 }
 
-const PLACEHOLDER_RE = /\{(summary|ticket|diff|files)\}/g;
+/** What {pr} says when the wire went on anything but its pull request merging. */
+export const NO_PR = "[No pull request: {pr} is filled in when the wire goes on its pull request merging.]";
+
+const PLACEHOLDER_RE = /\{(summary|ticket|diff|files|pr)\}/g;
 
 /** How B can get what a body had to leave out of a reading. */
 const LEFT_OUT_HOW: Record<"diff" | "files", string> = {
@@ -361,17 +366,19 @@ function cutToFit(text: string, cap: number, what: "diff" | "files"): { text: st
 
 /**
  * A wire's template with its placeholders filled in, in one pass: what one is replaced with is never read for more, so
- * "{diff}" in a summary stays text. {pr} isn't filled in by this version (W16), and the gate says so. The body fits
- * WIRE_BODY_MAX: the template's own words, {summary} and {ticket} first, then {diff} and {files} sharing what's left
- * (each an equal share, one's unused share the other's), cut with a marker saying what's left out and how to get it.
+ * "{diff}" in a summary stays text. {pr} is the merge that readied it, and said to be none otherwise. The body fits
+ * WIRE_BODY_MAX: the template's own words, {summary}, {ticket} and {pr} first, then {diff} and {files} sharing what's
+ * left (each an equal share, one's unused share the other's), cut with a marker saying what's left out and how to get it.
  */
 export async function expandTemplate(template: string, s: TemplateSources): Promise<Expansion> {
   const uses = (k: string) => [...template.matchAll(PLACEHOLDER_RE)].filter((m) => m[1] === k).length;
   const values = new Map<string, string>([
     ["summary", s.summary],
     ["ticket", s.ticket],
+    ["pr", s.pr ?? NO_PR],
   ]);
   const flags: string[] = [];
+  if (uses("pr") && s.pr === undefined) flags.push("{pr} is in the template, but this wasn't readied by its pull request merging, so it names none.");
   let redacted = 0;
   const readings = (["diff", "files"] as const).filter((k) => uses(k) > 0);
   for (const k of readings) {
@@ -408,8 +415,32 @@ export async function expandTemplate(template: string, s: TemplateSources): Prom
     text = text.slice(0, WIRE_BODY_MAX - end.length) + end;
     flags.push(`The body was cut to fit the ${nOf(WIRE_BODY_MAX)} characters a wire carries: its template and summary take more than that.`);
   }
-  if (template.includes("{pr}")) flags.push("{pr} stays as written: this version of Mockingbird doesn't fill it in.");
   return { text, flags, redacted };
+}
+
+// ---- {pr} --------------------------------------------------------------------------------------
+
+/** A pull request that merged, as a pr-merged wire's {pr} names it: its ticket's record of it, and its title when a read gave one. */
+export interface PrMerge {
+  ticket: string;
+  pr: Pick<PipelinePr, "provider" | "id" | "url" | "target" | "branch" | "base" | "mergedAt" | "mergeCommit" | "mergedBy">;
+  title?: string;
+}
+
+/**
+ * {pr}: the provider's id, its target, when it merged and its merge commit, from the ticket's record (main wrote each
+ * from the provider's answer, or the user marked it); its title and link each on one line.
+ */
+export function prText(m: PrMerge): string {
+  const { pr } = m;
+  const host = pr.provider === "ado" ? "Azure DevOps" : "GitHub";
+  const when = pr.mergedAt ? new Date(pr.mergedAt).toISOString() : "at a time not known";
+  return [
+    `Pull request ${pr.provider === "ado" ? pr.id : `#${pr.id}`} to ${pr.target === "dev" ? "dev/UAT" : "main"} (${oneLine(pr.branch, 120)} → ${oneLine(pr.base, 120)}), ticket #${oneLine(m.ticket, 40)}, merged ${when}; ${pr.mergeCommit ? `merge commit ${pr.mergeCommit}` : "its merge commit isn't known"}.`,
+    ...(m.title ? [`Title: ${oneLine(m.title)}`] : []),
+    oneLine(pr.url, 400),
+    ...(pr.mergedBy ? [`The user marked it merged, rather than ${host} saying so.`] : []),
+  ].join("\n");
 }
 
 // ---- {files} -----------------------------------------------------------------------------------

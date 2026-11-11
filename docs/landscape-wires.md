@@ -1892,6 +1892,11 @@ agent, which never ends a turn):
 - `WirePopover.tsx`: Cards.dc.html:162–170, opened by the gate dot and Show, at
   screen size at any zoom. Its variants: blocked, at the limit, unconfirmed,
   B closed, and idle, which is wire settings (section 5). Reuses `AnchoredPopover`.
+- **W4c adds the When row's "When its PR merges"** with W16's calls: `wiresSet(id, { when:
+  "pr-merged" })` (main refuses it, saying why, for a feedback wire or a source on no ticket
+  or branch), the gate's `why` (idle: what it waits for; blocked: the read that failed or the
+  PR that closed), and on a blocked one Check now (`pipelinePrCheck(ticket, url?)`) and
+  Mark merged… (`pipelinePrMarkMerged(ticket, url)`, the PR from the source's ticket record).
 - Files: that, `WireLayer.tsx` (the dot's click), `styles.css`.
 - Tests: what it sends is exactly what it shows; Not yet; a second finish arriving
   while open; Send twice sends once; idle edits saved.
@@ -1902,6 +1907,9 @@ agent, which never ends a turn):
   wire and pending id. Actions in `needsActions` (`workspaceActions.tsx:414`).
   Finish step in the workspace model, focus header and right-click, opening the
   small popover (section 5).
+- W16's item goes in too: each PR in pipeline.json where `prNeedsYou` (shared/types.ts)
+  holds, with Check now (`pipelinePrCheck`) and Mark merged… (`pipelinePrMarkMerged`, after a
+  confirm naming the PR), from `usePipelines`. Until then a notice and the PR's row say it.
 - Files: those, `NeedsYou.tsx`, `main.tsx` (`needsItems`' caller, `toNeeds`),
   `WorkspaceNode.tsx`.
 - Tests: `test/needsYou.test.ts`; `?landscapeNeedsAudit` gains a part.
@@ -2442,6 +2450,118 @@ Nothing in main polls.
   `pr-main`; dev then main on one branch both fire; a failure blocks and the third
   adds the item; closed; restart asks; Mark merged), `test/prStatus.test.ts` (by id,
   both providers, the merge commit).
+
+#### W16 as built
+
+**Reading one PR** (`prStateById`, `prStatus.ts`). The folder's origin is read through
+`guardedGit` (`remote get-url`) and has to be the PR's recorded provider and repository, or
+it throws saying whose origin it is. Then ADO's `pullrequests/{id}` through `adoRepo` and
+`deps.ado`, or `gh pr view <n> --repo <owner/repo>` through `runGh`: the pane lookup's calls,
+no new network path. An answer for another id, nothing, or gh output that isn't JSON throws.
+`PrState` gains `mergeCommit` (ADO `lastMergeCommit.commitId`, GitHub `mergeCommit.oid`, kept
+only when it's 7–64 hex), `mergedAt` and `closedAt` (ADO `closedDate`, GitHub's own).
+
+**The watch** (`src/main/prWatch.ts`, `PrWatch`). Started in `whenReady`: the first check 15 s
+after the start, then every `PR_TTL_MS` (moved here; `pr:status` imports it). Checks run one
+at a time, Check now and Mark merged… included.
+- **What it reads:** a PR not merged or closed, on a ticket that isn't Done, that something
+  waits on: the ticket at that PR's stage (`pr-dev` for dev, `pr-main` for main), or a
+  pr-merged wire whose source is on its ticket and branch and hasn't fired for it. *My
+  reading* of "each PR in pipeline.json": a 1.6-era record keeps every PR it opened, and
+  reading each every 2 minutes, with a Needs you item for each that can't be read, would be
+  noise. A failure kept on a PR nothing waits on any more is cleared.
+- **Where:** `PipelinePr.root` (recorded by `pipeline:pr:create` from W16 on); else, or when
+  that folder is gone, a session's folder or repository on its ticket and branch. None: that's
+  the failure.
+- **A merge:** `prMerged` saves `mergedAt` (the provider's time) and `mergeCommit`, moves
+  `pr-dev` → `dev-test` or `pr-main` → `prod-test` only from those, `by: "merge"`
+  (`BY_MERGE`), with "PR 4231 to dev merged (0123456789ab)." in history. At any other stage
+  the merge is saved and the ticket stays. A merge's move doesn't end the user's unticks:
+  it's neither their move nor a PR opening.
+- **Firing:** each check, every merged PR on a ticket not Done is offered to the pr-merged
+  handoffs from its ticket and branch that haven't fired for it, made before it merged
+  (`createdAt` ≤ `mergedAt`). `wires:set` turning a wire to pr-merged seeds `fired` with what
+  had merged from its source's branch, so neither a new wire nor a changed one takes an old
+  merge. A wire refused then (rooms starting, a take-over, a room's line) isn't marked and is
+  offered again next check, the reason logged once.
+- **Automatic** sends only a merge seen happening: a read this run found it open, then
+  merged. The first check after a start, a late offer, and Mark merged… pass `hold`, so the
+  gate asks, saying why.
+
+**Delivery** (`WireDelivery.offer`). A `MergeFill` (`"merge" in f`) goes to `offerMerge`:
+`mergePlan` (shared, pure) worked out inside the write, a pending and the PR's id in `fired`
+in the same change, the source's note untouched, then the gates (`gates`, shared with a
+finish). A wire changed since its fill, or refused, is answered alone. `origin: "merge"` with
+a finish's fill still behaves as W3's test has it.
+
+**{pr}** (`prText`, `wirePrompt.ts`): the id, target, branch → base, ticket, when it merged
+(ISO), the merge commit or that it isn't known, the title from the last read on one line, the
+link, and a line when the user marked it. `WireTools.planMerge` fills each wire; a pr-merged
+wire with no template of its own carries `MERGE_TEMPLATE`, `{pr}` then `{summary}`, the
+summary being the source's note's or a line saying it has none. `{pr}` on anything else is
+filled with a line saying it names none, and flagged (it was "stays as written").
+
+**When it can't read** (no silent stall):
+- each failure is logged with the ticket, PR, link, count and next try, and kept on the PR as
+  `watch: { failures, why, at }` in pipeline.json (so it outlives a restart);
+- the wire: `GateContext.mergeView` (`mergeViewOf`, from `WireService`'s `merges` option)
+  draws it blocked, "Can't tell whether PR 11 to dev merged (2 tries): …", whenever no
+  pending waits; idle, it says what it waits for ("Waits for PR 11 to dev to merge.",
+  "Waits for a pull request from 4182-x.");
+- the PR's row in the pipeline panel: one short line (`prMergeNote`), merged and when,
+  closed, or the failure;
+- back-off 2, 4, 8, then 10 minutes (`backoffMs`);
+- at the third in a row, `prNeedsYou` (shared) holds and a notice says so, under the
+  notification settings, its click showing the PR's session.
+- **Closed without merging:** `closedAt` saved, a notice, the wire blocked, `prNeedsYou`
+  until a newer PR from the branch to that target. Check now on it reads it again, and a
+  reopened one is watched again.
+
+**Window calls** (preload and `stub.ts`): `pipelinePrCheck(ticket, url?)` and
+`pipelinePrMarkMerged(ticket, url)` (`pipeline:pr:check`, `pipeline:pr:markMerged`). Mark
+merged… saves `mergedBy: "you"`, moves the ticket as a merge does with "You marked PR 11 to
+dev merged: Mockingbird couldn't read it (…)." by you, and readies the wires with a flag and a
+hold naming it. No tool, schema or the MCP router reaches either; a test reads them.
+
+**Making one:** `settingsRefusal` refuses `when: "pr-merged"` for anything but a handoff, and
+for a source on no ticket or no branch (`WireEnd` gains `ticket` and `branch`). The stored
+format gains `when: "pr-merged"` and `fired`, at `wv: 1`: no release has read a wire book.
+
+**Where this differs from the spec, or reads it:**
+- The Needs you tray isn't drawn here: W5 adds the item from `prNeedsYou` (a line in W5's
+  section), and W4c the When row (a line in W4c's). Until then the wire's gate, the PR's row,
+  the log and a notice say it.
+- What's read is narrowed to what waits (above). pr-merged is a handoff's only.
+- `PipelinePr` gains `mergedBy` and `watch` beside the planned fields.
+
+**Files:** `prStatus.ts`, `prWatch.ts` (new), `pipeline.ts`, `shared/types.ts`,
+`shared/wires.ts`, `wireDelivery.ts`, `wirePrompt.ts`, `wireTools.ts`, `wires.ts`, `index.ts`,
+`preload.ts`, `stub.ts`, `TicketPipeline.tsx`, `ticketPipelineModel.ts`, `styles.css`.
+
+**Tests:** `test/prWatch.test.ts`: once per PR, with {pr}; moves only from the PR stages;
+dev then main on one branch; a failure blocks, backs off, and the third needs you, then
+Check now clears it; closed, reopened, replaced; waiting for a PR and the refusals; automatic
+for a merge seen, asked after a restart; Mark merged and no tool path; no old merge for a new
+or changed wire; an older PR's folder; unticks kept; only what waits is read.
+`test/prStatus.test.ts`: by id on both providers, the merge commit and times, and each throw.
+`wirePrompt.test.ts`' {pr} case and `wires.test.ts`' format pin changed with it.
+
+**Not checked against real providers:** ADO's `lastMergeCommit` and `closedDate`, and gh's
+`mergeCommit`, `mergedAt` and `closedAt`, are read as their docs have them (still *inferred*);
+every test fakes `prDeps` and gh, and nothing read the ADO PAT.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 194 files pass and
+  31 skip; 3,195 tests pass and 252 skip.
+- `MB_E2E_APP=1`: `wiresApp.e2e` passes.
+- The guards that matter, each undone in turn (`w16/mutate.py`, 18 mutations), fail a test:
+  Mark merged… reachable from a tool, the router or a second caller; a merge moving the
+  ticket from any stage, or dev's to prod-test; `fired` not written, `mergePlan` ignoring it,
+  a merged PR read again, an old merge taken by a new or changed wire; a failure not kept,
+  not logged, no notice at three, taken as open, not blocking the wire, never needing you; a
+  close taken as open; another id accepted.
+- No UI test draws the pipeline panel's PR rows (the preview's one PR has no merge state), so
+  none was run for the row's line; `prMergeNote` is tested.
 
 ### W17 · The Orchestrator, its plan and the built-in template. Size L
 - **Role.** `SessionInfo.role` (W19 adds it for `"tasks"`) gains `"orchestrator"`,
@@ -3720,7 +3840,8 @@ part of the `Landscape` object or its patches, for reasons the code gives:
 ```ts
 // ~/.mockingbird/pipeline.json: unversioned as today; every addition optional
 TicketPipeline.history[]: { at, stage, note?, by?: string }  // "you", "merge", or a session's title (W13, W14)
-PipelinePr: { …today, by?: string, root?: string, mergedAt?: number, mergeCommit?: string, closedAt?: number }
+PipelinePr: { …today, by?: string, root?: string, mergedAt?: number, mergeCommit?: string, closedAt?: number,
+              mergedBy?: "you", watch?: { failures, why, at } }   // the last two: W16 as built
 TicketPipeline.requests?: { id, target, from: string, fromTitle, title, description, at }[]  // W14
 TicketPipeline.gateNotes?: Record<string, { by: string; note: string; at: number }>       // "<gate>:<item>"
 TicketPipeline.checkedBy?: Record<string, { by: string; at: number }>     // "<gate>:<item>": who ticked (W13); read by tickOf

@@ -9,6 +9,7 @@ import {
   asData,
   DEFAULT_TEMPLATE,
   expandTemplate,
+  prText,
   readLabel,
   readWireDiff,
   readWireFiles,
@@ -20,6 +21,7 @@ import {
   wireMessage,
   type Expansion,
   type LabelledEnd,
+  type PrMerge,
   type WireLine,
 } from "./wirePrompt";
 import { MAX_SUMMARY, WIRE_TOOL } from "./wireToolSchemas";
@@ -78,6 +80,15 @@ export interface FinishFill {
   /** Set when the source has no handoff or feedback wire out: only its summary is kept, and the finish says so. */
   noWireOut: { unread: string } | null;
 }
+
+/** A pull request merging, filled in (WireTools.planMerge): the PR's id and each pr-merged wire's body. Delivery's offer writes it. */
+export interface MergeFill {
+  merge: { pr: number };
+  fills: FinishFill["fills"];
+}
+
+/** What a pr-merged wire with no template of its own carries: the merge, then its source's last summary. */
+export const MERGE_TEMPLATE = "{pr}\n\n{summary}";
 
 export interface WireToolsOptions {
   store: Pick<LandscapeStore, "wires" | "editWires">;
@@ -234,6 +245,36 @@ export class WireTools {
     }
     const withdraws = plan.flatMap((s) => (s.withdraws ? [{ wire: s.wire, pending: s.withdraws }] : []));
     return { ...base, withdraws, fills, noWireOut: null };
+  }
+
+  /**
+   * A merge's fill, which writes nothing (prWatch.ts): each of session `me`'s pr-merged wires named in `wires` filled in
+   * now, {pr} naming the merge and {summary} its last finish's summary (kept, redacted, on its note), in one pass.
+   */
+  async planMerge(me: SessionInfo, merge: PrMerge, wires: readonly string[]): Promise<MergeFill | { refused: string }> {
+    const state = this.o.store.wires();
+    if (!state.book) return { refused: state.refused ?? "Wires can't be read right now." };
+    const title = me.ticketTitle ?? me.title;
+    const summary = own(state.book.notes, me.id)?.summary?.text ?? `(“${plainLine(title, 80)}” hasn't finished a step with a summary yet.)`;
+    const ticket = oneLine(`#${merge.ticket}${me.ticketTitle ? ` — ${me.ticketTitle}` : ""}`);
+    const pr = prText(merge);
+    let diff: Promise<Expansion> | null = null;
+    const fills: MergeFill["fills"] = [];
+    for (const id of wires) {
+      const w = own(state.book.links, id);
+      if (!w || w.from !== me.id || w.when !== "pr-merged") continue;
+      const body = await expandTemplate(w.template ?? MERGE_TEMPLATE, {
+        summary,
+        ticket,
+        pr,
+        diff: () => (diff ??= readWireDiff(me.cwd, this.secretFiles(), this.o.log)),
+        files: () => readWireFiles(me.cwd, w.files, this.secretFiles()),
+      });
+      // the user's mark, not the provider's word: the gate says so, and an automatic one asks
+      if (merge.pr.mergedBy) body.flags.push("You marked its pull request merged, rather than its provider saying so: its merge commit isn't known.");
+      fills.push({ wire: id, from: filledFrom(w), body });
+    }
+    return { merge: { pr: merge.pr.id }, fills };
   }
 
   /**
@@ -571,7 +612,7 @@ function finishReply(o: FinishOutcome): Reply {
   const lines = o.steps.map((s) => {
     const to = `the ${s.type} wire to ${quoted(s.toTitle)}`;
     if (s.does === "readies") return `- ${to}: readied. ${gateSaid(s)}${s.pending?.flags.length ? ` The user is shown: ${s.pending.flags.join(" ")}` : ""}`;
-    if (s.does === "keeps") return `- ${to}: it goes when the user sends it, with your summary.`;
+    if (s.does === "keeps") return `- ${to}: ${s.why ?? "it goes when the user sends it"}, with your summary.`;
     if (s.does === "holds") return `- ${to}: held until your step finishes with "approve".${s.withdraws ? " What was waiting there was taken back." : ""}`;
     if (s.does === "passes") return `- ${to}: nothing goes back on "approve".${s.withdraws ? " The changes waiting there were taken back." : ""}`;
     return `- ${to}: not readied. ${s.why}`;

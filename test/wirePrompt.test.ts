@@ -8,6 +8,7 @@ import {
   expandTemplate,
   fence,
   FILE_CHARS,
+  NO_PR,
   readWireDiff,
   readWireFiles,
   REDACTED,
@@ -380,10 +381,12 @@ describe("a template", () => {
     expect(diff).not.toHaveBeenCalled();
     expect(files).not.toHaveBeenCalled();
   });
-  it("leaves {pr} as written, and says so", async () => {
-    const r = await expandTemplate("{summary} {pr}", sources());
-    expect(r.text).toBe("did {diff} and {files} {pr}");
-    expect(r.flags).toEqual([expect.stringMatching(/\{pr\} stays as written/)]);
+  it("fills {pr} with the merge that readied it, says so when none did, and never reads a summary's {pr}", async () => {
+    const none = await expandTemplate("{summary} {pr}", sources({ summary: "did {pr}" }));
+    expect(none.text).toBe(`did {pr} ${NO_PR}`);
+    expect(none.flags).toEqual([expect.stringMatching(/wasn't readied by its pull request merging, so it names none/)]);
+    const merged = await expandTemplate("{pr}\n\n{summary}", { ...sources({ summary: "did {pr}" }), pr: "Pull request 12 to dev merged." });
+    expect(merged).toEqual({ text: "Pull request 12 to dev merged.\n\ndid {pr}", flags: [], redacted: 0 });
   });
 });
 

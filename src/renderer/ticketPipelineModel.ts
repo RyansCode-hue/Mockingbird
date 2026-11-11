@@ -1,4 +1,5 @@
-import { isTicketStage, stageStep, TICKET_STAGES, type PrTarget, type StoredStage, type TicketStage } from "../shared/types";
+import { isTicketStage, stageStep, TICKET_STAGES, type PipelinePr, type PrTarget, type StoredStage, type TicketStage } from "../shared/types";
+import { ago, plural } from "../shared/format";
 
 /**
  * The pipeline panel's plain logic (TicketPipeline.tsx): the rail and each
@@ -62,3 +63,15 @@ const NEXT: Record<TicketStage, NextStep[]> = {
 /** A ticket's next steps, from its stage (null: not tracked yet). */
 export const nextSteps = (stage: StoredStage | null): NextStep[] =>
   stage === null ? [move("Start BA", "ba", false), move("Start coding", "coding")] : isTicketStage(stage) ? NEXT[stage] : [];
+
+/**
+ * What a pull request's row says of its merge (W16), or null while nothing's known beyond its opening: merged and when
+ * (marked by the user, where they did), closed without merging, or the merge watch's failed reads; `problem` marks the
+ * last two.
+ */
+export function prMergeNote(pr: Pick<PipelinePr, "mergedAt" | "mergedBy" | "closedAt" | "watch">, now = Date.now()): { text: string; problem: boolean } | null {
+  if (pr.mergedAt) return { text: `merged ${ago(pr.mergedAt, now)}${pr.mergedBy ? ", marked by you" : ""}`, problem: false };
+  if (pr.closedAt) return { text: "closed without merging", problem: true };
+  if (pr.watch) return { text: `can't tell whether it merged (${plural(pr.watch.failures, "failed read")}): ${pr.watch.why}`, problem: true };
+  return null;
+}

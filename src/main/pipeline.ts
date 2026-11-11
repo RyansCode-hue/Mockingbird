@@ -3,9 +3,11 @@ import {
   type CommentDraft,
   type PipelinePr,
   type PipelineRequest,
+  type PrWatchFailure,
   type StoredStage,
   type TicketPipeline,
   type TicketStage,
+  BY_MERGE,
   BY_YOU,
   TICKET_STAGES,
   clearAgentTicks,
@@ -273,14 +275,14 @@ export class PipelineStore {
    * Move a record to `stage`: its history entry and drafted comment, and, back
    * at Coding, the gates' ticks cleared (by an agent, only agents'), which the
    * entry's note says, as it does the held PR requests the new stage doesn't take.
-   * The user's own move ends their unticks; an agent's never does. `draft`: "plain"
+   * The user's own move ends their unticks; an agent's or a merge's never does. `draft`: "plain"
    * drafts the stage's comment without quoting `note`, "none" drafts nothing; an
    * agent's move marks it with `by`.
    */
   private move(p: TicketPipeline, stage: TicketStage, o: { note?: string; summary?: string; pr?: PipelinePr; by?: string; draft?: "plain" | "none"; agent?: boolean }): TicketPipeline {
     const back = p.history.some((h) => (stageStep(h.stage) ?? 0) >= 2);
     const cleared = clearsGates(p.stage, stage) ? (o.agent ? clearAgentTicks(p) : clearGateTicks(p)) : null;
-    if (!o.agent) delete p.unticked;
+    if (!o.agent && o.by !== BY_MERGE) delete p.unticked;
     p.stage = stage;
     const stale = (p.requests ?? []).filter((r) => requestRefusal(stage, r.target));
     if (stale.length) p.requests = p.requests!.filter((r) => !stale.includes(r));
@@ -348,6 +350,62 @@ export class PipelineStore {
         if (p.checkedBy) delete p.checkedBy[key];
         if (by === BY_YOU) (p.unticked ??= {})[key] = { at: Date.now(), stage: p.stage };
       }
+      return p;
+    });
+  }
+
+  // ---- the merge watch's changes (prWatch.ts), and the user's Mark merged… ----
+
+  /** Pull request `url` of tracked ticket `id`: refused when either isn't there. */
+  private trackedPr(id: string, url: string): { p: TicketPipeline; pr: PipelinePr } {
+    const p = this.tracked(id);
+    const pr = p.prs.find((x) => x.url === url);
+    if (!pr) throw new Error(`#${id} has no pull request ${url}`);
+    return { p, pr };
+  }
+
+  /**
+   * Pull request `url` merged, as its provider says (`by` BY_MERGE) or as the user marks it (BY_YOU): when, and its merge
+   * commit, saved, and its watch's failures gone. A ticket at that PR's stage moves on, PR to dev to AI testing in
+   * dev/UAT and PR to main to AI testing in staging/prod, with `by` and `note`; at any other stage it stays. Refused once
+   * it's merged, so one merge moves a ticket once. `moved`: whether it moved.
+   */
+  prMerged(id: string, url: string, o: { at: number; commit?: string; by: string; note: string }): { pipeline: TicketPipeline; moved: boolean } {
+    return this.change(id, () => {
+      const { p, pr } = this.trackedPr(id, url);
+      if (pr.mergedAt) throw new Error(`#${id}'s pull request ${pr.id} is merged already`);
+      pr.mergedAt = o.at;
+      if (o.commit) pr.mergeCommit = o.commit;
+      if (o.by === BY_YOU) pr.mergedBy = BY_YOU;
+      delete pr.closedAt;
+      delete pr.watch;
+      if (p.stage !== (pr.target === "dev" ? "pr-dev" : "pr-main")) return { pipeline: p, moved: false };
+      this.move(p, pr.target === "dev" ? "dev-test" : "prod-test", { note: o.note, by: o.by, pr });
+      return { pipeline: p, moved: true };
+    });
+  }
+
+  /** Pull request `url` was closed without merging, at `at` (null: it was reopened): kept, and its watch's failures gone. */
+  prClosed(id: string, url: string, at: number | null): TicketPipeline {
+    return this.change(id, () => {
+      const { p, pr } = this.trackedPr(id, url);
+      if (pr.mergedAt) throw new Error(`#${id}'s pull request ${pr.id} is merged already`);
+      if (at === null) delete pr.closedAt;
+      else pr.closedAt = at;
+      delete pr.watch;
+      return p;
+    });
+  }
+
+  /** The merge watch's failed reads of pull request `url` in a row (null once one works). Nothing is written when that's what it says already. */
+  prWatched(id: string, url: string, watch: PrWatchFailure | null): TicketPipeline {
+    const prs = this.data[id]?.prs;
+    const cur = Array.isArray(prs) ? prs.find((x) => x.url === url) : undefined;
+    if (cur && JSON.stringify(cur.watch ?? null) === JSON.stringify(watch)) return this.data[id];
+    return this.change(id, () => {
+      const { p, pr } = this.trackedPr(id, url);
+      if (watch) pr.watch = watch;
+      else delete pr.watch;
       return p;
     });
   }

@@ -1866,6 +1866,20 @@ const api: Record<string, (...a: any[]) => any> = {
     pipelinesChanged();
     return { pipeline: p, told: { to: request.from, title: request.fromTitle, notTold: "UI preview: no agent is told" } };
   },
+  // the merge watch: nothing is read from a provider here; Mark merged… moves a ticket on from its PR stage, as main's does
+  pipelinePrCheck: async () => err("UI preview: no pull request is read"),
+  pipelinePrMarkMerged: async (id: string, url: string) => {
+    const p = pipelines[id];
+    const pr = p?.prs.find((x) => x.url === url);
+    if (!p || !pr) return err(`#${id} has no pull request ${url}`);
+    if (pr.mergedAt) return err(`#${id}'s pull request ${pr.id} is merged already`);
+    Object.assign(pr, { mergedAt: Date.now(), mergedBy: "you" });
+    delete pr.watch;
+    delete pr.closedAt;
+    if (p.stage === (pr.target === "dev" ? "pr-dev" : "pr-main")) return setStage(id, pr.target === "dev" ? "dev-test" : "prod-test");
+    pipelinesChanged();
+    return p;
+  },
   pipelinePrPreflight: async () => ({ branch: "5101-orgDropdowns", base: "dev", bases: ["dev", "main"], dirtyFiles: 2, commits: 1, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: null, existing: null, lookupError: null }),
   pipelinePrDescribe: async () => later({ description: "## Summary\nThe org dropdown remembers each user's last org.\n\n## Changes\n- Store and read the last org\n\n## Testing\nNot stated", agent: "claude" }, 800),
   pipelinePrCreate: async () => err("UI preview: no pull request is opened"),

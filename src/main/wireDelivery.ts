@@ -3,7 +3,7 @@ import type { LandscapeStore } from "./landscape";
 import type { QueueOutcome, QueueReceipt, SessionManager } from "./sessions";
 import { refuseTakenOver, type UntakenWireCall } from "./takenOverGuard";
 import { redactedFlag } from "./wirePrompt";
-import { filledFrom, titleAcross, usesSummary, type FinishFill } from "./wireTools";
+import { filledFrom, titleAcross, usesSummary, type FinishFill, type MergeFill } from "./wireTools";
 import { isObj, own, put } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
 import {
@@ -12,6 +12,7 @@ import {
   finishPlan,
   gateOf,
   isSending,
+  mergePlan,
   queuedRefusal,
   restoredWire,
   verdictRefusal,
@@ -198,7 +199,8 @@ export class WireDelivery {
    * sends it, or holds it saying why. `prompt` is the source's prompt as its finish began, for once per prompt.
    * Answers at once: a finish never waits on a gate.
    */
-  offer(me: SessionInfo, f: FinishFill, how: OfferHow, prompt: string | null): FinishOutcome {
+  offer(me: SessionInfo, f: FinishFill | MergeFill, how: OfferHow, prompt: string | null): FinishOutcome {
+    if ("merge" in f) return this.offerMerge(me, f, how);
     const noted = (book: WireBook): WireBook => {
       const note: SourceNote = { ...(own(book.notes, me.id) ?? { hops: 0 }), summary: f.note.summary };
       if (f.note.verdict) note.verdict = f.note.verdict;
@@ -257,17 +259,55 @@ export class WireDelivery {
     });
     if ("refused" in r) return { refused: verdictWhy ? `This workspace's wires changed while its step was being finished, so nothing was: ${verdictWhy}` : `Nothing was finished: ${r.refused}` };
     for (const id of recalled) this.takeBack(id, `was taken back: ${me.id}'s step finished again with "${v}"`);
-    // the finish is saved: each gate runs on its own, and one that fails holds its pending and leaves the rest to go
+    return { steps: this.gates(me, steps, how, prompt, "as this step finished"), redacted: f.redacted };
+  }
+
+  /**
+   * A pull request merging (WireTools.planMerge's fill), written in one change: each of the source's handoffs set to go
+   * when its PR merges, and not yet readied for that PR, gets a pending, the PR's id kept in its `fired` with it, so each
+   * merge readies a wire once. The plan is worked out again inside the write (mergePlan): a wire the rules refuse now, or
+   * one changed since it was filled in, is refused on its own and left to the next check. The source's note is left
+   * alone: a merge has no summary or verdict. Then each gate runs, with `how.hold` when the merge wasn't seen as it happened.
+   */
+  private offerMerge(me: SessionInfo, f: MergeFill, how: OfferHow): FinishOutcome {
+    const filled = new Map(f.fills.map((x) => [x.wire, x]));
+    let steps: FinishedStep[] = [];
+    const r = this.o.store.editWires((book) => {
+      const now = this.o.context(book);
+      const links = { ...book.links };
+      steps = mergePlan(me.id, f.merge.pr, now).flatMap((step): FinishedStep[] => {
+        const x = filled.get(step.wire);
+        if (!x) return [];
+        const w = book.links[step.wire];
+        const done: FinishedStep = { ...step, toTitle: titleAcross(now, me.id, step.to) };
+        if (step.does !== "readies") return [done];
+        if (x.from !== filledFrom(w)) return [{ ...done, does: "refused", why: "It was changed while the merge was being filled in: it's filled in again at the next check." }];
+        const tooLong = bodyRefusal(x.body.text);
+        if (tooLong) return [{ ...done, does: "refused", why: tooLong }];
+        const pending: WirePending = { id: this.newId(), body: x.body.text, at: Date.now(), flags: [...(x.body.redacted ? [redactedFlag(x.body.redacted)] : []), ...x.body.flags] };
+        const { pending: _replaced, ...rest } = w;
+        const next: Wire = { ...rest, pending, fired: [...(w.fired ?? []), f.merge.pr] };
+        put(links, step.wire, next);
+        return [{ ...done, pending: { id: pending.id, flags: pending.flags }, gate: gateOf(step.wire, next, { ...now, links }).gate }];
+      });
+      return { book: { ...book, links } };
+    });
+    if ("refused" in r) return { refused: `Nothing was readied for the merge: ${r.refused}` };
+    return { steps: this.gates(me, steps, how, null, "as its pull request merged"), redacted: 0 };
+  }
+
+  /** Each new pending's gate, run on its own once its change is saved: one that fails holds its pending and leaves the rest to go. */
+  private gates(me: SessionInfo, steps: FinishedStep[], how: OfferHow, prompt: string | null, as: string): FinishedStep[] {
     for (const step of steps) {
       if (!step.pending) continue;
       try {
         this.automatic(step.wire, step.pending.id, how, how.origin === "agent" ? prompt : null);
       } catch (err) {
-        this.o.log(`wires: ${me.id}'s finish readied ${step.pending.id} on ${step.wire}, and its gate failed`, err);
-        this.hold(step.wire, step.pending.id, `Its gate failed as this step finished (${message(err)}), so it waits for you.`);
+        this.o.log(`wires: ${me.id}'s ${how.origin === "merge" ? "merge" : "finish"} readied ${step.pending.id} on ${step.wire}, and its gate failed`, err);
+        this.hold(step.wire, step.pending.id, `Its gate failed ${as} (${message(err)}), so it waits for you.`);
       }
     }
-    return { steps: this.went(steps), redacted: f.redacted };
+    return this.went(steps);
   }
 
   /** `steps` with what each readied wire's gate shows now that it has run, for the finish's answer. */

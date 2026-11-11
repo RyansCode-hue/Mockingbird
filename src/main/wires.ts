@@ -3,7 +3,7 @@ import type { LandscapeStore } from "./landscape";
 import type { Reply } from "./messaging";
 import { canonical } from "./handlers";
 import { LandscapeShapeError, own, put } from "../shared/landscape";
-import type { SessionInfo } from "../shared/types";
+import { ticketOfSession, type SessionInfo } from "../shared/types";
 import {
   createdAtAfter,
   gateOf,
@@ -27,6 +27,7 @@ import {
   wiresInOrder,
   type GateContext,
   type KeptEntries,
+  type MergeView,
   type Wire,
   type WireBook,
   type WireEnd,
@@ -71,6 +72,12 @@ export interface WireServiceOptions {
   newId?: () => string;
   /** A wire was made and saved (not restored: its ends heard of it when it was first made). Told after the change counts. */
   onAdded?: (id: string, wire: Wire) => void;
+  /** The merge watch (prWatch.ts): what a pr-merged wire's pull requests say, and which had merged before one began to watch. */
+  merges?: {
+    view(w: Wire, source: WireEnd | null): MergeView | null;
+    /** The ids of the pull requests from session `from`'s ticket and branch that have merged. */
+    mergedBefore(from: string): number[];
+  };
 }
 
 /**
@@ -128,6 +135,11 @@ export class WireService {
       const refused = settingsRefusal(w, settings.settings, this.context(book));
       if (refused) return { refused };
       const next = withSettings(w, settings.settings);
+      // set to go when its PR merges: what had merged before then isn't a merge it waited for
+      if (next.when === "pr-merged" && w.when !== "pr-merged") {
+        const before = this.o.merges?.mergedBefore(w.from) ?? [];
+        if (before.length) next.fired = [...new Set([...(w.fired ?? []), ...before])];
+      }
       if (sameWire(next, w)) return { book };
       const links = { ...book.links };
       put(links, id, next);
@@ -321,11 +333,14 @@ export class WireService {
             folder: canonical(s.cwd),
             // a closed or exited session's record may still say so from its last run; its next launch starts afresh
             hooksSilent: running.has(id) && s.status !== "dead" && !!s.hooksSilent,
+            ticket: ticketOfSession(s),
+            branch: s.branch,
           }
         : null;
       ends.set(id, made);
       return made;
     };
+    const merges = this.o.merges;
     return {
       end,
       links: book.links,
@@ -333,6 +348,7 @@ export class WireService {
       ...(kept ? { kept: readableKept(kept) } : {}),
       fileRefusal: this.o.store.wiresWriteRefusal(),
       ...(this.o.roomsKnown && !this.o.roomsKnown() ? { roomsUnknown: ROOMS_STARTING } : {}),
+      ...(merges ? { mergeView: (w: Wire) => merges.view(w, end(w.from)) } : {}),
     };
   }
 }

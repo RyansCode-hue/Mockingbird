@@ -53,7 +53,8 @@ import { MessageLog } from "./messageLog";
 import { overlapReport, rereadWorktrees, type WorktreeReads } from "./conflicts";
 import { logOwnGitFailuresTo } from "./safeGit";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
-import { prStatusFor } from "./prStatus";
+import { prStateById, prStatusFor } from "./prStatus";
+import { PR_TTL_MS, PrWatch } from "./prWatch";
 import { LspManager } from "./lsp/manager";
 import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
@@ -1390,6 +1391,7 @@ const wires = new WireService({
   log: logError,
   onAdded: (id, w) => wireTools.wired(id, w),
   delivery: { withdraw: (id, w) => delivery.withdraw(id, w), restoring: (w) => delivery.restoring(w), restored: (id) => delivery.restored(id) },
+  merges: { view: (w, source) => prWatch.view(w, source), mergedBefore: (from) => prWatch.mergedBefore(from) },
 });
 handle("wires:get", () => wires.get());
 handle("wires:add", (from, to, type, settings) => wires.add(from, to, type, settings));
@@ -1489,6 +1491,24 @@ const ticketTools = new TicketTools({
 // a held PR request a move or another session's PR dropped: its asker hears why, as a dismissal tells it
 pipeline.onRequestsDropped = (id, dropped) => void ticketTools.requestsDropped(id, dropped);
 const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
+// a pull request merging: saved, the ticket moved on from its PR stage, and its pr-merged wires readied once each
+const prWatch: PrWatch = new PrWatch({
+  pipeline,
+  read: (pr, root) => prStateById(pr, prDeps(root)),
+  sessions,
+  wires: () => landscape.wires(),
+  fill: (me, merge, ids) => wireTools.planMerge(me, merge, ids),
+  offer: (me, f, how) => delivery.offer(me, f, how, null),
+  notify: (sessionId, title, body) => {
+    const session = sessionId ? sessions.list().find((s) => s.id === sessionId) : undefined;
+    if (!shouldNotify({ settings: store.settings, session, kind: "other", now: new Date() })) return;
+    const n = new Notification({ title, body });
+    if (session) n.on("click", () => focusPane(session.id));
+    n.show();
+  },
+  onChanged: pipelineChanged,
+  log: logError,
+});
 
 handle("pipeline:all", () => pipeline.all());
 handle("pipeline:stage", (id, stage, title) => pipelineDo(() => pipeline.setStage(String(id), stage, { title: title ? String(title) : undefined, by: BY_YOU })));
@@ -1500,6 +1520,9 @@ handle("pipeline:draft:drop", (id, draftId) => pipelineDo(() => pipeline.dropDra
 // stage 6's approval, and its line to the agent that asked for the PR to dev; an agent's PR request dismissed, with a note
 handle("pipeline:approve", (id) => pipelineDo(() => ticketTools.approve(String(id))));
 handle("pipeline:request:dismiss", (id, requestId, note) => pipelineDo(() => ticketTools.dismissRequest(String(id), String(requestId), typeof note === "string" ? note : "")));
+// the merge watch's Check now, and Mark merged…: the user's alone, as no tool reaches either
+handle("pipeline:pr:check", (id, url) => pipelineDo(() => prWatch.checkNow(String(id), typeof url === "string" ? url : undefined)));
+handle("pipeline:pr:markMerged", (id, url) => pipelineDo(() => prWatch.markMerged(String(id), String(url ?? ""))));
 // posting is the one step that writes to ADO, and only for the draft the user picked
 handle("pipeline:draft:post", (id, draftId) =>
   pipelineDo(async () => {
@@ -1551,7 +1574,7 @@ handle("pipeline:pr:create", (sessionId, ticketId, req) =>
     const description = String(req?.description ?? "");
     return pipeline.addPr(
       String(ticketId),
-      { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined, by: s.id },
+      { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined, by: s.id, root: s.cwd },
       req?.ticketTitle ? String(req.ticketTitle) : undefined,
       BY_YOU
     );
@@ -1665,7 +1688,6 @@ handle("lsp:format", async (id, rel, tabSize, insertSpaces) => {
 handle("lsp:applyEdits", (id, rel, edits) => applyFileEdits(sessionRoot(String(id)), String(rel), Array.isArray(edits) ? edits : []));
 
 // ---- PR status in the pane rail: the branch's pull request, looked up at most every 2 minutes per folder ----
-const PR_TTL_MS = 120_000;
 const prCache = new Map<string, PrStatus>();
 const prInFlight = new Map<string, Promise<PrStatus>>();
 handle("pr:status", async (cwd, fresh) => {
@@ -1847,6 +1869,7 @@ app.whenReady().then(() => {
     }
   };
   settleWires();
+  prWatch.start();
   setInterval(() => {
     sessions.checkStalls(Date.now(), STALL_MS);
     for (const o of sessions.overdueMessages(Date.now(), MESSAGE_OVERDUE_MS)) tellOverdue(o);
