@@ -109,7 +109,7 @@ const WORKSPACE_MENU = [
   "-", "# Hand on", "Continue in Codex…", "Fresh session from a brief…", "Second opinion from Codex",
   "-", "Close…",
 ];
-const CREATE_ROWS = ["# New workspace", "Claude…", "Codex…", "Terminal…", "From a ticket…", "Import…", "Collab… (coming) (off)", "Pipeline from a ticket… (coming) (off)"];
+const CREATE_ROWS = ["# New workspace", "Claude…", "Codex…", "Terminal…", "From a ticket…", "Resume a conversation…", "Import conversations…", "Collab… (coming) (off)", "Pipeline from a ticket… (coming) (off)"];
 const TAKEN_BACK = /^Nick Smith continues it on their laptop: take it back/;
 
 describe.skipIf(!local)("the selection bar", () => {
@@ -227,7 +227,7 @@ describe.skipIf(!local)("the selection bar", () => {
     expect(l.made.group).toBeNull();
     // (or the nearest free spot by it, when what's stored there leaves no room at the click)
     expect(Math.hypot(l.made.placed!.x - l.at.x, l.made.placed!.y - l.at.y), JSON.stringify({ at: l.at, p: l.made.placed })).toBeLessThan(160);
-    // From a ticket… opens it with the ticket field; Import… importing
+    // From a ticket… opens it with the ticket field; Resume a conversation… importing
     expect(b.createOther.ticket).toMatchObject({ launch: "Claude", group: "group: 5102▾", ticketOpen: true });
     expect(b.createOther.importing).toMatchObject({ mode: "Import" });
   }, 120_000);

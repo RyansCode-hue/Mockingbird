@@ -1976,6 +1976,7 @@ function App() {
         launch: (kind) => newAt(area, at, { launch: kind }),
         ticket: () => newAt(area, at, { ticket: true }),
         importIt: () => newAt(area, at, { mode: "import" }),
+        importMany: () => setModal("import"),
       }),
       ...(area ? [] : looseGhostRows()),
     ],

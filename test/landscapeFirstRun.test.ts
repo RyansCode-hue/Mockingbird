@@ -89,7 +89,7 @@ describe("what goes where the landscape would be empty", () => {
 });
 
 describe("the empty landscape's tiles", () => {
-  const rows = createActions({ launch: () => {}, ticket: () => {}, importIt: () => {} });
+  const rows = createActions({ launch: () => {}, ticket: () => {}, importIt: () => {}, importMany: () => {} });
   it("each runs a row of the create menu that can be done now", () => {
     for (const t of EMPTY_TILES) {
       const a = actionOf(rows, t.row);

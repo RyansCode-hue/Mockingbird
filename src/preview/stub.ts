@@ -3195,10 +3195,10 @@ if (params.has("motionDialogs")) {
   waitFor(".ls-world .ls-node", async () => {
     await sleep(300);
     const out: Record<string, unknown> = {};
-    // Import… in the top bar's New menu; the menu's own exit is finished before the dialog's is counted
+    // Resume a conversation… in the top bar's New menu; the menu's own exit is finished before the dialog's is counted
     document.querySelector<HTMLElement>(".topbar button.primary")?.click();
     await settle();
-    [...document.querySelectorAll<HTMLElement>(".mb-ctx:not(.mb-ghost) button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === "Import…")?.click();
+    [...document.querySelectorAll<HTMLElement>(".mb-ctx:not(.mb-ghost) button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === "Resume a conversation…")?.click();
     await sleep(40);
     note();
     out.dialogOpen = document.querySelectorAll(".modal-back:not(.mb-ghost)").length;
@@ -5764,12 +5764,12 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         const loose = await create(null, "Terminal…");
         const madeLoose = await made();
         out.createLoose = { ...loose, made: madeLoose };
-        // From a ticket… and Import… open the same dialog with the ticket field, or importing
+        // From a ticket… and Resume a conversation… open the same dialog with the ticket field, or importing
         await fitView();
         const ticket = await create("5102", "From a ticket…");
         esc();
         await sleep(300);
-        const importing = await create("5102", "Import…");
+        const importing = await create("5102", "Resume a conversation…");
         esc();
         await sleep(300);
         out.createOther = { ticket: ticket.dialog, importing: importing.dialog };

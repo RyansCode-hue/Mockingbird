@@ -31,7 +31,7 @@ async function run(part: string, query = "", size = "1440x900", limitMs?: number
   return out;
 }
 
-const CREATE = ["Claude…", "Codex…", "Terminal…", "From a ticket…", "Import…"];
+const CREATE = ["Claude…", "Codex…", "Terminal…", "From a ticket…", "Resume a conversation…", "Import conversations…"];
 /** What swallowed keys say (once), with nothing selected and with a workspace selected. */
 const HINT = "Click the landscape, or press ⌘E, to use its keys";
 /** With a workspace selected: naming the tab ⌘E types in. */

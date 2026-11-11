@@ -369,9 +369,15 @@ async function reviewPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
 async function importPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
   const keys = legacy();
   const ids = new Set(env.sessions().map((s) => s.id));
-  // Import conversations, several at once: ⌘K's row (the New menu's Import… resumes one, in New session)
-  await palette();
-  await paletteRun(/^Import sessions$/);
+  // Import conversations, several at once: the top bar's New menu has it beside Resume a conversation…, as ⌘K does
+  out.palette = (await palette()).some((r) => r.label === "Import sessions");
+  await paletteClose();
+  const create = document.querySelector<HTMLElement>(".topbar button.primary");
+  if (!create) throw new Error("the top bar has no New");
+  create.click();
+  await sleep(300);
+  out.rows = ctxRows();
+  await ctxPick("Import conversations…");
   await new Promise<void>((ok) => env.waitFor(".import-dlg .pick-list .item:not(.blocked)", () => ok()));
   document.querySelector<HTMLElement>(".import-dlg .pick-list .item:not(.blocked)")?.click();
   await sleep(200);

@@ -120,8 +120,11 @@ describe.skipIf(!local)("what goes on from a workspace", () => {
     expect(a.review).toMatchObject({ made: true, drawn: true });
   }, 90_000);
 
-  it("Import brings the first it opened into view and writes nothing of the grid's", async () => {
+  it("Import conversations, in the New menu beside Resume a conversation… and in ⌘K, brings the first it opened into view and writes nothing of the grid's", async () => {
     const a = await run("import");
+    const at = a.rows.indexOf("Resume a conversation…");
+    expect(a.rows.slice(at, at + 2)).toEqual(["Resume a conversation…", "Import conversations…"]);
+    expect(a.palette).toBe(true);
     expect(a.imported).toEqual({ opened: true, placed: true, selected: true, dialog: false, keysUnchanged: true });
   }, 90_000);
 });

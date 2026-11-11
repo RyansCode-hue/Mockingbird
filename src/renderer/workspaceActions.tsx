@@ -196,6 +196,8 @@ export interface CreateEnv {
   ticket: () => void;
   /** The dialog's Import, resuming a conversation from this Mac. */
   importIt: () => void;
+  /** Import conversations: several from this Mac at once, each reopened in its own folder (⌘K's Import sessions). */
+  importMany: () => void;
 }
 
 /** The kinds of workspace that can be made here, and those still to come (docs/landscape.md, Workspaces: Create). */
@@ -206,7 +208,8 @@ export function createActions(env: CreateEnv): ModelAction[] {
     { section: "create", key: "new:codex", label: "Codex", menuLabel: "Codex…", onPick: () => env.launch("codex") },
     { section: "create", key: "new:shell", label: "Terminal", menuLabel: "Terminal…", onPick: () => env.launch("shell") },
     { section: "create", key: "new:ticket", label: "From a ticket", menuLabel: "From a ticket…", onPick: env.ticket },
-    { section: "create", key: "new:import", label: "Import", menuLabel: "Import…", onPick: env.importIt },
+    { section: "create", key: "new:import", label: "Resume a conversation", menuLabel: "Resume a conversation…", onPick: env.importIt },
+    { section: "create", key: "new:import-many", label: "Import conversations", menuLabel: "Import conversations…", onPick: env.importMany },
     coming("new:collab", "Collab…", "Collab workspaces, where several agents talk a change through, come in a later version"),
     coming("new:pipeline", "Pipeline from a ticket…", "Pipeline templates come in a later version"),
   ];

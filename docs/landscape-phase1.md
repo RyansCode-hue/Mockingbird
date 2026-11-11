@@ -3679,10 +3679,11 @@ Design O, with Artifacts as a window, and N's workspace header.
   - **The first run's tests** lost their grid cases (a fresh window with the
     landscape off in Labs, the grid's terminal gone as it's typed in) and
     their `?labs=` query, with the flag.
-  - **The audits use S8a's top bar:** its tab reads Landscape, and Import
-    conversations (several at once) is ⌘K's Import sessions; the New menu's
-    Import… resumes one in New session, the dialog the motion audit opens
-    and closes.
+  - **The audits use S8a's top bar:** its tab reads Landscape. Its New menu
+    has **Resume a conversation…** (one, in New session, the dialog the
+    motion audit opens and closes; it was Import…) and, beside it, **Import
+    conversations…** (several at once, the dialog ⌘K's Import sessions
+    opens), which the switch audit goes through.
   - **`teamLiveApp`'s restart** takes either way it can go: a copy that ran
     again and stopped says "continued on Nick's laptop" on its row in the
     room; one refused at once (the room caught up first) stays closed, and

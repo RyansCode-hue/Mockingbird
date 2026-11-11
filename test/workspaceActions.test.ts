@@ -172,17 +172,20 @@ describe("a right-click on the empty landscape", () => {
     const launch = vi.fn();
     const ticket = vi.fn();
     const importIt = vi.fn();
-    const acts = createActions({ launch, ticket, importIt });
-    expect(rows(menuOf(acts))).toEqual(["# New workspace", "new:claude", "new:codex", "new:shell", "new:ticket", "new:import", "new:collab", "new:pipeline"]);
+    const importMany = vi.fn();
+    const acts = createActions({ launch, ticket, importIt, importMany });
+    expect(rows(menuOf(acts))).toEqual(["# New workspace", "new:claude", "new:codex", "new:shell", "new:ticket", "new:import", "new:import-many", "new:collab", "new:pipeline"]);
+    // resuming one conversation and importing several are told apart
+    expect(["new:import", "new:import-many"].map((k) => actionOf(acts, k)?.menuLabel)).toEqual(["Resume a conversation…", "Import conversations…"]);
     expect(acts.filter((a) => a.disabled).map((a) => [a.key, a.menuLabel])).toEqual([
       ["new:collab", "Collab… (coming)"],
       ["new:pipeline", "Pipeline from a ticket… (coming)"],
     ]);
     for (const a of acts.filter((x) => x.disabled)) expect(a.title).toMatch(/later version/);
-    // each runs today's flow: the New Session dialog for its kind, the ticket popover, Import
-    for (const k of ["new:claude", "new:codex", "new:shell", "new:ticket", "new:import"]) usable(acts, k)!.onPick(null as unknown as HTMLElement);
+    // each runs today's flow: the New Session dialog for its kind, the ticket popover, its Import, Import conversations
+    for (const k of ["new:claude", "new:codex", "new:shell", "new:ticket", "new:import", "new:import-many"]) usable(acts, k)!.onPick(null as unknown as HTMLElement);
     expect(launch.mock.calls).toEqual([["claude"], ["codex"], ["shell"]]);
-    expect([ticket.mock.calls.length, importIt.mock.calls.length]).toEqual([1, 1]);
+    expect([ticket.mock.calls.length, importIt.mock.calls.length, importMany.mock.calls.length]).toEqual([1, 1, 1]);
   });
 });
 
