@@ -223,7 +223,7 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     });
   }, 90_000);
 
-  it("takes no click on a strip the camera has just carried under the pointer", async () => {
+  it("takes no click on a strip the camera has just carried under the pointer, and shows it: the button off until one would count", async () => {
     const read = `(() => { ${PRESS_SETTLED}
       const t = (window.__t ??= { step: 0 });
       const calls = () => window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").map((c) => c.args[2]);
@@ -241,8 +241,10 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
         return null;
       }
       if (t.step === 1) {
+        // the press went at the start of this look
+        t.off ??= allow()?.disabled ?? null;
         if (Date.now() - t.at < 1000) return null;
-        t.early = { calls: calls(), strip: !!allow() };
+        t.early = { calls: calls(), strip: !!allow(), off: t.off, offAfter: allow()?.disabled ?? null };
         t.step = 2;
         return null;
       }
@@ -254,7 +256,7 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
       if (allow()) return null;
       return JSON.stringify({ early: t.early, after: calls() });
     })()`;
-    expect(JSON.parse(await result("motion=off&lsCamera=0,0,0.8&typingAsk", read, SIZE))).toEqual({ early: { calls: [], strip: true }, after: ["minutes"] });
+    expect(JSON.parse(await result("motion=off&lsCamera=0,0,0.8&typingAsk", read, SIZE))).toEqual({ early: { calls: [], strip: true, off: true, offAfter: false }, after: ["minutes"] });
   }, 90_000);
 
   it("shows the strip over the terminal: no re-fit, no pty resize", async () => {

@@ -1,10 +1,11 @@
-import { useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 /**
  * Answers a click gives (a teammate's ask to type, in the Needs you tray and on its workspace's strip) are let go when
  * the click wasn't aimed at them: a row that just arrived or moved under the pointer, or that the landscape's camera
- * just carried there, or the second click of a double click landing on whatever took the answered row's place. Only
- * Deny, the safe answer, is also given from the keyboard (a key's click); allowing takes the pointer.
+ * just carried there, or the second click of a double click landing on whatever took the answered row's place. A click
+ * let go shows: its button is off until a click there would count (`useHeldOff`). Only Deny, the safe answer, is also
+ * given from the keyboard (a key's click); allowing takes the pointer.
  */
 
 /** A row that arrived or moved this recently takes no answer: the click was aimed at what was there before. */
@@ -20,14 +21,14 @@ let cameraAt = -Infinity;
 export function cameraMoved(): void {
   cameraAt = Date.now();
 }
-/** The camera has been still ANSWER_SETTLE_MS: a strip it carried under the pointer has been where it is that long. */
-export const cameraStill = (): boolean => Date.now() - cameraAt >= ANSWER_SETTLE_MS;
+/** How long until the camera has been still ANSWER_SETTLE_MS (0: it has), so a strip it carried has stopped there. */
+export const cameraWait = (): number => Math.max(0, ANSWER_SETTLE_MS - (Date.now() - cameraAt));
 
 /**
- * Where each row of `list` (`rows`, keyed by `idOf`) is, and since when, recorded after every render: `settled(id)`
- * once it has stayed where it is ANSWER_SETTLE_MS. A row never seen isn't settled.
+ * Where each row of `list` (`rows`, keyed by `idOf`) is, and since when, recorded after every render: how long until
+ * row `id` has stayed where it is ANSWER_SETTLE_MS (0: it has). A row never seen waits the whole of it.
  */
-export function useSettledRows(list: RefObject<HTMLElement | null>, rows: string, idOf: (el: HTMLElement) => string | undefined): (id: string) => boolean {
+export function useSettledRows(list: RefObject<HTMLElement | null>, rows: string, idOf: (el: HTMLElement) => string | undefined): (id: string) => number {
   const placed = useRef(new Map<string, { top: number; at: number }>());
   useLayoutEffect(() => {
     const now = Date.now();
@@ -42,6 +43,22 @@ export function useSettledRows(list: RefObject<HTMLElement | null>, rows: string
   });
   return (id) => {
     const p = placed.current.get(id);
-    return !!p && Date.now() - p.at >= ANSWER_SETTLE_MS;
+    return p ? Math.max(0, ANSWER_SETTLE_MS - (Date.now() - p.at)) : ANSWER_SETTLE_MS;
   };
+}
+
+/**
+ * A button whose click was let go, shown off (disabled) for as long as a click there would be let go too: `holdOff(key,
+ * ms)` after letting one go, `heldOff(key)` for the button's `disabled`. One at a time.
+ */
+export function useHeldOff(): { holdOff: (key: string, ms: number) => void; heldOff: (key: string) => boolean } {
+  const [held, setHeld] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const holdOff = useCallback((key: string, ms: number) => {
+    clearTimeout(timer.current);
+    setHeld(key);
+    timer.current = setTimeout(() => setHeld(null), ms);
+  }, []);
+  return { holdOff, heldOff: (key) => held === key };
 }

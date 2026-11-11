@@ -3730,6 +3730,16 @@ Design O, with Artifacts as a window, and N's workspace header.
     and presses Allow at once.
   - **A Dashboard ticket's Start session** stamps its jump too, as New
     session does; `uiLandscapeFirstRun` types through its wait.
+- **As built, a click let go shows.** A pointer click the strip or the tray
+  lets go (the ask just arrived or moved, the camera just moved, a double
+  click's second) turns its button off, in the disabled style, for as long
+  as a click there would be let go too (`useHeldOff`, from each guard's time
+  left: `cameraWait` and the rows' wait). Go there to an ask and a click on
+  Allow before the view has settled shows it, and the next works.
+  `uiTyping`'s camera test reads the button off, then on. `teamLiveApp`
+  clicks Allow once the strip has stopped moving, as a person would, and
+  after the restart finds a refused copy by its ghost's status, as the side
+  bar may be showing the room instead of Closed sessions.
 
 ## Risks
 

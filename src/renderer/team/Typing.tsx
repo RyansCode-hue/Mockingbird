@@ -4,7 +4,7 @@ import type { RoomSessionTag, TypingAsk, TypingGrant } from "../../shared/team/l
 import { initialsOf } from "../Team";
 import { firstName } from "./connectedModel";
 import { settled } from "../settled";
-import { ANSWER_GUARD_MS, cameraStill, keyClick, useSettledRows } from "../answerGuard";
+import { ANSWER_GUARD_MS, cameraWait, keyClick, useHeldOff, useSettledRows } from "../answerGuard";
 
 /**
  * Typing into a teammate's session (docs/team-rooms.md, "Typing"): a
@@ -50,14 +50,21 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const strip = useRef<HTMLDivElement>(null);
-  const settledAsk = useSettledRows(strip, ".typing-ask[data-ask]", (el) => el.dataset.ask);
+  const askWait = useSettledRows(strip, ".typing-ask[data-ask]", (el) => el.dataset.ask);
+  const { holdOff, heldOff } = useHeldOff();
   const guardUntil = useRef(0);
   if (room.remote || !room.typingAsks?.length) return null;
   const title = session.ticketTitle ?? session.title;
   // a new ask from the same teammate is a new state, as the tray's rows are
   const askId = (a: TypingAsk) => `${a.member}:${a.at}`;
   const answer = async (e: MouseEvent, a: TypingAsk, choice: "session" | "minutes" | "deny") => {
-    if (keyClick(e) ? choice !== "deny" : Date.now() < guardUntil.current || !settledAsk(askId(a)) || !cameraStill()) return;
+    if (keyClick(e)) {
+      if (choice !== "deny") return;
+    } else {
+      // a click not aimed at it is let go, and its button shows off until one there would count
+      const wait = Math.max(guardUntil.current - Date.now(), askWait(askId(a)), cameraWait());
+      if (wait > 0) return holdOff(`${askId(a)}:${choice}`, wait);
+    }
     guardUntil.current = Date.now() + ANSWER_GUARD_MS;
     setBusy(a.member);
     setError((await decideTyping(session.id, a.member, choice)) ?? "");
@@ -78,13 +85,13 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
           <span className="reason">
             {firstName(a.name)} wants to type in “{title}”
           </span>
-          <button className="outline" tabIndex={-1} disabled={busy === a.member} aria-label={`Allow ${a.name} to type in “${title}” for this session`} onClick={(e) => answer(e, a, "session")}>
+          <button className="outline" tabIndex={-1} disabled={busy === a.member || heldOff(`${askId(a)}:session`)} aria-label={`Allow ${a.name} to type in “${title}” for this session`} onClick={(e) => answer(e, a, "session")}>
             Allow for this session
           </button>
-          <button className="outline" tabIndex={-1} disabled={busy === a.member} aria-label={`Allow ${a.name} to type in “${title}” for 15 min`} onClick={(e) => answer(e, a, "minutes")}>
+          <button className="outline" tabIndex={-1} disabled={busy === a.member || heldOff(`${askId(a)}:minutes`)} aria-label={`Allow ${a.name} to type in “${title}” for 15 min`} onClick={(e) => answer(e, a, "minutes")}>
             Allow for 15 min
           </button>
-          <button className="outline" disabled={busy === a.member} aria-label={`Deny ${a.name} typing in “${title}”`} onClick={(e) => answer(e, a, "deny")}>
+          <button className="outline" disabled={busy === a.member || heldOff(`${askId(a)}:deny`)} aria-label={`Deny ${a.name} typing in “${title}”`} onClick={(e) => answer(e, a, "deny")}>
             Deny
           </button>
         </div>

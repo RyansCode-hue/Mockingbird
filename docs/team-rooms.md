@@ -835,7 +835,8 @@ terminals, `!` commands, the agent's permission prompts.
   a key, so your own typing can't allow anyone, and an ask that has just
   arrived or moved under the pointer (or been carried there by the
   landscape's camera) takes no click for half a second, nor does a double
-  click's second (the Needs you tray's guards). **Deny**, the safe answer,
+  click's second (the Needs you tray's guards); a click let go turns its
+  button off until one there would count, so it shows. **Deny**, the safe answer,
   is also a Tab stop that Enter or Space answer. While anyone may type, the whole pane is outlined in teal
   (at least 3:1 against what's on either side, both themes), and the header
   says **"Nick can type"** (with the minutes left), whose ✕ takes it back at

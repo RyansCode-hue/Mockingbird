@@ -5,7 +5,7 @@ import { LOOSE_GROUP } from "../shared/landscape";
 import { agoShort, plural } from "../shared/format";
 import { DIALOG_OPENED, type DialogOpened } from "./Modal";
 import { AnchoredPopover } from "./Popover";
-import { ANSWER_GUARD_MS, cameraStill, keyClick, useSettledRows } from "./answerGuard";
+import { ANSWER_GUARD_MS, cameraWait, keyClick, useHeldOff, useSettledRows } from "./answerGuard";
 import { usePersisted } from "./prefs";
 import { shortAreaName } from "./landscapeModel";
 import { KIND_LABEL, dismiss, dismissedFrom, needsByArea, needsItems, needsLabel, shownItems, undismiss, type NeedsItem } from "./needsYouModel";
@@ -123,8 +123,8 @@ export function NeedsYou({
     setBusy((b) => ([...b].every((s) => shown.has(s)) ? b : new Set([...b].filter((s) => shown.has(s)))));
   }, [shownSigs]);
   // a row that arrived or moved is under a pointer aimed at another
-  const settledRow = useSettledRows(list, ".ny-item[data-item]", (el) => el.dataset.item);
-  const settled = (item: NeedsItem) => settledRow(item.id);
+  const rowWait = useSettledRows(list, ".ny-item[data-item]", (el) => el.dataset.item);
+  const { holdOff, heldOff } = useHeldOff();
   const close = (how?: "escape" | "outside" | "away") => {
     setOpen(false);
     // Escape gives the keyboard back to the button that opened it; Go there gives it to the landscape
@@ -174,8 +174,18 @@ export function NeedsYou({
     setLast(item);
   };
   const onAnswer = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
-    // a key's click gives only Deny, the safe answer; a pointer's one aimed at a row that has settled (answerGuard.ts)
-    if (!a.answer || busy.has(item.sig) || (keyClick(e) ? a.key !== "deny" : guarded() || !settled(item) || !cameraStill())) return;
+    if (!a.answer || busy.has(item.sig)) return;
+    // a key's click gives only Deny, the safe answer; a pointer's, one aimed at a row that has settled (answerGuard.ts)
+    if (keyClick(e)) {
+      if (a.key !== "deny") return;
+    } else {
+      const wait = Math.max(guardUntil.current - Date.now(), rowWait(item.id), cameraWait());
+      if (wait > 0) {
+        // let go, its button off until a click there would count: the keyboard stays with the tray as it goes off
+        (e.currentTarget as HTMLElement).closest<HTMLElement>(".ny-tray")?.focus({ preventScroll: true });
+        return holdOff(`${item.sig}:${a.key}`, wait);
+      }
+    }
     hold(e);
     setBusy((b) => new Set(b).add(item.sig));
     // answered, the row stays off until main's word takes it away; refused (said by the answer), it's back on
@@ -266,7 +276,7 @@ export function NeedsYou({
                         // an answer is outlined beside it, never filled
                         className={a.primary ? `ny-go ${DOT[item.kind] === "waiting" ? "fill" : ""}` : answer ? "ny-go ny-answer" : "ny-dismiss"}
                         data-action={a.key}
-                        disabled={a.disabled || busy.has(item.sig)}
+                        disabled={a.disabled || busy.has(item.sig) || heldOff(`${item.sig}:${a.key}`)}
                         tabIndex={answer && a.key !== "deny" ? -1 : undefined}
                         aria-label={answer ? `${a.label}: ${item.text}` : undefined}
                         title={a.title}

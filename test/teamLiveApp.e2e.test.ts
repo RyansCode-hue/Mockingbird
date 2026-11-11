@@ -220,15 +220,19 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("the ask on Ryan's pane", async () => /Nick wants to type in “shared shell”/.test(await ryan.evaluate<string>(`document.querySelector(".typing-ask")?.textContent ?? ""`)), 30_000);
         expect(await buffer(ryan, sh.id)).not.toContain("refused-");
         // Ryan allows it from the prompt with a click of his own: the room's row again, now that his window has the ask, brings
-        // the strip into view at 100%, and the click waits until it has been there a moment (the strip takes no click made by
-        // code, nor one on an ask that has just arrived or moved). Nick's typing then goes through
+        // the strip into view at 100%, and he clicks once it has stopped where it is, as a person waits for the view to
+        // stop moving (the strip takes no click made by code, nor one on an ask the camera or an arrival just put there).
+        // Nick's typing then goes through
         await ryan.evaluate(`${teamRow("shared shell")}?.click()`);
-        const allowAt = `(() => { const b = [...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session"); if (!b) return null; const r = b.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; return document.elementFromPoint(x, y) === b ? { x, y } : null; })()`;
-        await untilTrue("Allow in view at Ryan's", async () => !!(await ryan.evaluate(allowAt)));
-        await new Promise((r) => setTimeout(r, 900));
-        const at = await ryan.evaluate<{ x: number; y: number } | null>(allowAt);
-        if (!at) throw new Error("Allow for this session went out of view at Ryan's");
-        for (const type of ["mousePressed", "mouseReleased"]) await ryan.send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
+        const allowAt = `(() => { const b = [...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session"); if (!b || b.disabled) return null; const r = b.getBoundingClientRect(); const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2); return document.elementFromPoint(x, y) === b ? { x, y } : null; })()`;
+        let at: { x: number; y: number } | null = null;
+        let since = 0;
+        await untilTrue("Allow in view at Ryan's, and still", async () => {
+          const now = await ryan.evaluate<{ x: number; y: number } | null>(allowAt);
+          if (!now || !at || now.x !== at.x || now.y !== at.y) [at, since] = [now, Date.now()];
+          return !!at && Date.now() - since >= 800;
+        });
+        for (const type of ["mousePressed", "mouseReleased"]) await ryan.send("Input.dispatchMouseEvent", { type, ...at!, button: "left", clickCount: 1 });
         await untilTrue("Nick told he can type", async () => (await live(nick)).remote.find((x) => x.id === paneId)?.room?.typing?.state === "allowed");
         await untilTrue("Ryan's pane says Nick can type", async () => /Nick can type/.test(await ryan.evaluate<string>(`document.querySelector(".chip.typist")?.textContent ?? ""`)));
         await typeAsNick("echo from-nick-$((6*7))");
@@ -462,10 +466,11 @@ describe("team rooms between two Mockingbird instances", () => {
         );
         expect(await ryan.evaluate(`window.mb.relaunchSession(${JSON.stringify(s.id)})`)).toMatchObject({ error: expect.stringMatching(/continues on Nick's laptop/) });
         await untilTrue("Nick's session at Ryan's", async () => (await live(ryan)).remote.some((x) => x.room?.sessionId === mine.id && x.room.owner === nickId));
-        // a copy that ran again and stopped is a row in the room; one refused at once stays closed, a row in Closed sessions
+        // a copy that ran again and stopped is a row in the room; one refused at once stays closed, its ghost on the landscape
+        // saying so (the side bar may be showing the room rather than the Closed sessions list)
         await untilTrue("Ryan's row says so", async () =>
           relaunched.error
-            ? /Continued by Nick on their laptop/.test(await ryan.evaluate<string>(`document.querySelector('.lt-closed-row[data-closed-sid=${JSON.stringify(s.id)}] .lt-closed-sub')?.textContent ?? ""`))
+            ? /Continued by Nick on their laptop/.test(await ryan.evaluate<string>(`document.querySelector('.ls-ghost[data-front=${JSON.stringify(s.id)}] .lg-status')?.textContent ?? ""`))
             : /continued on Nick's laptop/.test(await ryan.evaluate<string>(`${roomRows("Donor entities")}.map((x) => x.textContent).join("|")`))
         );
         expect((await takeovers(ryan)).left.map((l) => l.sessionId).sort()).toEqual([ex.id, s.id].sort());
