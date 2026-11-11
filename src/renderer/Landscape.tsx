@@ -111,7 +111,7 @@ import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
 import { typingAsksOf } from "./needsYouModel";
 import { cameraMoved } from "./answerGuard";
-import { WireLayer, useWires, type WireLayerHandle } from "./WireLayer";
+import { WireLayer, rereadWires, useWires, type WireLayerHandle } from "./WireLayer";
 import { wireBanners, wireViews, type WireRoom } from "./wiresModel";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
@@ -2494,8 +2494,15 @@ export function LandscapeBanners({ problems, error, onReload, migration, onKeep 
       actions: p.kind === "unreadable" ? [{ label: "Read it again", run: onReload }] : undefined,
     })),
     ...(error ? [{ key: `error:${error}`, tone: "bad" as const, title: "Layout", text: error, actions: [{ label: "Read it again", run: onReload }] }] : []),
-    // the wire book: none of it usable (refused), or what of it couldn't be read; its read failing outright
-    ...wireBanners(wires).map((text) => ({ key: `wires:${text}`, tone: "bad" as const, title: "Wires", text })),
+    // the wire book: none of it usable (refused), or what of it couldn't be read; its read failing outright, the one
+    // line there is without a book, and asked for again
+    ...wireBanners(wires).map((text) => ({
+      key: `wires:${text}`,
+      tone: "bad" as const,
+      title: "Wires",
+      text,
+      actions: wires.state ? undefined : [{ label: "Read it again", run: rereadWires }],
+    })),
     ...(migration.remoteFailed
       ? [{
           key: `remote:${migration.remoteFailed}`,

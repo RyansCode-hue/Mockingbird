@@ -1,6 +1,6 @@
 import { LandscapeShapeError, fail, fields, isObj, list, name, num, own, put, str, type Check, type Part } from "./landscape";
 import { isRemotePaneId, parseRemoteId } from "./team/livePanes";
-import { TICKET_STAGES, type TicketStage } from "./types";
+import { TICKET_STAGES, ticketOfSession, type SessionInfo, type TicketStage } from "./types";
 
 /**
  * Typed links between workspaces (docs/landscape.md, Connections; docs/landscape-wires.md). The wire book is stored in
@@ -294,6 +294,13 @@ export interface WireState {
   refused: string | null;
   wiresRev: number;
   problems: WireProblem[];
+  /**
+   * What only main can tell, for the windows' drawing (WireService.forWindows): each pr-merged wire's merge view (the
+   * merge watch's), and each shared worktree wire's ends' folders with symlinks resolved. Sent again, under the same
+   * `wiresRev`, when either changes.
+   */
+  merges?: Record<string, MergeView>;
+  folders?: Record<string, string>;
 }
 
 /** A wire that went with its session, with what was waiting at its gate, for the note saying so. */
@@ -316,6 +323,31 @@ export type WireReply = { state: WireState; id?: string } | { refused: string };
 export type SendReply = { state: WireState; id?: string } | { refused: string; start?: "resume" | "reopen" };
 
 // ---- the rules on making and using a wire -------------------------------------------------
+
+/**
+ * Session `s` as one end of a wire, for main's rules and a window's drawing alike: what's read off the session is read
+ * here, and where it is (`at`: its room, a take-over, its sandbox, whether it's running or placed, its folder) is the
+ * caller's, as only main knows the rooms and the disk.
+ */
+export function wireEndOf(s: SessionInfo, at: Pick<WireEnd, "room" | "takenOver" | "outsideSandbox" | "placed" | "folder"> & { running: boolean }): WireEnd {
+  return {
+    id: s.id,
+    title: s.ticketTitle ?? s.title,
+    kind: s.shell ? "terminal" : "agent",
+    debrief: !!s.debrief,
+    tasks: s.role === "tasks",
+    room: at.room,
+    takenOver: at.takenOver,
+    outsideSandbox: at.outsideSandbox,
+    where: !at.running ? "closed" : s.status === "dead" ? "dead" : "running",
+    placed: at.placed,
+    folder: at.folder,
+    // a closed or exited session's record may still say so from its last run; its next launch starts afresh
+    hooksSilent: at.running && s.status !== "dead" && !!s.hooksSilent,
+    ticket: ticketOfSession(s),
+    branch: s.branch,
+  };
+}
 
 /** One end of a wire as the rules see it: a session of this Mac's, running or closed. */
 export interface WireEnd {

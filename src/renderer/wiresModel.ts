@@ -3,7 +3,7 @@
  * (the tile holding the session, a ghost's card, or a collapsed area's pill), what state it shows, and its curve
  * (Main.dc.html's). WireLayer.tsx draws them and keeps them on their ends as workspaces move.
  */
-import { ROOM_LINE, gateOf, wiresInOrder, type Gate, type GateContext, type Wire, type WireEnd, type WireState, type WireType } from "../shared/wires";
+import { ROOM_LINE, gateOf, wireEndOf, wiresInOrder, type Gate, type GateContext, type Wire, type WireEnd, type WireState, type WireType } from "../shared/wires";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
 import { topOfKey, type SessionInfo } from "../shared/types";
 import { LOOSE_GROUP, type Rect } from "../shared/landscape";
@@ -66,43 +66,56 @@ export interface WireRoom {
 }
 
 /**
- * A session on the landscape as the rules see it (main's WireService.context), from what this window knows of it. Its
- * room is its area's, as main's livePanes has it (groupRoomOf): a closed session has no room tag of its own. Without
- * `rooms`, its tag's.
+ * A session on the landscape as the rules see it (shared/wires.ts' wireEndOf, as main's WireService.context has it), with
+ * where it is as this window knows it. Its room is its area's, as main's livePanes has it (groupRoomOf): a closed
+ * session has no room tag of its own; without `rooms`, its tag's. Its folder is main's, with symlinks resolved, for a
+ * shared worktree wire's ends (WireState.folders), else its own.
  */
-function endOf(s: SessionInfo, running: boolean, rooms: readonly WireRoom[] | undefined): WireEnd {
+function endOf(s: SessionInfo, running: boolean, state: Pick<WireState, "folders">, rooms: readonly WireRoom[] | undefined): WireEnd {
   const taken = s.room?.takenOver;
   const area = topOfKey(s.taskGroup ?? LOOSE_GROUP);
-  return {
-    id: s.id,
-    title: titleOf(s),
-    kind: s.shell ? "terminal" : "agent",
-    debrief: !!s.debrief,
+  return wireEndOf(s, {
     room: !rooms ? (s.room?.roomId ?? null) : s.debrief || taken ? null : (rooms.find((r) => r.groupKey === area)?.id ?? null),
     takenOver: taken ? (taken.back ? `“${titleOf(s)}” was taken back into another session.` : `${taken.byName} continues “${titleOf(s)}” on their laptop.`) : null,
     outsideSandbox: running && !!s.room && !s.room.remote && outsideRoomSandbox(s.shell ? null : (s.agent ?? "claude"), s.room.guards),
-    where: !running ? "closed" : s.status === "dead" ? "dead" : "running",
+    running,
     placed: true,
-    folder: s.cwd,
-    hooksSilent: running && s.status !== "dead" && !!s.hooksSilent,
-  };
+    folder: (state.folders && Object.hasOwn(state.folders, s.id) ? state.folders[s.id] : null) ?? s.cwd,
+  });
 }
 
 /**
  * The rules' view of what's drawn, for gateOf: running sessions are tiles' members, closed ones a stack's closed tabs
- * and ghosts'. Main's view also knows its file's write access and whether team rooms have started; a wire that's
- * blocked only for those draws as its state otherwise is, and main refuses what's tried on it, saying why.
+ * and ghosts', each named by a wire made into an end. A pr-merged wire's merge view is main's (WireState.merges): the
+ * merge watch is main's. Main's view also knows its file's write access and whether team rooms have started; a wire
+ * that's blocked only for those draws as its state otherwise is, and main refuses what's tried on it, saying why. A
+ * session's take-over is read from its room tag, which a closed one doesn't have.
  */
-export function gateContextOf(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, state: Pick<WireState, "book">, rooms?: readonly WireRoom[]): GateContext | null {
+export function gateContextOf(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, state: Pick<WireState, "book" | "merges" | "folders">, rooms?: readonly WireRoom[]): GateContext | null {
   const book = state.book;
   if (!book) return null;
+  const named = new Set(Object.values(book.links).flatMap((w) => [w.from, w.to]));
   const ends = new Map<string, WireEnd>();
-  for (const t of layout.tiles) {
-    for (const s of t.members) ends.set(s.id, endOf(s, true, rooms));
-    for (const s of t.closed ?? []) ends.set(s.id, endOf(s, false, rooms));
+  const add = (s: SessionInfo, running: boolean) => named.has(s.id) && !ends.has(s.id) && ends.set(s.id, endOf(s, running, state, rooms));
+  if (named.size) {
+    for (const t of layout.tiles) {
+      for (const s of t.members) add(s, true);
+      for (const s of t.closed ?? []) add(s, false);
+    }
+    for (const g of layout.ghosts) for (const s of g.members) add(s, false);
   }
-  for (const g of layout.ghosts) for (const s of g.members) if (!ends.has(s.id)) ends.set(s.id, endOf(s, false, rooms));
-  return { end: (id) => ends.get(id) ?? null, links: book.links, notes: book.notes, fileRefusal: null };
+  const ids = new Map(Object.entries(book.links).map(([id, w]) => [w, id]));
+  const merges = state.merges ?? {};
+  return {
+    end: (id) => ends.get(id) ?? null,
+    links: book.links,
+    notes: book.notes,
+    fileRefusal: null,
+    mergeView: (w) => {
+      const id = ids.get(w);
+      return id !== undefined && Object.hasOwn(merges, id) ? merges[id] : null;
+    },
+  };
 }
 
 /** A blocked wire's reason, short enough to sit on it; the whole of it is `why`. */
@@ -115,7 +128,8 @@ export function shortWhy(gate: Gate, w: Pick<Wire, "rounds">): string {
   if (why === ROOM_LINE) return "across a room's line";
   if (/team room's sandbox/.test(why)) return "outside its room's sandbox";
   if (/continues “|was taken back/.test(why)) return "taken over";
-  return why.replace(/[.:].*$/s, "");
+  // its first clause, a quoted title kept whole: “Spike: streaming” is a terminal: … → “Spike: streaming” is a terminal
+  return why.replace(/^((?:“[^”]*”|[^.:“])*)[.:].*$/s, "$1");
 }
 
 /** How wire `w`, showing `gate`, is drawn (Inbox.dc.html's states and labels). */
@@ -144,8 +158,9 @@ export function lookOf(w: Wire, gate: Gate): Pick<WireView, "look" | "arrow" | "
  * in one collapsed area) has nowhere to run, and isn't drawn.
  */
 export function wireViews(state: WireState | null, layout: Pick<ResolvedLayout, "tiles" | "ghosts" | "areas">, rooms?: readonly WireRoom[]): WireView[] {
-  const ctx = state ? gateContextOf(layout, state, rooms) : null;
-  if (!state?.book || !ctx) return [];
+  if (!state?.book || !Object.keys(state.book.links).length) return [];
+  const ctx = gateContextOf(layout, state, rooms);
+  if (!ctx) return [];
   return wiresInOrder(state.book.links).flatMap(([id, w]): WireView[] => {
     const from = anchorOf(layout, w.from);
     const to = anchorOf(layout, w.to);

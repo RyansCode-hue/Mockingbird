@@ -11,7 +11,7 @@
  * - =far (at 13%): the same at cards, with no labels or dots, ends at the cards as they're drawn;
  * - =drag: Builder dragged by its header, its wires following it while it moves and once it's let go, a pinch after,
  *   and every call to the main process meanwhile (no sessionResize);
- * - =area (zoomed out to cards): 5120 dragged by its name, the wires lifted with its patch and on its workspaces;
+ * - =area (zoomed out to cards): 5120 dragged by its name, the wires on its workspaces and still under the others;
  * - =pill (with ?lsCollapsed=5102): the wire to Pathways ending at 5102's pill.
  */
 import type { Area, Landscape, Rect } from "../shared/landscape";
@@ -181,7 +181,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
         out.order = { svg: at(".ls-wires"), labels: at(".ls-wire-labels"), lastArea: Math.max(...areas), firstGhost: at(".ls-ghost"), firstNode: at(".ls-node") };
         out.events = [getComputedStyle(document.querySelector(".ls-wires")!).pointerEvents, getComputedStyle(document.querySelector(".ls-wire-labels")!).pointerEvents];
       } else if (part === "area") {
-        // 5120 dragged by its name zoomed out to cards: its patch is lifted, and the wires with it, on its workspaces
+        // 5120 dragged by its name zoomed out to cards: the wires follow its workspaces, and stay where they are among the world's
         const name = document.querySelector<HTMLElement>(`.ls-world .ls-area[data-area="5120"] .ls-area-title .n`);
         if (!name) throw new Error("5120 has no name to drag");
         const r = name.getBoundingClientRect();

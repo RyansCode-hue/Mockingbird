@@ -34,6 +34,7 @@ import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
 import { WireService } from "./wires";
+import type { WireState } from "../shared/wires";
 import { WireDelivery } from "./wireDelivery";
 import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
@@ -143,8 +144,10 @@ let mainWindow: BrowserWindow | null = null;
 const appWindow = (): BrowserWindow | null => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null);
 const toWindow = (channel: string, ...args: unknown[]) => appWindow()?.webContents.send(channel, ...args);
 
-// the landscape (docs/landscape.md): where workspaces and areas sit
-const landscape = new LandscapeStore({ file: path.join(MB_DIR, "landscape.json"), emit: (change) => toWindow("landscape:changed", change), emitWires: (change) => toWindow("wires:changed", change), log: logError });
+// the landscape (docs/landscape.md): where workspaces and areas sit. Its wires go to the window with what only main can
+// tell for drawing them (WireService.forWindows), once the service is there
+let wiresForWindows = <S extends WireState>(s: S): S => s;
+const landscape = new LandscapeStore({ file: path.join(MB_DIR, "landscape.json"), emit: (change) => toWindow("landscape:changed", change), emitWires: (change) => toWindow("wires:changed", wiresForWindows(change)), log: logError });
 
 // Team rooms (docs/team-rooms.md): identity, rooms and the WebRTC transport
 configureWebRtc(app);
@@ -1400,7 +1403,22 @@ const wires = new WireService({
   delivery: { withdraw: (id, w) => delivery.withdraw(id, w), restoring: (w) => delivery.restoring(w), restored: (id) => delivery.restored(id) },
   merges: { view: (w, source) => prWatch.view(w, source) },
 });
-handle("wires:get", () => wires.get());
+/** What the window last had of the wires' merge views and worktree folders, so a change in either alone is sent once. */
+let wiresDrawn = "";
+const drawnKey = (s: WireState) => JSON.stringify([s.merges ?? {}, s.folders ?? {}]);
+wiresForWindows = (s) => {
+  const out = wires.forWindows(s);
+  wiresDrawn = drawnKey(out);
+  return out;
+};
+/** The merge watch read its pull requests, or pipeline.json changed: the window hears the wires again if what it draws moved. */
+const wiresDrawnMoved = () => {
+  const s = wires.get();
+  if (drawnKey(s) === wiresDrawn) return;
+  wiresDrawn = drawnKey(s);
+  toWindow("wires:changed", s);
+};
+handle("wires:get", () => wiresForWindows(landscape.wires()));
 handle("wires:add", (from, to, type, settings) => wires.add(from, to, type, settings));
 handle("wires:set", (id, settings) => wires.set(id, settings));
 handle("wires:remove", (id) => wires.remove(id));
@@ -1466,7 +1484,10 @@ handle("wires:resetRounds", (id) => delivery.resetRounds(id));
 
 // ---- ticket pipeline: each ticket's stage, PRs, feedback and drafted comments ----
 const pipeline = new PipelineStore(path.join(MB_DIR, "pipeline.json"));
-const pipelineChanged = () => toWindow("pipeline:changed", pipeline.all());
+const pipelineChanged = () => {
+  toWindow("pipeline:changed", pipeline.all());
+  wiresDrawnMoved();
+};
 // the windows hear of the record as it is after the call, whether it worked or not: a failure may come after a change
 const pipelineDo = async <T,>(fn: () => T | Promise<T>): Promise<T> => {
   try {
@@ -1506,6 +1527,7 @@ const prWatch: PrWatch = new PrWatch({
   wires: () => landscape.wires(),
   fill: (me, merge, ids) => wireTools.planMerge(me, merge, ids),
   offer: (me, f, how) => delivery.offer(me, f, how, null),
+  onChecked: () => wiresDrawnMoved(),
   notify: (sessionId, title, body) => {
     const session = sessionId ? sessions.list().find((s) => s.id === sessionId) : undefined;
     if (!shouldNotify({ settings: store.settings, session, kind: "other", now: new Date() })) return;

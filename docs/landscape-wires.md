@@ -1894,20 +1894,29 @@ for none made. `useWires()` reads it; the landscape and `LandscapeBanners` each 
   tabs of a stack, two workspaces in one collapsed area) has nowhere to run and
   isn't drawn. None while the book is refused.
 - Gates are worked out in the window, from what's drawn (`gateContextOf`): running
-  ends are tiles' members, closed ones a stack's closed tabs and ghosts'. Its room
-  is its area's, from the team rooms main.tsx already has (`rooms={teamRooms}`), as
-  livePanes' `groupRoomOf` has it, since a closed session carries no room tag;
-  take-over and sandbox are from the session's tag. Main's context also knows the
-  file's write access and whether team rooms have started; the window doesn't, so
-  a wire blocked only for those draws as its state otherwise is, and main refuses
-  what's tried on it, saying why.
+  ends are tiles' members, closed ones a stack's closed tabs and ghosts', each one a
+  wire names made with `wireEndOf` (shared/wires.ts), which main's
+  `WireService.context` uses too, so what's read off a session (title, kind,
+  debrief, the Helpdesk tasks role, where it is, silent hooks, ticket, branch) is
+  the same in both. Its room is its area's, from the team rooms main.tsx already
+  has (`rooms={teamRooms}`), as livePanes' `groupRoomOf` has it, since a closed
+  session carries no room tag; take-over and sandbox are from the session's tag.
+  What only main can tell comes with the book (`WireService.forWindows`, on
+  `wires:get` and every `wires:changed`): each pr-merged wire's merge view
+  (`merges`), so a closed or unreadable pull request draws the wire blocked, and
+  each shared worktree wire's ends' folders with symlinks resolved (`folders`).
+  Main's context also knows the file's write access and whether team rooms have
+  started; the window doesn't, so a wire blocked only for those draws as its
+  state otherwise is, and main refuses what's tried on it, saying why.
 - `lookOf`: Inbox.dc.html's states. idle (gray), ready (amber, the glow, the gate
   dot and "Ready", "· round n of m" on a feedback wire, n the round it would
-  send), sending (dashed amber, "sending…"), sent (green; "in its prompt" when
-  placed), blocked (dashed red, hollow dot, the reason short: "needs approve",
-  "at the limit · 3 of 3", "may have arrived", "hooks not reporting", "closed",
-  "across a room's line", "outside its room's sandbox", "taken over", else its
-  first clause). A feedback wire not ready says "loop n of m" once it has counted
+  send), sending (dashed amber, "sending…", on the app's background so a line
+  under it doesn't cross it), sent (green; "in its prompt" when placed), blocked
+  (dashed red, hollow dot, the reason short: "needs approve", "at the limit · 3
+  of 3", "may have arrived", "hooks not reporting", "closed", "across a room's
+  line", "outside its room's sandbox", "taken over", else its first clause, a
+  quoted title kept whole: "“Spike: streaming” is a terminal"). A feedback wire
+  not ready says "loop n of m" once it has counted
   one (Main.dc.html). Context links are dashed teal and shared worktrees a thick
   gray line, neither with an arrow.
 - `wireCurve(a, b, px)`: Main.dc.html's curves. To a box on the right, side to
@@ -1937,11 +1946,14 @@ render of the workspace while it's dragged (its selection on the press) sets its
 class names again, so `dragging` is gone mid-drag (seen in the drag audit; the
 lift it gives a dragged workspace goes with it, which is S6a's and left alone).
 Ghosts don't move with a dragged area (as before), and their wires stay with
-them. A dragged area (`z-index: 6`) would cover the wires inside it, so `paint`
-lifts both layers to 6 while an area has a `translate` and lets them down when
-it's released. A `:has(> .ls-area.dragging)` rule did this first, and slowed the
-band change's restyle enough that `uiLandscapeZoom`'s 60% had 4 of 7 terminals
-drawing with WebGL after 700 ms (7 of 7 without it, and on main).
+them. A dragged area (`z-index: 6`) goes over the wires, as over the other
+areas, and they stay under every workspace: its patch at cards is a 7.5% tint and
+in the live band a dashed frame, so the wires inside it show through. (Lifting
+them with it put every wire over every other workspace while it moved; a
+`:has(> .ls-area.dragging)` rule doing so also slowed the band change's restyle
+enough that `uiLandscapeZoom`'s 60% had 4 of 7 terminals drawing with WebGL after
+700 ms.) `paint` reads the pills' sizes before it writes anything, and finds each
+wire's elements by `data-wire`.
 
 **Screen size.** Chrome doesn't hold `vector-effect: non-scaling-stroke` through
 the world's CSS scale: checked in headless Chrome, a 2 px non-scaling stroke under
@@ -1962,7 +1974,8 @@ board's.
 
 **Banners.** `LandscapeBanners` gains a "Wires" row for each of `wireBanners`: the
 book refused (newer, not one, a stand-in, read-only), each entry, note or field
-kept, a file with no book or gone aside, and the read failing.
+kept, a file with no book or gone aside, and the read failing, with Read it again
+(`rereadWires`, `wires:get` once more).
 
 **Preview** (`src/preview/wiresAudit.ts`, `stub.ts`):
 - `?lsWires`: the wires board as its own area, 5120, under 5101: Shape donor
@@ -1985,14 +1998,24 @@ kept, a file with no book or gone aside, and the read failing.
   size on screen), every state and label, a stacked tab named, a wire with an
   end off the landscape or both in one stack or one pill not drawn, a room from
   the area for a ghost (and blocked across the line without it), the banners,
-  each curve, overlapping boxes, a drag's offset and a card's inset.
+  a pr-merged wire blocked by main's merge view (a closed pull request, one that
+  can't be read) and idle waiting or without one, the Helpdesk tasks workspace, a
+  terminal and another folder refused with a quoted title whole, and main's
+  resolved folders letting a symlinked worktree through, each curve, overlapping
+  boxes, a drag's offset and a card's inset.
+- `test/prWatch.test.ts`: through the real merge watch and `WireService.get()`, a
+  pr-merged wire drawn blocked for a closed pull request and for a failed read,
+  as main's gate has it, idle again once read, and each check telling the
+  windows (`onChecked`). `test/wireService.test.ts`: `folders` as the disk has
+  them.
 - `test/uiLandscapeWires.test.ts` (Chrome, local): at 100% each state, label,
   tab name, width and dash on screen, each end on its box, the layer between the
   areas and the workspaces, no pointer; at 13% lines alone at screen size, ends at
   the cards as drawn; a drag of Builder, its wires on it while it moves (before any
   render) and once let go, a pinch, and the calls meanwhile: `landscapeUpdate`, no
-  `sessionResize`; 5120 dragged at cards, the layers lifted and let down; the
-  pill; and `?landscapePerf` with 20 wires, every frame interval p95 at most
+  `sessionResize`; 5120 dragged at cards, its wires following and the layers
+  staying under the workspaces; the pill; and `?landscapePerf` with 20 wires,
+  every frame interval p95 at most
   16.8 ms.
 
 **Performance** (`?landscapeMany=30&landscapePerf`, 1400 × 900, one run each):
@@ -2025,7 +2048,12 @@ the boards beside them in `boards/project/`):
 
 **Deviations:**
 - No `vector-effect` (above). Labels over the workspaces (above).
-- Gates in the window lack main's file and team-rooms-starting facts (above).
+- Gates in the window lack main's file and team-rooms-starting facts (above), and
+  read a take-over from the session's room tag, which a closed session doesn't
+  have.
+- A mutation's reply (`wires:add` and the rest) carries the book without
+  `merges` or `folders`; the `wires:changed` it causes has them. W4b's callers take
+  the change, not the reply's state, or it would draw with none until the next.
 - A label's whole reason isn't shown anywhere yet: the label is short and the
   layer takes no pointer. W4c's popover, opened by the dot, says it whole.
 - Ends go by places, inset at cards: a ghost squeezed above the next area's name

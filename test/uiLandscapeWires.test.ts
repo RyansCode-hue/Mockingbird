@@ -153,10 +153,10 @@ describe.skipIf(!local)("the landscape's wires", () => {
     expect(a.calls).not.toContain("sessionResize");
   });
 
-  it("are lifted with a dragged area over its patch, on its workspaces, and let down once it's dropped", async () => {
+  it("follow a dragged area's workspaces, under every other workspace however it's dragged", async () => {
     const a = (await audit("lsCamera=-1200,-600,0.13&landscapeWiresAudit=area")) as unknown as Record<"before" | "during" | "after", { lifted: string[]; builder: Box; sent: { from: Pt; to: Pt } }>;
     expect(a.before.lifted).toEqual(["auto", "5"]);
-    expect(a.during.lifted).toEqual(["6", "6"]);
+    expect(a.during.lifted).toEqual(["auto", "5"]);
     expect(a.during.builder.l).toBeGreaterThan(a.before.builder.l);
     near(a.during.sent.to.x, a.during.builder.l - 2);
     expect(a.after.lifted).toEqual(["auto", "5"]);

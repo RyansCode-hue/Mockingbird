@@ -3,7 +3,7 @@ import type { LandscapeStore } from "./landscape";
 import type { Reply } from "./messaging";
 import { canonical } from "./handlers";
 import { LandscapeShapeError, own, put } from "../shared/landscape";
-import { ticketOfSession, type SessionInfo } from "../shared/types";
+import type { SessionInfo } from "../shared/types";
 import {
   createdAtAfter,
   gateOf,
@@ -21,6 +21,7 @@ import {
   sameWire,
   settingsRefusal,
   WIRE_TYPES,
+  wireEndOf,
   wireRefusal,
   withoutSession,
   withSettings,
@@ -88,7 +89,28 @@ export class WireService {
   constructor(private readonly o: WireServiceOptions) {}
 
   get(): WireState {
-    return this.o.store.wires();
+    return this.forWindows(this.o.store.wires());
+  }
+
+  /**
+   * `s` as a window is told it (`wires:get`, `wires:changed`), with what only main can tell for its drawing: each
+   * pr-merged wire's merge view, so one the merge watch blocks is drawn blocked, and each shared worktree wire's ends'
+   * folders as the filesystem has them.
+   */
+  forWindows<S extends WireState>(s: S): S {
+    if (!s.book) return s;
+    const links = Object.entries(s.book.links).filter(([, w]) => w.when === "pr-merged" || w.type === "worktree");
+    if (!links.length) return s;
+    const ctx = this.context(s.book);
+    const merges: Record<string, MergeView> = {};
+    const folders: Record<string, string> = {};
+    for (const [id, w] of links) {
+      const view = w.when === "pr-merged" ? (ctx.mergeView?.(w) ?? null) : null;
+      if (view) put(merges, id, view);
+      if (w.type !== "worktree") continue;
+      for (const e of [ctx.end(w.from), ctx.end(w.to)]) if (e) put(folders, e.id, e.folder);
+    }
+    return { ...s, ...(Object.keys(merges).length ? { merges } : {}), ...(Object.keys(folders).length ? { folders } : {}) };
   }
 
   /** A new wire, with `settings` on it if given. */
@@ -312,23 +334,14 @@ export class WireService {
       if (known !== undefined) return known;
       const s = running.get(id) ?? closed.get(id);
       const made: WireEnd | null = s
-        ? {
-            id,
-            title: s.ticketTitle ?? s.title,
-            kind: s.shell ? "terminal" : "agent",
-            debrief: !!s.debrief,
-            tasks: s.role === "tasks",
+        ? wireEndOf(s, {
             room: this.o.roomOf(id),
             takenOver: this.o.takenOver(id),
             outsideSandbox: !!this.o.outsideSandbox?.(id),
-            where: !running.has(id) ? "closed" : s.status === "dead" ? "dead" : "running",
+            running: running.has(id),
             placed: running.has(id) || Object.hasOwn(ghosts, id),
             folder: canonical(s.cwd),
-            // a closed or exited session's record may still say so from its last run; its next launch starts afresh
-            hooksSilent: running.has(id) && s.status !== "dead" && !!s.hooksSilent,
-            ticket: ticketOfSession(s),
-            branch: s.branch,
-          }
+          })
         : null;
       ends.set(id, made);
       return made;

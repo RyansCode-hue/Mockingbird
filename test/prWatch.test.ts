@@ -8,6 +8,9 @@ import { SessionManager } from "../src/main/sessions";
 import { WireDelivery, type FrameWire } from "../src/main/wireDelivery";
 import { WireTools } from "../src/main/wireTools";
 import { WireService } from "../src/main/wires";
+import { emptyLandscape } from "../src/shared/landscape";
+import { resolveLayout } from "../src/renderer/landscapeModel";
+import { wireViews } from "../src/renderer/wiresModel";
 import { markMergedQuestion, prMergeNote } from "../src/renderer/ticketPipelineModel";
 import { BY_YOU, prNeedsYou, type PipelinePr, type PrRepo, type PrState, type SessionInfo } from "../src/shared/types";
 import { gateOf } from "../src/shared/wires";
@@ -96,6 +99,7 @@ async function setup() {
   /** A read in progress takes this long on the watch's clock, as a real one does on Date.now. */
   const readTakes = { ms: 0 };
   let changed = 0;
+  let checked = 0;
   const newWatch = () =>
     (watch = new PrWatch({
       pipeline,
@@ -117,6 +121,7 @@ async function setup() {
       offer: (me, f, how) => d.offer(me, f, how, null),
       notify: (session, title, body) => void notices.push({ session, title, body }),
       onChanged: () => void changed++,
+      onChecked: () => void checked++,
       log,
       now: () => clock.t,
     }));
@@ -153,8 +158,41 @@ async function setup() {
     get changed() {
       return changed;
     },
+    get checked() {
+      return checked;
+    },
   };
 }
+
+describe("a pr-merged wire in the windows", () => {
+  const drawn = (t: Awaited<ReturnType<typeof setup>>, w: string) => wireViews(t.service.get(), resolveLayout(emptyLandscape(), t.m.list(), undefined, [], null, [])).find((v) => v.id === w);
+
+  it("is drawn blocked for a pull request closed without merging, as main's gate has it, and each check tells the windows", async () => {
+    const t = await setup();
+    t.opened("dev", 11);
+    const w = t.add();
+    expect(drawn(t, w)).toMatchObject({ look: "idle" });
+    t.answer(11, { state: "closed", closedAt: Date.now() });
+    await t.tick();
+    expect(t.checked).toBe(1);
+    expect(t.service.get().merges).toEqual({ [w]: { blocked: "PR 11 to dev was closed without merging." } });
+    expect(drawn(t, w)).toMatchObject({ look: "blocked", label: { text: "PR 11 to dev was closed without merging", tone: "blocked" }, why: t.gate(w).why });
+  });
+
+  it("is drawn blocked for a pull request that can't be read", async () => {
+    const t = await setup();
+    t.opened("dev", 11);
+    const w = t.add();
+    t.answer(11, new Error("Azure DevOps 401 Unauthorized: TF400813"));
+    await t.tick();
+    expect(drawn(t, w)).toMatchObject({ look: "blocked", label: { text: "Can't tell whether PR 11 to dev merged (1 try)" }, why: t.gate(w).why });
+    // read again and open: idle, waiting for it
+    t.answer(11, { state: "open" });
+    await t.watch.checkNow(TICKET);
+    expect(t.checked).toBe(2);
+    expect(drawn(t, w)).toMatchObject({ look: "idle", label: null });
+  });
+});
 
 describe("a pull request merging as a wire's When", () => {
   it("readies each pr-merged wire once per pull request, its {pr} naming the merge, and moves the ticket on from PR to dev", async () => {

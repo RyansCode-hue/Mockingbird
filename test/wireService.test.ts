@@ -96,6 +96,8 @@ describe("making a wire", () => {
     running.find((s) => s.id === "a")!.cwd = real;
     running.find((s) => s.id === "term")!.cwd = link;
     expect(made(service.add("a", "term", "worktree")).id).toBeTruthy();
+    // and tells the windows, which can't read the disk, the folders it went by
+    expect(service.get().folders).toEqual({ a: fs.realpathSync(real), term: fs.realpathSync(real) });
     running.find((s) => s.id === "term")!.cwd = dir;
     const other = setup();
     expect(refusal(other.service.add("b", "term", "worktree"))).toMatch(/another folder/);

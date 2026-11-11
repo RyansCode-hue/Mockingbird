@@ -3386,7 +3386,8 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
    draws them. Chrome doesn't hold vector-effect: non-scaling-stroke through the world's CSS scale, so strokes, dashes
    and the gate dot keep their screen size by --ls-inv, as outlines do; arrowheads scale with their stroke. Zoomed out
    of the live band they're lines alone (Zoomed.dc.html): no labels, dot or glow. Labels are over the workspaces, as a
-   gap between two is narrower than one. A dragged area is lifted over them, so they're lifted with it (WireLayer) */
+   gap between two is narrower than one. A dragged area goes over them, as it does the other areas: its patch is a
+   tint, and the wires show through it */
 :root { --wire-idle: #6b675f; --wire-tree: #5d5a53; }
 :root[data-theme="light"] { --wire-idle: #a39d91; --wire-tree: #c2bcb0; }
 .ls-wires, .ls-wire-labels { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
@@ -3422,7 +3423,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   background: color-mix(in srgb, var(--red) 9%, var(--bg-app)); font-size: 10.5px; color: var(--red);
 }
 .ls-wire-label.t-plain, .ls-wire-tab { padding: 2px 8px; border: 1px solid var(--line-btn); border-radius: 10px; background: var(--bg-pane-header); color: var(--text-2); }
-.ls-wire-label.t-quiet { font-size: 10.5px; color: var(--amber-text); }
+.ls-wire-label.t-quiet { padding: 1px 7px; border-radius: 9px; background: var(--bg-app); font-size: 10.5px; color: var(--amber-text); }
 /* a stacked tab that isn't in front, named at its end of the wire, outside the workspace */
 .ls-wire-tab { padding: 1px 7px; font-size: 10.5px; }
 .ls-wire-tab[data-side="left"] { transform: scale(var(--ls-inv, 1)) translate(calc(-100% - 8px), calc(-100% - 4px)); }

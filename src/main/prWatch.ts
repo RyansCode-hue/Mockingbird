@@ -82,6 +82,8 @@ export interface PrWatchOptions {
   notify: (session: string | null, title: string, body: string) => void;
   /** pipeline.json changed: the windows hear of it. */
   onChanged: () => void;
+  /** A check, Check now or Mark merged… is done, changed anything or not: what a pr-merged wire shows (view) may have. */
+  onChecked?: () => void;
   log: (context: string, err: unknown) => void;
   /** A folder's repository as a pull request records it (originRepoOf, through guardedGit); throws when it can't be read. */
   originOf?: (folder: string) => Promise<PrRepo>;
@@ -208,9 +210,11 @@ export class PrWatch {
       () => undefined
     );
     return run.finally(() => {
-      if (!this.changed) return;
-      this.changed = false;
-      this.o.onChanged();
+      if (this.changed) {
+        this.changed = false;
+        this.o.onChanged();
+      }
+      this.o.onChecked?.();
     });
   }
 

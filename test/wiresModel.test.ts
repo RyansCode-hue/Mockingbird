@@ -150,6 +150,36 @@ describe("what a wire shows", () => {
     expect(wireBanners({ state: null, error: "boom" })).toEqual(["The wires couldn't be read (boom), so none are drawn."]);
     expect(wireBanners({ state: stateOf({}), error: null })).toEqual([]);
   });
+
+  it("is blocked by main's merge view of a pr-merged wire: a closed pull request, and one that can't be read", () => {
+    const w = wire("builder", "reviewer", "handoff", { when: "pr-merged" });
+    const drawn = (merges?: WireState["merges"]) => wireViews({ ...stateOf({ w }), ...(merges ? { merges } : {}) }, layout)[0];
+    const closedPr = "PR 12 to dev was closed without merging.";
+    expect(drawn({ w: { blocked: closedPr } })).toMatchObject({ look: "blocked", label: { text: "PR 12 to dev was closed without merging", tone: "blocked" }, why: closedPr });
+    const unread = "Can't tell whether PR 12 to dev merged (3 tries): Azure DevOps 401 Unauthorized: TF400813";
+    expect(drawn({ w: { blocked: unread } })).toMatchObject({ look: "blocked", label: { text: "Can't tell whether PR 12 to dev merged (3 tries)" }, why: unread });
+    // waiting on one, or with nothing from main, it's idle
+    expect(drawn({ w: { waits: "Waits for PR 12 to dev to merge." } })).toMatchObject({ look: "idle", label: null });
+    expect(drawn()).toMatchObject({ look: "idle" });
+  });
+
+  it("refuses ends as main's rules do: the Helpdesk tasks workspace, a terminal, another folder unless main resolves it to the same", () => {
+    const extra = [
+      session("helpdesk", { taskGroup: "c", role: "tasks", title: "Helpdesk" }),
+      session("spike2", { taskGroup: "c", shell: true, agent: undefined, title: "Spike: streaming" }),
+      session("bump", { taskGroup: "c", shell: true, agent: undefined, cwd: "/r/link", title: "Bump to v1.8" }),
+    ];
+    const laid = resolveLayout(stored(), [...running, ...extra], undefined, [], null, closed);
+    const state = stateOf({ tasks: wire("builder", "helpdesk", "handoff"), term: wire("builder", "spike2", "handoff"), tree: wire("builder", "bump", "worktree") });
+    const label = (views: WireView[], id: string) => view(views, id)?.label?.text;
+    const views = wireViews(state, laid);
+    expect(label(views, "tasks")).toBe("“Helpdesk” is the Helpdesk tasks workspace");
+    // a quoted title is kept whole
+    expect(label(views, "term")).toBe("“Spike: streaming” is a terminal");
+    expect(label(views, "tree")).toBe("“Bump to v1.8” runs in another folder");
+    // /r/link is a symlink to /r/wt, as main reads the disk
+    expect(view(wireViews({ ...state, folders: { builder: "/r/wt", bump: "/r/wt" } }, laid), "tree")).toMatchObject({ look: "tree", label: null });
+  });
 });
 
 describe("a wire's curve", () => {

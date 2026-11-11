@@ -12,26 +12,33 @@ export interface WiresRead {
   error: string | null;
 }
 
+/** Asks main for the wires again (wires:get): at the start, and from the banner's Read it again. */
+let readWires = () => {};
 const wires = createIpcStore<WiresRead>({ state: null, error: null }, ({ get, set }) => {
-  // a reply older than a change already here is dropped: wiresRev counts the book's changes
+  // a reply older than a change already here is dropped: wiresRev counts the book's changes. One with the same is main
+  // saying again what only it can tell (merges, folders) as that moves
   const take = (s: WireState) => {
     const now = get().state;
     if (now && s.wiresRev < now.wiresRev) return;
-    set({ state: { book: s.book, refused: s.refused, wiresRev: s.wiresRev, problems: s.problems }, error: null });
+    set({ state: { book: s.book, refused: s.refused, wiresRev: s.wiresRev, problems: s.problems, ...(s.merges ? { merges: s.merges } : {}), ...(s.folders ? { folders: s.folders } : {}) }, error: null });
   };
   const failed = (error: string) => {
     console.error(`Couldn't read the wires: ${error}`);
     if (!get().state) set({ state: null, error });
   };
   window.mb.onWiresChanged((c: WireState) => take(c));
-  Promise.resolve(window.mb.wiresGet()).then(
-    (r) => (isErr(r) ? failed(r.error) : take(r)),
-    (err: unknown) => failed(err instanceof Error ? err.message : String(err))
-  );
+  readWires = () =>
+    void Promise.resolve(window.mb.wiresGet()).then(
+      (r) => (isErr(r) ? failed(r.error) : take(r)),
+      (err: unknown) => failed(err instanceof Error ? err.message : String(err))
+    );
+  readWires();
 });
 
 /** The wire book, kept current. */
 export const useWires = (): WiresRead => wires.use();
+/** Read the wires again, as the banner's Read it again does. */
+export const rereadWires = (): void => readWires();
 
 /** The arrowhead each look ends in: its colour's. */
 const MARK: Record<WireLook, string> = { idle: "idle", ready: "amber", sending: "amber", sent: "green", blocked: "red", context: "idle", tree: "idle" };
@@ -74,27 +81,27 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
       const by = translateOf(el.style.translate);
       if (by && el.dataset.ws) moved.set(el.dataset.ws, by);
     }
-    // an area being dragged is lifted over the world's (styles.css .ls-area.dragging) until it's let go: the wires go
-    // over it, or its patch would hide those inside it. Set here rather than by a :has() rule on the world, which
-    // restyles it as terminals attach and slows a band change enough to hold their WebGL contexts back.
-    const lift = world.querySelector(":scope > .ls-area[style*='translate']") ? "6" : "";
-    s.style.zIndex = lift;
-    lb.style.zIndex = lift;
-    const box = (a: WireAnchor): Rect => {
-      if (a.kind !== "pill") return shiftedBox(a.rect, a.kind === "tile" ? moved.get(a.key) : undefined, inset);
-      const el = world.querySelector<HTMLElement>(`.ls-area-pill[data-area="${CSS.escape(a.key)}"]`);
-      return pillBox(a.rect, el ? { w: el.offsetWidth, h: el.offsetHeight } : null, zoom);
-    };
+    // the pills' sizes, read before anything is written, so a frame lays out once
+    const pills = new Map<string, { w: number; h: number } | null>();
+    for (const v of now.current.views)
+      for (const a of [v.from, v.to])
+        if (a.kind === "pill" && !pills.has(a.key)) {
+          const el = world.querySelector<HTMLElement>(`.ls-area-pill[data-area="${CSS.escape(a.key)}"]`);
+          pills.set(a.key, el ? { w: el.offsetWidth, h: el.offsetHeight } : null);
+        }
+    const box = (a: WireAnchor): Rect =>
+      a.kind === "pill" ? pillBox(a.rect, pills.get(a.key) ?? null, zoom) : shiftedBox(a.rect, a.kind === "tile" ? moved.get(a.key) : undefined, inset);
     const texts = new Map<string, HTMLElement[]>();
     for (const el of lb.querySelectorAll<HTMLElement>("[data-wire]")) texts.set(el.dataset.wire!, [...(texts.get(el.dataset.wire!) ?? []), el]);
-    const groups = s.querySelectorAll<SVGGElement>(":scope > g.ls-wire");
-    now.current.views.forEach((v, i) => {
-      const g = groups[i];
-      if (!g) return;
+    const groups = new Map<string, SVGGElement>();
+    for (const g of s.querySelectorAll<SVGGElement>(":scope > g.ls-wire")) groups.set(g.dataset.wire!, g);
+    for (const v of now.current.views) {
+      const g = groups.get(v.id);
+      if (!g) continue;
       const c = wireCurve(box(v.from), box(v.to), px);
       g.style.display = c ? "" : "none";
       for (const t of texts.get(v.id) ?? []) t.style.display = c ? "" : "none";
-      if (!c) return;
+      if (!c) continue;
       for (const p of g.querySelectorAll("path")) p.setAttribute("d", c.d);
       const dot = g.querySelector("circle");
       if (dot) {
@@ -109,7 +116,7 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
         if (end) t.dataset.side = end === "from" ? c.fromSide : c.toSide;
         else t.dataset.bend = c.bend;
       }
-    });
+    }
   };
   const paintNow = useRef(paint);
   paintNow.current = paint;
