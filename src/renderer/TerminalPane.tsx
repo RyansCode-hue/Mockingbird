@@ -463,7 +463,13 @@ export function PaneChips({ session, density, git, gitErr, overlaps, overlapsUnr
           #{ticketIdOf(session.ticketId)}{dead ? "" : " · Active"}
         </span>
       )}
-      {assistant && density !== "min" && <span className="chip teal">assistant</span>}
+      {session.role === "tasks"
+        ? density !== "min" && (
+            <span className="chip teal" title="The Helpdesk tasks workspace works in your own Chrome through Claude in Chrome. Type /chrome in it to see whether Chrome is connected.">
+              Chrome
+            </span>
+          )
+        : assistant && density !== "min" && <span className="chip teal">assistant</span>}
       {session.shell && density !== "min" && <span className="chip">shell</span>}
       {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
       {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row, its ⋯ or ⌘K)">muted</span>}

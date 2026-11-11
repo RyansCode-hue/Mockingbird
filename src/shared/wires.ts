@@ -323,6 +323,8 @@ export interface WireEnd {
   title: string;
   kind: "agent" | "terminal";
   debrief: boolean;
+  /** The Helpdesk tasks workspace (SessionRole "tasks"): it takes no wires. */
+  tasks?: boolean;
   /** The team room it's in. */
   room: string | null;
   /** Why it can't be wired: a teammate took it over. */
@@ -419,6 +421,7 @@ export function wireRefusal(from: string, to: string, type: WireType, ctx: WireC
   if (ctx.roomsUnknown) return ctx.roomsUnknown;
   if (a.room !== b.room) return ROOM_LINE;
   for (const e of [a, b]) if (e.debrief) return `“${e.title}” is a debrief interview with you, and takes no wires.`;
+  for (const e of [a, b]) if (e.tasks) return `“${e.title}” is the Helpdesk tasks workspace: it works in your Chrome on what you paste in, and takes no wires.`;
   for (const e of [a, b]) if (e.takenOver) return e.takenOver;
   for (const e of [a, b]) if (e.outsideSandbox) return `“${e.title}” isn't in its team room's sandbox (it joined the room while it was running, or its sandbox didn't start): restart it in the room to wire it there.`;
 

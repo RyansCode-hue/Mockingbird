@@ -4,7 +4,7 @@ import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { newPresetId } from "./Presets";
-import { isErr, AGENT_NAME, slugBranch, sanitizeSegment, groupKey, ticketIdOf, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
+import { isErr, AGENT_NAME, HELPDESK_PRESET, slugBranch, sanitizeSegment, groupKey, ticketIdOf, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
 import { agoShort } from "../shared/format";
 import { tildePath } from "../shared/paths";
 import { Modal } from "./Modal";
@@ -473,9 +473,12 @@ export function NewSessionModal({
             Import
           </button>
         </span>
-        {!importing && presets.length > 0 && (
+        {!importing && (
           <div className="preset-chips">
             <span className="pl-dim">Presets</span>
+            <button className="outline" data-tip="Claude in your Chrome, for helpdesk requests you paste in: shows the one you have, or starts it in ~/Helpdesk" onClick={() => onStartPreset(HELPDESK_PRESET)}>
+              {HELPDESK_PRESET.name}
+            </button>
             {presets.map((p) => (
               <button key={p.id} className="outline" data-tip={`Start “${p.name}” now`} onClick={() => onStartPreset(p)}>
                 {p.name}

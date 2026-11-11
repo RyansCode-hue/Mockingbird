@@ -11,6 +11,13 @@ export const AGENT_NAME: Record<AgentKind, string> = { claude: "Claude", codex: 
 export type SessionStatus = "working" | "waiting" | "idle" | "dead";
 
 /**
+ * A session with a standing job of its own. `tasks`: the Helpdesk tasks workspace, Claude in the user's own Chrome
+ * (`claude --chrome`) for requests pasted in. It has no Mockingbird MCP server, takes no messages or wires, and never
+ * runs in a team room's area.
+ */
+export type SessionRole = "tasks";
+
+/**
  * A closed session whose folder is gone (sessions:missingFolders), and what that means for reopening it: a removed
  * worktree whose branch is still there is made again from it (`reopens`); otherwise it can't run where it ran, and `why`
  * says what's missing.
@@ -46,6 +53,8 @@ export interface SessionInfo {
   debrief?: boolean; // morning brief / wrap-up — lives on the WorkTracker tab, not the landscape
   shell?: boolean; // plain terminal (no claude) — excluded from broadcasts/re-reads
   agent?: AgentKind; // absent on sessions persisted before Codex support — those are Claude
+  /** Its standing job (SessionRole), kept through every relaunch. */
+  role?: SessionRole;
   /** The agent conversation last seen running in this pane (from its hook events) — what a relaunch resumes. */
   conversation?: { agent: AgentKind; id: string };
   /** Every conversation this pane has run (a /clear starts a new one), oldest first — what its token meter adds up. */
@@ -296,6 +305,8 @@ export interface NewSessionRequest {
   shellResume?: { agent: AgentKind; id: string };
   model?: string; // claude --model (alias like "opus" or a full model id)
   effort?: string; // claude --effort (low | medium | high | xhigh | max)
+  /** A session with a standing job (SessionRole): `tasks` runs in ~/Helpdesk, on no repository. */
+  role?: SessionRole;
 }
 
 export interface RepoBranches {
@@ -373,7 +384,24 @@ export interface SessionPreset {
   kickoff?: string;
   model?: string;
   effort?: string;
+  /** The session's standing job: only the built-in HELPDESK_PRESET has one. */
+  role?: SessionRole;
 }
+
+/** The Helpdesk tasks workspace's area. */
+export const HELPDESK_GROUP = "Helpdesk";
+
+/** The built-in preset that starts the Helpdesk tasks workspace: first in New session's presets, never in Settings'. */
+export const HELPDESK_PRESET: SessionPreset = {
+  id: "builtin:helpdesk",
+  name: "Helpdesk tasks",
+  launch: "claude",
+  repoPath: null,
+  branch: { mode: "checkout" },
+  useWorktree: false,
+  group: HELPDESK_GROUP,
+  role: "tasks",
+};
 
 /** The top-bar tabs that can be turned off. Sessions and Settings always show. */
 export type OptionalTab = "dashboard" | "worktracker" | "collaborate";

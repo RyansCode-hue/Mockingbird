@@ -61,6 +61,8 @@ const CALLER_NEXT = {
 const PAIR_LIMIT = 8;
 const PAIR_WINDOW_MS = 5 * 60_000;
 const MAX_MESSAGE = 8000;
+/** send_message's answer for the Helpdesk tasks workspace: nothing another agent writes becomes its prompt. */
+const HELPDESK_TAKES_NO_MESSAGES = "That session is the Helpdesk tasks workspace, which works in the user's own Chrome and does not take agent messages.";
 /** How often a stream of requests with no valid token is logged. */
 const NO_TOKEN_LOG_MS = 60_000;
 
@@ -660,7 +662,7 @@ export class Messaging {
       let starting: string | null = null;
       const others: Record<string, unknown>[] = live
         .filter((s) => {
-          if (s.id === me.id || s.debrief) return false;
+          if (s.id === me.id || s.debrief || s.role === "tasks") return false;
           const across = this.wires?.acrossRoomLine?.(me, s) ?? null;
           if (across === ROOMS_STARTING) starting = across;
           return !across;
@@ -720,6 +722,7 @@ export class Messaging {
       const target = live.find((s) => s.id === to);
       if (!target) return { error: `No running session with id "${to}". Call list_sessions for current ids.` };
       if (target.debrief) return { error: "That session is a debrief interview with the user and does not take agent messages." };
+      if (target.role === "tasks") return { error: HELPDESK_TAKES_NO_MESSAGES };
 
       const logged = { at: Date.now(), from: me.id, fromTitle: titleOf(me), to, toTitle: titleOf(target), text };
       const looped = this.wires?.messageRefusal(me, target) ?? null;

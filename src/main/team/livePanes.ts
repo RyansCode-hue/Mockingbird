@@ -289,6 +289,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const s = this.d.sessions;
     s.remote = this;
     s.roomLaunch = (target) => this.roomLaunch(target);
+    s.roomOfGroup = (group) => this.roomForGroup(splitGroupKey(group).top);
     s.sandboxLost = (info, why) =>
       this.problem(`“${info.ticketTitle ?? info.title}” isn't in its team room's sandbox: ${why}. Nothing crosses the room's line for it, and teammates see it as unguarded; restart it to try again.`);
     s.folderNoticeSeen = (info, what, why) => {
@@ -353,6 +354,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const s = this.d.sessions;
     if (s.remote === this) s.remote = null;
     s.roomLaunch = null;
+    s.roomOfGroup = null;
     s.sandboxLost = null;
     setRoomSessionLookup(null);
   }
@@ -408,9 +410,9 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     return roomId && !this.takenOver(s.id) ? roomId : null;
   }
 
-  /** The room a session's group is shared as, taken over or not. */
+  /** The room a session's group is shared as, taken over or not. The Helpdesk tasks workspace is never shared, wherever it is. */
   private groupRoomOf(s: SessionInfo): RoomId | null {
-    return s.debrief ? null : this.roomForGroup(topOfKey(s.taskGroup ?? "ungrouped"));
+    return s.debrief || s.role === "tasks" ? null : this.roomForGroup(topOfKey(s.taskGroup ?? "ungrouped"));
   }
 
   /** Whether a teammate took this install's session `sessionId` over, in any room: the one rule main and the window go by (takenOverOwn). */

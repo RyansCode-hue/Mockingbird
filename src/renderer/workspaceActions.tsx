@@ -192,6 +192,8 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
 /** What making a workspace needs (right-click on empty landscape): today's New Session dialog, opened for each kind. */
 export interface CreateEnv {
   launch: (kind: "claude" | "codex" | "shell") => void;
+  /** The Helpdesk tasks workspace: the one there is shown, its ghost reopened, or it's started. */
+  helpdesk: () => void;
   /** The dialog with its ticket picker open. */
   ticket: () => void;
   /** The dialog's Import, resuming a conversation from this Mac. */
@@ -207,6 +209,7 @@ export function createActions(env: CreateEnv): ModelAction[] {
     { section: "create", key: "new:claude", label: "Claude", menuLabel: "Claude…", onPick: () => env.launch("claude") },
     { section: "create", key: "new:codex", label: "Codex", menuLabel: "Codex…", onPick: () => env.launch("codex") },
     { section: "create", key: "new:shell", label: "Terminal", menuLabel: "Terminal…", onPick: () => env.launch("shell") },
+    { section: "create", key: "new:helpdesk", label: "Helpdesk tasks", menuLabel: "Helpdesk tasks…", title: "Claude in your Chrome, for helpdesk requests you paste in: shows the one you have, or starts it", onPick: env.helpdesk },
     { section: "create", key: "new:ticket", label: "From a ticket", menuLabel: "From a ticket…", onPick: env.ticket },
     { section: "create", key: "new:import", label: "Resume a conversation", menuLabel: "Resume a conversation…", onPick: env.importIt },
     { section: "create", key: "new:import-many", label: "Import conversations", menuLabel: "Import conversations…", onPick: env.importMany },

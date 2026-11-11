@@ -317,6 +317,7 @@ export class WireService {
             title: s.ticketTitle ?? s.title,
             kind: s.shell ? "terminal" : "agent",
             debrief: !!s.debrief,
+            tasks: s.role === "tasks",
             room: this.o.roomOf(id),
             takenOver: this.o.takenOver(id),
             outsideSandbox: !!this.o.outsideSandbox?.(id),

@@ -9,7 +9,8 @@ import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { currentBranch, git } from "./git";
 import { adoEnv } from "./ado";
-import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents";
+import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, type LaunchContext } from "./agents";
+import { HELPDESK_IN_ROOM, HELPDESK_RULES, helpdeskFolder, readClaudeHelp } from "./helpdesk";
 import { which, whichSync, quote } from "./shell";
 import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { RoomSandboxWatch, SANDBOX_REPORT_MS } from "./roomSandboxWatch";
@@ -332,6 +333,12 @@ export class SessionManager {
   remote: RemotePanes | null = null;
   /** Extra launch settings for a session in a shared group (team rooms); null outside rooms. */
   roomLaunch: ((target: LaunchTarget) => Promise<RoomLaunch | null>) | null = null;
+  /** The team room a group is shared as, or null (team rooms): what keeps the Helpdesk tasks workspace out of one. */
+  roomOfGroup: ((group: string) => string | null) | null = null;
+  /** Claude Code's `--help` (helpdesk.ts); a test's stand-in otherwise. */
+  readClaudeHelp: (bin: string) => Promise<string> = readClaudeHelp;
+  /** Whether a Claude Code lists `--chrome`, by binary and version; one that couldn't be read is asked again next time. */
+  private chromeFlags = new Map<string, Promise<boolean>>();
   /** A Claude room launch whose sandbox didn't report in (RoomSandboxWatch): told once per launch. */
   sandboxLost: ((info: SessionInfo, why: string) => void) | null = null;
   /** A Codex room launch's folder notice: answered (for the log), or left to the user (told once, why). */
@@ -509,7 +516,7 @@ export class SessionManager {
    */
   async missingFolders(): Promise<MissingFolder[]> {
     const out: MissingFolder[] = [];
-    for (const s of this.resumable()) if (!fs.existsSync(s.cwd)) out.push({ id: s.id, ...(await folderGone(s)) });
+    for (const s of this.resumable()) if (s.role !== "tasks" && !fs.existsSync(s.cwd)) out.push({ id: s.id, ...(await folderGone(s)) });
     return out;
   }
 
@@ -518,6 +525,8 @@ export class SessionManager {
    */
   async create(req: NewSessionRequest, opts: { notice?: string } = {}): Promise<SessionInfo> {
     this.refuseWhileQuitting();
+    const tasks = req.role === "tasks";
+    if (tasks) await this.mayStartTasks(req);
     const settings = this.store.settings;
     let cwd: string;
     let branch: string | null = null;
@@ -530,7 +539,10 @@ export class SessionManager {
     const wanted =
       req.branchName?.trim() ||
       (req.ticketId && req.ticketTitle ? slugBranch(req.ticketId, req.ticketTitle) : null);
-    if (req.cwd) {
+    if (tasks) {
+      cwd = helpdeskFolder();
+      repoPath = null;
+    } else if (req.cwd) {
       cwd = expandHome(req.cwd);
       if (!fs.existsSync(cwd)) throw new Error(`${cwd} doesn't exist any more`);
       branch = req.branchName?.trim() || null;
@@ -571,7 +583,7 @@ export class SessionManager {
     // a terminal bringing a conversation back runs that agent under the room's settings too
     const resumes = req.shell ? req.shellResume?.agent ?? null : null;
     const versioned = targetAgent ?? resumes;
-    const roomed = !!versioned && !!group && !!this.roomLaunch && !req.debrief;
+    const roomed = !!versioned && !!group && !!this.roomLaunch && !req.debrief && !tasks;
     // a Claude room launch's protections, its pane and its sandbox check are all the one file its link names now
     const pinned = roomed && versioned === "claude" ? await this.binPins.pin(this.resolveBin(agentFor("claude"))) : null;
     const agentVersion = !roomed ? null : pinned ? pinned.version : await this.versionOf(versioned!);
@@ -579,8 +591,8 @@ export class SessionManager {
     if (pinned?.version && pinned.version !== this.agentVersions.claude) this.setAgentVersions({ claude: pinned.version });
     const binOf = (a: AgentAdapter) => (pinned && a.binSetting === "claudeBin" ? pinned.bin : this.resolveBin(a));
     const extraDirs = (req.extraDirs ?? []).map(expandHome);
-    const room = req.debrief ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs })) ?? null);
-    const instructions = [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id)].filter(Boolean).join("\n\n");
+    const room = req.debrief || tasks ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs })) ?? null);
+    const instructions = tasks ? HELPDESK_RULES : [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id)].filter(Boolean).join("\n\n");
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
       ...(room?.codexPermissions.length ? { codexPermissions: room.codexPermissions } : {}),
@@ -600,8 +612,9 @@ export class SessionManager {
     this.refuseWhileQuitting(); // shutdown may have begun while this launch was being prepared
     // a teammate may have taken the session over meanwhile: stopping it then found nothing live to stop
     if (req.reuseId) this.mayRun(req.reuseId);
-    // this launch's messaging tools and the token they're known by, which go with the launch if it fails from here on
-    const mcp = req.shell ? undefined : mcpLaunch(id);
+    // this launch's messaging tools and the token they're known by, which go with the launch if it fails from here on.
+    // The Helpdesk tasks workspace has none: it can't message, read or be wired, and its hooks still report its status
+    const mcp = req.shell || tasks ? undefined : mcpLaunch(id);
     const paneEnv = {
       ...terminalEnv(),
       MOCKINGBIRD: "1",
@@ -616,8 +629,8 @@ export class SessionManager {
       ...(room?.env ?? {}),
     } as Record<string, string>;
     try {
-      if (mcp) {
-        const paneCtx: LaunchContext = { mcp, ...roomCtx };
+      if (!req.shell) {
+        const paneCtx: LaunchContext = { ...(mcp ? { mcp } : {}), ...(tasks ? { chrome: true } : {}), ...roomCtx };
         paneArgs = agent.launchArgs(req, paneCtx);
         claudeArgs = ["-ilc", `exec ${commandFor(agent, req, paneCtx, paneArgs)}`];
       } else if (req.shellResume) {
@@ -689,6 +702,7 @@ export class SessionManager {
       waitingSince: null,
       debrief: req.debrief || undefined,
       shell: req.shell || undefined,
+      role: req.role || undefined,
       model: req.model || undefined,
       effort: req.effort || undefined,
       agent: req.shell ? undefined : req.agent ?? "claude",
@@ -1060,6 +1074,40 @@ export class SessionManager {
     return changed;
   }
 
+  /**
+   * Refuses a Helpdesk tasks workspace that can't start as one, saying why: it's Claude's alone, never in a team room's
+   * area, and needs a Claude Code with Claude in Chrome (`--chrome` in its `--help`, read once per version).
+   */
+  private async mayStartTasks(req: NewSessionRequest): Promise<void> {
+    if (req.shell || (req.agent ?? "claude") !== "claude") throw new Error("The Helpdesk tasks workspace runs Claude only: it works in your Chrome through Claude in Chrome");
+    const group = req.taskGroup ?? req.ticketId ?? null;
+    if (group && this.roomOfGroup?.(group)) throw new Error(`${HELPDESK_IN_ROOM}. Start it in an area that isn't shared.`);
+    const bin = this.resolveBin(agentFor("claude"));
+    const version = await this.versionOf("claude");
+    const key = `${bin}\0${version}`;
+    let check = version ? this.chromeFlags.get(key) : undefined;
+    if (!check) {
+      const reading = this.readClaudeHelp(bin).then(listsChromeFlag);
+      // an unknown version isn't kept, and neither is a read that failed
+      if (version) {
+        this.chromeFlags.set(key, reading);
+        reading.catch(() => this.chromeFlags.get(key) === reading && this.chromeFlags.delete(key));
+      }
+      check = reading;
+    }
+    let has: boolean;
+    try {
+      has = await check;
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      console.warn(`[sessions] couldn't read ${bin} --help to see whether it has Claude in Chrome: ${why}`);
+      throw new Error(`Couldn't check that Claude Code has Claude in Chrome (${bin} --help: ${why}), so the Helpdesk tasks workspace didn't start`);
+    }
+    if (!has) {
+      throw new Error(`${version ? `Claude Code ${version}` : "This Claude Code"} has no --chrome, which the Helpdesk tasks workspace needs to work in your Chrome: update Claude Code (Settings → Agents → Update), then start it again`);
+    }
+  }
+
   /** An agent CLI's installed version: as last read, else read now (one read at a time per agent). */
   async versionOf(kind: AgentKind): Promise<string | null> {
     if (!this.agentVersions[kind] && this.readVersion) {
@@ -1204,6 +1252,8 @@ export class SessionManager {
    * (createWorktree's mustExist); any other folder that's gone throws. So when this returns it has somewhere to run.
    */
   private async whereAgain(old: SessionInfo): Promise<PlaceAgain> {
+    // the Helpdesk tasks workspace always runs in ~/Helpdesk, which create() makes again when it's gone
+    if (old.role === "tasks") return { where: { useWorktree: false } };
     const repo = old.repoPath ? expandHome(old.repoPath) : null;
     if (!fs.existsSync(old.cwd)) {
       if (!repo || old.cwd === repo || !old.branch) throw new Error(`${old.cwd} doesn't exist any more`);
@@ -1245,6 +1295,7 @@ export class SessionManager {
       title: old.title,
       debrief: old.debrief,
       shell: old.shell,
+      role: old.role,
       model: old.model ?? undefined,
       effort: old.effort ?? undefined,
       agent: old.agent,
@@ -1265,7 +1316,8 @@ export class SessionManager {
   digest(): { info: SessionInfo; tail: string }[] {
     const ansi = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[=>]|\r/g;
     return [...this.live.values()]
-      .filter((s) => !s.info.debrief)
+      // nothing the Helpdesk tasks workspace read (requests, admin pages) becomes another agent's prompt
+      .filter((s) => !s.info.debrief && s.info.role !== "tasks")
       .map((s) => ({
         info: { ...s.info },
         tail: s.buffer
@@ -1292,6 +1344,7 @@ export class SessionManager {
     if (!this.live.has(id) && this.remote?.has(id)) throw new Error("That's a teammate's session: only its owner can move it to another group");
     const g = group?.trim() || null;
     const s = this.live.get(id);
+    if (g && this.roomOfGroup?.(g) && (s?.info ?? this.recordOf(id))?.role === "tasks") throw new Error(`${HELPDESK_IN_ROOM}.`);
     if (s) {
       s.info.taskGroup = g;
       this.store.upsertSession(s.info);
@@ -1326,6 +1379,8 @@ export class SessionManager {
     // prefix-aware: renaming group "5101" must carry "5101/etl" → "X/etl"
     const remap = (g: string | null): string | null =>
       g === oldKey ? newKey : g && g.startsWith(oldKey + "/") ? newKey + g.slice(oldKey.length) : g;
+    const records = [...[...this.live.values()].map((s) => s.info), ...this.store.state.sessions];
+    if (this.roomOfGroup?.(newKey) && records.some((s) => s.role === "tasks" && remap(s.taskGroup) !== s.taskGroup)) throw new Error(`${HELPDESK_IN_ROOM}.`);
     for (const s of this.live.values()) {
       const n = remap(s.info.taskGroup);
       if (n !== s.info.taskGroup) {

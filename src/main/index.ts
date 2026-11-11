@@ -45,6 +45,7 @@ import { WireTools } from "./wireTools";
 import { TicketTools } from "./ticketTools";
 import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
+import { helpdeskShareRefusal } from "./helpdesk";
 import { reviewPrompt } from "./review";
 import { shouldNotify, toolsLostNotice } from "./notifications";
 import { composeRollup, weekBounds } from "./rollup";
@@ -63,7 +64,7 @@ import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
-import { BY_YOU, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
+import { BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
@@ -1178,7 +1179,11 @@ handle("sessions:renameGroup", (oldKey, newKey) => {
 
 // ---- Team rooms ----
 handle("team:status", () => team.status());
-handle("team:share", (groupKey, title) => team.shareGroup(String(groupKey ?? ""), String(title ?? "")));
+handle("team:share", (groupKey, title) => {
+  const refused = helpdeskShareRefusal(String(groupKey ?? ""), [...sessions.list(), ...sessions.resumable()]);
+  if (refused) throw new Error(refused);
+  return team.shareGroup(String(groupKey ?? ""), String(title ?? ""));
+});
 handle("team:invite", (roomId) => ({ invite: team.createInvite(String(roomId)) }));
 handle("team:join", (code) => team.join(String(code ?? "")));
 handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
@@ -1710,7 +1715,7 @@ handle("pr:status", async (cwd, fresh) => {
 
 // ---- session presets: one-click recurring setups ----
 handle("presets:start", async (id) => {
-  const p = (store.settings.presets ?? []).find((x) => x.id === id);
+  const p = id === HELPDESK_PRESET.id ? HELPDESK_PRESET : (store.settings.presets ?? []).find((x) => x.id === id);
   if (!p) throw new Error("That preset no longer exists");
   const repo = p.repoPath ? expandHome(p.repoPath) : null;
   const branches = repo && p.branch.mode === "new" ? (await listBranches(repo)).branches : [];

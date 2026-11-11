@@ -11,9 +11,10 @@ const base = { repoPath: null, useWorktree: false };
 let agentFor: typeof import("../src/main/agents").agentFor;
 let agentLabel: typeof import("../src/main/agents").agentLabel;
 let codexMcpOff: typeof import("../src/main/agents").codexMcpOff;
+let listsChromeFlag: typeof import("../src/main/agents").listsChromeFlag;
 beforeEach(async () => {
   vi.resetModules();
-  ({ agentFor, agentLabel, codexMcpOff } = await import("../src/main/agents"));
+  ({ agentFor, agentLabel, codexMcpOff, listsChromeFlag } = await import("../src/main/agents"));
 });
 
 function rollout(cwd: string, source: string, day = "01"): void {
@@ -55,6 +56,21 @@ describe("Claude launch", () => {
     } finally {
       fs.rmSync(path.join(os.homedir(), ".claude", "settings.json"));
     }
+  });
+  it("runs Claude in Chrome only when asked (the Helpdesk tasks workspace), with its rules and no Mockingbird server", () => {
+    const tasks = agentFor("claude").launchArgs({ ...base, role: "tasks" }, { chrome: true, instructions: "HELPDESK RULES" });
+    expect(tasks).toContain("--chrome");
+    expect(tasks[tasks.indexOf("--append-system-prompt") + 1]).toBe("HELPDESK RULES");
+    expect(tasks).not.toContain("--mcp-config");
+    expect(tasks).not.toContain("--allowedTools");
+    expect(agentFor("claude").launchArgs({ ...base }, { mcp })).not.toContain("--chrome");
+    expect(agentFor("claude").launchArgs({ ...base, role: "tasks" }, {})).not.toContain("--chrome");
+  });
+  it("reads --chrome from Claude Code's --help; --no-chrome alone doesn't count", () => {
+    expect(listsChromeFlag("Options:\n  --chrome                              Enable Claude in Chrome integration\n  --no-chrome   Disable it")).toBe(true);
+    expect(listsChromeFlag("Options:\n  --no-chrome                           Disable Claude in Chrome integration")).toBe(false);
+    expect(listsChromeFlag("Options:\n  --chrome-profile <name>  Not the flag")).toBe(false);
+    expect(listsChromeFlag("")).toBe(false);
   });
   it("leaves the messaging server out when the pane has none", () => {
     expect(agentFor("claude").launchArgs({ ...base }, {})).not.toContain("--mcp-config");

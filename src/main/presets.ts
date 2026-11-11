@@ -27,6 +27,7 @@ export function uniqueBranch(name: string, existing: string[]): string {
 export function presetProblem(p: SessionPreset): string | null {
   if (!p.name?.trim()) return "The preset needs a name";
   if (!["claude", "codex", "shell"].includes(p.launch)) return `Unknown launch "${p.launch}"`;
+  if (p.role === "tasks" && p.launch !== "claude") return "The Helpdesk tasks workspace runs Claude only";
   if (p.branch.mode !== "checkout" && !p.repoPath) return "A branch needs a repo";
   if (p.branch.mode === "existing" && !p.branch.name.trim()) return "Name the branch to open";
   if (p.branch.mode === "new" && !expandBranchPattern(p.branch.pattern, new Date())) return "Give the new branch a name pattern";
@@ -48,6 +49,7 @@ export function presetRequest(p: SessionPreset, branches: string[], now: Date): 
     ...(agent && p.model?.trim() ? { model: p.model.trim() } : {}),
     ...(agent && p.effort?.trim() ? { effort: p.effort.trim() } : {}),
     ...(p.kickoff?.trim() ? { initialPrompt: p.kickoff.trim() } : {}),
+    ...(p.role ? { role: p.role } : {}),
   };
   if (p.branch.mode === "existing") req.branchName = p.branch.name.trim();
   if (p.branch.mode === "new") {

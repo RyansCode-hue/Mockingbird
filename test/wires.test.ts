@@ -72,6 +72,14 @@ describe("wireRefusal", () => {
     expect(wireRefusal("a", "d", "context", ctx)).toMatch(/debrief/);
     expect(wireRefusal("d", "a", "context", ctx)).toMatch(/debrief/);
   });
+  it("refuses the Helpdesk tasks workspace at either end, for every type", () => {
+    const ctx = ctxOf([end("a"), end("h", { tasks: true, title: "Helpdesk tasks" }), end("t", { kind: "terminal", folder: "/w/h" })]);
+    for (const type of ["handoff", "context", "feedback"] as const) {
+      expect(wireRefusal("a", "h", type, ctx), type).toMatch(/“Helpdesk tasks” is the Helpdesk tasks workspace.*takes no wires/);
+      expect(wireRefusal("h", "a", type, ctx), type).toMatch(/Helpdesk tasks workspace/);
+    }
+    expect(wireRefusal("h", "t", "worktree", ctx)).toMatch(/Helpdesk tasks workspace/);
+  });
   it("refuses a session taken over, at either end, saying where it continues", () => {
     const ctx = ctxOf([end("a"), end("t", { takenOver: "“t” continues on Nick's laptop" })]);
     expect(wireRefusal("a", "t", "handoff", ctx)).toMatch(/continues on Nick's laptop/);

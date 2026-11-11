@@ -42,7 +42,12 @@ export interface LaunchContext {
    * from its environment instead (CLAUDE_INLINE_ENV).
    */
   inline?: boolean;
+  /** Claude in Chrome (`--chrome`): the Helpdesk tasks workspace works in the user's own Chrome. Claude only. */
+  chrome?: boolean;
 }
+
+/** Whether Claude Code's `--help` lists `--chrome` (Claude in Chrome); `--no-chrome` alone doesn't count. */
+export const listsChromeFlag = (help: string): boolean => /(^|\s)--chrome(\s|$)/m.test(help);
 
 /**
  * Claude Code's switch to its classic main-screen renderer: it outranks a
@@ -110,6 +115,7 @@ const claude: AgentAdapter = {
       args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", tools.map(claudeToolName).join(","));
     }
     if (ctx.denyReads?.length) args.push("--disallowedTools", ...ctx.denyReads);
+    if (ctx.chrome) args.push("--chrome");
     if (ctx.instructions) args.push("--append-system-prompt", ctx.instructions);
     return args;
   },

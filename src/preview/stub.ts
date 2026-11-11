@@ -89,6 +89,9 @@ let sessions: SessionInfo[] = [
   // continued on Nick's laptop: its agent stopped here (team rooms: take-over)
   session("y1", { title: "Donor entity model", taskGroup: "5110", branch: "5110-donor-entities", cwd: WT("5110-donor-entities"), status: "dead" }),
 ];
+// ?helpdesk: the Helpdesk tasks workspace is running, in its own area (its header's Chrome chip)
+if (new URLSearchParams(location.search).has("helpdesk"))
+  sessions.push(session("h1", { title: "Helpdesk tasks", repoPath: null, cwd: "/Users/you/Helpdesk", kind: "assistant", taskGroup: "Helpdesk", role: "tasks", status: "idle", finishedAt: now - 3 * min }));
 // ?stall=hooks: s1 shows the stall banner of a pane whose hooks never reported ("working" may be wrong, Mark idle);
 // ?stall=quiet: of one that's gone quiet while working
 // ?needsMany: four more sessions waiting on a permission prompt, so Needs you lists seven items (with ?joinRequest=later)
@@ -8649,6 +8652,7 @@ const wireEnds = (): Pick<WireContext, "end"> => ({
       title: s.ticketTitle ?? s.title,
       kind: s.shell ? "terminal" : "agent",
       debrief: !!s.debrief,
+      tasks: s.role === "tasks",
       room: s.room?.roomId ?? null,
       takenOver: null,
       where: !running ? "closed" : s.status === "dead" ? "dead" : "running",

@@ -19,6 +19,7 @@ const live = [
   session("other", { taskGroup: "9999" }),
   session("term", { shell: true }),
   session("brief", { debrief: true }),
+  session("helpdesk", { role: "tasks", repoPath: null, branch: null, taskGroup: "Helpdesk" }),
   session("gone", { status: "dead" }),
 ];
 const delivered: { to: string; text: string; submit: boolean }[] = [];
@@ -65,7 +66,7 @@ describe("relay", () => {
     for (let i = 0; i < 50 && (fs.statSync(sock).mode & 0o777) !== 0o600; i++) await new Promise((r) => setTimeout(r, 20));
     expect(fs.statSync(sock).mode & 0o777).toBe(0o600);
   });
-  it("lists other live agent sessions — no shells, debriefs, dead ones or yourself — marking your group", async () => {
+  it("lists other live agent sessions — no shells, debriefs, the Helpdesk tasks workspace, dead ones or yourself — marking your group", async () => {
     const r = await ask({ op: "list_sessions", from: "front" });
     expect(r.result.you).toEqual({ id: "front", title: "Filter orgs" });
     expect(r.result.sessions.map((s: any) => [s.id, s.agent, s.same_group])).toEqual([
@@ -97,6 +98,7 @@ describe("relay", () => {
     [{ to: "nope", message: "x" }, /No running session with id "nope"/],
     [{ to: "term", message: "x" }, /No running session/],
     [{ to: "brief", message: "x" }, /debrief interview/],
+    [{ to: "helpdesk", message: "x" }, /Helpdesk tasks workspace, which works in the user's own Chrome and does not take agent messages/],
     [{ to: "back", message: "   " }, /empty/],
     [{ to: "back", message: "x".repeat(8001) }, /limit is 8000/],
   ])("refuses %j", async (args, err) => {

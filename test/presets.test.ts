@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expandBranchPattern, presetProblem, presetRequest, uniqueBranch } from "../src/main/presets";
-import type { SessionPreset } from "../src/shared/types";
+import { HELPDESK_PRESET, type SessionPreset } from "../src/shared/types";
 
 const writes: string[] = [];
 vi.mock("node-pty", () => ({
@@ -42,6 +42,12 @@ describe("the session a preset starts", () => {
     expect(sh).toMatchObject({ shell: true, initialPrompt: "npm test" });
     expect(sh.model).toBeUndefined();
     expect(sh.agent).toBeUndefined();
+  });
+  it("starts the built-in Helpdesk preset as the tasks workspace: Claude, in its own area, on no repository", () => {
+    expect(presetRequest(HELPDESK_PRESET, [], now)).toEqual({ repoPath: null, useWorktree: false, title: "Helpdesk tasks", taskGroup: "Helpdesk", agent: "claude", role: "tasks" });
+    expect(presetProblem({ ...HELPDESK_PRESET, launch: "codex" })).toMatch(/Claude only/);
+    expect(presetProblem({ ...HELPDESK_PRESET, launch: "shell" })).toMatch(/Claude only/);
+    expect(presetRequest(base, [], now).role).toBeUndefined();
   });
   it("refuses an incomplete preset", () => {
     expect(presetProblem({ ...base, name: " " })).toMatch(/name/);

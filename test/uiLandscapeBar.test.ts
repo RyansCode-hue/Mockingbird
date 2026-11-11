@@ -109,7 +109,7 @@ const WORKSPACE_MENU = [
   "-", "# Hand on", "Continue in Codex…", "Fresh session from a brief…", "Second opinion from Codex",
   "-", "Close…",
 ];
-const CREATE_ROWS = ["# New workspace", "Claude…", "Codex…", "Terminal…", "From a ticket…", "Resume a conversation…", "Import conversations…", "Collab… (coming) (off)", "Pipeline from a ticket… (coming) (off)"];
+const CREATE_ROWS = ["# New workspace", "Claude…", "Codex…", "Terminal…", "Helpdesk tasks…", "From a ticket…", "Resume a conversation…", "Import conversations…", "Collab… (coming) (off)", "Pipeline from a ticket… (coming) (off)"];
 const TAKEN_BACK = /^Nick Smith continues it on their laptop: take it back/;
 
 describe.skipIf(!local)("the selection bar", () => {

@@ -231,6 +231,22 @@ describe("room sessions in the room log", () => {
   });
 });
 
+describe("the Helpdesk tasks workspace and a room", () => {
+  it("never starts in or moves into a room's area, and is never shared from one it finds itself in", async () => {
+    const { ryan, nick } = await pair();
+    ryan.sessions.readClaudeHelp = async () => "  --chrome  Enable Claude in Chrome integration\n";
+    await expect(ryan.start({ role: "tasks", title: "Helpdesk tasks" })).rejects.toThrow(/never runs in a team room's area/);
+    const h = await ryan.start({ role: "tasks", taskGroup: "Helpdesk", title: "Helpdesk tasks" });
+    expect(() => ryan.sessions.setGroup(h.id, "5110/sub")).toThrow(/never runs in a team room's area/);
+    // as a room joined under its area's name would leave it: in the room's area all the same
+    (ryan.sessions as any).live.get(h.id).info.taskGroup = "5110";
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "Nick to see Ryan's room session");
+    expect(remoteOf(nick, h.id)).toBeUndefined();
+    expect(roomOfSession(h.id)).toBeNull();
+  });
+});
+
 describe("live panes", () => {
   it("streams only what a teammate shows: scrollback first, then live output", async () => {
     const { ryan, nick } = await pair();

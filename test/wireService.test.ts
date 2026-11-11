@@ -26,7 +26,7 @@ function setup(opts: { rooms?: Record<string, string>; takenOver?: Record<string
   const logged: string[] = [];
   const log = (context: string, err: unknown) => void logged.push(`${context}: ${err instanceof Error ? err.message : String(err)}`);
   const store = new LandscapeStore({ file, emit: () => {}, emitWires: (c) => changes.push(c), log });
-  const running = [session("a"), session("b"), session("c"), session("term", { shell: true, cwd: "/w/a" }), session("brief", { debrief: true }), session("gone", { status: "dead" })];
+  const running = [session("a"), session("b"), session("c"), session("term", { shell: true, cwd: "/w/a" }), session("brief", { debrief: true }), session("helpdesk", { role: "tasks", repoPath: null, taskGroup: "Helpdesk" }), session("gone", { status: "dead" })];
   const closed = [session("old"), session("ghost")];
   const rooms = { ...opts.rooms };
   const takenOver = { ...opts.takenOver };
@@ -70,6 +70,8 @@ describe("making a wire", () => {
     ["a teammate's session", "a", "r~abc", "handoff", /teammate's session/],
     ["a session it doesn't know", "a", "nope", "handoff", /no session "nope"/],
     ["a debrief", "a", "brief", "context", /debrief/],
+    ["the Helpdesk tasks workspace, as its target", "a", "helpdesk", "handoff", /Helpdesk tasks workspace/],
+    ["the Helpdesk tasks workspace, as its source", "helpdesk", "a", "context", /Helpdesk tasks workspace/],
     ["a terminal for a handoff", "a", "term", "handoff", /is a terminal/],
     ["an unknown type", "a", "b", "sees", /no wire type "sees"/],
   ])("refuses %s, changing nothing", (_what, from, to, type, why) => {

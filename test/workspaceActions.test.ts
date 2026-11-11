@@ -173,8 +173,8 @@ describe("a right-click on the empty landscape", () => {
     const ticket = vi.fn();
     const importIt = vi.fn();
     const importMany = vi.fn();
-    const acts = createActions({ launch, ticket, importIt, importMany });
-    expect(rows(menuOf(acts))).toEqual(["# New workspace", "new:claude", "new:codex", "new:shell", "new:ticket", "new:import", "new:import-many", "new:collab", "new:pipeline"]);
+    const acts = createActions({ launch, helpdesk: vi.fn(), ticket, importIt, importMany });
+    expect(rows(menuOf(acts))).toEqual(["# New workspace", "new:claude", "new:codex", "new:shell", "new:helpdesk", "new:ticket", "new:import", "new:import-many", "new:collab", "new:pipeline"]);
     // resuming one conversation and importing several are told apart
     expect(["new:import", "new:import-many"].map((k) => actionOf(acts, k)?.menuLabel)).toEqual(["Resume a conversation…", "Import conversations…"]);
     expect(acts.filter((a) => a.disabled).map((a) => [a.key, a.menuLabel])).toEqual([
@@ -186,6 +186,13 @@ describe("a right-click on the empty landscape", () => {
     for (const k of ["new:claude", "new:codex", "new:shell", "new:ticket", "new:import", "new:import-many"]) usable(acts, k)!.onPick(null as unknown as HTMLElement);
     expect(launch.mock.calls).toEqual([["claude"], ["codex"], ["shell"]]);
     expect([ticket.mock.calls.length, importIt.mock.calls.length, importMany.mock.calls.length]).toEqual([1, 1, 1]);
+  });
+  it("offers the Helpdesk tasks workspace as its own row, which runs its own flow", () => {
+    const helpdesk = vi.fn();
+    const row = usable(createActions({ launch: vi.fn(), helpdesk, ticket: vi.fn(), importIt: vi.fn(), importMany: vi.fn() }), "new:helpdesk")!;
+    expect(row).toMatchObject({ section: "create", menuLabel: "Helpdesk tasks…" });
+    row.onPick(null as unknown as HTMLElement);
+    expect(helpdesk).toHaveBeenCalledOnce();
   });
 });
 

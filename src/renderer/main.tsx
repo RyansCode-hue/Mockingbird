@@ -34,7 +34,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
+import { AGENT_NAME, HELPDESK_PRESET, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -1974,6 +1974,7 @@ function App() {
     create: (area, at) => [
       ...createActions({
         launch: (kind) => newAt(area, at, { launch: kind }),
+        helpdesk: () => void openHelpdesk(),
         ticket: () => newAt(area, at, { ticket: true }),
         importIt: () => newAt(area, at, { mode: "import" }),
         importMany: () => setModal("import"),
@@ -2373,11 +2374,24 @@ function App() {
     refresh();
   };
 
-  /** Start a preset's session and show it. */
+  /** Start a preset's session and show it. The built-in Helpdesk preset shows the one there is first (openHelpdesk). */
   const startPreset = async (p: SessionPreset) => {
+    if (p.id === HELPDESK_PRESET.id) return openHelpdesk();
     const since = inputStamp();
     const info = await window.mb.presetStart(p.id);
     if (isErr(info)) return alert(`Couldn't start “${p.name}”: ${info.error}`);
+    await refresh();
+    jumpToSession(info, since);
+  };
+  /** The Helpdesk tasks workspace: the one this Mac has shown (an exited one with its Resume), its ghost reopened, or it's started. */
+  const openHelpdesk = async () => {
+    const own = ownSessions.find((s) => s.role === "tasks");
+    if (own) return jumpToSession(own);
+    const closed = resumable.find((s) => s.role === "tasks");
+    if (closed) return reopenGhost(closed);
+    const since = inputStamp();
+    const info = await window.mb.presetStart(HELPDESK_PRESET.id);
+    if (isErr(info)) return alert(`Couldn't start the Helpdesk tasks workspace: ${info.error}`);
     await refresh();
     jumpToSession(info, since);
   };

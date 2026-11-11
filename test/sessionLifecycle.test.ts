@@ -6,6 +6,8 @@ import { git, makeRepo, tempDir } from "./helpers";
 import { legacyWorktreeRoot, worktreeRoot } from "../src/main/worktrees";
 import { FOLDER_NOTICE_SETTLE_MS, FOLDER_NOTICE_WAIT_MS } from "../src/main/codexFolderNotice";
 import capture from "./fixtures/codex-folder-notice-0.156.1.json";
+import { quote } from "../src/main/shell";
+import { HELPDESK_RULES } from "../src/main/helpdesk";
 
 /** Every pty the manager starts: what it was asked to run and with what environment, what was written to it, and a way to end it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; killed: boolean; signals: string[]; emit(d: string): void; exit(code: number): void };
@@ -1221,5 +1223,142 @@ describe("relaunching a worktree session whose worktree was removed", () => {
     m.kill(s.id, false);
     git(repo, "worktree", "remove", "--force", detached);
     await expect(m.relaunch(s.id)).rejects.toThrow(/doesn't exist any more/);
+  });
+});
+
+describe("the Helpdesk tasks workspace", () => {
+  const tasksPane = { repoPath: null, useWorktree: false, agent: "claude" as const, title: "Helpdesk tasks", taskGroup: "Helpdesk", role: "tasks" as const };
+  const CHROME_HELP = "Usage: claude [options]\n  --chrome     Enable Claude in Chrome integration\n  --no-chrome  Disable Claude in Chrome integration\n";
+  const helpdesk = () => path.join(os.homedir(), "Helpdesk");
+  async function tasksManager() {
+    const t = await manager();
+    t.m.readClaudeHelp = async () => CHROME_HELP;
+    return t;
+  }
+
+  it("starts Claude in Chrome with its rules in its system prompt, in ~/Helpdesk, with no Mockingbird server; its hooks still name its pane", async () => {
+    const { m, store } = await tasksManager();
+    const asked: string[] = [];
+    m.launchInstructions = (id) => (asked.push(id), "WIRES");
+    fs.rmSync(helpdesk(), { recursive: true, force: true });
+    const s = await m.create(tasksPane);
+    const p = ptys.at(-1)!;
+    const command = p.args.join(" ");
+    expect(command).toContain("'--chrome'");
+    expect(command).toContain(`'--append-system-prompt' ${quote(HELPDESK_RULES)}`);
+    expect(command).not.toContain("--mcp-config");
+    expect(command).not.toContain("WIRES");
+    expect(asked).toEqual([]);
+    expect(p.env.MOCKINGBIRD_SESSION).toBe(s.id);
+    expect(s).toMatchObject({ role: "tasks", cwd: helpdesk(), repoPath: null, branch: null, taskGroup: "Helpdesk", kind: "assistant" });
+    expect(fs.statSync(helpdesk()).isDirectory()).toBe(true);
+    expect(store.state.sessions.find((x: any) => x.id === s.id).role).toBe("tasks");
+    // an ordinary Claude pane: its Mockingbird server, no Chrome
+    await m.create(agentPane);
+    expect(ptys.at(-1)!.args.join(" ")).toContain("--mcp-config");
+    expect(ptys.at(-1)!.args.join(" ")).not.toContain("--chrome");
+  });
+
+  it("keeps its role, --chrome and its rules through a relaunch and a Resume, in ~/Helpdesk made again when it was removed", async () => {
+    const { m } = await tasksManager();
+    const s = await m.create(tasksPane);
+    m.kill(s.id, false);
+    fs.rmSync(helpdesk(), { recursive: true, force: true });
+    expect(await m.missingFolders()).toEqual([]);
+    const again = await m.relaunch(s.id);
+    expect(again).toMatchObject({ id: s.id, role: "tasks", cwd: helpdesk() });
+    for (let i = 0; i < 2; i++) {
+      const command = ptys.at(-1)!.args.join(" ");
+      expect(command).toContain("'--chrome'");
+      expect(command).toContain(quote(HELPDESK_RULES));
+      expect(command).not.toContain("--mcp-config");
+      if (i) break;
+      ptys.at(-1)!.exit(0);
+      expect(await m.resume(s.id)).toMatchObject({ id: s.id, role: "tasks" });
+    }
+  });
+
+  it("is Claude's only, and never starts in, or moves into, a team room's area", async () => {
+    const { m } = await tasksManager();
+    await expect(m.create({ ...tasksPane, agent: "codex" })).rejects.toThrow(/runs Claude only/);
+    await expect(m.create({ ...tasksPane, shell: true })).rejects.toThrow(/runs Claude only/);
+    m.roomOfGroup = (g) => (g.split("/")[0] === "Shared" ? "R1" : null);
+    const n = ptys.length;
+    await expect(m.create({ ...tasksPane, taskGroup: "Shared" })).rejects.toThrow(/never runs in a team room's area: teammates would see your admin consoles/);
+    expect(ptys.length).toBe(n);
+    const s = await m.create(tasksPane);
+    expect(() => m.setGroup(s.id, "Shared/sub")).toThrow(/never runs in a team room's area/);
+    expect(m.list().find((x) => x.id === s.id)!.taskGroup).toBe("Helpdesk");
+    m.setGroup(s.id, "Elsewhere/sub");
+    expect(m.list().find((x) => x.id === s.id)!.taskGroup).toBe("Elsewhere/sub");
+    // nor does its area, renamed onto a room's
+    expect(() => m.renameGroup("Elsewhere", "Shared")).toThrow(/never runs in a team room's area/);
+    expect(m.list().find((x) => x.id === s.id)!.taskGroup).toBe("Elsewhere/sub");
+    m.renameGroup("Elsewhere", "Desk");
+    expect(m.list().find((x) => x.id === s.id)!.taskGroup).toBe("Desk/sub");
+    // closed, its record isn't moved in either
+    m.kill(s.id, false);
+    expect(() => m.setGroup(s.id, "Shared")).toThrow(/never runs in a team room's area/);
+    // any other session moves into a room's area as before
+    const other = await m.create(agentPane);
+    m.setGroup(other.id, "Shared");
+    expect(m.list().find((x) => x.id === other.id)!.taskGroup).toBe("Shared");
+  });
+
+  it("is refused, saying why, by a Claude Code without --chrome; the answer is kept per version, and a read that failed is asked again", async () => {
+    const { m } = await manager();
+    const reads: string[] = [];
+    let help = "Usage: claude [options]\n  --no-chrome  Disable Claude in Chrome integration\n";
+    m.readClaudeHelp = async (bin) => (reads.push(bin), help);
+    m.setAgentVersions({ claude: "2.0.1" });
+    const n = ptys.length;
+    const why = "Claude Code 2.0.1 has no --chrome, which the Helpdesk tasks workspace needs to work in your Chrome: update Claude Code (Settings → Agents → Update), then start it again";
+    await expect(m.create(tasksPane)).rejects.toThrow(why);
+    await expect(m.create(tasksPane)).rejects.toThrow(why);
+    expect(reads).toEqual(["/bin/echo"]);
+    expect(ptys.length).toBe(n);
+    // updated: the new version's --help is read
+    help = CHROME_HELP;
+    m.setAgentVersions({ claude: "2.1.322" });
+    await m.create(tasksPane);
+    expect(reads).toHaveLength(2);
+    // a read that fails says why, and isn't kept
+    m.setAgentVersions({ claude: "2.1.400" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    m.readClaudeHelp = async (bin) => {
+      reads.push(bin);
+      throw new Error("timed out after 20s");
+    };
+    await expect(m.create(tasksPane)).rejects.toThrow("Couldn't check that Claude Code has Claude in Chrome (/bin/echo --help: timed out after 20s), so the Helpdesk tasks workspace didn't start");
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/couldn't read \/bin\/echo --help/));
+    m.readClaudeHelp = async (bin) => (reads.push(bin), CHROME_HELP);
+    await m.create(tasksPane);
+    expect(reads).toHaveLength(4);
+  });
+
+  it("reads --help from the binary it runs, through the login shell", async () => {
+    const dir = tempDir("claude-bins");
+    const standIn = (name: string, help: string) => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, `#!/bin/sh\ncat <<'EOF'\n${help}EOF\n`, { mode: 0o755 });
+      return file;
+    };
+    const old = standIn("old-claude", "Usage: claude [options]\n  --no-chrome  Disable Claude in Chrome integration\n");
+    const current = standIn("claude", CHROME_HELP);
+    const { m, store } = await manager();
+    store.settings.claudeBin = old;
+    m.resetBinCache();
+    await expect(m.create(tasksPane)).rejects.toThrow(/^This Claude Code has no --chrome, .*update Claude Code/);
+    store.settings.claudeBin = current;
+    m.resetBinCache();
+    await m.create(tasksPane);
+    expect(ptys.at(-1)!.args.join(" ")).toContain(`exec ${quote(current)} `);
+  });
+
+  it("is left out of the daily digest, so nothing it read reaches another agent", async () => {
+    const { m } = await tasksManager();
+    await m.create(tasksPane);
+    const other = await m.create(agentPane);
+    expect(m.digest().map((d) => d.info.id)).toEqual([other.id]);
   });
 });
