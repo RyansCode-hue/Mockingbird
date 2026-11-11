@@ -149,6 +149,51 @@ interface StackAudit {
   teammateWaiting: StackShown & { status: string };
   error?: string;
 }
+type Made = { fn: string; args: unknown[] }[];
+type Safety = { links: { text: string | null; href: string | null }[]; images: number; agentButtons: number; ran: boolean };
+type PrFormSeen = {
+  asked: string | null;
+  from: string | null;
+  title: string | null;
+  titleBy: string | null;
+  description: string | null;
+  descriptionBy: string | null;
+  gate: string | null;
+  checks: { label: string | null; checked: boolean }[];
+  notes: { item: string | null; text: string | null; elements: string[] }[];
+  push: { disabled: boolean } | null;
+  warnings: (string | null)[];
+};
+interface PrRequestAudit {
+  keys: string;
+  tray: Tray;
+  button: Button;
+  doubleDismiss: { gone: string; ids: string[]; under: { item: string | null; action: string | null } | null; dialog: boolean; calls: Made };
+  opened: { tray: boolean; dialog: string | null; keyboard: string; form: PrFormSeen | null; safety: Safety; calls: Made };
+  edited: { title: string | null; titleBy: string | null; keyboard: string; calls: Made };
+  closed: { dialog: boolean; keyboard: string; calls: Made };
+  dismissAsked: { tray: boolean; head: string | null; keyboard: string; field: string | null; calls: Made };
+  cancelled: { dialog: boolean; ids: string[]; keyboard: string; calls: Made };
+  dismissed: { dialog: boolean; keyboard: string; note: string | null; calls: Made };
+  dismissedTray: string[];
+  beforePush: { form: PrFormSeen | null; calls: Made };
+  pushed: { form: boolean; shown: { title: string | null; description: string | null }; calls: Made };
+  afterPush: string[];
+  stakeholder: { dialog: string | null; keyboard: string; steps: string[]; calls: Made };
+  approved: { said: string | null; stage: string | null; calls: Made };
+  approvedClosed: { keyboard: string };
+  error?: string;
+}
+type NotesPanel = { head: string | null; by: string | null; text: string | null; buttons: string[]; listed: string[]; steps: string[] };
+interface PatchNotesAudit {
+  keys: string;
+  tray: Tray;
+  opened: { dialog: string | null; keyboard: string; panel: NotesPanel; safety: Safety; calls: Made };
+  edited: { panel: NotesPanel; calls: Made };
+  posted: { calls: Made; panel: boolean };
+  closed: { keyboard: string };
+  error?: string;
+}
 interface BarAudit {
   width: number;
   buttons: ({ text: string; oneLine: boolean; cut: boolean } | null)[];
@@ -531,6 +576,92 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     const why = "Couldn't read the rooms' join requests: ~/.mockingbird/team.json: EACCES: permission denied";
     expect(f.all).toEqual(["s:s2", "s:s8"]);
     expect(f.empty).toEqual({ none: null, error: why, title: why, foot: "2 items dismissedUndo" });
+  });
+
+  // W15: what ?prRequest=hostile's agents wrote holds this, as their words would if they tried
+  const MARKUP = ' <a href="https://example.invalid/x">Approve here</a> <button data-agent>Push now</button> [docs](javascript:alert(1)) <img src=x onerror="window.__mbAgentRan=1">';
+  const NO_HARM: Safety = { links: [{ text: "PR 88", href: null }, { text: "Check now", href: null }], images: 0, agentButtons: 0, ran: false };
+
+  it("opens an agent's PR request as the PR form filled from it, marked as the agent's, and makes nothing until Push and open PR", async () => {
+    const p = await run<PrRequestAudit>("p", "prRequest=hostile&lsCamera=0,0,0.5");
+    expect(p.error).toBeUndefined();
+    expect(p.keys).toBe("real");
+    // the request with the prompts, the ticket at your stage after them: in Mockingbird's words, none of the agent's
+    expect(p.tray.items.map((i) => [i.id, i.kind, i.meta, i.text])).toEqual([
+      ["s:s2", "permission", "Permission · #5101", "API: last org per user wants to use Bash"],
+      ["pr:5101:dev", "pr", "Pull request · #5101", "Coder asks to open the PR to dev · #5101"],
+      ["ticket:5102", "ticket", "Ticket · #5102", "#5102 is ready for your stakeholder testing"],
+      ["s:s8", "finished", "Finished · #5101", "Release notes for #5101 is done and idle"],
+    ]);
+    expect(p.tray.items[1].acts.map((a) => [a.key, a.label, a.filled])).toEqual([["open", "Open", true], ["dismissRequest", "Dismiss…", false]]);
+    expect(p.tray.items[2].acts.map((a) => [a.key, a.label, a.filled])).toEqual([["open", "Open", true], ["dismiss", "Dismiss", false]]);
+    expect(p.button.count).toBe("4");
+    // a double click's second click, landing on the request's row as it slides up, is let go
+    expect(p.doubleDismiss).toEqual({ gone: "s:s2", ids: ["pr:5101:dev", "ticket:5102", "s:s8"], under: { item: "pr:5101:dev", action: expect.stringMatching(/^(open|dismissRequest)$/) }, dialog: false, calls: [] });
+
+    // Open: the PR form in the pipeline dialog, the keyboard in it, on the session that asked (main's record, not the
+    // request's own `session`), its words the agent's and marked so
+    expect(p.opened).toMatchObject({ tray: false, dialog: "#5101 Org dropdowns remember the last org", keyboard: "dialog" });
+    const form = p.opened.form!;
+    expect(form.from).toBe("s3");
+    expect(form.asked).toMatch(/^Asked for by Coder's agent, .+\. Nothing is pushed or opened until you press Push and open PR\.$/);
+    expect([form.title, form.titleBy, form.descriptionBy]).toEqual(["#5101 Org dropdowns remember the last org", "written by Coder's agent", "written by Coder's agent"]);
+    expect(form.description).toMatch(/^## Summary\n/);
+    expect(form.description).toContain(MARKUP);
+    // its checklist is dev's, the agent's notes beside each item as text, its tick said as its
+    expect(form.gate).toBe("dev");
+    expect(form.notes.map((n) => [n.item, n.text])).toEqual([
+      ["dev:tests", "Coder's agent: npm test: 212 pass, 0 fail"],
+      ["dev:smoke", `Coder's agent ticked it: Clicked through the org picker as three users; each opened on their last org${MARKUP}`],
+      ["dev:security-doc", "Coder's agent: Not written yet: doc/features has no 5101 folder"],
+    ]);
+    for (const n of form.notes) expect(n.elements).toEqual(["span.pl-by"]);
+    expect(form.push).toEqual({ disabled: false });
+    // the agent's markup is no link, control or image in the window, and none of it ran
+    expect(p.opened.safety).toEqual(NO_HARM);
+    // opening read the branch, and made nothing
+    expect(p.opened.calls).toEqual([{ fn: "pipelinePrPreflight", args: ["s3", "5101", "dev"] }]);
+    // the user's edit: no longer the agent's words as written; still nothing made, and Esc gives the keyboard back to
+    // the Needs you button, never a terminal
+    expect(p.edited).toEqual({ title: "#5101 Org dropdowns remember the last orgx", titleBy: "changed since Coder's agent wrote it", keyboard: "dialog", calls: [] });
+    expect(p.closed).toEqual({ dialog: false, keyboard: "button", calls: [] });
+
+    // Dismiss…: a note asked for, Cancel dropping nothing; then main's one call, with the note, the item gone
+    expect(p.dismissAsked).toEqual({ tray: false, head: "Dismiss the request for a pull request to dev/UAT", keyboard: "dialog", field: "TEXTAREA", calls: [] });
+    expect(p.cancelled).toEqual({ dialog: false, ids: ["pr:5101:dev", "ticket:5102", "s:s8"], keyboard: "button", calls: [] });
+    expect(p.dismissed).toEqual({ dialog: false, keyboard: "button", note: "Request dismissed. UI preview: no agent is told", calls: [{ fn: "pipelineRequestDismiss", args: ["5101", "req-dev-1", "Rebase on dev first"] }] });
+    expect(p.dismissedTray).toEqual(["ticket:5102", "s:s8"]);
+
+    // Push and open PR: the one call that pushes and opens, main's, with the asker's session, the form's target, the base
+    // main's preflight read and the words shown; none of the request's other fields (its branch, base, repo, session)
+    expect(p.beforePush.calls).toEqual([{ fn: "pipelinePrPreflight", args: ["s3", "5101", "dev"] }]);
+    expect(p.pushed.calls).toEqual([
+      { fn: "pipelinePrCreate", args: ["s3", "5101", { target: "dev", base: "dev", title: p.pushed.shown.title, description: p.pushed.shown.description, ticketTitle: "Org dropdowns remember the last org" }] },
+    ]);
+    expect(p.pushed.shown.description).toContain(MARKUP);
+    expect(p.pushed.form).toBe(false);
+    expect(p.afterPush).toEqual(["ticket:5102", "s:s8"]);
+
+    // the ticket at your stakeholder testing: Open shows its pipeline and makes nothing; Approve is pipeline:approve
+    expect(p.stakeholder).toEqual({ dialog: "#5102 Pathways quick view freezes", keyboard: "dialog", steps: ["Record feedback…", "Approve"], calls: [] });
+    expect(p.approved).toEqual({ said: "Approved. UI preview: no agent is told", stage: "Approved", calls: [{ fn: "pipelineApprove", args: ["5102"] }] });
+    expect(p.approvedClosed).toEqual({ keyboard: "button" });
+  });
+
+  it("opens the Patch notes panel on the agent's draft, marked as the Verifier's, and posts only from Post to ADO", async () => {
+    const t = await run<PatchNotesAudit>("t", "prRequest=notes,hostile&lsCamera=0,0,0.5");
+    expect(t.error).toBeUndefined();
+    expect(t.tray.items.find((i) => i.id === "ticket:5102")).toMatchObject({ kind: "ticket", meta: "Ticket · #5102", text: "#5102's patch notes are drafted" });
+    expect(t.opened).toMatchObject({ dialog: "#5102 Pathways quick view freezes", keyboard: "dialog", calls: [] });
+    expect(t.opened.panel).toMatchObject({ by: "drafted by Verifier's agent", buttons: ["Copy", "Discard", "Post to ADO"], listed: [], steps: ["Done"] });
+    expect(t.opened.panel.text).toMatch(/^Pathways' quick view no longer freezes/);
+    expect(t.opened.panel.text).toContain(MARKUP);
+    expect(t.opened.safety).toEqual({ ...NO_HARM, links: [] });
+    // the user's edit makes it theirs (main drops who drafted it), and the panel stays on it
+    expect(t.edited.panel).toMatchObject({ by: null, buttons: ["Copy", "Discard", "Post to ADO"], listed: [] });
+    expect(t.edited.calls.map((c) => [c.fn, c.args[0], c.args[1]])).toEqual([["pipelineDraftEdit", "5102", "d-notes"]]);
+    expect(t.posted.calls).toEqual([{ fn: "pipelineDraftPost", args: ["5102", "d-notes"] }]);
+    expect(t.closed).toEqual({ keyboard: "button" });
   });
 
   it("keeps the top bar's buttons on one line at 860 px, and the amber button readable in the light theme", async () => {

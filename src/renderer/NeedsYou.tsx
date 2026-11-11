@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { SessionInfo } from "../shared/types";
+import type { SessionInfo, TicketPipeline } from "../shared/types";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import { LOOSE_GROUP } from "../shared/landscape";
 import { agoShort, plural } from "../shared/format";
@@ -25,6 +25,8 @@ export interface NeedsYouState {
   isDismissed: (item: NeedsItem) => boolean;
   /** Why the rooms' join requests couldn't be read (the team status failed), or null: no requests listed then isn't "none". */
   joinError: string | null;
+  /** Why the ticket pipelines couldn't be read, or null: no pull request requests or tickets listed then isn't "none". */
+  pipelineError: string | null;
 }
 
 /** Where dismissals are kept between launches (a view preference, never landscape.json). */
@@ -40,11 +42,12 @@ export function useNeedsYou(
   asks: readonly { request: JoinRequestSummary; room: TeamRoomSummary }[],
   areaOf: (s: SessionInfo) => string,
   titleOf: (s: SessionInfo) => string,
-  joinError: string | null
+  joinError: string | null,
+  pipelines: { all: Readonly<Record<string, TicketPipeline>>; error: string | null } = { all: {}, error: null }
 ): NeedsYouState {
   const [saved, setSaved] = usePersisted<unknown>(DISMISSED_PREF, []);
   const list = useMemo(() => dismissedFrom(saved), [saved]);
-  const all = needsItems(sessions, asks, areaOf, titleOf);
+  const all = needsItems(sessions, asks, areaOf, titleOf, pipelines.all);
   const items = shownItems(all, list);
   // the same items in the same areas give the same counts, so what's memoized on them (the area tree) holds
   const shape = items.map((i) => `${i.sig}@${i.area}`).join("\n");
@@ -67,11 +70,12 @@ export function useNeedsYou(
     undismiss: (item) => setSaved((d: unknown) => undismiss(dismissedFrom(d), item)),
     isDismissed: (item) => list.some((d) => d.sig === item.sig),
     joinError,
+    pipelineError: pipelines.error,
   };
 }
 
 /** The dot before an item's kind: amber while something waits on you, grey for what's only done. */
-const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", join: "waiting", finished: "idle" };
+const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", pr: "waiting", join: "waiting", ticket: "waiting", finished: "idle" };
 
 /** The actions that answer a teammate's ask to type (needsActions). */
 const ANSWERS = new Set(["allow", "deny"]);
@@ -90,6 +94,9 @@ const stepOf = (e: React.KeyboardEvent): 1 | -1 | null => (e.metaKey || e.ctrlKe
  * Allow and Deny let someone type in a session, so they take only a pointer's click, as the strip's do: never a Tab
  * stop, Enter or Space; never on a row that has just arrived or moved, or within a double click of another answer or
  * Dismiss; and the row's buttons are off from the click until main has answered (and its row gone, once it has).
+ * A ticket's Open and a request's Dismiss… only open a dialog, which changes nothing until its own button: they take
+ * Go there's guard (none within a double click of an answer or Dismiss), and the dialog opening puts the tray away,
+ * the keyboard coming back to the button when it closes.
  */
 export function NeedsYou({
   state,
@@ -215,10 +222,12 @@ export function NeedsYou({
         aria-expanded={open}
         title={
           n
-            ? `${needsLabel(n)}: permission prompts, questions, teammates asking to type, join requests and finished sessions (N goes to the next on the landscape)`
+            ? `${needsLabel(n)}: permission prompts, questions, teammates asking to type, agents asking for pull requests, join requests, tickets at your stages and finished sessions (N goes to the next on the landscape)`
             : state.joinError
               ? `Couldn't read the rooms' join requests: ${state.joinError}`
-              : "Nothing needs you right now"
+              : state.pipelineError
+                ? `Couldn't read the ticket pipelines: ${state.pipelineError}`
+                : "Nothing needs you right now"
         }
         onClick={() => setOpen((o) => !o)}
         onKeyDown={(e) => {
@@ -243,7 +252,12 @@ export function NeedsYou({
                 Couldn't read the rooms' join requests: {state.joinError}
               </div>
             )}
-            {!n && !state.joinError && <div className="ny-none">Nothing needs you right now.</div>}
+            {state.pipelineError && (
+              <div className="ny-err" title={state.pipelineError}>
+                Couldn't read the ticket pipelines: {state.pipelineError}
+              </div>
+            )}
+            {!n && !state.joinError && !state.pipelineError && <div className="ny-none">Nothing needs you right now.</div>}
             {state.items.map((item) => (
               <div key={item.id} className={`ny-item k-${item.kind} ${current === item.id ? "on" : ""}`} data-item={item.id}>
                 <div className="ny-meta">

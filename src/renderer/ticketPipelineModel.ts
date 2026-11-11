@@ -1,4 +1,4 @@
-import { isTicketStage, stageStep, TICKET_STAGES, type PipelinePr, type PrTarget, type StoredStage, type TicketStage } from "../shared/types";
+import { isTicketStage, stageStep, TICKET_STAGES, type AgentTold, type CommentDraft, type PipelinePr, type PrTarget, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
 import { ago, plural } from "../shared/format";
 
 /**
@@ -41,7 +41,9 @@ export function railOf(stage: StoredStage | null): RailStep[] {
 export type NextStep =
   | { kind: "stage"; label: string; to: TicketStage; primary: boolean }
   | { kind: "pr"; label: string; target: PrTarget }
-  | { kind: "feedback"; label: string };
+  | { kind: "feedback"; label: string }
+  /** Stage 6's approval (pipeline:approve): Approved, and the agent that asked for the PR to dev told to prepare main's. */
+  | { kind: "approve"; label: string };
 
 const move = (label: string, to: TicketStage, primary = true): NextStep => ({ kind: "stage", label, to, primary });
 
@@ -52,7 +54,7 @@ const NEXT: Record<TicketStage, NextStep[]> = {
   "local-test": [{ kind: "pr", label: "Create PR to dev…", target: "dev" }],
   "pr-dev": [move("Merged — AI testing in dev/UAT", "dev-test")],
   "dev-test": [move("Ready for stakeholder testing", "stakeholder")],
-  stakeholder: [{ kind: "feedback", label: "Record feedback…" }, move("Approve", "approved")],
+  stakeholder: [{ kind: "feedback", label: "Record feedback…" }, { kind: "approve", label: "Approve" }],
   approved: [{ kind: "feedback", label: "Record feedback…" }, { kind: "pr", label: "Create PR to main…", target: "main" }],
   "pr-main": [{ kind: "feedback", label: "Record feedback…" }, move("Merged — AI testing in staging/prod", "prod-test")],
   "prod-test": [move("Write patch notes", "comms")],
@@ -87,3 +89,20 @@ export function markMergedQuestion(pr: Pick<PipelinePr, "provider" | "id" | "tar
   const why = pr.closedAt ? "Its provider says it was closed without merging." : "Mockingbird can't read whether it merged.";
   return `Mark ${prLabel(pr)}${pr.repo ? ` in ${pr.repo}` : ""} merged? ${why} The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent.`;
 }
+
+/** The checklist a pull request to `target` is opened against: dev's before dev/UAT, staging's before main (request_pr's gate_notes). */
+export const gateOfPr = (target: PrTarget): "dev" | "staging" => (target === "dev" ? "dev" : "staging");
+
+/** The stages patch notes are written at (write_patch_notes' own): AI testing in staging/prod and Patch notes. */
+export const notesStage = (stage: StoredStage | undefined): boolean => stage === "prod-test" || stage === "comms";
+
+/**
+ * The agent's patch notes draft (write_patch_notes) while the ticket is at a stage they're written at, or undefined: a
+ * Patch notes draft an agent wrote (`by`), which the user hasn't edited (an edit makes it theirs). There's one at most:
+ * a newer one replaces it.
+ */
+export const agentPatchNotes = (p: Pick<TicketPipeline, "drafts" | "stage">): CommentDraft | undefined =>
+  notesStage(p.stage) ? (p.drafts ?? []).filter((d) => d.stage === "comms" && !!d.by).at(-1) : undefined;
+
+/** Who heard the user's word (pipeline:approve, pipeline:request:dismiss), as main answered it: told, or why nobody was. */
+export const toldLine = (t: AgentTold): string => ("told" in t ? `Told ${t.title} (${t.told}).` : t.notTold || "No agent was told.");

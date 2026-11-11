@@ -3603,6 +3603,180 @@ branch about one run in four, even run alone, and never in 20 runs of a67814b.
 - Tests: `test/needsYou.test.ts`; `?landscapeNeedsAudit` gains a part; the form
   opens filled and creates nothing until its button.
 
+#### W15 as built
+
+**Needs you** (`needsYouModel.ts`). `NeedsKind` gains `pr` (rank 0, with the prompts) and
+`ticket` (rank 1, with join requests). `needsItems` takes the window's pipelines
+(`usePipelinesRead`), and `pipelineItems` makes a ticket's:
+- **`pr`**, one per held request (`requests`): "Coder asks to open the PR to dev ·
+  #4182", `id` `pr:<ticket>:<target>`, `sig` by the request's id, so a newer request is
+  a new state.
+- **`ticket`**: at `stakeholder`, "#4182 is ready for your stakeholder testing" (its
+  `sig` the arrival's time, so a dismissed one comes back after a rework); with an
+  agent's patch notes at `prod-test` or `comms` (`agentPatchNotes`: a comms draft with
+  `by`, which the user's edit drops), "#4182's patch notes are drafted".
+- **The words are Mockingbird's.** An item says the asker's title as main recorded it
+  (`fromTitle`) and nothing the agent wrote: its title, description and notes stay in
+  the form, marked as the agent's.
+- **Where N goes** (`ticketPlace`): the session main recorded (the asker, the draft's
+  `from`, the latest PR to dev's `by`) while it's on the ticket and this install's
+  (`notMine`), else another of this install's on the ticket, else none. With none,
+  `targetOf` says "No workspace on #4182 is open here: Open shows its pipeline", and
+  `toNeeds` still moves N's place to it, so the next N goes past it.
+- **Actions** (`needsActions`' `open` and `dismissRequest`): **Open** is the main
+  action in place of Go there. **Dismiss…** on a `pr` item replaces the tray's Dismiss:
+  a request turned down tells its agent, so it isn't the tray's undoable hiding. A
+  `ticket` item keeps Dismiss.
+- **The tray's guards.** Open and Dismiss… only open a dialog, which changes nothing
+  until its own button. They take Go there's guard: none within a double click of a
+  Dismiss or an answer (`guarded()`). The dialog opening puts the tray away and hands
+  the keyboard back to the Needs you button for when it closes (`DIALOG_OPENED`), so
+  opening a form never moves the keyboard into a terminal.
+- **Failures.** The tray says "Couldn't read the ticket pipelines: …" (and the button's
+  title, when nothing else is listed) rather than that nothing needs you.
+
+**Open** (`main.tsx`'s `openTicketItem`): the pipeline dialog, its new `openRequest`
+naming the request. The panel opens its PR form on the request's target, or says the
+request has gone (answered, replaced or dismissed). The dialog's sessions now include
+every session `ticketOfSession` puts on the ticket (main's ticket tools' rule), so the
+asker is always among them.
+
+**The PR form** (`PrForm`, `request`, `pipeline`):
+- **Filled from the request it opened on** (kept in state, so the PR answering it or a
+  dismissal doesn't empty the form). Its session is the request's `from`, main's
+  record of the token's session. Its title and description are the agent's, marked
+  "written by Coder's agent" until changed ("changed since Coder's agent wrote it").
+  Nothing else is read from the request.
+- **Main's records, not the request's.** The target is the request's `target`, which
+  main validated and keeps. The branch, base choices, repository and remote come from
+  the preflight on the session's folder, and `pipeline:pr:create` checks them again.
+  `?prRequest=hostile` gives the fixture request `branch`, `base`, `repo`, `provider`
+  and `session` fields: none reaches the call.
+- **"Asked for by Coder's agent, 6m ago. Nothing is pushed or opened until you press
+  Push and open PR."** with **Dismiss the request…** inline, and a warning when the
+  asker isn't open (the session picker then shows).
+- **The checklist it's opened against** (`gateOfPr`: dev's before dev/UAT, staging's
+  before main) is drawn in the form, and the stage's place leaves it out meanwhile.
+  `Gate` shows each agent note under its item (`pl-gnote`): "Coder's agent: …", or
+  "Coder's agent ticked it: …" for the agent's own tick.
+- **Push and open PR** is still the only call that pushes and opens
+  (`pipeline:pr:create`, main), from the form's own handler. Room panes can't push, so
+  this is their only path.
+
+**Agents' text is text.** Titles, descriptions, gate notes and patch notes go into
+`<input>`, `<textarea>` and text nodes only. Nothing is rendered as HTML or Markdown,
+and nothing is linkified. Main already strips bidi and zero-width characters
+(`agentText`, W14 L3).
+
+**Dismissing** (`RequestDismiss`, `RequestDismissDialog`): a note field, Cancel, and
+**Dismiss the request**, which is `pipeline:request:dismiss` with the note. Main's
+answer is said (`toldLine`): on the landscape for the tray's dialog, in the panel for
+the form's.
+
+**Approve** is `NextStep` kind `approve`, calling `pipeline:approve`. The panel says
+what main answered: "Approved. Told Coder (queued, …)." or why nobody was told.
+
+**Patch notes** (`PatchNotes`): with the agent's draft, the panel opens on it.
+- It's marked "drafted by Verifier's agent", with **Copy**, **Discard** and **Post to
+  ADO**. Posting is `DraftRow`'s, the Drafts list's own row, now shared. **Done** stays
+  the next step.
+- The Drafts list leaves that draft out.
+- The user's edit makes it theirs (main's `editDraft` drops `by`), and the panel stays
+  on it (`notesOn`).
+- Without an agent's draft, the panel is today's.
+- It shows at `prod-test` too, where `write_patch_notes` writes.
+
+**Shared:** `agentNamed` (`shared/types.ts`) is the one wording of an agent's `by`.
+`ticketTools`' `agentBy` uses it, and so does the window's mark.
+
+**The panel** also lists held requests ("Pull requests asked for", with **Open the form**).
+A request from Coding has no Create PR step to reach it otherwise.
+
+**Preview.** Each `?prRequest` flag sets up one fixture:
+- `?prRequest`: s3 ("Coder", not the ticket's first session) asks for the PR to dev on
+  5101, with notes on dev's checklist and one tick of its own. 5102 waits at
+  Stakeholder testing.
+- `=notes`: 5102 is at Patch notes instead, with the Verifier's (s5) draft.
+- `=hostile`: the agents' words carry `<a>`, `<button>`, `<img onerror>` and a
+  `javascript:` link.
+
+The preflight is clean under `?prRequest`, and `pipelinePrCreate` answers as `addPr`
+does. `pipelineDraftEdit` is new in the stub (drops `by`, as main's).
+`?needsTray&needsOpen=<item>` presses an item's Open for shots.
+
+**Tests:**
+- `needsYou.test.ts`: the items, their order, words and states; patch notes only an
+  agent's at their stages; where N goes (teammates' and taken-over copies never); the
+  action rows.
+- `ticketPipelineModel.test.ts`:
+  - Approve as `pipeline:approve`.
+  - `agentPatchNotes`, `gateOfPr`, `toldLine`, and `agentBy` equal to `agentNamed`.
+  - A read of the renderer: `pipelinePrCreate`, `pipelineRequestDismiss`,
+    `pipelineApprove` and `pipelineDraftPost` are each called from
+    `TicketPipeline.tsx` only, never from an effect.
+  - Create is in Push and open PR's handler.
+  - No `dangerouslySetInnerHTML`, `innerHTML`, Markdown or linkify in the four files.
+- `uiLandscapeNeeds`: two parts, both with real keys and mouse.
+  - `=p` checks:
+    - the tray's rows;
+    - a double click's second click let go on the request's row;
+    - Open's filled form, marks, notes and checklist;
+    - the hostile markup as text: no link with an href, no image or agent button, and
+      none of it run;
+    - only `pipelinePrPreflight` on Open;
+    - nothing on the edit or on Esc, with the keyboard back on the button;
+    - Dismiss… asking first, Cancel making nothing, then the one
+      `pipelineRequestDismiss`;
+    - Push and open PR the one `pipelinePrCreate`, with `s3`, `dev`, `dev` and the
+      words shown, none of the request's extra fields;
+    - the stakeholder ticket's Open making nothing, and Approve the one
+      `pipelineApprove`.
+  - `=t`: the notes panel on the Verifier's draft making nothing on Open, the edit
+    making it the user's, and Post to ADO the one `pipelineDraftPost`.
+
+**Where this differs from the spec, or reads it:**
+- "drafted by Verifier" shows as "drafted by Verifier's agent": main's `by`, which W14
+  made the one wording so an agent's text never reads as the user's.
+- "No push, `openPr` or ADO call on Open" is read as no write. Open runs today's
+  preflight, whose open-PR lookup reads the provider, as the form always has.
+- Approve's "not running" answer is said, but the panel offers no Reopen. A reopened
+  session wouldn't hear the line, since nothing sends it again. A follow-up would add
+  "tell again".
+- `PrForm` takes `request` (and the pipeline for its checklist) rather than `initial`.
+  The PR form shows its target's checklist with or without a request.
+
+**Files:** `needsYouModel.ts`, `NeedsYou.tsx`, `workspaceActions.tsx`,
+`TicketPipeline.tsx`, `ticketPipelineModel.ts`, `main.tsx`, `styles.css`,
+`shared/types.ts` (`agentNamed`), `main/ticketTools.ts` (`agentBy`), `stub.ts`,
+`needsYouAudit.ts`.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 193 files
+  pass and 33 skip; 3,191 tests pass and 303 skip.
+- Run alone, without CI: `uiLandscapeNeeds` (17), `uiLandscapeFirstRun` (104) and
+  `uiTyping` (33) pass.
+- Each guard undone in turn (`w15/mutate.py`) fails a test, 18 mutations:
+  - the tray's text carrying the agent's title;
+  - a teammate's or taken-over copy as where an item goes;
+  - a request getting the plain Dismiss;
+  - patch notes taken at any stage;
+  - Approve as a stage move, in the model or the panel;
+  - a second caller of `pipelinePrCreate`;
+  - a gate note or the description drawn as HTML;
+  - main's agent wording drifting from the window's;
+  - the form on the first session, or on the request's own `session`;
+  - the push taking the request's `base`;
+  - the form creating once filled;
+  - Open and Dismiss… without the double click's guard;
+  - Dismiss… dropping the request with no note asked;
+  - the agent's patch notes posted as the panel opens;
+  - closing the form leaving the keyboard in a terminal.
+- Two mutations no test catches, because the property holds through them:
+  - Open also going there, which arms the landscape: the dialog still hands the
+    keyboard back to the Needs you button.
+  - Open also jumping to the asker's terminal: the dialog opening cancels the jump's
+    keyboard move (`revealStamp`, S8b).
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn

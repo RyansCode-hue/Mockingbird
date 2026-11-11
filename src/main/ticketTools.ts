@@ -13,7 +13,7 @@ import {
 import { REDACTED, redactSecrets } from "./wirePrompt";
 import { onlyArgs } from "./wireTools";
 import { oneLine, plainLine, quoted } from "../shared/team/agentText";
-import { BY_YOU, GATES, personTicks, stageLabel, ticketOfSession, type AgentTold, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
+import { BY_YOU, GATES, agentNamed, personTicks, stageLabel, ticketOfSession, type AgentTold, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
 import { ROOMS_STARTING } from "../shared/wires";
 
 export interface TicketToolsOptions {
@@ -54,7 +54,7 @@ const nOf = (n: number) => n.toLocaleString("en-US");
 const isMap = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 
 /** Who an agent's change is marked as: its workspace's title, as an agent's, so it never reads as the user's. */
-export const agentBy = (me: Pick<SessionInfo, "title">): string => `${plainLine(me.title, 80) || "an unnamed workspace"}'s agent`;
+export const agentBy = (me: Pick<SessionInfo, "title">): string => agentNamed(plainLine(me.title, 80));
 
 type Text = { text: string; count: number } | { refused: string };
 

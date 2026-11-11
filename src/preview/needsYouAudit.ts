@@ -30,8 +30,16 @@
  * height with and without its count; ⌘N, ⌘K and ⌘P with the tray open, and Esc after each.
  * =s (at the cards' zoom): a stack's card counting its other tabs as the tray and the tree do: a tab on a prompt,
  * dismissed, on a second prompt, finished, and a teammate's tab on a prompt.
+ * =p (with ?prRequest=hostile, W15): an agent's pull request request and a ticket at your stakeholder testing: a double
+ * click's second landing on the request's row let go; Open, its PR form filled from the request, marked as the agent's,
+ * its checklist with the agent's notes, none of its markup made into a link or a control, and nothing made by the open,
+ * the user's edit or Esc; Dismiss…, its note, Cancel and the one call; Push and open PR the one call that pushes,
+ * with main's session and the form's words; the stakeholder ticket's Open and Approve (pipeline:approve). The keyboard
+ * is in the dialog, then back on the button, never in a terminal.
+ * =t (with ?prRequest=notes,hostile): patch notes an agent drafted: Open on them, marked as the Verifier's, the user's
+ * edit making them theirs with the panel staying on them, and Post to ADO the one call that posts.
  */
-import type { SessionInfo } from "../shared/types";
+import type { SessionInfo, TicketPipeline } from "../shared/types";
 import { armFocus } from "../renderer/keyArm";
 
 export interface NeedsAuditEnv {
@@ -49,6 +57,9 @@ export interface NeedsAuditEnv {
   /** The badge sources failing now (stub.ts's ?badgeFail), changeable. */
   badgeFails: Set<string>;
   waitFor: (selector: string, then: (el: HTMLElement) => void, tries?: number) => void;
+  /** The ticket pipelines as main would hold them (stub.ts's), changeable, and telling the window of a change. */
+  pipelines: () => Record<string, TicketPipeline>;
+  pipelinesChanged: () => void;
 }
 
 type Box = { x: number; y: number; w: number; h: number };
@@ -197,6 +208,8 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
       else if (part === "e") await closedPart(env, out);
       else if (part === "f") await aroundDismissPart(out);
       else if (part === "s") await stackCardPart(env, out);
+      else if (part === "p") await prPart(env, out);
+      else if (part === "t") await notesPart(env, out);
       else await badgePart(env, out);
     } catch (err) {
       out.error = String((err as Error)?.stack ?? err);
@@ -841,4 +854,193 @@ async function badgePart(env: NeedsAuditEnv, out: Record<string, unknown>): Prom
     await sleep(500);
     out.metersBack = { failing, todayFailing, ...back, pushed: { note: note(), cost: cost(), today: today() } };
   }
+}
+
+// ---- W15: an agent's pull request request and the tickets at your stages ----
+
+/** The calls besides the pipelines' that change something or reach a provider: none may be made before its own button. */
+const WRITES = new Set(["scmPush", "scmCommit", "adoAddComment", "adoUpdate", "adoSetTags", "adoMoveToColumn", "adoReorder", "sessionWrite", "createSession"]);
+/** The pipeline calls and the writes made since call `mark` (env.calls' length then), with their arguments. */
+const madeSince = (env: NeedsAuditEnv, mark: number) => env.calls.slice(mark).filter((c) => c.fn.startsWith("pipeline") || WRITES.has(c.fn)).map((c) => ({ fn: c.fn, args: c.args }));
+const dialog = () => document.querySelector<HTMLElement>(".modal-back .modal");
+/** Where the keyboard is, a dialog included. */
+const keysAt = () => (document.activeElement?.closest(".modal") ? "dialog" : keyboard());
+/** Set a React-controlled field's value as typing would, all at once. */
+function fill(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+const buttonOf = (root: ParentNode | null | undefined, label: string) => [...(root?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((b) => b.textContent?.trim() === label) ?? null;
+/** A dialog's button clicked as a person would, once it's scrolled into the dialog's view. */
+async function clickInView(el: Element) {
+  el.scrollIntoView({ block: "center" });
+  await sleep(150);
+  await clickOn(el);
+}
+async function until(test: () => unknown, tries = 40): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    if (test()) return true;
+    await sleep(100);
+  }
+  return false;
+}
+/**
+ * What agent-written text became in `root`: links (and their hrefs), images, and the buttons and bold its markup would
+ * make, and whether a script of its ran. Mockingbird's own links have no href (openLink).
+ */
+const safety = (root: HTMLElement | null) => ({
+  links: [...(root?.querySelectorAll("a") ?? [])].map((a) => ({ text: a.textContent, href: a.getAttribute("href") })),
+  images: root?.querySelectorAll("img").length ?? 0,
+  agentButtons: [...(root?.querySelectorAll("button") ?? [])].filter((b) => b.hasAttribute("data-agent") || /Push now|Approve here/.test(b.textContent ?? "")).length,
+  ran: !!(window as Window & { __mbAgentRan?: number }).__mbAgentRan,
+});
+/** The PR form as drawn: its fields, whose words they're marked as, its checklist with notes, and its button. */
+const prForm = () => {
+  const f = document.querySelector<HTMLElement>(".pl-prform");
+  if (!f) return null;
+  const fields = [...f.querySelectorAll<HTMLElement>("label.pl-field")];
+  const field = (name: string) => fields.find((l) => l.textContent?.trim().startsWith(name)) ?? null;
+  const push = buttonOf(f, "Push and open PR");
+  return {
+    asked: f.querySelector(".pl-asked .pl-dim")?.textContent ?? null,
+    from: f.querySelector<HTMLSelectElement>("label.pl-field select")?.value ?? null,
+    title: field("Title")?.querySelector("input")?.value ?? null,
+    titleBy: field("Title")?.querySelector(".pl-by")?.textContent ?? null,
+    description: field("Description")?.querySelector("textarea")?.value ?? null,
+    descriptionBy: field("Description")?.querySelector(".pl-by")?.textContent ?? null,
+    gate: f.querySelector<HTMLElement>(".pl-gate")?.dataset.gate ?? null,
+    checks: [...f.querySelectorAll<HTMLElement>(".pl-gate label.pl-check")].map((l) => ({ label: l.textContent, checked: l.querySelector("input")!.checked })),
+    notes: [...f.querySelectorAll<HTMLElement>(".pl-gnote")].map((n) => ({ item: n.dataset.note ?? null, text: n.textContent, elements: [...n.querySelectorAll("*")].map((e) => `${e.tagName.toLowerCase()}.${e.className}`) })),
+    push: push ? { disabled: push.disabled } : null,
+    warnings: [...f.querySelectorAll(".fp-note")].map((n) => n.textContent),
+  };
+};
+
+async function prPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const ids = () => tray().items.map((i) => i.id);
+  armFocus(vp());
+  await openTray();
+  out.tray = tray();
+  out.button = button();
+  // a real double click on the Dismiss above the request: the second click lands on the row that slid up, whatever
+  // button of it is there, and is let go
+  const above = ids()[ids().indexOf("pr:5101:dev") - 1]!;
+  const at = actBtn(above, "dismiss")!.getBoundingClientRect();
+  let mark = env.calls.length;
+  await clickOn(actBtn(above, "dismiss")!, 2);
+  await sleep(300);
+  const under = document.elementFromPoint(at.left + at.width / 2, at.top + at.height / 2)?.closest<HTMLElement>("button");
+  out.doubleDismiss = { gone: above, ids: ids(), under: under ? { item: under.closest<HTMLElement>(".ny-item")?.dataset.item ?? null, action: under.dataset.action ?? null } : null, dialog: !!dialog(), calls: madeSince(env, mark) };
+  await sleep(500);
+
+  // Open: the PR form, filled from the request; it reads the branch and changes nothing
+  mark = env.calls.length;
+  await clickOn(actBtn("pr:5101:dev", "open")!);
+  await until(() => document.querySelector(".pl-prform .pl-facts"));
+  await sleep(300);
+  out.opened = { tray: tray().open, dialog: dialog()?.querySelector("h3")?.textContent ?? null, keyboard: keysAt(), form: prForm(), safety: safety(dialog()), calls: madeSince(env, mark) };
+  // the user's edit: the title isn't the agent's as written any more; still nothing made
+  mark = env.calls.length;
+  document.querySelector<HTMLInputElement>(".pl-prform label.pl-field input[type=text]")!.focus();
+  await press("x");
+  out.edited = { title: prForm()?.title ?? null, titleBy: prForm()?.titleBy ?? null, keyboard: keysAt(), calls: madeSince(env, mark) };
+  // Esc: the dialog goes, the keyboard back on the Needs you button, never in a terminal; nothing made
+  mark = env.calls.length;
+  await press("Escape");
+  await sleep(400);
+  out.closed = { dialog: !!dialog(), keyboard: keysAt(), calls: madeSince(env, mark) };
+
+  // Dismiss…: a note asked for first; Cancel drops nothing
+  const saved = JSON.parse(JSON.stringify(env.pipelines()["5101"].requests));
+  await openTray();
+  mark = env.calls.length;
+  await clickOn(actBtn("pr:5101:dev", "dismissRequest")!);
+  await sleep(500);
+  out.dismissAsked = { tray: tray().open, head: dialog()?.querySelector(".pl-h")?.textContent ?? null, keyboard: keysAt(), field: document.activeElement?.tagName ?? null, calls: madeSince(env, mark) };
+  await clickInView(buttonOf(dialog(), "Cancel")!);
+  await sleep(400);
+  const cancelledKeys = keysAt();
+  await openTray();
+  out.cancelled = { dialog: !!dialog(), ids: ids(), keyboard: cancelledKeys, calls: madeSince(env, mark) };
+  // and with a note, main drops it and tells the agent: the one call, the item gone, the keyboard on the button
+  mark = env.calls.length;
+  await clickOn(actBtn("pr:5101:dev", "dismissRequest")!);
+  await sleep(500);
+  fill(dialog()!.querySelector("textarea")!, "Rebase on dev first");
+  await clickInView(buttonOf(dialog(), "Dismiss the request")!);
+  await sleep(600);
+  out.dismissed = { dialog: !!dialog(), keyboard: keysAt(), note: document.querySelector(".ls-note")?.textContent ?? null, calls: madeSince(env, mark) };
+  await openTray();
+  out.dismissedTray = ids();
+  await closeTray();
+
+  // asked again: Open, then Push and open PR, the one call that pushes and opens, made by main with the form's words
+  // and main's own session, target and base, never the request's other fields
+  env.pipelines()["5101"].requests = saved;
+  env.pipelinesChanged();
+  await sleep(400);
+  await openTray();
+  mark = env.calls.length;
+  await clickOn(actBtn("pr:5101:dev", "open")!);
+  await until(() => document.querySelector(".pl-prform .pl-facts"));
+  await sleep(300);
+  const shown = prForm();
+  out.beforePush = { form: shown, calls: madeSince(env, mark) };
+  mark = env.calls.length;
+  await clickInView(buttonOf(document.querySelector(".pl-prform"), "Push and open PR")!);
+  await sleep(700);
+  out.pushed = { form: !!document.querySelector(".pl-prform"), shown: { title: shown?.title ?? null, description: shown?.description ?? null }, calls: madeSince(env, mark) };
+  await press("Escape");
+  await sleep(400);
+  await openTray();
+  out.afterPush = ids();
+
+  // a ticket at your stakeholder testing: Open shows its pipeline; Approve is the one call, pipeline:approve
+  mark = env.calls.length;
+  await clickOn(actBtn("ticket:5102", "open")!);
+  await sleep(600);
+  out.stakeholder = { dialog: dialog()?.querySelector("h3")?.textContent ?? null, keyboard: keysAt(), steps: [...document.querySelectorAll<HTMLButtonElement>(".pl-now button")].map((b) => b.textContent), calls: madeSince(env, mark) };
+  mark = env.calls.length;
+  await clickInView(buttonOf(document.querySelector(".pl-now"), "Approve")!);
+  await sleep(600);
+  out.approved = { said: document.querySelector(".pl-said")?.textContent ?? null, stage: document.querySelector(".pl-now b")?.textContent ?? null, calls: madeSince(env, mark) };
+  await press("Escape");
+  await sleep(400);
+  out.approvedClosed = { keyboard: keysAt() };
+}
+
+async function notesPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  armFocus(vp());
+  await openTray();
+  out.tray = tray();
+  // Open: the Patch notes panel on the agent's draft, marked as the Verifier's; nothing posted
+  let mark = env.calls.length;
+  await clickOn(actBtn("ticket:5102", "open")!);
+  await sleep(600);
+  const notes = () => document.querySelector<HTMLElement>(".pl-notes");
+  const panel = () => ({
+    head: notes()?.querySelector(".pl-h")?.textContent ?? null,
+    by: notes()?.querySelector(".pl-h .pl-by")?.textContent ?? null,
+    text: notes()?.querySelector("textarea")?.value ?? null,
+    buttons: [...(notes()?.querySelectorAll("button") ?? [])].map((b) => b.textContent),
+    listed: [...document.querySelectorAll<HTMLElement>(".pl-drafts .pl-draft")].map((d) => d.dataset.draft ?? null),
+    steps: [...document.querySelectorAll<HTMLButtonElement>(".pl-now button")].map((b) => b.textContent),
+  });
+  out.opened = { dialog: dialog()?.querySelector("h3")?.textContent ?? null, keyboard: keysAt(), panel: panel(), safety: safety(dialog()), calls: madeSince(env, mark) };
+  // the user's edit makes it theirs (main drops who drafted it), and the panel stays on it
+  mark = env.calls.length;
+  const area = notes()!.querySelector("textarea")!;
+  area.focus();
+  fill(area, `${area.value}\nEdited.`);
+  dialog()!.focus();
+  await sleep(500);
+  out.edited = { panel: panel(), calls: madeSince(env, mark) };
+  // Post to ADO: the one call that posts, at its click
+  mark = env.calls.length;
+  await clickInView(buttonOf(notes(), "Post to ADO")!);
+  await sleep(600);
+  out.posted = { calls: madeSince(env, mark), panel: !!notes() };
+  await press("Escape");
+  await sleep(400);
+  out.closed = { keyboard: keysAt() };
 }

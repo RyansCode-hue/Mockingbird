@@ -1,7 +1,28 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { openLink } from "./uiUtil";
-import { GATES, clearsGates, gateTicks, stageLabel, stageStep, tickOf, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
-import { markMergedQuestion, nextSteps, prMergeNote, railOf } from "./ticketPipelineModel";
+import {
+  BY_YOU,
+  GATES,
+  agentNamed,
+  clearsGates,
+  gateTicks,
+  stageLabel,
+  stageStep,
+  tickOf,
+  isErr,
+  isWorkItemId,
+  type AgentTold,
+  type CommentDraft,
+  type PipelineRequest,
+  type PrPreflight,
+  type PrTarget,
+  type SessionInfo,
+  type StoredStage,
+  type TicketPipeline,
+  type TicketStage,
+  type IpcResult,
+} from "../shared/types";
+import { agentPatchNotes, gateOfPr, markMergedQuestion, nextSteps, notesStage, prMergeNote, railOf, toldLine } from "./ticketPipelineModel";
 import { ago, plural } from "../shared/format";
 import { createIpcStore } from "./ipcStore";
 import { useAction } from "./useAction";
@@ -90,12 +111,15 @@ function StageRail({ stage, onSet, clearing }: { stage: StoredStage | null; onSe
   );
 }
 
-/** One promotion gate's checklist; ticks are kept per ticket. */
+/**
+ * One promotion gate's checklist; ticks are kept per ticket. An agent's report on an item (gate_notes) shows under it
+ * as plain text, marked as the agent's, and so does an agent's tick: the user can untick it.
+ */
 function Gate({ p, gate }: { p: TicketPipeline; gate: (typeof GATES)[number] }) {
   const { run, error } = useAction();
   const done = gate.items.filter((it) => p.checks[`${gate.id}:${it.key}`]).length;
   return (
-    <div className="pl-gate">
+    <div className="pl-gate" data-gate={gate.id}>
       <div className="pl-h">
         {gate.title}
         <span className="pl-count">
@@ -105,11 +129,21 @@ function Gate({ p, gate }: { p: TicketPipeline; gate: (typeof GATES)[number] }) 
       {gate.items.map((it) => {
         const key = `${gate.id}:${it.key}`;
         const tick = tickOf(p, key);
+        const note = p.gateNotes?.[key];
+        const agentTick = tick && tick.by !== BY_YOU ? tick.by : null;
         return (
-          <label key={key} className="check-line pl-check" data-tip={tick ? `Ticked by ${tick.by}, ${ago(tick.at)}` : undefined}>
-            <input type="checkbox" checked={!!p.checks[key]} onChange={(e) => run("check", () => window.mb.pipelineCheck(p.ticketId, key, e.target.checked))} />
-            {it.label}
-          </label>
+          <Fragment key={key}>
+            <label className="check-line pl-check" data-tip={tick ? `Ticked by ${tick.by}, ${ago(tick.at)}` : undefined}>
+              <input type="checkbox" checked={!!p.checks[key]} onChange={(e) => run("check", () => window.mb.pipelineCheck(p.ticketId, key, e.target.checked))} />
+              {it.label}
+            </label>
+            {(note || agentTick) && (
+              <div className="pl-gnote" data-note={key}>
+                <span className="pl-by">{note ? `${note.by}${agentTick === note.by ? " ticked it" : ""}:` : `Ticked by ${agentTick}`}</span>
+                {note && ` ${note.note}`}
+              </div>
+            )}
+          </Fragment>
         );
       })}
       {error && <div className="fp-note err">{error}</div>}
@@ -129,21 +163,49 @@ export interface PipelineProps {
   onOpenScm: (sessionId: string) => void;
   /** After a drafted comment posts, so a visible discussion can reload. */
   onPosted?: () => void;
+  /** An agent's pull request request (Needs you's Open): the PR form opens on it, filled from it. */
+  openRequest?: string;
 }
 
 /**
  * Pushing the branch and opening its pull request, after showing everything
- * that matters first: commits, uncommitted files, the ticket's docs, an open PR.
+ * that matters first: commits, uncommitted files, the ticket's docs, an open PR,
+ * and the checklist it's opened against.
+ *
+ * `request`, an agent's request_pr for this target, fills it: its session is the one that asked (main's record), and
+ * its title and description are the agent's, as plain text marked as the agent's until changed. Nothing else comes
+ * from it: the branch, the repository and what's merged into are read by main from the session's folder, and the push
+ * and the pull request are main's, at Push and open PR, never the asking pane's. Opening, filling or dismissing it
+ * pushes, opens and posts nothing.
  */
-function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, onClose }: Omit<PipelineProps, "details" | "onPosted"> & { target: PrTarget; onClose: () => void }) {
+function PrForm({
+  ticketId,
+  title,
+  target,
+  sessions,
+  pipeline,
+  request,
+  onAskSession,
+  onOpenScm,
+  onDismissed,
+  onClose,
+}: Omit<PipelineProps, "details" | "onPosted" | "openRequest"> & { target: PrTarget; pipeline: TicketPipeline | undefined; request: PipelineRequest | undefined; onDismissed: (told: AgentTold) => void; onClose: () => void }) {
   const live = sessions.filter((s) => s.status !== "dead");
-  const [sid, setSid] = useState(live[0]?.id ?? "");
+  // the request it opened on stays, so a dismissal or the PR answering it doesn't empty the form under the user
+  const [req] = useState(request);
+  const asker = req ? live.find((s) => s.id === req.from) : undefined;
+  const [sid, setSid] = useState(asker?.id ?? live[0]?.id ?? "");
   const [pre, setPre] = useState<IpcResult<PrPreflight & { lookupError: string | null }> | null>(null);
   const [base, setBase] = useState("");
-  const [prTitle, setPrTitle] = useState(`#${ticketId} ${title}`.trim());
-  const [desc, setDesc] = useState("");
+  const [prTitle, setPrTitle] = useState(req?.title ?? `#${ticketId} ${title}`.trim());
+  const [desc, setDesc] = useState(req?.description ?? "");
+  const [dismissing, setDismissing] = useState(false);
   const { doing, run, error } = useAction();
   const [asked, setAsked] = useState("");
+  const by = req ? agentNamed(req.fromTitle) : null;
+  /** Whose words a field holds: the agent's while they're as it wrote them. */
+  const mark = (now: string, was: string) => by && <span className="pl-by">{now === was ? `written by ${by}` : `changed since ${by} wrote it`}</span>;
+  const gate = GATES.find((g) => g.id === gateOfPr(target));
   const seq = useRef(0);
   const load = () => {
     if (!sid) return;
@@ -188,12 +250,26 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
   };
   const docsPrompt = `Write the ticket documentation for #${ticketId} "${title}" following the team's PR workflow: a folder named ${ticketId}-<branch name> in this repo's documentation home (doc/features/ or wherever the repo keeps feature docs — ask me if it's unclear), holding ${ticketId}-Description.md and ${ticketId}-Security_Considerations.md. Don't commit yet.`;
   return (
-    <div className="pl-form">
+    <div className="pl-form pl-prform">
       <div className="pl-h">
         Pull request to {target === "dev" ? "dev/UAT" : "main"}
         <button className="icon" style={{ marginLeft: "auto" }} onClick={onClose} title="Close">✕</button>
       </div>
-      {live.length > 1 && (
+      {req && (
+        <div className="pl-asked">
+          <span className="pl-dim">
+            Asked for by {by}, {ago(req.at)}. Nothing is pushed or opened until you press Push and open PR.
+          </span>
+          {!dismissing && (
+            <button className="mini" onClick={() => setDismissing(true)}>
+              Dismiss the request…
+            </button>
+          )}
+        </div>
+      )}
+      {req && dismissing && <RequestDismiss ticketId={ticketId} request={req} onDone={onDismissed} onCancel={() => setDismissing(false)} />}
+      {req && !asker && <div className="fp-note warn">{req.fromTitle || "The workspace that asked"} isn't open here: the pull request comes from the session picked below.</div>}
+      {(live.length > 1 || (req && !asker)) && (
         <label className="pl-field">
           From
           <select value={sid} onChange={(e) => setSid(e.target.value)}>
@@ -246,7 +322,10 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
           </div>
           {asked && <div className="fp-note">{asked}</div>}
           <label className="pl-field">
-            Title
+            <span>
+              Title
+              {mark(prTitle, req?.title ?? "")}
+            </span>
             <input type="text" value={prTitle} onChange={(e) => setPrTitle(e.target.value)} />
           </label>
           <label className="pl-field">
@@ -255,9 +334,11 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
               <button className="mini" disabled={doing("write") || !base || !p.commits} onClick={write}>
                 {doing("write") ? "Writing…" : "Write it from the branch"}
               </button>
+              {mark(desc, req?.description ?? "")}
             </span>
             <textarea value={desc} onChange={(e) => setDesc(e.target.value)} spellCheck={false} style={{ minHeight: 120 }} placeholder="## Summary…" />
           </label>
+          {pipeline && gate && <Gate p={pipeline} gate={gate} />}
           {blockers.map((b) => (
             <div key={b} className="fp-note warn">{b}</div>
           ))}
@@ -274,57 +355,116 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
   );
 }
 
-/** Drafted comments: edit, post to the ticket's discussion, or discard. Nothing posts without a click. */
-function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
-  const [text, setText] = useState<Record<string, string>>({});
+/**
+ * One drafted comment: edited in place (an edit makes it the user's, main drops who drafted it), posted to the ticket's
+ * discussion, or discarded. Nothing posts without a click. `children` adds buttons before Discard, given the text as
+ * it stands; `meta` false leaves out its stage-and-age line, for where a heading says it.
+ */
+function DraftRow({ p, d, onPosted, meta = true, tall = false, children }: { p: TicketPipeline; d: CommentDraft; onPosted?: () => void; meta?: boolean; tall?: boolean; children?: (text: string) => ReactNode }) {
+  const [edit, setEdit] = useState<string | null>(null);
+  const cur = edit ?? d.text;
   const { doing, run, error } = useAction();
-  if (!p.drafts.length) return null;
   const canPost = isWorkItemId(p.ticketId);
+  const post = async () => {
+    const r = await run("post", async () => {
+      if (cur !== d.text) {
+        const e = await window.mb.pipelineDraftEdit(p.ticketId, d.id, cur);
+        if (isErr(e)) return e;
+      }
+      return window.mb.pipelineDraftPost(p.ticketId, d.id);
+    });
+    if (!isErr(r)) onPosted?.();
+  };
   return (
-    <div className="pl-drafts">
-      <div className="pl-h">Drafted comments <span className="pl-count">{p.drafts.length}</span></div>
-      {p.drafts.map((d) => {
-        const cur = text[d.id] ?? d.text;
-        const post = async () => {
-          const r = await run(`post:${d.id}`, async () => {
-            if (cur !== d.text) {
-              const e = await window.mb.pipelineDraftEdit(p.ticketId, d.id, cur);
-              if (isErr(e)) return e;
-            }
-            return window.mb.pipelineDraftPost(p.ticketId, d.id);
-          });
-          if (!isErr(r)) onPosted?.();
-        };
-        return (
-          <div key={d.id} className="pl-draft">
-            <div className="pl-dim">{stageLabel(d.stage)} · {ago(d.at)}</div>
-            <textarea
-              value={cur}
-              onChange={(e) => setText((t) => ({ ...t, [d.id]: e.target.value }))}
-              onBlur={() => cur !== d.text && run(`edit:${d.id}`, () => window.mb.pipelineDraftEdit(p.ticketId, d.id, cur))}
-              style={{ minHeight: 56 }}
-            />
-            <div className="row">
-              <button className="outline" disabled={doing(`drop:${d.id}`)} onClick={() => run(`drop:${d.id}`, () => window.mb.pipelineDraftDrop(p.ticketId, d.id))}>
-                Discard
-              </button>
-              <button className="primary" disabled={!canPost || doing(`post:${d.id}`) || !cur.trim()} title={canPost ? "Post this comment to the ticket in Azure DevOps" : "Only Azure DevOps work items have a discussion"} onClick={post}>
-                {doing(`post:${d.id}`) ? "Posting…" : "Post to ADO"}
-              </button>
-            </div>
-          </div>
-        );
-      })}
+    <div className="pl-draft" data-draft={d.id}>
+      {meta && (
+        <div className="pl-dim">
+          {stageLabel(d.stage)} · {ago(d.at)}
+          {d.by && (
+            <>
+              {" "}· <span className="pl-by">drafted by {d.by}</span>
+            </>
+          )}
+        </div>
+      )}
+      <textarea value={cur} onChange={(e) => setEdit(e.target.value)} onBlur={() => cur !== d.text && run("edit", () => window.mb.pipelineDraftEdit(p.ticketId, d.id, cur))} style={{ minHeight: tall ? 90 : 56 }} />
       {error && <div className="fp-note err">{error}</div>}
+      <div className="row">
+        {children?.(cur)}
+        <button className="outline" disabled={doing("drop")} onClick={() => run("drop", () => window.mb.pipelineDraftDrop(p.ticketId, d.id))}>
+          Discard
+        </button>
+        <button className="primary" disabled={!canPost || doing("post") || !cur.trim()} title={canPost ? "Post this comment to the ticket in Azure DevOps" : "Only Azure DevOps work items have a discussion"} onClick={post}>
+          {doing("post") ? "Posting…" : "Post to ADO"}
+        </button>
+      </div>
     </div>
   );
 }
 
-/** The patch notes for the people who use the system: drafted by an agent, copied or saved as a comment draft. */
-function PatchNotes({ p, title, details }: { p: TicketPipeline; title: string; details?: string }) {
-  const [text, setText] = useState("");
-  const { doing, run, error, setError } = useAction();
+/** Drafted comments: edit, post to the ticket's discussion, or discard. `exclude` is the one the Patch notes panel shows. */
+function Drafts({ p, onPosted, exclude }: { p: TicketPipeline; onPosted?: () => void; exclude?: string }) {
+  const list = p.drafts.filter((d) => d.id !== exclude);
+  if (!list.length) return null;
+  return (
+    <div className="pl-drafts">
+      <div className="pl-h">
+        Drafted comments <span className="pl-count">{list.length}</span>
+      </div>
+      {list.map((d) => (
+        <DraftRow key={d.id} p={p} d={d} onPosted={onPosted} />
+      ))}
+    </div>
+  );
+}
+
+/** Copy `text` to the clipboard, saying so, or why it couldn't. */
+function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+  const copy = () =>
+    navigator.clipboard.writeText(text).then(
+      () => {
+        setError("");
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      (err) => setError(`Couldn't copy: ${err instanceof Error ? err.message : err}`)
+    );
+  return (
+    <>
+      {error && <span className="fp-note err">{error}</span>}
+      <button className="outline" disabled={!text.trim()} onClick={copy}>
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </>
+  );
+}
+
+/**
+ * The patch notes for the people who use the system. With `draft`, an agent's (write_patch_notes), it opens on it,
+ * marked as drafted by that agent: copying it, posting it to ADO and Done are the user's. Without one: drafted from
+ * the ticket here, copied, or saved as a comment draft.
+ */
+function PatchNotes({ p, title, details, draft, onPosted }: { p: TicketPipeline; title: string; details?: string; draft: CommentDraft | undefined; onPosted?: () => void }) {
+  if (!draft) return <PatchNotesWrite p={p} title={title} details={details} />;
+  return (
+    <div className="pl-form pl-notes">
+      <div className="pl-h">
+        Patch notes
+        {draft.by && <span className="pl-by">drafted by {draft.by}</span>}
+        <span className="pl-dim">· {ago(draft.at)}</span>
+      </div>
+      <DraftRow key={draft.id} p={p} d={draft} onPosted={onPosted} meta={false} tall>
+        {(text) => <CopyButton text={text} />}
+      </DraftRow>
+    </div>
+  );
+}
+
+function PatchNotesWrite({ p, title, details }: { p: TicketPipeline; title: string; details?: string }) {
+  const [text, setText] = useState("");
+  const { doing, run, error } = useAction();
   const draft = async () => {
     const r = await run("draft", () => window.mb.pipelineComms(p.ticketId, title, details ?? ""));
     if (!isErr(r)) setText(r.text);
@@ -335,27 +475,15 @@ function PatchNotes({ p, title, details }: { p: TicketPipeline; title: string; d
     if (!isErr(r)) setText("");
   };
   return (
-    <div className="pl-form">
+    <div className="pl-form pl-notes">
       <div className="pl-h">Patch notes</div>
       <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="What changed, who it affects, anything they need to do." style={{ minHeight: 90 }} />
       {error && <div className="fp-note err">{error}</div>}
       <div className="row">
-        <button className="outline" disabled={doing("draft")} onClick={draft}>{doing("draft") ? "Writing…" : "Draft it from the ticket"}</button>
-        <button
-          className="outline"
-          disabled={!text.trim()}
-          onClick={() =>
-            navigator.clipboard.writeText(text).then(
-              () => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              },
-              (err) => setError(`Couldn't copy: ${err instanceof Error ? err.message : err}`)
-            )
-          }
-        >
-          {copied ? "Copied" : "Copy"}
+        <button className="outline" disabled={doing("draft")} onClick={draft}>
+          {doing("draft") ? "Writing…" : "Draft it from the ticket"}
         </button>
+        <CopyButton text={text} />
         <button className="outline" disabled={!text.trim() || doing("save")} onClick={save}>
           Save as a ticket comment draft
         </button>
@@ -365,24 +493,104 @@ function PatchNotes({ p, title, details }: { p: TicketPipeline; title: string; d
 }
 
 /**
+ * Turning an agent's pull request request down (pipeline:request:dismiss): main drops it and tells its agent, with the
+ * note. Nothing is pushed or opened.
+ */
+function RequestDismiss({ ticketId, request, onDone, onCancel }: { ticketId: string; request: PipelineRequest; onDone: (told: AgentTold) => void; onCancel: () => void }) {
+  const [note, setNote] = useState("");
+  const { doing, run, error } = useAction();
+  const who = request.fromTitle || "the workspace that asked";
+  const go = async () => {
+    const r = await run("dismiss", () => window.mb.pipelineRequestDismiss(ticketId, request.id, note.trim()));
+    if (!isErr(r)) onDone(r.told);
+  };
+  return (
+    <div className="pl-form pl-dismiss">
+      <div className="pl-h">Dismiss the request for a pull request to {request.target === "dev" ? "dev/UAT" : "main"}</div>
+      <textarea autoFocus value={note} onChange={(e) => setNote(e.target.value)} placeholder={`A note for ${who}: why, or what to do first (optional)`} style={{ minHeight: 60 }} />
+      {error && <div className="fp-note err">{error}</div>}
+      <div className="row">
+        <span className="pl-dim">Nothing is pushed or opened. {who} is told, with your note.</span>
+        <button className="outline" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary" disabled={doing("dismiss")} onClick={go}>
+          {doing("dismiss") ? "Dismissing…" : "Dismiss the request"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Needs you's Dismiss… on an agent's pull request request: the note asked for, then main's answer said by `onDone`. */
+export function RequestDismissDialog({ ticketId, requestId, onDone, onClose }: { ticketId: string; requestId: string; onDone: (line: string) => void; onClose: () => void }) {
+  const now = usePipelines()[ticketId]?.requests?.find((r) => r.id === requestId);
+  // the request it opened on, kept while main drops it: the dialog isn't emptied under the user as it goes
+  const seen = useRef(now);
+  seen.current = now ?? seen.current;
+  const request = seen.current;
+  return (
+    <Modal className="modal pl-modal pl-dismiss-dlg" onClose={onClose}>
+      <h3>#{ticketId}: a pull request asked for</h3>
+      <div className="pl">
+        {request ? (
+          <RequestDismiss
+            ticketId={ticketId}
+            request={request}
+            onDone={(told) => {
+              onDone(`Request dismissed. ${toldLine(told)}`);
+              onClose();
+            }}
+            onCancel={onClose}
+          />
+        ) : (
+          <div className="fp-note">That request has gone: it was answered, replaced or dismissed.</div>
+        )}
+      </div>
+      {!request && (
+        <div className="row">
+          <button className="outline" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/**
  * Where a ticket is in delivery and what comes next: the stage rail, the
- * current stage's step, its promotion-gate checklist, pull requests, feedback
- * and the comments drafted along the way.
+ * current stage's step, its promotion-gate checklist, agents' pull request
+ * requests, pull requests, feedback and the comments drafted along the way.
+ * `openRequest` opens it on an agent's request, its PR form filled from it.
  */
 export function PipelinePanel(props: PipelineProps) {
-  const { ticketId, title, details, sessions, onAskSession, onPosted } = props;
+  const { ticketId, title, details, sessions, onAskSession, onPosted, openRequest } = props;
   const p = usePipelines()[ticketId];
-  const [prFor, setPrFor] = useState<PrTarget | null>(null);
+  const [prFor, setPrFor] = useState<PrTarget | null>(() => p?.requests?.find((r) => r.id === openRequest)?.target ?? null);
+  // what the user's last word did: whom an approval or a dismissal told, or that the request asked for has gone
+  const [said, setSaid] = useState<string | null>(() => (openRequest && !p?.requests?.some((r) => r.id === openRequest) ? "That request has gone: it was answered, replaced or dismissed." : null));
   const [feedback, setFeedback] = useState<string | null>(null);
   const [sendFeedback, setSendFeedback] = useState(true);
-  const { run, error } = useAction();
+  const { run, doing, error } = useAction();
   const go = (stage: TicketStage) => run("stage", () => window.mb.pipelineStage(ticketId, stage, title));
+  const approve = async () => {
+    const r = await run("approve", () => window.mb.pipelineApprove(ticketId));
+    if (!isErr(r)) setSaid(`Approved. ${toldLine(r.told)}`);
+  };
   const live = sessions.filter((s) => s.status !== "dead");
   const prs = p?.prs ?? [];
+  const requests = p?.requests ?? [];
   const last = p?.history?.at(-1);
   const ticks = p ? gateTicks(p) : 0;
   /** What going to `to` would clear: back at Coding, the gates' ticks. */
   const clearing = (to: TicketStage) => (p && ticks && clearsGates(p.stage, to) ? `Clears the gates' ${plural(ticks, "tick")}` : null);
+  // the patch notes draft the panel is on: the agent's, and still that one once the user's edit makes it theirs
+  const notesOn = useRef<string | null>(null);
+  const notes = p && notesStage(p.stage) ? (p.drafts.find((d) => d.id === notesOn.current) ?? agentPatchNotes(p)) : undefined;
+  notesOn.current = notes?.id ?? null;
+  // the open PR form draws its target's checklist, which the stage's place then leaves out
+  const formGate = prFor ? gateOfPr(prFor) : null;
   return (
     <div className="pl">
       <StageRail stage={p?.stage ?? null} onSet={go} clearing={clearing} />
@@ -405,12 +613,31 @@ export function PipelinePanel(props: PipelineProps) {
             <button key={n.label} className={n.primary ? "primary" : "outline"} data-tip={clearing(n.to) ?? undefined} onClick={() => go(n.to)}>{n.label}</button>
           ) : n.kind === "pr" ? (
             <button key={n.label} className="primary" onClick={() => setPrFor(n.target)}>{n.label}</button>
+          ) : n.kind === "approve" ? (
+            <button key={n.label} className="primary" data-tip="Approved in stakeholder testing: the agent that asked for the PR to dev is told to prepare the one to main" disabled={doing("approve")} onClick={approve}>
+              {n.label}
+            </button>
           ) : (
             <button key={n.label} className="outline" onClick={() => setFeedback("")}>{n.label}</button>
           )
         )}
       </div>
       {error && <div className="fp-note err">{error}</div>}
+      {said && <div className="fp-note pl-said">{said}</div>}
+      {requests.length > 0 && (
+        <div className="pl-list">
+          <div className="pl-h">Pull requests asked for</div>
+          {requests.map((r) => (
+            <div key={r.id} className="pl-item" data-request={r.id}>
+              <span className="pl-by">{agentNamed(r.fromTitle)}</span>
+              <span className="pl-dim">
+                to {r.target === "dev" ? "dev/UAT" : "main"} · {ago(r.at)}
+              </span>
+              {prFor !== r.target && <a onClick={() => setPrFor(r.target)}>Open the form</a>}
+            </div>
+          ))}
+        </div>
+      )}
       {feedback !== null && (
         <div className="pl-form">
           <div className="pl-h">Stakeholder feedback</div>
@@ -440,9 +667,22 @@ export function PipelinePanel(props: PipelineProps) {
           </div>
         </div>
       )}
-      {prFor && <PrForm key={prFor} {...props} target={prFor} onClose={() => setPrFor(null)} />}
-      {p && GATES.filter((g) => g.at === p.stage).map((g) => <Gate key={g.id} p={p} gate={g} />)}
-      {p?.stage === "comms" && <PatchNotes p={p} title={title} details={details} />}
+      {prFor && (
+        <PrForm
+          key={prFor}
+          {...props}
+          target={prFor}
+          pipeline={p}
+          request={requests.find((r) => r.target === prFor)}
+          onDismissed={(told) => {
+            setPrFor(null);
+            setSaid(`Request dismissed. ${toldLine(told)}`);
+          }}
+          onClose={() => setPrFor(null)}
+        />
+      )}
+      {p && GATES.filter((g) => g.at === p.stage && g.id !== formGate).map((g) => <Gate key={g.id} p={p} gate={g} />)}
+      {p && (p.stage === "comms" || notes) && <PatchNotes p={p} title={title} details={details} draft={notes} onPosted={onPosted} />}
       {prs.length > 0 && (
         <div className="pl-list">
           <div className="pl-h">Pull requests</div>
@@ -490,7 +730,7 @@ export function PipelinePanel(props: PipelineProps) {
           ))}
         </div>
       )}
-      {p && <Drafts p={p} onPosted={onPosted} />}
+      {p && <Drafts p={p} onPosted={onPosted} exclude={notes?.id} />}
     </div>
   );
 }

@@ -492,18 +492,33 @@ export interface NeedsEnv {
   dismiss: () => void;
   /** A typing ask's answers (Allow for 15 min, Deny: main's calls, as the strip's), and the teammate's first name. */
   answer?: { allow: Answer; deny: Answer; who: string } | null;
+  /**
+   * A ticket's item (W15): Open, the main action in place of Go there, shows its pipeline (an agent's request: the PR
+   * form, filled from it); `title` says what it opens. Nothing is pushed, opened or posted by it.
+   */
+  open?: { can: Can; title: string } | null;
+  /** An agent's pull request request: Dismiss… in place of Dismiss, asking for a note to the agent before main drops it. */
+  dismissRequest?: Can | null;
 }
 
 const answerOf = (a: Answer): Pick<ModelAction, "onPick" | "answer" | "disabled" | "title"> =>
   typeof a === "function" ? { onPick: () => void a(), answer: a } : { onPick: () => {}, disabled: true, title: a.no };
 
 /**
- * A Needs you item's actions, in the tray's order: Go there, the main one on every row; a typing ask's Allow for 15
- * min and Deny; then Dismiss (until its state changes). The tray offers only the bounded allowance: one until it's
- * taken back is given from the strip, with the session in view.
+ * A Needs you item's actions, in the tray's order: Go there, the main one on every row but a ticket's, whose is Open; a
+ * typing ask's Allow for 15 min and Deny; then Dismiss (until its state changes), or an agent's pull request request's
+ * Dismiss…. The tray offers only the bounded allowance: one until it's taken back is given from the strip, with the
+ * session in view.
  */
 export function needsActions(env: NeedsEnv): ModelAction[] {
   const a = env.answer;
+  if (env.open)
+    return [
+      { section: "needs", key: "open", label: "Open", primary: true, title: env.open.title, ...can(env.open.can) },
+      env.dismissRequest
+        ? { section: "needs", key: "dismissRequest", label: "Dismiss…", title: "Turn the request down, with a note for the agent: nothing is pushed or opened", ...can(env.dismissRequest) }
+        : { section: "needs", key: "dismiss", label: "Dismiss", title: "Take it off the list until its state changes", onPick: env.dismiss },
+    ];
   return [
     { section: "needs", key: "go", label: "Go there", primary: true, title: env.goTitle, ...can(env.go) },
     ...(a

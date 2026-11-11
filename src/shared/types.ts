@@ -1128,6 +1128,8 @@ export const stageStep = (s: StoredStage): number | null => TICKET_STAGES.find((
 export const BY_YOU = "you";
 /** `by` for a move a pull request merging made (prWatch.ts): neither the user's nor an agent's. */
 export const BY_MERGE = "merge";
+/** `by` for an agent's change: its workspace's title (one plain line), as an agent's, so it never reads as the user's. */
+export const agentNamed = (title: string): string => `${title || "an unnamed workspace"}'s agent`;
 
 export type PrTarget = "dev" | "main";
 

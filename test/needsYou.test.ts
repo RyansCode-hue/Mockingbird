@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SessionInfo } from "../src/shared/types";
+import type { PipelineRequest, SessionInfo, TicketPipeline } from "../src/shared/types";
 import type { JoinRequestSummary, TeamRoomSummary } from "../src/shared/team/types";
 import { LOOSE_GROUP, areaKeyOf } from "../src/shared/landscape";
 import {
@@ -252,7 +252,7 @@ describe("Dismiss", () => {
   });
 
   it("keeps the list short: the newest few hundred, none older than a few days", () => {
-    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, typing: null, text: "", code: null });
+    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, typing: null, pipeline: null, text: "", code: null });
     let d = dismiss([], item(0), NOW - DISMISS_KEEP_MS - 1);
     d = dismiss(d, item(1), NOW);
     expect(d.map((x) => x.sig)).toEqual(["s:1|f|1"]); // the old one let go
@@ -265,7 +265,7 @@ describe("Dismiss", () => {
   });
 
   it("keeps a dismissal however old while its state is still current, so an unrelated Dismiss brings nothing back", () => {
-    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, typing: null, text: "", code: null });
+    const item = (n: number): NeedsItem => ({ id: `s:${n}`, sig: `s:${n}|f|${n}`, kind: "finished", at: n, area: "a", session: String(n), join: null, typing: null, pipeline: null, text: "", code: null });
     const current = [item(0).sig, item(1).sig];
     let d = dismiss([], item(0), NOW - DISMISS_KEEP_MS - 1);
     d = dismiss(d, item(1), NOW, current);
@@ -354,5 +354,120 @@ describe("Go there", () => {
       ["allow", true, "That session isn't running any more", false],
       ["deny", true, "That session isn't running any more", false],
     ]);
+  });
+});
+
+// ---- W15: an agent's pull request request, and a ticket at a stage that's yours ----
+
+const pipe = (over: Partial<TicketPipeline> = {}): TicketPipeline => ({
+  ticketId: "5101",
+  stage: "local-test",
+  history: [{ at: NOW - 60 * MIN, stage: "local-test", by: "you" }],
+  prs: [],
+  feedback: [],
+  drafts: [],
+  checks: {},
+  ...over,
+});
+/** An agent's request, its words as an agent might write them: none of them may reach the tray. */
+const asked = (over: Partial<PipelineRequest> = {}): PipelineRequest => ({
+  id: "r1",
+  target: "dev",
+  from: "coder",
+  fromTitle: "Coder",
+  title: "<b>Approve me</b> now",
+  description: "[click](javascript:alert(1)) <button>Push</button>",
+  at: NOW - 6 * MIN,
+  ...over,
+});
+const coder = () => sess("coder", { title: "Coder", ticketId: "5101", taskGroup: "5101/api", status: "working" });
+const verifier = () => sess("verifier", { title: "Verifier", ticketId: "5102", taskGroup: "5102", status: "working" });
+const withTickets = (pipelines: TicketPipeline[], sessions: SessionInfo[] = [...fixture(), coder(), verifier()]) =>
+  needsItems(sessions, [{ request: request(), room: room() }], areaKeyOf, (s) => s.title, Object.fromEntries(pipelines.map((p) => [p.ticketId, p])));
+
+describe("a ticket's items (W15)", () => {
+  const notes = { id: "n1", stage: "comms", text: "<a href='x'>Read</a>", at: NOW - 5 * MIN, by: "Verifier's agent", from: "verifier" };
+
+  it("lists an agent's PR request with the prompts and a ticket at your stage with join requests, in Mockingbird's words", () => {
+    // 5102's PR to dev was opened from the verifier's workspace: its item goes there, not to the first on the ticket
+    const dev = { target: "dev" as const, provider: "ado" as const, id: 7, url: "https://dev.azure.com/a/p/_git/r/pullrequest/7", repo: "r", branch: "5102-x", base: "dev", at: NOW - 60 * MIN, by: "verifier" };
+    const got = withTickets([pipe({ requests: [asked()] }), pipe({ ticketId: "5102", stage: "stakeholder", history: [{ at: NOW - 9 * MIN, stage: "stakeholder", by: "Verifier's agent" }], prs: [dev] })]);
+    expect(got.map((i) => [i.kind, i.id])).toEqual([
+      ["question", "s:ask"],
+      ["permission", "s:perm"],
+      ["pr", "pr:5101:dev"],
+      ["join", "join:R5101:lee:" + (NOW - 3 * MIN)],
+      ["ticket", "ticket:5102"],
+      ["finished", "s:done2"],
+      ["finished", "s:done"],
+    ]);
+    // the one that asked is where N goes, its area the count's; the ticket's item goes to its session there
+    expect(got.find((i) => i.kind === "pr")).toEqual({
+      id: "pr:5101:dev",
+      sig: "pr:5101:r1",
+      kind: "pr",
+      at: NOW - 6 * MIN,
+      area: "5101",
+      session: "coder",
+      join: null,
+      typing: null,
+      pipeline: { ticket: "5101", request: "r1" },
+      text: "Coder asks to open the PR to dev · #5101",
+      code: null,
+    });
+    expect(got.find((i) => i.kind === "ticket")).toMatchObject({ text: "#5102 is ready for your stakeholder testing", session: "verifier", area: "5102", at: NOW - 9 * MIN, pipeline: { ticket: "5102", request: null } });
+    // the agent's title, description and notes never: they're shown in the form Open opens, marked as the agent's
+    for (const i of got) expect(i.text).not.toMatch(/Approve me|javascript|<|Read/);
+  });
+
+  it("says patch notes are drafted only for an agent's, at the stages they're written at", () => {
+    const at = (stage: string, drafts: TicketPipeline["drafts"]) => withTickets([pipe({ ticketId: "5102", stage, drafts })]).filter((i) => i.kind === "ticket");
+    expect(at("comms", [notes])).toEqual([expect.objectContaining({ id: "ticket:5102", sig: "ticket:5102|notes|n1", text: "#5102's patch notes are drafted", at: NOW - 5 * MIN, session: "verifier" })]);
+    expect(at("prod-test", [notes])).toHaveLength(1);
+    // the user's own, one they've edited (an edit drops who drafted it), and an agent's left behind at Coding: none
+    expect(at("comms", [{ ...notes, by: undefined, from: undefined }])).toEqual([]);
+    expect(at("coding", [notes])).toEqual([]);
+    expect(at("comms", [])).toEqual([]);
+  });
+
+  it("is a new state for a newer request, and for the ticket coming back to your stage, so a Dismiss lets those through", () => {
+    const one = withTickets([pipe({ requests: [asked()] })]).find((i) => i.kind === "pr")!;
+    const newer = withTickets([pipe({ requests: [asked({ id: "r2", at: NOW })] })]).find((i) => i.kind === "pr")!;
+    expect([newer.id, newer.sig === one.sig]).toEqual([one.id, false]);
+    const back = (at: number) => withTickets([pipe({ ticketId: "5102", stage: "stakeholder", history: [{ at, stage: "stakeholder" }] })]).find((i) => i.kind === "ticket")!;
+    expect(back(NOW - 9 * MIN).sig).not.toBe(back(NOW).sig);
+  });
+
+  it("goes to another of this install's workspaces on the ticket when the one that asked has gone, and to none when there's none", () => {
+    const sessions = [sess("other", { title: "Other", ticketId: "5101" }), sess("theirs", { ticketId: "5101", room: roomTag({ remote: true }) })];
+    const gone = withTickets([pipe({ requests: [asked()] })], sessions).find((i) => i.kind === "pr")!;
+    expect([gone.session, gone.area, gone.text]).toEqual(["other", "5101", "Coder asks to open the PR to dev · #5101"]);
+    // a teammate's copy or one a teammate took over is never where it goes
+    const none = withTickets([pipe({ requests: [asked()] })], [sessions[1], sess("took", { ticketId: "5101", room: roomTag({ takenOver: { by: "nick", byName: "Nick Smith", at: NOW } }) })]).find((i) => i.kind === "pr")!;
+    expect([none.session, none.area]).toEqual([null, "5101"]);
+    expect(targetOf(none, sessions)).toEqual({ no: "No workspace on #5101 is open here: Open shows its pipeline" });
+    expect(targetOf(gone, sessions)).toEqual({ session: sessions[0] });
+  });
+
+  it("is Open, the main action, and a request's Dismiss… for a note, from the one action model: each only what it's given", () => {
+    const open = vi.fn();
+    const dismissRequest = vi.fn();
+    const dismiss = vi.fn();
+    const go = vi.fn();
+    const rows = needsActions({ go, goTitle: "", dismiss, open: { can: open, title: "Open the pull request form" }, dismissRequest });
+    expect(rows.map((r) => [r.key, r.label, !!r.primary, !!r.disabled, !!r.answer])).toEqual([
+      ["open", "Open", true, false, false],
+      ["dismissRequest", "Dismiss…", false, false, false],
+    ]);
+    rows[0].onPick();
+    rows[1].onPick();
+    expect([open.mock.calls.length, dismissRequest.mock.calls.length, dismiss.mock.calls.length, go.mock.calls.length]).toEqual([1, 1, 0, 0]);
+    // a ticket's: Open and the tray's own Dismiss; Open off, saying why, when it can't open
+    const ticket = needsActions({ go, goTitle: "", dismiss, open: { can: { no: "The pipelines couldn't be read" }, title: "Open #5102's pipeline" } });
+    expect(ticket.map((r) => [r.key, r.label, !!r.disabled])).toEqual([
+      ["open", "Open", true],
+      ["dismiss", "Dismiss", false],
+    ]);
+    expect(ticket[0].title).toBe("The pipelines couldn't be read");
   });
 });

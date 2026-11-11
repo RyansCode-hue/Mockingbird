@@ -1,22 +1,28 @@
-import type { SessionInfo } from "../shared/types";
+import { latestPr, ticketOfSession, type SessionInfo, type TicketPipeline } from "../shared/types";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import type { TypingAsk } from "../shared/team/livePanes";
 import { permissionTool, shortReason } from "../shared/phoneAlerts";
 import { takenOverWhy, type Can } from "./workspaceActions";
 import { firstName } from "./team/connectedModel";
+import { agentPatchNotes } from "./ticketPipelineModel";
 
 /**
  * The Needs you tray (docs/landscape.md, Finding what needs you): what's waiting on you, as items. Phase 1 has four
  * kinds: a session waiting on you (amber: a permission prompt, or a question it asked), a teammate asking to type
  * into one of this install's room sessions, a room's join request this install answers as the admin, and a session
- * whose turn ended and that has been idle since. Everything here is worked out from what the window already has
- * (sessions, the team status), so the tray, the badges and N agree.
+ * whose turn ended and that has been idle since. W15 adds two from the ticket pipelines: an agent asking for a pull
+ * request (request_pr), and a ticket at a stage that's yours (stakeholder testing, patch notes an agent drafted).
+ * Everything here is worked out from what the window already has (sessions, the team status, the pipelines), so the
+ * tray, the badges and N agree.
  */
 
-export type NeedsKind = "permission" | "question" | "typing" | "join" | "finished";
+export type NeedsKind = "permission" | "question" | "typing" | "pr" | "join" | "ticket" | "finished";
 
 export interface NeedsItem {
-  /** The same while it's the same thing waiting: "s:<session id>", "type:<session id>:<member>", or "join:<room>:<member>:<asked at>". */
+  /**
+   * The same while it's the same thing waiting: "s:<session id>", "type:<session id>:<member>",
+   * "join:<room>:<member>:<asked at>", "pr:<ticket>:<target>" or "ticket:<ticket>".
+   */
   id: string;
   /** Its state: a Dismiss holds until this changes. */
   sig: string;
@@ -31,6 +37,8 @@ export interface NeedsItem {
   join: { roomId: string; key: string } | null;
   /** A typing ask's item: the teammate asking, answered as the ask's strip on the workspace answers it. */
   typing: { member: string; name: string } | null;
+  /** A ticket's item: the ticket, and the agent's pull request request it is (a `pr` item's), whose words stay out of the tray. */
+  pipeline: { ticket: string; request: string | null } | null;
   /** What it says: "API: last org per user wants to use Bash". */
   text: string;
   /** The code-like part of `text` to set apart (the tool), or null. */
@@ -38,13 +46,14 @@ export interface NeedsItem {
 }
 
 /** Its kind as the tray's line says it, before the area. */
-export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", join: "Join request", finished: "Finished" };
+export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", pr: "Pull request", join: "Join request", ticket: "Ticket", finished: "Finished" };
 
 /**
- * Which kinds come first: what holds an agent or a person up (a prompt, a question, a teammate waiting to type,
- * someone at the room's door) before what's only done; newest first within a kind.
+ * Which kinds come first: what holds an agent or a person up (a prompt, a question, a teammate waiting to type, an
+ * agent waiting on its pull request), then someone at the room's door and a ticket at your stage, before what's only
+ * done; newest first within a rank.
  */
-const RANK: Record<NeedsKind, number> = { permission: 0, question: 0, typing: 0, join: 1, finished: 2 };
+const RANK: Record<NeedsKind, number> = { permission: 0, question: 0, typing: 0, pr: 0, join: 1, ticket: 1, finished: 2 };
 
 /** A join request's key, as the admin's prompt (main.tsx's joinKey) and Later name it. */
 export const joinKeyOf = (r: Pick<JoinRequestSummary, "roomId" | "id" | "at">): string => `${r.roomId}:${r.id}:${r.at}`;
@@ -82,6 +91,7 @@ export function typingItems(s: SessionInfo, area: string, title: string): NeedsI
     session: s.id,
     join: null,
     typing: { member: a.member, name: a.name },
+    pipeline: null,
     text: `${firstName(a.name)} wants to type in ${title}`,
     code: null,
   }));
@@ -103,12 +113,13 @@ export function sessionItem(s: SessionInfo, area: string, title: string): NeedsI
       session: s.id,
       join: null,
       typing: null,
+      pipeline: null,
       text: tool ? `${title} wants to use ${tool}` : `${title}: ${shortReason(s.waitingReason)}`,
       code: tool,
     };
   }
   if (s.status === "idle" && s.finishedAt) {
-    return { id: `s:${s.id}`, sig: `s:${s.id}|f|${s.finishedAt}`, kind: "finished", at: s.finishedAt, area, session: s.id, join: null, typing: null, text: `${title} is done and idle`, code: null };
+    return { id: `s:${s.id}`, sig: `s:${s.id}|f|${s.finishedAt}`, kind: "finished", at: s.finishedAt, area, session: s.id, join: null, typing: null, pipeline: null, text: `${title} is done and idle`, code: null };
   }
   return null;
 }
@@ -125,18 +136,79 @@ export function joinItem(request: JoinRequestSummary, room: TeamRoomSummary): Ne
     session: null,
     join: { roomId: room.id, key },
     typing: null,
+    pipeline: null,
     text: `${request.name} wants to join ${room.name}`,
     code: null,
   };
 }
 
 /**
- * Everything that needs you, in the tray's order (and N's): sessions waiting on you and teammates asking to type,
- * then join requests, then finished sessions, newest first within each. `asks` are the requests this install answers as a room's admin
- * (JoinRequests.tsx's adminRequests: the admin's prompt and Members ▾ read the same list); `areaOf` is the area a
- * session's workspace is in on the landscape.
+ * Where ticket `ticket`'s item goes (N) and counts: `prefer`, the session main recorded for it (the one that asked, or
+ * drafted, or opened the PR), while it's on the ticket and this install's; else another of this install's on it. Its
+ * area is that session's, else the ticket's own group.
  */
-export function needsItems(sessions: readonly SessionInfo[], asks: readonly { request: JoinRequestSummary; room: TeamRoomSummary }[], areaOf: (s: SessionInfo) => string, titleOf: (s: SessionInfo) => string): NeedsItem[] {
+function ticketPlace(ticket: string, prefer: string | null | undefined, sessions: readonly SessionInfo[], areaOf: (s: SessionInfo) => string): { session: string | null; area: string } {
+  const on = sessions.filter((s) => ticketOfSession(s) === ticket && !notMine(s));
+  const s = on.find((x) => x.id === prefer) ?? on[0];
+  return { session: s?.id ?? null, area: s ? areaOf(s) : ticket };
+}
+
+/**
+ * Ticket `p`'s items: each agent's held request for a pull request (`pr`, one per target), and the ticket itself
+ * (`ticket`) at stakeholder testing, or with patch notes an agent drafted at AI testing in staging/prod or Patch notes.
+ * What they say is Mockingbird's words and the asker's title as main recorded it: the agent's title, description and
+ * notes stay in the form that Open shows, marked as the agent's.
+ */
+export function pipelineItems(p: TicketPipeline, sessions: readonly SessionInfo[], areaOf: (s: SessionInfo) => string): NeedsItem[] {
+  const id = p.ticketId;
+  const out: NeedsItem[] = (p.requests ?? []).map((r) => ({
+    id: `pr:${id}:${r.target}`,
+    // a newer request (a new id) is a new state: one dismissed from the tray comes back
+    sig: `pr:${id}:${r.id}`,
+    kind: "pr",
+    at: r.at,
+    ...ticketPlace(id, r.from, sessions, areaOf),
+    join: null,
+    typing: null,
+    pipeline: { ticket: id, request: r.id },
+    text: `${r.fromTitle} asks to open the PR to ${r.target} · #${id}`,
+    code: null,
+  }));
+  const item = (sig: string, at: number, prefer: string | null | undefined, text: string): NeedsItem => ({
+    id: `ticket:${id}`,
+    sig: `ticket:${id}|${sig}`,
+    kind: "ticket",
+    at,
+    ...ticketPlace(id, prefer, sessions, areaOf),
+    join: null,
+    typing: null,
+    pipeline: { ticket: id, request: null },
+    text,
+    code: null,
+  });
+  const notes = agentPatchNotes(p);
+  if (p.stage === "stakeholder") {
+    // each arrival at it is a state of its own: one dismissed comes back when the ticket returns after a rework
+    const since = (p.history ?? []).at(-1)?.at ?? 0;
+    out.push(item(`stakeholder|${since}`, since, latestPr(p.prs ?? [], "dev")?.by, `#${id} is ready for your stakeholder testing`));
+  } else if (notes) out.push(item(`notes|${notes.id}`, notes.at, notes.from, `#${id}'s patch notes are drafted`));
+  return out;
+}
+
+/**
+ * Everything that needs you, in the tray's order (and N's): sessions waiting on you, teammates asking to type and
+ * agents asking for a pull request; then join requests and tickets at your stages; then finished sessions, newest
+ * first within each. `asks` are the requests this install answers as a room's admin (JoinRequests.tsx's
+ * adminRequests: the admin's prompt and Members ▾ read the same list); `areaOf` is the area a session's workspace is
+ * in on the landscape; `pipelines` are pipeline.json's tickets, as the window reads them.
+ */
+export function needsItems(
+  sessions: readonly SessionInfo[],
+  asks: readonly { request: JoinRequestSummary; room: TeamRoomSummary }[],
+  areaOf: (s: SessionInfo) => string,
+  titleOf: (s: SessionInfo) => string,
+  pipelines: Readonly<Record<string, TicketPipeline>> = {}
+): NeedsItem[] {
   const out: NeedsItem[] = [];
   for (const s of sessions) {
     const item = sessionItem(s, areaOf(s), titleOf(s));
@@ -144,6 +216,7 @@ export function needsItems(sessions: readonly SessionInfo[], asks: readonly { re
     out.push(...typingItems(s, areaOf(s), titleOf(s)));
   }
   for (const a of asks) if (a.request.role === "admin" && a.request.state === "waiting") out.push(joinItem(a.request, a.room));
+  for (const p of Object.values(pipelines)) out.push(...pipelineItems(p, sessions, areaOf));
   return out.sort((a, b) => RANK[a.kind] - RANK[b.kind] || b.at - a.at || a.id.localeCompare(b.id));
 }
 
@@ -250,6 +323,7 @@ export type NeedsTarget = { session: SessionInfo } | { area: string; roomId: str
  */
 export function targetOf(item: NeedsItem, sessions: readonly SessionInfo[]): NeedsTarget {
   if (item.join) return { area: item.area, roomId: item.join.roomId, requestKey: item.join.key };
+  if (item.pipeline && !item.session) return { no: `No workspace on #${item.pipeline.ticket} is open here: Open shows its pipeline` };
   const s = sessions.find((x) => x.id === item.session);
   if (!s) return { no: "That session isn't running any more" };
   const why = notMine(s);

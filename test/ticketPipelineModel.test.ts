@@ -1,9 +1,14 @@
+import * as fs from "fs";
+import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { stageLabel, stageStep, TICKET_STAGES, type TicketStage } from "../src/shared/types";
-import { nextSteps, railOf, type NextStep } from "../src/renderer/ticketPipelineModel";
+import { agentNamed, stageLabel, stageStep, TICKET_STAGES, type CommentDraft, type TicketStage } from "../src/shared/types";
+import { agentPatchNotes, gateOfPr, nextSteps, railOf, toldLine, type NextStep } from "../src/renderer/ticketPipelineModel";
+import { agentBy } from "../src/main/ticketTools";
 
 const said = (steps: NextStep[]) =>
-  steps.map((n) => (n.kind === "stage" ? `${n.label} → ${n.to}${n.primary ? "" : " (outline)"}` : n.kind === "pr" ? `${n.label} (PR form, ${n.target})` : `${n.label} (feedback form)`));
+  steps.map((n) =>
+    n.kind === "stage" ? `${n.label} → ${n.to}${n.primary ? "" : " (outline)"}` : n.kind === "pr" ? `${n.label} (PR form, ${n.target})` : n.kind === "approve" ? `${n.label} (pipeline:approve)` : `${n.label} (feedback form)`
+  );
 
 describe("the ticket stages", () => {
   it("are the table's, in order, with their rail steps", () => {
@@ -94,7 +99,7 @@ describe("the pipeline panel's next steps", () => {
       "local-test": ["Create PR to dev… (PR form, dev)"],
       "pr-dev": ["Merged — AI testing in dev/UAT → dev-test"],
       "dev-test": ["Ready for stakeholder testing → stakeholder"],
-      stakeholder: ["Record feedback… (feedback form)", "Approve → approved"],
+      stakeholder: ["Record feedback… (feedback form)", "Approve (pipeline:approve)"],
       approved: ["Record feedback… (feedback form)", "Create PR to main… (PR form, main)"],
       "pr-main": ["Record feedback… (feedback form)", "Merged — AI testing in staging/prod → prod-test"],
       "prod-test": ["Write patch notes → comms"],
@@ -107,5 +112,58 @@ describe("the pipeline panel's next steps", () => {
   });
   it("offer nothing at a stage id this build doesn't know", () => {
     expect(nextSteps("uat-signoff")).toEqual([]);
+  });
+});
+
+describe("the panel's agents' words (W15)", () => {
+  const draft = (over: Partial<CommentDraft>): CommentDraft => ({ id: "d", stage: "comms", text: "Notes", at: 1, ...over });
+
+  it("takes the agent's patch notes draft only at the stages they're written at, never the user's own or one they've edited", () => {
+    const agents = draft({ id: "a", by: "Verifier's agent", from: "s5" });
+    const drafts = [draft({ id: "mine" }), draft({ id: "stage", stage: "approved", by: "Verifier's agent" }), agents];
+    expect(agentPatchNotes({ stage: "comms", drafts })?.id).toBe("a");
+    expect(agentPatchNotes({ stage: "prod-test", drafts })?.id).toBe("a");
+    for (const stage of ["coding", "stakeholder", "done", "uat-signoff"]) expect(agentPatchNotes({ stage, drafts })).toBeUndefined();
+    expect(agentPatchNotes({ stage: "comms", drafts: [draft({ id: "mine" })] })).toBeUndefined();
+  });
+
+  it("opens a pull request's form on its target's checklist: dev's before dev/UAT, staging's before main", () => {
+    expect([gateOfPr("dev"), gateOfPr("main")]).toEqual(["dev", "staging"]);
+  });
+
+  it("says whom the user's word told, as main answered, or why nobody", () => {
+    expect(toldLine({ to: "s1", title: "Coder", told: "queued, with what was already waiting for it" })).toBe("Told Coder (queued, with what was already waiting for it).");
+    expect(toldLine({ to: "s1", title: "Coder", notTold: '"Coder" isn\'t running, so it wasn\'t told: reopen it to tell it.', reopen: true })).toBe('"Coder" isn\'t running, so it wasn\'t told: reopen it to tell it.');
+    expect(toldLine({ to: null, title: null, notTold: "" })).toBe("No agent was told.");
+  });
+
+  it("marks an agent's words with main's own wording, whatever the pane is called", () => {
+    expect(agentNamed("Coder")).toBe("Coder's agent");
+    expect(agentNamed("")).toBe("an unnamed workspace's agent");
+    // main's `by` and the window's mark are one wording
+    expect(agentBy({ title: "  Coder\n" })).toBe(agentNamed("Coder"));
+  });
+});
+
+describe("what the window makes of a pipeline, and from where (W15)", () => {
+  const dir = path.join(__dirname, "..", "src", "renderer");
+  const files = fs.readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => /\.tsx?$/.test(f));
+  const src = (f: string) => fs.readFileSync(path.join(dir, f), "utf8");
+  const callersOf = (call: string) => files.flatMap((f) => (src(f).match(new RegExp(`window\\.mb\\.${call}\\(`, "g")) ?? []).map(() => f));
+
+  it("pushes and opens a pull request from one place, the PR form's own button, and posts, approves and dismisses only from theirs", () => {
+    expect(callersOf("pipelinePrCreate")).toEqual(["TicketPipeline.tsx"]);
+    expect(callersOf("pipelineRequestDismiss")).toEqual(["TicketPipeline.tsx"]);
+    expect(callersOf("pipelineApprove")).toEqual(["TicketPipeline.tsx"]);
+    expect(callersOf("pipelineDraftPost")).toEqual(["TicketPipeline.tsx"]);
+    const panel = src("TicketPipeline.tsx");
+    // each inside the handler its button calls, never an effect: opening or filling a form makes nothing
+    expect(panel).toMatch(/const create = async \(\) => \{\n\s+const r = await run\("create", \(\) => window\.mb\.pipelinePrCreate\(/);
+    expect(panel).toMatch(/onClick=\{create\}>\s*\{doing\("create"\) \? "Opening…" : "Push and open PR"\}/);
+    for (const effect of panel.match(/useEffect\(\(\) => \{[\s\S]*?\}, \[[^\]]*\]\);/g) ?? []) expect(effect).not.toMatch(/pipeline(PrCreate|RequestDismiss|Approve|DraftPost)/);
+  });
+
+  it("draws an agent's words as text: no HTML, Markdown or links made of them", () => {
+    for (const f of ["TicketPipeline.tsx", "NeedsYou.tsx", "needsYouModel.ts", "ticketPipelineModel.ts"]) expect(src(f), f).not.toMatch(/dangerouslySetInnerHTML|\.innerHTML\s*=|marked\(|renderMarkdown|linkify/);
   });
 });

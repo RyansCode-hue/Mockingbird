@@ -11,7 +11,7 @@
  * the query can also pick the screen (see the end of this file).
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
-import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, PlanRequest, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
+import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, PipelineRequest, PlanRequest, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, clearGateTicks, clearsGates, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
 import { tildePath } from "../shared/paths";
 import { CHANGELOG } from "../shared/changelog";
@@ -289,6 +289,59 @@ const pipelines: Record<string, TicketPipeline> = {
 // =limit with Reviewer's feedback loop at its limit; 5120's pull request to dev can't be read
 const lsGatesQ = wireBoard ? new URLSearchParams(location.search).get("lsGates") : null;
 if (lsGatesQ !== null) pipelines[WIRE_AREA] = gatePipeline(now);
+// W15, ?prRequest: the Coder (s3, not the ticket's first session) asks for the PR to dev on 5101, with its notes against
+// dev's checklist, and 5102 waits on your stakeholder testing. With "notes", 5102 is at Patch notes instead, its notes
+// drafted by the Verifier (s5); with "hostile", the agents' words hold markup and links, and the request holds fields no
+// form may read (a hand-edited file's). The preflight is clean, and Push and open PR answers as main's addPr does.
+const prRequestQ = new URLSearchParams(location.search).get("prRequest");
+const prRequest = prRequestQ === null ? null : new Set(prRequestQ.split(","));
+if (prRequest) {
+  const hostile = prRequest.has("hostile");
+  sessions = sessions.map((s) => (s.id === "s3" ? { ...s, title: "Coder" } : s.id === "s5" ? { ...s, title: "Verifier" } : s));
+  const p = pipelines["5101"];
+  const markup = ' <a href="https://example.invalid/x">Approve here</a> <button data-agent>Push now</button> [docs](javascript:alert(1)) <img src=x onerror="window.__mbAgentRan=1">';
+  p.requests = [
+    {
+      id: "req-dev-1",
+      target: "dev",
+      from: "s3",
+      fromTitle: "Coder",
+      title: "#5101 Org dropdowns remember the last org",
+      description: `## Summary\nThe org dropdown opens on the org each user picked last.\n\n## Changes\n- Store the last org per user\n- Preselect it in the dropdown\n\n## Testing\n- npm test: 212 pass${hostile ? `\n${markup}` : ""}`,
+      at: now - 6 * min,
+      ...(hostile ? { branch: "someone-elses-branch", base: "main", repo: "evil/repo", provider: "github", session: "s1" } : {}),
+    } as PipelineRequest,
+  ];
+  p.checks = { "dev:tests": true, "dev:smoke": true };
+  p.checkedBy = { "dev:smoke": { by: "Coder's agent", at: now - 7 * min } };
+  p.gateNotes = {
+    "dev:tests": { by: "Coder's agent", note: "npm test: 212 pass, 0 fail", at: now - 7 * min },
+    "dev:smoke": { by: "Coder's agent", note: `Clicked through the org picker as three users; each opened on their last org${hostile ? markup : ""}`, at: now - 7 * min },
+    "dev:security-doc": { by: "Coder's agent", note: "Not written yet: doc/features has no 5101 folder", at: now - 7 * min },
+  };
+  const q = pipelines["5102"];
+  if (prRequest.has("notes")) {
+    q.stage = "comms";
+    q.history.push(
+      { at: now - 50 * min, stage: "stakeholder", by: "Verifier's agent" },
+      { at: now - 30 * min, stage: "approved", by: "you" },
+      { at: now - 20 * min, stage: "pr-main", by: "you" },
+      { at: now - 12 * min, stage: "prod-test", by: "merge" },
+      { at: now - 5 * min, stage: "comms", by: "Verifier's agent" }
+    );
+    q.drafts.push({
+      id: "d-notes",
+      stage: "comms",
+      text: `Pathways' quick view no longer freezes on pathways with many tags.\n\nWho it affects: anyone opening a pathway with more than a few hundred tags.\nNothing to do: it's live.${hostile ? markup : ""}`,
+      at: now - 4 * min,
+      by: "Verifier's agent",
+      from: "s5",
+    });
+  } else {
+    q.stage = "stakeholder";
+    q.history.push({ at: now - 9 * min, stage: "stakeholder", by: "Verifier's agent" });
+  }
+}
 
 const usage: UsageReport = {
   claude: { agent: "claude", plan: "Max", at: now - 2 * min, limits: [{ label: "5-hour limit", window: "5h", usedPct: 38, resetsAt: now + 2.5 * 60 * min }, { label: "Weekly · all models", window: "week", usedPct: 61, resetsAt: now + 3 * 24 * 60 * min }] },
@@ -1963,6 +2016,17 @@ const api: Record<string, (...a: any[]) => any> = {
     return p;
   },
   pipelineDraftPost: async (id: string, draftId: string) => api.pipelineDraftDrop(id, draftId),
+  // as main's editDraft: the user's edit makes a draft theirs, so who drafted it goes
+  pipelineDraftEdit: async (id: string, draftId: string, text: string) => {
+    const p = pipelines[id];
+    const d = p?.drafts.find((x) => x.id === draftId);
+    if (!p || !d) return err(`#${id} has no drafted comment ${draftId}`);
+    d.text = String(text);
+    delete d.by;
+    delete d.from;
+    pipelinesChanged();
+    return p;
+  },
   // as main's: Approve only from stakeholder testing, a dismissed request gone; no agent runs here to be told
   pipelineApprove: async (id: string) => {
     const p = pipelines[id];
@@ -1993,9 +2057,20 @@ const api: Record<string, (...a: any[]) => any> = {
     pipelinesChanged();
     return p;
   },
-  pipelinePrPreflight: async () => ({ branch: "5101-orgDropdowns", base: "dev", bases: ["dev", "main"], dirtyFiles: 2, commits: 1, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: null, existing: null, lookupError: null }),
+  pipelinePrPreflight: async (_sessionId: string, _ticketId: string, target: string) =>
+    prRequest
+      ? { branch: "5101-orgDropdowns", base: target === "main" ? "main" : "dev", bases: ["dev", "main"], dirtyFiles: 0, commits: 3, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: "doc/features/5101-orgDropdowns/5101-Description.md", existing: null, lookupError: null }
+      : { branch: "5101-orgDropdowns", base: "dev", bases: ["dev", "main"], dirtyFiles: 2, commits: 1, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: null, existing: null, lookupError: null },
   pipelinePrDescribe: async () => later({ description: "## Summary\nThe org dropdown remembers each user's last org.\n\n## Changes\n- Store and read the last org\n\n## Testing\nNot stated", agent: "claude" }, 800),
-  pipelinePrCreate: async () => err("UI preview: no pull request is opened"),
+  // nothing is pushed or opened here; with ?prRequest it's recorded as main's addPr would, answering the asker's request
+  pipelinePrCreate: async (sessionId: string, ticketId: string, req: { target?: string; base?: string } | undefined) => {
+    const p = pipelines[ticketId];
+    if (!prRequest || !p) return err("UI preview: no pull request is opened");
+    const target = req?.target === "main" ? "main" : "dev";
+    p.prs.push({ target, provider: "ado", id: 91, url: "https://dev.azure.com/acme/Backoffice/_git/backoffice/pullrequest/91", repo: "backoffice", branch: "5101-orgDropdowns", base: String(req?.base ?? ""), at: Date.now(), by: sessionId });
+    p.requests = (p.requests ?? []).filter((r) => !(r.target === target && r.from === sessionId));
+    return setStage(ticketId, target === "dev" ? "pr-dev" : "pr-main");
+  },
   presetStart: async () => err("UI preview: presets don't start sessions"),
 
   // undo, handoff, review, rollup
@@ -2998,6 +3073,9 @@ if (params.has("needsTray") || params.has("needsStep") || params.has("needsTrayS
     if (params.has("needsTray")) setTimeout(() => click(".ny-btn"), steps ? Math.abs(steps) * 150 + 700 : 0);
   }, 1200);
 }
+// W15: ?needsOpen=<item id> (with ?needsTray) then presses that item's Open: an agent's PR request's filled form, or a
+// ticket's pipeline (?prRequest has both)
+if (params.has("needsOpen")) setTimeout(() => click(`.ny-tray .ny-item[data-item="${CSS.escape(params.get("needsOpen")!)}"] button[data-action="open"]`), 2000);
 // ?joining (with ?section=team) pastes a code into Join a room… and presses Join: the joiner's side (see teamJoin)
 if (params.has("joining")) {
   setTimeout(() => click(".set-actions button.outline.strong"), 500);
@@ -3053,7 +3131,7 @@ if (params.has("landscapeFirstRunAudit")) {
   };
   runFirstRunAudit({ sessions: () => sessions, calls, stored: () => landscape, patch: patchLandscape, setSession, waitFor }, params.get("landscapeFirstRunAudit") || "k");
 }
-// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s works Needs you and the cards' badges (needsYouAudit.ts) for test/uiLandscapeNeeds.test.ts
+// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t works Needs you and the cards' badges, and W15's ticket items (needsYouAudit.ts), for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
   recordConsole();
   const setSession = (id: string, over: Partial<SessionInfo>) => {
@@ -3071,7 +3149,7 @@ if (params.has("landscapeNeedsAudit")) {
     live.remote = live.remote.map((s) => (s.id === id ? { ...s, ...over } : s));
     emit("onTeamLive", clone(live));
   };
-  runNeedsAudit({ sessions: () => sessions, setSession, setOwnTag, remote: () => live.remote, setRemote, calls, emit, badgeFails, waitFor }, params.get("landscapeNeedsAudit") || "a");
+  runNeedsAudit({ sessions: () => sessions, setSession, setOwnTag, remote: () => live.remote, setRemote, calls, emit, badgeFails, waitFor, pipelines: () => pipelines, pipelinesChanged }, params.get("landscapeNeedsAudit") || "a");
 }
 // W6: ?landscapeStripAudit (with ?wires=fanout) works the pipeline strip in focus (stripAudit.ts) for test/uiLandscapeStrip.test.ts
 if (params.has("landscapeStripAudit")) runStripAudit({ calls, waitFor });

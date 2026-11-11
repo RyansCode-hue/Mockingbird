@@ -23,7 +23,7 @@ import { FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, Se
 import { ActionBar, pickActions, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
-import { PipelineDialog, usePipelines } from "./TicketPipeline";
+import { PipelineDialog, RequestDismissDialog, usePipelines, usePipelinesRead } from "./TicketPipeline";
 import { HandoffDialog } from "./Handoff";
 import { BriefDialog, ContextWarning, useCostGate } from "./ContextWarning";
 import { UndoTurnDialog } from "./UndoTurn";
@@ -34,7 +34,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, HELPDESK_PRESET, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
+import { AGENT_NAME, HELPDESK_PRESET, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -180,9 +180,12 @@ function App() {
     if (!v) return alert(`${l.now.ownerName}'s copy has no backup here yet — Take it back is offered once it has one`);
     setTakeOverFor({ ...v, back: true });
   };
-  // the ticket pipeline, opened from an area's header or the palette
+  // the ticket pipeline, opened from an area's header, the palette or Needs you (`request`: an agent's PR request, its
+  // form filled from it); and an agent's PR request being dismissed from Needs you
   const pipelines = usePipelines();
-  const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string } | null>(null);
+  const pipelinesRead = usePipelinesRead();
+  const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string; request?: string } | null>(null);
+  const [dismissRequestFor, setDismissRequestFor] = useState<{ ticket: string; request: string } | null>(null);
   // "continue in the other agent" for this session
   const [handoffFor, setHandoffFor] = useState<SessionInfo | null>(null);
   // context warnings: a fresh session from a brief, and asking before an expensive resume
@@ -2146,7 +2149,7 @@ function App() {
   const [areaNameAsk, setAreaNameAsk] = useState<{ count: number; answer: (name: string | null) => void } | null>(null);
   const askAreaName = (count: number) => new Promise<string | null>((answer) => setAreaNameAsk({ count, answer }));
   // ---- Needs you (S7): the tray, N / ⇧N, and the areas' waiting counts (NeedsYou.tsx, needsYouModel.ts) ----
-  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null);
+  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null, pipelinesRead);
   const needsSel: NeedsSel = { session: selArea ? null : focused, area: selArea };
   // where N and Go there last went, so N moves on from it while the selection is still the one it left
   const needsLast = useRef<NeedsLast | null>(null);
@@ -2168,7 +2171,11 @@ function App() {
    */
   const toNeeds = (item: NeedsItem, o: { go: boolean; avoid: ScreenBox | null }) => {
     const t = targetOf(item, sessions);
-    if ("no" in t) return lsSay(t.no);
+    if ("no" in t) {
+      // N's place moves on to it all the same, so the next N goes past an item with nowhere to go (a ticket of no workspace here)
+      needsLast.current = { id: item.id, sel: needsSel };
+      return lsSay(t.no);
+    }
     needsLast.current = { id: item.id, sel: selectionAfter(item, needsSel, onLandscape) };
     if ("session" in t) {
       setTab("sessions");
@@ -2212,11 +2219,27 @@ function App() {
       if (error) lsSay(`Couldn't answer ${firstName(ask.name)}: ${error}`);
       return error;
     });
-  /** An item's actions (needsActions): a typing ask's answers, Go there and Dismiss, Go there off saying why when it can't be gone to. */
+  /**
+   * A ticket's item opened (W15): its pipeline in the dialog, on the agent's request's PR form when it's one. The
+   * dialog opening puts the tray away and hands the keyboard back to its button for when it closes: never a terminal.
+   */
+  const openTicketItem = (pl: NonNullable<NeedsItem["pipeline"]>) =>
+    setPipelineFor({ id: pl.ticket, title: pipelines[pl.ticket]?.title ?? ticketOfGroup(pl.ticket)?.title ?? "", ...(pl.request ? { request: pl.request } : {}) });
+  /** An item's actions (needsActions): a typing ask's answers, Go there and Dismiss, Go there off saying why when it can't be gone to; a ticket's Open, and a PR request's Dismiss…. */
   const needsActionsFor = (item: NeedsItem, close: () => void): ModelAction[] => {
     const target = targetOf(item, sessions);
     const ask = item.typing;
+    const pl = item.pipeline;
     return needsActions({
+      open: pl
+        ? {
+            can: () => openTicketItem(pl),
+            title: pl.request
+              ? "Open the pull request form, filled from the agent's request: nothing is pushed or opened until you press Push and open PR"
+              : `Open #${pl.ticket}'s pipeline`,
+          }
+        : null,
+      dismissRequest: pl?.request ? () => setDismissRequestFor({ ticket: pl.ticket, request: pl.request! }) : null,
       go: goCan(target, () => {
         close();
         toNeeds(item, { go: true, avoid: null });
@@ -3411,9 +3434,12 @@ function App() {
 
       {pipelineFor && (
         <PipelineDialog
+          key={`${pipelineFor.id}:${pipelineFor.request ?? ""}`}
           ticketId={pipelineFor.id}
           title={pipelineFor.title}
-          sessions={workSessions.filter((s) => topOf(s) === pipelineFor.id && !isRemote(s))}
+          openRequest={pipelineFor.request}
+          // a session counts toward its ticket as main's ticket tools count it (ticketOfSession), so the one that asked is here
+          sessions={workSessions.filter((s) => (topOf(s) === pipelineFor.id || ticketOfSession(s) === pipelineFor.id) && !isRemote(s))}
           onAskSession={(id, text) => {
             setPipelineFor(null);
             typeInto(id, text);
@@ -3424,6 +3450,9 @@ function App() {
           }}
           onClose={() => setPipelineFor(null)}
         />
+      )}
+      {dismissRequestFor && (
+        <RequestDismissDialog ticketId={dismissRequestFor.ticket} requestId={dismissRequestFor.request} onDone={lsSay} onClose={() => setDismissRequestFor(null)} />
       )}
 
       {groupDlg && (
