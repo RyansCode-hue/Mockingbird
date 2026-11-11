@@ -4,7 +4,7 @@ import type { RoomSessionTag, TypingAsk, TypingGrant } from "../../shared/team/l
 import { initialsOf } from "../Team";
 import { firstName } from "./connectedModel";
 import { settled } from "../settled";
-import { ANSWER_GUARD_MS, keyClick, useSettledRows } from "../answerGuard";
+import { ANSWER_GUARD_MS, cameraStill, keyClick, useSettledRows } from "../answerGuard";
 
 /**
  * Typing into a teammate's session (docs/team-rooms.md, "Typing"): a
@@ -39,10 +39,12 @@ export async function decideTyping(sessionId: string, member: string, choice: "s
  * "Nick wants to type in “Export API”", with Allow for this session / Allow
  * for 15 min / Deny. It lies over the terminal's top rows rather than taking
  * room from it: the pty is never resized for it. Only a click aimed at it
- * answers it, with the Needs you tray's guards (answerGuard.ts): it's no Tab
- * stop and a key's click does nothing, so typing in the pane can't answer it;
- * an ask that just arrived or moved under the pointer takes no click, nor
- * does a double click's second once one answer is given.
+ * allows, with the Needs you tray's guards (answerGuard.ts): Allow's buttons
+ * are no Tab stops and a key's click does nothing, so typing in the pane can't
+ * allow anyone; an ask that just arrived or moved under the pointer, or that
+ * the camera just carried there, takes no click, nor does a double click's
+ * second once one answer is given. Deny, the safe answer, also takes the
+ * keyboard.
  */
 export function TypingAsks({ session, room }: { session: SessionInfo; room: RoomSessionTag }) {
   const [error, setError] = useState("");
@@ -55,7 +57,7 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
   // a new ask from the same teammate is a new state, as the tray's rows are
   const askId = (a: TypingAsk) => `${a.member}:${a.at}`;
   const answer = async (e: MouseEvent, a: TypingAsk, choice: "session" | "minutes" | "deny") => {
-    if (keyClick(e) || Date.now() < guardUntil.current || !settledAsk(askId(a))) return;
+    if (keyClick(e) ? choice !== "deny" : Date.now() < guardUntil.current || !settledAsk(askId(a)) || !cameraStill()) return;
     guardUntil.current = Date.now() + ANSWER_GUARD_MS;
     setBusy(a.member);
     setError((await decideTyping(session.id, a.member, choice)) ?? "");
@@ -76,13 +78,13 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
           <span className="reason">
             {firstName(a.name)} wants to type in “{title}”
           </span>
-          <button className="outline" tabIndex={-1} disabled={busy === a.member} onClick={(e) => answer(e, a, "session")}>
+          <button className="outline" tabIndex={-1} disabled={busy === a.member} aria-label={`Allow ${a.name} to type in “${title}” for this session`} onClick={(e) => answer(e, a, "session")}>
             Allow for this session
           </button>
-          <button className="outline" tabIndex={-1} disabled={busy === a.member} onClick={(e) => answer(e, a, "minutes")}>
+          <button className="outline" tabIndex={-1} disabled={busy === a.member} aria-label={`Allow ${a.name} to type in “${title}” for 15 min`} onClick={(e) => answer(e, a, "minutes")}>
             Allow for 15 min
           </button>
-          <button className="outline" tabIndex={-1} disabled={busy === a.member} onClick={(e) => answer(e, a, "deny")}>
+          <button className="outline" disabled={busy === a.member} aria-label={`Deny ${a.name} typing in “${title}”`} onClick={(e) => answer(e, a, "deny")}>
             Deny
           </button>
         </div>

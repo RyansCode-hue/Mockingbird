@@ -37,8 +37,10 @@ import { OVERLAYS, ownsKeys } from "./keys";
 
 /** Keys closer together than this are typing: a pause this long ends a burst. */
 export const TYPING_MS = 1000;
+/** A modifier pressed on its own: no key of a burst (Shift goes down just before Shift+Tab's Tab). */
+const MODIFIERS: ReadonlySet<string> = new Set(["Shift", "Alt", "Meta", "Control", "CapsLock", "Fn"]);
 /** Keys that call for no word when swallowed: a modifier on its own, and Esc, which closes things rather than typing. */
-export const QUIET_KEYS: ReadonlySet<string> = new Set(["Shift", "Alt", "Meta", "Control", "CapsLock", "Fn", "Escape"]);
+export const QUIET_KEYS: ReadonlySet<string> = new Set([...MODIFIERS, "Escape"]);
 /** Said on `document` (detail: the key) the first time a key is swallowed with the keyboard on the holder, each time it goes there. */
 export const KEYS_SWALLOWED = "mb-keys-swallowed";
 /** Said on `document` as a dialog opens (Modal.tsx's `useDialogFocus`, which says what it hands back). */
@@ -141,9 +143,11 @@ if (typeof document !== "undefined") {
     "keydown",
     (e) => {
       const paused = performance.now() - lastKeyAt >= TYPING_MS;
-      keyPaused = paused;
       lastKey = e.key;
-      lastKeyAt = performance.now();
+      if (!MODIFIERS.has(e.key)) {
+        keyPaused = paused;
+        lastKeyAt = performance.now();
+      }
       touched = true;
       inputs++;
       act();

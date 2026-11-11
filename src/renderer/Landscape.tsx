@@ -110,6 +110,7 @@ import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCa
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
 import { typingAsksOf } from "./needsYouModel";
+import { cameraMoved } from "./answerGuard";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
 export const CAMERA_PREF = "mb.landscape.camera";
@@ -646,7 +647,9 @@ export function Landscape({
     return m && tourHolds(m) ? m.from : cam.current;
   };
   const apply = useCallback((next: Camera) => {
+    const was = cam.current;
     cam.current = next;
+    if (was.x !== next.x || was.y !== next.y || was.zoom !== next.zoom) cameraMoved();
     const w = world.current;
     const v = viewport.current;
     if (w) {

@@ -2703,9 +2703,9 @@ function App() {
             onJump={jumpTo}
             onAskSession={typeInto}
             onOpenScm={openScmFor}
-            onCreated={(s) => {
+            onCreated={(s, since) => {
               refresh();
-              jumpToSession(s);
+              jumpToSession(s, since);
             }}
           />
         )}

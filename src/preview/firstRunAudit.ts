@@ -2383,7 +2383,8 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     vp().blur();
     vp().focus({ preventScroll: true });
     await sleep(60);
-    await typeKeys(["n", "t", "Tab", "x"], 120);
+    // one burst, sent together: a Tab after a pause would leave the landscape, as it should
+    await act(["n", "t", "Tab", "x"].map((key) => ({ key })));
     await sleep(200);
     out.disarmed = { notes: [...notesSaid], keyboard: keyboard(), selected: selected() };
     // ⌘E with nothing selected arms it: ? opens the sheet

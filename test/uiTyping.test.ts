@@ -188,24 +188,73 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     expect(r.after).toEqual(["session"]);
   }, 90_000);
 
-  it("never answers from the keyboard: the strip's buttons are no Tab stops, and Enter or Space on a focused one does nothing", async () => {
+  it("answers from the keyboard only with Deny: Allow's buttons are no Tab stops and take no key, Deny takes Enter", async () => {
     const read = `(() => {
       const t = (window.__t ??= { step: 0 });
       const btns = () => [...document.querySelectorAll(".typing-ask button")];
+      const calls = () => window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").map((c) => c.args[2]);
       if (t.step === 0) {
         if (btns().length !== 3) return null;
         t.tabIndex = btns().map((b) => b.tabIndex);
+        t.labels = btns().map((b) => b.getAttribute("aria-label"));
         btns()[0].focus();
-        t.focused = document.activeElement === btns()[0];
         (window.__mbKeys ??= []).push({ key: "Enter" }, { key: "Space" });
         t.step = 1;
         t.at = Date.now();
         return null;
       }
-      if (Date.now() - t.at < 1200) return null;
-      return JSON.stringify({ tabIndex: t.tabIndex, focused: t.focused, calls: window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").length, strip: btns().length });
+      if (t.step === 1) {
+        if (Date.now() - t.at < 1000) return null;
+        t.afterAllow = { calls: calls(), strip: btns().length };
+        btns()[2].focus();
+        (window.__mbKeys ??= []).push({ key: "Enter" });
+        t.step = 2;
+        t.at = Date.now();
+        return null;
+      }
+      if (btns().length || Date.now() - t.at < 600) return null;
+      return JSON.stringify({ tabIndex: t.tabIndex, labels: t.labels, afterAllow: t.afterAllow, calls: calls() });
     })()`;
-    expect(JSON.parse(await result(`motion=off&${AT}&typingAsk`, read, SIZE))).toEqual({ tabIndex: [-1, -1, -1], focused: true, calls: 0, strip: 3 });
+    expect(JSON.parse(await result(`motion=off&${AT}&typingAsk`, read, SIZE))).toEqual({
+      tabIndex: [-1, -1, 0],
+      labels: ["Allow Nick Smith to type in “Release notes for #5101” for this session", "Allow Nick Smith to type in “Release notes for #5101” for 15 min", "Deny Nick Smith typing in “Release notes for #5101”"],
+      afterAllow: { calls: [], strip: 3 },
+      calls: ["deny"],
+    });
+  }, 90_000);
+
+  it("takes no click on a strip the camera has just carried under the pointer", async () => {
+    const read = `(() => { ${PRESS_SETTLED}
+      const t = (window.__t ??= { step: 0 });
+      const calls = () => window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").map((c) => c.args[2]);
+      const allow = () => [...document.querySelectorAll('.ls-world [data-front="s8"] .typing-ask button')].find((b) => b.textContent === "Allow for 15 min");
+      if (t.step === 0) {
+        // the ask long settled; then a small pan, and a press at once where Allow is
+        if (!allow()) return null;
+        t.seen ??= Date.now();
+        if (Date.now() - t.seen < 1200) return null;
+        const r = allow().getBoundingClientRect();
+        const at = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        (window.__mbKeys ??= []).push({ wheel: { ...at, dx: 0, dy: 4 } }, { pause: 60 }, { mouse: { ...at, clickCount: 1 } });
+        t.step = 1;
+        t.at = Date.now();
+        return null;
+      }
+      if (t.step === 1) {
+        if (Date.now() - t.at < 1000) return null;
+        t.early = { calls: calls(), strip: !!allow() };
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        if (!allow() || !pressSettled(allow(), "still")) return null;
+        t.step = 3;
+        return null;
+      }
+      if (allow()) return null;
+      return JSON.stringify({ early: t.early, after: calls() });
+    })()`;
+    expect(JSON.parse(await result("motion=off&lsCamera=0,0,0.8&typingAsk", read, SIZE))).toEqual({ early: { calls: [], strip: true }, after: ["minutes"] });
   }, 90_000);
 
   it("shows the strip over the terminal: no re-fit, no pty resize", async () => {
@@ -406,7 +455,7 @@ describe.skipIf(!local)("a teammate's ask answered from Needs you, with real pre
     expect(r.typing).toEqual(["s2", "s8"]);
   }, 90_000);
 
-  it("never answers from the keyboard: Tab passes Allow and Deny by, and Enter or Space on a focused one does nothing", async () => {
+  it("answers from the keyboard only with Deny: Tab passes Allow by, Enter or Space on it does nothing, and Enter on Deny denies", async () => {
     const read = `(() => { ${common}
       if (t.step === 0) return open() ? ((t.step = 1), (t.focus = []), null) : null;
       if (t.step === 1) {
@@ -436,16 +485,29 @@ describe.skipIf(!local)("a teammate's ask answered from Needs you, with real pre
         t.done = Date.now();
         return null;
       }
-      if (Date.now() - t.done < 1000) return null;
-      return JSON.stringify({ focus: t.focus, focused: t.focused, calls: calls(), typing: typing() });
+      if (t.step === 4) {
+        if (Date.now() - t.done < 1000) return null;
+        t.afterAllow = { calls: calls(), typing: typing() };
+        const deny = row("s8").querySelector('[data-action="deny"]');
+        t.denyLabel = deny.getAttribute("aria-label");
+        deny.focus();
+        key("Enter");
+        t.step = 5;
+        t.done = Date.now();
+        return null;
+      }
+      if (row("s8") || Date.now() - t.done < 600) return null;
+      return JSON.stringify({ focus: t.focus, focused: t.focused, afterAllow: t.afterAllow, denyLabel: t.denyLabel, calls: calls() });
     })()`;
     const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.5&typingAsk", read, "1400x900"));
     expect(r.focus.length).toBeGreaterThan(3);
     expect(r.focus).toContain("go");
-    expect(r.focus.filter((a: string) => a === "allow" || a === "deny")).toEqual([]);
+    expect(r.focus).toContain("deny");
+    expect(r.focus).not.toContain("allow");
     expect(r.focused).toBe("allow");
-    expect(r.calls).toEqual([]);
-    expect(r.typing).toEqual(["s8"]);
+    expect(r.afterAllow).toEqual({ calls: [], typing: ["s8"] });
+    expect(r.denyLabel).toMatch(/^Deny: Nick wants to type in /);
+    expect(r.calls).toEqual([["s8", NICK, "deny"]]);
   }, 90_000);
 
   it("turns the row's buttons off from the click until main answers", async () => {

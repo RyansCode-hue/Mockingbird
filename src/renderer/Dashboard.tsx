@@ -20,7 +20,7 @@ import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { blockAction, editTags, tagSuggestions } from "./tagEdits";
 import { splitTagInput, type TagChange } from "../shared/cardRules";
 import { gapAt, placeCard, placeLabel, placement, stepGap } from "./boardOrder";
-import { keyboardNowhere } from "./keyArm";
+import { inputStamp, keyboardNowhere } from "./keyArm";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -47,7 +47,8 @@ export function DashboardBoard({
   onJump: (id: string) => void;
   onAskSession: (sessionId: string, text: string) => void;
   onOpenScm: (sessionId: string) => void;
-  onCreated: (s: SessionInfo) => void;
+  /** A session started on a ticket, and the user's input as Start session was pressed (`inputStamp`), for the jump to it. */
+  onCreated: (s: SessionInfo, since: number) => void;
 }) {
   const pipelines = usePipelines();
   const [items, setItems] = useState<AdoWorkItem[] | null>(null);
@@ -409,6 +410,7 @@ export function DashboardBoard({
     if (!detail || !repoPath) return;
     if (branchMode === "existing" && !existingBranch) return;
     const prompt = sendTicket ? ticketKickoffPrompt(detail.id, title, desc) : undefined;
+    const since = inputStamp();
     const info = await run("start", () =>
       window.mb.createSession({
         repoPath,
@@ -424,7 +426,7 @@ export function DashboardBoard({
       })
     );
     if (isErr(info)) return;
-    onCreated(info);
+    onCreated(info, since);
   };
 
   return (

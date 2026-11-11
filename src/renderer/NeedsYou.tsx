@@ -5,7 +5,7 @@ import { LOOSE_GROUP } from "../shared/landscape";
 import { agoShort, plural } from "../shared/format";
 import { DIALOG_OPENED, type DialogOpened } from "./Modal";
 import { AnchoredPopover } from "./Popover";
-import { ANSWER_GUARD_MS, keyClick, useSettledRows } from "./answerGuard";
+import { ANSWER_GUARD_MS, cameraStill, keyClick, useSettledRows } from "./answerGuard";
 import { usePersisted } from "./prefs";
 import { shortAreaName } from "./landscapeModel";
 import { KIND_LABEL, dismiss, dismissedFrom, needsByArea, needsItems, needsLabel, shownItems, undismiss, type NeedsItem } from "./needsYouModel";
@@ -174,7 +174,8 @@ export function NeedsYou({
     setLast(item);
   };
   const onAnswer = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
-    if (!a.answer || keyClick(e) || guarded() || busy.has(item.sig) || !settled(item)) return;
+    // a key's click gives only Deny, the safe answer; a pointer's one aimed at a row that has settled (answerGuard.ts)
+    if (!a.answer || busy.has(item.sig) || (keyClick(e) ? a.key !== "deny" : guarded() || !settled(item) || !cameraStill())) return;
     hold(e);
     setBusy((b) => new Set(b).add(item.sig));
     // answered, the row stays off until main's word takes it away; refused (said by the answer), it's back on
@@ -266,7 +267,8 @@ export function NeedsYou({
                         className={a.primary ? `ny-go ${DOT[item.kind] === "waiting" ? "fill" : ""}` : answer ? "ny-go ny-answer" : "ny-dismiss"}
                         data-action={a.key}
                         disabled={a.disabled || busy.has(item.sig)}
-                        tabIndex={answer ? -1 : undefined}
+                        tabIndex={answer && a.key !== "deny" ? -1 : undefined}
+                        aria-label={answer ? `${a.label}: ${item.text}` : undefined}
                         title={a.title}
                         onClick={(e) => (answer ? onAnswer(item, a, e) : a.key === "dismiss" ? onDismiss(item, a, e) : !guarded() && a.onPick())}
                       >

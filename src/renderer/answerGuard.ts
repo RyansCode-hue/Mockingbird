@@ -2,8 +2,9 @@ import { useLayoutEffect, useRef, type RefObject } from "react";
 
 /**
  * Answers a click gives (a teammate's ask to type, in the Needs you tray and on its workspace's strip) are let go when
- * the click wasn't aimed at them: a row that just arrived or moved under the pointer, the second click of a double
- * click landing on whatever took the answered row's place, or a key's click on a focused button.
+ * the click wasn't aimed at them: a row that just arrived or moved under the pointer, or that the landscape's camera
+ * just carried there, or the second click of a double click landing on whatever took the answered row's place. Only
+ * Deny, the safe answer, is also given from the keyboard (a key's click); allowing takes the pointer.
  */
 
 /** A row that arrived or moved this recently takes no answer: the click was aimed at what was there before. */
@@ -13,6 +14,14 @@ export const ANSWER_GUARD_MS = 450;
 
 /** A click with no pointer behind it: a key's (Enter or Space) on a focused button, or one made by code. */
 export const keyClick = (e: { detail: number }): boolean => e.detail === 0;
+
+/** When the landscape's camera last moved (a pan, a zoom, a flight), carrying what's drawn on it under a resting pointer. */
+let cameraAt = -Infinity;
+export function cameraMoved(): void {
+  cameraAt = Date.now();
+}
+/** The camera has been still ANSWER_SETTLE_MS: a strip it carried under the pointer has been where it is that long. */
+export const cameraStill = (): boolean => Date.now() - cameraAt >= ANSWER_SETTLE_MS;
 
 /**
  * Where each row of `list` (`rows`, keyed by `idOf`) is, and since when, recorded after every render: `settled(id)`

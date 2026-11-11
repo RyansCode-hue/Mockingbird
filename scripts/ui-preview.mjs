@@ -140,13 +140,14 @@ const KEYS = {
   Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
   Escape: { key: "Escape", code: "Escape", keyCode: 27 },
   Space: { key: " ", code: "Space", keyCode: 32, text: " " },
+  Shift: { key: "Shift", code: "ShiftLeft", keyCode: 16 },
 };
 
 /**
  * Press, for real, the keys and the mouse the page asked for: it pushes { key, shift?, meta?, alt?, ctrl?, hold? } (hold:
  * "down" or "up", only that half of the press), { mouse: { x, y, clickCount, button?, shift? } } (clickCount 2: a double
  * click's second), { move: { x, y } }, { wheel: { x, y, dx, dy, meta?, ctrl? } } or { drag: { x0, y0, x1, y1, hold? } } onto
- * window.__mbKeys, and window.__mbKeysDone counts the ones done. They reach whatever has the keyboard or is under the
+ * window.__mbKeys, or { pause: ms } between two of them, and window.__mbKeysDone counts the ones done. They reach whatever has the keyboard or is under the
  * pointer, as a person's would, which an event dispatched at an element can't show.
  */
 async function pressAsked(ask) {
@@ -165,6 +166,10 @@ async function pressAsked(ask) {
     }
     if (k.move) {
       await ask("Input.dispatchMouseEvent", { type: "mouseMoved", x: k.move.x, y: k.move.y });
+      continue;
+    }
+    if (k.pause) {
+      await new Promise((r) => setTimeout(r, k.pause));
       continue;
     }
     if (k.wheel) {

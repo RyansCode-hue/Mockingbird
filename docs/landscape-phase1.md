@@ -3711,6 +3711,25 @@ Design O, with Artifacts as a window, and N's workspace header.
     to the first stop after it, or with Shift the last before it, past all it
     holds (keyArm.ts's `afterPause` and `tabPast`); in a burst it's swallowed
     with the rest, as on the holder.
+- **As built, review fixes 3b.**
+  - **A modifier pressed on its own is no key of a burst:** keyArm measures
+    the pause without Shift, Alt, Meta, Control, CapsLock and Fn, so the
+    Shift a keyboard sends just before Shift+Tab's Tab doesn't hide the
+    pause, on the landscape and on the holder. The preview's driver presses
+    a lone Shift and waits (`{ pause }`); `uiLandscapeFirstRun` sends Shift
+    90 ms before Tab.
+  - **Deny takes the keyboard; allowing doesn't.** The strip's and the
+    tray's Deny are Tab stops that Enter or Space answer; Allow for this
+    session and Allow for 15 min stay pointer-only. Each strip button's
+    `aria-label` names who asks and the session; the tray's reads its row
+    ("Deny: Nick wants to type in …").
+  - **A strip the camera just carried under the pointer takes no click:**
+    the landscape notes each move of its camera (a pan, a zoom, a flight;
+    `cameraMoved`), and the strip's and the tray's answers take no pointer
+    click within 500 ms of one (`cameraStill`). `uiTyping` pans a few pixels
+    and presses Allow at once.
+  - **A Dashboard ticket's Start session** stamps its jump too, as New
+    session does; `uiLandscapeFirstRun` types through its wait.
 
 ## Risks
 

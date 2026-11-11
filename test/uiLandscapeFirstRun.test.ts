@@ -944,10 +944,63 @@ describe.skipIf(!local)("a session started from a dialog while main is slow to s
       const r = await look("motion=off&lsCamera=0,0,1&createMs=1500", read);
       expect(r).toEqual({ started: 1, dialog: false, writes: [] });
     }, 120_000);
+
+  it("leaves what's typed meanwhile out of a session started from a Dashboard ticket: the jump to it moves no keyboard", async () => {
+    const read = `(() => {
+      const t = (window.__t ??= { step: 0, typed: 0 });
+      const push = (k) => (window.__mbKeys ??= []).push(k);
+      const pressOn = (el) => { const r = el.getBoundingClientRect(); push({ mouse: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), clickCount: 1 } }); };
+      const start = () => [...document.querySelectorAll(".bdetail button.primary")].find((b) => b.textContent.trim() === "Start session");
+      if (t.step === 0) {
+        const card = document.querySelector(".board .bcard");
+        if (!card) return null;
+        pressOn(card);
+        t.step = 1;
+        return null;
+      }
+      if (t.step === 1) {
+        // the ticket's repo, from the New session picker
+        const pick = [...document.querySelectorAll(".bdetail .mb-select")].find((b) => b.textContent.includes("repo…"));
+        if (!pick) return null;
+        pick.click();
+        t.step = 1.5;
+        return null;
+      }
+      if (t.step === 1.5) {
+        const repo = document.querySelectorAll(".mb-listbox [role=option]")[1];
+        if (!repo) return null;
+        repo.click();
+        t.step = 2;
+        return null;
+      }
+      if (t.step === 2) {
+        const b = start();
+        if (!b || b.disabled) return null;
+        t.mark = window.__mbCalls.length;
+        pressOn(b);
+        t.step = 3;
+        return null;
+      }
+      if (t.step === 3) {
+        // started (?createMs keeps main busy 1.5 s): the user goes on typing
+        if (t.typed < 12) {
+          push({ key: "abcdefghijkl"[t.typed++] });
+          return null;
+        }
+        t.step = 4;
+        t.at = Date.now();
+        return null;
+      }
+      if (Date.now() - t.at < 600) return null;
+      const since = window.__mbCalls.slice(t.mark);
+      return JSON.stringify({ started: since.filter((c) => c.fn === "createSession").length, tab: document.querySelector(".topbar .tab.on")?.dataset.tab ?? null, writes: since.filter((c) => c.fn === "sessionWrite").map((c) => c.args[0]) });
+    })()`;
+    expect(await look("tab=dashboard&motion=off&lsCamera=0,0,1&createMs=1500", read)).toEqual({ started: 1, tab: "sessions", writes: [] });
+  }, 120_000);
 });
 
 describe.skipIf(!local)("Tab on the landscape disarmed", () => {
-  it("leaves it once keys have paused, for the stop after it or, with Shift, the one before; a burst's stays swallowed", async () => {
+  it("leaves it once keys have paused, for the stop after it or, with Shift (pressed first, on its own), the one before; a burst's stays swallowed", async () => {
     const read = `(() => {
       const t = (window.__t ??= { step: 0 });
       const vp = document.querySelector(".ls-viewport");
@@ -986,7 +1039,8 @@ describe.skipIf(!local)("Tab on the landscape disarmed", () => {
       }
       if (t.step === 3) {
         if (Date.now() - t.at < 1300) return null;
-        push({ key: "Tab", shift: true });
+        // as a keyboard sends it: Shift down on its own a moment before Tab
+        push({ key: "Shift", shift: true, hold: "down" }, { pause: 90 }, { key: "Tab", shift: true }, { key: "Shift", hold: "up" });
         t.step = 4;
         return null;
       }
