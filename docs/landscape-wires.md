@@ -2372,6 +2372,22 @@ under the worktree. It passes once that resolves (a link to the main checkout's)
   - The history's count of the user's other kept ticks is gone. The cleared list
     and this line say what changed.
 
+#### W14: the phone handle's race
+
+`uiPhoneAlerts` › "won't save a handle Messages couldn't tell is yours" failed on this
+branch about one run in four, even run alone, and never in 20 runs of a67814b.
+- **The cause** is in `PhoneAlerts.tsx`, not in W14's code.
+  `useEffect(() => setHandle(p.handle), [p.handle])` runs on mount, after the
+  first frame. The test types into the field as soon as the field exists. When the
+  typing landed before that effect, the effect put the saved `you@icloud.com` back
+  over it. The debug run showed exactly that: the same input element, with the
+  saved handle back in it.
+- **Why only on this branch:** any change to the bundle shifts its timing. On main
+  with only one of this branch's files swapped in, the test failed 2–6 times in 8,
+  whichever file it was, `TicketPipeline.tsx` included.
+- **The fix:** the field now follows the saved handle during render, only when the
+  handle changes, and no longer on mount. With it, 0 of 12 runs failed.
+
 ### W15 · PR requests, patch notes and your stages, in the window. Size M
 - Needs you gains `pr` (rank 0: "Coder asks to open the PR to dev · #4182") and
   `ticket` (rank 1: "#4182 is ready for your stakeholder testing", "#4182's patch

@@ -47,6 +47,13 @@ export function PhoneAlertsSection({ settings, onChange }: { settings: Settings;
   const [st, setSt] = useState<PhoneStatus | null>(null);
   const [stErr, setStErr] = useState("");
   const [handle, setHandle] = useState(p.handle);
+  // the field follows the saved handle when that changes, but not on mount: a mount effect runs after the first frame
+  // and would put the saved handle back over anything typed before it ran
+  const [shown, setShown] = useState(p.handle);
+  if (shown !== p.handle) {
+    setShown(p.handle);
+    setHandle(p.handle);
+  }
   const [testing, setTesting] = useState(false);
   const [testNote, setTestNote] = useState<{ ok: boolean; msg: string } | null>(null);
   const [askFda, setAskFda] = useState(false);
@@ -66,7 +73,6 @@ export function PhoneAlertsSection({ settings, onChange }: { settings: Settings;
       clearInterval(t);
     };
   }, []);
-  useEffect(() => setHandle(p.handle), [p.handle]);
 
   const normalized = normalizeHandle(handle);
   const commitHandle = () => {
