@@ -76,7 +76,8 @@ describe("one pull request by its id, for the merge watch", () => {
     env: {},
     cwd: repo,
   });
-  const ADO_PR = { provider: "ado" as const, id: 7, repo: "Portal/client-portal" };
+  const ADO_PR = { provider: "ado" as const, id: 7, repo: "Portal/client-portal", url: `${web}/pullrequest/7` };
+  const GH_PR = { provider: "github" as const, id: 9, repo: "o/r", url: "https://github.com/o/r/pull/9" };
 
   it("reads an ADO pull request at pullrequests/{id}, with its merge commit and when it merged or closed", async () => {
     const repo = withOrigin("https://dev.azure.com/acme/Portal/_git/client-portal");
@@ -100,24 +101,26 @@ describe("one pull request by its id, for the merge watch", () => {
       cmds.push({ cmd, cwd: opts?.cwd });
       return { code: 0, out: JSON.stringify({ number: 9, url: "https://github.com/o/r/pull/9", title: "x", state: "MERGED", baseRefName: "main", mergeCommit: { oid: "0123456789abcdef0123456789abcdef01234567" }, mergedAt: "2026-11-11T15:00:00Z" }) };
     };
-    const st = await prStateById({ provider: "github", id: 9, repo: "o/r" }, { ado: async () => ({}), run, env: {}, cwd: repo });
+    const st = await prStateById(GH_PR, { ado: async () => ({}), run, env: {}, cwd: repo });
     expect(st).toMatchObject({ id: 9, state: "merged", base: "main", mergeCommit: "0123456789abcdef0123456789abcdef01234567", mergedAt: Date.parse("2026-11-11T15:00:00Z") });
     expect(cmds).toEqual([{ cmd: expect.stringMatching(/^gh pr view 9 --repo 'o\/r' --json \S*,mergeCommit,mergedAt,closedAt$/), cwd: repo }]);
-    const closed: ShellRunner = async () => ({ code: 0, out: JSON.stringify({ number: 9, state: "CLOSED", closedAt: "2026-11-10T08:00:00Z" }) });
-    expect(await prStateById({ provider: "github", id: 9, repo: "o/r" }, { ado: async () => ({}), run: closed, env: {}, cwd: repo })).toMatchObject({ state: "closed", closedAt: Date.parse("2026-11-10T08:00:00Z") });
+    const closed: ShellRunner = async () => ({ code: 0, out: JSON.stringify({ number: 9, url: "https://github.com/O/R/pull/9/", state: "CLOSED", closedAt: "2026-11-10T08:00:00Z" }) });
+    expect(await prStateById(GH_PR, { ado: async () => ({}), run: closed, env: {}, cwd: repo })).toMatchObject({ state: "closed", closedAt: Date.parse("2026-11-10T08:00:00Z") });
   });
 
   it("throws, saying why, rather than answer as if it hadn't merged", async () => {
     const gh = withOrigin("https://github.com/o/r.git");
-    const at = (run: ShellRunner) => prStateById({ provider: "github", id: 9, repo: "o/r" }, { ado: async () => ({}), run, env: {}, cwd: gh });
+    const at = (run: ShellRunner) => prStateById(GH_PR, { ado: async () => ({}), run, env: {}, cwd: gh });
     await expect(at(async () => ({ code: 1, out: "HTTP 401: Bad credentials" }))).rejects.toThrow(/gh: HTTP 401: Bad credentials/);
     await expect(at(async () => ({ code: 0, out: "<html>" }))).rejects.toThrow(/gh's answer for pull request 9 wasn't JSON/);
     await expect(at(async () => ({ code: 0, out: JSON.stringify({ number: 8, state: "MERGED" }) }))).rejects.toThrow(/GitHub answered with pull request 8, not 9/);
+    // the answer has to be for the PR's own page
+    await expect(at(async () => ({ code: 0, out: JSON.stringify({ number: 9, url: "https://github.com/o/fork/pull/9", state: "MERGED" }) }))).rejects.toThrow(/GitHub answered for https:\/\/github.com\/o\/fork\/pull\/9, not https:\/\/github.com\/o\/r\/pull\/9/);
     // the folder's origin has to be the repository the PR was recorded in, on its provider
-    await expect(prStateById({ provider: "github", id: 9, repo: "o/other" }, { ado: async () => ({}), run: noRun, env: {}, cwd: gh })).rejects.toThrow(/origin in .* is o\/r, not o\/other/);
-    await expect(prStateById({ provider: "ado", id: 9, repo: "o/r" }, { ado: async () => ({}), run: noRun, env: {}, cwd: gh })).rejects.toThrow(/is o\/r, not o\/r, where the pull request is/);
-    await expect(prStateById({ provider: "github", id: 9, repo: "o/r" }, { ado: async () => ({}), run: noRun, env: {}, cwd: makeRepo() })).rejects.toThrow(/has no origin remote/);
-    await expect(prStateById({ provider: "github", id: 0, repo: "o/r" }, { ado: async () => ({}), run: noRun, env: {}, cwd: gh })).rejects.toThrow(/isn't a pull request id/);
+    await expect(prStateById({ ...GH_PR, repo: "o/other" }, { ado: async () => ({}), run: noRun, env: {}, cwd: gh })).rejects.toThrow(/origin in .* is o\/r, not o\/other/);
+    await expect(prStateById({ ...GH_PR, provider: "ado" }, { ado: async () => ({}), run: noRun, env: {}, cwd: gh })).rejects.toThrow(/is o\/r, not o\/r, where the pull request is/);
+    await expect(prStateById(GH_PR, { ado: async () => ({}), run: noRun, env: {}, cwd: makeRepo() })).rejects.toThrow(/has no origin remote/);
+    await expect(prStateById({ ...GH_PR, id: 0 }, { ado: async () => ({}), run: noRun, env: {}, cwd: gh })).rejects.toThrow(/isn't a pull request id/);
     const az = withOrigin("https://dev.azure.com/acme/Portal/_git/client-portal");
     const denied = async () => {
       throw new Error("Azure DevOps 401 Unauthorized: x");
@@ -125,5 +128,8 @@ describe("one pull request by its id, for the merge watch", () => {
     await expect(prStateById(ADO_PR, { ...adoAt(az, {}), ado: denied })).rejects.toThrow(/401/);
     await expect(prStateById(ADO_PR, adoAt(az, ado({ pullRequestId: 6 })))).rejects.toThrow(/Azure DevOps answered with pull request 6, not 7/);
     await expect(prStateById(ADO_PR, adoAt(az, null))).rejects.toThrow(/Azure DevOps returned nothing for pull request 7/);
+    // the same project and repository in another ADO organization isn't the PR's
+    const otherOrg = async (url: string) => (url.includes("/pullrequests/7?") ? ado({}) : { id: "guid", webUrl: "https://dev.azure.com/other/Portal/_git/client-portal" });
+    await expect(prStateById(ADO_PR, { ...adoAt(az, {}), ado: otherOrg })).rejects.toThrow(/Azure DevOps answered for https:\/\/dev.azure.com\/other\/.*, not https:\/\/dev.azure.com\/acme\//);
   });
 });

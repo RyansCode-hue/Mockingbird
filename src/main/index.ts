@@ -1391,7 +1391,7 @@ const wires = new WireService({
   log: logError,
   onAdded: (id, w) => wireTools.wired(id, w),
   delivery: { withdraw: (id, w) => delivery.withdraw(id, w), restoring: (w) => delivery.restoring(w), restored: (id) => delivery.restored(id) },
-  merges: { view: (w, source) => prWatch.view(w, source), mergedBefore: (from) => prWatch.mergedBefore(from) },
+  merges: { view: (w, source) => prWatch.view(w, source) },
 });
 handle("wires:get", () => wires.get());
 handle("wires:add", (from, to, type, settings) => wires.add(from, to, type, settings));

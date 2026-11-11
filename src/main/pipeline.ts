@@ -13,7 +13,9 @@ import {
   clearAgentTicks,
   clearGateTicks,
   clearsGates,
+  isPrWatchFailure,
   isTicketStage,
+  latestPr,
   stageLabel,
   stageStep,
 } from "../shared/types";
@@ -161,6 +163,12 @@ export class PipelineStore {
     const data = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, TicketPipeline>) : {};
     for (const [id, p] of Object.entries(data)) {
       if (!isMap(p)) continue;
+      // a merge watch failure of another shape would stop that PR's reads: it starts over, logged
+      for (const pr of Array.isArray(p.prs) ? p.prs : []) {
+        if (!isMap(pr) || pr.watch === undefined || isPrWatchFailure(pr.watch)) continue;
+        delete pr.watch;
+        console.error(`[mockingbird] pipeline.json: #${id}'s pull request ${JSON.stringify(pr.url)} had a merge watch record it couldn't read; it starts over.`);
+      }
       const started = [...LISTS.filter((k) => p[k] === undefined), ...(p.checks === undefined ? ["checks"] : [])];
       if (!started.length) continue;
       for (const k of LISTS) p[k] ??= [];
@@ -365,21 +373,24 @@ export class PipelineStore {
   }
 
   /**
-   * Pull request `url` merged, as its provider says (`by` BY_MERGE) or as the user marks it (BY_YOU): when, and its merge
-   * commit, saved, and its watch's failures gone. A ticket at that PR's stage moves on, PR to dev to AI testing in
-   * dev/UAT and PR to main to AI testing in staging/prod, with `by` and `note`; at any other stage it stays. Refused once
-   * it's merged, so one merge moves a ticket once. `moved`: whether it moved.
+   * Pull request `url` merged, as its provider says (`by` BY_MERGE) or as the user marks it (BY_YOU): when (`timeUnknown`
+   * when the provider gave none and `at` is when it was seen), and its merge commit, saved, and its watch's failures
+   * gone. A ticket at that PR's stage moves on, PR to dev to AI testing in dev/UAT and PR to main to AI testing in
+   * staging/prod, with `by` and `note`, but only for the ticket's latest PR to that target: an older one's merge (a round
+   * before a rework, never recorded by 1.6) is saved and moves nothing. Refused once it's merged, so one merge moves a
+   * ticket once. `moved`: whether it moved.
    */
-  prMerged(id: string, url: string, o: { at: number; commit?: string; by: string; note: string }): { pipeline: TicketPipeline; moved: boolean } {
+  prMerged(id: string, url: string, o: { at: number; timeUnknown?: boolean; commit?: string; by: string; note: string }): { pipeline: TicketPipeline; moved: boolean } {
     return this.change(id, () => {
       const { p, pr } = this.trackedPr(id, url);
       if (pr.mergedAt) throw new Error(`#${id}'s pull request ${pr.id} is merged already`);
       pr.mergedAt = o.at;
+      if (o.timeUnknown) pr.mergedAtUnknown = true;
       if (o.commit) pr.mergeCommit = o.commit;
       if (o.by === BY_YOU) pr.mergedBy = BY_YOU;
       delete pr.closedAt;
       delete pr.watch;
-      if (p.stage !== (pr.target === "dev" ? "pr-dev" : "pr-main")) return { pipeline: p, moved: false };
+      if (p.stage !== (pr.target === "dev" ? "pr-dev" : "pr-main") || latestPr(p.prs, pr.target) !== pr) return { pipeline: p, moved: false };
       this.move(p, pr.target === "dev" ? "dev-test" : "prod-test", { note: o.note, by: o.by, pr });
       return { pipeline: p, moved: true };
     });

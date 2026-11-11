@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { openLink } from "./uiUtil";
 import { GATES, clearsGates, gateTicks, stageLabel, stageStep, tickOf, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
-import { nextSteps, prMergeNote, railOf } from "./ticketPipelineModel";
+import { markMergedQuestion, nextSteps, prMergeNote, railOf } from "./ticketPipelineModel";
 import { ago, plural } from "../shared/format";
 import { createIpcStore } from "./ipcStore";
 import { useAction } from "./useAction";
@@ -456,6 +456,21 @@ export function PipelinePanel(props: PipelineProps) {
                   {merge && !merge.problem && ` · ${merge.text}`}
                 </span>
                 {merge?.problem && <span className="pl-warn">{merge.text}</span>}
+                {!r.mergedAt && (
+                  <a data-tip="Ask its provider now whether it has merged" onClick={() => void run("check", () => window.mb.pipelinePrCheck(ticketId, r.url))}>
+                    Check now
+                  </a>
+                )}
+                {merge?.problem && (
+                  <a
+                    data-tip="Say it merged, when Mockingbird can't tell: the ticket and its wires go on as for a merge"
+                    onClick={() => {
+                      if (window.confirm(markMergedQuestion(r))) void run("mark merged", () => window.mb.pipelinePrMarkMerged(ticketId, r.url));
+                    }}
+                  >
+                    Mark merged…
+                  </a>
+                )}
               </div>
             );
           })}

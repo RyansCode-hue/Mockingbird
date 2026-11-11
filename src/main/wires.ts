@@ -72,12 +72,8 @@ export interface WireServiceOptions {
   newId?: () => string;
   /** A wire was made and saved (not restored: its ends heard of it when it was first made). Told after the change counts. */
   onAdded?: (id: string, wire: Wire) => void;
-  /** The merge watch (prWatch.ts): what a pr-merged wire's pull requests say, and which had merged before one began to watch. */
-  merges?: {
-    view(w: Wire, source: WireEnd | null): MergeView | null;
-    /** The ids of the pull requests from session `from`'s ticket and branch that have merged. */
-    mergedBefore(from: string): number[];
-  };
+  /** The merge watch (prWatch.ts): what a pr-merged wire's pull requests say. */
+  merges?: { view(w: Wire, source: WireEnd | null): MergeView | null };
 }
 
 /**
@@ -110,7 +106,8 @@ export class WireService {
       const refused = wireRefusal(from, to, type, ctx) ?? settingsRefusal({ from, to, type }, settings.settings, ctx);
       if (refused) return { refused };
       id = this.unusedId(book, kept);
-      made = withSettings(newWire(from, to, type, createdAtAfter(book.links, Date.now())), settings.settings);
+      const at = createdAtAfter(book.links, Date.now());
+      made = withSettings(newWire(from, to, type, at), settings.settings, at);
       const links = { ...book.links };
       put(links, id, made);
       return { book: { ...book, links } };
@@ -134,12 +131,7 @@ export class WireService {
       if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
       const refused = settingsRefusal(w, settings.settings, this.context(book));
       if (refused) return { refused };
-      const next = withSettings(w, settings.settings);
-      // set to go when its PR merges: what had merged before then isn't a merge it waited for
-      if (next.when === "pr-merged" && w.when !== "pr-merged") {
-        const before = this.o.merges?.mergedBefore(w.from) ?? [];
-        if (before.length) next.fired = [...new Set([...(w.fired ?? []), ...before])];
-      }
+      const next = withSettings(w, settings.settings, Date.now());
       if (sameWire(next, w)) return { book };
       const links = { ...book.links };
       put(links, id, next);

@@ -81,9 +81,10 @@ export interface FinishFill {
   noWireOut: { unread: string } | null;
 }
 
-/** A pull request merging, filled in (WireTools.planMerge): the PR's id and each pr-merged wire's body. Delivery's offer writes it. */
+/** A pull request merging, filled in (WireTools.planMerge): the PR and each pr-merged wire's body. Delivery's offer writes it. */
 export interface MergeFill {
-  merge: { pr: number };
+  /** The PR, by its page: what `fired` keeps. */
+  merge: { pr: string };
   fills: FinishFill["fills"];
 }
 
@@ -274,7 +275,7 @@ export class WireTools {
       if (merge.pr.mergedBy) body.flags.push("You marked its pull request merged, rather than its provider saying so: its merge commit isn't known.");
       fills.push({ wire: id, from: filledFrom(w), body });
     }
-    return { merge: { pr: merge.pr.id }, fills };
+    return { merge: { pr: merge.pr.url }, fills };
   }
 
   /**

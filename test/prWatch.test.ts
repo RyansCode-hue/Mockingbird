@@ -8,8 +8,8 @@ import { SessionManager } from "../src/main/sessions";
 import { WireDelivery, type FrameWire } from "../src/main/wireDelivery";
 import { WireTools } from "../src/main/wireTools";
 import { WireService } from "../src/main/wires";
-import { prMergeNote } from "../src/renderer/ticketPipelineModel";
-import { BY_YOU, prNeedsYou, type PipelinePr, type PrState, type SessionInfo } from "../src/shared/types";
+import { markMergedQuestion, prMergeNote } from "../src/renderer/ticketPipelineModel";
+import { BY_YOU, prNeedsYou, type PipelinePr, type PrRepo, type PrState, type SessionInfo } from "../src/shared/types";
 import { gateOf } from "../src/shared/wires";
 import { tempDir } from "./helpers";
 
@@ -64,7 +64,7 @@ async function setup() {
     takenOver: () => null,
     log,
     delivery: { withdraw: (id, w) => d.withdraw(id, w), restoring: (w) => d.restoring(w), restored: (id) => d.restored(id) },
-    merges: { view: (w, source) => watch.view(w, source), mergedBefore: (from) => watch.mergedBefore(from) },
+    merges: { view: (w, source) => watch.view(w, source) },
   });
   const d: WireDelivery = new WireDelivery({
     store,
@@ -91,15 +91,25 @@ async function setup() {
   const answers = new Map<string, Answer>();
   const reads: { url: string; root: string }[] = [];
   const notices: { session: string | null; title: string; body: string }[] = [];
+  /** Each folder's origin, as originRepoOf would read it: the Coder's repository unless a test says otherwise. */
+  const repos = new Map<string, PrRepo | Error>();
+  /** A read in progress takes this long on the watch's clock, as a real one does on Date.now. */
+  const readTakes = { ms: 0 };
   let changed = 0;
   const newWatch = () =>
     (watch = new PrWatch({
       pipeline,
       read: async (pr, root) => {
         reads.push({ url: pr.url, root });
+        clock.t += readTakes.ms;
         const a = answers.get(pr.url) ?? {};
         if (a instanceof Error) throw a;
         return { id: pr.id, url: pr.url, title: "Org dropdowns remember the last org", base: pr.base, state: "open", conflicts: false, reviews: [], ...a };
+      },
+      originOf: async (f) => {
+        const r = repos.get(f) ?? { provider: "ado", repo: "Portal/client-portal" };
+        if (r instanceof Error) throw r;
+        return r;
       },
       sessions: m,
       wires: () => store.wires(),
@@ -135,7 +145,7 @@ async function setup() {
   const record = () => pipeline.get(TICKET)!;
   const prOf = (id: number) => record().prs.find((x) => x.id === id)!;
   return {
-    m, store, pipeline, service, d, tools, folder, clock, answers, reads, notices, logged, coder, verifier,
+    m, store, pipeline, service, d, tools, dir, folder, clock, answers, reads, notices, logged, coder, verifier, repos, readTakes,
     add, opened, answer, merged, tick, book, wireOf, gate, record, prOf, newWatch,
     get watch() {
       return watch;
@@ -169,7 +179,7 @@ describe("a pull request merging as a wire's When", () => {
     expect(first.body).toContain(urlOf(11));
     expect(first.body).toContain("“Org dropdowns” hasn't finished a step with a summary yet.");
     expect(first.flags).toEqual([]);
-    expect(t.wireOf(w).fired).toEqual([11]);
+    expect(t.wireOf(w).fired).toEqual([urlOf(11)]);
     expect(t.gate(w)).toMatchObject({ state: "ready", gate: "ask", pendingId: first.id });
     expect(t.notices).toEqual([{ session: t.coder.id, title: "#4182: PR 11 to dev merged", body: "Org dropdowns → Verifier: ready at the gate." }]);
     expect(t.changed).toBeGreaterThan(0);
@@ -179,7 +189,7 @@ describe("a pull request merging as a wire's When", () => {
     await t.tick();
     expect(t.reads).toHaveLength(2);
     expect(t.wireOf(w).pending!.id).toBe(first.id);
-    expect(t.wireOf(w).fired).toEqual([11]);
+    expect(t.wireOf(w).fired).toEqual([urlOf(11)]);
   });
 
   it("readies a wire once for a PR in delivery's own write, whoever offers that merge again", async () => {
@@ -194,7 +204,7 @@ describe("a pull request merging as a wire's When", () => {
     if ("refused" in fill) throw new Error(fill.refused);
     expect(t.d.offer(t.coder, fill, { origin: "merge" }, null)).toEqual({ steps: [], redacted: 0 });
     expect(t.wireOf(w).pending!.id).toBe(first);
-    expect(t.wireOf(w).fired).toEqual([11]);
+    expect(t.wireOf(w).fired).toEqual([urlOf(11)]);
   });
 
   it("keeps a finish's summary for the merge rather than readying the wire, and its {summary} carries it", async () => {
@@ -243,7 +253,7 @@ describe("a pull request merging as a wire's When", () => {
     const main = t.wireOf(w).pending!;
     expect(main.id).not.toBe(dev.id);
     expect(main.body).toContain("Pull request 12 to main");
-    expect(t.wireOf(w).fired).toEqual([11, 12]);
+    expect(t.wireOf(w).fired).toEqual([urlOf(11), urlOf(12)]);
   });
 
   it("puts a failed read on the wire as blocked and on the PR's row, backs off, and needs the user after three", async () => {
@@ -268,7 +278,7 @@ describe("a pull request merging as a wire's When", () => {
     expect(t.prOf(11).watch!.failures).toBe(3);
     expect(t.gate(w)).toMatchObject({ state: "blocked", why: expect.stringMatching(/\(3 tries\)/) });
     expect(prNeedsYou(t.record(), t.prOf(11))).toBe(true);
-    expect(t.notices).toEqual([{ session: t.coder.id, title: "#4182: can't tell whether PR 11 to dev merged", body: expect.stringMatching(/^3 tries failed: Azure DevOps 401.*\nCheck now, or Mark merged…/s) }]);
+    expect(t.notices).toEqual([{ session: t.coder.id, title: "#4182: can't tell whether PR 11 to dev merged", body: expect.stringMatching(/^3 tries failed: Azure DevOps 401.*\nCheck now and Mark merged… are on its row in the ticket's pipeline\.$/s) }]);
     expect(prMergeNote(t.prOf(11))).toEqual({ text: "can't tell whether it merged (3 failed reads): Azure DevOps 401 Unauthorized: TF400813", problem: true });
 
     // Check now reads at once, whatever the back-off; a read that works clears it all
@@ -291,7 +301,8 @@ describe("a pull request merging as a wire's When", () => {
     expect(t.gate(w)).toMatchObject({ state: "blocked", why: "PR 11 to dev was closed without merging." });
     expect(prNeedsYou(t.record(), t.prOf(11))).toBe(true);
     expect(prMergeNote(t.prOf(11))).toEqual({ text: "closed without merging", problem: true });
-    expect(t.notices).toEqual([{ session: t.coder.id, title: "#4182: PR 11 to dev was closed without merging", body: expect.stringMatching(/until another pull request from 4182-org-dropdowns merges, or you mark it merged/) }]);
+    expect(t.notices).toEqual([{ session: t.coder.id, title: "#4182: PR 11 to dev was closed without merging", body: expect.stringMatching(/until it's reopened and merges, or another pull request from 4182-org-dropdowns replaces it\. Check now and Mark merged… are on its row/) }]);
+    // still read, but every 10 minutes
     await t.tick();
     expect(t.reads).toHaveLength(1);
     // reopened and checked by hand: watched again
@@ -308,9 +319,17 @@ describe("a pull request merging as a wire's When", () => {
   it("waits for a pull request from the branch until there is one, and is refused for a source on no ticket or no branch", async () => {
     const t = await setup();
     const w = t.add();
-    expect(t.gate(w)).toMatchObject({ state: "idle", why: `Waits for a pull request from ${BRANCH}.` });
+    expect(t.gate(w)).toMatchObject({ state: "idle", why: "Its pull requests are first checked within 2 minutes." });
     await t.tick();
     expect(t.reads).toEqual([]);
+    expect(t.gate(w)).toMatchObject({ state: "idle", why: `Waits for a pull request from ${BRANCH} in Portal/client-portal.` });
+    // a source whose origin can't be read can't be told its pull requests: blocked, saying so, and logged once
+    t.repos.set(t.folder, new Error("fatal: not a git repository"));
+    await t.tick();
+    await t.tick();
+    expect(t.gate(w)).toMatchObject({ state: "blocked", why: "Which pull requests are “Org dropdowns”'s can't be told: its origin couldn't be read (fatal: not a git repository)." });
+    expect(t.logged).toEqual([expect.stringMatching(/^merge watch: session .*'s origin couldn't be read.*: fatal: not a git repository$/)]);
+    t.repos.delete(t.folder);
     const loose = await t.m.create({ repoPath: null, cwd: t.folder, branchName: "x", useWorktree: false, agent: "claude", title: "Loose" });
     expect(t.service.add(loose.id, t.verifier.id, "handoff", { when: "pr-merged" })).toEqual({ refused: expect.stringMatching(/“Loose” isn't on a ticket.*needs its source on a ticket and a branch/) });
     const noBranch = await t.m.create({ repoPath: null, cwd: t.folder, useWorktree: false, agent: "claude", title: "No branch", ticketId: TICKET });
@@ -392,10 +411,160 @@ describe("a pull request merging as a wire's When", () => {
     expect(t.logged).toEqual([]);
     t.service.remove(made);
     const later = t.add({});
+    expect(t.wireOf(later).since).toBeUndefined();
     expect(t.service.set(later, { when: "pr-merged" })).toMatchObject({ state: expect.anything() });
-    expect(t.wireOf(later).fired).toEqual([11]);
+    expect(t.wireOf(later).since).toEqual(expect.any(Number));
     await t.tick();
     expect(t.wireOf(later).pending).toBeUndefined();
+    // set back, it no longer waits since then
+    t.service.set(later, { when: "finished" });
+    expect(t.wireOf(later).since).toBeUndefined();
+  });
+
+  it("doesn't take a merge from after the wire was made but before it began waiting, nor one of no known time unless seen open since", async () => {
+    const t = await setup();
+    t.opened("dev", 11);
+    const w = t.add({});
+    const created = t.wireOf(w).createdAt;
+    // moved on by hand, so PR 11 isn't watched; it merges a minute after the wire was made
+    t.pipeline.setStage(TICKET, "dev-test", { by: BY_YOU });
+    t.merged(11, created + 60_000);
+    await t.tick();
+    expect(t.reads).toEqual([]);
+    // an hour on, the wire is set to wait for its PR
+    const now = vi.spyOn(Date, "now").mockReturnValue(created + 3_600_000);
+    t.service.set(w, { when: "pr-merged" });
+    now.mockRestore();
+    t.clock.t = Math.max(t.clock.t, created + 3_600_000);
+    expect(t.wireOf(w).since).toBe(created + 3_600_000);
+    await t.tick();
+    expect(t.prOf(11).mergedAt).toBe(created + 60_000);
+    expect(t.wireOf(w).pending).toBeUndefined();
+
+    // a merge its provider gives no time for, first seen merged: taken as old
+    t.pipeline.setStage(TICKET, "coding", { by: BY_YOU });
+    t.opened("dev", 12);
+    t.answer(12, { state: "merged" });
+    await t.tick();
+    expect(t.prOf(12)).toMatchObject({ mergedAt: t.clock.t, mergedAtUnknown: true });
+    expect(t.wireOf(w).pending).toBeUndefined();
+    // one seen open since the wire began waiting, then merged with no time: taken
+    t.pipeline.setStage(TICKET, "coding", { by: BY_YOU });
+    t.opened("dev", 13);
+    t.answer(13, { state: "open" });
+    await t.tick();
+    t.answer(13, { state: "merged" });
+    await t.tick();
+    expect(t.wireOf(w).pending!.body).toContain(urlOf(13));
+    expect(t.wireOf(w).fired).toEqual([urlOf(13)]);
+  });
+
+  it("moves the ticket only for its latest pull request to a target: an older one's merge is saved and moves nothing", async () => {
+    const t = await setup();
+    // a round before a rework: PR 11 to dev merged on the provider, never recorded (as 1.6 left it), then PR 12
+    t.opened("dev", 11);
+    t.pipeline.setStage(TICKET, "coding", { by: BY_YOU });
+    t.opened("dev", 12);
+    t.merged(11, Date.now() - 30 * 86_400_000);
+    t.answer(12, { state: "open" });
+    await t.tick();
+    // the stage waits on the latest alone
+    expect(t.reads.map((r) => r.url)).toEqual([urlOf(12)]);
+    expect(t.record().stage).toBe("pr-dev");
+    const history = t.record().history.length;
+    // read by hand, the older one's merge is saved and moves nothing
+    await t.watch.checkNow(TICKET, urlOf(11));
+    expect(t.prOf(11).mergedAt).toEqual(expect.any(Number));
+    expect(t.record().stage).toBe("pr-dev");
+    expect(t.record().history).toHaveLength(history);
+    t.merged(12);
+    await t.tick();
+    expect(t.record().stage).toBe("dev-test");
+  });
+
+  it("takes only its source's repository's pull requests, each kept apart by its page", async () => {
+    const t = await setup();
+    const w = t.add();
+    // the ticket's other repository: the same ticket branch, and the same number on GitHub
+    const other = "https://github.com/other/frontend/pull/11";
+    t.pipeline.addPr(TICKET, { target: "dev", provider: "github", id: 11, url: other, repo: "other/frontend", branch: BRANCH, base: "dev", at: t.clock.t + 1, by: "someone-else", root: t.folder }, "Org dropdowns", BY_YOU);
+    t.answers.set(other, { state: "open" });
+    await t.tick();
+    expect(t.gate(w)).toMatchObject({ state: "idle", why: `Waits for a pull request from ${BRANCH} in Portal/client-portal.` });
+    t.answers.set(other, { state: "merged", mergedAt: Date.now() });
+    await t.tick();
+    expect(t.record().prs[0].mergedAt).toEqual(expect.any(Number));
+    expect(t.wireOf(w).pending).toBeUndefined();
+    expect(t.wireOf(w).fired).toBeUndefined();
+    // the Coder's own PR 11, on Azure DevOps
+    t.pipeline.setStage(TICKET, "coding", { by: BY_YOU });
+    t.opened("dev", 11);
+    t.answer(11, { state: "open" });
+    await t.tick();
+    t.merged(11);
+    await t.tick();
+    expect(t.wireOf(w).fired).toEqual([urlOf(11)]);
+    expect(t.wireOf(w).pending!.body).toContain(urlOf(11));
+    // a closed PR is replaced only by a newer one from its own repository
+    const closed: PipelinePr = { ...t.record().prs.find((x) => x.url === urlOf(11))!, mergedAt: undefined, closedAt: 1 };
+    const newer: PipelinePr = { ...t.record().prs.find((x) => x.url === other)!, at: closed.at + 1, mergedAt: undefined };
+    expect(prNeedsYou({ ...t.record(), prs: [closed, newer] }, closed)).toBe(true);
+  });
+
+  it("reads a closed pull request again every 10 minutes while something waits on it, so one reopened and merged is found", async () => {
+    const t = await setup();
+    t.opened("dev", 11);
+    const w = t.add();
+    t.answer(11, { state: "closed", closedAt: Date.now() });
+    await t.tick();
+    expect(prMergeNote(t.prOf(11))).toEqual({ text: "closed without merging", problem: true });
+    expect(markMergedQuestion(t.prOf(11))).toBe(
+      "Mark PR 11 to dev merged? Its provider says it was closed without merging. The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent."
+    );
+    t.merged(11);
+    for (let i = 0; i < 4; i++) await t.tick();
+    expect(t.reads).toHaveLength(1);
+    await t.tick();
+    expect(t.reads).toHaveLength(2);
+    expect(t.record().stage).toBe("dev-test");
+    expect(t.prOf(11).closedAt).toBeUndefined();
+    expect(t.wireOf(w).pending).toBeDefined();
+  });
+
+  it("reads every 2 minutes though a read takes time, and backs off 2, 4, 8, then 10", async () => {
+    const t = await setup();
+    t.opened("dev", 11);
+    t.add();
+    t.answer(11, { state: "open" });
+    t.readTakes.ms = 800;
+    let start = t.clock.t;
+    for (let i = 1; i <= 6; i++) {
+      t.clock.t = start + i * PR_TTL_MS;
+      await t.watch.tick();
+    }
+    expect(t.reads).toHaveLength(6);
+    t.answer(11, new Error("offline"));
+    start = start + 6 * PR_TTL_MS;
+    const read: number[] = [];
+    for (let i = 1; i <= 13; i++) {
+      const before = t.reads.length;
+      t.clock.t = start + i * PR_TTL_MS;
+      await t.watch.tick();
+      if (t.reads.length > before) read.push(i);
+    }
+    expect(read).toEqual([1, 2, 4, 8, 13]);
+  });
+
+  it("starts over a merge watch record pipeline.json holds in another shape, rather than stopping that PR's reads", () => {
+    const file = path.join(tempDir("pipeline"), "pipeline.json");
+    const pr = { target: "dev", provider: "ado", id: 11, url: urlOf(11), repo: "Portal/client-portal", branch: BRANCH, base: "dev", at: 1 };
+    fs.writeFileSync(file, JSON.stringify({ [TICKET]: { ticketId: TICKET, stage: "pr-dev", history: [], prs: [{ ...pr, watch: { why: "no count" } }, { ...pr, id: 12, url: urlOf(12), watch: { failures: 2, why: "kept", at: 5 } }], feedback: [], drafts: [], checks: {} } }));
+    const said = vi.spyOn(console, "error").mockImplementation(() => {});
+    const p = new PipelineStore(file).get(TICKET)!;
+    expect(said.mock.calls).toEqual([[expect.stringMatching(/#4182's pull request ".*\/pullrequest\/11" had a merge watch record it couldn't read; it starts over/)]]);
+    said.mockRestore();
+    expect(p.prs[0].watch).toBeUndefined();
+    expect(p.prs[1].watch).toEqual({ failures: 2, why: "kept", at: 5 });
   });
 
   it("reads an older PR, with no folder of its own, in a session's on its branch, and says so when there's none", async () => {
@@ -406,7 +575,16 @@ describe("a pull request merging as a wire's When", () => {
     expect(t.reads).toEqual([{ url: urlOf(11), root: t.folder }]);
     t.opened("dev", 12, { root: path.join(t.folder, "gone"), branch: "4182-elsewhere" });
     await t.tick();
-    expect(t.prOf(12).watch?.why).toMatch(/its folder, .*gone, isn't there any more, and no session of #4182's is on 4182-elsewhere/);
+    expect(t.prOf(12).watch?.why).toMatch(/its folder, .*gone, isn't there any more, and no session of #4182's on 4182-elsewhere has Portal\/client-portal as its origin/);
+    // one from before folders were kept, with no session on its branch, isn't read or counted as failing: said once
+    t.logged.length = 0;
+    t.opened("dev", 13, { root: undefined, branch: "4182-long-gone" });
+    await t.tick();
+    await t.tick();
+    expect(t.reads.map((r) => r.url)).not.toContain(urlOf(13));
+    expect(t.prOf(13).watch).toBeUndefined();
+    expect(t.logged).toEqual([expect.stringMatching(/^merge watch: #4182's PR 13 to dev .* isn't read: it's from before Mockingbird kept a PR's folder, and no session is on 4182-long-gone/)]);
+    expect(t.notices).toEqual([]);
   });
 
   it("leaves the user's untick in place: a merge isn't the user's move", async () => {

@@ -1909,7 +1909,8 @@ agent, which never ends a turn):
   small popover (section 5).
 - W16's item goes in too: each PR in pipeline.json where `prNeedsYou` (shared/types.ts)
   holds, with Check now (`pipelinePrCheck`) and Mark merged… (`pipelinePrMarkMerged`, after a
-  confirm naming the PR), from `usePipelines`. Until then a notice and the PR's row say it.
+  confirm naming the PR, `markMergedQuestion`), from `usePipelines`. Until then a notice
+  says it, and the PR's row in the pipeline panel has both actions (W16 review fixes 1).
 - Files: those, `NeedsYou.tsx`, `main.tsx` (`needsItems`' caller, `toNeeds`),
   `WorkspaceNode.tsx`.
 - Tests: `test/needsYou.test.ts`; `?landscapeNeedsAudit` gains a part.
@@ -2562,6 +2563,73 @@ every test fakes `prDeps` and gh, and nothing read the ADO PAT.
   close taken as open; another id accepted.
 - No UI test draws the pipeline panel's PR rows (the preview's one PR has no merge state), so
   none was run for the row's line; `prMergeNote` is tested.
+
+#### W16 review fixes 1 as built
+
+The review of 32e3491 found two Highs and two Mediums, each confirmed with a probe; the
+probes are tests now (`test/prWatch.test.ts`).
+
+- **H1: only the ticket's latest PR to a target moves it.** `prMerged` moves the ticket only
+  when the merged PR is `latestPr(p.prs, target)` (shared, by `at`, the whole ticket). An
+  older one's merge (a round before a rework, which 1.6 never recorded) is saved and moves
+  nothing. A ticket at a PR stage has only its latest PR to that target read.
+- **H2: a wire takes only its source's repository's PRs, kept apart by page.**
+  - Each check reads each pr-merged source's origin (`originRepoOf`, shared with
+    `prStateById`, through `guardedGit`), from its folder or, once that's gone, its
+    repository's. `fire`, `mergeViewOf`, what's read for a wire, and `prNeedsYou`'s
+    replacement all match provider, repository and branch (`samePrPlace`).
+  - A source whose origin can't be read is blocked, saying so, and logged once. Until its
+    first check the gate says its PRs are checked within 2 minutes.
+  - `fired` holds PR pages (urls), not ids (`MergeFill.merge.pr`, `mergePlan`). The wire
+    book is unreleased, so `wv` stays 1.
+  - An older PR with no folder of its own is read in a session's folder on its branch whose
+    origin is the PR's repository.
+- **M1: a closed PR is read again.** While something waits on it and nothing newer from its
+  repository and branch replaces it, it's read every 10 minutes, so one reopened and merged is
+  found. Its row in the pipeline panel (`TicketPipeline.tsx`) now has **Check now** on any PR
+  not merged, and **Mark merged…** where the row shows a problem (closed, or reads failing).
+  Mark merged… asks first (`markMergedQuestion`). The notices point at that row.
+- **M2: a wire takes only merges from after it began waiting.**
+  - `Wire.since` is stamped when a wire's When becomes pr-merged: its `createdAt` when it's
+    made so, the time of the change when it's set so (`withSettings`). It goes when the When
+    changes away. W16's seeding of `fired` (`mergedBefore`) is gone.
+  - A merge whose provider gave no time is saved with `mergedAtUnknown`. A wire takes it only
+    when this run saw the PR open at or after `since`.
+- **Lows:**
+  - L1: a read is due by the check's start, with 5 s of slack. Reads come every 2 minutes
+    however long a read takes, and back off 2, 4, 8, then 10 minutes.
+  - L2: a PR from before folders were kept, with no session on its branch, isn't read or
+    counted as failing. It's logged once.
+  - L3: the answer's page must be the PR's (case and a trailing slash aside), so another ADO
+    organization's PR of the same project, repository and id is refused.
+  - L6: a PR's `watch` of another shape is dropped as pipeline.json is read, logged, and the
+    PR is read as one with no failures.
+
+**Follow-ups (not done):**
+- L4: a wire book unreadable for one check makes `waiting()` empty, so the cleanup clears
+  failures kept only for a wire, and they come back next check (needs you flaps). `fresh`
+  outlives `fire`'s early return, so the hold's "while this wire couldn't take it" isn't always
+  the reason.
+- L5: a wire the rules keep refusing (a take-over, a room's line) is filled in again every
+  check, `{diff}` included. Only the log is once.
+- L7: the PR title goes into the receiving agent's prompt on one line, but unflagged, and it's
+  provider text.
+
+**Tests:** the five probes (an older PR moving the ticket, another repository's PR firing the
+wire, a closed PR never read again, a merge from before the When changed, reads every other
+tick), an unknown merge time, a source whose origin can't be read, a PR skipped from before
+folders, another organization's answer and another repository's page (`prStatus.test.ts`), and
+a malformed `watch`. The format pin adds `since`.
+
+**Checked:** `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 194
+files pass and 31 skip; 3,201 tests pass and 252 skip. `MB_E2E_APP=1`: `wiresApp.e2e` passes.
+No `uiLandscape*` test draws the pipeline panel's PR rows, so none was run. Each guard undone
+in turn (`w16/mutate2.py`, 14 mutations) fails a test:
+- H1: an older PR's merge moving the ticket; the stage reading every PR to its target.
+- H2: `fire`, the gate or `prNeedsYou` ignoring the repository; `fired` by number.
+- M2: `since` not stamped on a change; `fire` going by `createdAt`; an unknown time taken as
+  new, or not recorded.
+- Mark merged…: a tool or a second caller reaching it; a marked merge sending by itself.
 
 ### W17 · The Orchestrator, its plan and the built-in template. Size L
 - **Role.** `SessionInfo.role` (W19 adds it for `"tasks"`) gains `"orchestrator"`,
@@ -3807,7 +3875,8 @@ interface Wire {
   template?: string;                  // "{summary}", "{diff}", "{pr}", or a prompt: all of What flows
   files?: string[];                   // what {files} reads, set by you, relative to from's folder
   when: "finished" | "manual" | "pr-merged";   // pr-merged: W16
-  fired?: number[];                   // pr-merged: PR ids already turned into a pending
+  fired?: string[];                   // pr-merged: PR pages already turned into a pending (W16 review fixes 1)
+  since?: number;                     // pr-merged: when it began waiting; an older merge isn't its
   gate: "ask" | "automatic";
   toolOutput?: false;                 // context: leave tool output out of read_context (decision 9)
   rounds?: { limit: number; used: number };  // feedback only
@@ -3841,7 +3910,7 @@ part of the `Landscape` object or its patches, for reasons the code gives:
 // ~/.mockingbird/pipeline.json: unversioned as today; every addition optional
 TicketPipeline.history[]: { at, stage, note?, by?: string }  // "you", "merge", or a session's title (W13, W14)
 PipelinePr: { …today, by?: string, root?: string, mergedAt?: number, mergeCommit?: string, closedAt?: number,
-              mergedBy?: "you", watch?: { failures, why, at } }   // the last two: W16 as built
+              mergedAtUnknown?: true, mergedBy?: "you", watch?: { failures, why, at } }   // the last three: W16 as built
 TicketPipeline.requests?: { id, target, from: string, fromTitle, title, description, at }[]  // W14
 TicketPipeline.gateNotes?: Record<string, { by: string; note: string; at: number }>       // "<gate>:<item>"
 TicketPipeline.checkedBy?: Record<string, { by: string; at: number }>     // "<gate>:<item>": who ticked (W13); read by tickOf

@@ -69,10 +69,12 @@ export interface Wire {
   files?: string[];
   when: WireWhen;
   /**
-   * when: pr-merged. The pull request ids it has had a pending for, or that had merged before it watched: each merge
-   * readies it once (prWatch.ts).
+   * when: pr-merged. The pull requests it has had a pending for, by their pages (an id is only one repository's): each
+   * merge readies it once (prWatch.ts).
    */
-  fired?: number[];
+  fired?: string[];
+  /** when: pr-merged. When it began waiting for a merge: one from before then isn't one it waited for. */
+  since?: number;
   gate: WireGate;
   /** A context link set to leave tool output out of what its reader gets (read_context); absent, it's included. */
   toolOutput?: false;
@@ -130,7 +132,8 @@ const WIRE: Part = {
     template: str,
     files: list(name),
     when: oneOf(WIRE_WHENS),
-    fired: list(whole(1)),
+    fired: list(name),
+    since: num,
     gate: oneOf(WIRE_GATES),
     toolOutput: (v, where) => (v === false ? false : fail(where, "is only ever false")),
     rounds: (v, where) => fields(v, where, ROUNDS),
@@ -545,11 +548,11 @@ export function finishPlan(id: string, verdict: WireVerdict | undefined, ctx: Wi
 }
 
 /**
- * What pull request `pr` merging does along session `id`'s wires out: each handoff set to go when its PR merges that
- * hasn't had a pending for that PR readies, in place of one that hasn't gone, unless the rules refuse it now. A merge
- * has no verdict and leaves the source's note alone.
+ * What pull request `pr` (its page) merging does along session `id`'s wires out: each handoff set to go when its PR
+ * merges that hasn't had a pending for that PR readies, in place of one that hasn't gone, unless the rules refuse it
+ * now. A merge has no verdict and leaves the source's note alone.
  */
-export function mergePlan(id: string, pr: number, ctx: WireContext): FinishStep[] {
+export function mergePlan(id: string, pr: string, ctx: WireContext): FinishStep[] {
   return wiresInOrder(ctx.links).flatMap(([k, w]): FinishStep[] => {
     if (w.from !== id || w.when !== "pr-merged" || !carriesWork(w.type) || w.fired?.includes(pr)) return [];
     const step = { wire: k, to: w.to, type: w.type };
@@ -630,8 +633,11 @@ export function settingsRefusal(w: Pick<Wire, "from" | "to" | "type">, s: WireSe
 export const sameWire = (a: Wire, b: Wire): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /** `w` with settings on it: the limit moves, what's been counted stays. */
-export function withSettings(w: Wire, s: WireSettings): Wire {
+export function withSettings(w: Wire, s: WireSettings, now = Date.now()): Wire {
   const next: Wire = { ...w };
+  // when it begins waiting for a merge: one from before then isn't one it waited for
+  if (s.when === "pr-merged" && w.when !== "pr-merged") next.since = now;
+  else if (s.when !== undefined && s.when !== "pr-merged") delete next.since;
   if (s.template !== undefined) {
     if (s.template === null) delete next.template;
     else next.template = s.template;

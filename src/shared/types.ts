@@ -1068,6 +1068,8 @@ export interface PipelinePr {
   root?: string;
   /** When it merged, as its provider says (or when the user marked it merged), and its merge commit when that's known. */
   mergedAt?: number;
+  /** The provider gave no time: `mergedAt` is when the merge watch saw it merged, so a wire takes it as old. */
+  mergedAtUnknown?: true;
   mergeCommit?: string;
   /** Set when the user marked it merged (BY_YOU) rather than the provider saying so. */
   mergedBy?: string;
@@ -1084,18 +1086,40 @@ export interface PrWatchFailure {
   at: number;
 }
 
+/** Whether `x` is a failure as the merge watch keeps one: a hand-edited or older shape isn't, and is let go on reading. */
+export const isPrWatchFailure = (x: unknown): x is PrWatchFailure =>
+  !!x && typeof x === "object" && Number.isInteger((x as PrWatchFailure).failures) && (x as PrWatchFailure).failures >= 1 && typeof (x as PrWatchFailure).why === "string" && Number.isFinite((x as PrWatchFailure).at);
+
 /** Failed reads in a row after which a pull request the merge watch can't read needs the user (Needs you, a notice). */
 export const PR_WATCH_NEEDS_YOU = 3;
 
+/** A pull request's repository as pipeline.json records it: a ticket can span repositories, each with the ticket's branch name. */
+export type PrRepo = Pick<PipelinePr, "provider" | "repo">;
+
+/** Whether two pull requests come from the same repository and branch. */
+export const samePrPlace = (a: Pick<PipelinePr, "provider" | "repo" | "branch">, b: Pick<PipelinePr, "provider" | "repo" | "branch">): boolean =>
+  a.provider === b.provider && a.repo === b.repo && a.branch === b.branch;
+
+/**
+ * The latest pull request to `target` among `prs` that `of` keeps (by when it was opened), or null. The ticket's latest
+ * to a target is the one whose merge moves it on; an older one's merge is history.
+ */
+export function latestPr(prs: readonly PipelinePr[], target: PrTarget, of: (pr: PipelinePr) => boolean = () => true): PipelinePr | null {
+  let best: PipelinePr | null = null;
+  for (const x of prs) if (x.target === target && of(x) && (!best || x.at > best.at)) best = x;
+  return best;
+}
+
 /**
  * Whether pull request `pr` on ticket `p` needs the user: the merge watch failed to read it PR_WATCH_NEEDS_YOU times in a
- * row, or it was closed without merging and no later one from its branch to its target has replaced it. Check now and
- * Mark merged… are its actions (pipelinePrCheck, pipelinePrMarkMerged). A Done ticket's never do.
+ * row, or it was closed without merging and no later one from its repository and branch to its target has replaced it.
+ * Check now and Mark merged… are its actions (its row in the pipeline panel, pipelinePrCheck, pipelinePrMarkMerged). A
+ * Done ticket's never do.
  */
 export function prNeedsYou(p: TicketPipeline, pr: PipelinePr): boolean {
   if (p.stage === "done" || pr.mergedAt) return false;
   if ((pr.watch?.failures ?? 0) >= PR_WATCH_NEEDS_YOU) return true;
-  return !!pr.closedAt && !p.prs.some((x) => x !== pr && x.branch === pr.branch && x.target === pr.target && x.at > pr.at);
+  return !!pr.closedAt && latestPr(p.prs, pr.target, (x) => samePrPlace(x, pr)) === pr;
 }
 
 /** An agent's request for a pull request (request_pr), held until the user opens it or dismisses it. One per target. */

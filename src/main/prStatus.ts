@@ -3,7 +3,7 @@ import { currentBranch, originRemote, parseRemote, publicUrl, remoteName, type R
 import { adoPrUrl, adoRepo, ghError, prError, runGh, type PrDeps } from "./pullRequests";
 import { guardedGit } from "./safeGit";
 import { quote } from "./shell";
-import type { PipelinePr, PrState, PrStatus } from "../shared/types";
+import type { PipelinePr, PrRepo, PrState, PrStatus } from "../shared/types";
 
 /** A commit id as a provider gives one: anything else isn't kept, so it never reaches a prompt ({pr}). */
 const COMMIT = /^[0-9a-f]{7,64}$/i;
@@ -113,17 +113,27 @@ export async function prStatusFor(cwd: string, deps: Omit<PrDeps, "cwd">): Promi
   }
 }
 
+/** Where `cwd`'s origin lives, read through guardedGit, and its name as a pull request records it (`repo`). Throws saying why there's none. */
+export async function originRepoOf(cwd: string): Promise<{ remote: RemoteRepo; repo: PrRepo }> {
+  const url = await (await guardedGit(cwd)).run(["remote", "get-url", "origin"], { okCodes: [0, 2] }); // 2: no such remote
+  const remote = url ? parseRemote(url) : null;
+  if (!remote) throw new Error(url ? `origin (${publicUrl(url)}) isn't on Azure DevOps or GitHub` : `${cwd} has no origin remote`);
+  return { remote, repo: { provider: remote.provider, repo: remoteName(remote) } };
+}
+
+/** A pull request's page, as two answers for the same one compare: case and a trailing slash aside (ADO's organization is in it). */
+const pageOf = (url: string): string => url.trim().replace(/\/+$/, "").toLowerCase();
+
 /**
  * One pull request by its id, with its merge commit and when it merged or closed: what the merge watch reads
- * (prWatch.ts), in the folder `deps.cwd`. That folder's origin, read through guardedGit, has to be the repository the PR
- * was recorded in; then ADO's `pullrequests/{id}` or `gh pr view <id>`, through the calls the pane's lookup makes.
- * Whatever doesn't answer for that PR throws, saying why, so a failed read never passes for "not merged".
+ * (prWatch.ts), in the folder `deps.cwd`. That folder's origin has to be the repository the PR was recorded in; then
+ * ADO's `pullrequests/{id}` or `gh pr view <id>`, through the calls the pane's lookup makes, and the answer has to be for
+ * the PR's own page (its ADO organization included). Whatever doesn't answer for that PR throws, saying why, so a failed
+ * read never passes for "not merged".
  */
-export async function prStateById(pr: Pick<PipelinePr, "provider" | "id" | "repo">, deps: PrDeps): Promise<PrState> {
+export async function prStateById(pr: Pick<PipelinePr, "provider" | "id" | "repo" | "url">, deps: PrDeps): Promise<PrState> {
   if (!Number.isSafeInteger(pr.id) || pr.id <= 0) throw new Error(`${JSON.stringify(pr.id)} isn't a pull request id`);
-  const url = await (await guardedGit(deps.cwd)).run(["remote", "get-url", "origin"], { okCodes: [0, 2] }); // 2: no such remote
-  const remote = url ? parseRemote(url) : null;
-  if (!remote) throw new Error(url ? `origin (${publicUrl(url)}) isn't on Azure DevOps or GitHub` : `${deps.cwd} has no origin remote`);
+  const { remote } = await originRepoOf(deps.cwd);
   if (remote.provider !== pr.provider || remoteName(remote) !== pr.repo) throw new Error(`origin in ${deps.cwd} is ${remoteName(remote)}, not ${pr.repo}, where the pull request is`);
   let st: PrState;
   if (remote.provider === "ado") {
@@ -143,6 +153,8 @@ export async function prStateById(pr: Pick<PipelinePr, "provider" | "id" | "repo
     if (!out || typeof out !== "object") throw new Error(`gh returned nothing for pull request ${pr.id}`);
     st = githubPrState(out);
   }
-  if (st.id !== pr.id) throw new Error(`${remote.provider === "ado" ? "Azure DevOps" : "GitHub"} answered with pull request ${JSON.stringify(st.id)}, not ${pr.id}`);
+  const host = remote.provider === "ado" ? "Azure DevOps" : "GitHub";
+  if (st.id !== pr.id) throw new Error(`${host} answered with pull request ${JSON.stringify(st.id)}, not ${pr.id}`);
+  if (pageOf(String(st.url ?? "")) !== pageOf(pr.url)) throw new Error(`${host} answered for ${st.url || "a page it didn't give"}, not ${pr.url}, where the pull request was opened`);
   return st;
 }

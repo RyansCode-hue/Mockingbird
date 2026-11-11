@@ -326,12 +326,12 @@ describe("reading a stored book", () => {
  * The book's stored format, version by version. A field added or made required changes what an older Mockingbird can
  * read: it needs WIRE_VERSION raised and the new format pinned here, or to be an entry an older build keeps verbatim.
  * A context link's toolOutput is the second kind: a build before it keeps such a link as an entry it can't parse, and
- * no release has read version 1. So are a pr-merged wire's `when` and its `fired` (W16).
+ * no release has read version 1. So are a pr-merged wire's `when`, `fired` and `since` (W16).
  */
 const FORMATS: Record<number, typeof WIRE_FORMAT> = {
   1: {
     book: { fields: ["links", "notes", "wv"], required: ["links", "notes", "wv"] },
-    wire: { fields: ["createdAt", "delivery", "files", "fired", "from", "gate", "pending", "rounds", "template", "to", "toolOutput", "type", "when"], required: ["createdAt", "from", "gate", "to", "type", "when"] },
+    wire: { fields: ["createdAt", "delivery", "files", "fired", "from", "gate", "pending", "rounds", "since", "template", "to", "toolOutput", "type", "when"], required: ["createdAt", "from", "gate", "to", "type", "when"] },
     rounds: { fields: ["limit", "used"], required: ["limit", "used"] },
     pending: { fields: ["at", "body", "flags", "id", "verdict"], required: ["at", "body", "flags", "id"] },
     // attempt and automatic came before any release wrote a wire book; a W1-only dev build keeps such a wire verbatim

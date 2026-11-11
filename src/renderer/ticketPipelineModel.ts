@@ -75,3 +75,10 @@ export function prMergeNote(pr: Pick<PipelinePr, "mergedAt" | "mergedBy" | "clos
   if (pr.watch) return { text: `can't tell whether it merged (${plural(pr.watch.failures, "failed read")}): ${pr.watch.why}`, problem: true };
   return null;
 }
+
+/** What Mark merged… asks first: it's the user's word for a merge Mockingbird can't see, and the ticket and its wires act on it. */
+export function markMergedQuestion(pr: Pick<PipelinePr, "provider" | "id" | "target" | "closedAt" | "watch">): string {
+  const name = `${pr.provider === "ado" ? `PR ${pr.id}` : `#${pr.id}`} to ${pr.target}`;
+  const why = pr.closedAt ? "Its provider says it was closed without merging." : "Mockingbird can't read whether it merged.";
+  return `Mark ${name} merged? ${why} The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent.`;
+}
