@@ -485,7 +485,8 @@ describe("pipeline.json across versions", () => {
     s.setCheck("7001", "dev:tests", false, BY_YOU);
     const d = s.addDraft("7001", "comms", "Patch notes").drafts.at(-1)!;
     s.dropDraft("7001", d.id);
-    expect(readFile(f)["7001"]).toEqual(newer["7001"]);
+    // the untick is remembered, so no agent ticks it again at this stage (W14)
+    expect(readFile(f)["7001"]).toEqual({ ...newer["7001"], unticked: { "dev:tests": { at: expect.any(Number), stage: "uat-signoff" } } });
   });
 });
 

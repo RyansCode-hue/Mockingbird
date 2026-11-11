@@ -1104,8 +1104,13 @@ export interface CommentDraft {
   stage: StoredStage;
   text: string;
   at: number;
-  /** Who wrote it, when an agent did ("Verifier's agent"): an ADO comment is read by others. */
+  /**
+   * Who wrote it, when an agent did ("Verifier's agent"), or whose move drafted it: an ADO comment is read by others.
+   * The user's edit makes it theirs, so both go.
+   */
   by?: string;
+  /** The session whose agent wrote it, by id (write_patch_notes). */
+  from?: string;
 }
 
 /** Who ticked a gate's item, and when. */
@@ -1137,6 +1142,8 @@ export interface TicketPipeline {
   checkedBy?: Record<string, GateTick>;
   /** Agents' reports against the checklists, keyed "<gate>:<item>" as `checks` (gate_notes). */
   gateNotes?: Record<string, GateNote>;
+  /** Items the user unticked at the stage it's at now, keyed as `checks`: no agent ticks them again until the stage changes. */
+  unticked?: Record<string, { at: number; stage: StoredStage }>;
   /** Agents' pull request requests waiting for the user (request_pr): one per target. */
   requests?: PipelineRequest[];
 }
@@ -1212,6 +1219,29 @@ export function clearGateTicks(p: TicketPipeline): string | null {
     return { title: g.title, ticked };
   }).filter((c) => c.ticked > 0);
   return counts.length ? `Gate ticks cleared: ${counts.map((c) => `${c.title} (${c.ticked})`).join(", ")}` : null;
+}
+
+/**
+ * An agent's move back to Coding: only agents' ticks go, and agents' notes on every item, as evidence about work that's
+ * changing. The user's ticks stay, as do a person's items' and those from before authors were kept, which no agent
+ * made. Returns the line its history entry keeps, naming each tick cleared and whose it was, or null when none was.
+ */
+export function clearAgentTicks(p: TicketPipeline): string | null {
+  const cleared: string[] = [];
+  for (const g of GATES) {
+    for (const i of g.items) {
+      const key = `${g.id}:${i.key}`;
+      const tick = tickOf(p, key);
+      if (!tick || tick.by === BY_YOU || i.person) continue;
+      delete p.checks[key];
+      delete p.checkedBy![key];
+      cleared.push(`"${i.label}" (ticked by ${tick.by})`);
+    }
+  }
+  for (const k of Object.keys(p.gateNotes ?? {})) if (GATES.some((g) => k.startsWith(`${g.id}:`))) delete p.gateNotes![k];
+  const kept = gateTicks(p);
+  if (!cleared.length) return null;
+  return `Agents' ticks cleared: ${cleared.join(", ")}.${kept ? ` The user's ticks stay (${kept}).` : ""}`;
 }
 
 /** What creating a pull request needs to know about a session's worktree. */

@@ -40,12 +40,13 @@ import { goesBack, PipelineStore, stageRefusal } from "../src/main/pipeline";
 import { openPr } from "../src/main/pullRequests";
 import { scmPush } from "../src/main/scm";
 import { SessionManager } from "../src/main/sessions";
-import { agentBy, TicketTools } from "../src/main/ticketTools";
+import { agentBy, TicketTools, type ApprovalUndone } from "../src/main/ticketTools";
 import { GATE_ITEM_KEYS, PATCH_NOTES_GUIDANCE, PATCH_NOTES_MAX, PERSON_GATE_ITEMS, TICKET_TOOL, TICKET_TOOL_SCHEMAS } from "../src/main/ticketToolSchemas";
-import { BY_YOU, TICKET_STAGES, tickOf, type PipelinePr, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../src/shared/types";
+import { BY_YOU, TICKET_STAGES, tickOf, gateTicks, type PipelinePr, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../src/shared/types";
 import { PipelineStore as PipelineStore160 } from "./fixtures/pipeline-1.6.0/pipeline";
 import { askAs, startServer, testLaunch } from "./mcpClient";
 import { tempDir } from "./helpers";
+import { ROOMS_STARTING } from "../src/shared/wires";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, title: id, ticketTitle: null, ticketId: null, repoPath: `/code/${id}`, branch: "b", taskGroup: null, status: "idle", agent: "claude", cwd: `/w/${id}`, kind: "work", ...over }) as SessionInfo;
@@ -86,6 +87,9 @@ function setup() {
   const told: { id: string; text: string; submit: boolean }[] = [];
   const logged: string[] = [];
   const counts = { changed: 0 };
+  const rooms: Record<string, string> = {};
+  const flags = { roomsKnown: true };
+  const undone: ApprovalUndone[] = [];
   const tools = new TicketTools({
     pipeline,
     sessions: {
@@ -97,7 +101,13 @@ function setup() {
       },
     },
     submitOnDelivery: () => true,
-    takenOver: (id, doing) => (takenOver[id] ? `${takenOver[id]} — take it back rather than ${doing}` : null),
+    takenOver: (id, doing) => {
+      if (takenOver[id] === "throws") throw new Error("the take-over state can't be read");
+      return takenOver[id] ? `${takenOver[id]} — take it back rather than ${doing}` : null;
+    },
+    roomOf: (id) => rooms[id] ?? null,
+    roomsKnown: () => flags.roomsKnown,
+    onApprovalUndone: (e) => void undone.push(e),
     onChanged: () => void counts.changed++,
     log: (context, err) => void logged.push(`${context}: ${err instanceof Error ? err.message : String(err)}`),
   });
@@ -106,7 +116,7 @@ function setup() {
   const at = (stage: TicketStage, id = "4182") => pipeline.setStage(id, stage, { by: BY_YOU });
   const record = (id = "4182"): TicketPipeline => JSON.parse(fs.readFileSync(file, "utf8"))[id];
   const disk = () => fs.readFileSync(file, "utf8");
-  return { file, pipeline, running, takenOver, told, logged, counts, tools, as, call, at, record, disk };
+  return { file, pipeline, running, takenOver, told, logged, counts, rooms, flags, undone, tools, as, call, at, record, disk };
 }
 
 describe("stageRefusal: what an agent may move a ticket to", () => {
@@ -170,7 +180,8 @@ describe("set_stage", () => {
     const p = t.record();
     expect(p.stage).toBe("local-test");
     expect(p.history.at(-1)).toEqual({ at: expect.any(Number), stage: "local-test", note: "Committed as 1a2b3c", by: "Coder's agent" });
-    expect(p.drafts.at(-1)).toEqual({ id: expect.any(String), stage: "local-test", text: "Development is done; testing locally.", at: expect.any(Number) });
+    // Mockingbird's words, marked as the agent's move's
+    expect(p.drafts.at(-1)).toEqual({ id: expect.any(String), stage: "local-test", text: "Development is done; testing locally.", at: expect.any(Number), by: "Coder's agent" });
     expect({ ...p, stage: before.stage, history: before.history, drafts: before.drafts }).toEqual(before);
     expect(t.record("5101")).toEqual(JSON.parse(t.disk())["5101"]);
     expect(t.told).toEqual([]);
@@ -190,19 +201,56 @@ describe("set_stage", () => {
     expect(t.counts.changed).toBe(2);
   });
 
-  it("sends it back to Coding with the feedback kept as whose, drafting no comment, and the checklists start over", async () => {
+  it("sends it back to Coding with the feedback kept as whose, drafting no comment, clearing only agents' ticks and saying whose", async () => {
     const t = setup();
-    t.at("local-test");
-    t.pipeline.setCheck("4182", "dev:tests", true, BY_YOU);
+    await t.call("coder", TICKET_TOOL.setStage, { stage: "local-test", gate_notes: [{ item: "dev:tests", note: "npm test: 412 passed", done: true }] });
+    t.pipeline.setCheck("4182", "dev:smoke", true, BY_YOU);
     t.at("dev-test");
     const drafts = t.record().drafts.length;
     const r = await t.call("verifier", TICKET_TOOL.setStage, { stage: "coding", note: "Orgs with no users vanish from the filter on dev." });
-    expect(r.result).toBe("#4182 is back at Coding from AI testing in dev/UAT, with your note kept as its feedback, marked as yours. The checklists' ticks were cleared, as the work changes.");
+    expect(r.result).toBe("#4182 is back at Coding from AI testing in dev/UAT, with your note kept as its feedback, marked as yours. Agents' ticks on its checklists were cleared, as the work changes; the user's stay.");
     const p = t.record();
     expect(p.feedback.at(-1)).toEqual({ at: expect.any(Number), text: "Orgs with no users vanish from the filter on dev.", by: "Verifier's agent" });
     expect(p.drafts).toHaveLength(drafts);
-    expect(p.checks).toEqual({});
-    expect(p.history.at(-1)).toMatchObject({ stage: "coding", by: "Verifier's agent", note: "Orgs with no users vanish from the filter on dev.\n\nGate ticks cleared: Before the PR to dev/UAT (1)" });
+    expect(p.checks).toEqual({ "dev:smoke": true });
+    expect(tickOf(p, "dev:smoke")).toMatchObject({ by: "you" });
+    expect(p.gateNotes).toEqual({});
+    expect(p.history.at(-1)).toMatchObject({
+      stage: "coding",
+      by: "Verifier's agent",
+      note: 'Orgs with no users vanish from the filter on dev.\n\nAgents\' ticks cleared: "Tests pass" (ticked by Coder\'s agent). The user\'s ticks stay (1).',
+    });
+    // before the user's approval: nobody is notified
+    expect(t.undone).toEqual([]);
+  });
+
+  it("from past the user's approval: their ticks and a person's items stay, and they're told once, naming the agent and its note", async () => {
+    const t = setup();
+    for (const stage of ["approved", "pr-main", "prod-test", "comms"] as const) {
+      t.at("local-test");
+      t.pipeline.setCheck("4182", "dev:tests", true, "Coder's agent");
+      t.pipeline.setCheck("4182", "dev:smoke", true, BY_YOU);
+      t.at(stage);
+      t.pipeline.setCheck("4182", "staging:peer-review", true, BY_YOU);
+      t.pipeline.setCheck("4182", "staging:security-reviewed", true, BY_YOU);
+      t.pipeline.setCheck("4182", "prod:sign-off", true, BY_YOU);
+      t.pipeline.setCheck("4182", "staging:secrets", true, "Verifier's agent");
+      const before = t.undone.length;
+      const r = await t.call("verifier", TICKET_TOOL.setStage, { stage: "coding", note: "The deployed build drops orgs" });
+      expect(r.result, stage).toMatch(/That undoes the user's approval of stakeholder testing, so they've been told\.$/);
+      const p = t.record();
+      expect(Object.keys(p.checks).sort(), stage).toEqual(["dev:smoke", "prod:sign-off", "staging:peer-review", "staging:security-reviewed"]);
+      expect(p.history.at(-1)!.note, stage).toBe(
+        'The deployed build drops orgs\n\nAgents\' ticks cleared: "Tests pass" (ticked by Coder\'s agent), "No hardcoded secrets, credentials or environment-specific values" (ticked by Verifier\'s agent). The user\'s ticks stay (4).'
+      );
+      expect(t.undone.slice(before), stage).toEqual([{ ticket: "4182", title: "Org filter", session: t.as("verifier"), by: "Verifier's agent", from: stage, note: "The deployed build drops orgs" }]);
+    }
+    // the user's own move back clears every tick, as before
+    t.at("approved");
+    t.pipeline.setCheck("4182", "staging:peer-review", true, BY_YOU);
+    t.pipeline.addFeedback("4182", "Stakeholders want it reworked", BY_YOU);
+    expect(gateTicks(t.record())).toBe(0);
+    expect(t.undone).toHaveLength(4);
   });
 
   it("refuses, writing nothing: each of section 4's rules, and a call that names anything but its arguments", async () => {
@@ -346,26 +394,35 @@ describe("request_pr", () => {
     }
     t.at("approved");
     expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "main", title: "To main", description: "d" })).result).toMatch(/^Asked: .* pull request to main on #4182/);
-    expect(t.record().requests!.map((x) => x.target)).toEqual(["dev", "main"]);
+    // the dev request went with the first move to a stage that doesn't take it
+    expect(t.record().requests!.map((x) => x.target)).toEqual(["main"]);
     expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "prod", title: "t", description: "d" })).error).toMatch(/target is "dev" or "main", not "prod"/);
     expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "main", title: "t", description: PRIVATE_KEY })).error).toMatch(/^description holds a private key/);
     expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "main", title: " ", description: "d" })).error).toBe("title is empty.");
     expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "main", title: "t", description: "d", base: "main" })).error).toMatch(/nothing else \(not "base"\)/);
   });
 
-  it("is answered by the pull request opening: the request goes, and the PR is the asking agent's, whichever pane it was opened from", () => {
+  it("is answered by a pull request opened from the session that asked; another session's PR leaves it to be dropped, saying so", () => {
     const t = setup();
     t.at("local-test");
     t.pipeline.holdRequest("4182", { target: "dev", from: "coder", fromTitle: "Coder", title: "t", description: "d" }, [], "Coder's agent");
-    t.pipeline.addPr("4182", prTo("dev", 91, "busy"), undefined, BY_YOU);
+    t.pipeline.addPr("4182", prTo("dev", 91, "coder"), undefined, BY_YOU);
+    expect(t.record().requests).toEqual([]);
+    expect(t.record().prs.at(-1)).toMatchObject({ id: 91, by: "coder" });
+    expect(t.record().history.at(-1)!.note).toBeUndefined();
+    // opened from B's form: the PR is B's, and A's request goes as PR to dev takes none, the history saying so
+    t.at("local-test");
+    t.pipeline.holdRequest("4182", { target: "dev", from: "coder", fromTitle: "Coder", title: "t", description: "d" }, [], "Coder's agent");
+    t.pipeline.addPr("4182", prTo("dev", 92, "busy"), undefined, BY_YOU);
     const p = t.record();
+    expect(p.prs.at(-1)).toMatchObject({ id: 92, by: "busy" });
     expect(p.requests).toEqual([]);
-    expect(p.prs.at(-1)).toMatchObject({ id: 91, by: "coder" });
-    expect(p.stage).toBe("pr-dev");
-    // without a request, the pane it was opened from
-    t.at("approved");
-    t.pipeline.addPr("4182", prTo("main", 92, "busy"), undefined, BY_YOU);
-    expect(t.record().prs.at(-1)).toMatchObject({ id: 92, by: "busy" });
+    expect(p.history.at(-1)).toMatchObject({
+      stage: "pr-dev",
+      note: "Dropped the held request for a pull request to dev from Coder: A pull request to dev is asked for from Coding or Local testing; it's at PR to dev.",
+    });
+    t.at("stakeholder");
+    expect(t.tools.approve("4182").told).toEqual({ to: "busy", title: "Busy", told: "queued until its current turn ends" });
   });
 });
 
@@ -502,7 +559,7 @@ describe("approval's line to a busy Coder, through the real SessionManager", () 
   it("waits in its queue while it works and reaches it as its turn ends, in Mockingbird's words", async () => {
     const pipeline = new PipelineStore(path.join(dir, "pipeline.json"));
     const coder = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "Coder", ticketId: "4182", ticketTitle: "Org filter" });
-    const tools = new TicketTools({ pipeline, sessions: m, submitOnDelivery: () => true, takenOver: () => null, onChanged: () => {}, log: () => {} });
+    const tools = new TicketTools({ pipeline, sessions: m, submitOnDelivery: () => true, takenOver: () => null, roomOf: () => null, roomsKnown: () => true, onChanged: () => {}, log: () => {} });
     pipeline.startCoding("4182", "Org filter", BY_YOU);
     pipeline.setStage("4182", "local-test", { by: BY_YOU });
     pipeline.addPr("4182", prTo("dev", 91, coder.id), undefined, BY_YOU);
@@ -583,5 +640,152 @@ describe("pipeline.json across versions", () => {
     expect(after.feedback).toEqual(ours.feedback);
     expect(after.drafts.slice(0, ours.drafts.length)).toEqual(ours.drafts);
     expect(new PipelineStore(t.file).get("4182")!.requests).toEqual(ours.requests);
+  });
+});
+
+describe("review fixes 1", () => {
+  it("the user's edit makes an agent's draft theirs: the agent's next patch notes don't replace it", async () => {
+    const t = setup();
+    t.at("prod-test");
+    await t.call("verifier", TICKET_TOOL.writePatchNotes, { text: "Agent draft one." });
+    const d = t.record().drafts.find((x) => x.stage === "comms" && x.by)!;
+    expect(d).toMatchObject({ by: "Verifier's agent", from: "verifier" });
+    t.pipeline.editDraft("4182", d.id, "Rewritten by the user.");
+    expect(t.record().drafts.find((x) => x.id === d.id)).toEqual({ id: d.id, stage: "comms", text: "Rewritten by the user.", at: d.at });
+    const r = await t.call("verifier", TICKET_TOOL.writePatchNotes, { text: "Agent draft two." });
+    expect(r.result).not.toMatch(/replaces/);
+    expect(t.record().drafts.filter((x) => x.stage === "comms").map((x) => x.text)).toEqual(["Rewritten by the user.", "Agent draft two."]);
+  });
+
+  it("approval tells only a session still on the ticket: one moved to another says where it is now, and is told nothing", async () => {
+    const t = setup();
+    t.pipeline.addPr("4182", prTo("dev", 91, "coder"), undefined, BY_YOU);
+    t.running[0] = { ...t.as("coder"), ticketId: "5101" };
+    t.at("stakeholder");
+    expect(t.tools.approve("4182").told).toEqual({ to: "coder", title: "Coder", notTold: '"Coder" is on #5101 now, so it wasn\'t told.' });
+    t.running[0] = { ...t.as("coder"), ticketId: null };
+    t.pipeline.addPr("4182", prTo("dev", 92, "coder"), undefined, BY_YOU);
+    t.at("stakeholder");
+    expect(t.tools.approve("4182").told).toMatchObject({ notTold: '"Coder" isn\'t on a ticket now, so it wasn\'t told.' });
+    expect(t.told).toEqual([]);
+  });
+
+  it("a failure while telling never half-finishes approval or dismissal: the move stands, the answer says so, and it's logged", async () => {
+    const t = setup();
+    await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "t", description: "d" });
+    t.pipeline.addPr("4182", prTo("dev", 91, "coder"), undefined, BY_YOU);
+    t.at("stakeholder");
+    t.takenOver.coder = "throws";
+    const a = t.tools.approve("4182");
+    expect(a.told).toEqual({ to: "coder", title: null, notTold: "It couldn't be told: the take-over state can't be read" });
+    expect(t.record().stage).toBe("approved");
+    expect(t.logged).toEqual(["tickets: telling coder about #4182: the take-over state can't be read"]);
+    t.at("coding");
+    delete t.takenOver.coder;
+    await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "t", description: "d" });
+    t.takenOver.coder = "throws";
+    const d = t.tools.dismissRequest("4182", t.record().requests![0].id, "");
+    expect(d.told).toMatchObject({ notTold: "It couldn't be told: the take-over state can't be read" });
+    expect(t.record().requests).toEqual([]);
+    // the window hears of the record however the call ends
+    const src = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8");
+    expect(src).toMatch(/const pipelineDo = async <T,>\(fn: \(\) => T \| Promise<T>\): Promise<T> => \{\n  try \{\n    return await fn\(\);\n  \} finally \{\n    pipelineChanged\(\);/);
+  });
+
+  it("holds every cap after redaction, which can lengthen a value: refused, saying so", async () => {
+    const t = setup();
+    const title = "pwd=Zq9xW2kL ".repeat(15);
+    expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title, description: "d" })).error).toBe(
+      "title is 224 characters once its 15 secret-looking values are replaced with [redacted]; the limit is 200: shorten it."
+    );
+    t.at("prod-test");
+    const text = "pwd=Zq9xW2kL ".repeat(307);
+    expect(text.trim().length).toBeLessThanOrEqual(PATCH_NOTES_MAX);
+    expect((await t.call("verifier", TICKET_TOOL.writePatchNotes, { text })).error).toMatch(/^text is 4,604 characters once its 307 secret-looking values are replaced with \[redacted\]; the limit is 4,000/);
+    expect(t.record().requests ?? []).toEqual([]);
+    expect(t.record().drafts.filter((d) => d.stage === "comms")).toEqual([]);
+  });
+
+  it("takes bidi controls and zero-width characters out of titles, descriptions, patch notes, gate notes and feedback", async () => {
+    const t = setup();
+    const hidden = "‮⁦​‍﻿⁩‬";
+    await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: `Fix ${hidden}gnissap tests`, description: `Line one${hidden}\nLine two`, gate_notes: [{ item: "dev:tests", note: `ran${hidden} them` }] });
+    const req = t.record().requests![0];
+    expect([req.title, req.description, t.record().gateNotes!["dev:tests"].note]).toEqual(["Fix gnissap tests", "Line one\nLine two", "ran them"]);
+    t.at("dev-test");
+    await t.call("verifier", TICKET_TOOL.setStage, { stage: "coding", note: `Broken${hidden}` });
+    expect(t.record().feedback.at(-1)!.text).toBe("Broken");
+    t.at("prod-test");
+    await t.call("verifier", TICKET_TOOL.writePatchNotes, { text: `It ${hidden}remembers.` });
+    expect(t.record().drafts.at(-1)!.text).toBe("It remembers.");
+    expect((await t.call("coder", TICKET_TOOL.writePatchNotes, { text: hidden })).error).toBe("text is empty.");
+  });
+
+  it("an item the user unticked isn't ticked again by an agent until the stage changes; a note on it still is kept", async () => {
+    const t = setup();
+    await t.call("coder", TICKET_TOOL.setStage, { stage: "local-test", gate_notes: [{ item: "dev:tests", note: "ran", done: true }] });
+    t.pipeline.setCheck("4182", "dev:tests", false, BY_YOU);
+    expect(t.record().unticked).toEqual({ "dev:tests": { at: expect.any(Number), stage: "local-test" } });
+    const before = t.disk();
+    const r = await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "t", description: "d", gate_notes: [{ item: "dev:tests", note: "ran again", done: true }] });
+    expect(r.error).toBe("The user unticked dev:tests at Local testing, so no agent ticks it again until the ticket's stage changes: leave done out, and say in its note what changed.");
+    expect(t.disk()).toBe(before);
+    await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "t", description: "d", gate_notes: [{ item: "dev:tests", note: "Fixed the flaky one; ran again" }] });
+    expect(t.record().gateNotes!["dev:tests"].note).toBe("Fixed the flaky one; ran again");
+    expect(tickOf(t.record(), "dev:tests")).toBeNull();
+    // the user's own tick ends it; so does the stage changing
+    t.pipeline.setCheck("4182", "dev:tests", true, BY_YOU);
+    expect(t.record().unticked).toEqual({});
+    t.pipeline.setCheck("4182", "dev:tests", false, BY_YOU);
+    t.at("coding");
+    expect(t.record().unticked).toBeUndefined();
+    await t.call("coder", TICKET_TOOL.setStage, { stage: "local-test", gate_notes: [{ item: "dev:tests", note: "ran", done: true }] });
+    expect(tickOf(t.record(), "dev:tests")).toMatchObject({ by: "Coder's agent" });
+  });
+
+  it("no request or patch notes draft is replaced across a team room's line, either way, nor while rooms are starting, and no name crosses it", async () => {
+    const t = setup();
+    t.rooms.busy = "room-1";
+    await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "Private", description: "d" });
+    const before = t.disk();
+    const fromRoom = await t.call("busy", TICKET_TOOL.requestPr, { target: "dev", title: "From the room", description: "d" });
+    expect(fromRoom.error).toBe(
+      "Nothing was asked: a request for a pull request to dev is held from another workspace, and it's on the other side of a team room's line, so this can't replace it: the user opens or dismisses it first."
+    );
+    expect(fromRoom.error).not.toContain("Coder");
+    expect(t.disk()).toBe(before);
+    // and the reverse
+    t.pipeline.dropRequest("4182", t.record().requests![0].id);
+    await t.call("busy", TICKET_TOOL.requestPr, { target: "dev", title: "From the room", description: "d" });
+    expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "Private", description: "d" })).error).toMatch(/other side of a team room's line/);
+    // the same room: replaced, and named
+    t.rooms.coder = "room-1";
+    expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "Private", description: "d" })).result).toMatch(/It replaces the request "Busy" made earlier/);
+    delete t.rooms.coder;
+    // patch notes
+    t.at("prod-test");
+    await t.call("verifier", TICKET_TOOL.writePatchNotes, { text: "Private notes" });
+    expect((await t.call("busy", TICKET_TOOL.writePatchNotes, { text: "Room notes" })).error).toBe(
+      "Nothing was kept: the patch notes draft there is another workspace's, and it's on the other side of a team room's line, so this can't replace it: the user opens or dismisses it first."
+    );
+    t.flags.roomsKnown = false;
+    expect((await t.call("coder", TICKET_TOOL.writePatchNotes, { text: "Mine" })).error).toBe(`Nothing was kept: the patch notes draft there is another workspace's, and ${ROOMS_STARTING}`);
+    // its own draft it replaces whatever rooms are doing
+    expect((await t.call("verifier", TICKET_TOOL.writePatchNotes, { text: "Private notes, again" })).result).toMatch(/It replaces the earlier agent's draft/);
+  });
+
+  it("a held request goes when a move takes the ticket to a stage that doesn't take it, the history saying so", async () => {
+    const t = setup();
+    t.at("approved");
+    await t.call("coder", TICKET_TOOL.requestPr, { target: "main", title: "To main", description: "d" });
+    await t.call("verifier", TICKET_TOOL.setStage, { stage: "coding", note: "Rework" });
+    expect(t.record().requests).toEqual([]);
+    expect(t.record().history.at(-1)!.note).toBe(
+      "Rework\n\nDropped the held request for a pull request to main from Coder: A pull request to main is asked for once the user has approved stakeholder testing; it's at Coding."
+    );
+    // a move that keeps it takeable keeps it
+    await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "To dev", description: "d" });
+    t.at("local-test");
+    expect(t.record().requests!.map((r) => r.target)).toEqual(["dev"]);
   });
 });

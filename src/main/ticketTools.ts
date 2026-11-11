@@ -1,5 +1,5 @@
 import { MCP_SERVER, type Reply } from "./messaging";
-import { goesBack, patchNotesRefusal, requestRefusal, stageRefusal, type GateReport, type PipelineStore } from "./pipeline";
+import { goesBack, PAST_APPROVAL, patchNotesRefusal, requestRefusal, stageRefusal, untickRefusal, type GateReport, type PipelineStore } from "./pipeline";
 import { holdsPrivateKey } from "./team/artifactStore";
 import {
   GATE_ITEM_KEYS,
@@ -13,7 +13,8 @@ import {
 import { REDACTED, redactSecrets } from "./wirePrompt";
 import { onlyArgs } from "./wireTools";
 import { oneLine, plainLine, quoted } from "../shared/team/agentText";
-import { BY_YOU, GATES, stageLabel, ticketOfSession, type AgentTold, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage } from "../shared/types";
+import { BY_YOU, GATES, stageLabel, ticketOfSession, type AgentTold, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
+import { ROOMS_STARTING } from "../shared/wires";
 
 export interface TicketToolsOptions {
   pipeline: Pick<PipelineStore, "get" | "setStage" | "agentMove" | "holdRequest" | "dropRequest" | "agentPatchNotes">;
@@ -26,9 +27,24 @@ export interface TicketToolsOptions {
   submitOnDelivery(target: SessionInfo): boolean;
   /** Why session `id` can't have `doing` done to it, a teammate having taken it over; null otherwise. */
   takenOver(id: string, doing: string): string | null;
+  /** The team room session `id` is in, or null; and whether rooms have started, before which no session looks to be in one. */
+  roomOf(id: string): string | null;
+  roomsKnown(): boolean;
+  /** An agent sent the ticket back to Coding from past the user's approval of stage 6: the user is told, once. */
+  onApprovalUndone?(e: ApprovalUndone): void;
   /** An agent changed a ticket's record: the windows hear of it. */
   onChanged(): void;
   log: (context: string, err: unknown) => void;
+}
+
+/** An agent's move back that undid the user's approval: who, from where, and why it said. */
+export interface ApprovalUndone {
+  ticket: string;
+  title: string | null;
+  session: SessionInfo;
+  by: string;
+  from: StoredStage;
+  note: string;
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -40,16 +56,24 @@ export const agentBy = (me: Pick<SessionInfo, "title">): string => `${plainLine(
 
 type Text = { text: string; count: number } | { refused: string };
 
+/** Bidi controls and marks, and zero-width characters: they reorder or hide text where the user reads it and where it's posted. */
+const INVISIBLE_RE = /[\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
+
 /**
- * An agent's text for the ticket's record, which others read once the user posts or opens it: trimmed (on one line
- * when `line`), refused empty, past `max` or holding a private key, and redacted, `count` saying how many values went.
+ * An agent's text for the ticket's record, which others read once the user posts or opens it: invisible characters
+ * taken out, trimmed (on one line when `line`), refused empty or holding a private key, and redacted, `count` saying how
+ * many values went. Refused past `max`, before redaction and after it, since a redacted value can be longer.
  */
 function agentText(name: string, v: unknown, max: number, line = false): Text {
-  if (typeof v !== "string" || !v.trim()) return { refused: `${name} is empty.` };
-  const t = line ? oneLine(v, Infinity) : v.trim();
+  const raw = typeof v === "string" ? v.replace(INVISIBLE_RE, "") : "";
+  const t = line ? oneLine(raw, Infinity) : raw.trim();
+  if (!t) return { refused: `${name} is empty.` };
   if (t.length > max) return { refused: `${name} is ${nOf(t.length)} characters; the limit is ${nOf(max)}.` };
   if (holdsPrivateKey(t)) return { refused: `${name} holds a private key, so nothing was kept: take it out and call again.` };
-  return redactSecrets(t);
+  const r = redactSecrets(t);
+  if (r.text.length > max)
+    return { refused: `${name} is ${nOf(r.text.length)} characters once its ${r.count} secret-looking value${r.count === 1 ? " is" : "s are"} replaced with ${REDACTED}; the limit is ${nOf(max)}: shorten it.` };
+  return r;
 }
 
 /**
@@ -148,15 +172,32 @@ export class TicketTools {
     const to = args.stage as TicketStage;
     const back = goesBack(t.p.stage, to);
     if (back && Array.isArray(args.gate_notes) && args.gate_notes.length)
-      return { error: "A move back to Coding clears the checklists' ticks, so it takes no gate_notes: report against a checklist with a move forward or request_pr." };
+      return { error: "A move back to Coding clears agents' ticks on the checklists, so it takes no gate_notes:report against a checklist with a move forward or request_pr." };
     const gates = GATES.filter((g) => g.at === t.p.stage || g.at === to).map((g) => g.id);
     const r = gateReport(args.gate_notes, back ? [] : gates, `at ${stageLabel(t.p.stage)} or ${stageLabel(to)}`);
     if ("refused" in r) return { error: r.refused };
+    const unticked = untickRefusal(t.p, r.report);
+    if (unticked) return { error: unticked };
     const from = t.p.stage;
-    const { drafted, ticked } = this.o.pipeline.agentMove(t.id, to, { note: note?.text, by: agentBy(me), report: r.report });
+    const by = agentBy(me);
+    const { pipeline, drafted, ticked } = this.o.pipeline.agentMove(t.id, to, { note: note?.text, by, report: r.report });
     this.changed();
     const redacted = redactedLine((note?.count ?? 0) + r.count);
-    if (back) return { result: `#${t.id} is back at Coding from ${stageLabel(from)}, with your note kept as its feedback, marked as yours. The checklists' ticks were cleared, as the work changes.${redacted}` };
+    if (back) {
+      const undid = PAST_APPROVAL.includes(from);
+      if (undid) {
+        try {
+          this.o.onApprovalUndone?.({ ticket: t.id, title: pipeline.title ?? null, session: me, by, from, note: note!.text });
+        } catch (err) {
+          this.o.log(`tickets: telling the user ${me.id} sent #${t.id} back from ${from}`, err);
+        }
+      }
+      return {
+        result:
+          `#${t.id} is back at Coding from ${stageLabel(from)}, with your note kept as its feedback, marked as yours. Agents' ticks on its checklists were cleared, as the work changes; the user's stay.` +
+          `${undid ? " That undoes the user's approval of stakeholder testing, so they've been told." : ""}${redacted}`,
+      };
+    }
     const comment = drafted ? " Mockingbird drafted the stage's comment for the ticket; only the user posts it." : "";
     return { result: `#${t.id} moved from ${stageLabel(from)} to ${stageLabel(to)}, marked as yours.${comment}${notesLine(r.report, ticked)}${redacted}` };
   }
@@ -175,6 +216,11 @@ export class TicketTools {
     if ("refused" in description) return { error: description.refused };
     const r = gateReport(args.gate_notes, [target === "dev" ? "dev" : "staging"], "");
     if ("refused" in r) return { error: r.refused };
+    const unticked = untickRefusal(t.p, r.report);
+    if (unticked) return { error: unticked };
+    const held = t.p.requests?.find((x) => x.target === target);
+    const across = held ? this.acrossLine(me.id, held.from) : null;
+    if (across) return { error: `Nothing was asked: a request for a pull request to ${target} is held from another workspace, and ${across}` };
     const by = agentBy(me);
     const { replaced, ticked } = this.o.pipeline.holdRequest(t.id, { target, from: me.id, fromTitle: plainLine(me.title, 80), title: title.text, description: description.text }, r.report, by);
     this.changed();
@@ -195,7 +241,11 @@ export class TicketTools {
     if (why) return { error: `Nothing was kept: ${why}` };
     const text = agentText("text", args.text, PATCH_NOTES_MAX);
     if ("refused" in text) return { error: text.refused };
-    const { replaced } = this.o.pipeline.agentPatchNotes(t.id, text.text, agentBy(me));
+    for (const d of t.p.drafts.filter((x) => x.stage === "comms" && x.by)) {
+      const across = this.acrossLine(me.id, d.from ?? "");
+      if (across) return { error: `Nothing was kept: the patch notes draft there is another workspace's, and ${across}` };
+    }
+    const { replaced } = this.o.pipeline.agentPatchNotes(t.id, text.text, agentBy(me), me.id);
     this.changed();
     const was = replaced ? ` It replaces the earlier agent's draft.` : "";
     return { result: `Kept as #${t.id}'s patch notes draft (${nOf(text.text.length)} characters), marked as yours. The user reads it and posts it; nothing is posted by this.${was}${redactedLine(text.count)}` };
@@ -218,7 +268,7 @@ export class TicketTools {
     const line =
       `[Mockingbird: the user approved ${ticket} in stakeholder testing. Prepare the pull request to main: when the branch is ready, ` +
       `call the ${MCP_SERVER} ${TICKET_TOOL.requestPr} tool with target "main". The user opens it; nothing is pushed until they do.]`;
-    return { pipeline, told: this.tell(asked, line, `No pull request to dev on #${id} says which workspace asked for it, so no agent was told.`) };
+    return { pipeline, told: this.tell(id, asked, line, `No pull request to dev on #${id} says which workspace asked for it, so no agent was told.`) };
   }
 
   /** The user dismissed an agent's pull request request (pipeline:request:dismiss): it goes, and its agent is told, with the user's note. */
@@ -228,23 +278,40 @@ export class TicketTools {
     const line =
       `[Mockingbird: the user dismissed your request for a pull request to ${request.target} on #${id} (${quoted(request.title)}). ` +
       `Nothing was pushed or opened.${said ? " Their note follows." : ""}]${said ? `\n\n${said}` : ""}`;
-    return { pipeline, told: this.tell(request.from, line, "") };
+    return { pipeline, told: this.tell(id, request.from, line, "") };
   }
 
-  /** `text` to session `to` through its queue, or why it wasn't: none to tell, not running (reopen it), or taken over. */
-  private tell(to: string | null, text: string, none: string): AgentTold {
+  /**
+   * `text` to session `to` about ticket `ticket`, through its queue, or why it wasn't: none to tell, on another ticket
+   * now, not running (reopen it), taken over, or a failure, which is logged. It never throws, so the window's change
+   * before it is answered and heard of whatever happens here.
+   */
+  private tell(ticket: string, to: string | null, text: string, none: string): AgentTold {
     if (!to) return { to: null, title: null, notTold: none };
-    const s = this.o.sessions.list().find((x) => x.id === to && !x.shell);
-    const closed = s ? null : this.o.sessions.resumable().find((x) => x.id === to && !x.shell);
-    const title = s?.title ?? closed?.title ?? null;
-    if (!s || s.status === "dead") return { to, title, notTold: `${title ? quoted(title) : `Workspace ${to}`} isn't running, so it wasn't told: reopen it to tell it.`, ...(title ? { reopen: true as const } : {}) };
-    const taken = this.o.takenOver(to, "telling this copy");
-    if (taken) return { to, title: s.title, notTold: taken };
     try {
+      const s = this.o.sessions.list().find((x) => x.id === to && !x.shell);
+      const found = s ?? this.o.sessions.resumable().find((x) => x.id === to && !x.shell);
+      const title = found?.title ?? null;
+      const name = title ? quoted(title) : `Workspace ${to}`;
+      const now = found ? ticketOfSession(found) : ticket;
+      if (now !== ticket) return { to, title, notTold: now ? `${name} is on #${now} now, so it wasn't told.` : `${name} isn't on a ticket now, so it wasn't told.` };
+      if (!s || s.status === "dead") return { to, title, notTold: `${name} isn't running, so it wasn't told: reopen it to tell it.`, ...(title ? { reopen: true as const } : {}) };
+      const taken = this.o.takenOver(to, "telling this copy");
+      if (taken) return { to, title: s.title, notTold: taken };
       return { to, title: s.title, told: this.o.sessions.deliverAgentMessage(to, text, this.o.submitOnDelivery(s)) };
     } catch (err) {
-      this.o.log(`tickets: telling ${to}`, err);
-      return { to, title: s.title, notTold: `It couldn't be told: ${errorText(err)}` };
+      this.o.log(`tickets: telling ${to} about #${ticket}`, err);
+      return { to, title: null, notTold: `It couldn't be told: ${errorText(err)}` };
     }
+  }
+
+  /**
+   * Why session `me` can't replace session `other`'s record (a held request, a patch notes draft), or null: they're on
+   * either side of a team room's line, or rooms haven't started, so that can't be told yet. Neither is named.
+   */
+  private acrossLine(me: string, other: string): string | null {
+    if (me === other) return null;
+    if (!this.o.roomsKnown()) return ROOMS_STARTING;
+    return this.o.roomOf(me) !== this.o.roomOf(other) ? "it's on the other side of a team room's line, so this can't replace it: the user opens or dismisses it first." : null;
   }
 }

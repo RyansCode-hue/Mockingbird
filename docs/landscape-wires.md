@@ -2203,9 +2203,10 @@ but Done, with a note. Refused: Done, Approved, the PR stages, BA, skipping, any
 forward from step 6 (stakeholder, approved or PR to main), back to anything but
 Coding, back without a note, a move from Done or from a stage this build doesn't
 know. A forward move drafts the stage's comment (never quoting the agent's note: the
-note goes in history only). A move back keeps the note as feedback with `by`, drafts
-nothing, and clears the checklists as W13's moves to Coding do. A move fires nothing
-but `pipeline:changed`.
+note goes in history only). A move back keeps the note as feedback with `by` and
+drafts nothing. It cleared the checklists as W13's moves to Coding do; since review
+fixes 1 it clears only agents' ticks (below). A move fires nothing but
+`pipeline:changed`.
 
 **`gate_notes`** (on `set_stage` and `request_pr`): `[{ item, note, done? }]`, `item`
 being `<gate>:<item>` (the schema's enum is every key). Each item must be on the
@@ -2221,9 +2222,10 @@ refused, and so is the whole call. The person can untick anything through
 **`request_pr`.** Dev from Coding or Local testing, main only at `approved`. Held in
 `requests`, one per target: a newer request replaces the older, and the reply names
 whose it replaced. The title goes on one line (200 characters at most), the
-description is at most 8,000 characters, and both are redacted. `addPr` answers
-the request: it goes, and the PR's `by` is the asker's, else the session the form
-opened it from (`pipeline:pr:create` passes `s.id`).
+description is at most 8,000 characters, and both are redacted. The PR's `by` is
+the session the form opened it from (`pipeline:pr:create` passes `s.id`). `addPr`
+answered any held request for its target; since review fixes 1 only the asker's own
+(below).
 
 **`write_patch_notes`.** At `prod-test` or `comms` only, at most 4,000 characters,
 refused when `holdsPrivateKey`, redacted, with the count in the reply. It replaces
@@ -2286,6 +2288,61 @@ shared), `wireTools.ts` (`onlyArgs` exported), and the tool list pins in
 `MB_E2E_APP=1 npx vitest run test/wiresApp.e2e.test.ts`. In a worktree with no
 `node_modules`, `leakGuard.test.ts` can't find `node_modules/vitest/vitest.mjs`
 under the worktree. It passes once that resolves (a link to the main checkout's).
+
+#### W14 review fixes 1 as built
+
+- **An agent's move back keeps the user's ticks (H1).** It's still allowed from any
+  stage but Done, since the Verifier sends bugs back from staging/prod.
+  - What it clears: `clearAgentTicks` (shared, beside `clearGateTicks`) unticks only
+    ticks an agent made. It keeps the user's, every person item's, and any from
+    before authors were kept. It drops agents' gate notes.
+  - History names each tick it cleared and whose it was: `Agents' ticks cleared:
+    "Tests pass" (ticked by Coder's agent). The user's ticks stay (1).`
+  - From `approved`, `pr-main`, `prod-test` or `comms` (`PAST_APPROVAL`), the move
+    undoes the user's approval. `onApprovalUndone` tells them once by a
+    notification, under the notification settings, naming the agent and its note.
+    Clicking it shows the pane, and the agent's reply says so.
+  - The user's own move back clears every tick, as before.
+- **Approval's line reaches only the session doing the work (M1).**
+  - `addPr` answers a held request only when it's the PR's own session's
+    (`asked.from === pr.by`).
+  - Another session's request for that target is dropped by the move (M4), saying
+    so.
+  - `tell` needs the session still on the ticket (`ticketOfSession`). If it isn't,
+    the answer says `"Coder" is on #5101 now` (or on no ticket), and nobody is told.
+- **The user's edit makes a draft theirs (M2).** `editDraft` drops `by` and `from`,
+  so no agent's `write_patch_notes` replaces it.
+- **Feedback says whose (M3).** The panel's feedback line shows `3m ago · by
+  Verifier's agent`, and the rollup shows `Feedback (Wed, by Verifier's agent)`.
+- **A held request goes with the stage that took it (M4).** On every move, `move()`
+  drops each request `requestRefusal` refuses at the new stage. History says which,
+  from whom and why.
+- **Lows.**
+  - L1: `tell` is wrapped whole: the session lists and `takenOver` are inside the
+    try. A failure is logged and answered as `notTold`, so approval and dismissal
+    never half-finish. `pipelineDo` sends `pipeline:changed` in a `finally`, so a
+    call that fails after a change is still heard.
+  - L2: caps are checked after redaction too, which can lengthen a value. Text over
+    the cap is refused, saying how long it is once redacted. It's never cut.
+  - L3: `agentText` takes out U+061C, U+200B–200F, U+202A–202E, U+2060–2069 and
+    U+FEFF before anything else. That covers titles, descriptions, patch notes,
+    gate notes and `set_stage`'s note.
+  - L4: an untick in the window is kept in `unticked` with the stage it was made
+    at. An agent's tick of that item is refused, saying so, until the stage
+    changes (any `move()` clears it) or the user ticks it. A note alone is still
+    kept.
+  - L5: `request_pr` and `write_patch_notes` refuse to replace another session's
+    request or agent draft across a team room's line, either way, and while rooms
+    are starting (`roomOf`, `roomsKnown`, as `WireService` takes them). Neither is
+    named. Agent drafts keep `from` (the session id) for this. A request is named
+    only on the caller's side of the line.
+  - L6: the stage's comment an agent's forward move drafts carries its `by`.
+  - L7: `PR_DESCRIPTION_MAX` stays 8,000 (the coordinator's call).
+- **Tests.** The review's ten probes are tests in `ticketTools.test.ts`: the H1
+  pair, and "review fixes 1". `rollup.test.ts` covers feedback attribution.
+  `pipeline.test.ts`' newer-build round trip now expects the remembered untick.
+  `uiLandscape*` ran alone, without CI. No UI test reads the panel's feedback
+  line: the stub records no agent feedback.
 
 ### W15 · PR requests, patch notes and your stages, in the window. Size M
 - Needs you gains `pr` (rank 0: "Coder asks to open the PR to dev · #4182") and

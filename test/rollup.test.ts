@@ -32,7 +32,7 @@ describe("weekly rollup", () => {
     expect(ticketOf("/x/worktrees/portal/5207-fix-login", sessions)).toEqual({ id: "5207", title: null });
     expect(ticketOf("/Users/me/Code/Mockingbird", sessions)).toBeNull();
   });
-  it("writes the week: totals, each ticket's time, stages and PRs, and work outside tickets", () => {
+  it("writes the week: totals, each ticket's time, stages, PRs and feedback (an agent's says whose), and work outside tickets", () => {
     const { start, end } = weekBounds(mon);
     const t = (day: number, h: number, m = 0) => new Date(2026, 8, 28 + day, h, m).getTime();
     const pipeline: TicketPipeline = {
@@ -41,7 +41,10 @@ describe("weekly rollup", () => {
       stage: "pr-dev",
       history: [{ at: t(0, 9), stage: "coding" }, { at: t(2, 16), stage: "pr-dev" }, { at: t(-10, 9), stage: "ba" }],
       prs: [{ target: "dev", provider: "ado", id: 88, url: "https://dev.azure.com/o/p/_git/r/pullrequest/88", repo: "p/r", branch: "5101-org", base: "dev", at: t(2, 16) }],
-      feedback: [],
+      feedback: [
+        { at: t(1, 10), text: "Keep the last org" },
+        { at: t(2, 11), text: "Orgs with no users vanish on dev", by: "Verifier's agent" },
+      ],
       drafts: [],
       checks: {},
     };
@@ -70,6 +73,8 @@ describe("weekly rollup", () => {
     expect(md).toContain("- Time: 7m (Mon 6m, Tue 1m)");
     expect(md).toContain("- Stages: Coding (Mon) → PR to dev (Wed)");
     expect(md).toContain("- Pull request: https://dev.azure.com/o/p/_git/r/pullrequest/88 (5101-org → dev)");
+    expect(md).toContain("- Feedback (Tue): Keep the last org");
+    expect(md).toContain("- Feedback (Wed, by Verifier's agent): Orgs with no users vanish on dev");
     expect(md).toContain('- Claude: "Add the org dropdown" — 7m');
     expect(md).toContain("### Mockingbird — 9m");
     expect(md).toContain("- Mon: session-digests/2026-09-28.md");

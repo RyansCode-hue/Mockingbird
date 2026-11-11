@@ -62,7 +62,8 @@ import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
-import { BY_YOU, isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
+import { BY_YOU, isWorkItemId, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
+import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
 import { claudeRunner, freeForResume } from "./claudeBackground";
@@ -1457,10 +1458,13 @@ handle("wires:resetRounds", (id) => delivery.resetRounds(id));
 // ---- ticket pipeline: each ticket's stage, PRs, feedback and drafted comments ----
 const pipeline = new PipelineStore(path.join(MB_DIR, "pipeline.json"));
 const pipelineChanged = () => toWindow("pipeline:changed", pipeline.all());
+// the windows hear of the record as it is after the call, whether it worked or not: a failure may come after a change
 const pipelineDo = async <T,>(fn: () => T | Promise<T>): Promise<T> => {
-  const r = await fn();
-  pipelineChanged();
-  return r;
+  try {
+    return await fn();
+  } finally {
+    pipelineChanged();
+  }
 };
 // the agents' set_stage, request_pr and write_patch_notes (routed by messaging), and the window's answers to them
 const ticketTools = new TicketTools({
@@ -1468,6 +1472,15 @@ const ticketTools = new TicketTools({
   sessions,
   submitOnDelivery: submitsAgentMessages,
   takenOver: (id, doing) => takeover?.takenOverRefusal(id, doing) ?? null,
+  roomOf: (id) => livePanes.roomOfSession(id),
+  roomsKnown: () => roomsKnown,
+  // an agent undid stage 6's approval: one notice, under the notification settings, whose click shows the pane
+  onApprovalUndone: ({ ticket, title, session, by, from, note }) => {
+    if (!shouldNotify({ settings: store.settings, session, kind: "other", now: new Date() })) return;
+    const n = new Notification({ title: `#${ticket}${title ? ` ${plainLine(title, 80)}` : ""} is back at Coding`, body: `${by} sent it back from ${stageLabel(from)}: ${plainLine(note, 200)}` });
+    n.on("click", () => focusPane(session.id));
+    n.show();
+  },
   onChanged: pipelineChanged,
   log: logError,
 });

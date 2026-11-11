@@ -6,7 +6,9 @@ import {
   type StoredStage,
   type TicketPipeline,
   type TicketStage,
+  BY_YOU,
   TICKET_STAGES,
+  clearAgentTicks,
   clearGateTicks,
   clearsGates,
   isTicketStage,
@@ -90,6 +92,9 @@ export function stageRefusal(from: StoredStage, to: unknown, note?: string): str
   return null;
 }
 
+/** The stages past the user's approval of stage 6: an agent's move back from one undoes it, and the user is told. */
+export const PAST_APPROVAL: readonly StoredStage[] = ["approved", "pr-main", "prod-test", "comms"];
+
 /** Why an agent can't ask for a pull request to `target` with its ticket at `stage`, or null: dev from Coding or Local testing, main only once approved. */
 export function requestRefusal(stage: StoredStage, target: unknown): string | null {
   if (target !== "dev" && target !== "main") return `target is "dev" or "main", not ${JSON.stringify(String(target).slice(0, 40))}.`;
@@ -110,6 +115,12 @@ export interface GateReport {
   done: boolean;
 }
 
+/** Why an agent's notes can't tick what they say, or null: the user unticked one of the items at this stage. */
+export function untickRefusal(p: TicketPipeline, notes: readonly GateReport[]): string | null {
+  const n = notes.find((x) => x.done && !p.checks[x.key] && p.unticked?.[x.key]);
+  return n ? `The user unticked ${n.key} at ${stageLabel(p.unticked![n.key].stage)}, so no agent ticks it again until the ticket's stage changes: leave done out, and say in its note what changed.` : null;
+}
+
 const LISTS = ["history", "prs", "feedback", "drafts"] as const;
 const isMap = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 
@@ -121,6 +132,7 @@ function shapeProblem(p: TicketPipeline): string | null {
   if (p.checkedBy != null && !isMap(p.checkedBy)) return "its checkedBy isn't a map";
   if (p.gateNotes != null && !isMap(p.gateNotes)) return "its gateNotes aren't a map";
   if (p.requests != null && !Array.isArray(p.requests)) return "its requests aren't a list";
+  if (p.unticked != null && !isMap(p.unticked)) return "its unticked isn't a map";
   return null;
 }
 
@@ -207,17 +219,20 @@ export class PipelineStore {
     return this.record(id);
   }
 
-  private draft(p: TicketPipeline, stage: TicketStage, text: string | null, by?: string): void {
+  private draft(p: TicketPipeline, stage: TicketStage, text: string | null, by?: string, from?: string): void {
     if (!text) return;
-    const d: CommentDraft = { id: crypto.randomUUID(), stage, text, at: Date.now(), ...(by ? { by } : {}) };
+    const d: CommentDraft = { id: crypto.randomUUID(), stage, text, at: Date.now(), ...(by ? { by } : {}), ...(from ? { from } : {}) };
     p.drafts.push(d);
   }
 
   /**
    * An agent's gate notes, each kept beside its item; one it says it did is ticked as its tick, unless it's ticked
-   * already (the user's tick stays theirs). Returns how many it ticked.
+   * already (the user's tick stays theirs). One the user unticked at this stage isn't ticked again. Returns how many it
+   * ticked.
    */
   private report(p: TicketPipeline, notes: readonly GateReport[], by: string): number {
+    const why = untickRefusal(p, notes);
+    if (why) throw new Error(why);
     const at = Date.now();
     let ticked = 0;
     for (const n of notes) {
@@ -233,16 +248,23 @@ export class PipelineStore {
 
   /**
    * Move a record to `stage`: its history entry and drafted comment, and, back
-   * at Coding, the gates' ticks cleared, which the entry's note says. `draft`:
-   * "plain" drafts the stage's comment without quoting `note`, "none" drafts nothing.
+   * at Coding, the gates' ticks cleared (by an agent, only agents'), which the
+   * entry's note says, as it does the held PR requests the new stage doesn't take.
+   * The user's unticks hold only at the stage they were made. `draft`: "plain"
+   * drafts the stage's comment without quoting `note`, "none" drafts nothing; an
+   * agent's move marks it with `by`.
    */
-  private move(p: TicketPipeline, stage: TicketStage, o: { note?: string; summary?: string; pr?: PipelinePr; by?: string; draft?: "plain" | "none" }): TicketPipeline {
+  private move(p: TicketPipeline, stage: TicketStage, o: { note?: string; summary?: string; pr?: PipelinePr; by?: string; draft?: "plain" | "none"; agent?: boolean }): TicketPipeline {
     const back = p.history.some((h) => (stageStep(h.stage) ?? 0) >= 2);
-    const cleared = clearsGates(p.stage, stage) ? clearGateTicks(p) : null;
-    const note = [o.note, cleared].filter(Boolean).join("\n\n");
+    const cleared = clearsGates(p.stage, stage) ? (o.agent ? clearAgentTicks(p) : clearGateTicks(p)) : null;
+    if (p.stage !== stage) delete p.unticked;
     p.stage = stage;
+    const stale = (p.requests ?? []).filter((r) => requestRefusal(stage, r.target));
+    if (stale.length) p.requests = p.requests!.filter((r) => !stale.includes(r));
+    const dropped = stale.map((r) => `Dropped the held request for a pull request to ${r.target} from ${r.fromTitle}: ${requestRefusal(stage, r.target)}`);
+    const note = [o.note, cleared, ...dropped].filter(Boolean).join("\n\n");
     p.history.push({ at: Date.now(), stage, ...(note ? { note } : {}), ...(o.by ? { by: o.by } : {}) });
-    if (o.draft !== "none") this.draft(p, stage, stageComment(stage, { ...o, ...(o.draft === "plain" ? { note: undefined } : {}), back }));
+    if (o.draft !== "none") this.draft(p, stage, stageComment(stage, { ...o, ...(o.draft === "plain" ? { note: undefined } : {}), back }), o.agent ? o.by : undefined);
     return p;
   }
 
@@ -271,29 +293,30 @@ export class PipelineStore {
   }
 
   /**
-   * A pull request was opened: record it and move to its stage. An agent's request for it is answered, so it goes, and
-   * the PR is that agent's (`by`), whichever session it was opened from.
+   * A pull request was opened: record it and move to its stage. The request it answers, one from the session it was
+   * opened from (`pr.by`), goes; another session's is dropped by the move, saying so, as the stage no longer takes it.
    */
   addPr(id: string, pr: PipelinePr, title?: string, by?: string): TicketPipeline {
     return this.change(id, () => {
       const p = this.record(id, title);
-      const asked = p.requests?.find((r) => r.target === pr.target);
-      if (p.requests) p.requests = p.requests.filter((r) => r.target !== pr.target);
-      p.prs.push(asked ? { ...pr, by: asked.from } : pr);
+      if (p.requests && pr.by) p.requests = p.requests.filter((r) => !(r.target === pr.target && r.from === pr.by));
+      p.prs.push(pr);
       return this.move(p, pr.target === "dev" ? "pr-dev" : "pr-main", { pr, summary: pr.summary, by });
     });
   }
 
-  /** Tick or untick a gate item; a tick keeps who made it, an untick forgets it. */
+  /** Tick or untick a gate item; a tick keeps who made it, an untick forgets it, and the user's untick holds agents off it at this stage. */
   setCheck(id: string, key: string, value: boolean, by: string): TicketPipeline {
     return this.change(id, () => {
       const p = this.record(id);
       if (value) {
         p.checks[key] = true;
         (p.checkedBy ??= {})[key] = { by, at: Date.now() };
+        if (p.unticked) delete p.unticked[key];
       } else {
         delete p.checks[key];
         if (p.checkedBy) delete p.checkedBy[key];
+        if (by === BY_YOU) (p.unticked ??= {})[key] = { at: Date.now(), stage: p.stage };
       }
       return p;
     });
@@ -303,8 +326,9 @@ export class PipelineStore {
 
   /**
    * An agent's set_stage: the move with its `by`, and its gate notes. A move back to Coding keeps `note` as feedback
-   * with who wrote it and drafts no comment, since the agent's words would be quoted to the ticket; one forward drafts
-   * the stage's. `drafted`: whether it did; `ticked`: how many items its notes ticked.
+   * with who wrote it, drafts no comment, since the agent's words would be quoted to the ticket, and clears only agents'
+   * ticks; one forward drafts the stage's, marked with `by`. `drafted`: whether it did; `ticked`: how many items its
+   * notes ticked.
    */
   agentMove(id: string, stage: TicketStage, o: { note?: string; by: string; report: readonly GateReport[] }): { pipeline: TicketPipeline; drafted: boolean; ticked: number } {
     return this.change(id, () => {
@@ -312,11 +336,11 @@ export class PipelineStore {
       const why = stageRefusal(p.stage, stage, o.note);
       if (why) throw new Error(why);
       const back = goesBack(p.stage, stage);
-      if (back && o.report.length) throw new Error("A move back clears the gates' ticks, so it takes no gate notes");
+      if (back && o.report.length) throw new Error("A move back clears agents' ticks, so it takes no gate notes");
       if (back) p.feedback.push({ at: Date.now(), text: o.note!.trim(), by: o.by });
       const ticked = this.report(p, o.report, o.by);
       const drafts = p.drafts.length;
-      this.move(p, stage, { note: o.note?.trim() || undefined, by: o.by, draft: back ? "none" : "plain" });
+      this.move(p, stage, { note: o.note?.trim() || undefined, by: o.by, draft: back ? "none" : "plain", agent: true });
       return { pipeline: p, drafted: p.drafts.length > drafts, ticked };
     });
   }
@@ -352,8 +376,11 @@ export class PipelineStore {
     });
   }
 
-  /** An agent's write_patch_notes: the ticket's patch notes draft, marked as `by`'s, replacing every earlier agent's (`replaced` of them); the user's own stay. */
-  agentPatchNotes(id: string, text: string, by: string): { pipeline: TicketPipeline; replaced: number } {
+  /**
+   * An agent's write_patch_notes: the ticket's patch notes draft, marked as `by`'s and session `from`'s, replacing every
+   * earlier agent's (`replaced` of them); the user's own stay, as do the agent's drafts the user has edited.
+   */
+  agentPatchNotes(id: string, text: string, by: string, from: string): { pipeline: TicketPipeline; replaced: number } {
     return this.change(id, () => {
       const p = this.tracked(id);
       const why = patchNotesRefusal(p.stage);
@@ -361,7 +388,7 @@ export class PipelineStore {
       const before = p.drafts.length;
       p.drafts = p.drafts.filter((d) => !(d.stage === "comms" && d.by));
       const replaced = before - p.drafts.length;
-      this.draft(p, "comms", text.trim() || null, by);
+      this.draft(p, "comms", text.trim() || null, by, from);
       return { pipeline: p, replaced };
     });
   }
@@ -376,9 +403,13 @@ export class PipelineStore {
     });
   }
 
+  /** The user's edit of a draft: it's theirs from now on, whoever wrote it, so no agent's draft replaces it. */
   editDraft(id: string, draftId: string, text: string): TicketPipeline {
     return this.change(id, () => {
-      this.findDraft(id, draftId).text = text;
+      const d = this.findDraft(id, draftId);
+      d.text = text;
+      delete d.by;
+      delete d.from;
       return this.data[id];
     });
   }

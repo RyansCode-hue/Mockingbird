@@ -461,7 +461,11 @@ export function PipelinePanel(props: PipelineProps) {
           <div className="pl-h">Feedback</div>
           {p.feedback.map((f) => (
             <div key={f.at} className="pl-item">
-              <span className="pl-dim">{ago(f.at)}</span> {f.text}
+              <span className="pl-dim">
+                {ago(f.at)}
+                {f.by ? ` · by ${f.by}` : ""}
+              </span>{" "}
+              {f.text}
             </div>
           ))}
         </div>

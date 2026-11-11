@@ -148,7 +148,7 @@ export function composeRollup(i: RollupInput): string {
       const steps = p?.history.filter((h) => inWeek(h.at)) ?? [];
       if (steps.length) out.push(`- Stages: ${steps.map((h) => `${stageLabel(h.stage)} (${day(h.at)})`).join(" → ")}`);
       for (const { r } of prs.filter((x) => x.p.ticketId === id)) out.push(`- Pull request: ${r.url} (${r.branch} → ${r.base})`);
-      for (const f of p?.feedback.filter((f) => inWeek(f.at)) ?? []) out.push(`- Feedback (${day(f.at)}): ${f.text.replace(/\s+/g, " ").slice(0, 160)}`);
+      for (const f of p?.feedback.filter((f) => inWeek(f.at)) ?? []) out.push(`- Feedback (${day(f.at)}${f.by ? `, by ${f.by}` : ""}): ${f.text.replace(/\s+/g, " ").slice(0, 160)}`);
       for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentLabel(c.agent)}: "${c.title}" — ${hoursMinutes(c.ms)}`);
     }
   }
