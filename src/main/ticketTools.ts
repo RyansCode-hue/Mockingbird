@@ -13,7 +13,7 @@ import {
 import { REDACTED, redactSecrets } from "./wirePrompt";
 import { onlyArgs } from "./wireTools";
 import { oneLine, plainLine, quoted } from "../shared/team/agentText";
-import { BY_YOU, GATES, stageLabel, ticketOfSession, type AgentTold, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
+import { BY_YOU, GATES, personTicks, stageLabel, ticketOfSession, type AgentTold, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
 import { ROOMS_STARTING } from "../shared/wires";
 
 export interface TicketToolsOptions {
@@ -30,8 +30,8 @@ export interface TicketToolsOptions {
   /** The team room session `id` is in, or null; and whether rooms have started, before which no session looks to be in one. */
   roomOf(id: string): string | null;
   roomsKnown(): boolean;
-  /** An agent sent the ticket back to Coding from past the user's approval of stage 6: the user is told, once. */
-  onApprovalUndone?(e: ApprovalUndone): void;
+  /** An agent sent the ticket back to Coding from past the user's approval of stage 6: the user is told, once. Whether a notice showed. */
+  onApprovalUndone?(e: ApprovalUndone): boolean;
   /** An agent changed a ticket's record: the windows hear of it. */
   onChanged(): void;
   log: (context: string, err: unknown) => void;
@@ -45,6 +45,8 @@ export interface ApprovalUndone {
   by: string;
   from: StoredStage;
   note: string;
+  /** The person items still ticked (personTicks), which the rework may need done again. */
+  kept: string[];
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -185,17 +187,23 @@ export class TicketTools {
     const redacted = redactedLine((note?.count ?? 0) + r.count);
     if (back) {
       const undid = PAST_APPROVAL.includes(from);
+      let shown = false;
       if (undid) {
         try {
-          this.o.onApprovalUndone?.({ ticket: t.id, title: pipeline.title ?? null, session: me, by, from, note: note!.text });
+          shown = this.o.onApprovalUndone?.({ ticket: t.id, title: pipeline.title ?? null, session: me, by, from, note: note!.text, kept: personTicks(pipeline) }) ?? false;
         } catch (err) {
           this.o.log(`tickets: telling the user ${me.id} sent #${t.id} back from ${from}`, err);
         }
       }
+      const approval = !undid
+        ? ""
+        : shown
+          ? " That undoes the user's approval of stakeholder testing, so Mockingbird showed them a notice."
+          : " That undoes the user's approval of stakeholder testing, and Mockingbird showed them no notice (their notification settings, or it failed): say so in your reply.";
       return {
         result:
           `#${t.id} is back at Coding from ${stageLabel(from)}, with your note kept as its feedback, marked as yours. Agents' ticks on its checklists were cleared, as the work changes; the user's stay.` +
-          `${undid ? " That undoes the user's approval of stakeholder testing, so they've been told." : ""}${redacted}`,
+          `${approval}${redacted}`,
       };
     }
     const comment = drafted ? " Mockingbird drafted the stage's comment for the ticket; only the user posts it." : "";
@@ -279,6 +287,16 @@ export class TicketTools {
       `[Mockingbird: the user dismissed your request for a pull request to ${request.target} on #${id} (${quoted(request.title)}). ` +
       `Nothing was pushed or opened.${said ? " Their note follows." : ""}]${said ? `\n\n${said}` : ""}`;
     return { pipeline, told: this.tell(id, request.from, line, "") };
+  }
+
+  /**
+   * Held PR requests a change dropped (PipelineStore's onRequestsDropped): each asker is told why, as a dismissal tells
+   * it, if it's still on the ticket and running.
+   */
+  requestsDropped(id: string, dropped: { request: { target: PrTarget; from: string; title: string }; why: string }[]): AgentTold[] {
+    return dropped.map(({ request, why }) =>
+      this.tell(id, request.from, `[Mockingbird: your request for a pull request to ${request.target} on #${id} (${quoted(request.title)}) was dropped: ${why} Nothing was pushed or opened.]`, "")
+    );
   }
 
   /**

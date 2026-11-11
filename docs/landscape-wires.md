@@ -2297,11 +2297,12 @@ under the worktree. It passes once that resolves (a link to the main checkout's)
     ticks an agent made. It keeps the user's, every person item's, and any from
     before authors were kept. It drops agents' gate notes.
   - History names each tick it cleared and whose it was: `Agents' ticks cleared:
-    "Tests pass" (ticked by Coder's agent). The user's ticks stay (1).`
+    "Tests pass" (ticked by Coder's agent).` (1b names the person ticks kept.)
   - From `approved`, `pr-main`, `prod-test` or `comms` (`PAST_APPROVAL`), the move
     undoes the user's approval. `onApprovalUndone` tells them once by a
     notification, under the notification settings, naming the agent and its note.
-    Clicking it shows the pane, and the agent's reply says so.
+    Clicking it shows the pane, and the agent's reply says so (1b: only when it
+    showed).
   - The user's own move back clears every tick, as before.
 - **Approval's line reaches only the session doing the work (M1).**
   - `addPr` answers a held request only when it's the PR's own session's
@@ -2329,8 +2330,8 @@ under the worktree. It passes once that resolves (a link to the main checkout's)
     gate notes and `set_stage`'s note.
   - L4: an untick in the window is kept in `unticked` with the stage it was made
     at. An agent's tick of that item is refused, saying so, until the stage
-    changes (any `move()` clears it) or the user ticks it. A note alone is still
-    kept.
+    changes or the user ticks it (1b: until the user moves the ticket or ticks it).
+    A note alone is still kept.
   - L5: `request_pr` and `write_patch_notes` refuse to replace another session's
     request or agent draft across a team room's line, either way, and while rooms
     are starting (`roomOf`, `roomsKnown`, as `WireService` takes them). Neither is
@@ -2343,6 +2344,33 @@ under the worktree. It passes once that resolves (a link to the main checkout's)
   `pipeline.test.ts`' newer-build round trip now expects the remembered untick.
   `uiLandscape*` ran alone, without CI. No UI test reads the panel's feedback
   line: the stub records no agent feedback.
+
+#### W14 review fixes 1b as built
+
+- **An agent's move doesn't end the user's untick (N1).** `move()` clears `unticked`
+  only on a move that isn't an agent's: the window's, a PR opening. Otherwise it
+  clears when the user ticks the item. Without this, an agent could clear its own
+  refusal: the user unticks at Coding, the agent calls `set_stage local-test`, then
+  `request_pr` with `done: true`. That sequence is now refused and tested.
+- **A dropped request's asker is told (N2).** `PipelineStore.onRequestsDropped`
+  hears every request a change dropped, with why, once the change is saved. A
+  failed change tells nothing. Main wires it to `TicketTools.requestsDropped`,
+  which tells each asker as a dismissal does, through `tell`'s session and ticket
+  checks. Requests are dropped two ways:
+  - a move to a stage that doesn't take them, saying `requestRefusal`'s reason;
+  - another session's PR for the same target (`addPr`), saying "a pull request to
+    dev was opened from another workspace", without naming it.
+- **The reply claims a notice only when one showed (N3).**
+  - `onApprovalUndone` returns whether the notice was shown. When it wasn't
+    (notification settings, or a throw), the agent is told Mockingbird showed no
+    notice and to say so in its reply.
+  - The notice and the history line list the person items still ticked:
+    `Your ticks were kept: peer review, security doc reviewed, sign-off; untick
+    them if the rework needs a new review.` They vouch for code the rework will
+    change. `GATES`' person items carry those `short` names (`personTicks`,
+    `keptTicksLine`, shared).
+  - The history's count of the user's other kept ticks is gone. The cleared list
+    and this line say what changed.
 
 ### W15 · PR requests, patch notes and your stages, in the window. Size M
 - Needs you gains `pr` (rank 0: "Coder asks to open the PR to dev · #4182") and

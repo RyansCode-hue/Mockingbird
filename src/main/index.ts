@@ -62,7 +62,7 @@ import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
-import { BY_YOU, isWorkItemId, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
+import { BY_YOU, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
@@ -1475,15 +1475,19 @@ const ticketTools = new TicketTools({
   roomOf: (id) => livePanes.roomOfSession(id),
   roomsKnown: () => roomsKnown,
   // an agent undid stage 6's approval: one notice, under the notification settings, whose click shows the pane
-  onApprovalUndone: ({ ticket, title, session, by, from, note }) => {
-    if (!shouldNotify({ settings: store.settings, session, kind: "other", now: new Date() })) return;
-    const n = new Notification({ title: `#${ticket}${title ? ` ${plainLine(title, 80)}` : ""} is back at Coding`, body: `${by} sent it back from ${stageLabel(from)}: ${plainLine(note, 200)}` });
+  onApprovalUndone: ({ ticket, title, session, by, from, note, kept }) => {
+    if (!shouldNotify({ settings: store.settings, session, kind: "other", now: new Date() })) return false;
+    const body = [`${by} sent it back from ${stageLabel(from)}: ${plainLine(note, 200)}`, keptTicksLine(kept)].filter(Boolean).join("\n");
+    const n = new Notification({ title: `#${ticket}${title ? ` ${plainLine(title, 80)}` : ""} is back at Coding`, body });
     n.on("click", () => focusPane(session.id));
     n.show();
+    return true;
   },
   onChanged: pipelineChanged,
   log: logError,
 });
+// a held PR request a move or another session's PR dropped: its asker hears why, as a dismissal tells it
+pipeline.onRequestsDropped = (id, dropped) => void ticketTools.requestsDropped(id, dropped);
 const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
 
 handle("pipeline:all", () => pipeline.all());

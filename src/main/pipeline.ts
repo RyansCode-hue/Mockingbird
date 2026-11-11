@@ -115,10 +115,10 @@ export interface GateReport {
   done: boolean;
 }
 
-/** Why an agent's notes can't tick what they say, or null: the user unticked one of the items at this stage. */
+/** Why an agent's notes can't tick what they say, or null: the user unticked one of the items, and hasn't ticked it or moved the ticket since. */
 export function untickRefusal(p: TicketPipeline, notes: readonly GateReport[]): string | null {
   const n = notes.find((x) => x.done && !p.checks[x.key] && p.unticked?.[x.key]);
-  return n ? `The user unticked ${n.key} at ${stageLabel(p.unticked![n.key].stage)}, so no agent ticks it again until the ticket's stage changes: leave done out, and say in its note what changed.` : null;
+  return n ? `The user unticked ${n.key} at ${stageLabel(p.unticked![n.key].stage)}, so no agent ticks it again until the user ticks it or moves the ticket: leave done out, and say in its note what changed.` : null;
 }
 
 const LISTS = ["history", "prs", "feedback", "drafts"] as const;
@@ -180,15 +180,25 @@ export class PipelineStore {
   private change<T>(id: string, fn: () => T): T {
     const had = Object.prototype.hasOwnProperty.call(this.data, id);
     const before = had ? structuredClone(this.data[id]) : undefined;
+    let r: T;
     try {
-      const r = fn();
+      r = fn();
       this.save();
-      return r;
     } catch (err) {
+      this.droppedNow = [];
       if (had) this.data[id] = before!;
       else delete this.data[id];
       throw err;
     }
+    const dropped = this.droppedNow.splice(0);
+    if (dropped.length && this.onRequestsDropped) {
+      try {
+        this.onRequestsDropped(id, dropped.map(({ request, why }) => ({ request, why })));
+      } catch (err) {
+        console.error(`[mockingbird] pipeline.json: #${id}'s dropped PR requests couldn't be told to their askers:`, err);
+      }
+    }
+    return r;
   }
 
   all(): Record<string, TicketPipeline> {
@@ -213,6 +223,19 @@ export class PipelineStore {
     return fresh;
   }
 
+  /**
+   * Held PR requests a change dropped (a move to a stage that doesn't take them, another session's PR), each with why:
+   * their askers are told once the change is saved (ticketTools' requestsDropped). Set by main.
+   */
+  onRequestsDropped?: (id: string, dropped: { request: PipelineRequest; why: string }[]) => void;
+  private droppedNow: { id: string; request: PipelineRequest; why: string }[] = [];
+
+  /** Request `r` dropped from `p`, for its asker to hear once the change is saved: the line its history entry keeps. */
+  private dropped(p: TicketPipeline, r: PipelineRequest, why: string): string {
+    this.droppedNow.push({ id: p.ticketId, request: r, why });
+    return `Dropped the held request for a pull request to ${r.target} from ${r.fromTitle}: ${why}`;
+  }
+
   /** Ticket `id`'s record for an agent's change: refused when there's none, as an agent never starts one. */
   private tracked(id: string): TicketPipeline {
     if (!this.data[id]) throw new Error(`#${id} isn't tracked in the ticket pipeline`);
@@ -227,8 +250,8 @@ export class PipelineStore {
 
   /**
    * An agent's gate notes, each kept beside its item; one it says it did is ticked as its tick, unless it's ticked
-   * already (the user's tick stays theirs). One the user unticked at this stage isn't ticked again. Returns how many it
-   * ticked.
+   * already (the user's tick stays theirs). One the user unticked isn't ticked again (untickRefusal). Returns how many
+   * it ticked.
    */
   private report(p: TicketPipeline, notes: readonly GateReport[], by: string): number {
     const why = untickRefusal(p, notes);
@@ -250,18 +273,18 @@ export class PipelineStore {
    * Move a record to `stage`: its history entry and drafted comment, and, back
    * at Coding, the gates' ticks cleared (by an agent, only agents'), which the
    * entry's note says, as it does the held PR requests the new stage doesn't take.
-   * The user's unticks hold only at the stage they were made. `draft`: "plain"
+   * The user's own move ends their unticks; an agent's never does. `draft`: "plain"
    * drafts the stage's comment without quoting `note`, "none" drafts nothing; an
    * agent's move marks it with `by`.
    */
   private move(p: TicketPipeline, stage: TicketStage, o: { note?: string; summary?: string; pr?: PipelinePr; by?: string; draft?: "plain" | "none"; agent?: boolean }): TicketPipeline {
     const back = p.history.some((h) => (stageStep(h.stage) ?? 0) >= 2);
     const cleared = clearsGates(p.stage, stage) ? (o.agent ? clearAgentTicks(p) : clearGateTicks(p)) : null;
-    if (p.stage !== stage) delete p.unticked;
+    if (!o.agent) delete p.unticked;
     p.stage = stage;
     const stale = (p.requests ?? []).filter((r) => requestRefusal(stage, r.target));
     if (stale.length) p.requests = p.requests!.filter((r) => !stale.includes(r));
-    const dropped = stale.map((r) => `Dropped the held request for a pull request to ${r.target} from ${r.fromTitle}: ${requestRefusal(stage, r.target)}`);
+    const dropped = stale.map((r) => this.dropped(p, r, requestRefusal(stage, r.target)!));
     const note = [o.note, cleared, ...dropped].filter(Boolean).join("\n\n");
     p.history.push({ at: Date.now(), stage, ...(note ? { note } : {}), ...(o.by ? { by: o.by } : {}) });
     if (o.draft !== "none") this.draft(p, stage, stageComment(stage, { ...o, ...(o.draft === "plain" ? { note: undefined } : {}), back }), o.agent ? o.by : undefined);
@@ -294,14 +317,21 @@ export class PipelineStore {
 
   /**
    * A pull request was opened: record it and move to its stage. The request it answers, one from the session it was
-   * opened from (`pr.by`), goes; another session's is dropped by the move, saying so, as the stage no longer takes it.
+   * opened from (`pr.by`), goes; another session's for the same target is dropped, saying so, and its asker told.
    */
   addPr(id: string, pr: PipelinePr, title?: string, by?: string): TicketPipeline {
     return this.change(id, () => {
       const p = this.record(id, title);
-      if (p.requests && pr.by) p.requests = p.requests.filter((r) => !(r.target === pr.target && r.from === pr.by));
+      const same = (p.requests ?? []).filter((r) => r.target === pr.target);
+      if (same.length) p.requests = p.requests!.filter((r) => r.target !== pr.target);
+      const others = same.filter((r) => r.from !== pr.by).map((r) => this.dropped(p, r, `a pull request to ${pr.target} was opened from another workspace.`));
       p.prs.push(pr);
-      return this.move(p, pr.target === "dev" ? "pr-dev" : "pr-main", { pr, summary: pr.summary, by });
+      this.move(p, pr.target === "dev" ? "pr-dev" : "pr-main", { pr, summary: pr.summary, by });
+      if (others.length) {
+        const h = p.history.at(-1)!;
+        h.note = [h.note, ...others].filter(Boolean).join("\n\n");
+      }
+      return p;
     });
   }
 

@@ -1142,7 +1142,7 @@ export interface TicketPipeline {
   checkedBy?: Record<string, GateTick>;
   /** Agents' reports against the checklists, keyed "<gate>:<item>" as `checks` (gate_notes). */
   gateNotes?: Record<string, GateNote>;
-  /** Items the user unticked at the stage it's at now, keyed as `checks`: no agent ticks them again until the stage changes. */
+  /** Items the user unticked, keyed as `checks`, and the stage then: no agent ticks them again until the user ticks them or moves the ticket. */
   unticked?: Record<string, { at: number; stage: StoredStage }>;
   /** Agents' pull request requests waiting for the user (request_pr): one per target. */
   requests?: PipelineRequest[];
@@ -1155,7 +1155,7 @@ export const tickOf = (p: TicketPipeline, key: string): GateTick | null => (p.ch
  * The promotion gates (local → dev/UAT → staging → production) and what each
  * should have before a ticket moves on, plus the clean-code review.
  */
-export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketStage; items: { key: string; label: string; person?: true }[] }[] = [
+export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketStage; items: { key: string; label: string; person?: true; short?: string }[] }[] = [
   {
     id: "dev",
     title: "Before the PR to dev/UAT",
@@ -1174,8 +1174,8 @@ export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketS
     title: "Before the PR to main",
     at: "approved",
     items: [
-      { key: "peer-review", label: "Peer review completed", person: true },
-      { key: "security-reviewed", label: "Security considerations doc reviewed, not just drafted", person: true },
+      { key: "peer-review", label: "Peer review completed", person: true, short: "peer review" },
+      { key: "security-reviewed", label: "Security considerations doc reviewed, not just drafted", person: true, short: "security doc reviewed" },
       { key: "endpoints", label: "New endpoints verified for the right auth state" },
       { key: "secrets", label: "No hardcoded secrets, credentials or environment-specific values" },
     ],
@@ -1186,7 +1186,7 @@ export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketS
     at: "prod-test",
     items: [
       { key: "inventory", label: "Endpoint inventory updated for new routes" },
-      { key: "sign-off", label: "Approver sign-off obtained", person: true },
+      { key: "sign-off", label: "Approver sign-off obtained", person: true, short: "sign-off" },
       { key: "rollback", label: "Rollback plan noted, if the change is high risk" },
     ],
   },
@@ -1221,10 +1221,19 @@ export function clearGateTicks(p: TicketPipeline): string | null {
   return counts.length ? `Gate ticks cleared: ${counts.map((c) => `${c.title} (${c.ticked})`).join(", ")}` : null;
 }
 
+/** The person items ticked on `p`, by their short names: they vouch for code a rework will change. */
+export const personTicks = (p: TicketPipeline): string[] =>
+  GATES.flatMap((g) => g.items.filter((i) => i.person && p.checks?.[`${g.id}:${i.key}`]).map((i) => i.short ?? i.label));
+
+/** What the user is asked about the person ticks an agent's move back kept, or null when none is ticked. */
+export const keptTicksLine = (kept: readonly string[]): string | null =>
+  kept.length ? `Your ticks were kept: ${kept.join(", ")}; untick them if the rework needs a new review.` : null;
+
 /**
  * An agent's move back to Coding: only agents' ticks go, and agents' notes on every item, as evidence about work that's
  * changing. The user's ticks stay, as do a person's items' and those from before authors were kept, which no agent
- * made. Returns the line its history entry keeps, naming each tick cleared and whose it was, or null when none was.
+ * made. Returns the line its history entry keeps, naming each tick cleared and whose it was and the person ticks kept,
+ * or null when there's neither.
  */
 export function clearAgentTicks(p: TicketPipeline): string | null {
   const cleared: string[] = [];
@@ -1239,9 +1248,7 @@ export function clearAgentTicks(p: TicketPipeline): string | null {
     }
   }
   for (const k of Object.keys(p.gateNotes ?? {})) if (GATES.some((g) => k.startsWith(`${g.id}:`))) delete p.gateNotes![k];
-  const kept = gateTicks(p);
-  if (!cleared.length) return null;
-  return `Agents' ticks cleared: ${cleared.join(", ")}.${kept ? ` The user's ticks stay (${kept}).` : ""}`;
+  return [cleared.length ? `Agents' ticks cleared: ${cleared.join(", ")}.` : null, keptTicksLine(personTicks(p))].filter(Boolean).join(" ") || null;
 }
 
 /** What creating a pull request needs to know about a session's worktree. */

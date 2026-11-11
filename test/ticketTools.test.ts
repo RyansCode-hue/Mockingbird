@@ -88,7 +88,8 @@ function setup() {
   const logged: string[] = [];
   const counts = { changed: 0 };
   const rooms: Record<string, string> = {};
-  const flags = { roomsKnown: true };
+  /** roomsKnown: whether team rooms have started; notify: whether the user's settings show the approval notice. */
+  const flags = { roomsKnown: true, notify: true };
   const undone: ApprovalUndone[] = [];
   const tools = new TicketTools({
     pipeline,
@@ -107,10 +108,11 @@ function setup() {
     },
     roomOf: (id) => rooms[id] ?? null,
     roomsKnown: () => flags.roomsKnown,
-    onApprovalUndone: (e) => void undone.push(e),
+    onApprovalUndone: (e) => (undone.push(e), flags.notify),
     onChanged: () => void counts.changed++,
     log: (context, err) => void logged.push(`${context}: ${err instanceof Error ? err.message : String(err)}`),
   });
+  pipeline.onRequestsDropped = (id, dropped) => void tools.requestsDropped(id, dropped);
   const as = (id: string) => running.find((s) => s.id === id)!;
   const call = async (id: string, op: string, args: Record<string, unknown>): Promise<{ result?: string; error?: string }> => (await tools.call(as(id), op, args)) as { result?: string; error?: string };
   const at = (stage: TicketStage, id = "4182") => pipeline.setStage(id, stage, { by: BY_YOU });
@@ -218,7 +220,8 @@ describe("set_stage", () => {
     expect(p.history.at(-1)).toMatchObject({
       stage: "coding",
       by: "Verifier's agent",
-      note: 'Orgs with no users vanish from the filter on dev.\n\nAgents\' ticks cleared: "Tests pass" (ticked by Coder\'s agent). The user\'s ticks stay (1).',
+      note: 'Orgs with no users vanish from the filter on dev.\n\nAgents\' ticks cleared: "Tests pass" (ticked by Coder\'s agent).',
+
     });
     // before the user's approval: nobody is notified
     expect(t.undone).toEqual([]);
@@ -237,20 +240,28 @@ describe("set_stage", () => {
       t.pipeline.setCheck("4182", "staging:secrets", true, "Verifier's agent");
       const before = t.undone.length;
       const r = await t.call("verifier", TICKET_TOOL.setStage, { stage: "coding", note: "The deployed build drops orgs" });
-      expect(r.result, stage).toMatch(/That undoes the user's approval of stakeholder testing, so they've been told\.$/);
+      expect(r.result, stage).toMatch(/That undoes the user's approval of stakeholder testing, so Mockingbird showed them a notice\.$/);
       const p = t.record();
       expect(Object.keys(p.checks).sort(), stage).toEqual(["dev:smoke", "prod:sign-off", "staging:peer-review", "staging:security-reviewed"]);
       expect(p.history.at(-1)!.note, stage).toBe(
-        'The deployed build drops orgs\n\nAgents\' ticks cleared: "Tests pass" (ticked by Coder\'s agent), "No hardcoded secrets, credentials or environment-specific values" (ticked by Verifier\'s agent). The user\'s ticks stay (4).'
+        'The deployed build drops orgs\n\nAgents\' ticks cleared: "Tests pass" (ticked by Coder\'s agent), "No hardcoded secrets, credentials or environment-specific values" (ticked by Verifier\'s agent). Your ticks were kept: peer review, security doc reviewed, sign-off; untick them if the rework needs a new review.'
       );
-      expect(t.undone.slice(before), stage).toEqual([{ ticket: "4182", title: "Org filter", session: t.as("verifier"), by: "Verifier's agent", from: stage, note: "The deployed build drops orgs" }]);
+      expect(t.undone.slice(before), stage).toEqual([
+        { ticket: "4182", title: "Org filter", session: t.as("verifier"), by: "Verifier's agent", from: stage, note: "The deployed build drops orgs", kept: ["peer review", "security doc reviewed", "sign-off"] },
+      ]);
     }
+    // a notice the user's settings didn't show isn't claimed
+    t.flags.notify = false;
+    t.at("approved");
+    expect((await t.call("verifier", TICKET_TOOL.setStage, { stage: "coding", note: "Again" })).result).toMatch(
+      /That undoes the user's approval of stakeholder testing, and Mockingbird showed them no notice \(their notification settings, or it failed\): say so in your reply\.$/
+    );
     // the user's own move back clears every tick, as before
     t.at("approved");
     t.pipeline.setCheck("4182", "staging:peer-review", true, BY_YOU);
     t.pipeline.addFeedback("4182", "Stakeholders want it reworked", BY_YOU);
     expect(gateTicks(t.record())).toBe(0);
-    expect(t.undone).toHaveLength(4);
+    expect(t.undone).toHaveLength(5);
   });
 
   it("refuses, writing nothing: each of section 4's rules, and a call that names anything but its arguments", async () => {
@@ -419,8 +430,12 @@ describe("request_pr", () => {
     expect(p.requests).toEqual([]);
     expect(p.history.at(-1)).toMatchObject({
       stage: "pr-dev",
-      note: "Dropped the held request for a pull request to dev from Coder: A pull request to dev is asked for from Coding or Local testing; it's at PR to dev.",
+      note: "Dropped the held request for a pull request to dev from Coder: a pull request to dev was opened from another workspace.",
     });
+    // its asker hears why, as a dismissal tells it
+    expect(t.told).toEqual([
+      { id: "coder", submit: true, text: '[Mockingbird: your request for a pull request to dev on #4182 ("t") was dropped: a pull request to dev was opened from another workspace. Nothing was pushed or opened.]' },
+    ]);
     t.at("stakeholder");
     expect(t.tools.approve("4182").told).toEqual({ to: "busy", title: "Busy", told: "queued until its current turn ends" });
   });
@@ -721,24 +736,31 @@ describe("review fixes 1", () => {
     expect((await t.call("coder", TICKET_TOOL.writePatchNotes, { text: hidden })).error).toBe("text is empty.");
   });
 
-  it("an item the user unticked isn't ticked again by an agent until the stage changes; a note on it still is kept", async () => {
+  it("an item the user unticked isn't ticked again by an agent until the user ticks it or moves the ticket; a note on it still is kept", async () => {
     const t = setup();
     await t.call("coder", TICKET_TOOL.setStage, { stage: "local-test", gate_notes: [{ item: "dev:tests", note: "ran", done: true }] });
     t.pipeline.setCheck("4182", "dev:tests", false, BY_YOU);
     expect(t.record().unticked).toEqual({ "dev:tests": { at: expect.any(Number), stage: "local-test" } });
     const before = t.disk();
     const r = await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "t", description: "d", gate_notes: [{ item: "dev:tests", note: "ran again", done: true }] });
-    expect(r.error).toBe("The user unticked dev:tests at Local testing, so no agent ticks it again until the ticket's stage changes: leave done out, and say in its note what changed.");
+    expect(r.error).toBe("The user unticked dev:tests at Local testing, so no agent ticks it again until the user ticks it or moves the ticket: leave done out, and say in its note what changed.");
     expect(t.disk()).toBe(before);
     await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "t", description: "d", gate_notes: [{ item: "dev:tests", note: "Fixed the flaky one; ran again" }] });
     expect(t.record().gateNotes!["dev:tests"].note).toBe("Fixed the flaky one; ran again");
     expect(tickOf(t.record(), "dev:tests")).toBeNull();
-    // the user's own tick ends it; so does the stage changing
+    // the user's own tick ends it; so does the user's move
     t.pipeline.setCheck("4182", "dev:tests", true, BY_YOU);
     expect(t.record().unticked).toEqual({});
     t.pipeline.setCheck("4182", "dev:tests", false, BY_YOU);
     t.at("coding");
     expect(t.record().unticked).toBeUndefined();
+    // an agent's own move doesn't: unticked at Coding, then set_stage to Local testing, and the tick is still refused
+    t.pipeline.setCheck("4182", "dev:tests", true, BY_YOU);
+    t.pipeline.setCheck("4182", "dev:tests", false, BY_YOU);
+    expect((await t.call("coder", TICKET_TOOL.setStage, { stage: "local-test" })).result).toMatch(/^#4182 moved from Coding to Local testing/);
+    expect(t.record().unticked).toEqual({ "dev:tests": { at: expect.any(Number), stage: "coding" } });
+    expect((await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "t", description: "d", gate_notes: [{ item: "dev:tests", note: "ran", done: true }] })).error).toMatch(/^The user unticked dev:tests at Coding/);
+    t.at("coding");
     await t.call("coder", TICKET_TOOL.setStage, { stage: "local-test", gate_notes: [{ item: "dev:tests", note: "ran", done: true }] });
     expect(tickOf(t.record(), "dev:tests")).toMatchObject({ by: "Coder's agent" });
   });
@@ -783,6 +805,20 @@ describe("review fixes 1", () => {
     expect(t.record().history.at(-1)!.note).toBe(
       "Rework\n\nDropped the held request for a pull request to main from Coder: A pull request to main is asked for once the user has approved stakeholder testing; it's at Coding."
     );
+    expect(t.told).toEqual([
+      {
+        id: "coder",
+        submit: true,
+        text: '[Mockingbird: your request for a pull request to main on #4182 ("To main") was dropped: A pull request to main is asked for once the user has approved stakeholder testing; it\'s at Coding. Nothing was pushed or opened.]',
+      },
+    ]);
+    // an asker that has moved to another ticket isn't told
+    t.at("approved");
+    await t.call("coder", TICKET_TOOL.requestPr, { target: "main", title: "To main", description: "d" });
+    t.running[0] = { ...t.as("coder"), ticketId: "5101" };
+    t.at("coding");
+    expect(t.told).toHaveLength(1);
+    t.running[0] = { ...t.as("coder"), ticketId: "4182" };
     // a move that keeps it takeable keeps it
     await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: "To dev", description: "d" });
     t.at("local-test");
