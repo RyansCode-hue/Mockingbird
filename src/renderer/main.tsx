@@ -2202,6 +2202,7 @@ function App() {
         <div className="ls-row">
         <BadgeContext.Provider value={badgeEnv}>
         <Landscape
+          rooms={teamRooms}
           layout={landscapeLayout}
           stored={landscapeState.landscape}
           selected={focused}

@@ -1875,6 +1875,166 @@ agent, which never ends a turn):
   16.7 ms p95.
 - Board: Inbox.dc.html (states, labels) at 100%, Zoomed.dc.html at 45% and 13%.
 
+#### W4a as built
+
+**The store.** `WireLayer.tsx`'s `wires` is a `createIpcStore` of `wires:get`, then
+`wires:changed` (a reply older than a change already in hand, by `wiresRev`, is
+dropped; `dropped` is left for the UI slices' Forget note). A read that fails is
+kept as `error`, logged, and said in a banner, so no wires drawn is never taken
+for none made. `useWires()` reads it; the landscape and `LandscapeBanners` each do.
+
+**What a wire shows** (`src/renderer/wiresModel.ts`, pure):
+- `anchorOf(layout, id)`: the tile whose `members` or `closed` holds the session
+  (so stacks and their closed tabs need nothing), else its ghost, else, for a
+  hidden one, its collapsed area's pill (`areaShown`). A stack's tab that isn't in
+  front, a ghost stack's too, is named (`tab`). Closed with no place, or unknown:
+  null, not drawn.
+- `wireViews(state, layout, rooms)`: every wire with both ends drawn, in
+  `wiresInOrder`, each with `gateOf`'s state. One whose ends are one thing (two
+  tabs of a stack, two workspaces in one collapsed area) has nowhere to run and
+  isn't drawn. None while the book is refused.
+- Gates are worked out in the window, from what's drawn (`gateContextOf`): running
+  ends are tiles' members, closed ones a stack's closed tabs and ghosts'. Its room
+  is its area's, from the team rooms main.tsx already has (`rooms={teamRooms}`), as
+  livePanes' `groupRoomOf` has it, since a closed session carries no room tag;
+  take-over and sandbox are from the session's tag. Main's context also knows the
+  file's write access and whether team rooms have started; the window doesn't, so
+  a wire blocked only for those draws as its state otherwise is, and main refuses
+  what's tried on it, saying why.
+- `lookOf`: Inbox.dc.html's states. idle (gray), ready (amber, the glow, the gate
+  dot and "Ready", "· round n of m" on a feedback wire, n the round it would
+  send), sending (dashed amber, "sending…"), sent (green; "in its prompt" when
+  placed), blocked (dashed red, hollow dot, the reason short: "needs approve",
+  "at the limit · 3 of 3", "may have arrived", "hooks not reporting", "closed",
+  "across a room's line", "outside its room's sandbox", "taken over", else its
+  first clause). A feedback wire not ready says "loop n of m" once it has counted
+  one (Main.dc.html). Context links are dashed teal and shared worktrees a thick
+  gray line, neither with an arrow.
+- `wireCurve(a, b, px)`: Main.dc.html's curves. To a box on the right, side to
+  side; above or below, top to bottom; to one on the left, a loop under both,
+  leaving A at two fifths of its width so it's apart from a wire down from the
+  middle (Inbox.dc.html's Reviewer has both). Ends face each other where the boxes
+  overlap across the wire, else each side's middle. The arrow's end stops 2 screen
+  px short (`px` is a screen pixel in landscape px), and a loop drops at least
+  32. Overlapping boxes have none.
+
+**The layer** (`WireLayer`, memoized): one `<svg class="ls-wires">` in `.ls-world`,
+after the areas and before ghosts, workspaces, windows and cards, 1 × 1 with
+`overflow: visible`, and `.ls-wire-labels` beside it. React draws what each wire
+is (its `g`, the glow, line, dot, label and tab names); where it runs (`d`, the
+dot's centre, the labels' places) is written straight to the elements by `paint`:
+after a render, on a zoom change (a card's inset and a pill's size are screen px),
+and through `follow()`. Nothing in it takes a pointer or the keyboard (both are
+`pointer-events: none`, `aria-hidden`, nothing focusable), so S8a's arming is
+untouched.
+
+**Following a drag.** `gestureMove` calls `follow()` after it sets a workspace's
+`translate` (a tile dragged, or an area's tiles); the module's `release` became
+`releaseEls`, and the component's `release` lets go and calls `follow()`, so
+every drop, refusal, Esc and settled drop redraws. `paint` reads the offsets from
+`.ls-node[data-ws]` with a `translate` in its style, not from `.dragging`: a
+render of the workspace while it's dragged (its selection on the press) sets its
+class names again, so `dragging` is gone mid-drag (seen in the drag audit; the
+lift it gives a dragged workspace goes with it, which is S6a's and left alone).
+Ghosts don't move with a dragged area (as before), and their wires stay with
+them. A dragged area (`z-index: 6`) would cover the wires inside it, so `paint`
+lifts both layers to 6 while an area has a `translate` and lets them down when
+it's released. A `:has(> .ls-area.dragging)` rule did this first, and slowed the
+band change's restyle enough that `uiLandscapeZoom`'s 60% had 4 of 7 terminals
+drawing with WebGL after 700 ms (7 of 7 without it, and on main).
+
+**Screen size.** Chrome doesn't hold `vector-effect: non-scaling-stroke` through
+the world's CSS scale: checked in headless Chrome, a 2 px non-scaling stroke under
+`scale(.25)` drew 0.5 px, as a plain one does. So, as every outline in the world,
+strokes, dashes and the dot's radius are `calc(N * var(--ls-inv))` (CSS `r`), and
+arrowheads, scaled by their stroke, follow; `vector-effect` isn't used. Labels are
+`scale(var(--ls-inv))` from the point they're placed at. `paintScale` sets
+`--ls-inv` on both layers.
+
+**Zoomed out** (Zoomed.dc.html, 45%): below the live band, lines alone: no labels,
+dot or glow, and ready is a 2 px amber line.
+
+**Labels over the workspaces.** The lines are under the workspaces as asked; the
+labels are over them (`z-index: 5`, under a dragged workspace's 6): at 100% the
+gap between two workspaces is 16 px (GAP), narrower than a label, so under them a
+label would be cut by its own wire's ends. Inbox.dc.html's 50 px gaps are a
+board's.
+
+**Banners.** `LandscapeBanners` gains a "Wires" row for each of `wireBanners`: the
+book refused (newer, not one, a stand-in, read-only), each entry, note or field
+kept, a file with no book or gone aside, and the read failing.
+
+**Preview** (`src/preview/wiresAudit.ts`, `stub.ts`):
+- `?lsWires`: the wires board as its own area, 5120, under 5101: Shape donor
+  export, Builder (Codex), Reviewer, Dev server (terminal), Tester, a stack
+  (Fixtures, Docs) and a ghost (Spike: streaming), placed as Inbox.dc.html half
+  as big again, with a wire in each state: sent, sending, a feedback loop ready at
+  round 2 of 3, a handoff blocked till approve, a shared worktree, a context link
+  to the stack's back tab, a handoff to the ghost, and a context link from
+  Reviewer to 5102's Pathways (its pill with `?lsCollapsed=5102`). Without it the
+  book is empty, as `uiWiresStub` needs.
+- `?landscapeMany=<n>&lsWires=<k>`: k wires between those workspaces' agents,
+  cycling through the states.
+- `?landscapeWiresAudit=near|far|drag|area|pill`, for `test/uiLandscapeWires.test.ts`.
+- No new `window.mb` call: the store uses `wiresGet` and `onWiresChanged`, which
+  the stub has.
+
+**Tests:**
+- `test/wiresModel.test.ts`: ends (a tile, a ghost, closed with no place, a
+  stack's front and back tabs and a closed tab, a collapsed area's pill and its
+  size on screen), every state and label, a stacked tab named, a wire with an
+  end off the landscape or both in one stack or one pill not drawn, a room from
+  the area for a ghost (and blocked across the line without it), the banners,
+  each curve, overlapping boxes, a drag's offset and a card's inset.
+- `test/uiLandscapeWires.test.ts` (Chrome, local): at 100% each state, label,
+  tab name, width and dash on screen, each end on its box, the layer between the
+  areas and the workspaces, no pointer; at 13% lines alone at screen size, ends at
+  the cards as drawn; a drag of Builder, its wires on it while it moves (before any
+  render) and once let go, a pinch, and the calls meanwhile: `landscapeUpdate`, no
+  `sessionResize`; 5120 dragged at cards, the layers lifted and let down; the
+  pill; and `?landscapePerf` with 20 wires, every frame interval p95 at most
+  16.8 ms.
+
+**Performance** (`?landscapeMany=30&landscapePerf`, 1400 × 900, one run each):
+
+| | W4a, `&lsWires=20` | main (70c3c2d) |
+| --- | --- | --- |
+| pan, frame interval p95 at 100 / 60 / 30% | 16.8 / 16.8 / 16.8 ms | 16.8 / 16.7 / 16.8 ms |
+| pinch, frame interval p95 | 16.7 / 16.7 / 16.7 ms | 16.8 / 16.8 / 16.8 ms |
+| any frame interval, max | 16.8 ms | 16.8 ms |
+| pan, main thread p95 | 8.4 / 12.9 / 11.8 ms | 7.9 / 12.1 / 10.3 ms |
+| sweep 100% → 25% → 100%, interval p95 / main p95 | 16.8 / 10.7 ms | 16.8 / 11.4 ms |
+| DOM elements at 100% | 1432 | 1365 |
+
+The main thread per pan frame is within run-to-run noise (S6a's runs spread 6.4–11.8
+ms).
+
+**Boards** (screenshots in the session's scratchpad,
+`/private/tmp/claude-501/-Users-ryanellerbroek-Code-Mockingbird/5aa8eb2c-2175-488e-ab1b-5588bc1fbc8a/scratchpad/w4a/`;
+the boards beside them in `boards/project/`):
+- `w4a-100.png` (and `w4a-100-light.png`) beside Inbox.dc.html: `--size 1600x1000
+  --query "lsWires&lsCamera=0,3040,1"`. The states, strokes, dashes, dots and
+  labels match. Differences: the ready label is centred under its dot (the
+  board's sits a little left of it); the sending label is over the middle of its
+  wire (the board's over its start); the board's sent wire bends between centres
+  where ours runs straight across the boxes' shared rows.
+- `w4a-45.png` beside Zoomed.dc.html at 45%: `lsCamera=-200,2700,0.45`. Lines alone,
+  as drawn there.
+- `w4a-13.png` (`lsCamera=-1200,-600,0.13`) and `w4a-pill-13.png` (with
+  `lsCollapsed=5102`): at screen size against cards; a wire ending at a pill.
+
+**Deviations:**
+- No `vector-effect` (above). Labels over the workspaces (above).
+- Gates in the window lack main's file and team-rooms-starting facts (above).
+- A label's whole reason isn't shown anywhere yet: the label is short and the
+  layer takes no pointer. W4c's popover, opened by the dot, says it whole.
+- Ends go by places, inset at cards: a ghost squeezed above the next area's name
+  line zoomed out (`ghostDrawnHeight`) is shorter than its place, so a wire from
+  its foot starts a little below it; a pill's size is read when the wires are
+  drawn, not when its counts change.
+- The wires board has its own area (5120) rather than wires between the fixture's
+  own workspaces: those are full-size terminals 16 px apart, where a wire is a stub.
+
 ### W4b · Making wires. Size M
 - Edge handle (Cards.dc.html:84–87) above `.ls-rz` (`WorkspaceNode.tsx:242`),
   shown on hover or selection. A new gesture kind (`Landscape.tsx:183`). The type

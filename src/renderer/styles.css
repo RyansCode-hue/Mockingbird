@@ -3382,6 +3382,53 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   position: absolute; right: calc(8px * var(--ls-inv, 1)); bottom: calc(8px * var(--ls-inv, 1)); padding: calc(2px * var(--ls-inv, 1)) calc(7px * var(--ls-inv, 1));
   border-radius: calc(4px * var(--ls-inv, 1)); background: var(--bg-chrome); font: 500 calc(11px * var(--ls-inv, 1)) var(--mono); color: var(--text-1); white-space: nowrap;
 }
+/* W4a: wires (WireLayer.tsx), one SVG over the areas and under the workspaces, their states and labels as Inbox.dc.html
+   draws them. Chrome doesn't hold vector-effect: non-scaling-stroke through the world's CSS scale, so strokes, dashes
+   and the gate dot keep their screen size by --ls-inv, as outlines do; arrowheads scale with their stroke. Zoomed out
+   of the live band they're lines alone (Zoomed.dc.html): no labels, dot or glow. Labels are over the workspaces, as a
+   gap between two is narrower than one. A dragged area is lifted over them, so they're lifted with it (WireLayer) */
+:root { --wire-idle: #6b675f; --wire-tree: #5d5a53; }
+:root[data-theme="light"] { --wire-idle: #a39d91; --wire-tree: #c2bcb0; }
+.ls-wires, .ls-wire-labels { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.ls-wire-labels { width: 0; height: 0; z-index: 5; }
+.ls-wire path { fill: none; }
+.ls-wire .line { --sw: 1.5; stroke: var(--wire-idle); stroke-width: calc(var(--sw) * 1px * var(--ls-inv, 1)); }
+.ls-wire .glow { stroke: var(--amber); stroke-opacity: .18; stroke-width: calc(7px * var(--ls-inv, 1)); }
+.ls-wire.lk-ready .line { --sw: 2.2; stroke: var(--amber); }
+.ls-wire.lk-sending .line { --sw: 1.8; stroke: var(--amber); stroke-dasharray: calc(5px * var(--ls-inv, 1)) calc(4px * var(--ls-inv, 1)); }
+.ls-wire.lk-sent .line { stroke: var(--git-add); }
+.ls-wire.lk-blocked .line { --sw: 1.6; stroke: var(--red); stroke-dasharray: calc(4px * var(--ls-inv, 1)) calc(4px * var(--ls-inv, 1)); }
+.ls-wire.lk-context .line { --sw: 1.3; stroke: var(--teal); stroke-dasharray: calc(5px * var(--ls-inv, 1)) calc(4px * var(--ls-inv, 1)); }
+.ls-wire.lk-tree .line { --sw: 5; stroke: var(--wire-tree); stroke-linecap: round; }
+.ls-wire .dot { r: calc(7px * var(--ls-inv, 1)); fill: var(--amber); }
+.ls-wire .dot.blocked { r: calc(6px * var(--ls-inv, 1)); fill: var(--bg-app); stroke: var(--red); stroke-width: calc(1.5px * var(--ls-inv, 1)); }
+.ls-wm path { fill: none; stroke-width: 1.5; stroke-linecap: round; }
+.ls-wm.m-idle path { stroke: var(--wire-idle); }
+.ls-wm.m-amber path { stroke: var(--amber); }
+.ls-wm.m-green path { stroke: var(--git-add); }
+.ls-wm.m-red path { stroke: var(--red); }
+.ls-viewport:not(.ls-band-live) :is(.ls-wire .glow, .ls-wire .dot, .ls-wire-labels) { display: none; }
+.ls-viewport:not(.ls-band-live) .ls-wire.lk-ready .line { --sw: 2; }
+.ls-wire-label, .ls-wire-tab {
+  position: absolute; box-sizing: border-box; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transform-origin: 0 0; font: 400 11px/15px var(--ui);
+}
+.ls-wire-label[data-bend="h"] { transform: scale(var(--ls-inv, 1)) translate(-50%, calc(-100% - 10px)); }
+.ls-wire-label[data-bend="v"] { transform: scale(var(--ls-inv, 1)) translate(12px, -50%); }
+.ls-wire-label[data-bend="u"] { transform: scale(var(--ls-inv, 1)) translate(-50%, 12px); }
+.ls-wire-label.t-ready { padding: 2px 9px; border-radius: 10px; background: var(--amber); color: var(--on-amber); font-weight: 500; }
+.ls-wire-label.t-blocked {
+  padding: 1px 7px; border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); border-radius: 9px;
+  background: color-mix(in srgb, var(--red) 9%, var(--bg-app)); font-size: 10.5px; color: var(--red);
+}
+.ls-wire-label.t-plain, .ls-wire-tab { padding: 2px 8px; border: 1px solid var(--line-btn); border-radius: 10px; background: var(--bg-pane-header); color: var(--text-2); }
+.ls-wire-label.t-quiet { font-size: 10.5px; color: var(--amber-text); }
+/* a stacked tab that isn't in front, named at its end of the wire, outside the workspace */
+.ls-wire-tab { padding: 1px 7px; font-size: 10.5px; }
+.ls-wire-tab[data-side="left"] { transform: scale(var(--ls-inv, 1)) translate(calc(-100% - 8px), calc(-100% - 4px)); }
+.ls-wire-tab[data-side="right"] { transform: scale(var(--ls-inv, 1)) translate(8px, calc(-100% - 4px)); }
+.ls-wire-tab[data-side="top"] { transform: scale(var(--ls-inv, 1)) translate(8px, calc(-100% - 6px)); }
+.ls-wire-tab[data-side="bottom"] { transform: scale(var(--ls-inv, 1)) translate(8px, 6px); }
 /* a stack (design E): its card has the tabs it holds stacked behind it; a closed tab is faded, and opens its ghost's menu */
 /* its layers at least 3 and 6 px apart on screen however far it's zoomed out (--ls-inv, which paintScale keeps on stacks) */
 .ls-node.stack { --so: max(4px, calc(3px * var(--ls-inv, 1))); --so2: max(8px, calc(6px * var(--ls-inv, 1))); }

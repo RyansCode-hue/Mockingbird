@@ -511,7 +511,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
   windows, ghosts, Needs you and reading the grid's layout in are built, and
   the grid's code is gone. Wires between workspaces (handoff, context link,
   feedback loop, shared worktree, with gates and pipelines) are being built
-  next, in their own slices, and ship with the landscape in 1.7.0.
+  in their own slices: their book, delivery and drawing them on the landscape
+  are in; making them and the send popover are next. They ship with the
+  landscape in 1.7.0.
 - **Team rooms** ([design](docs/team-rooms.md)) — a group shared live with a
   teammate's Mockingbird. Built and tested end to end on one Mac; next is the
   first run between two laptops through the deployed Worker.

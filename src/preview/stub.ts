@@ -46,6 +46,7 @@ import { runFirstRunAudit } from "./firstRunAudit";
 // the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
 import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
+import { manyWiresBook, placeWireBoard, runWiresAudit, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
@@ -112,6 +113,13 @@ let previous: SessionInfo[] = [
 // ?lsManyClosed=<n>: n more closed sessions with no place, for a long Closed sessions list
 for (let i = 1; i <= Number(new URLSearchParams(location.search).get("lsManyClosed") ?? 0); i++) {
   previous.push(session(`c${i}`, { title: `Closed spike ${i}`, taskGroup: "5102", status: "dead", conversation: { agent: "claude", id: `conv-c${i}` }, createdAt: now - (60 + i) * 60 * min }));
+}
+// ?lsWires: the wires board's workspaces in their own area, 5120 (wiresAudit.ts); with ?landscapeMany, wires between those instead
+const lsWiresQ = new URLSearchParams(location.search).get("lsWires");
+const wireBoard = lsWiresQ !== null && !new URLSearchParams(location.search).has("landscapeMany") ? wireBoardSessions(session, WT) : null;
+if (wireBoard) {
+  sessions.push(...wireBoard.running);
+  previous.push(...wireBoard.closed);
 }
 /** The closed sessions whose folders are gone (main's sessions:missingFolders): g2's worktree and branch were removed. */
 const goneFolders = new Map([["g2", { reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" }]]);
@@ -1098,6 +1106,7 @@ const landscapeFixture = (): Landscape => {
   const a5101 = area("5101", 0, 0, ["s1", "s2", "s3", SAM_PANE, NICK_PANE, "s4", "s8", "g2"]);
   const a5102 = area("5102", a5101.w + AREA_GAP, 0, ["s5", "s6", "g1"]);
   area("5110", a5102.x, a5102.y + a5102.h + AREA_GAP, ["y1", remotePaneId(NICK, "n7")]);
+  if (wireBoard) placeWireBoard(l, a5101.x, a5101.y + a5101.h + AREA_GAP, REPO);
   // the assistant is ungrouped: loose, next to the first area, and p1's ghost beside it
   const placed = [...Object.values(l.areas), ...Object.values(l.workspaces)];
   l.workspaces.s7 = placeNew(M, placed, null, a5101);
@@ -8638,6 +8647,10 @@ import {
   type WireType,
 } from "../shared/wires";
 let wireBook: WireBook = emptyWireBook();
+if (wireBoard) wireBook = wireBoardBook(now);
+else if (lsWiresQ !== null && manyQ) wireBook = manyWiresBook(sessions, Number(lsWiresQ) || 20, now);
+// W4a: ?landscapeWiresAudit=near|far|drag|area|pill works the wires drawn (wiresAudit.ts) for test/uiLandscapeWires.test.ts
+if (params.has("landscapeWiresAudit")) runWiresAudit({ calls, waitFor }, params.get("landscapeWiresAudit") || "near");
 let wiresRev = 0;
 const removedWires = new Map<string, Wire>();
 const wireState = (): WireState => clone({ book: wireBook, refused: null, wiresRev, problems: [] });

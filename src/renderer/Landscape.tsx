@@ -111,6 +111,8 @@ import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
 import { typingAsksOf } from "./needsYouModel";
 import { cameraMoved } from "./answerGuard";
+import { WireLayer, useWires, type WireLayerHandle } from "./WireLayer";
+import { wireBanners, wireViews, type WireRoom } from "./wiresModel";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
 export const CAMERA_PREF = "mb.landscape.camera";
@@ -224,7 +226,7 @@ interface Settling {
   moved: () => boolean;
 }
 
-const release = (els: readonly HTMLElement[]) => {
+const releaseEls = (els: readonly HTMLElement[]) => {
   for (const el of els) {
     el.style.translate = "";
     el.classList.remove("dragging");
@@ -315,6 +317,7 @@ export function Landscape({
   onShortcuts,
   newAsk = 0,
   tour,
+  rooms,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -399,6 +402,8 @@ export function Landscape({
   newAsk?: number;
   /** The migration tour: due (shown once nothing else is open over the app, and not behind focus), and its end, however it came. */
   tour: { due: boolean; onEnd: () => void };
+  /** The team rooms and the areas they're shared as: a wire's ends' rooms, for what it shows (wiresModel). */
+  rooms?: readonly WireRoom[];
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -503,6 +508,12 @@ export function Landscape({
   const guidesEl = useRef<HTMLDivElement>(null);
   const sizeBox = useRef<HTMLDivElement>(null);
   const settling = useRef<Settling[]>([]);
+  const wiresRef = useRef<WireLayerHandle>(null);
+  /** Elements a drag moved, back where the layout has them; their wires with them. */
+  const release = (els: readonly HTMLElement[]) => {
+    releaseEls(els);
+    wiresRef.current?.follow();
+  };
   /** No drag going and no drop settling: the selection bar shows again (styles.css hides it under .ls-dragging). */
   const dragDone = () => {
     if (!gesture.current?.on && !settling.current.length) viewport.current?.classList.remove("ls-dragging");
@@ -591,7 +602,7 @@ export function Landscape({
   const paintScale = (zoom: number) => {
     const inv = String(1 / zoom);
     const hs = String(Math.max(1, 1 / zoom));
-    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-window, .ls-acard, .ls-ghost") ?? []) {
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-window, .ls-acard, .ls-ghost, .ls-wires, .ls-wire-labels") ?? []) {
       el.style.setProperty("--ls-inv", inv);
       el.style.setProperty("--ls-hs", hs);
     }
@@ -1563,12 +1574,16 @@ export function Landscape({
       if (g.kind === "tab") {
         const m = t.members.find((x) => x.id === g.sid);
         showBox(s.rect, m ? titleOf(m) : "");
-      } else for (const el of g.els) el.style.translate = `${s.rect.x - t.rect.x}px ${s.rect.y - t.rect.y}px`;
+      } else {
+        for (const el of g.els) el.style.translate = `${s.rect.x - t.rect.x}px ${s.rect.y - t.rect.y}px`;
+        wiresRef.current?.follow();
+      }
       const a = l.areas.find((x) => x.key === target);
       setHot(a && (target !== t.area || g.kind === "tab") && !a.rect.locked ? target : null);
       return;
     }
     for (const el of g.els) el.style.translate = `${dx / z}px ${dy / z}px`;
+    wiresRef.current?.follow();
   };
   /** What a workspace moved or resized snaps to: everything else drawn (workspaces, ghosts, windows, cards) but `except`. */
   const snapTargets = (except: string): Rect[] => {
@@ -2071,6 +2086,8 @@ export function Landscape({
   const areaViews = layout.areas.map((a) => ({ a, accent: accents.get(a.key) ?? accentOf(a.key), counts: areaCounts(layout.tiles, a.key, layout.ghosts), title: areaTitle(a.key), info: areaHooks.info(a.key) }));
   const loose = useMemo(() => (switcher ? looseStop(layout.tiles) : null), [switcher, layout]);
   const stops = useMemo(() => (loose ? [...layout.areas, loose] : layout.areas), [loose, layout]);
+  const wireBook = useWires().state;
+  const wireList = useMemo(() => wireViews(wireBook, layout, rooms), [wireBook, layout, rooms]);
 
   const tileActions = (t: Tile): ModelAction[] => actionsFor(t);
   /** The picked workspaces still drawn, in layout order. */
@@ -2297,6 +2314,7 @@ export function Landscape({
               onGrab={(e) => grabArea(a.key, e)}
             />
           ))}
+          <WireLayer ref={wiresRef} views={wireList} band={band} cam={cam} listeners={listeners.current} />
           {layout.ghosts.map((g) => (
             <GhostCard
               key={g.key}
@@ -2465,6 +2483,7 @@ export function Landscape({
 export function LandscapeBanners({ problems, error, onReload, migration, onKeep }: { problems: LandscapeProblem[]; error: string | null; onReload: () => void; migration: Migrating; onKeep: () => void }) {
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const step = migration.step;
+  const wires = useWires();
   type Action = { label: string; run: () => void };
   const rows: { key: string; tone: "bad" | "info"; title: string; text: string; actions?: Action[] }[] = [
     ...problems.map((p) => ({
@@ -2475,6 +2494,8 @@ export function LandscapeBanners({ problems, error, onReload, migration, onKeep 
       actions: p.kind === "unreadable" ? [{ label: "Read it again", run: onReload }] : undefined,
     })),
     ...(error ? [{ key: `error:${error}`, tone: "bad" as const, title: "Layout", text: error, actions: [{ label: "Read it again", run: onReload }] }] : []),
+    // the wire book: none of it usable (refused), or what of it couldn't be read; its read failing outright
+    ...wireBanners(wires).map((text) => ({ key: `wires:${text}`, tone: "bad" as const, title: "Wires", text })),
     ...(migration.remoteFailed
       ? [{
           key: `remote:${migration.remoteFailed}`,
