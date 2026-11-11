@@ -20,8 +20,7 @@ async function run(part: string, query = "", size = "1440x900", limitMs?: number
   const id = "mb-landscape-first-run-audit";
   const json: string | null = await pageResult({
     size,
-    // ?labsOff: the grid, the landscape left off in Labs
-    query: `${/(^|&)labsOff(&|$)/.test(query) ? "labs=none" : "labs=landscape"}${/motion=/.test(query) ? "" : "&motion=off"}&landscapeFirstRunAudit=${part}${query ? `&${query}` : ""}`,
+    query: `${/motion=/.test(query) ? "" : "motion=off&"}landscapeFirstRunAudit=${part}${query ? `&${query}` : ""}`,
     outDir: path.join(tempDir(`${id}-${part}`), "out"),
     read: `document.getElementById(${JSON.stringify(id)})?.textContent ?? null`,
     limitMs,
@@ -586,7 +585,6 @@ describe.skipIf(!local)("Tab with nothing typed in gone", () => {
   for (const [label, query] of [
     ["a fresh window on Dashboard", "case=tabWalk&how=fresh&tab=dashboard"],
     ["a fresh window on Settings", "case=tabWalk&how=fresh&tab=settings"],
-    ["a fresh window with the landscape off in Labs", "case=tabWalk&how=fresh&labsOff"],
     ["⌘K's Dashboard row", "case=tabWalk&how=palette"],
     ["the side bar's Reopen pressed with Enter", "case=tabWalk&how=reopen"],
   ] as const)
@@ -630,13 +628,6 @@ describe.skipIf(!local)("the holder", () => {
     });
     // straight after the palette's Enter: Shift+Tab ×5 and y held, nothing reached
     expect(a.after).toEqual({ reached: [], ...noneReached });
-  }, 120_000);
-
-  it("isn't there without the landscape: the grid's terminal gone as it's typed in leaves the keyboard on the page", async () => {
-    const a = await run("a", "case=escape&how=grid&labsOff");
-    expect(a.before).toBe(true);
-    expect(a.gone).toEqual({ keyboard: "body" });
-    expect(a.tabbed).toBe(true);
   }, 120_000);
 });
 

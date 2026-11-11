@@ -102,7 +102,10 @@ const selectWs = async (id: string) => {
 };
 const noteText = () => document.querySelector(".ls-note")?.textContent ?? null;
 const tabLabel = async (label: string) => {
-  [...document.querySelectorAll<HTMLElement>(".tab")].find((b) => b.textContent?.trim() === label)!.click();
+  const tabs = [...document.querySelectorAll<HTMLElement>(".topbar .tab[data-tab]")];
+  const b = tabs.find((t) => t.textContent?.trim() === label);
+  if (!b) throw new Error(`the top bar has no ${label} tab: ${JSON.stringify(tabs.map((t) => t.textContent?.trim()))}`);
+  b.click();
   await sleep(500);
 };
 const overlap = (a: Rect, b: Rect) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -282,7 +285,7 @@ async function notesPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
   await paletteRun(/^Reopen all \(\d+\) — the Closed sessions list/);
   await sleep(1000);
   out.offLandscape = document.querySelector(".statusbar .update-note:not(.bad)")?.textContent ?? null;
-  await tabLabel("Sessions");
+  await tabLabel("Landscape");
   // what team rooms can't publish, said in the tree's foot
   env.setLiveProblems(["Couldn't publish “Org dropdowns” to the room: the record is too large"]);
   await sleep(300);
@@ -366,7 +369,9 @@ async function reviewPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
 async function importPart(env: SwitchAuditEnv, out: Record<string, unknown>) {
   const keys = legacy();
   const ids = new Set(env.sessions().map((s) => s.id));
-  [...document.querySelectorAll<HTMLElement>(".topbar button")].find((b) => b.textContent?.startsWith("Import"))?.click();
+  // Import conversations, several at once: ⌘K's row (the New menu's Import… resumes one, in New session)
+  await palette();
+  await paletteRun(/^Import sessions$/);
   await new Promise<void>((ok) => env.waitFor(".import-dlg .pick-list .item:not(.blocked)", () => ok()));
   document.querySelector<HTMLElement>(".import-dlg .pick-list .item:not(.blocked)")?.click();
   await sleep(200);

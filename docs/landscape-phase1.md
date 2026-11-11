@@ -3656,6 +3656,37 @@ Design O, with Artifacts as a window, and N's workspace header.
     strip and the card's badge.
   - **The notification** says "allow it or not in Needs you, or on its
     workspace".
+- **As built, on S8a's arming.** S8b sits on S8a (`keyArm.ts`), whose rules
+  every keyboard move of S8b's follows:
+  - **Go there** arms the landscape through `armFocus`, a typing ask's
+    included: it lands at 100% (`answerOn`) with the landscape's keys
+    working. A reveal still moves no keyboard once the user has typed,
+    pressed or had a dialog open since it was asked (`revealStamp`).
+  - **The strip's buttons are the landscape's:** a press on Allow or Deny
+    takes no keyboard (S8a's button press), at any zoom now that they take
+    the mouse below 100%. A terminal being typed in keeps it and the armed
+    landscape stays armed, so what's typed next goes where it was going:
+    `uiTyping` presses Allow at 80% from each and types `?` after.
+  - **The tray's answers** move the keyboard to the tray only from the
+    user's own click, as Dismiss does. The tray is an overlay (`.mb-menu`),
+    so its going leaves the keyboard on the page, never on the holder.
+  - **A handoff's or brief's new session** is brought into view, and its
+    terminal takes the keyboard only if the input stamp hasn't moved while
+    main started it (`inputStamp`).
+  - **The tour's end** (`tourDone`) is saved through the store itself as a
+    flag (`{ flag: true }`), never through the saves a failed read-in
+    refuses.
+  - **The first run's tests** lost their grid cases (a fresh window with the
+    landscape off in Labs, the grid's terminal gone as it's typed in) and
+    their `?labs=` query, with the flag.
+  - **The audits use S8a's top bar:** its tab reads Landscape, and Import
+    conversations (several at once) is ⌘K's Import sessions; the New menu's
+    Import… resumes one in New session, the dialog the motion audit opens
+    and closes.
+  - **`teamLiveApp`'s restart** takes either way it can go: a copy that ran
+    again and stopped says "continued on Nick's laptop" on its row in the
+    room; one refused at once (the room caught up first) stays closed, and
+    its Closed sessions row says "Continued by Nick on their laptop".
 
 ## Risks
 

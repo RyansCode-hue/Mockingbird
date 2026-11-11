@@ -3195,7 +3195,10 @@ if (params.has("motionDialogs")) {
   waitFor(".ls-world .ls-node", async () => {
     await sleep(300);
     const out: Record<string, unknown> = {};
-    ([...document.querySelectorAll<HTMLElement>(".topbar button")].find((b) => b.textContent?.startsWith("Import")) ?? null)?.click();
+    // Import… in the top bar's New menu; the menu's own exit is finished before the dialog's is counted
+    document.querySelector<HTMLElement>(".topbar button.primary")?.click();
+    await settle();
+    [...document.querySelectorAll<HTMLElement>(".mb-ctx:not(.mb-ghost) button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === "Import…")?.click();
     await sleep(40);
     note();
     out.dialogOpen = document.querySelectorAll(".modal-back:not(.mb-ghost)").length;

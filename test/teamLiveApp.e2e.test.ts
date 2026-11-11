@@ -220,7 +220,8 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("the ask on Ryan's pane", async () => /Nick wants to type in “shared shell”/.test(await ryan.evaluate<string>(`document.querySelector(".typing-ask")?.textContent ?? ""`)), 30_000);
         expect(await buffer(ryan, sh.id)).not.toContain("refused-");
         // Ryan allows it from the prompt; Nick's typing then goes through
-        await ryan.evaluate(`[...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session").click()`);        await untilTrue("Nick told he can type", async () => (await live(nick)).remote.find((x) => x.id === paneId)?.room?.typing?.state === "allowed");
+        await ryan.evaluate(`[...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session").click()`);
+        await untilTrue("Nick told he can type", async () => (await live(nick)).remote.find((x) => x.id === paneId)?.room?.typing?.state === "allowed");
         await untilTrue("Ryan's pane says Nick can type", async () => /Nick can type/.test(await ryan.evaluate<string>(`document.querySelector(".chip.typist")?.textContent ?? ""`)));
         await typeAsNick("echo from-nick-$((6*7))");
         await untilTrue("Nick's typing in Ryan's shell", async () => (await buffer(ryan, sh.id)).includes("from-nick-42"));
@@ -450,8 +451,11 @@ describe("team rooms between two Mockingbird instances", () => {
         );
         expect(await ryan.evaluate(`window.mb.relaunchSession(${JSON.stringify(s.id)})`)).toMatchObject({ error: expect.stringMatching(/continues on Nick's laptop/) });
         await untilTrue("Nick's session at Ryan's", async () => (await live(ryan)).remote.some((x) => x.room?.sessionId === mine.id && x.room.owner === nickId));
+        // a copy that ran again and stopped is a row in the room; one refused at once stays closed, a row in Closed sessions
         await untilTrue("Ryan's row says so", async () =>
-          /continued on Nick's laptop/.test(await ryan.evaluate<string>(`${roomRows("Donor entities")}.map((x) => x.textContent).join("|")`))
+          relaunched.error
+            ? /Continued by Nick on their laptop/.test(await ryan.evaluate<string>(`document.querySelector('.lt-closed-row[data-closed-sid=${JSON.stringify(s.id)}] .lt-closed-sub')?.textContent ?? ""`))
+            : /continued on Nick's laptop/.test(await ryan.evaluate<string>(`${roomRows("Donor entities")}.map((x) => x.textContent).join("|")`))
         );
         expect((await takeovers(ryan)).left.map((l) => l.sessionId).sort()).toEqual([ex.id, s.id].sort());
         expect((await takeovers(ryan)).refused).toEqual([]);

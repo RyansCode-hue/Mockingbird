@@ -1,5 +1,5 @@
 /**
- * ?landscapeFirstRunAudit=k|t|e|b (with ?labs=landscape&motion=off): S8's first run, worked as a person would in the UI
+ * ?landscapeFirstRunAudit=k|t|e|b (with ?motion=off): S8's first run, worked as a person would in the UI
  * preview, into <script id="mb-landscape-first-run-audit"> for test/uiLandscapeFirstRun.test.ts. Keys, the wheel and the
  * mouse go through the test's Chrome driver (scripts/ui-preview.mjs), so they reach whatever really has the keyboard or
  * is under the pointer; a page with no driver reports `driver: false` and proves nothing.
@@ -1499,10 +1499,10 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
  *   or ⌘K's jump to s2 (palette); then y;
  * - join (&how=withdrawn|enter|esc, with ?joinRequest=later&lsCamera=0,0,1): Go there on Lee's request, then the
  *   request going from under its prompt, or Accept with Enter, or Esc;
- * - tabWalk (&how=fresh|palette|reopen): Tab from a fresh window (&tab=dashboard, &tab=settings, ?labsOff), after
+ * - tabWalk (&how=fresh|palette|reopen): Tab from a fresh window (&tab=dashboard, &tab=settings), after
  *   ⌘K's Dashboard row, after the side bar's Reopen went with Enter;
  * - escape (&how=tab|shift, with ?lsCamera=0,0,1): s1's terminal gone as it's typed in, then a pause, then Tab or
- *   Shift+Tab; (&how=grid, with ?labsOff) the grid's first terminal gone as it's typed in, then Tab.
+ *   Shift+Tab.
  */
 async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<void> {
   const which = params.get("case");
@@ -2084,24 +2084,6 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
       walked.push(keyboard());
     }
     out.walked = walked;
-  } else if (which === "escape" && params.get("how") === "grid") {
-    // the grid (?labsOff), no landscape to hold for: a terminal gone as it's typed in leaves the keyboard on the page
-    const term = qs(".term-holder").find((el) => el.getClientRects().length > 0);
-    if (!term) throw new Error("no terminal in the grid");
-    await clickOn(term);
-    await sleep(300);
-    out.before = keyboard() === "terminal";
-    const mark = env.calls.length;
-    await press("a");
-    await sleep(150);
-    const id = writesSince(mark)[0];
-    if (!id) throw new Error("the grid's terminal took no key");
-    env.setSession(id, null);
-    await sleep(300);
-    out.gone = { keyboard: keyboard() };
-    await press("Tab");
-    await sleep(150);
-    out.tabbed = !["body", "nowhere"].includes(keyboard());
   } else if (which === "escape") {
     // the keyboard on the holder (s1's terminal gone as it's typed in); a burst is swallowed, Tab with it
     out.before = await intoTerm("s1");

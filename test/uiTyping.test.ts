@@ -80,6 +80,58 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     expect(JSON.parse(await result("lsCamera=0,0,0.8&typingAsk", read, SIZE))).toEqual(["Nick can type · 12 min✕", "Nick can type · 15 min✕"]);
   }, 90_000);
 
+  // The strip's buttons are the landscape's (keyArm.ts): a press on one takes no keyboard. A terminal being typed in
+  // keeps it, and the landscape the user pressed keeps it armed, so what's typed next goes where it was going.
+  for (const from of ["terminal", "landscape"] as const)
+    it(`leaves the keyboard ${from === "terminal" ? "in another session's terminal being typed in" : "on the landscape, armed"} when Allow is pressed on the strip below 100%`, async () => {
+      const read = `(() => {
+        const t = (window.__t ??= { step: 0 });
+        const vp = document.querySelector(".ls-viewport");
+        const centre = (el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; };
+        const push = (k) => (window.__mbKeys ??= []).push(k);
+        const allow = () => [...document.querySelectorAll('.ls-world [data-front="s8"] .typing-ask button')].find((b) => b.textContent === "Allow for 15 min");
+        const writes = () => window.__mbCalls.filter((c) => c.fn === "sessionWrite").map((c) => c.args[0]);
+        const keyboard = () => { const a = document.activeElement; return a === vp ? "landscape" : a?.closest(".xterm") ? "terminal:" + (a.closest(".ls-node")?.dataset.front ?? "?") : (a?.tagName ?? null); };
+        // a press on the landscape between its workspaces
+        const bare = () => {
+          const r = vp.getBoundingClientRect();
+          for (let y = r.top + 80; y < r.bottom - 80; y += 40)
+            for (let x = r.left + 40; x < r.right - 300; x += 40) {
+              const el = document.elementFromPoint(x, y);
+              if (el && vp.contains(el) && !el.closest(".ls-node, .ls-area, .ls-window, .ls-acard, .ls-hud, .ls-banners, .ls-minimap, .ls-selbar, .ls-switcher, .ls-note, .ls-ghost, button")) return { x, y };
+            }
+          return null;
+        };
+        if (t.step === 0) {
+          if (!allow() || !vp?.classList.contains("ls-mouse-off")) return null;
+          if (${from === "terminal"}) window.__mbEmit("onUiCommand", "focus-session", "s1");
+          else push({ mouse: { ...bare(), clickCount: 1 } });
+          t.step = 1;
+          return null;
+        }
+        if (t.step === 1) {
+          t.before = keyboard();
+          push({ mouse: { ...centre(allow()), clickCount: 1 } });
+          t.step = 2;
+          return null;
+        }
+        if (t.step === 2) {
+          if (document.querySelector(".typing-ask")) return null;
+          t.after = keyboard();
+          t.mark = writes().length;
+          push({ key: "?" });
+          t.step = 3;
+          t.at = Date.now();
+          return null;
+        }
+        if (Date.now() - t.at < 600) return null;
+        return JSON.stringify({ before: t.before, after: t.after, pct: document.querySelector(".ls-hud-btn.pct")?.textContent, sheet: !!document.querySelector(".ls-keys"), wrote: writes().slice(t.mark), answered: window.__mbCalls.filter((c) => c.fn === "teamDecideTyping").map((c) => c.args[2]) });
+      })()`;
+      const r = JSON.parse(await result("motion=off&lsCamera=0,0,0.8&typingAsk", read, SIZE));
+      const at = from === "terminal" ? "terminal:s1" : "landscape";
+      expect(r).toEqual({ before: at, after: at, pct: "80%", sheet: from === "landscape", wrote: from === "terminal" ? ["s1"] : [], answered: ["minutes"] });
+    }, 90_000);
+
   it("shows the strip over the terminal: no re-fit, no pty resize", async () => {
     // runs once in the page (Runtime.evaluate doesn't await): it leaves its answer in window.__done
     const read = `(window.__audit ??= (async () => {
