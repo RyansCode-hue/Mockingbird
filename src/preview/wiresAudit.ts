@@ -12,7 +12,8 @@
  * - =drag: Builder dragged by its header, its wires following it while it moves and once it's let go, a pinch after,
  *   and every call to the main process meanwhile (no sessionResize);
  * - =area (zoomed out to cards): 5120 dragged by its name, the wires on its workspaces and still under the others;
- * - =pill (with ?lsCollapsed=5102): the wire to Pathways ending at 5102's pill.
+ * - =pill (with ?lsCollapsed=5102): the wire to Pathways ending at 5102's pill;
+ * - =tidy: 5120 tidied from its toolbar (W10), laid out along its wires, and what the note says.
  */
 import type { Area, Landscape, Rect } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
@@ -198,6 +199,15 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
         window.dispatchEvent(new PointerEvent("pointerup", { ...init, buttons: 0, clientX: p.x + 36, clientY: p.y + 24 }));
         await sleep(1200);
         out.after = { lifted: lifted(), builder: box(node(W("builder"))), sent: endsOf(W("sent")) };
+      } else if (part === "tidy") {
+        // 5120 tidied from its toolbar (W10): along its wires, said in the note
+        const tidy = document.querySelector<HTMLButtonElement>(`.ls-world .ls-area[data-area="${WIRE_AREA}"] .ls-area-tools button[data-act="tidy"]`);
+        if (!tidy) throw new Error("5120 has no Tidy");
+        tidy.click();
+        await sleep(600);
+        out.said = document.querySelector(".ls-note")?.textContent ?? null;
+        out.boxes = boxes();
+        out.wires = wiresNow();
       } else if (part === "pill") {
         out.wires = wiresNow();
         out.pill = box(document.querySelector(`.ls-world .ls-area-pill[data-area="5102"]`));

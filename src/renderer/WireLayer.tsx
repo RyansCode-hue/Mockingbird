@@ -37,6 +37,8 @@ const wires = createIpcStore<WiresRead>({ state: null, error: null }, ({ get, se
 
 /** The wire book, kept current. */
 export const useWires = (): WiresRead => wires.use();
+/** The wire book as it is now, for what reads it once (Tidy), not on every change. */
+export const wiresNow = (): WiresRead => wires.get();
 /** Read the wires again, as the banner's Read it again does. */
 export const rereadWires = (): void => readWires();
 

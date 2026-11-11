@@ -171,6 +171,22 @@ describe.skipIf(!local)("the landscape's wires", () => {
     near(to.y, a.pill.b + 2);
   });
 
+  it("lay their area out when it's tidied (W10): each chain left to right, a shared terminal under its agent, and the note says so", async () => {
+    const a = (await audit("lsCamera=-200,2700,0.45&landscapeWiresAudit=tidy")) as Audit & { said: string | null };
+    expect(a.said).toMatch(/^Tidied #5120 along its wires/);
+    const b = a.boxes;
+    for (const [l, r] of [["shape", "builder"], ["builder", "reviewer"], ["reviewer", "tester"]]) {
+      expect(b[l].r).toBeLessThan(b[r].l);
+      near(b[l].t, b[r].t);
+    }
+    // Dev server shares Builder's worktree; Docs' stack is read by Shape export; Spike: streaming is handed to by the stack
+    for (const [over, under] of [["builder", "dev"], ["shape", "fixtures"], ["dev", "spike"]]) {
+      near(b[under].l, b[over].l);
+      expect(b[under].t).toBeGreaterThan(b[over].b);
+    }
+    for (const id of ["sent", "sending", "loop", "held", "tree", "context", "ghost"]) expect(wire(a, id).ends).not.toBeNull();
+  });
+
   it("leave panning and pinching at the display's rate with 20 of them (?landscapePerf, S6a's 16.7 ms p95)", async () => {
     // @ts-expect-error — a plain .mjs build script, no type declarations
     const { pageResult } = await import("../scripts/ui-preview.mjs");

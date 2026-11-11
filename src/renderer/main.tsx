@@ -85,6 +85,8 @@ import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type Lands
 import { useLandscape, useLandscapeMigration, type LandscapeSave } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
 import { viewOnlyPatch, accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { wiresInOrder } from "../shared/wires";
+import { wiresNow } from "./WireLayer";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
@@ -1801,7 +1803,7 @@ function App() {
     const placed = placedNow.current;
     if (!now || !layout || !placed) return;
     const title = areaTitle(key);
-    const plan = planTidy(placed, layout, key, areaTitle);
+    const plan = planTidy(placed, layout, key, areaTitle, wiresInOrder(wiresNow().state?.book?.links ?? {}).map(([, w]) => w));
     if ("refused" in plan) return lsSay(plan.refused);
     if (!plan.patch) return lsSay(`${title} is tidy already`);
     const back = undoOf(now.landscape, plan.patch);
@@ -1811,7 +1813,7 @@ function App() {
         if (landscapeStore.revNow() !== r.rev) return lsSay(`Can't undo tidying ${title}: the landscape has changed since`);
         void lsChange(back, `putting ${title} back as it was`);
       };
-      lsSay(`Tidied ${title} in the order its workspaces were made`, back ? { label: "Undo", run: undo } : undefined);
+      lsSay(plan.note ?? `Tidied ${title} in the order its workspaces were made`, back ? { label: "Undo", run: undo } : undefined);
     });
   };
   /**

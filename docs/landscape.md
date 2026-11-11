@@ -229,10 +229,12 @@ together so work and context flow between them.
   right along its wires; loose workspaces go below. Undo (the note's, or ⌘Z
   while it shows, wherever the keyboard is but a terminal, a text field or
   the code editor)
-  puts them back, while nothing else has changed the landscape since. Until
-  phase 3 brings wires it packs the area in rows in the order its workspaces
-  and ghosts were made, each tool window after its workspace, and the area
-  fits the result.
+  puts them back, while nothing else has changed the landscape since. Each
+  chain of wires is a band of columns by handoffs, a shared terminal under
+  its agent; what no wire joins is packed below in rows in the order it was
+  made, each tool window after its workspace. With no wire inside the area,
+  it's all packed so. The area fits the result (W10 as built, in
+  landscape-wires.md).
 - **Stacks** (⌘G on a selection) pile workspaces into one card with tabs. A
   stack moves, wires and focuses as one. Zoomed out, its card has a
   `stack · N` chip in its title row (`×N` before the title when the card is

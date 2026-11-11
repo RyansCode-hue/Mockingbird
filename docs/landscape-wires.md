@@ -2175,6 +2175,80 @@ the boards beside them in `boards/project/`):
 - Tests: `test/landscapeArrange.test.ts` (chain, loop, fan-out, cross-area edges
   ignored, Undo). Board: Zoomed.dc.html, its note's wording included.
 
+#### W10 as built
+
+**What Tidy reads.** `planTidy(l, layout, key, titleOf, wires)` takes the book's
+wires, earliest first (`wiresInOrder`), as `TidyWire`s (`from`, `to`, `type`).
+main.tsx's `tidyArea` passes them from the wire store as it is now (`wiresNow()`,
+WireLayer.tsx, a read once rather than a subscription, so the app doesn't render
+again on every gate). A book that's refused or couldn't be read passes none.
+
+**Which wires count** (`alongWires`, landscapeModel.ts). Only those with both ends
+on the area's workspaces or ghosts: a wire to another area's workspace, a session
+not on the landscape, or between two tabs of one stack is passed over. A stack is
+one item, whichever tab a wire names; a ghost is one too, and W8's not-started
+steps, fed to `resolveLayout` as closed sessions, are ghosts. With none left, the
+area is laid out in rows as before, byte for byte (every older test of it holds),
+and the note says "Tidied … in the order its workspaces were made".
+
+**The layout.**
+- A shared worktree wire puts its terminal under its agent, in its column; a
+  terminal shared by two agents goes under the first wire's. Its other wires are
+  its agent's.
+- Workspaces any wire joins, of any type, are one chain. Each chain is a band of
+  columns, left to right from the area's inside top-left; one chain under the one
+  before, in the order their first workspaces were made.
+- A column is a layer by the longest path of handoffs into it, so A → B → D with
+  A → D puts D after B. A feedback wire and a context link join a chain but never
+  order it: Reviewer's feedback to Builder leaves Reviewer after Builder, and a
+  workspace joined only so sits in the first column. A handoff that would close a
+  loop of handoffs (the latest made) is passed over.
+- In a column, a workspace goes by the highest row among those handing off to it,
+  then by when it was made, so a chain's rows stay level. Under each, the
+  terminals sharing its worktree, then its and their tool windows. A column is as
+  wide as its widest; columns and rows are GAP apart.
+- Below the bands, in rows as wide as the area inside (or the bands, if wider):
+  what no wire joins in the order it was made with its tool windows, then what
+  else the area keeps, in reading order.
+- The area then fits, growing and pushing what's in its way, or shrinking, as
+  before. The note is Zoomed.dc.html's: "Tidied … along its wires", with Undo
+  (`undoOf` on the same patch).
+
+**Preview.** `?lsWires&landscapeWiresAudit=tidy` presses 5120's Tidy in its
+toolbar and reports the note, the boxes and the wires.
+
+**Tests.**
+- `test/landscapeArrange.test.ts` ("Tidy along wires"): a chain made out of order,
+  what no wire joins below, the area grown to fit, no overlaps, Undo; a feedback
+  loop, a feedback wire alone, a loop of handoffs; fan-out and the longest path; two
+  chains, one under the other, and a column ordered by its sources' rows; wires to
+  another area, an unknown session and a session itself passed over (the plan
+  equals the one with no wires); a shared terminal under its agent and the next
+  column clear of the wider; a stack moved by a wire to its back tab and a ghost
+  in its place in the chain.
+- `test/uiLandscapeWires.test.ts` (Chrome, local): 5120 tidied from its toolbar,
+  "Tidied #5120 along its wires", Shape → Builder → Reviewer → Tester on one line,
+  Dev server under Builder, Docs' stack under Shape export, Spike: streaming under
+  Dev server, every wire still drawn.
+
+**Board.** `w10.png` in the session's scratchpad
+(`/private/tmp/claude-501/-Users-ryanellerbroek-Code-Mockingbird/5aa8eb2c-2175-488e-ab1b-5588bc1fbc8a/scratchpad/w10/`,
+`w10-before.png` beside it), `--size 1600x1000 --query
+"lsWires&landscapeWiresAudit=tidy&lsCamera=-200,2700,0.45"`, beside Zoomed.dc.html
+at 45%: the chain on one line, Dev server under Builder, the feedback loop under
+both, the note's wording and Undo as the board's. Differences: the board's cards
+are about 50 px apart where Tidy leaves GAP (16), so at 45% a handoff between two
+columns is a short stub; and the board's area holds the one chain, where 5120's
+stack and ghost, joined to it by a context link, sit in its first two columns
+under it.
+
+**Deviations:**
+- `WireLayer.tsx` gains `wiresNow()`, one line, for main.tsx to read the book
+  once; `wiresAudit.ts` its `tidy` part and `uiLandscapeWires.test.ts` its case.
+  The note's wording comes with the plan (`note`), so main.tsx's note line changes
+  with the call.
+- Columns are GAP apart, as every other arrangement's, not wider for the wires.
+
 ### W11 · Tour, sheet, empty landscape. Size S
 - The third tour step on S8a's frame, Build rows on the sheet (Tour.dc.html), the
   Pipeline template tile and W19's Helpdesk tasks tile (Empty.dc.html). Copy for

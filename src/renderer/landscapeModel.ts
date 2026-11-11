@@ -7,6 +7,7 @@
 import { isWorkItemId, splitGroupKey, type SessionInfo } from "../shared/types";
 import { areaShelf } from "../shared/areaArtifacts";
 import { isRemotePaneId } from "../shared/team/livePanes";
+import type { Wire } from "../shared/wires";
 import {
   AREA_GAP,
   AREA_HEADER,
@@ -2220,15 +2221,103 @@ export function tidyRefusal(layout: Pick<ResolvedLayout, "areas" | "tiles" | "gh
 /** When a workspace or ghost was made: its earliest session's. */
 const madeAt = (t: Tile) => Math.min(...t.members.map((s) => s.createdAt));
 
+/** A wire as Tidy reads it: its ends' sessions and its type. */
+export type TidyWire = Pick<Wire, "from" | "to" | "type">;
+
+/**
+ * An area's workspaces and ghosts (`tiles`, in the order they were made) along `wires` (earliest first), for Tidy; null
+ * when none runs between two of them. A stack is one: a wire to any of its tabs is a wire to it, and one between two
+ * of its tabs runs nowhere. A shared worktree's terminal goes `under` its agent (the first wire's, when there are
+ * several), and its wires are its agent's. Tiles any wire joins, whatever its type, are one chain, a `band`; its
+ * columns are layers by the longest path of handoffs into each. A feedback or context wire joins but never orders, and
+ * a handoff that would close a loop of handoffs is passed over. In a column, a tile goes by the highest of the
+ * tiles handing off to it, then as it was made. `wired` is every tile placed so, terminals included.
+ */
+function alongWires(tiles: readonly Tile[], wires: readonly TidyWire[]): { bands: Tile[][][]; under: Map<Tile, Tile[]>; wired: Set<Tile> } | null {
+  const tileOf = new Map<string, Tile>();
+  for (const t of tiles) for (const s of [...t.members, ...(t.closed ?? [])]) tileOf.set(s.id, t);
+  const inside = wires.flatMap((w) => {
+    const a = tileOf.get(w.from);
+    const b = tileOf.get(w.to);
+    return a && b && a !== b ? [{ a, b, type: w.type }] : [];
+  });
+  if (!inside.length) return null;
+  const host = new Map<Tile, Tile>();
+  const under = new Map<Tile, Tile[]>();
+  for (const { a, b, type } of inside) {
+    if (type !== "worktree" || host.has(a) || host.has(b) || under.has(b)) continue;
+    host.set(b, a);
+    under.set(a, [...(under.get(a) ?? []), b]);
+  }
+  const up = (t: Tile) => host.get(t) ?? t;
+  // each chain by one of its tiles: two joined, the second's chain becomes the first's
+  const joined = new Map<Tile, Tile>();
+  const chainOf = (t: Tile): Tile => {
+    const j = joined.get(t);
+    return j ? chainOf(j) : t;
+  };
+  const into = new Map<Tile, Tile[]>();
+  const outOf = new Map<Tile, Tile[]>();
+  const reaches = (from: Tile, to: Tile, seen = new Set<Tile>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (outOf.get(from) ?? []).some((n) => reaches(n, to, seen));
+  };
+  const nodes = new Set<Tile>();
+  for (const e of inside) {
+    const a = up(e.a);
+    const b = up(e.b);
+    nodes.add(a).add(b);
+    if (chainOf(a) !== chainOf(b)) joined.set(chainOf(b), chainOf(a));
+    if (e.type !== "handoff" || reaches(b, a)) continue;
+    outOf.set(a, [...(outOf.get(a) ?? []), b]);
+    into.set(b, [...(into.get(b) ?? []), a]);
+  }
+  const layer = new Map<Tile, number>();
+  const layerOf = (t: Tile): number => {
+    const known = layer.get(t);
+    if (known !== undefined) return known;
+    const n = Math.max(0, ...(into.get(t) ?? []).map((u) => layerOf(u) + 1));
+    layer.set(t, n);
+    return n;
+  };
+  // a chain's place among the others is its first tile's, a tile's in its column first its sources' rows
+  const made = new Map(tiles.map((t, i) => [t, i]));
+  const chains = new Map<Tile, Tile[][]>();
+  for (const t of tiles.filter((x) => nodes.has(x)).sort((a, b) => layerOf(a) - layerOf(b))) {
+    const columns = chains.get(chainOf(t)) ?? [];
+    chains.set(chainOf(t), columns);
+    (columns[layerOf(t)] ??= []).push(t);
+  }
+  const row = new Map<Tile, number>();
+  const by = (t: Tile) => {
+    const from = into.get(t);
+    return from ? Math.min(...from.map((u) => row.get(u)!)) : 0;
+  };
+  for (const columns of chains.values()) {
+    for (const column of columns) {
+      column.sort((a, b) => by(a) - by(b) || made.get(a)! - made.get(b)!);
+      column.forEach((t, i) => row.set(t, i));
+    }
+  }
+  return { bands: [...chains.values()], under, wired: new Set([...nodes, ...host.keys()]) };
+}
+
 /**
  * Tidy area `key` (T, or its ⋯): everything in it packed in rows, left to right in the order it was made, from its
  * top-left inside the padding and under the header, each row as wide as the area is inside. Its workspaces and ghosts
  * go by when their sessions were made; a workspace's tool window right after it; then what else it keeps (its own
  * windows and cards, the places of sessions not shown) as they lie, in reading order. The area then fits what it
- * holds: smaller, or larger, when it pushes what's in its way aside as any area that grows does. Phase 3 lays it out
- * along its wires instead. Refused while it's locked or collapsed. `undoOf(l, patch)` puts every place back.
+ * holds: smaller, or larger, when it pushes what's in its way aside as any area that grows does. Refused while it's
+ * locked or collapsed. `undoOf(l, patch)` puts every place back.
+ *
+ * Given `wires` (the book's, earliest first), it lays the area out along those between two of its workspaces or ghosts
+ * instead, with a note saying so (alongWires): each chain left to right in columns, one chain under another, its
+ * workspaces' tool windows under them; then, below, in rows as above, what no wire joins and what else it keeps. A
+ * wire to another area's workspace is passed over. With none inside it, it's laid out in rows as above.
  */
-export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titleOf: (key: string) => string): AreaPlan {
+export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titleOf: (key: string) => string, wires: readonly TidyWire[] = []): AreaPlan {
   const refused = tidyRefusal(layout, key, titleOf);
   if (refused) return { refused };
   const area = layout.areas.find((a) => a.key === key)!;
@@ -2247,30 +2336,58 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
     if (owner) windowsOf.set(owner.key, [...(windowsOf.get(owner.key) ?? []), item]);
     else rest.push(item);
   }
+  const itemOf = (t: Tile): Item => ({ key: t.key, rect: t.rect, move: (p, r) => (t.stack ? put(p.stacks, t.stack, { active: own(p.stacks, t.stack)?.active ?? t.front.id, placement: r }) : put(p.workspaces, t.front.id, r)) });
+  const along = alongWires(tiles, wires);
   const items: Item[] = [];
   for (const t of tiles) {
-    items.push({ key: t.key, rect: t.rect, move: (p, r) => (t.stack ? put(p.stacks, t.stack, { active: own(p.stacks, t.stack)?.active ?? t.front.id, placement: r }) : put(p.workspaces, t.front.id, r)) });
+    if (along?.wired.has(t)) continue;
+    items.push(itemOf(t));
     items.push(...(windowsOf.get(t.key) ?? []));
   }
   items.push(...rest.sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x));
-  if (!items.length) return { refused: `${titleOf(key)} has nothing in it to tidy` };
+  if (!items.length && !along) return { refused: `${titleOf(key)} has nothing in it to tidy` };
   const left = snapUp(area.rect.x + AREA_PAD);
   const top = snapUp(area.rect.y + AREA_HEADER);
-  const inner = Math.max(area.rect.w - 2 * AREA_PAD, ...items.map((i) => i.rect.w));
   const p = emptyPatch();
-  let x = left;
-  let y = top;
-  let rowH = 0;
   const placed: Rect[] = [];
+  const keys = new Set<string>();
+  const place = (it: Item, x: number, y: number) => {
+    const r = { ...it.rect, x, y };
+    placed.push(r);
+    keys.add(it.key);
+    if (r.x !== it.rect.x || r.y !== it.rect.y) it.move(p, r);
+  };
+  let y = top;
+  for (const band of along?.bands ?? []) {
+    let x = left;
+    let below = y;
+    for (const column of band) {
+      // a workspace, the terminals sharing its worktree, then their tool windows
+      const stacked = column.flatMap((t) => {
+        const block = [t, ...(along!.under.get(t) ?? [])];
+        return [...block.map(itemOf), ...block.flatMap((u) => windowsOf.get(u.key) ?? [])];
+      });
+      let cy = y;
+      for (const it of stacked) {
+        place(it, x, cy);
+        cy = snapUp(cy + it.rect.h + GAP);
+      }
+      below = Math.max(below, cy);
+      x = snapUp(x + Math.max(...stacked.map((it) => it.rect.w)) + GAP);
+    }
+    y = below;
+  }
+  const wide = Math.max(0, ...placed.map((r) => r.x + r.w - left));
+  const inner = Math.max(area.rect.w - 2 * AREA_PAD, wide, ...items.map((i) => i.rect.w));
+  let x = left;
+  let rowH = 0;
   for (const it of items) {
     if (x > left && x + it.rect.w > left + inner) {
       x = left;
       y = snapUp(y + rowH + GAP);
       rowH = 0;
     }
-    const r = { ...it.rect, x, y };
-    placed.push(r);
-    if (r.x !== it.rect.x || r.y !== it.rect.y) it.move(p, r);
+    place(it, x, y);
     x = snapUp(x + it.rect.w + GAP);
     rowH = Math.max(rowH, it.rect.h);
   }
@@ -2280,10 +2397,10 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
   if (w !== area.rect.w || h !== area.rect.h) {
     const grown = { ...area.rect, w, h };
     // larger either way: what's in its way is pushed aside; only smaller: nothing else moves
-    if (w > area.rect.w || h > area.rect.h) growArea(p, l, layout, key, grown, new Set(items.map((i) => i.key)));
+    if (w > area.rect.w || h > area.rect.h) growArea(p, l, layout, key, grown, keys);
     else put(p.areas, key, { w, h });
   }
-  return { patch: finish(p), moves: [], after: null };
+  return { patch: finish(p), moves: [], after: null, ...(along ? { note: `Tidied ${titleOf(key)} along its wires` } : {}) };
 }
 
 /**

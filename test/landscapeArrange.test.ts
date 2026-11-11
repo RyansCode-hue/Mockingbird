@@ -31,6 +31,7 @@ import {
   withoutGone,
   type AreaPlan,
   type MovesFailed,
+  type TidyWire,
 } from "../src/renderer/landscapeModel";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, GRID, LOOSE_GROUP, applyPatch, emptyLandscape, overlaps, presetSize, renameAreaPatch, type Area, type Landscape, type LandscapePatch, type Rect } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
@@ -668,6 +669,112 @@ describe("Tidy", () => {
     e.areas.E = area(0, 0, 800, 600);
     expect(tidyRefusal(resolveLayout(e, []), "E", T)).toBe("E has no workspaces to tidy");
     expect(refusal(planTidy(e, resolveLayout(e, []), "E", T))).toBe("E has no workspaces to tidy");
+  });
+});
+
+describe("Tidy along wires (W10)", () => {
+  const wire = (from: string, to: string, type: TidyWire["type"] = "handoff"): TidyWire => ({ from, to, type });
+  const col = (n: number) => AREA_PAD + n * (M.w + GAP);
+  const row = (n: number) => AREA_HEADER + n * (M.h + GAP);
+  /** Area A, two M wide, holding `ids` (made in that order, M each) placed against that order. */
+  const scattered = (ids: string[], over: Record<string, Partial<SessionInfo>> = {}) => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 2 * AREA_PAD + 2 * M.w + GAP, row(Math.ceil(ids.length / 2)) + AREA_PAD);
+    ids.forEach((id, i) => {
+      const j = ids.length - 1 - i;
+      l.workspaces[id] = { x: col(j % 2), y: row(Math.floor(j / 2)), ...M };
+    });
+    return { l, sessions: ids.map((id, i) => session(id, { taskGroup: "A", createdAt: i + 1, ...over[id] })) };
+  };
+  const tidy = (l: Landscape, sessions: SessionInfo[], wires: TidyWire[], closed: SessionInfo[] = []) => {
+    const p = ready(planTidy(l, resolveLayout(l, sessions, undefined, [], null, closed), "A", T, wires));
+    return { p, ...settle(l, p, sessions, closed) };
+  };
+  const at = (r: ReturnType<typeof resolveLayout>, key: string) => {
+    const { x, y } = rectOf(r, key);
+    return { x, y };
+  };
+
+  it("lays a chain of handoffs out left to right whatever the order they were made, what no wire joins below, and Undo puts every place back", () => {
+    const { l, sessions } = scattered(["a1", "a2", "a3", "a4"]);
+    const { p, l: tidied, r } = tidy(l, sessions, [wire("a3", "a1"), wire("a1", "a2")]);
+    expect(p.note).toBe("Tidied A along its wires");
+    expect([at(r, "a3"), at(r, "a1"), at(r, "a2")]).toEqual([0, 1, 2].map((n) => ({ x: col(n), y: row(0) })));
+    expect(at(r, "a4")).toEqual({ x: col(0), y: row(1) });
+    // the area fits, wider than it was
+    expect(r.areas[0].rect).toMatchObject({ w: col(2) + M.w + AREA_PAD, h: row(1) + M.h + AREA_PAD });
+    const rects = r.tiles.map((t) => t.rect);
+    for (const a of rects) for (const b of rects) if (a !== b) expect(overlaps(a, b)).toBe(false);
+    const undone = applyPatch(tidied, undoOf(l, p.patch!)!);
+    expect(undone.workspaces).toEqual(l.workspaces);
+    expect(undone.areas.A).toEqual(l.areas.A);
+  });
+
+  it("never orders by a feedback wire, and passes over a handoff that would close a loop of handoffs", () => {
+    const { l, sessions } = scattered(["a1", "a2", "a3"]);
+    // the review loop: a2 after a1 for the handoff, the feedback back to a1 changes nothing
+    const loop = tidy(l, sessions, [wire("a1", "a2"), wire("a2", "a1", "feedback")]).r;
+    expect([at(loop, "a1"), at(loop, "a2")]).toEqual([0, 1].map((n) => ({ x: col(n), y: row(0) })));
+    // a feedback wire alone: one column, as they were made
+    const back = tidy(l, sessions, [wire("a2", "a1", "feedback")]).r;
+    expect([at(back, "a1"), at(back, "a2")]).toEqual([0, 1].map((n) => ({ x: col(0), y: row(n) })));
+    // handoffs round in a loop: the latest, closing it, is passed over
+    const round = tidy(l, sessions, [wire("a2", "a3"), wire("a3", "a1"), wire("a1", "a2")]).r;
+    expect([at(round, "a2"), at(round, "a3"), at(round, "a1")]).toEqual([0, 1, 2].map((n) => ({ x: col(n), y: row(0) })));
+  });
+
+  it("fans out down a column, each by the longest path of handoffs into it", () => {
+    const { l, sessions } = scattered(["a1", "a2", "a3", "a4"]);
+    const { r } = tidy(l, sessions, [wire("a1", "a4"), wire("a1", "a2"), wire("a1", "a3"), wire("a2", "a4")]);
+    expect(at(r, "a1")).toEqual({ x: col(0), y: row(0) });
+    expect([at(r, "a2"), at(r, "a3")]).toEqual([0, 1].map((n) => ({ x: col(1), y: row(n) })));
+    // after a2, not beside it, for a1 → a2 → a4
+    expect(at(r, "a4")).toEqual({ x: col(2), y: row(0) });
+  });
+
+  it("puts each chain under the one before it, a column's workspaces by the row of what hands off to them", () => {
+    const { l, sessions } = scattered(["a1", "a2", "a3", "a4", "a5", "a6"]);
+    // one chain, joined by the feedback wire: a5, made after a2, goes over it, as a1, handing off to it, is over a3
+    const { r } = tidy(l, sessions, [wire("a1", "a5"), wire("a3", "a2"), wire("a1", "a3", "feedback"), wire("a4", "a6", "context")]);
+    expect([at(r, "a1"), at(r, "a3")]).toEqual([0, 1].map((n) => ({ x: col(0), y: row(n) })));
+    expect([at(r, "a5"), at(r, "a2")]).toEqual([0, 1].map((n) => ({ x: col(1), y: row(n) })));
+    // the other chain, joined by a context link that doesn't order either, under it
+    expect([at(r, "a4"), at(r, "a6")]).toEqual([2, 3].map((n) => ({ x: col(0), y: row(n) })));
+  });
+
+  it("passes over a wire to another area's workspace, laying the area out as it would with none", () => {
+    const { l, sessions } = scattered(["a1", "a2", "a3"]);
+    l.areas.B = area(0, 2000, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+    l.workspaces.b1 = { x: AREA_PAD, y: 2000 + AREA_HEADER, ...M };
+    const all = [...sessions, session("b1", { taskGroup: "B", createdAt: 9 })];
+    const r = resolveLayout(l, all);
+    const plain = planTidy(l, r, "A", T);
+    expect(planTidy(l, r, "A", T, [wire("a3", "b1"), wire("b1", "a1"), wire("a2", "gone"), wire("a2", "a2")])).toEqual(plain);
+    expect(ready(plain).note).toBeUndefined();
+  });
+
+  it("puts a shared terminal under its agent, the next column clear of both", () => {
+    const tm = { w: M.w + 64, h: 160 };
+    const { l, sessions } = scattered(["a1", "t1", "a2"], { t1: { shell: true } });
+    l.workspaces.t1 = { ...l.workspaces.t1, ...tm };
+    l.areas.A.h += 400;
+    const { r } = tidy(l, sessions, [wire("a1", "a2"), wire("a1", "t1", "worktree")]);
+    expect(at(r, "a1")).toEqual({ x: col(0), y: row(0) });
+    expect(at(r, "t1")).toEqual({ x: col(0), y: row(1) });
+    expect(at(r, "a2")).toEqual({ x: AREA_PAD + tm.w + GAP, y: row(0) });
+  });
+
+  it("moves a stack as one, by a wire to any of its tabs, and a ghost into its place in the chain", () => {
+    const { l, sessions } = scattered(["a1", "g1"]);
+    l.stacks["A/tabs"] = { active: "s1", placement: { x: col(1), y: row(1), ...M } };
+    l.areas.A.h = row(2) + AREA_PAD;
+    const tabs = [session("s1", { taskGroup: "A/tabs", createdAt: 0 }), session("s2", { taskGroup: "A/tabs", createdAt: 0 })];
+    const closed = [{ ...sessions[1], status: "dead" as const }];
+    const shown = [sessions[0], ...tabs];
+    // to the stack's back tab, a wire between its own tabs that runs nowhere, then on to the ghost
+    const { p, r } = tidy(l, shown, [wire("a1", "s2"), wire("s1", "s2", "context"), wire("s2", "g1")], closed);
+    expect([at(r, "a1"), at(r, "ws:A/tabs"), at(r, "ghost:g1")]).toEqual([0, 1, 2].map((n) => ({ x: col(n), y: row(0) })));
+    expect(p.patch?.stacks?.["A/tabs"]).toEqual({ active: "s1", placement: { x: col(1), y: row(0), ...M } });
   });
 });
 
