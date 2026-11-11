@@ -87,6 +87,26 @@ export function wireBoardBook(at: number): WireBook {
   };
 }
 
+/** The pipeline strip's boards over the wires board (W6, `?wires=`), focused on Builder. */
+export type StripBoard = "chain" | "fanout";
+export const stripBoardOf = (q: string | null): StripBoard | null => (q === "chain" || q === "fanout" ? q : null);
+
+/**
+ * The wires board with what the strip's boards add (W6). chain (Focus.dc.html): Builder's path as the board has it,
+ * and 5102's Pathways reading Builder's context, attached beside its Dev server. fanout (WireFanOut.dc.html A): that,
+ * and Builder handing on to Spike (closed) and Docs (a stack's tab behind Fixtures) as well as to Reviewer.
+ */
+export function stripBoardBook(board: StripBoard, at: number): WireBook {
+  const book = wireBoardBook(at);
+  const wire = (from: string, to: string, type: Wire["type"], n: number): Wire => newWire(from, to, type, at + 100 + n);
+  book.links[W("portal")] = wire("s5", W("builder"), "context", 0);
+  if (board === "fanout") {
+    book.links[W("to-spike")] = wire(W("builder"), W("spike"), "handoff", 1);
+    book.links[W("to-docs")] = wire(W("builder"), W("docs"), "handoff", 2);
+  }
+  return book;
+}
+
 /**
  * `count` wires between the agents of `sessions` (?landscapeMany), for what drawing them costs: each to the agent two
  * after it, then three after, and so on, cycling through the states a wire shows.

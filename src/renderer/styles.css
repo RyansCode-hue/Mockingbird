@@ -3603,6 +3603,66 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-peek-term .xterm { pointer-events: none; }
 /* focus: the workspace fills the window over the landscape, whose camera stays where it was */
 .ls-focus { position: absolute; inset: 0; z-index: 20; background: var(--bg-app); outline: none; }
+/* the pipeline strip over a focused workspace with wires (PipelineStrip.tsx); the workspace starts under it */
+.ls-focus .ls-node.focus { top: var(--ls-strip-h, 0px); }
+/* what the landscape says (a move along the strip it can't make) shows over focus too */
+.ls-viewport:has(.ls-focus) .ls-note { z-index: 21; }
+.ls-strip {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 1; height: 64px; box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 0 16px;
+  background: var(--bg-sidebar); border-bottom: 1px solid var(--line-med); font: 400 12px var(--ui); color: var(--text-2);
+}
+.ls-strip.folded { height: 28px; }
+.ls-strip-label, .ls-strip-toggle { flex-shrink: 0; font: 400 11px var(--ui); color: var(--text-4); text-transform: uppercase; letter-spacing: .06em; }
+.ls-strip-toggle { display: flex; align-items: center; gap: 4px; margin: 0 6px 0 -6px; padding: 3px 6px; border: none; border-radius: 5px; background: none; cursor: pointer; }
+.ls-strip-toggle:hover { color: var(--text-2); background: var(--fill-subtle); }
+.ls-strip-toggle .ico { width: 10px; height: 10px; }
+.ls-strip-sum { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 400 11.5px var(--ui); color: var(--text-4); }
+.ls-strip-sum .here { color: var(--text-1); font-weight: 500; }
+.ls-strip-chain { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.ls-strip-chain.more-r { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.ls-strip-chain.more-l { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+.ls-strip-chain.more-l.more-r { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+.ls-step {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0; box-sizing: border-box; padding: 7px 11px; border-radius: 8px;
+  border: 1px solid var(--line-strong); background: var(--bg-pane); color: var(--text-2); font: inherit; text-align: left; cursor: pointer;
+}
+button.ls-step:hover { border-color: var(--line-strong2); }
+.ls-step .dot { width: 8px; height: 8px; }
+.ls-step-text { display: flex; flex-direction: column; min-width: 0; }
+.ls-step-t { max-width: 150px; font: 400 12.5px/16px var(--ui); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ls-step-n { font: 400 11px/14px var(--ui); color: var(--text-4); white-space: nowrap; }
+.ls-step-k { flex-shrink: 0; margin-left: 4px; font: 400 11px var(--ui); color: var(--text-4); opacity: .65; }
+.ls-step-ok { flex-shrink: 0; color: var(--git-add); }
+.ls-step.here { background: var(--bg-pane-header-focus); border: 1.5px solid var(--text-1); cursor: default; }
+.ls-step.here .ls-step-t { max-width: 180px; font-weight: 500; }
+.ls-step.here .ls-step-n { color: var(--text-3); }
+.ls-step.done { background: var(--bg-pane-header); }
+.ls-step.ready { background: var(--bg-pane-waiting); border-color: color-mix(in srgb, var(--amber) 50%, transparent); }
+.ls-step.ready .ls-step-n { color: var(--amber-text); }
+.ls-step.blocked, .ls-step.dim { border-color: var(--line-med); opacity: .8; }
+.ls-step.blocked .ls-step-t, .ls-step.dim .ls-step-t { color: var(--text-3); }
+/* a wire between two steps: its colour is its gate's state, a blocked one dashed */
+.ls-strip-arrow { position: relative; display: flex; flex-shrink: 0; color: var(--text-3); }
+.ls-strip-arrow path { fill: none; stroke: currentColor; stroke-width: 1.5; }
+.ls-strip-arrow.sent { color: var(--git-add); }
+.ls-strip-arrow.ready, .ls-strip-arrow.sending { color: var(--amber); }
+.ls-strip-arrow.blocked { color: var(--red); }
+.ls-strip-arrow.blocked .line { stroke-dasharray: 3 3; }
+.ls-strip-more {
+  position: absolute; left: 14px; top: 1px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line-focus); background: var(--bg-pane-header-focus);
+  font: 500 11px/16px var(--ui); color: var(--text-1); cursor: pointer;
+}
+.ls-strip-more:hover { border-color: var(--text-3); }
+.ls-strip-attached { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; padding-left: 8px; }
+.ls-attach {
+  display: flex; align-items: center; gap: 6px; max-width: 180px; padding: 5px 10px; border-radius: 14px; border: 1px solid var(--line-strong);
+  background: var(--bg-pane); font: 400 12px var(--ui); color: var(--text-2); white-space: nowrap; cursor: pointer;
+}
+.ls-attach:hover { border-color: var(--line-strong2); }
+.ls-attach .dot { width: 7px; height: 7px; }
+.ls-attach-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ls-attach.context .ls-attach-t { max-width: 112px; }
+.ls-attach.context { color: var(--teal-text); background: color-mix(in srgb, var(--teal) 6%, var(--bg-pane)); border: 1px dashed color-mix(in srgb, var(--teal) 45%, transparent); }
 .ls-hud {
   position: absolute; left: 50%; bottom: 12px; z-index: 5; transform: translateX(-50%); display: flex; gap: 2px; padding: 3px; border-radius: 8px;
   background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2), 0 4px 14px rgba(0, 0, 0, .22);

@@ -98,6 +98,7 @@ import { menuHeading, tidyMenu, useContextMenu, type MenuEntry } from "./Context
 import { AreaBar, SeveralBar, WorkspaceBar, type BarPlace } from "./SelectionBar";
 import { AREA_NAME_PX, areaStatus, barAnchor, escapeClears, readBarExtended, saveBarExtended, severalBarItems, type BarChrome, type BarTarget } from "./selectionBarModel";
 import { focusTerm, lendTerm, screenText, scrollTerm, termHasKeys } from "./TerminalPane";
+import { usePipelineStrip, type StripGo } from "./PipelineStrip";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
@@ -274,6 +275,7 @@ interface Peeked {
  */
 /** A tool window's key among what's on screen (`seen`), apart from the workspaces'. */
 const WIN_SEEN = "win:";
+const NO_SESSIONS: readonly SessionInfo[] = [];
 
 export function Landscape({
   layout,
@@ -318,6 +320,7 @@ export function Landscape({
   newAsk = 0,
   tour,
   rooms,
+  closed = NO_SESSIONS,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -404,6 +407,8 @@ export function Landscape({
   tour: { due: boolean; onEnd: () => void };
   /** The team rooms and the areas they're shared as: a wire's ends' rooms, for what it shows (wiresModel). */
   rooms?: readonly WireRoom[];
+  /** Closed sessions with no place on the landscape (the Closed sessions list): the pipeline strip names them. */
+  closed?: readonly SessionInfo[];
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -865,13 +870,14 @@ export function Landscape({
   /** Both presses of the double-click just made were on workspace `key`. */
   const pairOn = (key: string) => pressedOn.current[0] === key && pressedOn.current[1] === key;
   // focus, its own terminal and leaving it, are always the user's commands (Enter, ⌘E, ⌘Esc, a double-click, Focus)
-  const enterFocus = (t: Tile) => {
+  /** `keys` false: the keyboard stays where it is (focus's frame, moving along the pipeline strip with ⌥ arrows). */
+  const enterFocus = (t: Tile, keys = true) => {
     stopHover();
     setPeek(null);
     setFocusKey(t.key);
     select(t);
     // your own terminal takes the keyboard; a teammate's waits for a click
-    setTimeout(() => (!isRemote(t.front) && t.front.status !== "dead" ? focusTerm(t.front.id) : armFocus(overlay.current)), 50);
+    if (keys) setTimeout(() => (!isRemote(t.front) && t.front.status !== "dead" ? focusTerm(t.front.id) : armFocus(overlay.current)), 50);
   };
   const leaveFocus = () => {
     setFocusKey(null);
@@ -884,6 +890,43 @@ export function Landscape({
   enterRef.current = enterFocus;
   const leaveRef = useRef(leaveFocus);
   leaveRef.current = leaveFocus;
+  /**
+   * A move along the pipeline strip, always the user's (a click, ⌥ or ⌘⌥ arrows): focus goes to the step's workspace
+   * at once. A stack's tab behind another is asked to the front, and the keyboard waits for nothing: it goes to focus's
+   * frame, and the terminal gets it once clicked. A closed step leaves focus for its ghost, where Reopen is; one with no
+   * place is said.
+   */
+  const goAlong: StripGo = (id, dir, keys) => {
+    const l = layoutNow.current;
+    const tile = id ? l.tiles.find((t) => t.members.some((m) => m.id === id)) : undefined;
+    if (tile) {
+      const behind = tile.front.id !== id;
+      enterFocus(tile, keys === "terminal" && !behind);
+      if (!behind) return;
+      armFocus(overlay.current);
+      onTab(tile, id!);
+      return;
+    }
+    const ghost = id ? (l.ghosts.find((g) => g.members.some((m) => m.id === id)) ?? l.tiles.find((t) => t.closed?.some((m) => m.id === id))) : undefined;
+    if (ghost && !ghost.hidden) {
+      leaveFocus();
+      return flyTo(centreOn(cam.current, ghost.rect, vpNow.current));
+    }
+    const s = id ? (ghost?.members.find((m) => m.id === id) ?? ghost?.closed?.find((m) => m.id === id) ?? closed.find((m) => m.id === id)) : undefined;
+    const name = s ? `“${s.ticketTitle ?? s.title}”` : null;
+    say(
+      !id
+        ? dir === "back"
+          ? "Nothing hands work on to this workspace"
+          : "This workspace hands work on to nothing"
+        : !name
+          ? "That workspace is gone: no session of this Mac's has its id"
+          : ghost
+            ? `${name} is closed, in a collapsed area: open the area to reopen it`
+            : `${name} is closed and not on the landscape: reopen it from Closed sessions`
+    );
+  };
+  const strip = usePipelineStrip({ here: focusTile && !isRemote(focusTile.front) ? focusTile.front : null, layout, rooms, closed, frame: overlay, onGo: goAlong });
   // a workspace that leaves (closed, or merged into a stack) ends its focus, and its peek
   useEffect(() => {
     if (focusKey && !focusTile) setFocusKey(null);
@@ -2446,8 +2489,11 @@ export function Landscape({
               leaveFocus();
             }}
             tabIndex={-1}
+            style={{ ["--ls-strip-h" as string]: `${strip.height}px` }}
           >
-            {node(focusTile, "focus", vp)}
+            {strip.strip}
+            {/* your own workspace reflows under the strip: its height comes off the pty's rows */}
+            {node(focusTile, "focus", { w: vp.w, h: vp.h - strip.height })}
           </div>
         )}
       </div>

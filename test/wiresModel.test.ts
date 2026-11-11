@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { anchorOf, pillBox, shiftedBox, translateOf, wireBanners, wireCurve, wireViews, type WireView } from "../src/renderer/wiresModel";
+import { anchorOf, gateContextOf, pillBox, shiftedBox, translateOf, wireBanners, wireCurve, wireViews, type WireView } from "../src/renderer/wiresModel";
+import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
-import { ROOM_LINE, newWire, type Wire, type WireBook, type WireState } from "../src/shared/wires";
+import { ROOM_LINE, gateOf, newWire, type GateContext, type Wire, type WireBook, type WireState } from "../src/shared/wires";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo => ({
   id,
@@ -179,6 +180,20 @@ describe("what a wire shows", () => {
     expect(label(views, "tree")).toBe("“Bump to v1.8” runs in another folder");
     // /r/link is a symlink to /r/wt, as main reads the disk
     expect(view(wireViews({ ...state, folders: { builder: "/r/wt", bump: "/r/wt" } }, laid), "tree")).toMatchObject({ look: "tree", label: null });
+  });
+
+  it("names a closed session with no place, for the pipeline strip, as main does: blocked till it's reopened", () => {
+    const state = stateOf({ off: wire("builder", "gone", "handoff") });
+    const why = (ctx: GateContext | null) => gateOf("off", state.book!.links.off, ctx!).why;
+    expect(why(gateContextOf(layout, state))).toBe('This Mac has no session "gone".');
+    expect(why(gateContextOf(layout, state, undefined, closed))).toBe("“gone” is closed and not on the landscape: reopen it from Closed sessions.");
+  });
+
+  it("is what the pipeline strip says on the step it leads to: one gate for both", () => {
+    const state = { ...stateOf({ pr: wire("builder", "reviewer", "handoff", { when: "pr-merged" }) }), merges: { pr: { blocked: "PR 12 to dev was closed without merging." } } };
+    const gates = gateContextOf(layout, state)!;
+    const chain = chainOf("builder", gates.links, stepEnds({ open: running, ghosts: [], closed: [] }), (id, w) => gateOf(id, w, gates))!;
+    expect(stepNote(chain.down[0], "down")).toMatchObject({ text: view(wireViews(state, layout), "pr")!.label!.text, tone: "blocked" });
   });
 });
 

@@ -2119,6 +2119,139 @@ the boards beside them in `boards/project/`):
 - Boards: Focus.dc.html at 1440 × 900, minus its collab step (section 7);
   WireFanOut.dc.html A.
 
+#### W6 as built
+
+**The chain** (`src/renderer/pipelineChain.ts`, pure). `chainOf(here, links, end,
+gate)` is null when the workspace has no wire at all, so no strip shows. Otherwise:
+- Wires are walked handoffs first, then feedback, each in the order made
+  (`wiresInOrder`).
+- Everything handing work on to this one (its handoff ancestors) is set aside first,
+  so downstream never walks back up a feedback wire to it. Downstream then takes the
+  first branch at each step; upstream is one chain, falling back to a feedback wire in
+  when no handoff comes in.
+- The other branches at a step are its `also`: downstream, the workspaces the step
+  before also hands on to (WireFanOut A's `+2`); upstream, the others handing on to
+  the step after it, as a chip too, so a fan-in isn't hidden.
+- A wire carrying work back to a step earlier in the chain is that step's `back`:
+  the feedback loop and its round chip. No workspace is walked twice, so a cycle of
+  handoffs a damaged book could hold ends where it would come round.
+- Attached: shared worktree wires, then context links, at either end; `reads` says
+  which way a context link runs.
+
+`stepNote` says what the board says: a wire's state stands alone ("changes ready ·
+↺ 2 of 3", "waits for approve", "ready to send"); a status, and a handoff gone
+("claude · handed on"), follow the agent. A blocked wire says what its drawn label
+does (wiresModel's `shortWhy`), but "needs approve", which reads "waits for approve"
+as the board has it. Ghosts read closed, W8's `planned` reads not started, a closed
+session with no place "closed · not on the landscape", an id no session has "gone".
+
+**One store and one gate for the strip and the drawn wires (rebased on W4a).** The
+strip reads W4a's store (`useWires`, WireLayer.tsx) and works each gate out with
+W4a's `gateContextOf` (wiresModel.ts) and `gateOf`. Every end is built by the shared
+`wireEndOf`, and main's merge views and resolved folders (`WireState.merges`,
+`folders`) and the team rooms (Landscape's `rooms`) are used as the drawn wires use
+them. A pr-merged wire that main blocks shows blocked on both. `gateContextOf` takes
+one addition, `closed`: closed sessions with no place (Landscape's `closed` prop,
+main.tsx's `closedSessions`), named as main names them, not placed, so a step there
+reads blocked with main's reason. Nothing draws them, so the drawn wires don't pass
+it. The strip's own store and gate context, written before W4a merged, are gone.
+
+**The strip** (`PipelineStrip.tsx`, `usePipelineStrip`). A book that can't be read
+shows no strip; the landscape's banner (W4a's `wireBanners`) says why. Steps are
+buttons (a click goes there); this one is marked `aria-current`. Each wire between
+two steps is coloured by its gate's state, a blocked one dashed. The `+n` chip
+opens the app's context menu: "Also from …", each row's dot and note, and "⌥→ takes
+…" as its last line. Titles are capped (150 px, 180 for this one) and a step's note
+is never cut. A chain wider than the strip scrolls sideways with faded edges, this
+one kept in the middle.
+
+**Folding and reflow.** The strip is 64 px open and 28 px folded (its toggle and the
+chain's names); `mb.pipelineStrip.folded` is kept through `usePersisted`. In focus
+the overlay passes `{ w: vp.w, h: vp.h − strip }` to the node and sets
+`--ls-strip-h`, which the focused node's `top` reads. Folding or opening it resizes
+the pty once. A teammate's workspace in focus has no strip (no wire reaches one).
+
+**Keys (decision 3), by keyArm.ts's rules.** One listener at the window's capture,
+while a workspace of this Mac's is in focus:
+- ⌥← ⌥→ act only while focus's frame has the keyboard and the user armed it
+  (`isArmed`): a press on the strip, its header or its frame. Typed in a terminal
+  they're the terminal's (a word left or right). On a frame given the keyboard by
+  code they do nothing, and the frame swallows them.
+- ⌘⌥← ⌘⌥→ act from anywhere inside focus, or with the keyboard nowhere, and are
+  taken before xterm sees them. From a field or an editor elsewhere in the window
+  they're the field's. Nothing acts while a dialog, menu or the tour is open.
+- A move made from the frame keeps the keyboard there (`enterFocus(t, false)`), so
+  the next ⌥→ moves again rather than typing into the terminal it just reached. A
+  move from a terminal, or a click on a step, gives the new terminal the keyboard,
+  as Enter does (`enterFocus`'s 50 ms; nothing waits on main).
+- A stack's tab behind another: focus moves at once and the keyboard goes to the
+  frame (the user's command, `armFocus`). The tab is asked to the front through
+  `onTab`, and nothing waits on its answer, so no stamp is needed.
+- A ghost (or a stack's closed tab) leaves focus and flies to it, where Reopen is.
+  One in a collapsed area, a closed session with no place, an id that's gone, or
+  nothing that way, is said in the landscape's note, which now shows over focus
+  (it sat under the overlay).
+
+**Preview.** `?wires=chain|fanout` is W4a's wires board (`?lsWires`, area 5120)
+with `stripBoardBook`'s additions (wiresAudit.ts), focused on Builder
+(`?lsFocus=wb-builder`).
+- chain (Focus.dc.html): the board's own path. Shape donor export handed on →
+  Builder → Reviewer, whose changes are ready back at round 2 of 3 → Tester, waiting
+  for approve. Dev server is on Builder's folder, and 5102's Pathways reads Builder's
+  context.
+- fanout (WireFanOut A): the same, with Builder also handing on to Spike (closed)
+  and Docs (a stack's tab behind Fixtures).
+
+`&stripMore` opens the chip's list for a screenshot (added to the resize-stopping
+list), and `&stripFolded` starts folded. `?landscapeStripAudit` drives it all with
+real keys and presses (`src/preview/stripAudit.ts`). It picks workspaces in the area
+tree and focuses them with ⌘E, as the board's cards are a few px wide at the fit.
+
+**Differences from the boards:**
+- No collab step (section 7).
+- Focus fills the window edge to edge as S2 built it, not inset 14/16 px.
+- The prompt line's "⌥← ⌥→ move along the pipeline" isn't drawn: the keys are on
+  the steps and in the toggle's tooltip.
+- Finish step in the header is W5's.
+- The board's fixed step widths are a cap on titles instead.
+- A right-click on a step opens the focused workspace's menu, as anywhere in focus.
+- Over W4a's board, Builder → Reviewer is amber (its wire is sending), not grey.
+  In fanout, Spike is closed where the board has a not-started step: `planned` is
+  W8's, and `pipelineChain.test.ts` covers it.
+
+**Tests:** `test/pipelineChain.test.ts`: no chain without wires; up and down along
+handoffs; a feedback loop (to this one and further up) and a damaged handoff cycle;
+a fan-out, handoffs before feedback, a fan-in; a ghost, a not-started step and a
+gone one; attached; the notes as the board has them. `test/wiresModel.test.ts`:
+`gateContextOf` naming a closed session with no place as main does, and a pr-merged
+wire main blocks reading the same on the strip's step as on the drawn wire.
+`test/uiLandscapeStrip.test.ts` (Chrome, local), from `?landscapeStripAudit`:
+- no strip on a workspace with no wires (s1), its pty the window's;
+- Builder's strip 64 px with the pty 64 px shorter, each step's note and each wire's
+  state as the drawn wires have it;
+- one `sessionResize` per fold and per opening, the pref saved;
+- ⌥→ in Builder's terminal written to it, and on a frame focused by code doing
+  nothing;
+- after a press, ⌥→ to Reviewer and ⌥← back, keys on the frame;
+- ⌘⌥→ ⌘⌥← from inside terminals moving and writing nothing;
+- the +2 list: Docs, a stack's tab behind, brought to the front with the frame armed
+  (⌥← goes back); Spike, closed, leaving focus for its ghost;
+- a click on Tester's step;
+- ⌘⌥← from a field elsewhere doing nothing;
+- ⌥← back to the top and once more: "Nothing hands work on to this workspace",
+  the note stacked over focus.
+
+**Mutation-checked** (each guard taken out alone, the test run, again after the
+rebase): the arming check on plain ⌥ arrows, failed; the ⌘⌥ "inside focus" check,
+failed; keeping the keyboard on the frame after a move from it, failed. Taking out
+`preventDefault` and `stopPropagation` survived: xterm writes nothing for a ⌘ chord,
+so nothing shows it. It's kept, as ⌘E's is, so no later handler or terminal mode can take the key.
+
+**Seen, not changed:** in a headless 1440 × 900 shot, a focused workspace ends about
+85 px above the status bar, with or without the strip. The suite's `leakGuard` test
+runs `node_modules/vitest/vitest.mjs` from the checkout, which a worktree without
+node_modules hasn't got. A link to the main checkout's vitest makes it pass.
+
 ### W7 · Shared worktree. Size S
 - Add terminal on its tree (`companionSession`, `index.ts:1424`, with `shell`).
   Wiring an existing terminal requires the same folder, by `canonical` path.

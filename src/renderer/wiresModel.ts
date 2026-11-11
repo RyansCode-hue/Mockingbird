@@ -71,7 +71,7 @@ export interface WireRoom {
  * session has no room tag of its own; without `rooms`, its tag's. Its folder is main's, with symlinks resolved, for a
  * shared worktree wire's ends (WireState.folders), else its own.
  */
-function endOf(s: SessionInfo, running: boolean, state: Pick<WireState, "folders">, rooms: readonly WireRoom[] | undefined): WireEnd {
+function endOf(s: SessionInfo, running: boolean, state: Pick<WireState, "folders">, rooms: readonly WireRoom[] | undefined, placed: boolean): WireEnd {
   const taken = s.room?.takenOver;
   const area = topOfKey(s.taskGroup ?? LOOSE_GROUP);
   return wireEndOf(s, {
@@ -79,7 +79,7 @@ function endOf(s: SessionInfo, running: boolean, state: Pick<WireState, "folders
     takenOver: taken ? (taken.back ? `“${titleOf(s)}” was taken back into another session.` : `${taken.byName} continues “${titleOf(s)}” on their laptop.`) : null,
     outsideSandbox: running && !!s.room && !s.room.remote && outsideRoomSandbox(s.shell ? null : (s.agent ?? "claude"), s.room.guards),
     running,
-    placed: true,
+    placed,
     folder: (state.folders && Object.hasOwn(state.folders, s.id) ? state.folders[s.id] : null) ?? s.cwd,
   });
 }
@@ -89,20 +89,27 @@ function endOf(s: SessionInfo, running: boolean, state: Pick<WireState, "folders
  * and ghosts', each named by a wire made into an end. A pr-merged wire's merge view is main's (WireState.merges): the
  * merge watch is main's. Main's view also knows its file's write access and whether team rooms have started; a wire
  * that's blocked only for those draws as its state otherwise is, and main refuses what's tried on it, saying why. A
- * session's take-over is read from its room tag, which a closed one doesn't have.
+ * session's take-over is read from its room tag, which a closed one doesn't have. `closed`: closed sessions with no place
+ * (the Closed sessions list), which the pipeline strip names and nothing draws; a wire to one is blocked till it's reopened.
  */
-export function gateContextOf(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, state: Pick<WireState, "book" | "merges" | "folders">, rooms?: readonly WireRoom[]): GateContext | null {
+export function gateContextOf(
+  layout: Pick<ResolvedLayout, "tiles" | "ghosts">,
+  state: Pick<WireState, "book" | "merges" | "folders">,
+  rooms?: readonly WireRoom[],
+  closed: readonly SessionInfo[] = []
+): GateContext | null {
   const book = state.book;
   if (!book) return null;
   const named = new Set(Object.values(book.links).flatMap((w) => [w.from, w.to]));
   const ends = new Map<string, WireEnd>();
-  const add = (s: SessionInfo, running: boolean) => named.has(s.id) && !ends.has(s.id) && ends.set(s.id, endOf(s, running, state, rooms));
+  const add = (s: SessionInfo, running: boolean, placed = true) => named.has(s.id) && !ends.has(s.id) && ends.set(s.id, endOf(s, running, state, rooms, placed));
   if (named.size) {
     for (const t of layout.tiles) {
       for (const s of t.members) add(s, true);
       for (const s of t.closed ?? []) add(s, false);
     }
     for (const g of layout.ghosts) for (const s of g.members) add(s, false);
+    for (const s of closed) add(s, false, false);
   }
   const ids = new Map(Object.entries(book.links).map(([id, w]) => [w, id]));
   const merges = state.merges ?? {};

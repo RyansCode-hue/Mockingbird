@@ -46,7 +46,8 @@ import { runFirstRunAudit } from "./firstRunAudit";
 // the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
 import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
-import { manyWiresBook, placeWireBoard, runWiresAudit, wireBoardBook, wireBoardSessions } from "./wiresAudit";
+import { manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
+import { runStripAudit } from "./stripAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
@@ -114,8 +115,11 @@ let previous: SessionInfo[] = [
 for (let i = 1; i <= Number(new URLSearchParams(location.search).get("lsManyClosed") ?? 0); i++) {
   previous.push(session(`c${i}`, { title: `Closed spike ${i}`, taskGroup: "5102", status: "dead", conversation: { agent: "claude", id: `conv-c${i}` }, createdAt: now - (60 + i) * 60 * min }));
 }
-// ?lsWires: the wires board's workspaces in their own area, 5120 (wiresAudit.ts); with ?landscapeMany, wires between those instead
-const lsWiresQ = new URLSearchParams(location.search).get("lsWires");
+// ?lsWires: the wires board's workspaces in their own area, 5120 (wiresAudit.ts); with ?landscapeMany, wires between those instead.
+// ?wires=chain|fanout: the board with the pipeline strip's boards' wires added (stripBoardBook), for its strip in focus
+// (?lsFocus=wb-builder)
+const stripBoard = stripBoardOf(new URLSearchParams(location.search).get("wires"));
+const lsWiresQ = new URLSearchParams(location.search).get("lsWires") ?? (stripBoard ? "" : null);
 const wireBoard = lsWiresQ !== null && !new URLSearchParams(location.search).has("landscapeMany") ? wireBoardSessions(session, WT) : null;
 if (wireBoard) {
   sessions.push(...wireBoard.running);
@@ -2972,6 +2976,8 @@ if (params.has("landscapeNeedsAudit")) {
   };
   runNeedsAudit({ sessions: () => sessions, setSession, setOwnTag, remote: () => live.remote, setRemote, calls, emit, badgeFails, waitFor }, params.get("landscapeNeedsAudit") || "a");
 }
+// W6: ?landscapeStripAudit (with ?wires=fanout) works the pipeline strip in focus (stripAudit.ts) for test/uiLandscapeStrip.test.ts
+if (params.has("landscapeStripAudit")) runStripAudit({ calls, waitFor });
 // S8: ?landscapeSwitchAudit=stack|locked|palette|notes|place works what the grid offered on the landscape (switchAudit.ts) for test/uiLandscapeSwitch.test.ts
 if (params.has("landscapeSwitchAudit")) {
   const newSession = (over: Partial<SessionInfo>) => {
@@ -3171,7 +3177,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu"))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu") || params.has("stripMore"))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {
@@ -8647,7 +8653,7 @@ import {
   type WireType,
 } from "../shared/wires";
 let wireBook: WireBook = emptyWireBook();
-if (wireBoard) wireBook = wireBoardBook(now);
+if (wireBoard) wireBook = stripBoard ? stripBoardBook(stripBoard, now) : wireBoardBook(now);
 else if (lsWiresQ !== null && manyQ) wireBook = manyWiresBook(sessions, Number(lsWiresQ) || 20, now);
 // W4a: ?landscapeWiresAudit=near|far|drag|area|pill works the wires drawn (wiresAudit.ts) for test/uiLandscapeWires.test.ts
 if (params.has("landscapeWiresAudit")) runWiresAudit({ calls, waitFor }, params.get("landscapeWiresAudit") || "near");
@@ -8756,3 +8762,7 @@ api.killSession = async (id: string, forget?: boolean) => {
   }
   return r;
 };
+// W6, with ?wires=chain|fanout: &stripFolded starts with the pipeline strip folded away, as the pref has it after a fold;
+// &stripMore opens its +n chip's list, for a screenshot
+if (stripBoard && params.has("stripFolded")) localStorage.setItem("mb.pipelineStrip.folded", "true");
+if (stripBoard && params.has("stripMore")) waitFor(".ls-strip-more", (el) => setTimeout(() => el.click(), 300));

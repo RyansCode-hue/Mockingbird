@@ -2249,6 +2249,7 @@ function App() {
           onShortcuts={() => setKeysOpen((o) => !o)}
           newAsk={newAsk}
           tour={{ due: tourDue, onEnd: endTour }}
+          closed={closedSessions}
         />
         </BadgeContext.Provider>
         {dockColumn()}
