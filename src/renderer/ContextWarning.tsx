@@ -143,20 +143,23 @@ function headline(b: ContextBudget, level: 1 | 2): string {
   return level === 2 ? `Context ${pct}% full: nearly out of room` : `Context ${pct}% full`;
 }
 
-const explain = (agent: AgentKind, b: ContextBudget) =>
+const explain = (agent: AgentKind, b: ContextBudget, fresh: boolean) =>
   [
     amount(b, agent) + ".",
     "Compact sends /compact now, on your click: the agent summarizes the conversation and carries on from that.",
-    "A fresh session starts beside this one, in the same worktree, from a brief of this conversation (its task, plan, changes and last turns), with the whole transcript there to read.",
+    fresh ? "A fresh session starts beside this one, in the same worktree, from a brief of this conversation (its task, plan, changes and last turns), with the whole transcript there to read." : "",
     b.autoCompacts ? `Near the limit, ${AGENT_NAME[agent]} compacts by itself and keeps only its own summary.` : "",
   ]
     .filter(Boolean)
     .join("\n");
 
-/** The session's "Fresh session from a brief" row, from its action model: off, saying why, where it can't be done. */
+/**
+ * The session's "Fresh session from a brief" row, from its action model: off, saying why, where it can't be done, and
+ * absent where its model has none (the Helpdesk tasks workspace's conversation isn't handed on).
+ */
 export type BriefRow = { onPick: () => void; disabled?: boolean; title?: string };
 
-function Actions({ w, agent, brief }: { w: WarningState; agent: AgentKind; brief: BriefRow }) {
+function Actions({ w, agent, brief }: { w: WarningState; agent: AgentKind; brief?: BriefRow }) {
   return (
     <>
       <button
@@ -170,17 +173,19 @@ function Actions({ w, agent, brief }: { w: WarningState; agent: AgentKind; brief
       >
         {w.compacting ? "Compacting…" : "Compact"}
       </button>
-      <button
-        className="outline"
-        disabled={!!brief.disabled}
-        title={brief.disabled ? brief.title : "Start a new session in this worktree from a brief of this one"}
-        onClick={(e) => {
-          e.stopPropagation();
-          brief.onPick();
-        }}
-      >
-        Fresh session with a brief
-      </button>
+      {brief && (
+        <button
+          className="outline"
+          disabled={!!brief.disabled}
+          title={brief.disabled ? brief.title : "Start a new session in this worktree from a brief of this one"}
+          onClick={(e) => {
+            e.stopPropagation();
+            brief.onPick();
+          }}
+        >
+          Fresh session with a brief
+        </button>
+      )}
     </>
   );
 }
@@ -191,7 +196,7 @@ function Actions({ w, agent, brief }: { w: WarningState; agent: AgentKind; brief
  * what that means and the actions: Compact, Fresh session with a brief, and
  * Dismiss (until the next threshold).
  */
-export function ContextWarning({ session, brief }: { session: SessionInfo; brief: BriefRow }) {
+export function ContextWarning({ session, brief }: { session: SessionInfo; brief?: BriefRow }) {
   const cw = useContextReading(session);
   const w = useWarning(session, cw);
   const [open, setOpen] = useState(false);
@@ -206,7 +211,7 @@ export function ContextWarning({ session, brief }: { session: SessionInfo; brief
     <span className="ctx-chip-wrap">
       <button
         className={`chip ctx-chip ${tone}`}
-        title={explain(agent, b)}
+        title={explain(agent, b, !!brief)}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={(e) => {
@@ -225,19 +230,23 @@ export function ContextWarning({ session, brief }: { session: SessionInfo; brief
               ? "Compacting: this clears once the agent reports the smaller context."
               : b.autoCompacts
                 ? `Near the limit, ${AGENT_NAME[agent]} compacts by itself and keeps only its own summary.`
-                : "Compact, or carry on in a fresh session, before it runs out."}
+                : brief
+                  ? "Compact, or carry on in a fresh session, before it runs out."
+                  : "Compact before it runs out."}
           </div>
           <div className="ctx-acts">
             <Actions
               w={w}
               agent={agent}
-              brief={{
-                ...brief,
-                onPick: () => {
-                  setOpen(false);
-                  brief.onPick();
-                },
-              }}
+              brief={
+                brief && {
+                  ...brief,
+                  onPick: () => {
+                    setOpen(false);
+                    brief.onPick();
+                  },
+                }
+              }
             />
             <span style={{ flex: 1 }} />
             <button

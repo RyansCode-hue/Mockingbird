@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, createActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, usable, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, createActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, usable, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -164,6 +164,26 @@ describe("a workspace's actions as a menu", () => {
     const area = inSection("area", [{ key: "rename", label: "Rename", onPick: vi.fn() }, "-", { key: "lock", label: "Lock", onPick: vi.fn() }]);
     expect(area.map((a) => [a.key, a.section])).toEqual([["rename", "area"], ["lock", "area"]]);
     expect(rows(menuOf(area))).toEqual(["# Area", "rename", "lock"]);
+  });
+});
+
+describe("the Helpdesk tasks workspace's actions", () => {
+  const tasks = sess({ id: "h1", title: "Helpdesk tasks", role: "tasks", repoPath: null, cwd: "/Users/you/Helpdesk", branch: null, taskGroup: "Helpdesk", kind: "assistant" });
+  it("hand nothing on: no Continue in Codex, Brief or Second opinion in its menu, ⌘K or selection bar, running or exited", () => {
+    for (const s of [tasks, { ...tasks, status: "dead" as const }]) {
+      const e = env();
+      const acts = workspaceActions(s, e);
+      expect(acts.filter((a) => a.section === "handon")).toEqual([]);
+      for (const key of ["handoff", "brief", "review"]) {
+        expect(actionOf(acts, key), key).toBeUndefined();
+        expect(paneRow(s, e, key), key).toBeUndefined();
+      }
+      expect(rows(menuOf(acts))).not.toContain("# Hand on");
+      expect([e.handoff, e.brief, e.secondOpinion].map((f) => (f as ReturnType<typeof vi.fn>).mock.calls.length)).toEqual([0, 0, 0]);
+    }
+    // the rest of its actions stay, and any other workspace keeps its hand-on rows
+    expect(keys(workspaceActions(tasks, env()))).toEqual(["rename", "notify", "move", "size:S", "size:M", "size:L", "newTab", "tool:files", "tool:changes", "tool:search", "tool:run", "tool:artifacts", "repaint", "diff", "undo", "close"]);
+    expect(keys(workspaceActions(sess({ repoPath: null, kind: "assistant" }), env())).filter((k) => ["handoff", "brief", "review"].includes(k))).toEqual(["handoff", "brief", "review"]);
   });
 });
 

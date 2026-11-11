@@ -27,11 +27,28 @@ export const HELPDESK_RULES = [
 /** Why the Helpdesk tasks workspace doesn't go in a team room's area. */
 export const HELPDESK_IN_ROOM = "The Helpdesk tasks workspace never runs in a team room's area: teammates would see your admin consoles and could type into it";
 
+/** Why the Helpdesk tasks workspace's conversation isn't handed on: a handoff, a brief or a review would copy it to another session. */
+export const HELPDESK_KEEPS_ITS_CONVERSATION =
+  "The Helpdesk tasks workspace's conversation holds what you saw on admin sites, so it isn't handed on to another session or agent";
+
+/** Why nothing but the Helpdesk tasks workspace runs an agent in ~/Helpdesk, where its conversations are. */
+export const HELPDESK_FOLDER_ONLY =
+  "~/Helpdesk holds the Helpdesk tasks workspace's conversations, which hold what you saw on admin sites, so they open only there: New workspace → Helpdesk tasks…";
+
+const HELPDESK_DIR = () => path.join(os.homedir(), "Helpdesk");
+
 /** The Helpdesk tasks workspace's folder, ~/Helpdesk, made when it isn't there: its conversations and --continue stay apart from home's. */
 export function helpdeskFolder(): string {
-  const dir = path.join(os.homedir(), "Helpdesk");
+  const dir = HELPDESK_DIR();
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/** Whether `dir` is ~/Helpdesk or inside it. */
+export function inHelpdeskFolder(dir: string): boolean {
+  const top = HELPDESK_DIR();
+  const rel = path.relative(top, path.resolve(dir));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
 /** Claude Code's `--help`, run in the user's login shell as a pane's is; throws, saying why, when it can't be read. */

@@ -2843,9 +2843,50 @@ pasted in.
 - Alone without CI: `uiLandscapeBar` (its create rows now include the row) and
   `uiLandscapeFirstRun` pass.
 
-**Left:** Continue in Codex, Brief and Second opinion are still offered on it. They
-are the user's own act, but they would carry its conversation (requests, page text)
-to an agent with tools.
+#### W19 rebase and hand-on as built
+**Rebased onto main 70c3c2d** (S8b). Its New menu renamed Import… to "Resume a
+conversation…" and added "Import conversations…" (`new:import-many`). Both sides were
+kept: Helpdesk tasks… still sits after Terminal…, and the tests' create rows carry all
+three. The conflicts were `main.tsx`'s shared-types import, `landscapeFirstRun`,
+`uiLandscapeBar` and `workspaceActions` tests.
+
+**Nothing hands its conversation on.** Its scrollback and transcript hold what Ryan saw
+on admin sites:
+- `workspaceActions` leaves out Continue in Codex…, Fresh session from a brief… and
+  Second opinion for `role: "tasks"`. Its menus, ⌘K (`paneRow`) and selection bar all
+  read that model, so none of them offer these.
+- Its context warning keeps Compact and Dismiss, without "Fresh session with a brief"
+  (`ContextWarning`'s `brief` is optional).
+- Main refuses it too (`HELPDESK_KEEPS_ITS_CONVERSATION`):
+  - `handoff:draft`, which would send a digest of the conversation to the other agent;
+  - `usage:brief`.
+- **Only it runs an agent in `~/Helpdesk`** (`HELPDESK_FOLDER_ONLY`, in `create`).
+  - Refused: any other agent session, or a terminal bringing a conversation back,
+    there or below. That covers the starts of a handoff, brief or review
+    (`companionSession` starts them in its folder), Import's Resume a conversation…
+    and Import conversations…, and a search hit's resume.
+  - A plain terminal there runs no agent and still opens.
+  - `import:list` doesn't list `~/Helpdesk`'s conversations.
+
+**Tests:**
+- `workspaceActions.test.ts`: running or exited, it has no hand-on rows, none for
+  ⌘K, and no "Hand on" heading; its other actions stay. Any other repo-less workspace
+  keeps the three rows.
+- `sessionLifecycle.test.ts`: a resume, a Codex handoff's start in a subfolder and a
+  terminal bringing a conversation back are refused in `~/Helpdesk`, starting no pty.
+  A plain terminal there and a folder beside it start.
+- `helpdesk.test.ts`: `inHelpdeskFolder`, with `..`, a sibling and the folder's
+  parent.
+
+**Checked:**
+- Each of the 4 new guards undone in turn fails its test: the model rows, the folder
+  refusal, the terminal case and the folder test.
+- `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 193
+  files pass and 33 skip; 3,178 tests pass and 301 skip. As before, vitest was linked
+  into the worktree for `leakGuard`, and the link was removed after. An earlier run at
+  load 13 timed out in one `teamTakeover` test, which passed alone.
+- Alone without CI: `uiLandscapeBar`, `uiLandscapeSwitch` and `uiLandscapeFirstRun`
+  pass.
 
 ### W20 · Who's calling, by process (main, no UI). Size M. Required for 1.7.0
 Citations here are at W1's review fixes 2 (on 1acf933), read, and the `lsof` timing

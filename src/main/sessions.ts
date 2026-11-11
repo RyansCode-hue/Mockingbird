@@ -10,7 +10,7 @@ import { createWorktree, checkoutBranch } from "./worktrees";
 import { currentBranch, git } from "./git";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, type LaunchContext } from "./agents";
-import { HELPDESK_IN_ROOM, HELPDESK_RULES, helpdeskFolder, readClaudeHelp } from "./helpdesk";
+import { HELPDESK_FOLDER_ONLY, HELPDESK_IN_ROOM, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
 import { which, whichSync, quote } from "./shell";
 import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { RoomSandboxWatch, SANDBOX_REPORT_MS } from "./roomSandboxWatch";
@@ -567,6 +567,9 @@ export class SessionManager {
       // bare terminal, so --continue/--resume can pick those up
       cwd = repoPath ?? (req.debrief ? expandHome(settings.workTrackerPath) : os.homedir());
     }
+    // any other agent there (a resumed conversation, a handoff, a brief, a review) would carry the Helpdesk tasks
+    // workspace's conversations to a session with Mockingbird's tools; a plain terminal runs no agent
+    if (!tasks && (!req.shell || req.shellResume) && inHelpdeskFolder(cwd)) throw new Error(HELPDESK_FOLDER_ONLY);
 
     const agent = agentFor(req.agent);
 

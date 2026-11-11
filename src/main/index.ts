@@ -45,7 +45,7 @@ import { WireTools } from "./wireTools";
 import { TicketTools } from "./ticketTools";
 import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
-import { helpdeskShareRefusal } from "./helpdesk";
+import { HELPDESK_KEEPS_ITS_CONVERSATION, helpdeskShareRefusal, inHelpdeskFolder } from "./helpdesk";
 import { reviewPrompt } from "./review";
 import { shouldNotify, toolsLostNotice } from "./notifications";
 import { composeRollup, weekBounds } from "./rollup";
@@ -999,6 +999,7 @@ handle("usage:resumeCost", (id: string): ResumeEstimate | null => {
 handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
   const s = sessionOf(String(id));
   if (s.shell) throw new Error("A terminal has no conversation to brief from");
+  if (s.role === "tasks") throw new Error(HELPDESK_KEEPS_ITS_CONVERSATION);
   const conv = s.conversation?.id ?? conversationsOf(s).at(-1);
   if (!conv) throw new Error("Couldn't read the conversation: Mockingbird hasn't seen this session's conversation yet");
   if (!transcripts) throw new Error(`Couldn't read the conversation: the conversation index isn't available${transcriptsProblem ? ` (${transcriptsProblem})` : ""}`);
@@ -1148,7 +1149,8 @@ handle("sessions:clearPhoneNote", (id) => sessions.setPhoneNote(String(id), null
 handle("debrief:run", (kind) => runDebrief(kind, sessions, store));
 // recent conversations of both agents come from the transcript index; without
 // it (it couldn't open), Claude's are still read from its own folder
-handle("import:list", () => importable(transcripts?.recentConversations() ?? listClaudeConversations(), sessions.list(), collab.list()));
+// the Helpdesk tasks workspace's conversations open only as it (HELPDESK_FOLDER_ONLY), so they aren't listed
+handle("import:list", () => importable(transcripts?.recentConversations() ?? listClaudeConversations(), sessions.list(), collab.list()).filter((c) => !inHelpdeskFolder(c.cwd)));
 handle("sessions:rename", (id, title) => sessions.rename(id, title));
 handle("sessions:renameGroup", (oldKey, newKey) => {
   const [from, to] = [String(oldKey), String(newKey)];
@@ -1603,6 +1605,7 @@ function companionSession(s: SessionInfo, agent: AgentKind, title: string, initi
 handle("handoff:draft", async (id) => {
   const s = sessionOf(String(id));
   if (s.shell) throw new Error("A terminal has no agent conversation to hand over");
+  if (s.role === "tasks") throw new Error(HELPDESK_KEEPS_ITS_CONVERSATION);
   const from: AgentKind = s.agent ?? "claude";
   const to = otherAgent(from);
   const bin = await installedBin(to);

@@ -1821,10 +1821,10 @@ function App() {
   const sessionAction = (s: SessionInfo, key: string): ModelAction | undefined => actionOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))), key);
   /** Its row for ⌘K (paneRow). */
   const paneAction = (s: SessionInfo, key: string): ModelAction | undefined => paneRow(s, wsEnv(s, tileOfSession(s.id)), key);
-  /** Its context warning chip, with the model's Fresh session from a brief row (off, saying why, where it can't be). */
+  /** Its context warning chip, with the model's Fresh session from a brief row (off, saying why, where it can't be; none on the Helpdesk tasks workspace). */
   const contextChipFor = (s: SessionInfo) => {
     const brief = sessionAction(s, "brief");
-    return !s.shell && !isRemote(s) && brief ? <ContextWarning session={s} brief={brief} /> : undefined;
+    return !s.shell && !isRemote(s) && (brief || s.role === "tasks") ? <ContextWarning session={s} brief={brief} /> : undefined;
   };
   /** What a workspace's header chips and footer show (WorkspaceNode). */
   const chromeFor = (s: SessionInfo): WorkspaceChrome => ({

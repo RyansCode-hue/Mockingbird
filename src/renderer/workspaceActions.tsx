@@ -178,12 +178,17 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
       onPick: env.hidePanel,
       ...(env.diffPanel ? { title: "Close the agent's diff side panel (same as its × or /diff)" } : { disabled: true, title: "The agent's diff panel isn't open" }),
     },
-    { section: "terminal", key: "undo", label: "Undo", menuLabel: "Undo the last turn…", icon: <UndoIcon />, ...can(tookIt(env.undo, "before undoing a turn here")) },
-    { section: "handon", key: "handoff", label: other, menuLabel: `Continue in ${other}…`, icon: <HandoffIcon />, ...can(tookIt(env.handoff, "to hand it on")) },
-    { section: "handon", key: "brief", label: "Brief", menuLabel: "Fresh session from a brief…", ...can(tookIt(env.brief, "to hand it on")) },
-    { section: "handon", key: "review", label: "Second opinion", menuLabel: `Second opinion from ${other}`, ...can(tookIt(env.secondOpinion, "to have its branch reviewed")) },
-    ...env.room.map((a): ModelAction => ({ ...a, section: "room" }))
+    { section: "terminal", key: "undo", label: "Undo", menuLabel: "Undo the last turn…", icon: <UndoIcon />, ...can(tookIt(env.undo, "before undoing a turn here")) }
   );
+  // the Helpdesk tasks workspace's conversation holds what its user saw on admin sites: nothing hands it on to another
+  // session, so its menus, ⌘K, its selection bar and its context warning offer none of these
+  if (s.role !== "tasks")
+    out.push(
+      { section: "handon", key: "handoff", label: other, menuLabel: `Continue in ${other}…`, icon: <HandoffIcon />, ...can(tookIt(env.handoff, "to hand it on")) },
+      { section: "handon", key: "brief", label: "Brief", menuLabel: "Fresh session from a brief…", ...can(tookIt(env.brief, "to hand it on")) },
+      { section: "handon", key: "review", label: "Second opinion", menuLabel: `Second opinion from ${other}`, ...can(tookIt(env.secondOpinion, "to have its branch reviewed")) }
+    );
+  out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
   if (dead && local) out.push({ section: "end", key: "resume", label: "Resume", menuLabel: "Resume", primary: true, title: "Start it again, resuming its conversation", ...can(tookIt(env.resume, "rather than resuming this copy")) });
   out.push({ section: "end", key: "close", label: "Close", menuLabel: dead ? "Close & clean up…" : "Close…", icon: <CloseIcon />, danger: true, onPick: env.close, ...theirs("close") });
   return out;

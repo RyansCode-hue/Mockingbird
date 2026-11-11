@@ -1355,6 +1355,24 @@ describe("the Helpdesk tasks workspace", () => {
     expect(ptys.at(-1)!.args.join(" ")).toContain(`exec ${quote(current)} `);
   });
 
+  it("is the only agent ~/Helpdesk runs: a resumed conversation, a handoff's, a brief's or a terminal bringing one back there are refused", async () => {
+    const { m } = await tasksManager();
+    const s = await m.create(tasksPane);
+    const n = ptys.length;
+    const why = "~/Helpdesk holds the Helpdesk tasks workspace's conversations, which hold what you saw on admin sites, so they open only there: New workspace → Helpdesk tasks…";
+    // as Import and a search hit resume one, and a handoff, brief or review start beside it (companionSession)
+    fs.mkdirSync(path.join(s.cwd, "notes"), { recursive: true });
+    await expect(m.create({ ...agentPane, cwd: s.cwd, resumeSessionId: "conv-h" })).rejects.toThrow(why);
+    await expect(m.create({ ...agentPane, agent: "codex", cwd: path.join(s.cwd, "notes"), initialPrompt: "Continue from this handoff" })).rejects.toThrow(why);
+    await expect(m.create({ repoPath: null, useWorktree: false, shell: true, cwd: s.cwd, shellResume: { agent: "claude", id: "conv-h" }, title: "t" })).rejects.toThrow(why);
+    expect(ptys.length).toBe(n);
+    // a plain terminal there runs no agent, and a folder beside it is any other
+    await m.create({ repoPath: null, useWorktree: false, shell: true, cwd: s.cwd, title: "t" });
+    fs.mkdirSync(path.join(os.homedir(), "Helpdesk-notes"), { recursive: true });
+    await m.create({ ...agentPane, cwd: path.join(os.homedir(), "Helpdesk-notes") });
+    expect(ptys.length).toBe(n + 2);
+  });
+
   it("is left out of the daily digest, so nothing it read reaches another agent", async () => {
     const { m } = await tasksManager();
     await m.create(tasksPane);

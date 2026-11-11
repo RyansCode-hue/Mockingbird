@@ -1,5 +1,7 @@
+import * as os from "os";
+import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { CHROME_NOT_CONNECTED, HELPDESK_RULES, helpdeskShareRefusal } from "../src/main/helpdesk";
+import { CHROME_NOT_CONNECTED, HELPDESK_RULES, helpdeskShareRefusal, inHelpdeskFolder } from "../src/main/helpdesk";
 import type { SessionInfo } from "../src/shared/types";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
@@ -16,6 +18,14 @@ describe("sharing an area as a team room", () => {
   it("goes ahead for any other area", () => {
     expect(helpdeskShareRefusal("5101", [session("a"), session("h", { role: "tasks", taskGroup: "Helpdesk" })])).toBeNull();
     expect(helpdeskShareRefusal("5101", [session("a", { debrief: true })])).toBeNull();
+  });
+});
+
+describe("~/Helpdesk", () => {
+  it("is the folder and what's inside it, not a folder beside it or above it", () => {
+    const top = path.join(os.homedir(), "Helpdesk");
+    expect([top, `${top}/`, path.join(top, "notes"), path.join(top, "a", "..", "b")].map(inHelpdeskFolder)).toEqual([true, true, true, true]);
+    expect([os.homedir(), `${top}-notes`, path.join(top, ".."), path.join(os.homedir(), "Code"), "/Helpdesk"].map(inHelpdeskFolder)).toEqual([false, false, false, false, false]);
   });
 });
 
