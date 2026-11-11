@@ -1,4 +1,4 @@
-import { isWorkItemId, ticketIdOf, topOfKey, totalTokens, type AgentKind, type GroupMeter, type Meters, type SessionInfo, type TokenCounts, type UsageReport } from "../shared/types";
+import { ticketOfSession, topOfKey, totalTokens, type AgentKind, type GroupMeter, type Meters, type SessionInfo, type TokenCounts, type UsageReport } from "../shared/types";
 import { weightsFor } from "../shared/contextBudget";
 import type { UsageRow } from "./transcripts";
 
@@ -46,13 +46,6 @@ export const conversationsOf = (s: Pick<SessionInfo, "conversations" | "conversa
 /** A pane's conversations once `id` is its latest: moved to the end, keeping the newest 50. */
 export const withConversation = (s: Pick<SessionInfo, "conversations" | "conversation">, id: string): string[] =>
   [...conversationsOf(s).filter((c) => c !== id), id].slice(-50);
-
-/** The ticket a session counts toward: its own, or the group it's in when that is named after a work item. */
-export function ticketOfSession(s: Partial<Pick<SessionInfo, "ticketId" | "taskGroup">>): string | null {
-  if (s.ticketId) return ticketIdOf(s.ticketId);
-  const top = s.taskGroup ? topOfKey(s.taskGroup) : "";
-  return top && isWorkItemId(top) ? top : null;
-}
 
 export function computeMeters(o: {
   /** Live and resumable sessions: a ticket's usage counts its closed-but-resumable sessions too. */

@@ -1838,6 +1838,22 @@ const api: Record<string, (...a: any[]) => any> = {
     return p;
   },
   pipelineDraftPost: async (id: string, draftId: string) => api.pipelineDraftDrop(id, draftId),
+  // as main's: Approve only from stakeholder testing, a dismissed request gone; no agent runs here to be told
+  pipelineApprove: async (id: string) => {
+    const p = pipelines[id];
+    if (!p) return err(`#${id} isn't tracked in the ticket pipeline`);
+    if (p.stage !== "stakeholder") return err(`#${id} is at ${p.stage}: Approve is for a ticket in stakeholder testing`);
+    const asked = p.prs.filter((x) => x.target === "dev").at(-1)?.by ?? null;
+    return { pipeline: setStage(id, "approved"), told: { to: asked, title: null, notTold: "UI preview: no agent is told" } };
+  },
+  pipelineRequestDismiss: async (id: string, requestId: string) => {
+    const p = pipelines[id];
+    const request = p?.requests?.find((r) => r.id === requestId);
+    if (!p || !request) return err(`#${id} has no pull request request ${requestId} (it may have been answered or replaced)`);
+    p.requests = p.requests!.filter((r) => r.id !== requestId);
+    pipelinesChanged();
+    return { pipeline: p, told: { to: request.from, title: request.fromTitle, notTold: "UI preview: no agent is told" } };
+  },
   pipelinePrPreflight: async () => ({ branch: "5101-orgDropdowns", base: "dev", bases: ["dev", "main"], dirtyFiles: 2, commits: 1, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: null, existing: null, lookupError: null }),
   pipelinePrDescribe: async () => later({ description: "## Summary\nThe org dropdown remembers each user's last org.\n\n## Changes\n- Store and read the last org\n\n## Testing\nNot stated", agent: "claude" }, 800),
   pipelinePrCreate: async () => err("UI preview: no pull request is opened"),

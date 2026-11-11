@@ -1003,6 +1003,13 @@ export const ticketIdOf = (id: string): string => id.replace(/^#/, "");
 /** An Azure DevOps work item id: digits only, as a group named after a ticket is. */
 export const isWorkItemId = (id: string): boolean => /^\d+$/.test(id);
 
+/** The ticket a session counts toward: its own, or its group's when that's named after a work item (as the meters count). */
+export function ticketOfSession(s: Partial<Pick<SessionInfo, "ticketId" | "taskGroup">>): string | null {
+  if (s.ticketId) return ticketIdOf(s.ticketId);
+  const top = s.taskGroup ? topOfKey(s.taskGroup) : "";
+  return top && isWorkItemId(top) ? top : null;
+}
+
 export function slugBranch(ticketId: string, ticketTitle: string): string {
   const slug = ticketTitle
     .trim()
@@ -1058,7 +1065,38 @@ export interface PipelinePr {
   at: number;
   /** The Summary section of its description, for the ticket comment and the comms draft. */
   summary?: string;
+  /**
+   * The session that asked for it, by id: the one whose request_pr it answered, else the one it was opened from. Its
+   * approval's line goes there (pipeline:approve). Absent on PRs from before it was kept.
+   */
+  by?: string;
 }
+
+/** An agent's request for a pull request (request_pr), held until the user opens it or dismisses it. One per target. */
+export interface PipelineRequest {
+  id: string;
+  target: PrTarget;
+  /** The session that asked, by id, and its title then. */
+  from: string;
+  fromTitle: string;
+  /** Written by the agent, redacted. */
+  title: string;
+  description: string;
+  at: number;
+}
+
+/** An agent's report on a gate item (gate_notes): what it did, and its evidence. */
+export interface GateNote {
+  by: string;
+  note: string;
+  at: number;
+}
+
+/**
+ * Who a window call's line to an agent reached (pipeline:approve, pipeline:request:dismiss): `told` is how it went,
+ * as deliverAgentMessage says; `notTold` why nobody was, and `reopen` when reopening the session would let it hear.
+ */
+export type AgentTold = { to: string; title: string; told: string } | { to: string | null; title: string | null; notTold: string; reopen?: true };
 
 /** A comment drafted when a ticket reaches a stage; it posts to ADO only when the user clicks Post. */
 export interface CommentDraft {
@@ -1066,6 +1104,8 @@ export interface CommentDraft {
   stage: StoredStage;
   text: string;
   at: number;
+  /** Who wrote it, when an agent did ("Verifier's agent"): an ADO comment is read by others. */
+  by?: string;
 }
 
 /** Who ticked a gate's item, and when. */
@@ -1085,7 +1125,8 @@ export interface TicketPipeline {
   /** Every move; `by` is who made it (BY_YOU for the window), absent on moves from before it was kept. */
   history: { at: number; stage: StoredStage; note?: string; by?: string }[];
   prs: PipelinePr[];
-  feedback: { at: number; text: string }[];
+  /** `by`: who wrote it, when it isn't the user (an agent's move back to Coding). */
+  feedback: { at: number; text: string; by?: string }[];
   drafts: CommentDraft[];
   /** Promotion-gate checklist ticks, keyed "<gate>:<item>". Only `true` is kept: unticking deletes the key. */
   checks: Record<string, boolean>;
@@ -1094,6 +1135,10 @@ export interface TicketPipeline {
    * counts only while its item is ticked (tickOf), since 1.6.0 unticks without touching it.
    */
   checkedBy?: Record<string, GateTick>;
+  /** Agents' reports against the checklists, keyed "<gate>:<item>" as `checks` (gate_notes). */
+  gateNotes?: Record<string, GateNote>;
+  /** Agents' pull request requests waiting for the user (request_pr): one per target. */
+  requests?: PipelineRequest[];
 }
 
 /** Who ticked a gate item that's ticked; null for one that isn't, or one ticked before authors were kept. */
@@ -1103,7 +1148,7 @@ export const tickOf = (p: TicketPipeline, key: string): GateTick | null => (p.ch
  * The promotion gates (local → dev/UAT → staging → production) and what each
  * should have before a ticket moves on, plus the clean-code review.
  */
-export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketStage; items: { key: string; label: string }[] }[] = [
+export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketStage; items: { key: string; label: string; person?: true }[] }[] = [
   {
     id: "dev",
     title: "Before the PR to dev/UAT",
@@ -1122,8 +1167,8 @@ export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketS
     title: "Before the PR to main",
     at: "approved",
     items: [
-      { key: "peer-review", label: "Peer review completed" },
-      { key: "security-reviewed", label: "Security considerations doc reviewed, not just drafted" },
+      { key: "peer-review", label: "Peer review completed", person: true },
+      { key: "security-reviewed", label: "Security considerations doc reviewed, not just drafted", person: true },
       { key: "endpoints", label: "New endpoints verified for the right auth state" },
       { key: "secrets", label: "No hardcoded secrets, credentials or environment-specific values" },
     ],
@@ -1134,7 +1179,7 @@ export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketS
     at: "prod-test",
     items: [
       { key: "inventory", label: "Endpoint inventory updated for new routes" },
-      { key: "sign-off", label: "Approver sign-off obtained" },
+      { key: "sign-off", label: "Approver sign-off obtained", person: true },
       { key: "rollback", label: "Rollback plan noted, if the change is high risk" },
     ],
   },
@@ -1153,8 +1198,9 @@ export const gateTicks = (p: TicketPipeline): number => gateKeysTicked(p).length
 export const clearsGates = (from: StoredStage, to: TicketStage): boolean => to === "coding" && from !== "ba" && from !== "coding";
 
 /**
- * Untick every gate item and forget who ticked it, for a ticket going back to Coding. Keys of gates this build
- * doesn't know are left alone. Returns the line its history entry keeps, or null when nothing was ticked.
+ * Untick every gate item and forget who ticked it and agents' notes on it, for a ticket going back to Coding. Keys of
+ * gates this build doesn't know are left alone. Returns the line its history entry keeps, or null when nothing was
+ * ticked.
  */
 export function clearGateTicks(p: TicketPipeline): string | null {
   const counts = GATES.map((g) => {
@@ -1162,6 +1208,7 @@ export function clearGateTicks(p: TicketPipeline): string | null {
     const ticked = gateKeysTicked(p).filter((k) => k.startsWith(prefix)).length;
     for (const k of Object.keys(p.checks)) if (k.startsWith(prefix)) delete p.checks[k];
     for (const k of Object.keys(p.checkedBy ?? {})) if (k.startsWith(prefix)) delete p.checkedBy![k];
+    for (const k of Object.keys(p.gateNotes ?? {})) if (k.startsWith(prefix)) delete p.gateNotes![k];
     return { title: g.title, ticked };
   }).filter((c) => c.ticked > 0);
   return counts.length ? `Gate ticks cleared: ${counts.map((c) => `${c.title} (${c.ticked})`).join(", ")}` : null;

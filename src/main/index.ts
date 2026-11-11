@@ -42,6 +42,8 @@ import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, claudeTranscriptOf, codexRolloutOf } from "./agentFiles";
 import { conversationFiles, handoffKickoff, handoffPrompt, replyOfConversation, repoState, transcriptDigest, transcriptLines, type ConversationLookup } from "./handoff";
 import { WireTools } from "./wireTools";
+import { TicketTools } from "./ticketTools";
+import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify, toolsLostNotice } from "./notifications";
@@ -656,6 +658,7 @@ app.whenReady().then(() => {
   messaging.setRoomHandler((roomId, seat, op, args) => collab.handleRoomRequest(roomId, seat, op, args));
   messaging.setWires(wires);
   messaging.setWireTools(wireTools);
+  messaging.setTicketTools(ticketTools);
   // team rooms: team chat
   teamRoom.start(team.transport, messaging);
   const beforeTeamRoom = sessions.onChanged;
@@ -1459,6 +1462,15 @@ const pipelineDo = async <T,>(fn: () => T | Promise<T>): Promise<T> => {
   pipelineChanged();
   return r;
 };
+// the agents' set_stage, request_pr and write_patch_notes (routed by messaging), and the window's answers to them
+const ticketTools = new TicketTools({
+  pipeline,
+  sessions,
+  submitOnDelivery: submitsAgentMessages,
+  takenOver: (id, doing) => takeover?.takenOverRefusal(id, doing) ?? null,
+  onChanged: pipelineChanged,
+  log: logError,
+});
 const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
 
 handle("pipeline:all", () => pipeline.all());
@@ -1468,6 +1480,9 @@ handle("pipeline:check", (id, key, value) => pipelineDo(() => pipeline.setCheck(
 handle("pipeline:draft:add", (id, stage, text) => pipelineDo(() => pipeline.addDraft(String(id), stage, String(text ?? ""))));
 handle("pipeline:draft:edit", (id, draftId, text) => pipelineDo(() => pipeline.editDraft(String(id), String(draftId), String(text ?? ""))));
 handle("pipeline:draft:drop", (id, draftId) => pipelineDo(() => pipeline.dropDraft(String(id), String(draftId))));
+// stage 6's approval, and its line to the agent that asked for the PR to dev; an agent's PR request dismissed, with a note
+handle("pipeline:approve", (id) => pipelineDo(() => ticketTools.approve(String(id))));
+handle("pipeline:request:dismiss", (id, requestId, note) => pipelineDo(() => ticketTools.dismissRequest(String(id), String(requestId), typeof note === "string" ? note : "")));
 // posting is the one step that writes to ADO, and only for the draft the user picked
 handle("pipeline:draft:post", (id, draftId) =>
   pipelineDo(async () => {
@@ -1519,7 +1534,7 @@ handle("pipeline:pr:create", (sessionId, ticketId, req) =>
     const description = String(req?.description ?? "");
     return pipeline.addPr(
       String(ticketId),
-      { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined },
+      { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined, by: s.id },
       req?.ticketTitle ? String(req.ticketTitle) : undefined,
       BY_YOU
     );
@@ -1893,7 +1908,7 @@ handle("pipeline:comms", async (ticketId, title, details) => {
   const { agent, bin } = await askingAgent();
   const prompt = [
     `Write a short announcement for the people who use this system about a change that just shipped: ticket #${ticketId} "${String(title ?? "")}".`,
-    "Plain language, no internal jargon, branch names or ticket numbers; 3 to 6 sentences: what changed, who it affects, and anything they need to do.",
+    PATCH_NOTES_GUIDANCE,
     "Reply with the announcement only.",
     "",
     details ? `The ticket:\n${String(details).slice(0, 6000)}` : "",

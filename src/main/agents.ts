@@ -8,6 +8,7 @@ import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
 import { readSlice } from "./fileOps";
 import { HOUSE_WRITE_TOOLS } from "../shared/team/house";
 import { MIGRATION_TOOL } from "../shared/team/migrations";
+import { TICKET_TOOL } from "./ticketToolSchemas";
 import { WIRE_TOOL } from "./wireToolSchemas";
 
 export interface LaunchContext {
@@ -105,7 +106,7 @@ const claude: AgentAdapter = {
     // --mcp-config adds to the user's own servers (outside a room); the allow
     // rule spares a permission prompt on every message
     if (ctx.mcp) {
-      const tools = [...new Set<string>([MCP_TOOL.listSessions, MCP_TOOL.sendMessage, MCP_TOOL.listLinks, ...Object.values(WIRE_TOOL), ...(ctx.allowTools ?? [])])];
+      const tools = [...new Set<string>([MCP_TOOL.listSessions, MCP_TOOL.sendMessage, MCP_TOOL.listLinks, ...Object.values(WIRE_TOOL), ...Object.values(TICKET_TOOL), ...(ctx.allowTools ?? [])])];
       args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", tools.map(claudeToolName).join(","));
     }
     if (ctx.denyReads?.length) args.push("--disallowedTools", ...ctx.denyReads);

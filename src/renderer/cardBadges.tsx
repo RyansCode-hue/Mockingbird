@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
-import { formatShare, formatTokens, isErr, isWorkItemId, stageLabel, ticketIdOf, topOfKey, totalTokens, type BranchStat, type IpcResult, type LastReply, type SessionInfo, type SessionMeter, type TicketPipeline } from "../shared/types";
+import { formatShare, formatTokens, isErr, stageLabel, ticketOfSession, totalTokens, type BranchStat, type IpcResult, type LastReply, type SessionInfo, type SessionMeter, type TicketPipeline } from "../shared/types";
 import { agoShort, plural } from "../shared/format";
 import { onFolderChanged } from "./folderWatch";
 import { settled } from "./settled";
@@ -47,13 +47,6 @@ export function diffBadge(read: Read<BranchStat> | null): Badge | null {
     lines: { add: d.insertions, del: d.deletions },
     title: `${plural(d.files, "file")} changed since it forked from ${d.base}: ${d.insertions} lines added, ${d.deletions} removed (its commits and uncommitted changes; new files count once they're added)`,
   };
-}
-
-/** The ticket a session counts toward: its own, or its group's when that's named after a work item (as the meters count). */
-export function ticketOfSession(s: Pick<SessionInfo, "ticketId" | "taskGroup">): string | null {
-  if (s.ticketId) return ticketIdOf(s.ticketId);
-  const top = s.taskGroup ? topOfKey(s.taskGroup) : "";
-  return top && isWorkItemId(top) ? top : null;
 }
 
 /**

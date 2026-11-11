@@ -2169,6 +2169,124 @@ write_patch_notes({ text })
   `openPr` or `addComment` (spies); the tool list pinned; approval's line queued for
   a busy Coder.
 
+#### W14 as built
+
+**The tools.** `src/main/ticketToolSchemas.ts` holds the names, schemas and limits,
+as `wireToolSchemas.ts` does, so `messaging.ts` (the script's list, after the wire
+tools) and `agents.ts` (Claude's `--allowedTools`) read one list. Every schema has
+`additionalProperties: false`, and `onlyArgs` (now exported from `wireTools.ts`)
+refuses an extra argument by name, so `ticket` or `from` is refused, never read.
+`messaging.ts` routes them after the wire tools, as the token's session, says
+"aren't ready" until `setTicketTools`, and puts them on the room's line: a room
+pane outside its sandbox gets `ROOM_SANDBOX_REFUSAL`, as W2's tools do
+(`teamAgents.test.ts`). `src/main/ticketTools.ts` (`TicketTools`) answers them, every
+answer synchronous.
+
+**Whose ticket.** `ticketOfSession` moved to `src/shared/types.ts` (the copies in
+`cardBadges.tsx` and `meters.ts` were the same function). Each tool refuses, in this
+order, an extra argument, a workspace on no ticket, a copy taken over (the
+take-over's words), and a ticket with no record in pipeline.json: an agent never
+starts one. The store's agent methods refuse an untracked record too, and check
+the stage rules again inside `change()`, so a refusal writes nothing.
+
+**`by`.** An agent's change is marked `"<title>'s agent"` (`agentBy`): history, ticks,
+gate notes, feedback and its patch notes draft. It can't read as "you" whatever the
+pane is called. `PipelineRequest.from` and `PipelinePr.by` are session ids, since
+approval delivers to one.
+
+**`set_stage`** (`stageRefusal`, `goesBack`, pure, in `pipeline.ts`). The schema's
+`stage` enum is the four an agent can reach (`coding`, `local-test`,
+`stakeholder`, `comms`); main refuses whatever is sent. The allowed moves are pinned
+as a matrix over every pair of stages: forward `ba → coding`, `coding → local-test`,
+`dev-test → stakeholder`, `prod-test → comms`, and back to Coding from anywhere past it
+but Done, with a note. Refused: Done, Approved, the PR stages, BA, skipping, anything
+forward from step 6 (stakeholder, approved or PR to main), back to anything but
+Coding, back without a note, a move from Done or from a stage this build doesn't
+know. A forward move drafts the stage's comment (never quoting the agent's note: the
+note goes in history only). A move back keeps the note as feedback with `by`, drafts
+nothing, and clears the checklists as W13's moves to Coding do. A move fires nothing
+but `pipeline:changed`.
+
+**`gate_notes`** (on `set_stage` and `request_pr`): `[{ item, note, done? }]`, `item`
+being `<gate>:<item>` (the schema's enum is every key). Each item must be on the
+checklist the call is about: for `set_stage`, the gate at the stage it's at or moves
+to; for `request_pr`, dev's or staging's. A move back takes none. Notes are kept in
+`gateNotes`, redacted. `done: true` ticks the item as the agent's, unless it's
+ticked already, so a person's tick stays theirs. Ticking a person's item
+(`person: true` in `GATES`: peer review, security doc reviewed, sign-off) is refused.
+A note on one, unticked, is kept. Unknown, duplicate, empty or malformed entries are
+refused, and so is the whole call. The person can untick anything through
+`pipeline:check`. `clearGateTicks` now drops the gate's notes with its ticks.
+
+**`request_pr`.** Dev from Coding or Local testing, main only at `approved`. Held in
+`requests`, one per target: a newer request replaces the older, and the reply names
+whose it replaced. The title goes on one line (200 characters at most), the
+description is at most 8,000 characters, and both are redacted. `addPr` answers
+the request: it goes, and the PR's `by` is the asker's, else the session the form
+opened it from (`pipeline:pr:create` passes `s.id`).
+
+**`write_patch_notes`.** At `prod-test` or `comms` only, at most 4,000 characters,
+refused when `holdsPrivateKey`, redacted, with the count in the reply. It replaces
+every comms draft an agent wrote (`by` set) and leaves the person's own.
+`PATCH_NOTES_GUIDANCE` is the one copy of `pipeline:comms`' guidance words.
+
+**Text an agent writes** (notes, titles, descriptions, patch notes) goes through one
+helper, `agentText`. It trims the text, and refuses it empty, over its limit or
+holding a private key. Then it runs W2's `redactSecrets`.
+
+**The window.**
+- `pipeline:approve(id)` is refused unless the ticket is at Stakeholder testing. It
+  moves it to Approved `by: "you"`. Then it tells the latest PR to dev's `by` one
+  line in Mockingbird's words, through `deliverAgentMessage`, so a busy Coder gets
+  it at its turn's end: prepare the PR to main, call `request_pr` with `main`.
+- `pipeline:request:dismiss(id, requestId, note)` drops the request and tells its
+  `from`, with the person's note after the label.
+- Both answer `{ pipeline, told: AgentTold }`. That's how it went, or why nobody was
+  told: no PR to dev says who asked, the asker is taken over, or it isn't running
+  (`reopen: true` when it's closed or exited). Nothing reopens by itself.
+- Both are in `preload.ts` and `stub.ts`. The stub tells no agent.
+
+**Outside the file list:** `src/main/ticketToolSchemas.ts` (new),
+`src/renderer/cardBadges.tsx` and `src/main/meters.ts` (`ticketOfSession` gone to
+shared), `wireTools.ts` (`onlyArgs` exported), and the tool list pins in
+`messaging.test.ts`, `agents.test.ts` and `teamAgents.test.ts`.
+
+**Tests:** `test/ticketTools.test.ts` covers:
+- the move matrix and each refusal's words;
+- each refusal through the tool leaving the file byte-for-byte as it was;
+- another ticket, no ticket, untracked and taken over;
+- gate notes and ticks: an agent's tick, the person's kept, untick, person's items;
+- requests replaced, and answered by a PR;
+- patch notes' stages, cap, redaction and replacement;
+- one guidance constant;
+- spies on `scmPush`, `openPr`, `addComment`, `updateWorkItem` and `fetch`
+  through every tool, the approval and the dismissal, and a read of the tools'
+  imports;
+- dismissal's line;
+- approval through the real `SessionManager`, the line queued while the Coder
+  works and typed in as its turn ends, and the not-running and taken-over answers;
+- the tools through the real MCP server;
+- 1.6.0 keeping `requests`, `gateNotes` and the new `by`s through its own writes.
+
+**Where the plan was off, or this reads it:**
+- Two refusals were added beyond section 4's list. `dev-test` and `prod-test` are
+  set only by the merge (W16) or a click, as the stage table says, so the stage never
+  claims a merge. A move from Done is the person's Reopen.
+- "Anything forward from `stakeholder`" is read as from step 6, so `approved` and
+  `pr-main` can't be moved on by an agent either.
+- `request_pr`'s text is redacted and private keys refused, as patch notes are. A
+  PR's description is read by others too.
+- Gate notes' item names are qualified (`dev:tests`), matching `checks`' keys.
+- `pipeline:approve` lives in `TicketTools`: `pipeline.test.ts` pins exactly one
+  `pipeline.setStage` call in `index.ts`, and that one is the rail's.
+- Cited lines had moved by a67814b: `pipeline:comms`' guidance was `index.ts:1896`,
+  not `:1779–1780`, and `pipeline:pr:create` was `:1494`.
+
+**Checks:** `npm run typecheck`, `CI=true npm test` (exit 0), `npm run build`, and
+`MB_E2E_APP=1 npx vitest run test/wiresApp.e2e.test.ts`. In a worktree with no
+`node_modules`, `leakGuard.test.ts` can't find `node_modules/vitest/vitest.mjs`
+under the worktree. It passes once that resolves (a link to the main checkout's).
+
 ### W15 · PR requests, patch notes and your stages, in the window. Size M
 - Needs you gains `pr` (rank 0: "Coder asks to open the PR to dev · #4182") and
   `ticket` (rank 1: "#4182 is ready for your stakeholder testing", "#4182's patch

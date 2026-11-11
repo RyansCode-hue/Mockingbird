@@ -15,6 +15,7 @@ import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
 import { TEAMMATE_TOOL } from "../src/shared/team/overlaps";
 import { HOUSE_TOOLS } from "../src/shared/team/house";
 import { WIRE_TOOL } from "../src/main/wireToolSchemas";
+import { TICKET_TOOL } from "../src/main/ticketToolSchemas";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, title: id, ticketTitle: null, repoPath: `/code/backoffice`, branch: `${id}-branch`, taskGroup: "5110", status: "idle", agent: "claude", cwd: `/w/${id}`, kind: "work", waitingReason: null, ...over }) as SessionInfo;
@@ -227,8 +228,8 @@ describe("a Claude session that joined its room while it was running", () => {
       expect(listed.result.teammates_error).toBe(ROOM_SANDBOX_REFUSAL);
       expect(listed.result.sessions.some((s: any) => s.remote)).toBe(false);
       expect((await ask({ op: "send_message", from: "joined", args: { to: rid("api", nick), message: "hi" } })).error).toBe(ROOM_SANDBOX_REFUSAL);
-      // the room's tools, and its wires and what they read
-      for (const op of [ARTIFACT_TOOL.list, TEAMMATE_TOOL.changes, HOUSE_TOOLS.list, "list_links", ...Object.values(WIRE_TOOL)]) {
+      // the room's tools, its wires and what they read, and its ticket's record
+      for (const op of [ARTIFACT_TOOL.list, TEAMMATE_TOOL.changes, HOUSE_TOOLS.list, "list_links", ...Object.values(WIRE_TOOL), ...Object.values(TICKET_TOOL)]) {
         expect((await ask({ op, from: "joined", args: { from: "front", summary: "done" } })).error, op).toBe(ROOM_SANDBOX_REFUSAL);
       }
       // and what its teammates send it, which would become its prompt

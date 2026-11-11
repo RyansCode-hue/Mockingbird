@@ -118,7 +118,7 @@ export interface WireToolsOptions {
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /** `args` naming only `allowed`, or why not: a tool's schema says so, and main holds to it whatever a caller sends. */
-function onlyArgs(tool: string, args: Record<string, unknown>, allowed: readonly string[]): string | null {
+export function onlyArgs(tool: string, args: Record<string, unknown>, allowed: readonly string[]): string | null {
   const extra = Object.keys(args).filter((k) => !allowed.includes(k));
   return extra.length ? `${tool} takes ${allowed.join(" and ")}, nothing else (not ${extra.map((k) => JSON.stringify(plainLine(k, 40))).join(", ")}).` : null;
 }

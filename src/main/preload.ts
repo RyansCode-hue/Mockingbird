@@ -1,4 +1,4 @@
-import type { IpcResult, MissingFolder, SessionInfo, UiCommand, WorktreeCleanupMode } from "../shared/types";
+import type { AgentTold, IpcResult, MissingFolder, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
@@ -273,6 +273,10 @@ const api = {
   pipelineDraftEdit: (id: string, draftId: string, text: string) => ipcRenderer.invoke("pipeline:draft:edit", id, draftId, text),
   pipelineDraftDrop: (id: string, draftId: string) => ipcRenderer.invoke("pipeline:draft:drop", id, draftId),
   pipelineDraftPost: (id: string, draftId: string) => ipcRenderer.invoke("pipeline:draft:post", id, draftId),
+  // stage 6's Approve, telling the agent that asked for the PR to dev to prepare the one to main; an agent's PR request dismissed
+  pipelineApprove: (id: string): Promise<IpcResult<{ pipeline: TicketPipeline; told: AgentTold }>> => ipcRenderer.invoke("pipeline:approve", id),
+  pipelineRequestDismiss: (id: string, requestId: string, note?: string): Promise<IpcResult<{ pipeline: TicketPipeline; told: AgentTold }>> =>
+    ipcRenderer.invoke("pipeline:request:dismiss", id, requestId, note),
   pipelinePrPreflight: (sessionId: string, ticketId: string, target: string) => ipcRenderer.invoke("pipeline:pr:preflight", sessionId, ticketId, target),
   pipelinePrDescribe: (sessionId: string, ticketId: string, title: string, base: string) => ipcRenderer.invoke("pipeline:pr:describe", sessionId, ticketId, title, base),
   pipelinePrCreate: (sessionId: string, ticketId: string, req: unknown) => ipcRenderer.invoke("pipeline:pr:create", sessionId, ticketId, req),

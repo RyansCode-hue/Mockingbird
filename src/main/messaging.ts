@@ -14,6 +14,7 @@ import { isTeamChangesTool, TEAM_CHANGES_TOOL_SCHEMAS, teamChangesToolCall } fro
 import { outsideRoomSandbox, parseRemoteId, remoteSessionId, ROOM_SANDBOX_REFUSAL } from "../shared/team/livePanes";
 import { ROOMS_STARTING } from "../shared/wires";
 import { McpTokens } from "./mcpTokens";
+import { isTicketTool, TICKET_TOOL_SCHEMAS } from "./ticketToolSchemas";
 import { isWireTool, WIRE_TOOL_SCHEMAS } from "./wireToolSchemas";
 import { systemPeerCheck, type PeerCheck } from "./peerCheck";
 
@@ -200,6 +201,7 @@ const SESSION_TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   ...${JSON.stringify(WIRE_TOOL_SCHEMAS)},
+  ...${JSON.stringify(TICKET_TOOL_SCHEMAS)},
   ...${JSON.stringify(HOUSE_TOOL_SCHEMAS)},
   ${ARTIFACT_TOOL_SCHEMAS.map((t) => JSON.stringify(t)).join(",\n  ")},
   ...${JSON.stringify(TEAM_CHANGES_TOOL_SCHEMAS)},
@@ -380,6 +382,11 @@ export interface WireToolCalls {
   call(me: SessionInfo, op: string, args: Record<string, unknown>): Promise<Reply>;
 }
 
+/** What set_stage, request_pr and write_patch_notes answer from (src/main/ticketTools.ts), on the ticket of the caller its token names. */
+export interface TicketToolCalls {
+  call(me: SessionInfo, op: string, args: Record<string, unknown>): Promise<Reply>;
+}
+
 /** Teammates' room sessions, reached through the team room (src/main/team/agentBridge.ts). */
 export interface RemoteAgents {
   /** The team room a local session is in, or null: only room sessions see and message teammates' sessions. */
@@ -408,6 +415,7 @@ export class Messaging {
   private remote: RemoteAgents | null = null;
   private wires: WireLinks | null = null;
   private wireTools: WireToolCalls | null = null;
+  private ticketTools: TicketToolCalls | null = null;
   /**
    * When refusals were last logged: per running launch whose server lost its token, per pane for the rest that name one,
    * and once for all that name none. And the launches (by token file) whose loss the user has been told of.
@@ -430,6 +438,11 @@ export class Messaging {
   /** The wire tools register here; until then they say they aren't ready. */
   setWireTools(t: WireToolCalls): void {
     this.wireTools = t;
+  }
+
+  /** The ticket tools register here; until then they say they aren't ready. */
+  setTicketTools(t: TicketToolCalls): void {
+    this.ticketTools = t;
   }
 
   /** Team rooms register here; until then only this laptop's sessions are listed and reachable. */
@@ -623,9 +636,10 @@ export class Messaging {
     const live = this.live();
     const me = live.find((s) => s.id === req.from);
     if (!me) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
-    // what crosses the room's line for it: the room's tools, and its wires and what they read
+    // what crosses the room's line for it: the room's tools, its wires and what they read, and its ticket's record
     const offLine = this.offRoomLine(me);
-    const roomLine = isHouseTool(req.op) || req.op === ARTIFACT_TOOL.list || req.op === ARTIFACT_TOOL.read || isTeamChangesTool(req.op) || req.op === MCP_TOOL.listLinks || isWireTool(req.op);
+    const roomLine =
+      isHouseTool(req.op) || req.op === ARTIFACT_TOOL.list || req.op === ARTIFACT_TOOL.read || isTeamChangesTool(req.op) || req.op === MCP_TOOL.listLinks || isWireTool(req.op) || isTicketTool(req.op);
     if (offLine && roomLine) return { error: offLine };
 
     // team rooms: the House board — it answers "not in a team room" for sessions outside one
@@ -637,6 +651,8 @@ export class Messaging {
     if (req.op === MCP_TOOL.listLinks) return this.wires ? this.wires.linksFor(me) : { error: "Wires aren't ready yet — try again in a moment." };
     // wires: finishing a step and reading along a link, always as the token's session
     if (isWireTool(req.op)) return this.wireTools ? this.wireTools.call(me, req.op, req.args ?? {}) : { error: "Wires aren't ready yet — try again in a moment." };
+    // tickets: moving its own ticket's stage, asking for a PR, writing patch notes, always on the token's session's ticket
+    if (isTicketTool(req.op)) return this.ticketTools ? this.ticketTools.call(me, req.op, req.args ?? {}) : { error: "Ticket tools aren't ready yet — try again in a moment." };
 
     if (req.op === MCP_TOOL.listSessions) {
       // only this Mac's sessions on its side of a team room's line, which send_message reaches; what's left out isn't

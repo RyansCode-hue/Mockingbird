@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BranchStat, LastReply, SessionMeter, TicketPipeline } from "../src/shared/types";
-import { FAILED, costBadge, didLine, diffBadge, logFailure, prBadge, readOf, readStore, repeatsDid, ticketOfSession, type Read } from "../src/renderer/cardBadges";
+import { ticketOfSession, type BranchStat, type LastReply, type SessionMeter, type TicketPipeline } from "../src/shared/types";
+import { FAILED, costBadge, didLine, diffBadge, logFailure, prBadge, readOf, readStore, repeatsDid, type Read } from "../src/renderer/cardBadges";
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;

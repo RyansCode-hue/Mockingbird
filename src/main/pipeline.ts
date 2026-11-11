@@ -1,5 +1,18 @@
 import * as crypto from "crypto";
-import { type CommentDraft, type PipelinePr, type TicketPipeline, type TicketStage, clearGateTicks, clearsGates, isTicketStage, stageStep } from "../shared/types";
+import {
+  type CommentDraft,
+  type PipelinePr,
+  type PipelineRequest,
+  type StoredStage,
+  type TicketPipeline,
+  type TicketStage,
+  TICKET_STAGES,
+  clearGateTicks,
+  clearsGates,
+  isTicketStage,
+  stageLabel,
+  stageStep,
+} from "../shared/types";
 import { readJsonOrSetAside, writeFileAtomic } from "./fileOps";
 
 /**
@@ -36,6 +49,67 @@ export function stageComment(stage: TicketStage, ctx: { pr?: PipelinePr; summary
   }
 }
 
+// ---- what an agent may do to its ticket (docs/landscape-wires.md, section 4: "Agents moving stages") ----
+
+/** Whether a move from `from` to `to` goes back: to an earlier rail step, or another stage within the same one. */
+export const goesBack = (from: StoredStage, to: TicketStage): boolean => {
+  const a = stageStep(from);
+  const b = stageStep(to)!;
+  return a !== null && from !== to && b <= a;
+};
+
+/**
+ * Why an agent's set_stage can't move a ticket from `from` to `to`, or null. Done and stage 6's approval are the user's;
+ * the PR stages are set only by a PR opening, and AI testing's by that PR merging (W16) or the user, so the stage never
+ * claims a PR or a merge that isn't there; BA is never gone back to. Forward is one rail step, stage 6's three counting
+ * as one, and from stage 6 an agent can only send it back. Back is to Coding only, with `note`, the feedback that
+ * caused it. A stage this build doesn't know, and Done, are the user's to move from.
+ */
+export function stageRefusal(from: StoredStage, to: unknown, note?: string): string | null {
+  if (!isTicketStage(to)) return `${JSON.stringify(String(to).slice(0, 40))} isn't a stage an agent can move a ticket to.`;
+  const at = `It's at ${stageLabel(from)}.`;
+  if (to === "done") return "Done is the user's to mark, never an agent's.";
+  if (to === "approved") return "Approving stakeholder testing is the user's, never an agent's.";
+  if (to === "pr-dev" || to === "pr-main")
+    return `Only a pull request opening moves a ticket to ${stageLabel(to)}, so the stage never claims a PR that isn't there: ask for one with request_pr, and the user opens it.`;
+  if (to === "ba") return "A ticket never goes back to BA.";
+  const a = stageStep(from);
+  if (a === null) return `It's at ${JSON.stringify(String(from).slice(0, 40))}, a stage this version of Mockingbird doesn't know: the user moves it.`;
+  if (from === "done") return "It's Done: only the user reopens it.";
+  if (from === to) return `It's at ${stageLabel(to)} already.`;
+  if (goesBack(from, to)) {
+    if (to !== "coding") return `An agent sends a ticket back only to Coding, with the feedback that sends it there. ${at}`;
+    if (!note?.trim()) return "Sending it back to Coding needs note: the feedback that sends it back.";
+    return null;
+  }
+  if (a === 6) return `From stakeholder testing an agent can only send it back to Coding, with the feedback: moving it on is the user's. ${at}`;
+  if (to === "dev-test" || to === "prod-test")
+    return `Only its pull request merging, or the user, moves a ticket to ${stageLabel(to)}, so the stage never claims a merge that hasn't happened.`;
+  const next = TICKET_STAGES.find((x) => x.step === a + 1);
+  if (stageStep(to) !== a + 1) return `Forward is one step on the rail: from ${stageLabel(from)} the next is ${next?.label ?? "nothing"}.`;
+  return null;
+}
+
+/** Why an agent can't ask for a pull request to `target` with its ticket at `stage`, or null: dev from Coding or Local testing, main only once approved. */
+export function requestRefusal(stage: StoredStage, target: unknown): string | null {
+  if (target !== "dev" && target !== "main") return `target is "dev" or "main", not ${JSON.stringify(String(target).slice(0, 40))}.`;
+  if (target === "dev" && stage !== "coding" && stage !== "local-test") return `A pull request to dev is asked for from Coding or Local testing; it's at ${stageLabel(stage)}.`;
+  if (target === "main" && stage !== "approved") return `A pull request to main is asked for once the user has approved stakeholder testing; it's at ${stageLabel(stage)}.`;
+  return null;
+}
+
+/** Why an agent can't write patch notes with its ticket at `stage`, or null: at AI testing in staging/prod or Patch notes. */
+export function patchNotesRefusal(stage: StoredStage): string | null {
+  return stage === "prod-test" || stage === "comms" ? null : `Patch notes are written at ${stageLabel("prod-test")} or ${stageLabel("comms")}; it's at ${stageLabel(stage)}.`;
+}
+
+/** An agent's report on one gate item (gate_notes): what it did and its evidence, and whether it ticks the item. */
+export interface GateReport {
+  key: string;
+  note: string;
+  done: boolean;
+}
+
 const LISTS = ["history", "prs", "feedback", "drafts"] as const;
 const isMap = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 
@@ -45,6 +119,8 @@ function shapeProblem(p: TicketPipeline): string | null {
   for (const k of LISTS) if (!Array.isArray(p[k])) return `its ${k} isn't a list`;
   if (!isMap(p.checks)) return "its checks aren't a map";
   if (p.checkedBy != null && !isMap(p.checkedBy)) return "its checkedBy isn't a map";
+  if (p.gateNotes != null && !isMap(p.gateNotes)) return "its gateNotes aren't a map";
+  if (p.requests != null && !Array.isArray(p.requests)) return "its requests aren't a list";
   return null;
 }
 
@@ -125,23 +201,48 @@ export class PipelineStore {
     return fresh;
   }
 
-  private draft(p: TicketPipeline, stage: TicketStage, text: string | null): void {
+  /** Ticket `id`'s record for an agent's change: refused when there's none, as an agent never starts one. */
+  private tracked(id: string): TicketPipeline {
+    if (!this.data[id]) throw new Error(`#${id} isn't tracked in the ticket pipeline`);
+    return this.record(id);
+  }
+
+  private draft(p: TicketPipeline, stage: TicketStage, text: string | null, by?: string): void {
     if (!text) return;
-    const d: CommentDraft = { id: crypto.randomUUID(), stage, text, at: Date.now() };
+    const d: CommentDraft = { id: crypto.randomUUID(), stage, text, at: Date.now(), ...(by ? { by } : {}) };
     p.drafts.push(d);
   }
 
   /**
-   * Move a record to `stage`: its history entry and drafted comment, and, back
-   * at Coding, the gates' ticks cleared, which the entry's note says.
+   * An agent's gate notes, each kept beside its item; one it says it did is ticked as its tick, unless it's ticked
+   * already (the user's tick stays theirs). Returns how many it ticked.
    */
-  private move(p: TicketPipeline, stage: TicketStage, o: { note?: string; summary?: string; pr?: PipelinePr; by?: string }): TicketPipeline {
+  private report(p: TicketPipeline, notes: readonly GateReport[], by: string): number {
+    const at = Date.now();
+    let ticked = 0;
+    for (const n of notes) {
+      (p.gateNotes ??= {})[n.key] = { by, note: n.note, at };
+      if (n.done && !p.checks[n.key]) {
+        p.checks[n.key] = true;
+        (p.checkedBy ??= {})[n.key] = { by, at };
+        ticked++;
+      }
+    }
+    return ticked;
+  }
+
+  /**
+   * Move a record to `stage`: its history entry and drafted comment, and, back
+   * at Coding, the gates' ticks cleared, which the entry's note says. `draft`:
+   * "plain" drafts the stage's comment without quoting `note`, "none" drafts nothing.
+   */
+  private move(p: TicketPipeline, stage: TicketStage, o: { note?: string; summary?: string; pr?: PipelinePr; by?: string; draft?: "plain" | "none" }): TicketPipeline {
     const back = p.history.some((h) => (stageStep(h.stage) ?? 0) >= 2);
     const cleared = clearsGates(p.stage, stage) ? clearGateTicks(p) : null;
     const note = [o.note, cleared].filter(Boolean).join("\n\n");
     p.stage = stage;
     p.history.push({ at: Date.now(), stage, ...(note ? { note } : {}), ...(o.by ? { by: o.by } : {}) });
-    this.draft(p, stage, stageComment(stage, { ...o, back }));
+    if (o.draft !== "none") this.draft(p, stage, stageComment(stage, { ...o, ...(o.draft === "plain" ? { note: undefined } : {}), back }));
     return p;
   }
 
@@ -169,11 +270,16 @@ export class PipelineStore {
     });
   }
 
-  /** A pull request was opened: record it and move to its stage. */
+  /**
+   * A pull request was opened: record it and move to its stage. An agent's request for it is answered, so it goes, and
+   * the PR is that agent's (`by`), whichever session it was opened from.
+   */
   addPr(id: string, pr: PipelinePr, title?: string, by?: string): TicketPipeline {
     return this.change(id, () => {
       const p = this.record(id, title);
-      p.prs.push(pr);
+      const asked = p.requests?.find((r) => r.target === pr.target);
+      if (p.requests) p.requests = p.requests.filter((r) => r.target !== pr.target);
+      p.prs.push(asked ? { ...pr, by: asked.from } : pr);
       return this.move(p, pr.target === "dev" ? "pr-dev" : "pr-main", { pr, summary: pr.summary, by });
     });
   }
@@ -190,6 +296,73 @@ export class PipelineStore {
         if (p.checkedBy) delete p.checkedBy[key];
       }
       return p;
+    });
+  }
+
+  // ---- an agent's changes (ticketTools.ts): each checked again here, as its one writer, and refused on a record not tracked ----
+
+  /**
+   * An agent's set_stage: the move with its `by`, and its gate notes. A move back to Coding keeps `note` as feedback
+   * with who wrote it and drafts no comment, since the agent's words would be quoted to the ticket; one forward drafts
+   * the stage's. `drafted`: whether it did; `ticked`: how many items its notes ticked.
+   */
+  agentMove(id: string, stage: TicketStage, o: { note?: string; by: string; report: readonly GateReport[] }): { pipeline: TicketPipeline; drafted: boolean; ticked: number } {
+    return this.change(id, () => {
+      const p = this.tracked(id);
+      const why = stageRefusal(p.stage, stage, o.note);
+      if (why) throw new Error(why);
+      const back = goesBack(p.stage, stage);
+      if (back && o.report.length) throw new Error("A move back clears the gates' ticks, so it takes no gate notes");
+      if (back) p.feedback.push({ at: Date.now(), text: o.note!.trim(), by: o.by });
+      const ticked = this.report(p, o.report, o.by);
+      const drafts = p.drafts.length;
+      this.move(p, stage, { note: o.note?.trim() || undefined, by: o.by, draft: back ? "none" : "plain" });
+      return { pipeline: p, drafted: p.drafts.length > drafts, ticked };
+    });
+  }
+
+  /** An agent's request_pr: held, replacing the request for the same target (`replaced`), with its gate notes (`ticked` of them ticking). */
+  holdRequest(
+    id: string,
+    r: Omit<PipelineRequest, "id" | "at">,
+    report: readonly GateReport[],
+    by: string
+  ): { pipeline: TicketPipeline; request: PipelineRequest; replaced: PipelineRequest | null; ticked: number } {
+    return this.change(id, () => {
+      const p = this.tracked(id);
+      const why = requestRefusal(p.stage, r.target);
+      if (why) throw new Error(why);
+      const held = p.requests ?? [];
+      const replaced = held.find((x) => x.target === r.target) ?? null;
+      const request: PipelineRequest = { id: crypto.randomUUID(), ...r, at: Date.now() };
+      p.requests = [...held.filter((x) => x.target !== r.target), request];
+      const ticked = this.report(p, report, by);
+      return { pipeline: p, request, replaced, ticked };
+    });
+  }
+
+  /** The user dismissed request `requestId`: it goes, and what it was is returned so its agent can be told. */
+  dropRequest(id: string, requestId: string): { pipeline: TicketPipeline; request: PipelineRequest } {
+    return this.change(id, () => {
+      const p = this.tracked(id);
+      const request = p.requests?.find((x) => x.id === requestId);
+      if (!request) throw new Error(`#${id} has no pull request request ${requestId} (it may have been answered or replaced)`);
+      p.requests = p.requests!.filter((x) => x.id !== requestId);
+      return { pipeline: p, request };
+    });
+  }
+
+  /** An agent's write_patch_notes: the ticket's patch notes draft, marked as `by`'s, replacing every earlier agent's (`replaced` of them); the user's own stay. */
+  agentPatchNotes(id: string, text: string, by: string): { pipeline: TicketPipeline; replaced: number } {
+    return this.change(id, () => {
+      const p = this.tracked(id);
+      const why = patchNotesRefusal(p.stage);
+      if (why) throw new Error(why);
+      const before = p.drafts.length;
+      p.drafts = p.drafts.filter((d) => !(d.stage === "comms" && d.by));
+      const replaced = before - p.drafts.length;
+      this.draft(p, "comms", text.trim() || null, by);
+      return { pipeline: p, replaced };
     });
   }
 

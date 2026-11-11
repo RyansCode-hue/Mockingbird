@@ -9,7 +9,7 @@ import { HouseService } from "../src/main/team/houseService";
 import { TicketSessions, type TicketSessionDeps } from "../src/main/team/ticketSession";
 import { recordFor } from "../src/main/team/roomSessions";
 import { SessionManager } from "../src/main/sessions";
-import { ticketOfSession } from "../src/main/meters";
+import { ticketOfSession } from "../src/shared/types";
 import { listBranches, worktreeRoot } from "../src/main/worktrees";
 import { ticketBrief, TICKET_FENCE, type TicketSessionFailure } from "../src/shared/team/ticketSession";
 import type { HouseTicketDetail } from "../src/shared/team/house";

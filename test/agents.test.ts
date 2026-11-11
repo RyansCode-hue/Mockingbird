@@ -30,7 +30,7 @@ describe("Claude launch", () => {
     const cfg = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
     expect(cfg.mcpServers.mockingbird).toEqual({ type: "stdio", ...mcp });
     expect(args[args.indexOf("--allowedTools") + 1]).toBe(
-      "mcp__mockingbird__list_sessions,mcp__mockingbird__send_message,mcp__mockingbird__list_links,mcp__mockingbird__finish_step,mcp__mockingbird__read_context,mcp__mockingbird__read_terminal"
+      "mcp__mockingbird__list_sessions,mcp__mockingbird__send_message,mcp__mockingbird__list_links,mcp__mockingbird__finish_step,mcp__mockingbird__read_context,mcp__mockingbird__read_terminal,mcp__mockingbird__set_stage,mcp__mockingbird__request_pr,mcp__mockingbird__write_patch_notes"
     );
   });
   it("resumes a specific conversation by id", () => {
