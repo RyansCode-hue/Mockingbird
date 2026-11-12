@@ -1283,12 +1283,20 @@ async function emptyPart(env: FirstRunEnv, out: Record<string, unknown>): Promis
 
   // &tile=helpdesk: the Helpdesk tile is New workspace → Helpdesk tasks…: the built-in preset started (main refuses it
   // in a team room's area, ?lsHelpdeskRoom, and says why)
+  // &twice=double|apart (with ?createMs): a double click, or two clicks 400 ms apart, while the first is starting it
   if (params.get("tile") === "helpdesk") {
     const said: string[] = [];
     window.alert = (m?: unknown) => void said.push(String(m));
     const mark = env.calls.length;
-    await clickOn(q('.ls-empty-tile[data-tile="new:helpdesk"]')!);
-    await sleep(1200);
+    const tile = q('.ls-empty-tile[data-tile="new:helpdesk"]')!;
+    const at = middle(tile);
+    const twice = params.get("twice");
+    if (twice === "double") await act([{ mouse: { ...at, clickCount: 1 } }, { mouse: { ...at, clickCount: 2 } }]);
+    else if (twice === "apart") await act([{ mouse: { ...at, clickCount: 1 } }, { pause: 400 }, { mouse: { ...at, clickCount: 1 } }]);
+    else await clickOn(tile);
+    await sleep(100);
+    out.helpdeskDuring = { busy: tile.getAttribute("aria-busy"), sub: tile.querySelector(".s")?.textContent ?? null, note: q(".ls-note")?.textContent ?? null };
+    await sleep(Number(params.get("createMs") ?? 0) + 1200);
     const n = q(".ls-world .ls-node");
     out.helpdesk = {
       started: env.calls.slice(mark).filter((c) => c.fn === "presetStart").map((c) => c.args[0]),

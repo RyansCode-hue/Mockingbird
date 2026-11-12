@@ -8,7 +8,7 @@ import { FOLDER_NOTICE_SETTLE_MS, FOLDER_NOTICE_WAIT_MS } from "../src/main/code
 import capture from "./fixtures/codex-folder-notice-0.156.1.json";
 import { quote } from "../src/main/shell";
 import { HELPDESK_RULES } from "../src/main/helpdesk";
-import type { PlanRequest } from "../src/shared/types";
+import { HELPDESK_STARTING, helpdeskOpenAlready, type PlanRequest, type SessionInfo } from "../src/shared/types";
 import { LandscapeStore } from "../src/main/landscape";
 import { WireService } from "../src/main/wires";
 import { ROOM_LINE } from "../src/shared/wires";
@@ -1330,8 +1330,10 @@ describe("the Helpdesk tasks workspace", () => {
     // updated: the new version's --help is read
     help = CHROME_HELP;
     m.setAgentVersions({ claude: "2.1.322" });
-    await m.create(tasksPane);
+    const first = await m.create(tasksPane);
     expect(reads).toHaveLength(2);
+    // closed, so the next start isn't a second one
+    m.kill(first.id, false);
     // a read that fails says why, and isn't kept
     m.setAgentVersions({ claude: "2.1.400" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1381,6 +1383,29 @@ describe("the Helpdesk tasks workspace", () => {
     fs.mkdirSync(path.join(os.homedir(), "Helpdesk-notes"), { recursive: true });
     await m.create({ ...agentPane, cwd: path.join(os.homedir(), "Helpdesk-notes") });
     expect(ptys.length).toBe(n + 2);
+  });
+
+  it("is one at a time: a second start while one is open or starting is refused, saying why, and its own relaunch isn't", async () => {
+    const { m } = await tasksManager();
+    // two starts at once (a double click): the second is refused while the first reads --help, and only one pty starts
+    const n = ptys.length;
+    const [a, b] = await Promise.allSettled([m.create(tasksPane), m.create(tasksPane)]);
+    expect(a.status).toBe("fulfilled");
+    expect(b).toMatchObject({ status: "rejected", reason: new Error(HELPDESK_STARTING) });
+    expect(ptys.length).toBe(n + 1);
+    const s = (a as PromiseFulfilledResult<SessionInfo>).value;
+    // open, running or exited: another is refused, naming the one there is
+    await expect(m.create(tasksPane)).rejects.toThrow(helpdeskOpenAlready("Helpdesk tasks"));
+    ptys.at(-1)!.exit(0);
+    await expect(m.create(tasksPane)).rejects.toThrow(/open already, as “Helpdesk tasks”: New workspace → Helpdesk tasks… shows it/);
+    expect(ptys.length).toBe(n + 1);
+    // its own Resume, under its id, starts it again
+    expect(await m.resume(s.id)).toMatchObject({ id: s.id, role: "tasks" });
+    // closed, a new one starts; any other session starts as before, alongside it
+    m.kill(s.id, false);
+    await m.create(tasksPane);
+    await m.create(agentPane);
+    expect(ptys.length).toBe(n + 4);
   });
 
   it("is left out of the daily digest, so nothing it read reaches another agent", async () => {

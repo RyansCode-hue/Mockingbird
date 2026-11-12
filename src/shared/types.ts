@@ -452,6 +452,14 @@ export interface SessionPreset {
 /** The Helpdesk tasks workspace's area. */
 export const HELPDESK_GROUP = "Helpdesk";
 
+/** Why the Helpdesk tasks workspace doesn't go in a team room's area. */
+export const HELPDESK_IN_ROOM = "The Helpdesk tasks workspace never runs in a team room's area: teammates would see your admin consoles and could type into it";
+/** Why it isn't started there (main's refusal, and the preview's). */
+export const HELPDESK_START_IN_ROOM = `${HELPDESK_IN_ROOM}. Start it in an area that isn't shared.`;
+/** Why a second one isn't started: one at a time on this Mac, and the window shows the one there is. */
+export const HELPDESK_STARTING = "The Helpdesk tasks workspace is being started already";
+export const helpdeskOpenAlready = (title: string): string => `The Helpdesk tasks workspace is open already, as “${title}”: New workspace → Helpdesk tasks… shows it`;
+
 /** The built-in preset that starts the Helpdesk tasks workspace: first in New session's presets, never in Settings'. */
 export const HELPDESK_PRESET: SessionPreset = {
   id: "builtin:helpdesk",

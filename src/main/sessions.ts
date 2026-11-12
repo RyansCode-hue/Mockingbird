@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, stepSlug, ticketIdOf, AgentKind, AGENT_KINDS, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, stepSlug, ticketIdOf, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
 import { dirtyFileCount } from "./scm";
@@ -13,7 +13,7 @@ import { uniqueBranch } from "./presets";
 import { roomFolderRefusal, samePath } from "./handlers";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, type LaunchContext } from "./agents";
-import { HELPDESK_FOLDER_ONLY, HELPDESK_IN_ROOM, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
+import { HELPDESK_FOLDER_ONLY, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
 import { which, whichSync, quote } from "./shell";
 import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
 import { RoomSandboxWatch, SANDBOX_REPORT_MS } from "./roomSandboxWatch";
@@ -332,6 +332,8 @@ export class SessionManager {
   private relaunching = new Set<string>();
   /** Not-started steps being started now (startPlanned), until each runs or has failed: a second start, a relaunch or a forget meanwhile is refused. */
   private starting = new Set<string>();
+  /** A Helpdesk tasks workspace is being started (create), until it runs or has failed: another start meanwhile is refused. */
+  private tasksStarting = false;
   /** Every pty that hasn't exited yet, closed panes' included, with its exit: quitting waits for them (shutdown). */
   private running = new Map<pty.IPty, Promise<void>>();
   /** Set by shutdown: ptys ending now are the app quitting, which leaves each pane's saved state as it was. */
@@ -573,6 +575,21 @@ export class SessionManager {
    * about to start, after every await in preparing it: what it throws is the launch's failure, nothing having started.
    */
   async create(req: NewSessionRequest, opts: { notice?: string; beforeSpawn?: () => void } = {}): Promise<SessionInfo> {
+    if (req.role !== "tasks") return this.createPane(req, opts);
+    // One Helpdesk tasks workspace on this Mac: another start while one is open or starting (a double click, the menu
+    // and Settings' Start at once) is refused; its own relaunch, under its id, isn't.
+    if (this.tasksStarting) throw new Error(HELPDESK_STARTING);
+    const open = [...this.live.values()].find((s) => s.info.role === "tasks" && s.info.id !== req.reuseId);
+    if (open) throw new Error(helpdeskOpenAlready(open.info.title));
+    this.tasksStarting = true;
+    try {
+      return await this.createPane(req, opts);
+    } finally {
+      this.tasksStarting = false;
+    }
+  }
+
+  private async createPane(req: NewSessionRequest, opts: { notice?: string; beforeSpawn?: () => void }): Promise<SessionInfo> {
     this.refuseWhileQuitting();
     const tasks = req.role === "tasks";
     if (tasks) await this.mayStartTasks(req);
@@ -1144,7 +1161,7 @@ export class SessionManager {
   private async mayStartTasks(req: NewSessionRequest): Promise<void> {
     if (req.shell || (req.agent ?? "claude") !== "claude") throw new Error("The Helpdesk tasks workspace runs Claude only: it works in your Chrome through Claude in Chrome");
     const group = req.taskGroup ?? req.ticketId ?? null;
-    if (group && this.roomOfGroup?.(group)) throw new Error(`${HELPDESK_IN_ROOM}. Start it in an area that isn't shared.`);
+    if (group && this.roomOfGroup?.(group)) throw new Error(HELPDESK_START_IN_ROOM);
     const bin = this.resolveBin(agentFor("claude"));
     const version = await this.versionOf("claude");
     const key = `${bin}\0${version}`;

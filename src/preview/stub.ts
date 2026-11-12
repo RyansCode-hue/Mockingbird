@@ -12,7 +12,7 @@
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, PipelineRequest, PlanRequest, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
-import { DEFAULT_SETTINGS, HELPDESK_GROUP, HELPDESK_PRESET, clearGateTicks, clearsGates, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
+import { DEFAULT_SETTINGS, HELPDESK_GROUP, HELPDESK_PRESET, HELPDESK_STARTING, HELPDESK_START_IN_ROOM, clearGateTicks, clearsGates, helpdeskOpenAlready, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
 import { tildePath } from "../shared/paths";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, followsBottom, measuredCell } from "../renderer/cachedTerm";
@@ -469,11 +469,13 @@ const team: TeamStatus = {
   problems: [],
   // ?notice: Nick removed you from a room, and its backup couldn't be deleted from origin
   notices: teamQuery.has("notice")
-    ? [{ id: "n1", roomId: "R5099ccccccccccccccccc", roomName: "#5099 Gift aid export", kind: "removed", by: "Nick Smith", at: now - 4 * min, problems:["The backup of “Gift aid CSV” couldn't be deleted from origin (refs/mockingbird/rooms/R5099ccccccccccccccccc/s9): remote: Permission denied"] }]
+    ? [{ id: "n1", roomId: "R5099ccccccccccccccccc", roomName: "#5099 Gift aid export", kind: "removed", by: "Nick Smith", at: now - 4 * min, problems: ["The backup of “Gift aid CSV” couldn't be deleted from origin (refs/mockingbird/rooms/R5099ccccccccccccccccc/s9): remote: Permission denied"] }]
     : [],
 };
 // ?lsHelpdeskRoom: 5110's room is on the Helpdesk area, where the Helpdesk tasks workspace is then refused (presetStart)
 if (teamQuery.has("lsHelpdeskRoom")) team.rooms[1].groupKey = HELPDESK_GROUP;
+/** The Helpdesk tasks workspace is being started (presetStart), as main keeps it: another start meanwhile is refused. */
+let tasksStarting = false;
 // team rooms: the House board — 5101 works in atticus-backoffice: its backlog in the House's order (high priority
 // first), a ticket in every status, both handoff tags, a blocked and a waiting one, and five the room added (two of
 // them closed, so outside the open backlog); 5110 has no project yet. ?houseMissing: no token here for 5101's project.
@@ -2116,13 +2118,21 @@ const api: Record<string, (...a: any[]) => any> = {
     p.requests = (p.requests ?? []).filter((r) => !(r.target === target && r.from === sessionId));
     return setStage(ticketId, target === "dev" ? "pr-dev" : "pr-main");
   },
-  // only the built-in Helpdesk preset starts here, as main's presets:start does: its tasks session in the Helpdesk area,
-  // refused, saying why, when that area is a team room's (main's mayStartTasks). ?lsHelpdeskRoom makes it 5110's room's.
+  // only the built-in Helpdesk preset starts here, as main's presets:start does: its tasks session in the Helpdesk area
+  // after ?createMs, refused, saying why, as main refuses it (sessions.ts create, mayStartTasks): while one is open or
+  // starting, and when that area is a team room's. ?lsHelpdeskRoom makes it 5110's room's.
   presetStart: async (id: string) => {
     if (id !== HELPDESK_PRESET.id) return err("UI preview: presets don't start sessions");
-    if (team.rooms.some((r) => r.groupKey === HELPDESK_GROUP))
-      return err("The Helpdesk tasks workspace never runs in a team room's area: teammates would see your admin consoles and could type into it. Start it in an area that isn't shared.");
-    await startLag();
+    if (tasksStarting) return err(HELPDESK_STARTING);
+    const open = sessions.find((s) => s.role === "tasks");
+    if (open) return err(helpdeskOpenAlready(open.title));
+    if (team.rooms.some((r) => r.groupKey === HELPDESK_GROUP)) return err(HELPDESK_START_IN_ROOM);
+    tasksStarting = true;
+    try {
+      await startLag();
+    } finally {
+      tasksStarting = false;
+    }
     const s = session(`h${Date.now().toString(36)}`, { title: "Helpdesk tasks", repoPath: null, cwd: "/Users/you/Helpdesk", kind: "assistant", taskGroup: HELPDESK_GROUP, role: "tasks", status: "idle", createdAt: Date.now() });
     sessions = [...sessions, s];
     buffers[s.id] = `${C.dim}(UI preview: the Helpdesk tasks workspace would start here)${C.reset}\r\n> `;

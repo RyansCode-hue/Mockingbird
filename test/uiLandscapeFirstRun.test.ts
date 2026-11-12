@@ -697,10 +697,20 @@ describe.skipIf(!local)("the empty landscape", () => {
     expect(e.joinDialog).toMatch(/join/i);
   }, 120_000);
 
-  it("starts the Helpdesk tasks workspace from its tile, as New workspace → Helpdesk tasks… does", async () => {
+  it("starts the Helpdesk tasks workspace from its tile, as New workspace → Helpdesk tasks… does, leaving the keyboard on the landscape", async () => {
     const e = await run("e", "lsOnly=nothing&tile=helpdesk");
-    expect(e.helpdesk).toMatchObject({ started: ["builtin:helpdesk"], created: ["Helpdesk"], empty: false, workspace: "tasks", said: [] });
+    // the jump finds the new workspace's terminal not yet there to take the keyboard, so it stays where it was
+    expect(e.helpdesk).toEqual({ started: ["builtin:helpdesk"], created: ["Helpdesk"], empty: false, workspace: "tasks", said: [], keyboard: "landscape" });
   }, 120_000);
+
+  for (const twice of ["double", "apart"])
+    it(`starts one Helpdesk tasks workspace for a ${twice === "double" ? "double click" : "second click 400 ms later"} while the first is starting, the tile saying so`, async () => {
+      const e = await run("e", `lsOnly=nothing&tile=helpdesk&twice=${twice}&createMs=1500`);
+      // the second press runs the row, which is off and says why
+      expect(e.helpdeskDuring).toMatchObject({ busy: "true", sub: "Opening…" });
+      expect(e.helpdeskDuring.note).toMatch(/^Opening the Helpdesk tasks workspace…/);
+      expect(e.helpdesk).toMatchObject({ started: ["builtin:helpdesk"], created: ["Helpdesk"], empty: false, workspace: "tasks", said: [] });
+    }, 120_000);
 
   it("refuses the Helpdesk tasks workspace where its area is a team room's, saying why", async () => {
     const e = await run("e", "lsOnly=nothing&tile=helpdesk&lsHelpdeskRoom");

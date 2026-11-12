@@ -89,7 +89,7 @@ export interface EmptyTile {
 /** The tiles, in order, one entry each: a tile joins when its flow is a row of the create menu that isn't "coming". */
 export const EMPTY_TILES: readonly EmptyTile[] = [
   { row: "new:ticket", title: "Start from a ticket", sub: "From your ADO board" },
-  { row: "new:pipeline", title: "Pipeline template", sub: "Ticket → build → review" },
+  { row: "new:pipeline", title: "Pipeline template", sub: "Orchestrator → Coder → Verifier" },
   { row: "new:claude", title: "New workspace", sub: "Claude, Codex, terminal" },
   // called what its row is (Resume a conversation…), so the tile and the menu name one flow
   { row: "new:import", title: "Resume a conversation", sub: "From anywhere on this Mac" },
@@ -157,9 +157,9 @@ const around = (rects: readonly Rect[]): Rect => {
 
 /**
  * The workspace whose edge handle the wires step shows: the selected one, else an agent in the tour's area, else any
- * agent, else any workspace, all of this Mac's (`own`: a teammate's workspace has no handle) and outside a collapsed
- * area. An agent comes first, since wires are made from one: a terminal's only wire is a shared worktree to an agent,
- * and a debrief or the Helpdesk tasks workspace takes none.
+ * agent, else a terminal, all of this Mac's (`own`: a teammate's workspace has no handle) and outside a collapsed area.
+ * Never a debrief or the Helpdesk tasks workspace, which take no wire, selected or not. An agent comes first, since
+ * wires are made from one: a terminal's only wire is a shared worktree to an agent.
  */
 export function tourHandleOf(
   tiles: readonly Pick<Tile, "key" | "area" | "rect" | "hidden" | "front">[],
@@ -167,8 +167,8 @@ export function tourHandleOf(
   areaKey: string | null,
   own: (s: SessionInfo) => boolean
 ): { key: string; rect: Rect } | null {
-  const mine = tiles.filter((t) => !t.hidden && own(t.front));
-  const agent = (t: (typeof mine)[number]) => !t.front.shell && !t.front.debrief && t.front.role !== "tasks";
+  const mine = tiles.filter((t) => !t.hidden && own(t.front) && !t.front.debrief && t.front.role !== "tasks");
+  const agent = (t: (typeof mine)[number]) => !t.front.shell;
   const pick = mine.find((t) => t.key === selected) ?? mine.find((t) => t.area === areaKey && agent(t)) ?? mine.find(agent) ?? mine[0];
   return pick ? { key: pick.key, rect: pick.rect } : null;
 }
@@ -251,11 +251,12 @@ export const TOUR_MIN_W = 160;
 
 /**
  * The camera that brings a step's target (`box` in the view's px) into view, or null when it's wholly in view (under a
- * strip `top` px tall, the area switcher's) and big enough to read: the tour moves nothing it doesn't have to.
+ * strip `top` px tall, the area switcher's), big enough to read and at least `least` (an edge handle's workspace: the
+ * handle is drawn only on one HANDLE_ROOM big on screen): the tour moves nothing it doesn't have to.
  */
-export function tourCamera(rect: Rect, box: Box, view: Size, top: number): Camera | null {
+export function tourCamera(rect: Rect, box: Box, view: Size, top: number, least: Size = { w: 0, h: 0 }): Camera | null {
   const whole = box.x >= 0 && box.y >= top && box.x + box.w <= view.w && box.y + box.h <= view.h;
-  return whole && box.w >= TOUR_MIN_W ? null : fitBelow([rect], view, top);
+  return whole && box.w >= TOUR_MIN_W && box.w >= least.w && box.h >= least.h ? null : fitBelow([rect], view, top);
 }
 
 /** Two cameras that show the same: what the tour left is compared with where it is, after rounding on the way. */

@@ -3457,8 +3457,9 @@ Resume a conversation (`new:import`: now called what its menu row is) and Helpde
 area, saying why). Three to a row, the short last row centred; two, then one, as the view narrows (a container query).
 A tile is pressed only by a click or an armed key: S8a's `keepKeyboard` and the disarmed landscape's swallowing are
 unchanged, and a disarmed Tab after a pause goes past the tiles (`tabPast` skips what's inside the landscape). The
-Helpdesk tile is W19's flow whole, so, as from the menu, the workspace it starts or shows gets the keyboard unless a key
-or press came meanwhile (`jumpToSession`'s stamp); nothing else here gives a terminal the keyboard.
+Helpdesk tile is W19's flow whole. A workspace it starts leaves the keyboard on the landscape: `jumpToSession` gives a
+terminal the keyboard only if it can take it within its 50 ms retry, and one just started isn't there yet (corrected in
+review fixes 1, which also asserts it).
 
 **Preview** (`stub.ts`, `firstRunAudit.ts`):
 - `presetStart` starts the built-in Helpdesk preset as main does (its tasks session in the Helpdesk area), refusing it,
@@ -3510,6 +3511,60 @@ key-safety guard was changed.
 
 **Found, not fixed:** under heavy load (load average 40–57 from parallel builders), the driven sheet test twice stalled
 on Chrome not answering an input event within the driver's 20 s; at load 17 it passed in 86 s.
+
+#### W11 review fixes 1 as built
+Ryan approved the copy, but for the Pipeline template tile's subtitle, now "Orchestrator → Coder → Verifier" (the
+built-in template W17 adds). The empty landscape's column is 612 px (was 560) so that subtitle stays on one line, three
+tiles to a row.
+
+**M1, one Helpdesk tasks workspace for a double click.** A start takes a second or more (main reads `claude --help`
+first), and every press in that time started another.
+- The window (`main.tsx`'s `openHelpdesk`): a ref holds the open under way, its start or its ghost's reopening, so a
+  press from any way in (the create menu, the empty landscape's tile, Settings' Start) does nothing until it's done.
+  Meanwhile Helpdesk tasks… is off in the create menu (`CreateEnv.helpdeskBusy`), titled "Opening the Helpdesk tasks
+  workspace…" (`HELPDESK_BUSY`). The tile reads its row: it says "Opening…" (`aria-busy`), and a press on it runs the
+  row, which is off and says why in the landscape's note.
+- Main (`sessions.ts` `create`, now a guard around `createPane`): a Helpdesk tasks start is refused while another is
+  starting ("The Helpdesk tasks workspace is being started already", `HELPDESK_STARTING`) or one is open, running or
+  exited ("The Helpdesk tasks workspace is open already, as “Helpdesk tasks”: New workspace → Helpdesk tasks… shows
+  it", `helpdeskOpenAlready`). Its own relaunch and Resume, under its id, aren't refused; a closed one's record doesn't
+  count, since the window reopens that one.
+
+**L1:** the wires step never rings the Helpdesk tasks workspace or a debrief, selected or not; with no agent, a
+terminal's dot.
+
+**L2:** for a dot, the tour's camera also moves when the workspace is under 96 × 64 on screen (`tourCamera`'s `least`,
+`HANDLE_ROOM`, now in `landscapeModel.ts` for `WorkspaceNode.tsx` and the tour alike): a wide, short one was wholly in
+view and wide enough, and so drew no dot to ring.
+
+**L3:** a workspace started from the Helpdesk tile leaves the keyboard on the landscape (`jumpToSession` finds no
+terminal to take it within its 50 ms retry). The test asserts it, and W11's notes above are corrected.
+
+**L5:** `HELPDESK_IN_ROOM` moved to `src/shared/types.ts`, with `HELPDESK_START_IN_ROOM`, `HELPDESK_STARTING` and
+`helpdeskOpenAlready`, which main and the preview's `presetStart` both use. The preview refuses as main does: while one
+is open or starting, and in a room's area. The stray whitespace change in `stub.ts` is reverted.
+
+**L4, for the follow-up list:** the sheet is exactly full at 1024 × 768 (621 of 621 px); one more row scrolls it.
+Comparison shots at that size use `--size 1024x855`, since headless Chrome's window counts 87 px of its own.
+
+**Copy for Ryan's OK** (new): the menu row's title while opening, "Opening the Helpdesk tasks workspace…"; the tile's
+subtitle then, "Opening…"; main's two refusals above.
+
+**Tests:**
+- `test/sessionLifecycle.test.ts`: one at a time (two starts at once: one pty, the second refused while starting;
+  then refused while open, running and exited, naming it; its own Resume starts; closed, a new one starts). The
+  `--help` test closes its first before starting the next. Each refusal, undone alone, fails it.
+- `test/landscapeFirstRun.test.ts`: the row off while opening; the wires step never on the tasks workspace or a
+  debrief; the camera moving for a short wide workspace's dot.
+- `test/uiLandscapeFirstRun.test.ts` (with `?createMs=1500`): a double click, and a second click 400 ms later, each
+  start one (one `presetStart`), the tile "Opening…" and the note saying why meanwhile; the single click's keyboard on
+  the landscape.
+
+**Checked:** typecheck and build pass. Unit: `landscapeFirstRun`, `helpdesk`, `workspaceActions` (89),
+`sessionLifecycle`, `teamLivePanes`, `presets` (175). UI, alone without CI, with `-t`: 8 pass (the empty landscape's offer; the
+Helpdesk tile once, double-clicked, clicked twice 400 ms apart, and in a room's area; the tour's four steps, a selected
+workspace's dot and the first wire), then the offer and the short view's scrolling again (2) once the column widened.
+The empty landscape's shots, dark and light, are `w11/shots/empty-fix1-dark.png` and `empty-fix1-light.png`.
 
 ### W12 · Whole run. Size S
 - An e2e with fake `claude` and `codex` scripts through Settings' binaries: A

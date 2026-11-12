@@ -212,6 +212,9 @@ export function onScreen(cam: Camera, viewport: Size, r: Rect, margin = ON_SCREE
 export const keysOnScreen = (tiles: readonly { key: string; rect: Rect; hidden?: boolean }[], cam: Camera, viewport: Size, margin = ON_SCREEN_MARGIN): string[] =>
   tiles.filter((t) => !t.hidden && onScreen(cam, viewport, t.rect, margin)).map((t) => t.key);
 
+/** The least a workspace takes on screen, in px, to carry its edge handle (18 × 22): on a smaller card a press there moves it. */
+export const HANDLE_ROOM: Size = { w: 96, h: 64 };
+
 /** How long the pointer rests on a card or a read-only workspace before its peek opens. */
 export const PEEK_HOVER_MS = 600;
 /** The share of the viewport a peek may take, and how far it keeps from the viewport's edges. */

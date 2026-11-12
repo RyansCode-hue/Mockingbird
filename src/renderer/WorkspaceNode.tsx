@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import type React from "react";
 import type { SessionInfo, SessionMeter } from "../shared/types";
 import { WORKSPACE_CHROME, WORKSPACE_FOOT, WORKSPACE_HEAD, type Size } from "../shared/landscape";
-import type { Tile } from "./landscapeModel";
+import { HANDLE_ROOM, type Tile } from "./landscapeModel";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
 import { BackIcon, ExpandIcon, MoreIcon } from "./Icons";
@@ -24,8 +24,6 @@ export const ownTermHasKeys = (el: Element): boolean => {
  * counts cells in.
  */
 const PAD = WORKSPACE_CHROME.w / 2;
-/** The least a workspace takes on screen, in px, to carry its edge handle (18 × 22): on a smaller card a press there moves it. */
-const HANDLE_ROOM = { w: 96, h: 64 };
 
 /**
  * What a workspace shows (Landscape.tsx decides): `live`, its terminal attached; `focus`, that filling the

@@ -2236,6 +2236,7 @@ function App() {
       ...createActions({
         launch: (kind) => newAt(area, at, { launch: kind }),
         helpdesk: () => void openHelpdesk(),
+        helpdeskBusy,
         ticket: () => newAt(area, at, { ticket: true }),
         importIt: () => newAt(area, at, { mode: "import" }),
         importMany: () => setModal("import"),
@@ -2691,17 +2692,33 @@ function App() {
     await refresh();
     jumpToSession(info, since);
   };
-  /** The Helpdesk tasks workspace: the one this Mac has shown (an exited one with its Resume), its ghost reopened, or it's started. */
+  /** openHelpdesk is under way: a start takes a second or more (main reads `claude --help` first). */
+  const helpdeskOpening = useRef(false);
+  const [helpdeskBusy, setHelpdeskBusy] = useState(false);
+  /**
+   * The Helpdesk tasks workspace: the one this Mac has shown (an exited one with its Resume), its ghost reopened, or it's
+   * started. One at a time from every way in (the create menu, the empty landscape's tile, Settings' Start): a press
+   * while one is under way does nothing here, since the list it looks in hasn't the new one yet. Main refuses a second
+   * too.
+   */
   const openHelpdesk = async () => {
-    const own = ownSessions.find((s) => s.role === "tasks");
-    if (own) return jumpToSession(own);
-    const closed = resumable.find((s) => s.role === "tasks");
-    if (closed) return reopenGhost(closed);
-    const since = inputStamp();
-    const info = await window.mb.presetStart(HELPDESK_PRESET.id);
-    if (isErr(info)) return alert(`Couldn't start the Helpdesk tasks workspace: ${info.error}`);
-    await refresh();
-    jumpToSession(info, since);
+    if (helpdeskOpening.current) return;
+    helpdeskOpening.current = true;
+    setHelpdeskBusy(true);
+    try {
+      const own = ownSessions.find((s) => s.role === "tasks");
+      if (own) return jumpToSession(own);
+      const closed = resumable.find((s) => s.role === "tasks");
+      if (closed) return await reopenGhost(closed);
+      const since = inputStamp();
+      const info = await window.mb.presetStart(HELPDESK_PRESET.id);
+      if (isErr(info)) return alert(`Couldn't start the Helpdesk tasks workspace: ${info.error}`);
+      await refresh();
+      jumpToSession(info, since);
+    } finally {
+      helpdeskOpening.current = false;
+      setHelpdeskBusy(false);
+    }
   };
   /** Save the preset list. Settings writes merge, so only the changed key is sent. */
   const savePresets = async (next: SessionPreset[]) => {

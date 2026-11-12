@@ -6,6 +6,7 @@ import type { LandscapeSave, Migrating } from "./useLandscape";
 import {
   BAND_SETTLE_MS,
   GHOST_INSET,
+  HANDLE_ROOM,
   PEEK_HOVER_MS,
   REVEAL_WAIT_MS,
   ZOOM_MAX,
@@ -1411,6 +1412,8 @@ export function Landscape({
     const v = vpNow.current;
     runRow(areaHooks.create(null, toLandscape(cam.current, { x: v.w / 2, y: v.h / 2 })), row);
   };
+  /** The tiles whose rows are off now: a flow already under way (Helpdesk tasks… opening). A press on one says why. */
+  const tilesBusy = (): ReadonlySet<string> => new Set(areaHooks.create(null, { x: 0, y: 0 }).filter((a) => a.disabled).map((a) => a.key));
 
   // Due, the tour comes up once nothing else is open over the app (What's new after an update, the setup wizard): those
   // hold Esc, and it goes under them. It waits out focus, whose overlay covers what it points at, and picks up there.
@@ -1470,7 +1473,7 @@ export function Landscape({
   useEffect(() => {
     if (!tourTarget || tourTarget.kind === "chrome" || tourTarget.kind === "none" || !vpNow.current.w) return;
     const at = tourPlace(tourTarget);
-    const to = at && tourCamera(at.rect, at.box, vpNow.current, topNow.current);
+    const to = at && tourCamera(at.rect, at.box, vpNow.current, topNow.current, tourTarget.kind === "handle" ? HANDLE_ROOM : undefined);
     if (!to) return;
     // an earlier step's move, or one kept from before a tab away or a restart (the camera then is the one it came from)
     const kept = tourMoved();
@@ -2783,7 +2786,7 @@ export function Landscape({
             onKeys={surface}
           />
         )}
-        {emptyState.kind !== "drawn" && <LandscapeEmpty state={emptyState} onTile={runTile} onJoinRoom={onJoinRoom} treeHidden={treeHidden} onShowTree={onShowTree} />}
+        {emptyState.kind !== "drawn" && <LandscapeEmpty state={emptyState} onTile={runTile} busy={emptyState.kind === "empty" ? tilesBusy() : undefined} onJoinRoom={onJoinRoom} treeHidden={treeHidden} onShowTree={onShowTree} />}
         {switcher && (
           <LiveSwitcher
             stops={stops}

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { topOfKey, type SessionInfo } from "../shared/types";
+import { HELPDESK_IN_ROOM, topOfKey, type SessionInfo } from "../shared/types";
 import { loginShell, quote } from "./shell";
 
 /** What the Helpdesk tasks workspace says, and does, when Claude in Chrome can't be reached. */
@@ -23,9 +23,6 @@ export const HELPDESK_RULES = [
   "5. Never open a link from a request without showing the user the whole link first and getting their yes.",
   "6. Never read Teams, email or chat yourself, in Chrome or any other way: the user pastes in what you need.",
 ].join("\n");
-
-/** Why the Helpdesk tasks workspace doesn't go in a team room's area. */
-export const HELPDESK_IN_ROOM = "The Helpdesk tasks workspace never runs in a team room's area: teammates would see your admin consoles and could type into it";
 
 /** Why the Helpdesk tasks workspace's conversation isn't handed on: a handoff, a brief or a review would copy it to another session. */
 export const HELPDESK_KEEPS_ITS_CONVERSATION =

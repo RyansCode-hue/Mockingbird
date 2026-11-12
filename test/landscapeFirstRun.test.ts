@@ -22,9 +22,9 @@ import {
   type TourTarget,
 } from "../src/renderer/landscapeFirstRun";
 import type { SessionInfo } from "../src/shared/types";
-import { fitRects, flagOnly, type ResolvedLayout } from "../src/renderer/landscapeModel";
+import { HANDLE_ROOM, fitRects, flagOnly, type ResolvedLayout } from "../src/renderer/landscapeModel";
 import { SHEET_FOOT, SHORTCUTS, shortcutIds } from "../src/renderer/landscapeShortcuts";
-import { actionOf, createActions } from "../src/renderer/workspaceActions";
+import { HELPDESK_BUSY, actionOf, createActions } from "../src/renderer/workspaceActions";
 
 const R = (x = 0, y = 0, w = 100, h = 100): Rect => ({ x, y, w, h });
 const none = (): Pick<ResolvedLayout, "areas" | "tiles" | "ghosts" | "windows" | "cards"> => ({ areas: [], tiles: [], ghosts: [], windows: [], cards: [] });
@@ -111,6 +111,13 @@ describe("the empty landscape's tiles", () => {
   it("are called what their row is, where the row is the tile's one flow", () => {
     for (const key of ["new:import", "new:helpdesk"]) expect([key, EMPTY_TILES.find((t) => t.row === key)?.title]).toEqual([key, actionOf(rows, key)?.label]);
   });
+  it("find Helpdesk tasks… off while it's opening, saying so, so a second press starts nothing", () => {
+    let opened = 0;
+    const busy = createActions({ launch: () => {}, helpdesk: () => opened++, helpdeskBusy: true, ticket: () => {}, importIt: () => {}, importMany: () => {}, pipeline: () => {} });
+    expect(actionOf(busy, "new:helpdesk")).toMatchObject({ disabled: true, title: HELPDESK_BUSY });
+    expect(actionOf(rows, "new:helpdesk")?.disabled).toBeFalsy();
+    expect(opened).toBe(0);
+  });
 });
 
 describe("the tour's steps", () => {
@@ -180,6 +187,14 @@ describe("what the wires step points at", () => {
     expect(tourHandleOf([ws("term", "5101", { shell: true })], null, "5101", own)?.key).toBe("term");
   });
 
+  it("is never the Helpdesk tasks workspace or a debrief, which take no wire, even selected, a terminal coming before them", () => {
+    const help = ws("help", "Helpdesk", { role: "tasks" });
+    const brief = ws("brief", "x", { debrief: true });
+    expect(tourHandleOf([help, brief], "help", "Helpdesk", own)).toBeNull();
+    expect(tourHandleOf([help, brief, ws("term", "5101", { shell: true })], "help", "Helpdesk", own)?.key).toBe("term");
+    expect(tourHandleOf([help, ws("a", "5101")], "help", "Helpdesk", own)?.key).toBe("a");
+  });
+
   it("is never a teammate's workspace, nor one in a collapsed area, even selected", () => {
     const tiles = [ws("nick", "5110", theirs), ws("hid", "5101", {}, R(), true)];
     expect(tourHandleOf(tiles, "nick", "5110", own)).toBeNull();
@@ -223,6 +238,14 @@ describe("moving the camera for the tour", () => {
     expect(tourCamera(rect, { x: 800, y: 10, w: 400, h: 300 }, view, 0)).not.toBeNull();
     expect(tourCamera(rect, { x: 10, y: 10, w: 400, h: 300 }, view, 56)).not.toBeNull();
     expect(tourCamera(rect, { x: 10, y: 10, w: TOUR_MIN_W - 1, h: 300 }, view, 0)).not.toBeNull();
+  });
+
+  it("moves for a workspace too small on screen to carry its edge handle, wide but short, when it's the handle shown", () => {
+    // 1600 × 240 at 15%: wholly in view and 240 wide, but 36 tall
+    const short = { x: 10, y: 100, w: 240, h: 36 };
+    expect(tourCamera(rect, short, view, 0)).toBeNull();
+    expect(tourCamera(rect, short, view, 0, HANDLE_ROOM)).not.toBeNull();
+    expect(tourCamera(rect, { ...short, h: HANDLE_ROOM.h }, view, 0, HANDLE_ROOM)).toBeNull();
   });
 });
 

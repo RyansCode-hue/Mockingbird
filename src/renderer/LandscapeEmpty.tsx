@@ -35,6 +35,7 @@ function useScrollsWhenTall() {
 export function LandscapeEmpty({
   state,
   onTile,
+  busy,
   onJoinRoom,
   treeHidden,
   onShowTree,
@@ -42,6 +43,8 @@ export function LandscapeEmpty({
   state: Exclude<EmptyState, { kind: "drawn" }>;
   /** A tile's create-menu row run, for a workspace placed at the view's centre. */
   onTile: (row: string) => void;
+  /** The rows whose flow is under way (off in the create menu): their tiles say so. */
+  busy?: ReadonlySet<string>;
   onJoinRoom: () => void;
   /** The side bar is hidden, or shows Team rooms: its Closed list needs showing. */
   treeHidden: boolean;
@@ -83,12 +86,16 @@ export function LandscapeEmpty({
           {state.reset && `${state.reset} `}Right-click anywhere to add a workspace, or start from one of these.
         </div>
         <div className="ls-empty-tiles">
-          {EMPTY_TILES.map((t) => (
-            <button key={t.row} type="button" className="ls-empty-tile" data-tile={t.row} onMouseDown={keepKeyboard} onClick={() => onTile(t.row)}>
-              <span className="t">{t.title}</span>
-              <span className="s">{t.sub}</span>
-            </button>
-          ))}
+          {EMPTY_TILES.map((t) => {
+            const going = !!busy?.has(t.row);
+            return (
+              // still pressable while its flow is under way: the press runs the row, which is off and says why
+              <button key={t.row} type="button" className="ls-empty-tile" data-tile={t.row} aria-busy={going || undefined} onMouseDown={keepKeyboard} onClick={() => onTile(t.row)}>
+                <span className="t">{t.title}</span>
+                <span className="s">{going ? "Opening…" : t.sub}</span>
+              </button>
+            );
+          })}
         </div>
         {state.closed > 0 && (
           <div className="ls-empty-closed" data-closed={state.closed}>
