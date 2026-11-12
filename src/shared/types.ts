@@ -1440,6 +1440,12 @@ export function roomPushLine(p: RoomPush): string | null {
 /** The usual names of the branches work merges into, by team convention, each in the order it's preferred. */
 export const BASE_NAMES: Record<PrTarget, string[]> = { dev: ["dev", "develop", "development", "uat"], main: ["main", "master"] };
 
+/**
+ * What Source Control's Push gives: where it pushed (and, for a team room session, what ran), or, for a room session
+ * on a branch with a base's name or not its own, why it waits for the user's say-so: asked again with `branch`, it goes.
+ */
+export type ScmPushResult = { upstream: string; roomPush?: RoomPush } | { confirm: string; branch: string };
+
 /** Azure DevOps keeps this many characters of a pull request's description: openPr shortens a longer one to fit. */
 export const ADO_DESC_MAX = 4000;
 

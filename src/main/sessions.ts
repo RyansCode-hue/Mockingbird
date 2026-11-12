@@ -359,6 +359,11 @@ export class SessionManager {
   roomLaunch: ((target: LaunchTarget) => Promise<RoomLaunch | null>) | null = null;
   /** The team room a group is shared as, or null (team rooms): what keeps the Helpdesk tasks workspace out of one. */
   roomOfGroup: ((group: string) => string | null) | null = null;
+  /**
+   * Whether the git that makes or checks out a folder for a session in `group` fires only the user's own hooks
+   * (worktrees.ts's `own`): main's pushesOwnHooks rule, by group. Unset (a test's Sessions), the repository's run.
+   */
+  ownHooksFor: ((group: string | null) => boolean) | null = null;
   /** Claude Code's `--help` (helpdesk.ts); a test's stand-in otherwise. */
   readClaudeHelp: (bin: string) => Promise<string> = readClaudeHelp;
   /** Whether a Claude Code lists `--chrome`, by binary and version; one that couldn't be read is asked again next time. */
@@ -582,6 +587,7 @@ export class SessionManager {
     const wanted =
       req.branchName?.trim() ||
       (req.ticketId && req.ticketTitle ? slugBranch(req.ticketId, req.ticketTitle) : null);
+    const own = !!this.ownHooksFor?.(req.taskGroup ?? req.ticketId ?? null);
     if (tasks) {
       cwd = helpdeskFolder();
       repoPath = null;
@@ -591,14 +597,14 @@ export class SessionManager {
       branch = req.branchName?.trim() || null;
     } else if (repoPath && req.useWorktree) {
       branch = wanted || `mb-${Date.now().toString(36)}`;
-      cwd = await createWorktree(repoPath, branch, req.baseBranch, { warn, ...(req.startAt ? { startAt: req.startAt } : {}) });
+      cwd = await createWorktree(repoPath, branch, req.baseBranch, { warn, own, ...(req.startAt ? { startAt: req.startAt } : {}) });
     } else if (repoPath && wanted) {
       // ticket branch in the checkout itself — one branch per checkout, so
       // another live session there on a different branch blocks this. One with
       // no branch of its own runs on whatever's out, and would be moved all the same
       const other = [...this.live.values()].find((s) => s.info.cwd === repoPath && s.info.status !== "dead" && s.info.branch !== wanted);
       const occupiedBy = other && (other.info.branch ?? (await currentBranch(repoPath)) ?? "a detached HEAD");
-      await checkoutBranch(repoPath, wanted, req.baseBranch, occupiedBy === wanted ? undefined : occupiedBy, warn);
+      await checkoutBranch(repoPath, wanted, req.baseBranch, occupiedBy === wanted ? undefined : occupiedBy, warn, { own });
       branch = wanted;
       cwd = repoPath;
     } else {
@@ -1586,7 +1592,8 @@ export class SessionManager {
     if (!fs.existsSync(old.cwd)) {
       if (!repo || old.cwd === repo || !old.branch) throw new Error(`${old.cwd} doesn't exist any more`);
       const warnings: string[] = [];
-      const cwd = await createWorktree(repo, old.branch, undefined, { mustExist: true, at: old.cwd, warn: (text) => warnings.push(text) });
+      const own = !!this.ownHooksFor?.(old.taskGroup ?? null);
+      const cwd = await createWorktree(repo, old.branch, undefined, { mustExist: true, at: old.cwd, warn: (text) => warnings.push(text), own });
       return { where: { cwd, branchName: old.branch, useWorktree: false }, ...(warnings.length ? { warnings } : {}) };
     }
     const where = { cwd: old.cwd, useWorktree: false };

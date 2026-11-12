@@ -1,14 +1,24 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
-import { guardedGit, ownNetworkGit, SAFE_DIFF, WRITE_ENV } from "./safeGit";
-import type { GitChange, GraphCommit, GraphRef, RoomPush, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
+import { guardedGit, ownNetworkGit, roomPushPlan, roomWriteEnv, SAFE_DIFF, WRITE_ENV } from "./safeGit";
+import { prBranchProblem, unrecordedBranch, type GitChange, type GraphCommit, type GraphRef, type RoomPush, type ScmGraph, type ScmPushResult, type ScmStatus, type ScmStatusCode } from "../shared/types";
 
 /**
  * Source control for a session's folder, like VS Code's view: what's staged,
  * what isn't, and stage / unstage / discard / commit / push. Every path is
  * checked to stay inside the folder before git sees it. What it reads goes
  * through guardedGit, so nothing the folder's config names runs for a read.
+ * Each write takes `own` for a team room session's folder: then the hooks it
+ * fires are the user's own only (roomWriteEnv), never the repository's.
  */
+
+/** Whether a write is for a team room session's folder (its hooks the user's own only), as main's handlers decide it. */
+export interface Own {
+  own?: boolean;
+}
+
+/** The environment a write in `root` runs with: roomWriteEnv's for a room session's folder, else WRITE_ENV. */
+const writeEnv = async (root: string, o: Own): Promise<Readonly<Record<string, string>>> => (o.own ? roomWriteEnv(root) : WRITE_ENV);
 
 const code = (c: string): ScmStatusCode => (c === "A" ? "A" : c === "D" ? "D" : c === "R" || c === "C" ? "R" : "M");
 
@@ -67,33 +77,33 @@ async function inside(root: string, paths: string[]): Promise<string[]> {
   return paths;
 }
 
-export async function scmStage(root: string, paths: string[]): Promise<void> {
-  await git(root, ["add", "-A", "--", ...(await inside(root, paths))], { env: WRITE_ENV });
+export async function scmStage(root: string, paths: string[], o: Own = {}): Promise<void> {
+  await git(root, ["add", "-A", "--", ...(await inside(root, paths))], { env: await writeEnv(root, o) });
 }
 
-export async function scmUnstage(root: string, paths: string[]): Promise<void> {
+export async function scmUnstage(root: string, paths: string[], o: Own = {}): Promise<void> {
   const rel = await inside(root, paths);
   // before the first commit there's no HEAD to restore the index from
-  await git(root, (await headCommit(root)) ? ["restore", "--staged", "--", ...rel] : ["rm", "--cached", "-r", "-q", "--", ...rel], { env: WRITE_ENV });
+  await git(root, (await headCommit(root)) ? ["restore", "--staged", "--", ...rel] : ["rm", "--cached", "-r", "-q", "--", ...rel], { env: await writeEnv(root, o) });
 }
 
 /**
  * Throw away unstaged changes: tracked files go back to their staged (or
  * committed) content; untracked files go to the Trash, so a mistake can be undone.
  */
-export async function scmDiscard(root: string, entries: { path: string; untracked: boolean }[], trash: (abs: string) => Promise<void>): Promise<void> {
+export async function scmDiscard(root: string, entries: { path: string; untracked: boolean }[], trash: (abs: string) => Promise<void>, o: Own = {}): Promise<void> {
   const tracked = entries.filter((e) => !e.untracked).map((e) => e.path);
   const untracked = entries.filter((e) => e.untracked).map((e) => e.path);
-  if (tracked.length) await git(root, ["restore", "--worktree", "--", ...(await inside(root, tracked))], { env: WRITE_ENV });
+  if (tracked.length) await git(root, ["restore", "--worktree", "--", ...(await inside(root, tracked))], { env: await writeEnv(root, o) });
   for (const p of untracked) await trash(await resolveIn(root, p));
 }
 
-export async function scmCommit(root: string, message: string): Promise<{ sha: string }> {
+export async function scmCommit(root: string, message: string, o: Own = {}): Promise<{ sha: string }> {
   const msg = message.trim();
   if (!msg) throw new Error("Write a commit message first");
   const staged = (await scmStatus(root)).staged.length;
   if (!staged) throw new Error("Nothing is staged — stage the changes to commit first");
-  await git(root, ["commit", "-q", "-m", msg], { env: WRITE_ENV });
+  await git(root, ["commit", "-q", "-m", msg], { env: await writeEnv(root, o) });
   return { sha: await git(root, ["rev-parse", "--short", "HEAD"]) };
 }
 
@@ -106,37 +116,74 @@ export async function scmCommit(root: string, message: string): Promise<{ sha: s
  * by a teammate typing) can write, so it goes through ownNetworkGit's room push: a pre-push only from the user's global
  * core.hooksPath outside every working tree, never the repository's (its `.git/hooks` or Husky's `.husky/_`), the
  * repository's Git LFS files uploaded first (git lfs push, to the remote the push goes to), git's own receive-pack, no
- * submodule's push and no ext:: transport. `roomPush` says what ran. A local session's push stays a plain one, the
- * repository's hooks (Husky's, git-lfs's) running: its agent is trusted.
+ * submodule's push and no ext:: transport, and it names its branch rather than HEAD, so what was checked out when it
+ * looked is what goes, whatever the agent checks out meanwhile. `roomPush` says what ran. A local session's push stays
+ * a plain one, the repository's hooks (Husky's, git-lfs's) running: its agent is trusted.
+ *
+ * `branch`: the branch the caller checked (roomPushAsk, the PR form's refusals); nothing is pushed when it's moved on.
  */
-export async function scmPush(root: string, o: { own?: boolean } = {}): Promise<{ upstream: string; roomPush?: RoomPush }> {
+export async function scmPush(root: string, o: { own?: boolean; branch?: string } = {}): Promise<{ upstream: string; roomPush?: RoomPush }> {
   const st = await scmStatus(root);
   if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to push to");
-  const args = st.published ? ["-q"] : ["-q", "-u", "origin", "HEAD"];
+  if (o.branch !== undefined && st.branch !== o.branch) throw new Error(`The worktree is on ${st.branch} now, not ${o.branch}: nothing was pushed`);
   const upstream = st.published ? st.upstream! : `origin/${st.branch}`;
   if (!o.own) {
-    await git(root, ["push", ...args]);
+    await git(root, ["push", ...(st.published ? ["-q"] : ["-q", "-u", "origin", "HEAD"])]);
     return { upstream };
   }
   let roomPush: RoomPush | undefined;
-  // a plain `git push` goes to the upstream's remote (a branch's pushRemote aside, which this repository's config sets)
-  const remote = st.published ? upstream.slice(0, upstream.indexOf("/")) : "origin";
-  await ownNetworkGit(root, "push", args, { roomPush: { lfs: { remote, refs: ["HEAD"] }, pushes: "a room session's pushes", told: (p) => (roomPush = p) } });
+  const remote = pushRemote(st);
+  const ref = `refs/heads/${st.branch}`;
+  await ownNetworkGit(root, "push", st.published ? ["-q", remote, ref] : ["-q", "-u", "origin", ref], {
+    roomPush: { lfs: { remote, refs: [ref] }, pushes: "a room session's pushes", told: (p) => (roomPush = p) },
+  });
   return { upstream, roomPush };
+}
+
+/** The remote a push from a folder at `st` goes to, as a plain `git push` picks it: its upstream's once published (a branch's pushRemote aside), else origin. */
+const pushRemote = (st: ScmStatus): string => (st.published ? st.upstream!.slice(0, st.upstream!.indexOf("/")) : "origin");
+
+/** What a room session's push from `root` would run, set aside and do with Git LFS files (roomPushPlan), to the remote scmPush would push to. */
+export async function scmRoomPushPlan(root: string): Promise<RoomPush> {
+  return roomPushPlan(root, pushRemote(await scmStatus(root)));
+}
+
+/**
+ * The branch a team room session's push from `root` would go from, and why it takes the user's say-so, if it does: a
+ * base branch's name (prBranchProblem), or not `recorded`, the branch the session was made on (unrecordedBranch). Its
+ * agent picks the branch it's on, and the push goes to origin under that name. Null `branch`: a detached HEAD, which
+ * scmPush refuses itself.
+ */
+export async function roomPushAsk(root: string, recorded: string | null): Promise<{ branch: string | null; why: string | null }> {
+  const branch = (await scmStatus(root)).branch;
+  return { branch, why: branch ? (prBranchProblem(branch, "") ?? unrecordedBranch(branch, recorded)) : null };
+}
+
+/**
+ * Source Control's Push for a team room session made on `recorded`: scmPush's `own`, from the branch roomPushAsk read.
+ * When it asks, nothing is pushed until the user says so, `confirmBranch` naming that branch.
+ */
+export async function scmRoomPush(root: string, recorded: string | null, confirmBranch?: string): Promise<ScmPushResult> {
+  const { branch, why } = await roomPushAsk(root, recorded);
+  if (branch && why && confirmBranch !== branch) return { confirm: why, branch };
+  return scmPush(root, { own: true, ...(branch ? { branch } : {}) });
 }
 
 /**
  * Bring in what the upstream has that this branch doesn't — fast-forward only,
  * so a pull never makes a merge commit, rewrites anything, or stops halfway in
  * conflicts. When both sides have moved, or local edits are in the way, git's
- * refusal is passed on and nothing changes.
+ * refusal is passed on and nothing changes. A room session's (`own`) runs as
+ * Mockingbird's own network gits do (ownNetworkGit), its hooks the user's own:
+ * a pull fires post-merge and reference-transaction.
  */
-export async function scmPull(root: string): Promise<void> {
+export async function scmPull(root: string, o: Own = {}): Promise<void> {
   const st = await scmStatus(root);
   if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to pull into");
   if (!st.upstream) throw new Error("This branch doesn't track a remote branch yet, so there's nothing to pull");
   try {
-    await git(root, ["pull", "--ff-only", "-q"], { env: WRITE_ENV });
+    if (o.own) await ownNetworkGit(root, "pull", ["--ff-only", "-q"], { room: true });
+    else await git(root, ["pull", "--ff-only", "-q"], { env: WRITE_ENV });
   } catch (err) {
     const msg = (err as Error).message;
     if (/not possible to fast-forward|diverg/i.test(msg)) {
@@ -148,9 +195,10 @@ export async function scmPull(root: string): Promise<void> {
   }
 }
 
-/** Update the remote branches (what ↑/↓ and the graph compare against), dropping deleted ones. */
-export async function scmFetch(root: string): Promise<void> {
-  await git(root, ["fetch", "--prune", "-q"], { env: WRITE_ENV });
+/** Update the remote branches (what ↑/↓ and the graph compare against), dropping deleted ones. A room session's (`own`) as scmPull's: a fetch fires reference-transaction. */
+export async function scmFetch(root: string, o: Own = {}): Promise<void> {
+  if (o.own) await ownNetworkGit(root, "fetch", ["--prune", "-q"], { room: true });
+  else await git(root, ["fetch", "--prune", "-q"], { env: WRITE_ENV });
 }
 
 const SEP = "\x1f";

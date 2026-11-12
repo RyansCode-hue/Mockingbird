@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { isErr, AGENT_NAME, roomPushLine, type GitChange, type GitChanges, type RoomPush, type ScmEntry, type ScmStatus, type IpcResult, type AgentKind } from "../shared/types";
+import { isErr, AGENT_NAME, roomPushLine, type GitChange, type GitChanges, type ScmEntry, type ScmPushResult, type ScmStatus, type IpcResult, type AgentKind } from "../shared/types";
 import { useFolderRefresh } from "./folderWatch";
 import { SparkleIcon } from "./Icons";
 import { CommitGraph } from "./CommitGraph";
@@ -276,7 +276,13 @@ export function SourceControl({
             onClick={() =>
               act("push", async () => {
                 setPushed(null);
-                const r: IpcResult<{ upstream: string; roomPush?: RoomPush }> = await window.mb.scmPush(sessionId);
+                let r: IpcResult<ScmPushResult> = await window.mb.scmPush(sessionId);
+                // a room session's branch with a base's name, or not its own: pushed only once the user says so, naming it
+                if (!isErr(r) && "confirm" in r) {
+                  if (!window.confirm(`${r.confirm}\n\nPush ${r.branch} to origin anyway?`)) return undefined;
+                  r = await window.mb.scmPush(sessionId, r.branch);
+                  if (!isErr(r) && "confirm" in r) return { error: `Nothing was pushed: ${r.confirm}` };
+                }
                 if (!isErr(r) && r.roomPush) setPushed(roomPushLine(r.roomPush));
                 return r;
               })

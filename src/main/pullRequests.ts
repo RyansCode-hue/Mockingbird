@@ -1,7 +1,7 @@
 import { ADO_API } from "./ado";
 import { BASE_NAMES, branchesOf, currentBranch, git, originRemote, remoteName, type RemoteRepo } from "./git";
-import { dirtyFileCount } from "./scm";
-import { guardedGit, roomPushPlan } from "./safeGit";
+import { dirtyFileCount, scmRoomPushPlan } from "./scm";
+import { guardedGit } from "./safeGit";
 import { listAllFiles } from "./find";
 import { quote, type ShellResult } from "./shell";
 import type { ShellRunner } from "./headless";
@@ -178,7 +178,7 @@ export async function prPreflight(
     existing,
     lookupError,
     branchProblem: branch && base ? prBranchProblem(branch, base) : null,
-    ...(o.own ? { roomPush: await roomPushPlan(root) } : {}),
+    ...(o.own ? { roomPush: await scmRoomPushPlan(root) } : {}),
   };
 }
 

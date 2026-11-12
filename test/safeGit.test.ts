@@ -394,6 +394,28 @@ describe("Mockingbird's own network gits", { timeout: 300_000 }, () => {
     expect((await ownNetworkEnv(personal)).GIT_SSH_COMMAND).toBe(defaultSsh);
   });
 
+  it("set an ssh aside that's set in a file in one of the repository's working trees, whatever its program: one the config includes from there", async () => {
+    const { clone, w, global } = overSsh();
+    const userSsh = w.plant("userssh", "exit 1");
+    fs.writeFileSync(global, `[core]\n\tsshCommand = ${userSsh}\n`);
+    // a team's tracked .gitconfig, which the repository's own config includes: the session's agent writes it
+    fs.writeFileSync(path.join(clone, "team.gitconfig"), `[core]\n\tsshCommand = ssh -o ProxyCommand='${w.plant("proxied", "exit 1")}'\n`);
+    git(clone, "config", "include.path", "../team.gitconfig");
+    const own = ownGitLog();
+    expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe(userSsh);
+    // and no credential manager's window, which nobody is watching for
+    expect((await ownNetworkEnv(clone)).GCM_INTERACTIVE).toBe("never");
+    expect((await ownNetworkEnv(clone, { room: true })).GCM_INTERACTIVE).toBe("never");
+    await expect(fetchOrigin(clone)).rejects.toThrow(unreachable);
+    expect(w.ran()).toEqual(["userssh"]);
+    expect(own.find((l) => / set aside /.test(l))).toContain(`: it's set in team.gitconfig, a file in ${fs.realpathSync(clone)}, a working tree of this repository, which a session there can change`);
+    // the repository's own config, in its .git, is the user's tools': an ssh set there runs
+    git(clone, "config", "--unset", "include.path");
+    const localSsh = w.plant("localssh", "exit 1");
+    git(clone, "config", "core.sshCommand", localSsh);
+    expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe(localSsh);
+  });
+
   it("log a failure with the repository, the whole command and git's words, and say which ssh was set aside and why", async () => {
     const { clone, w, global } = overSsh();
     const userSsh = w.plant("userssh", "echo 'Permission denied (publickey).' >&2; exit 255");

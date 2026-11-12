@@ -1,9 +1,12 @@
 import * as fs from "fs";
+import * as http from "http";
 import * as os from "os";
 import * as path from "path";
-import { describe, expect, it, vi } from "vitest";
-import { parseRefs, scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmPull, scmPush, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
-import { ownNetworkGit, programOnPath } from "../src/main/safeGit";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { parseRefs, scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmPull, scmPush, scmRoomPush, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
+import { ownNetworkGit, programOnPath, urlHost } from "../src/main/safeGit";
+import { checkoutBranch, cleanupWorktree, createWorktree, worktreeAt } from "../src/main/worktrees";
+import { prBranchProblem, unrecordedBranch } from "../src/shared/types";
 import { git, makeRepo, tempDir } from "./helpers";
 
 const id = ["-c", "user.name=t", "-c", "user.email=t@t"];
@@ -207,6 +210,16 @@ describe("a push's hooks: a room session's and a local one's", () => {
       git(t.repo, ...id, "commit", "-q", "--allow-empty", "-m", "again");
       expect((await scmPush(t.repo, { own: true })).roomPush).toEqual({ runs: null, skipped: { value: ".husky/_", why: "hooks in the working tree can be changed by the session" }, lfs: "none" });
       expect(t.ran()).toEqual(["user"]);
+      // one set in a file the user's config includes from the working tree is the agent's too, wherever it points
+      fs.writeFileSync(path.join(t.repo, "user.gitconfig"), `[core]\n\thooksPath = ${userHooks}\n`);
+      fs.writeFileSync(global, `[include]\n\tpath = ${path.join(t.repo, "user.gitconfig")}\n`);
+      git(t.repo, ...id, "commit", "-q", "--allow-empty", "-m", "and again");
+      expect((await scmPush(t.repo, { own: true })).roomPush).toEqual({
+        runs: null,
+        skipped: { value: userHooks, why: `it's set in user.gitconfig, a file in ${fs.realpathSync(t.repo)}, which the session can change` },
+        lfs: "none",
+      });
+      expect(t.ran()).toEqual(["user"]);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -303,6 +316,254 @@ describe("a room session's push and Git LFS", () => {
     expect(git(remote, "for-each-ref")).toBe("");
     // a local session's push is git's own, as ever
     expect(await scmPush(repo)).toEqual({ upstream: "origin/main" });
+  });
+
+  /** A listener on 127.0.0.1 standing for a host an agent named: what it's asked. */
+  async function listener() {
+    const hits: string[] = [];
+    const server = http.createServer((req, res) => {
+      hits.push(`${req.method} ${req.url}`);
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", () => ok()));
+    onTestFinished(() => void server.close());
+    return { port: (server.address() as { port: number }).port, hits };
+  }
+
+  it.skipIf(!lfsHere)("pushes nothing when the repository's .lfsconfig sends its LFS files to another host: in the working tree, the index or HEAD", async () => {
+    const t = lfsRepo();
+    const away = await listener();
+    const refused = (where: string) =>
+      `Nothing was pushed: this repository's .lfsconfig, in ${where}, sends its Git LFS files to 127.0.0.1, not to ${t.remote}, where origin is: a session can change that file, so Mockingbird won't upload them there.`;
+    const lfsconfig = path.join(t.repo, ".lfsconfig");
+    fs.writeFileSync(lfsconfig, `[lfs]\n\turl = http://127.0.0.1:${away.port}/agent\n`);
+    await expect(scmPush(t.repo, { own: true })).rejects.toThrow(refused("the working tree"));
+    // a remote's own endpoint key, in any case
+    fs.writeFileSync(lfsconfig, `[Remote "origin"]\n\tLfsPushUrl = http://127.0.0.1:${away.port}/agent\n`);
+    await expect(scmPush(t.repo, { own: true })).rejects.toThrow(refused("the working tree"));
+    // git-lfs reads the index's when the working tree has none, and HEAD's when neither has
+    fs.writeFileSync(lfsconfig, `[lfs]\n\tpushurl = http://127.0.0.1:${away.port}/agent\n`);
+    git(t.repo, "add", ".lfsconfig");
+    fs.rmSync(lfsconfig);
+    await expect(scmPush(t.repo, { own: true })).rejects.toThrow(refused("the index"));
+    git(t.repo, ...id, "commit", "-q", "-m", "an endpoint");
+    git(t.repo, "rm", "-q", "--cached", ".lfsconfig");
+    await expect(scmPush(t.repo, { own: true })).rejects.toThrow(refused("HEAD"));
+    expect(away.hits).toEqual([]);
+    expect(git(t.remote, "for-each-ref")).toBe("");
+    // one that names no endpoint is git-lfs's to read: the push goes, its LFS files first
+    fs.writeFileSync(lfsconfig, "[lfs]\n\tlocksverify = false\n");
+    git(t.repo, "add", ".lfsconfig");
+    git(t.repo, ...id, "commit", "-q", "-m", "no endpoint");
+    expect((await scmPush(t.repo, { own: true })).roomPush?.lfs).toBe("push");
+    expect(t.objects()).toBe(1);
+  });
+
+  it("reads a remote's host as git does: a URL's, an scp-like one's, none for a local path", () => {
+    expect(urlHost("https://user:pw@Dev.Azure.com/org/p/_git/r")).toBe("dev.azure.com");
+    expect(urlHost("ssh://git@github.com:22/o/r.git")).toBe("github.com");
+    expect(urlHost("git@ssh.dev.azure.com:v3/org/p/r")).toBe("ssh.dev.azure.com");
+    expect(urlHost("http://127.0.0.1:8080/x")).toBe("127.0.0.1");
+    expect(urlHost("http://[::1]:8080/x")).toBe("[::1]");
+    for (const local of ["/srv/r.git", "./r.git", "../a:b/r.git", "file:///srv/r.git"]) expect(urlHost(local), local).toBeNull();
+  });
+});
+
+/**
+ * A clone with a bare origin and a session's linked worktree on 5101-x, published, and in its .git/hooks a hook for
+ * each of `hooks` that leaves its name in `ran` whenever git fires it: a hook manager's (pre-commit's, lefthook's) would
+ * run what the agent wrote there instead. The agent's own file, .mgr-config.yaml, is committed on 5101-x.
+ */
+function firedHooks(hooks: string[]) {
+  const repo = makeRepo({ "a.txt": "a\n" });
+  const dir = tempDir("remote");
+  const remote = path.join(dir, "r.git");
+  git(dir, "init", "-q", "--bare", remote);
+  git(repo, "remote", "add", "origin", remote);
+  git(repo, "push", "-q", "origin", "main");
+  const wt = path.join(tempDir("worktrees"), "5101-x");
+  git(repo, "worktree", "add", "-q", "-b", "5101-x", wt);
+  fs.writeFileSync(path.join(wt, ".mgr-config.yaml"), "entry: make\n");
+  git(wt, "add", ".mgr-config.yaml");
+  git(wt, ...id, "commit", "-q", "-m", "the agent's work");
+  git(wt, "push", "-q", "-u", "origin", "5101-x");
+  const log = path.join(dir, "ran");
+  for (const h of hooks) fs.writeFileSync(path.join(repo, ".git", "hooks", h), `#!/bin/sh\necho ${h} >> '${log}'\n`, { mode: 0o755 });
+  const ran = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : []);
+  return { repo, wt, remote, dir, log, ran, clear: () => fs.rmSync(log, { force: true }) };
+}
+
+/** A commit on origin's `branch` from a clone of its own, as a teammate's push would make it. */
+function theyPush(remote: string, branch: string, file: string) {
+  const other = path.join(tempDir("teammate"), "clone");
+  git(path.dirname(other), "clone", "-q", "-b", branch, remote, other);
+  fs.writeFileSync(path.join(other, file), `${file}\n`);
+  git(other, "add", "-A");
+  git(other, ...id, "commit", "-q", "-m", `their ${file}`);
+  git(other, "push", "-q", "origin", branch);
+  return git(other, "rev-parse", "HEAD");
+}
+
+describe("a room session's writes: none of the repository's hooks, only the user's own", () => {
+  it("stages and commits a room session's work firing none of the repository's hooks; a local session's fires them all", async () => {
+    const hooks = ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"];
+    const t = firedHooks(hooks);
+    fs.writeFileSync(path.join(t.wt, "work.txt"), "w\n");
+    await scmStage(t.wt, ["work.txt"], { own: true });
+    await scmCommit(t.wt, "room work", { own: true });
+    expect(t.ran()).toEqual([]);
+    expect(git(t.wt, "log", "-1", "--format=%s")).toBe("room work");
+    // unstage and discard fire post-index-change
+    fs.writeFileSync(path.join(t.wt, "a.txt"), "changed\n");
+    await scmStage(t.wt, ["a.txt"], { own: true });
+    await scmUnstage(t.wt, ["a.txt"], { own: true });
+    await scmDiscard(t.wt, [{ path: "a.txt", untracked: false }], async () => {}, { own: true });
+    expect(t.ran()).toEqual([]);
+    expect(fs.readFileSync(path.join(t.wt, "a.txt"), "utf8")).toBe("a\n");
+    // the same, for a local session: the probe is real
+    fs.writeFileSync(path.join(t.wt, "more.txt"), "m\n");
+    await scmStage(t.wt, ["more.txt"]);
+    await scmCommit(t.wt, "local work");
+    expect(t.ran()).toEqual(expect.arrayContaining(hooks));
+  });
+
+  it("never runs a hook from a tracked folder the repository's core.hooksPath names, for a room session's commit", async () => {
+    const t = firedHooks([]);
+    git(t.repo, "config", "core.hooksPath", ".githooks");
+    // the agent's own pre-commit, in its worktree: core.hooksPath is found from the top of the tree git runs in
+    fs.mkdirSync(path.join(t.wt, ".githooks"));
+    fs.writeFileSync(path.join(t.wt, ".githooks", "pre-commit"), `#!/bin/sh\necho "agent's pre-commit" >> '${t.log}'\n`, { mode: 0o755 });
+    git(t.wt, "add", "-A");
+    await scmCommit(t.wt, "room work", { own: true });
+    expect(t.ran()).toEqual([]);
+    fs.writeFileSync(path.join(t.wt, "more.txt"), "m\n");
+    git(t.wt, "add", "-A");
+    await scmCommit(t.wt, "local work");
+    expect(t.ran()).toEqual(["agent's pre-commit"]);
+  });
+
+  it("runs the user's own global hooks for a room session's commit, only while they're the user's alone", async () => {
+    const t = firedHooks([]);
+    const hooksAt = (folder: string, name: string) => {
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, "pre-commit"), `#!/bin/sh\necho ${name} >> '${t.log}'\n`, { mode: 0o755 });
+      return folder;
+    };
+    const global = path.join(tempDir("global"), "gitconfig");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    onTestFinished(() => void vi.unstubAllEnvs());
+    let n = 0;
+    const commit = async () => {
+      fs.writeFileSync(path.join(t.wt, `w${++n}.txt`), `${n}\n`);
+      git(t.wt, "add", "-A");
+      await scmCommit(t.wt, `work ${n}`, { own: true });
+      const ran = t.ran();
+      t.clear();
+      return ran;
+    };
+    fs.writeFileSync(global, `[core]\n\thooksPath = ${hooksAt(tempDir("user-hooks"), "user")}\n`);
+    expect(await commit()).toEqual(["user"]);
+    // set in a file the user's config includes from a working tree: the agent's to write, wherever it points
+    fs.writeFileSync(path.join(t.wt, "user.gitconfig"), `[core]\n\thooksPath = ${hooksAt(tempDir("outside"), "outside")}\n`);
+    fs.writeFileSync(global, `[include]\n\tpath = ${path.join(t.wt, "user.gitconfig")}\n`);
+    expect(await commit()).toEqual([]);
+    // in the folder room sessions keep their caches in
+    fs.writeFileSync(global, `[core]\n\thooksPath = ${hooksAt(path.join(os.homedir(), "Library", "Caches", "mockingbird-room-caches", "r1", "hooks"), "cache")}\n`);
+    expect(await commit()).toEqual([]);
+    // relative: found from the top of whichever working tree git runs in, inside it or beside it
+    hooksAt(path.join(t.wt, "relhooks"), "relative");
+    fs.writeFileSync(global, "[core]\n\thooksPath = relhooks\n");
+    expect(await commit()).toEqual([]);
+    hooksAt(path.join(path.dirname(t.wt), "beside-hooks"), "beside");
+    fs.writeFileSync(global, "[core]\n\thooksPath = ../beside-hooks\n");
+    expect(await commit()).toEqual([]);
+  });
+
+  it("pulls and fetches for a room session firing none of the repository's hooks; a local session's fires them", async () => {
+    const t = firedHooks(["reference-transaction", "post-merge", "post-checkout"]);
+    const theirs = theyPush(t.remote, "5101-x", "theirs.txt");
+    await scmFetch(t.wt, { own: true });
+    await scmPull(t.wt, { own: true });
+    expect(t.ran()).toEqual([]);
+    expect(git(t.wt, "rev-parse", "HEAD")).toBe(theirs);
+    const again = theyPush(t.remote, "5101-x", "again.txt");
+    await scmFetch(t.wt);
+    expect(t.ran()).toContain("reference-transaction");
+    t.clear();
+    await scmPull(t.wt);
+    expect(t.ran()).toContain("post-merge");
+    expect(git(t.wt, "rev-parse", "HEAD")).toBe(again);
+  });
+
+  it("asks before a room session's Source Control push of a branch with a base's name or not its own, then pushes the one named", async () => {
+    const t = hookManager();
+    // made on another: its say-so first, naming the branch; nothing goes until then
+    expect(await scmRoomPush(t.wt, "5101-other")).toEqual({ confirm: unrecordedBranch("5101-x", "5101-other"), branch: "5101-x" });
+    expect(await scmRoomPush(t.wt, "5101-other", "5101-y")).toEqual({ confirm: unrecordedBranch("5101-x", "5101-other"), branch: "5101-x" });
+    expect(git(t.remote, "for-each-ref")).toBe("");
+    expect(await scmRoomPush(t.wt, "5101-other", "5101-x")).toMatchObject({ upstream: "origin/5101-x" });
+    expect(git(t.remote, "log", "-1", "--format=%s", "5101-x")).toBe("the agent's work");
+    // its own branch goes as it is
+    git(t.wt, ...id, "commit", "-q", "--allow-empty", "-m", "more");
+    expect(await scmRoomPush(t.wt, "5101-x")).toMatchObject({ upstream: "origin/5101-x" });
+    // a base's name, even the one it was made on, would update origin's base directly
+    const dev = path.join(tempDir("worktrees"), "dev");
+    git(t.repo, "worktree", "add", "-q", "-b", "dev", dev);
+    expect(await scmRoomPush(dev, "dev")).toEqual({ confirm: prBranchProblem("dev", ""), branch: "dev" });
+    expect(git(t.remote, "for-each-ref", "--format=%(refname)")).not.toContain("refs/heads/dev");
+    expect(await scmRoomPush(dev, "dev", "dev")).toMatchObject({ upstream: "origin/dev" });
+    // and a push from a branch it didn't check goes nowhere
+    await expect(scmPush(t.wt, { own: true, branch: "5101-other" })).rejects.toThrow("The worktree is on 5101-x now, not 5101-other: nothing was pushed");
+  });
+});
+
+describe("a room session's folder made, checked out and cleaned up: none of the repository's hooks", () => {
+  it("pushes a room session's branch for Close session's Push branch, then remove worktree, firing none of them: its WIP commit's (--no-verify skips two), its pre-push", async () => {
+    const hooks = ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction", "pre-push"];
+    const t = firedHooks(hooks);
+    fs.writeFileSync(path.join(t.wt, "wip.txt"), "w\n");
+    expect(await cleanupWorktree(t.repo, t.wt, "push", { own: true })).toEqual({ removed: true });
+    expect(t.ran()).toEqual([]);
+    expect(git(t.remote, "log", "-1", "--format=%s", "5101-x")).toBe("WIP: 5101-x (closed from Mockingbird)");
+    expect(fs.existsSync(t.wt)).toBe(false);
+    // a local session's: git's own push, its hooks run but the two --no-verify skips
+    const l = firedHooks(hooks);
+    fs.writeFileSync(path.join(l.wt, "wip.txt"), "w\n");
+    await cleanupWorktree(l.repo, l.wt, "push");
+    expect(l.ran()).toEqual(expect.arrayContaining(["prepare-commit-msg", "post-commit", "pre-push"]));
+    expect(l.ran()).not.toContain("pre-commit");
+  });
+
+  it("deletes a room session's branch for Discard everything firing none of them", async () => {
+    const t = firedHooks(["reference-transaction"]);
+    expect(await cleanupWorktree(t.repo, t.wt, "discard", { own: true })).toEqual({ removed: true });
+    expect(git(t.repo, "branch", "--list", "5101-x")).toBe("");
+    expect(t.ran()).toEqual([]);
+    const l = firedHooks(["reference-transaction"]);
+    await cleanupWorktree(l.repo, l.wt, "discard");
+    expect(l.ran()).toContain("reference-transaction");
+  });
+
+  it("makes a room session's worktree again, a take-over's, and checks a branch out for one, firing no post-checkout on what its agent wrote", async () => {
+    const t = firedHooks(["post-checkout", "reference-transaction"]);
+    git(t.repo, "worktree", "remove", t.wt);
+    git(t.repo, "branch", "5101-y", "5101-x");
+    t.clear();
+    const again = path.join(tempDir("worktrees"), "5101-x");
+    expect(await createWorktree(t.repo, "5101-x", undefined, { mustExist: true, at: again, own: true })).toBe(again);
+    expect(fs.existsSync(path.join(again, ".mgr-config.yaml"))).toBe(true);
+    const taken = await worktreeAt(t.repo, "5101-z", git(t.repo, "rev-parse", "5101-x"));
+    expect(fs.existsSync(path.join(taken.path, ".mgr-config.yaml"))).toBe(true);
+    await checkoutBranch(t.repo, "5101-y", undefined, undefined, undefined, { own: true });
+    expect(git(t.repo, "branch", "--show-current")).toBe("5101-y");
+    expect(t.ran()).toEqual([]);
+    // a local session's: git's own checkout, its post-checkout run
+    await checkoutBranch(t.repo, "main");
+    expect(t.ran()).toContain("post-checkout");
+    t.clear();
+    git(t.repo, "worktree", "remove", again);
+    await createWorktree(t.repo, "5101-x", undefined, { mustExist: true, at: path.join(tempDir("worktrees"), "5101-x") });
+    expect(t.ran()).toContain("post-checkout");
   });
 });
 

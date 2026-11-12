@@ -194,7 +194,7 @@ const api = {
   scmUnstage: (id: string, paths: string[]) => ipcRenderer.invoke("scm:unstage", id, paths),
   scmDiscard: (id: string, entries: { path: string; untracked: boolean }[]) => ipcRenderer.invoke("scm:discard", id, entries),
   scmCommit: (id: string, message: string) => ipcRenderer.invoke("scm:commit", id, message),
-  scmPush: (id: string) => ipcRenderer.invoke("scm:push", id),
+  scmPush: (id: string, confirmBranch?: string) => ipcRenderer.invoke("scm:push", id, confirmBranch),
   scmDiff: (id: string, rel: string, staged: boolean, untracked: boolean) => ipcRenderer.invoke("scm:diff", id, rel, staged, untracked),
   filesDiff: (id: string, rel: string, scope: string, untracked: boolean) =>
     ipcRenderer.invoke("files:diff", id, rel, scope, untracked),

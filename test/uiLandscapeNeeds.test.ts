@@ -796,6 +796,43 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     });
   });
 
+  it("asks before Source Control pushes a room session's branch that isn't its own, naming it, and pushes nothing when told no", async () => {
+    // @ts-expect-error — a plain .mjs build script, no type declarations
+    const { pageResult } = await import("../scripts/ui-preview.mjs");
+    const read = `(() => {
+      window.__t0 ??= Date.now();
+      if (Date.now() - window.__t0 < 3000) return null;
+      if (!window.__reached) { window.__reached = 1; document.querySelector('.area-tree .lt-ws[data-sid="s1"]')?.click(); return null; }
+      const b = [...document.querySelectorAll(".sc-sync button")].find((x) => /Push|Publish/.test(x.textContent || ""));
+      if (!b) return Date.now() - window.__t0 > 20000 ? JSON.stringify({ error: "no Push button" }) : null;
+      const pushes = () => window.__mbCalls.filter((c) => c.fn === "scmPush").map((c) => c.args);
+      if (!window.__asked) {
+        window.__asked = [];
+        window.confirm = (m) => (window.__asked.push(m), window.__asked.length > 1);
+        b.click();
+        return null;
+      }
+      if (window.__asked.length === 1 && !window.__no) {
+        if (b.disabled) return null;
+        window.__no = { pushes: pushes(), line: !!document.querySelector("[data-push-hooks]") };
+        b.click();
+        return null;
+      }
+      const l = document.querySelector("[data-push-hooks]");
+      return l ? JSON.stringify({ asked: window.__asked, no: window.__no, pushes: pushes(), line: !!l }) : null;
+    })()`;
+    const json: string | null = await pageResult({ size: "1400x900", query: "motion=off&view=scm&roomPushHooks&pushConfirm", outDir: path.join(tempDir("needs-sc-ask"), "out"), read });
+    const ask = "The worktree is on release/2.1, not 5101-orgDropdowns, the branch this session was made on: pushing it updates origin's release/2.1.\n\nPush release/2.1 to origin anyway?";
+    expect(JSON.parse(json!)).toEqual({
+      asked: [ask, ask],
+      // told no: asked once, nothing pushed, nothing said
+      no: { pushes: [["s1"]], line: false },
+      // told yes: asked again with the branch it named
+      pushes: [["s1"], ["s1"], ["s1", "release/2.1"]],
+      line: true,
+    });
+  });
+
   it("keeps the user's unsaved patch notes edit when the agent's newer draft arrives, saving nothing over it until they pick", async () => {
     const r = await run<NewerNotesAudit>("r", "prRequest=notes&lsCamera=0,0,0.5");
     expect(r.error).toBeUndefined();

@@ -703,10 +703,32 @@ describe("a pull request's branch", () => {
     const create = main.slice(main.indexOf('"pipeline:pr:create",'), main.indexOf("// ---- continue in the other agent"));
     expect(create).toMatch(/const own = pushesOwnHooks\(s\.id\);/);
     expect(create).toMatch(/prPreflight\(s\.cwd, String\(ticketId\), target, prDeps\(s\.cwd\), \{ own \}\)/);
-    expect(create).toMatch(/scmPush\(s\.cwd, \{ own \}\)/);
+    // from the branch its refusals checked
+    expect(create).toMatch(/scmPush\(s\.cwd, \{ own, branch: pre\.branch \}\)/);
     // the preflight says what that push would set aside, and Source Control's Push is the same push
     expect(main).toMatch(/prPreflight\(s\.cwd, [^\n]*\{ own: pushesOwnHooks\(s\.id\) \}\)/);
-    expect(main).toMatch(/handle\("scm:push", \(id\) => scmPush\(sessionRoot\(id\), \{ own: pushesOwnHooks\(String\(id\)\) \}\)\);/);
+    expect(main).toContain("return { root: s.cwd, own: pushesOwnHooks(s.id), s };");
+    expect(main).toContain('return own ? scmRoomPush(root, s.branch, typeof confirmBranch === "string" ? confirmBranch : undefined) : scmPush(root);');
+  });
+
+  it("runs Source Control's every write for a room session, and Close session's, with only hooks its agent can't have written", () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "src", "main", "index.ts"), "utf8");
+    for (const [call, run] of [
+      ["scm:stage", "scmStage(root, paths, { own })"],
+      ["scm:unstage", "scmUnstage(root, paths, { own })"],
+      ["scm:discard", "scmDiscard(root, entries, (abs) => shell.trashItem(abs), { own })"],
+      ["scm:commit", 'scmCommit(root, String(message ?? ""), { own })'],
+      ["scm:pull", "scmPull(root, { own })"],
+      ["scm:fetch", "scmFetch(root, { own })"],
+    ]) {
+      const at = main.indexOf(`handle("${call}"`);
+      expect(main.slice(at, main.indexOf("\n});", at)), call).toContain(`const { root, own } = scmIn(id);\n  return ${run};`);
+    }
+    // the session is looked up by its folder: Close session has closed its pane by then, so it's among the resumable
+    expect(main).toContain("return cleanupWorktree(repo, folder, mode, { own: folderOwnHooks(folder) });");
+    expect(main).toContain("const there = [...sessions.list(), ...sessions.resumable()].filter((s) => samePath(s.cwd, folder));\n  return !there.length || there.some((s) => pushesOwnHooks(s.id));");
+    // a folder made or checked out for one, by the group it starts in
+    expect(main).toContain("sessions.ownHooksFor = (group) => !roomsKnown || !!sessions.roomOfGroup?.(group ?? LOOSE_GROUP);");
   });
 });
 

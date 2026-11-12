@@ -19,7 +19,7 @@ import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./h
 import { readUsage, watchUsage, setClaudePlan, readContextWindow } from "./usage";
 import { planRateOf, refreshBrief, resumeEstimate, type RefreshBrief, type ResumeEstimate } from "./contextActions";
 import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef, inside, branchStat, forgetBranchStat } from "./files";
-import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
+import { scmRoomPush, scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
 import { Messaging, removeMcpTokenFiles } from "./messaging";
@@ -64,7 +64,7 @@ import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
+import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, UpdateOutcome } from "../shared/types";
 import { BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
@@ -849,9 +849,19 @@ function assertWorktreeFree(wtPath: string): void {
 handle("repos:list", () => indexRepos(store.settings.repoRoots));
 handle("worktree:state", (wtPath) => worktreeState(wtPath));
 handle("worktree:cleanup", (repo, wtPath, mode) => {
-  assertWorktreeFree(String(wtPath));
-  return cleanupWorktree(repo, wtPath, mode);
+  const folder = String(wtPath);
+  assertWorktreeFree(folder);
+  return cleanupWorktree(repo, folder, mode, { own: folderOwnHooks(folder) });
 });
+/**
+ * pushesOwnHooks for a folder, from the sessions there, live or closed but resumable (Close session closes the pane
+ * before it cleans its worktree up): when any of them is a team room's, or none is found, its git fires only the
+ * user's own hooks.
+ */
+function folderOwnHooks(folder: string): boolean {
+  const there = [...sessions.list(), ...sessions.resumable()].filter((s) => samePath(s.cwd, folder));
+  return !there.length || there.some((s) => pushesOwnHooks(s.id));
+}
 handle("worktrees:list", () =>
   listWorktrees(
     indexRepos(store.settings.repoRoots),
@@ -968,20 +978,49 @@ handle("files:all", (id) => listAllFiles(sessionRoot(id)));
 handle("files:search", (id, query, opts) => searchFiles(sessionRoot(id), String(query ?? ""), { regex: !!opts?.regex, matchCase: !!opts?.matchCase }));
 // Source control for a session's folder (addressed by session id, like the explorer)
 handle("scm:status", (id) => scmStatus(sessionRoot(id)));
-handle("scm:stage", (id, paths) => scmStage(sessionRoot(id), paths));
-handle("scm:unstage", (id, paths) => scmUnstage(sessionRoot(id), paths));
-handle("scm:discard", (id, entries) => scmDiscard(sessionRoot(id), entries, (abs) => shell.trashItem(abs)));
-handle("scm:commit", (id, message) => scmCommit(sessionRoot(id), String(message ?? "")));
 /**
- * Whether a push main makes from session `id`'s worktree runs only hooks its agent can't have written (scmPush's
- * `own`): a team room session's, which a sandboxed agent or a teammate typing can change, and every session's until
- * rooms have started, when none can be told apart yet. A local session's push runs the user's own hooks (Husky's): its
- * agent is trusted, as everywhere else on this Mac.
+ * Whether the git main runs in session `id`'s folder (Source Control's, the PR form's push, Close session's) fires only
+ * hooks its agent can't have written (scm.ts's `own`): a team room session's, which a sandboxed agent or a teammate
+ * typing can change, and every session's until rooms have started, when none can be told apart yet. A local session's
+ * runs the repository's hooks (Husky's): its agent is trusted, as everywhere else on this Mac.
  */
 const pushesOwnHooks = (id: string): boolean => !roomsKnown || livePanes.roomOfSession(id) !== null;
-handle("scm:push", (id) => scmPush(sessionRoot(id), { own: pushesOwnHooks(String(id)) }));
-handle("scm:pull", (id) => scmPull(sessionRoot(id)));
-handle("scm:fetch", (id) => scmFetch(sessionRoot(id)));
+// the same rule for a folder made or checked out for a session, before it has an id: by the group it starts in
+sessions.ownHooksFor = (group) => !roomsKnown || !!sessions.roomOfGroup?.(group ?? LOOSE_GROUP);
+/** Source Control's writes, addressed by session id: `own` as pushesOwnHooks says. */
+const scmIn = (id: unknown): { root: string; own: boolean; s: SessionInfo } => {
+  const s = sessionOf(String(id));
+  return { root: s.cwd, own: pushesOwnHooks(s.id), s };
+};
+handle("scm:stage", (id, paths) => {
+  const { root, own } = scmIn(id);
+  return scmStage(root, paths, { own });
+});
+handle("scm:unstage", (id, paths) => {
+  const { root, own } = scmIn(id);
+  return scmUnstage(root, paths, { own });
+});
+handle("scm:discard", (id, entries) => {
+  const { root, own } = scmIn(id);
+  return scmDiscard(root, entries, (abs) => shell.trashItem(abs), { own });
+});
+handle("scm:commit", (id, message) => {
+  const { root, own } = scmIn(id);
+  return scmCommit(root, String(message ?? ""), { own });
+});
+// a room session's push from a branch with a base's name, or not its own, waits for the user's say-so naming it
+handle("scm:push", (id, confirmBranch): Promise<ScmPushResult> => {
+  const { root, own, s } = scmIn(id);
+  return own ? scmRoomPush(root, s.branch, typeof confirmBranch === "string" ? confirmBranch : undefined) : scmPush(root);
+});
+handle("scm:pull", (id) => {
+  const { root, own } = scmIn(id);
+  return scmPull(root, { own });
+});
+handle("scm:fetch", (id) => {
+  const { root, own } = scmIn(id);
+  return scmFetch(root, { own });
+});
 handle("scm:graph", (id, limit) => scmGraph(sessionRoot(id), Math.min(2000, Math.max(20, Number(limit) || 150))));
 handle("scm:commitFiles", (id, sha) => scmCommitFiles(sessionRoot(id), String(sha)));
 handle("scm:commitDiff", (id, sha, rel) => scmCommitDiff(sessionRoot(id), String(sha), String(rel)));
@@ -1635,7 +1674,7 @@ handle(
       const url = await originUrl(s.cwd);
       const remote = url ? parseRemote(url) : null;
       if (!remote) throw new Error(url ? `origin (${url}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
-      await scmPush(s.cwd, { own });
+      await scmPush(s.cwd, { own, branch: pre.branch });
       let made: { id: number; url: string };
       try {
         made = await openPr(remote, { branch: pre.branch, base, title, description: String(req?.description ?? ""), workItemId: String(ticketId) }, prDeps(s.cwd));

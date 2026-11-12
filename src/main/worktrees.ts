@@ -1,7 +1,7 @@
 import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
 import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
-import { dirtyFileCount } from "./scm";
-import { guardedGit, ownFetch, ownNetworkGit, WRITE_ENV } from "./safeGit";
+import { dirtyFileCount, type Own, scmPush } from "./scm";
+import { guardedGit, ownFetch, ownNetworkGit, roomWriteEnv, WRITE_ENV } from "./safeGit";
 import { unpinGitDirs } from "./gitPins";
 import * as fs from "fs";
 import * as path from "path";
@@ -179,8 +179,10 @@ function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
  * another branch. One folder's are made one at a time: the next finds it made and reuses it. `warn` hears what it
  * went by when origin couldn't be asked or fetched from. `startAt` (a not-started step, W8) makes `branch` anew at that
  * commit, fetching nothing: refused when the branch or its folder is there already, or the commit isn't in the repo.
+ * `own`: for a team room session, whose branch its agent wrote: the checkout fires only the user's own hooks
+ * (roomWriteEnv), not the repository's post-checkout.
  */
-export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean; at?: string; warn?: Warn; startAt?: string } = {}): Promise<string> {
+export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean; at?: string; warn?: Warn; startAt?: string } & Own = {}): Promise<string> {
   const target = opts.at ?? path.join(worktreeRoot(repoPath), branch);
   return oneAtATime(target, async () => {
     // a branch can only be checked out once: if the old layout already holds it,
@@ -205,7 +207,8 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
       repoPath,
       sp.existing
         ? ["worktree", "add", target, branch]
-        : ["worktree", "add", ...(sp.track ? ["--track"] : []), "-b", branch, target, ...(sp.from ? [sp.from] : [])]
+        : ["worktree", "add", ...(sp.track ? ["--track"] : []), "-b", branch, target, ...(sp.from ? [sp.from] : [])],
+      { env: opts.own ? await roomWriteEnv(repoPath) : WRITE_ENV }
     );
     return target;
   });
@@ -216,10 +219,12 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
  * laptop: on `branch` when that's free here — absent, or checked out nowhere
  * and at or behind `base` (then moved up to it) — else on `<branch>-takeover`
  * (then -takeover-2, …), so no local work is ever moved or lost. Detached when
- * `branch` is null. The folder is always new.
+ * `branch` is null. The folder is always new. Its git fires only the user's own hooks (roomWriteEnv): what it checks
+ * out is a teammate's work, which the repository's post-checkout (a hook manager's, an `npm install`) would run.
  */
 export async function worktreeAt(repoPath: string, branch: string | null, base: string): Promise<{ path: string; branch: string | null; renamedFrom: string | null }> {
   const root = worktreeRoot(repoPath);
+  const env = await roomWriteEnv(repoPath);
   const freshFolder = (name: string): string => {
     for (let i = 1; ; i++) {
       const p = path.join(root, i === 1 ? name : `${name}-${i}`);
@@ -229,7 +234,7 @@ export async function worktreeAt(repoPath: string, branch: string | null, base: 
   };
   if (!branch) {
     const p = freshFolder(`takeover-${base.slice(0, 8)}`);
-    await git(repoPath, ["worktree", "add", "--detach", p, base]);
+    await git(repoPath, ["worktree", "add", "--detach", p, base], { env });
     return { path: p, branch: null, renamedFrom: null };
   }
   await git(repoPath, ["check-ref-format", "--branch", branch]); // throws on a name git won't take
@@ -244,10 +249,10 @@ export async function worktreeAt(repoPath: string, branch: string | null, base: 
     const tip = await git(repoPath, ["rev-parse", "--verify", "-q", `refs/heads/${name}`], { okCodes: [0, 1] });
     if (tip && (checkedOut.has(name) || !(await isAncestor(repoPath, tip, base)))) continue; // in use, or holds commits `base` lacks
     const p = freshFolder(name);
-    if (!tip) await git(repoPath, ["worktree", "add", "-b", name, p, base]);
+    if (!tip) await git(repoPath, ["worktree", "add", "-b", name, p, base], { env });
     else {
-      if (tip !== base) await git(repoPath, ["branch", "-f", name, base]);
-      await git(repoPath, ["worktree", "add", p, name]);
+      if (tip !== base) await git(repoPath, ["branch", "-f", name, base], { env });
+      await git(repoPath, ["worktree", "add", p, name], { env });
     }
     return { path: p, branch: name, renamedFrom: name === branch ? null : branch };
   }
@@ -322,20 +327,25 @@ export function worktreeState(wtPath: string): Promise<WorktreeStateInfo> {
 /**
  * Close-session worktree cleanup (design 1e).
  *  - keep:    leave the worktree untouched
- *  - push:    commit WIP if dirty, push the branch, then remove the worktree
+ *  - push:    commit WIP if dirty, push the branch (scmPush), then remove the worktree
  *  - discard: remove the worktree and delete its branch — not recoverable
+ * `own`: a team room session's worktree, whose agent wrote what its hooks would read. Then the WIP commit (which
+ * `--no-verify` keeps from pre-commit and commit-msg only) and the branch's deletion fire only the user's own hooks
+ * (roomWriteEnv), and the push is a room session's (scmPush's `own`).
  */
-export async function cleanupWorktree(repoPath: string, wtPath: string, mode: WorktreeCleanupMode): Promise<WorktreeCleanupResult> {
+export async function cleanupWorktree(repoPath: string, wtPath: string, mode: WorktreeCleanupMode, o: Own = {}): Promise<WorktreeCleanupResult> {
   if (mode === "keep") return { removed: false };
 
   const st = await readState(wtPath); // fresh: this decides what gets committed or deleted
   stateCache.delete(wtPath);
+  // read in the worktree while it's there: discard removes it before deleting its branch
+  const env = o.own ? await roomWriteEnv(wtPath) : WRITE_ENV;
   if (mode === "push") {
     if (st.dirty) {
-      await git(wtPath, ["add", "-A"], { env: WRITE_ENV });
-      await git(wtPath, ["commit", "--no-verify", "-m", `WIP: ${st.branch} (closed from Mockingbird)`], { env: WRITE_ENV });
+      await git(wtPath, ["add", "-A"], { env });
+      await git(wtPath, ["commit", "--no-verify", "-m", `WIP: ${st.branch} (closed from Mockingbird)`], { env });
     }
-    await git(wtPath, ["push", "-u", "origin", "HEAD"]);
+    await scmPush(wtPath, { own: o.own, ...(st.branch !== "HEAD" ? { branch: st.branch } : {}) });
     await git(repoPath, ["worktree", "remove", "--force", wtPath]);
     return { removed: true };
   }
@@ -344,7 +354,7 @@ export async function cleanupWorktree(repoPath: string, wtPath: string, mode: Wo
   await git(repoPath, ["worktree", "remove", "--force", wtPath]);
   if (st.branch === "HEAD") return { removed: true, branchKept: "The worktree wasn't on a branch (detached HEAD), so no branch was deleted" };
   try {
-    await git(repoPath, ["branch", "-D", st.branch]);
+    await git(repoPath, ["branch", "-D", st.branch], { env });
   } catch (err) {
     // e.g. the branch is checked out in another folder too
     console.error(`[worktrees] removed ${wtPath} but kept branch ${st.branch}:`, err);
@@ -452,9 +462,10 @@ export async function removeWorktree(repoPath: string, wtPath: string): Promise<
  * debug/launch configs on the repo just work. Refuses loudly when the checkout
  * cannot safely switch: uncommitted changes, or another live session already
  * on a different branch there (a checkout has one branch at a time — that is
- * the one thing worktrees exist to solve). The branch is made as startPoint says.
+ * the one thing worktrees exist to solve). The branch is made as startPoint says. `own`: for a team room session, as
+ * createWorktree's.
  */
-export async function checkoutBranch(repoPath: string, branch: string, baseBranch?: string, occupiedBy?: string, warn: Warn = warnInConsole): Promise<void> {
+export async function checkoutBranch(repoPath: string, branch: string, baseBranch?: string, occupiedBy?: string, warn: Warn = warnInConsole, o: Own = {}): Promise<void> {
   if (occupiedBy) {
     throw new Error(
       `${path.basename(repoPath)} is already checked out on ${occupiedBy} by a running session. ` +
@@ -471,7 +482,9 @@ export async function checkoutBranch(repoPath: string, branch: string, baseBranc
     );
   }
   const sp = await startPoint(repoPath, branch, baseBranch, false, warn);
-  await git(repoPath, sp.existing ? ["switch", branch] : ["switch", ...(sp.track ? ["--track"] : []), "-c", branch, ...(sp.from ? [sp.from] : [])]);
+  await git(repoPath, sp.existing ? ["switch", branch] : ["switch", ...(sp.track ? ["--track"] : []), "-c", branch, ...(sp.from ? [sp.from] : [])], {
+    env: o.own ? await roomWriteEnv(repoPath) : WRITE_ENV,
+  });
 }
 
 /** Move an old-layout worktree into `worktrees/<repo>/`; returns its new path. */

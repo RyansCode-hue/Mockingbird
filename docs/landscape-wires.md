@@ -4078,6 +4078,159 @@ The verification confirmed review fixes 1's residual as a High.
   - The cue removed.
   - The Hangul fillers kept.
 
+#### W15 review fixes 3 as built
+
+The security verify of fixes 2 found two Highs: room pushes were covered, but other
+git writes main makes in a room session's folder still ran the repository's hooks.
+- **H-a.** Close session › "Push branch, then remove worktree" ran `git add -A`,
+  `commit --no-verify` and a plain `git push -u origin HEAD` with the repository's
+  hooks. `--no-verify` skips only pre-commit and commit-msg.
+- **H-b.** Source Control's Commit, Pull and Fetch did the same. A pre-commit manager
+  in `.git/hooks` ran, and so did a tracked `.githooks` named by `core.hooksPath`.
+  Pull fires post-merge and reference-transaction; Fetch fires reference-transaction.
+  `WRITE_ENV`'s comment assumed a room agent writing no config was enough.
+
+- **One rule for every room write (H-a, H-b).**
+  - `roomWriteEnv(cwd)` (`safeGit.ts`): `WRITE_ENV` with `core.hooksPath` set to
+    `usersHooks`' folder, plus no `ext::`.
+    - That folder is the user's global one when it's theirs alone, else `/dev/null`:
+      the same folder a room push uses.
+    - `ownHooks` now builds on `usersHooks`.
+  - `scm.ts`: stage, unstage, discard and commit take `{ own }` and use it.
+    - Pull and fetch go through `ownNetworkGit` with its new `room` option: hooks from
+      the user's folder, git's own upload-pack, no submodules, no `ext::`, ssh as
+      `ownSsh` says.
+    - `OWN_FLAGS` gains `pull`.
+  - `index.ts`: each `scm:*` handler looks its session up once (`scmIn`) and passes
+    `own: pushesOwnHooks(id)`.
+  - `cleanupWorktree(…, { own })`: the WIP commit and Discard's `branch -D` use
+    `roomWriteEnv`.
+    - The push is now `scmPush` for both kinds of session, so a room session's goes
+      out as a room push.
+    - It carries the branch read before the WIP commit.
+  - `worktree:cleanup` finds the session by folder (`folderOwnHooks`): live or
+    resumable, since Close session closes the pane first.
+    - If any session there is a room's, or none is found, its git is a room's.
+  - `WRITE_ENV`'s comment now says it's for local sessions only, and why.
+- **The sweep.** Room-reachable git that can fire a hook:
+  - **Covered:**
+    - `worktreeAt`, take-over's worktree on a teammate's work: always
+      `roomWriteEnv`, which stops post-checkout.
+    - `createWorktree` (a new session, and relaunch's remake of a removed worktree on
+      the branch its agent wrote) and `checkoutBranch` take `{ own }`.
+      - Sessions decides that through `ownHooksFor(group)`, which `index.ts` sets to
+        the `pushesOwnHooks` rule by group:
+        `!roomsKnown || roomOfGroup(group ?? "ungrouped")`.
+  - **Not covered:**
+    - `testCopy`'s clone and checkout: a fresh clone has none of the repository's
+      hooks, and the copy exists to run the project's own commands anyway.
+    - Take-over's `git apply` writes no index and fires no hook.
+    - Snapshots already use `OWN_WRITE_ENV`.
+    - Main runs no merge, rebase, am, stash or cherry-pick.
+    - `worktree remove` and `worktree move` fire no hook.
+- **The .lfsconfig redirect (L1).**
+  - Probe, under the test HOME: a stub LFS server for the remote and another for the
+    agent's host.
+    - With `lfs.url`, `lfs.pushurl` and `remote.origin.lfsurl` / `.lfspushurl`
+      overridden blank, git-lfs 3.7.1 doesn't fall back to the remote's endpoint. It
+      fails with `missing protocol: ""`, so blank overrides can't close this.
+    - Without them it POSTs to the `.lfsconfig` host. It ignores
+      `remote.<r>.lfspushurl` from `.lfsconfig` as unsafe, but honours the other
+      three.
+  - So `lfsPlan(cwd, repoHooks, remote)` refuses instead (`lfsRedirect`), when any
+    `.lfsconfig` git-lfs might read sets one of the four keys to a host other than the
+    push remote's.
+    - It reads the working-tree file, `:.lfsconfig` and `HEAD:.lfsconfig` with
+      `git config --list --no-includes`.
+    - A working-tree `.lfsconfig` that isn't a plain file is refused too.
+    - The remote's URL is `git remote get-url --push`; `urlHost` reads hosts as git
+      does, and a local path has none.
+  - The refusal says which copy sends the files where.
+  - `roomPushPlan` takes the remote; `scmRoomPushPlan` gives the preflight the
+    remote `scmPush` would use.
+  - `GCM_INTERACTIVE=never` is set on every `ownNetwork` environment.
+- **Source Control's branch (L2).**
+  - `roomPushAsk` reads the branch and asks when it has a base's name
+    (`prBranchProblem(branch, "")`) or isn't the session's recorded branch
+    (`unrecordedBranch`).
+  - `scmRoomPush` returns `{ confirm, branch }` and pushes nothing until called again
+    with `confirmBranch` naming that branch (`ScmPushResult`).
+  - The window asks with `window.confirm`, naming the branch. If the answer comes
+    back asking again, it shows an error.
+  - The PR form's push and Close session's now pass the branch they checked. A room
+    push names `refs/heads/<branch>` rather than HEAD, so a checkout in between
+    can't change what goes.
+- **The user's folder, alone (L3).**
+  - `scopedValues` adds `--show-origin`.
+  - `usersHooks` takes the user's `core.hooksPath` only when all of these hold:
+    - the path is absolute;
+    - it's outside every working tree;
+    - it isn't set in a file inside one (`originTree`, which ignores the repository's
+      own `.git`);
+    - it's outside `ROOM_CACHES_DIR`.
+  - `skipped.why` says which applied.
+  - `ownSsh` sets aside a `core.sshCommand` set in a working tree's file the same way,
+    for example a tracked team `.gitconfig` the local config includes.
+- **Probe.** The reviewer's `pushhook3.ts` cases were run as a throwaway test under
+  the test HOME, with `own` as the handlers pass it (not committed).
+  - A–F: nothing ran.
+  - G (Close session push), H (commit, `.git/hooks` manager) and H2 (commit,
+    `.githooks`): nothing ran.
+  - I: refused, and the listener saw nothing.
+- **Residual (Low).**
+  - Filter drivers and `gpg.program` from the user's own config still run for room
+    writes (filters define what's stored). One that names a program in a working
+    tree would run the agent's file.
+  - A config file the repository includes from its working tree can still set
+    `credential.helper`, `url.*.insteadOf` or a filter for room gits. Only its ssh is
+    set aside.
+  - `.lfsconfig` is checked moments before git-lfs reads it, so an agent rewriting it
+    in that window isn't caught.
+  - Close session's push of a room session doesn't ask about a base-named or other
+    branch. Its dialog names the branch it pushes.
+  - Local sessions' plain push, pull and fetch keep the credential manager's window.
+- **Tests.**
+  - `scm.test.ts`:
+    - room stage, commit, unstage and discard fire none of six hooks, which a local
+      session's fires;
+    - a tracked `.githooks`;
+    - the user's global pre-commit runs, but not when set by an include from a
+      working tree, in the room caches, or relative;
+    - room pull and fetch fire none, a local session's do;
+    - Source Control's say-so: an unrecorded branch, a base name, a moved branch;
+    - the `.lfsconfig` redirect in the working tree, the index and HEAD;
+    - `urlHost`;
+    - the global-include case's `skipped.why`;
+    - Close session's push and discard;
+    - `createWorktree`, `worktreeAt` and `checkoutBranch`, each room and local.
+  - `safeGit.test.ts`: the included ssh is set aside, while the repository's own
+    runs; `GCM_INTERACTIVE`.
+  - `pipeline.test.ts`: the handlers' wiring, read statically.
+  - `uiLandscapeNeeds`: Source Control's say-so (`?pushConfirm`): asked and told no,
+    nothing pushed; then asked and told yes, pushed with the branch.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 196 files
+  pass and 35 skip; 3,290 tests pass and 317 skip.
+- `uiLandscapeNeeds` alone, without CI: 23 tests pass.
+- Each change undone in turn (`w15/mutate4.py`) fails a test, 31 mutations:
+  - H-b (8): commit, stage, unstage, pull and fetch each run as a local one; the
+    room environment's hooks folder dropped; the commit and fetch handlers passing
+    no `own`.
+  - H-a (4): the WIP commit's environment; the push not a room push; the handler
+    passing no `own`; the closed session not found.
+  - The sweep (3): `worktreeAt`, `createWorktree` and `checkoutBranch` firing
+    post-checkout.
+  - L1 (3): no redirect check; the index's and HEAD's copies unread; a remote's own
+    keys unchecked.
+  - L2 (7): never asking; any say-so passing; a base's name not asked; a moved branch
+    pushed; the PR form's push checking no branch; the window not asking; its say-so
+    naming no branch.
+  - L3 (4): a folder set in a working tree's file, one in the room caches, a relative
+    one, and no reason given. The relative one first went uncaught, since
+    `relhooks` resolves inside the tree anyway; a `../beside-hooks` case was added.
+  - The included ssh run, and the credential manager's window.
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn

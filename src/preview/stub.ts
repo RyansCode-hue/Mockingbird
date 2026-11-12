@@ -1910,17 +1910,20 @@ const api: Record<string, (...a: any[]) => any> = {
   scmCommitMessage: async () => later({ message: "Remember the last org each user picked", scope: "all", agent: "claude" }, 800),
   scmFetch: async () => later(undefined, 400),
   scmPull: async () => later(err("This branch and origin/dev have both moved, so they can't be fast-forwarded."), 400),
-  // with ?roomPushHooks, as a team room session's push answers: what it ran and set aside, its LFS files sent first
-  scmPush: async () =>
-    later(
-      {
-        upstream: "origin/5101-orgDropdowns",
-        ...(new URLSearchParams(location.search).has("roomPushHooks")
-          ? { roomPush: { runs: "~/.githooks", skipped: { value: ".git/hooks", why: "this repository's hooks can run files its agent writes (a hook manager's config, its scripts)" }, lfs: "push" } }
-          : {}),
-      },
-      400
-    ),
+  // with ?roomPushHooks, as a team room session's push answers: what it ran and set aside, its LFS files sent first;
+  // with ?pushConfirm too, it first waits for a say-so naming its branch, as one on a branch not its own does
+  scmPush: async (_id: string, confirmBranch?: string) =>
+    new URLSearchParams(location.search).has("pushConfirm") && confirmBranch !== "release/2.1"
+      ? later({ confirm: "The worktree is on release/2.1, not 5101-orgDropdowns, the branch this session was made on: pushing it updates origin's release/2.1.", branch: "release/2.1" }, 200)
+      : later(
+          {
+            upstream: "origin/5101-orgDropdowns",
+            ...(new URLSearchParams(location.search).has("roomPushHooks")
+              ? { roomPush: { runs: "~/.githooks", skipped: { value: ".git/hooks", why: "this repository's hooks can run files its agent writes (a hook manager's config, its scripts)" }, lfs: "push" } }
+              : {}),
+          },
+          400
+        ),
   lspOpen: async () => ({ server: null, state: "none" }),
 
   // board and tickets
