@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
+import { WIRED_COLUMN_GAP } from "../src/renderer/landscapeModel";
 import { tempDir } from "./helpers";
 
 // The landscape's wires (W4a) in the UI preview, in real headless Chrome: local only (CI runners have no desktop); the
@@ -175,8 +176,9 @@ describe.skipIf(!local)("the landscape's wires", () => {
     const a = (await audit("lsCamera=-200,2700,0.45&landscapeWiresAudit=tidy")) as Audit & { said: string | null };
     expect(a.said).toMatch(/^Tidied #5120 along its wires/);
     const b = a.boxes;
+    // Zoomed.dc.html's 50 px between a chain's columns at 45%
     for (const [l, r] of [["shape", "builder"], ["builder", "reviewer"], ["reviewer", "tester"]]) {
-      expect(b[l].r).toBeLessThan(b[r].l);
+      near(b[r].l - b[l].r, WIRED_COLUMN_GAP * a.zoom, 2);
       near(b[l].t, b[r].t);
     }
     // Dev server shares Builder's worktree; Docs' stack is read by Shape export; Spike: streaming is handed to by the stack

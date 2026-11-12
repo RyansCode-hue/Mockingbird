@@ -2225,6 +2225,12 @@ const madeAt = (t: Tile) => Math.min(...t.members.map((s) => s.createdAt));
 export type TidyWire = Pick<Wire, "from" | "to" | "type">;
 
 /**
+ * The space Tidy leaves between a chain's columns, which handoffs cross, so a wire and its label have room to run:
+ * Zoomed.dc.html's 50 px between cards at 45%, on the grid. Everything else stays GAP apart.
+ */
+export const WIRED_COLUMN_GAP = 112;
+
+/**
  * An area's workspaces and ghosts (`tiles`, in the order they were made) along `wires` (earliest first), for Tidy; null
  * when none runs between two of them. A stack is one: a wire to any of its tabs is a wire to it, and one between two
  * of its tabs runs nowhere. A shared worktree's terminal goes `under` its agent (the first wire's, when there are
@@ -2313,9 +2319,10 @@ function alongWires(tiles: readonly Tile[], wires: readonly TidyWire[]): { bands
  * locked or collapsed. `undoOf(l, patch)` puts every place back.
  *
  * Given `wires` (the book's, earliest first), it lays the area out along those between two of its workspaces or ghosts
- * instead, with a note saying so (alongWires): each chain left to right in columns, one chain under another, its
- * workspaces' tool windows under them; then, below, in rows as above, what no wire joins and what else it keeps. A
- * wire to another area's workspace is passed over. With none inside it, it's laid out in rows as above.
+ * instead, with a note saying so (alongWires): each chain left to right in columns WIRED_COLUMN_GAP apart, one
+ * chain under another, its workspaces' tool windows under them; then, below, in rows as above, what no wire joins and
+ * what else it keeps. A wire to another area's workspace is passed over. With none inside it, it's laid out in rows as
+ * above.
  */
 export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titleOf: (key: string) => string, wires: readonly TidyWire[] = []): AreaPlan {
   const refused = tidyRefusal(layout, key, titleOf);
@@ -2373,7 +2380,8 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
         cy = snapUp(cy + it.rect.h + GAP);
       }
       below = Math.max(below, cy);
-      x = snapUp(x + Math.max(...stacked.map((it) => it.rect.w)) + GAP);
+      // every column after the first has a handoff in from the one before it (the longest path)
+      x = snapUp(x + Math.max(...stacked.map((it) => it.rect.w)) + WIRED_COLUMN_GAP);
     }
     y = below;
   }

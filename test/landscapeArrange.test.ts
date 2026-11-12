@@ -3,6 +3,7 @@ import {
   GHOST_INSET,
   MOVE_EDGES,
   SNAP_PX,
+  WIRED_COLUMN_GAP,
   areaCounts,
   carryPlan,
   closedIn,
@@ -674,7 +675,9 @@ describe("Tidy", () => {
 
 describe("Tidy along wires (W10)", () => {
   const wire = (from: string, to: string, type: TidyWire["type"] = "handoff"): TidyWire => ({ from, to, type });
-  const col = (n: number) => AREA_PAD + n * (M.w + GAP);
+  // a chain's columns are WIRED_COLUMN_GAP apart; rows, and cells in what no wire joins, GAP
+  const col = (n: number) => AREA_PAD + n * (M.w + WIRED_COLUMN_GAP);
+  const cell = (n: number) => AREA_PAD + n * (M.w + GAP);
   const row = (n: number) => AREA_HEADER + n * (M.h + GAP);
   /** Area A, two M wide, holding `ids` (made in that order, M each) placed against that order. */
   const scattered = (ids: string[], over: Record<string, Partial<SessionInfo>> = {}) => {
@@ -682,7 +685,7 @@ describe("Tidy along wires (W10)", () => {
     l.areas.A = area(0, 0, 2 * AREA_PAD + 2 * M.w + GAP, row(Math.ceil(ids.length / 2)) + AREA_PAD);
     ids.forEach((id, i) => {
       const j = ids.length - 1 - i;
-      l.workspaces[id] = { x: col(j % 2), y: row(Math.floor(j / 2)), ...M };
+      l.workspaces[id] = { x: cell(j % 2), y: row(Math.floor(j / 2)), ...M };
     });
     return { l, sessions: ids.map((id, i) => session(id, { taskGroup: "A", createdAt: i + 1, ...over[id] })) };
   };
@@ -696,11 +699,11 @@ describe("Tidy along wires (W10)", () => {
   };
 
   it("lays a chain of handoffs out left to right whatever the order they were made, what no wire joins below, and Undo puts every place back", () => {
-    const { l, sessions } = scattered(["a1", "a2", "a3", "a4"]);
+    const { l, sessions } = scattered(["a1", "a2", "a3", "a4", "a5"]);
     const { p, l: tidied, r } = tidy(l, sessions, [wire("a3", "a1"), wire("a1", "a2")]);
     expect(p.note).toBe("Tidied A along its wires");
     expect([at(r, "a3"), at(r, "a1"), at(r, "a2")]).toEqual([0, 1, 2].map((n) => ({ x: col(n), y: row(0) })));
-    expect(at(r, "a4")).toEqual({ x: col(0), y: row(1) });
+    expect([at(r, "a4"), at(r, "a5")]).toEqual([0, 1].map((n) => ({ x: cell(n), y: row(1) })));
     // the area fits, wider than it was
     expect(r.areas[0].rect).toMatchObject({ w: col(2) + M.w + AREA_PAD, h: row(1) + M.h + AREA_PAD });
     const rects = r.tiles.map((t) => t.rect);
@@ -761,12 +764,12 @@ describe("Tidy along wires (W10)", () => {
     const { r } = tidy(l, sessions, [wire("a1", "a2"), wire("a1", "t1", "worktree")]);
     expect(at(r, "a1")).toEqual({ x: col(0), y: row(0) });
     expect(at(r, "t1")).toEqual({ x: col(0), y: row(1) });
-    expect(at(r, "a2")).toEqual({ x: AREA_PAD + tm.w + GAP, y: row(0) });
+    expect(at(r, "a2")).toEqual({ x: AREA_PAD + tm.w + WIRED_COLUMN_GAP, y: row(0) });
   });
 
   it("moves a stack as one, by a wire to any of its tabs, and a ghost into its place in the chain", () => {
     const { l, sessions } = scattered(["a1", "g1"]);
-    l.stacks["A/tabs"] = { active: "s1", placement: { x: col(1), y: row(1), ...M } };
+    l.stacks["A/tabs"] = { active: "s1", placement: { x: cell(1), y: row(1), ...M } };
     l.areas.A.h = row(2) + AREA_PAD;
     const tabs = [session("s1", { taskGroup: "A/tabs", createdAt: 0 }), session("s2", { taskGroup: "A/tabs", createdAt: 0 })];
     const closed = [{ ...sessions[1], status: "dead" as const }];
