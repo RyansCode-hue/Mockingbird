@@ -791,15 +791,19 @@ handle("sessions:relaunch", (id) => reopenSession(id));
 handle("sessions:planned", () => sessions.planned());
 handle("sessions:plan", (req: PlanRequest) => wires.addStep(req, { plan: (q) => sessions.plan(q), forget: (id) => sessions.kill(id, true) }).info);
 handle("sessions:startPlanned", (id) => startPlannedStep(String(id ?? "")));
+handle("sessions:describeStart", (id) => sessions.describeStart(String(id ?? ""), upstreamOf(String(id ?? ""))));
+/** The step before not-started step `id`: the source of the earliest handoff into it, or null with none (Start now's). */
+function upstreamOf(id: string): string | null {
+  const book = landscape.wires().book;
+  return (book ? wiresInOrder(book.links).find(([, w]) => w.to === id && w.type === "handoff")?.[1].from : undefined) ?? null;
+}
 /**
  * Start not-started step `id` (SessionManager.startPlanned) from upstream session `from`'s commit as it is now: the
- * Send's source, or (Start now) the source of the earliest handoff into it. Placed in its own area as a reopened
- * session is; a step on a ticket starts its coding, as a session opened on one does.
+ * Send's source, or (Start now) upstreamOf's. Placed in its own area as a reopened session is; a step on a ticket starts
+ * its coding, as a session opened on one does.
  */
 async function startPlannedStep(id: string, from?: string): Promise<SessionInfo> {
-  const book = landscape.wires().book;
-  const up = from ?? (book ? wiresInOrder(book.links).find(([, w]) => w.to === id && w.type === "handoff")?.[1].from : undefined) ?? null;
-  const info = await sessions.startPlanned(id, up);
+  const info = await sessions.startPlanned(id, from ?? upstreamOf(id));
   try {
     landscape.sessionReopened(info);
   } catch (err) {
@@ -1424,6 +1428,8 @@ const wires = new WireService({
   // its source's repository is recorded as it begins waiting, not at its first check
   onWaiting: () => void prWatch.recordSources().catch((err) => logError("merge watch: recording a waiting wire's source repository failed", err)),
 });
+// a not-started step starts from another session's folder or commit only as a handoff between them could go now
+sessions.startGuard = (step, other) => wires.startRefusal(step, other);
 /** What the window last had of the wires' merge views and worktree folders, so a change in either alone is sent once. */
 let wiresDrawn = "";
 const drawnKey = (s: WireState) => JSON.stringify([s.merges ?? {}, s.folders ?? {}]);

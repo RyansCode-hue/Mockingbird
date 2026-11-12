@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
+import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { mergeViewOf } from "../src/main/prWatch";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
@@ -342,6 +342,10 @@ describe("making a wire", () => {
     expect(plannedLine("qa", links, titleOf)).toBe("Not started. Starts when Tester hands off.");
     expect(plannedLine("qa", links, titleOf, (w) => w === "h")).toBe("Not started. Starts when Tester approves.");
     expect(plannedLine("qa", { c: wire("tester", "qa", "context") }, titleOf)).toBe("Not started. Nothing hands off to it yet: wire a step to it, or start it now.");
+    // zoomed out, a line short enough to leave room for its foot
+    expect(plannedShort("qa", links)).toBe("Waits for its handoff");
+    expect(plannedShort("qa", links, (w) => w === "h")).toBe("Waits for approve");
+    expect(plannedShort("qa", { c: wire("tester", "qa", "context") })).toBe("Nothing hands off to it");
   });
 
   it("names its ends as a possessive reads", () => {

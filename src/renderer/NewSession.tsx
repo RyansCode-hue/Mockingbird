@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRepos } from "./RepoPick";
 import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
@@ -14,8 +14,8 @@ import { useAction } from "./useAction";
 import { initialsOf, InviteCode, ShareError } from "./Team";
 import { localTops, newRoomOf, newRoomPlan, repoChoices, repoOfFolder, seedWhere, workspacesOf, type NewRoom } from "./newSessionModel";
 import type { TeamRoomSummary } from "../shared/team/types";
-import { QUIET_KEYS, afterPause, inputStamp } from "./keyArm";
-import { ANSWER_SETTLE_MS, useHeldOff } from "./answerGuard";
+import { inputStamp } from "./keyArm";
+import { useOpenSettle } from "./answerGuard";
 import { titleOf } from "./appModel";
 
 /** Starting sessions: New session (⌘N) and Import. */
@@ -218,39 +218,10 @@ export function NewSessionModal({
     if (!planning) writePref("mb.newWorktree", v);
   };
   const { isBusy, busy, run, error, setError } = useAction();
-  // Add next step opens on a handle's click or a wire's drop, where a double click's second, or a click close behind,
-  // lands on whatever the dialog put there: for ANSWER_SETTLE_MS, and never a double click's second, a click in it is
-  // let go before it reaches a control, which shows off meanwhile. And keys of a burst typed as it opened were typed for
-  // what was there before: none reaches it until a pause, or a press in it.
+  // Add next step opens on a handle's click or a wire's drop, where a click close behind, or keys typed as it opened,
+  // were aimed at what was there before
   const headEl = useRef<HTMLDivElement>(null);
-  const { holdOff, heldOff } = useHeldOff();
-  useLayoutEffect(() => {
-    const box = planning ? headEl.current?.closest<HTMLElement>(".modal") : null;
-    if (!box) return;
-    const opened = Date.now();
-    holdOff("settle", ANSWER_SETTLE_MS);
-    let fresh = true;
-    const aimed = (e: MouseEvent) => {
-      if (e.detail < 2 && (e.detail < 1 || Date.now() - opened >= ANSWER_SETTLE_MS)) return;
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    const pressed = () => void (fresh = false);
-    const key = (e: KeyboardEvent) => {
-      if (!fresh || QUIET_KEYS.has(e.key)) return;
-      if (afterPause()) return void (fresh = false);
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    box.addEventListener("click", aimed, true);
-    box.addEventListener("pointerdown", pressed, true);
-    box.addEventListener("keydown", key, true);
-    return () => {
-      box.removeEventListener("click", aimed, true);
-      box.removeEventListener("pointerdown", pressed, true);
-      box.removeEventListener("keydown", key, true);
-    };
-  }, [planning, holdOff]);
+  const { heldOff } = useOpenSettle(() => headEl.current?.closest<HTMLElement>(".modal"), planning);
   // ADO ticket picker — same flow as the dashboard's Start session. It keeps
   // everyone's tickets: it defaults to yours (identity comes from the PAT) but
   // you can pick up someone else's. Manual entry works without the board.

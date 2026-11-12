@@ -409,10 +409,19 @@ export function noChoice(choices: readonly WireChoice[]): string | null {
  * its gate's "needs approve"), or that nothing does yet.
  */
 export function plannedLine(id: string, links: Readonly<Record<string, Wire>>, titleOf: (id: string) => string | null, needsApprove: (wire: string) => boolean = () => false): string {
-  const into = wiresInOrder(links).find(([, w]) => w.to === id && w.type === "handoff");
+  const into = handoffInto(id, links);
   if (!into) return "Not started. Nothing hands off to it yet: wire a step to it, or start it now.";
   return `Not started. Starts when ${titleOf(into[1].from) ?? "the step before it"} ${needsApprove(into[0]) ? "approves" : "hands off"}.`;
 }
+
+/** The same, short enough to stay one line on its card zoomed out (Zoomed.dc.html's Tester), its foot still under it. */
+export function plannedShort(id: string, links: Readonly<Record<string, Wire>>, needsApprove: (wire: string) => boolean = () => false): string {
+  const into = handoffInto(id, links);
+  if (!into) return "Nothing hands off to it";
+  return needsApprove(into[0]) ? "Waits for approve" : "Waits for its handoff";
+}
+
+const handoffInto = (id: string, links: Readonly<Record<string, Wire>>) => wiresInOrder(links).find(([, w]) => w.to === id && w.type === "handoff");
 
 /** A session a wire can be made to from the landscape: a workspace's (each tab of a stack), or a ghost's. */
 export interface WireTarget {

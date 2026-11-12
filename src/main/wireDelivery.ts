@@ -6,6 +6,7 @@ import { redactedFlag } from "./wirePrompt";
 import { filledFrom, titleAcross, usesSummary, type FinishFill, type MergeFill } from "./wireTools";
 import { isObj, own, put } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
+import { outsideRoomSandbox } from "../shared/team/livePanes";
 import {
   carriesWork,
   countedFor,
@@ -51,6 +52,8 @@ export const AUTOMATIC_HOPS = 3;
 
 /** How long a Send waits for its stopped other end to start before it gives up, sending nothing. */
 export const START_WAIT_MS = 60_000;
+/** How often a send that started its other end asks whether its room sandbox has confirmed (sandboxSettled). */
+const SANDBOX_POLL_MS = 200;
 
 /**
  * The prompt the other end receives for `body`: Mockingbird's label, naming the source and saying whether a person sent
@@ -73,7 +76,7 @@ export interface WireDeliveryOptions {
   store: Pick<LandscapeStore, "wires" | "editWires" | "wiresWriteRefusal">;
   /** The rules' view of the sessions now (WireService.context). */
   context: (book: WireBook) => GateContext;
-  sessions: Pick<SessionManager, "list" | "resumable" | "resume" | "deliverAgentMessage" | "promptCount" | "withdraw" | "holds">;
+  sessions: Pick<SessionManager, "list" | "resumable" | "resume" | "deliverAgentMessage" | "promptCount" | "withdraw" | "holds" | "guardsOf">;
   /** Reopen closed session `id`, as the window's Reopen does (index.ts's reopenSession); null when it has no record. */
   reopen: (id: string) => Promise<SessionInfo | null>;
   /**
@@ -604,6 +607,7 @@ export class WireDelivery {
 
   /** Take a send written ahead to its other end: started first if it's stopped (a person's, agreed to), then into its queue. */
   private async deliver(go: Go): Promise<SendReply> {
+    const until = Date.now() + START_WAIT_MS;
     let target = this.running(go.to);
     if (!target) {
       if (!go.start) return this.fail(go, "It isn't running, and starting it wasn't agreed to, so nothing was sent.");
@@ -612,6 +616,8 @@ export class WireDelivery {
       } catch (err) {
         return this.fail(go, message(err));
       }
+      const unsure = await this.sandboxSettled(target, until);
+      if (unsure) return this.fail(go, unsure);
     }
     let text: string;
     let submit: boolean;
@@ -648,6 +654,22 @@ export class WireDelivery {
 
   private running(id: string): SessionInfo | undefined {
     return this.o.sessions.list().find((s) => s.id === id && s.status !== "dead");
+  }
+
+  /**
+   * Session `s`, just started by a send, once its team room's sandbox has said whether it's on (RoomSandboxWatch: a
+   * room Claude launch is `starting` for a moment after its pane is up, and nothing crosses the room's line meanwhile).
+   * Null when it may be sent to, as one that isn't a room launch may at once; else why not, waiting no later than
+   * `until`. The rules are asked again just before the paste.
+   */
+  private async sandboxSettled(s: SessionInfo, until: number): Promise<string | null> {
+    const guards = () => this.o.sessions.guardsOf(s.id);
+    while (guards()?.starting && Date.now() < until) await new Promise((r) => setTimeout(r, SANDBOX_POLL_MS));
+    const g = guards();
+    const name = `“${s.ticketTitle ?? s.title}”`;
+    if (g?.starting) return `${name} started, but its team room's sandbox hadn't confirmed within ${START_WAIT_MS / 1000} s, so nothing was sent: send it again once it has.`;
+    if (g && outsideRoomSandbox(s.agent, g)) return `${name} started, but its sandbox didn't confirm, so nothing crosses its team room's line to it and nothing was sent: restart it in the room, then send this again.`;
+    return null;
   }
 
   /** The other end started (startEnd), or a refusal once START_WAIT_MS has gone by; a start that ends after that is logged. */

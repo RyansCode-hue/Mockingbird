@@ -122,6 +122,7 @@ function setup() {
       list: () => running,
       resumable: () => closed,
       promptCount: () => null,
+      guardsOf: () => null,
       resume: async () => ({ refused: "not in these tests" }),
       deliverAgentMessage: () => {
         throw new Error("nothing is sent in these tests");

@@ -5,6 +5,7 @@ import { MoreIcon } from "./Icons";
 import { fromKeyboard, usePresence } from "./motion";
 import { giveBack, keyboardClaimed, useOpener } from "./Modal";
 import { isArmed, keyboardNowhere, userLeft } from "./keyArm";
+import { ANSWER_SETTLE_MS } from "./answerGuard";
 
 /**
  * One action, said once and shown two ways: as a labelled icon button (an
@@ -95,6 +96,16 @@ export function menuKey(state: MenuState, key: string): { state: MenuState | nul
 }
 
 /**
+ * Whether a pick made `sinceOpen` ms after its menu opened was aimed at the menu. A key held down, or pressed before
+ * the menu could be read, was aimed at what opened it (a held Enter on More would run its first row); so was a double
+ * click's second landing on a row that just appeared under it. A single click, or one made by code, always counts.
+ */
+export function menuPickAimed(via: "key" | "click", e: { repeat?: boolean; detail?: number }, sinceOpen: number): boolean {
+  const early = sinceOpen < ANSWER_SETTLE_MS;
+  return via === "key" ? !e.repeat && !early : !(early && (e.detail ?? 0) > 1);
+}
+
+/**
  * Where a menu opened at a point goes: down and right of it when it fits,
  * flipped up or left when it would run off the window, never past an edge,
  * and no taller than the window (a long menu scrolls).
@@ -127,6 +138,10 @@ function ContextMenuView({ state, setState, label, back, backArmed }: { state: M
   // keys read the newest state, even two pressed before a render
   const cur = useRef(state);
   cur.current = state;
+  // when it opened (again, at a new point, while shown), for menuPickAimed
+  const opened = useRef({ at: state.at, t: Date.now() });
+  if (opened.current.at !== state.at) opened.current = { at: state.at, t: Date.now() };
+  const sinceOpen = () => Date.now() - opened.current.t;
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -189,8 +204,9 @@ function ContextMenuView({ state, setState, label, back, backArmed }: { state: M
         if (!r.handled) return;
         e.preventDefault();
         e.stopPropagation();
-        if (r.picked) run(r.picked, close);
-        else {
+        if (r.picked) {
+          if (menuPickAimed("key", e, sinceOpen())) run(r.picked, close);
+        } else {
           if (r.state) cur.current = r.state;
           setState(r.state);
         }
@@ -214,7 +230,7 @@ function ContextMenuView({ state, setState, label, back, backArmed }: { state: M
             className={`${it.danger ? "danger" : ""} ${i === state.active ? "active" : ""}`}
             title={it.title}
             onMouseEnter={() => !it.disabled && setState({ ...state, active: i })}
-            onClick={() => run(it, close)}
+            onClick={(e) => menuPickAimed("click", e, sinceOpen()) && run(it, close)}
           >
             <span className="mb-ctx-ico">{it.icon}</span>
             <span className="mb-ctx-t">{it.menuLabel ?? it.label}</span>

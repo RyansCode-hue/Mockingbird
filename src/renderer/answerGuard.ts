@@ -71,6 +71,45 @@ export function useHeldOff(): { holdOff: (key: string, ms: number) => void; held
   return { holdOff, heldOff: (key) => held === key };
 }
 
+/**
+ * A dialog opened by a click or a key aimed at something else (a handle's click, a menu row): for ANSWER_SETTLE_MS, and
+ * never a double click's second, a click in it is let go before it reaches a control, which shows off meanwhile
+ * (`heldOff("settle")`, for its main button's `disabled` and its backdrop); and keys of a burst typed as it opened were
+ * typed for what was there before, so none reaches it until a pause, or a press in it. `box`: the dialog's element,
+ * read once it has rendered; none (`on` false) for a dialog opened by its own button.
+ */
+export function useOpenSettle(box: () => HTMLElement | null | undefined, on = true): { heldOff: (key: string) => boolean } {
+  const { holdOff, heldOff } = useHeldOff();
+  useLayoutEffect(() => {
+    const el = on ? box() : null;
+    if (!el) return;
+    const opened = Date.now();
+    holdOff("settle", ANSWER_SETTLE_MS);
+    let fresh = true;
+    const aimed = (e: MouseEvent) => {
+      if (e.detail < 2 && (e.detail < 1 || Date.now() - opened >= ANSWER_SETTLE_MS)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const pressed = () => void (fresh = false);
+    const key = (e: globalThis.KeyboardEvent) => {
+      if (!fresh || QUIET_KEYS.has(e.key)) return;
+      if (afterPause() && !e.repeat) return void (fresh = false);
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    el.addEventListener("click", aimed, true);
+    el.addEventListener("pointerdown", pressed, true);
+    el.addEventListener("keydown", key, true);
+    return () => {
+      el.removeEventListener("click", aimed, true);
+      el.removeEventListener("pointerdown", pressed, true);
+      el.removeEventListener("keydown", key, true);
+    };
+  }, [on, holdOff]);
+  return { heldOff };
+}
+
 /** What a surface that swallowed early keys (`useAimedKeys`) says. */
 export const EARLY_KEYS_HINT = "Keys typed just before this opened don't press anything here: pause, then go on.";
 

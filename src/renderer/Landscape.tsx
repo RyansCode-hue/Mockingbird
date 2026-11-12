@@ -115,7 +115,7 @@ import { isRemote } from "./team/RoomLive";
 import { typingAsksOf } from "./needsYouModel";
 import { cameraMoved } from "./answerGuard";
 import { WireLayer, rereadWires, useWires, type WireLayerHandle } from "./WireLayer";
-import { WIRE_TYPE_NAME, commonReason, gateContextOf, gateView, noChoice, plannedLine, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
+import { WIRE_TYPE_NAME, commonReason, gateContextOf, gateView, noChoice, plannedLine, plannedShort, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
 import { WireSettingsPopover, WireTypePicker, type WirePick, type WireSettingsProps } from "./WireMaking";
 import { WirePopover } from "./WirePopover";
 import { sendAlongWire } from "./wireSend";
@@ -2693,18 +2693,23 @@ export function Landscape({
             />
           ))}
           <WireLayer ref={wiresRef} views={wireList} band={band} cam={cam} listeners={listeners.current} />
-          {layout.ghosts.map((g) => (
-            <GhostCard
-              key={g.key}
-              ghost={g}
-              band={band}
-              actions={ghostActions(g.front, g.members)}
-              status={ghostStatus(g.front)}
-              inv={1 / cam.current.zoom}
-              onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front, g.members)))}
-              planned={g.front.planned ? plannedLine(g.front.id, wireBook?.book?.links ?? {}, (id) => (sessionOn(id) ? named(id) : null), (w) => wireList.some((v) => v.id === w && v.why === "needs approve")) : undefined}
-            />
-          ))}
+          {layout.ghosts.map((g) => {
+            const links = wireBook?.book?.links ?? {};
+            const needsApprove = (w: string) => wireList.some((v) => v.id === w && v.why === "needs approve");
+            return (
+              <GhostCard
+                key={g.key}
+                ghost={g}
+                band={band}
+                actions={ghostActions(g.front, g.members)}
+                status={ghostStatus(g.front)}
+                inv={1 / cam.current.zoom}
+                onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front, g.members)))}
+                planned={g.front.planned ? plannedLine(g.front.id, links, (id) => (sessionOn(id) ? named(id) : null), needsApprove) : undefined}
+                plannedShort={g.front.planned ? plannedShort(g.front.id, links, needsApprove) : undefined}
+              />
+            );
+          })}
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}
           {layout.windows.map((w) => {
             if (w.hidden) return null;

@@ -40,7 +40,7 @@ import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
 import { UsageMeter } from "./UsageMeter";
 import { DashboardBoard } from "./Dashboard";
-import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog, CloseManyDialog } from "./Dialogs";
+import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog, CloseManyDialog, StartStepDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
 import { ConnectedLine, JoinRoomDialog, MemberDialogs, ShareRoomDialog, roomOfGroup, useTeamStatus, type MemberDialog } from "./Team";
 import { adminRequests, JoinRequestPrompt } from "./team/JoinRequests";
@@ -262,6 +262,8 @@ function App() {
   // several workspaces' Close…: asked once (closeMany), then each closed as its own Close would, one dialog at a time
   const [closeMany, setCloseMany] = useState<SessionInfo[] | null>(null);
   const [closeQueue, setCloseQueue] = useState<string[]>([]);
+  // Start now's confirm: the not-started step, and where main says it starts
+  const [startAsk, setStartAsk] = useState<{ step: SessionInfo; where: string } | null>(null);
   // a lone pane's "+" promotes it to a workspace, but only once the new session
   // actually exists — cancelling the dialog must leave the pane exactly as it was
   const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
@@ -1842,7 +1844,7 @@ function App() {
     s.planned
       ? plannedActions({
           busy: closedBusy.has(s.id),
-          start: () => void startStep(s),
+          start: () => void askStartStep(s),
           forget: () => void forgetGhosts([s], `forgetting ${titleOf(s)}`),
         })
       : ghostActions(s, ghostEnv(s, tabs));
@@ -1853,8 +1855,18 @@ function App() {
     return plannedWhere(s, (id) => ((x) => (x ? titleOf(x) : null))(titled(id)));
   };
   /**
-   * Start now: not-started step `s` started from the commit the step before it is on (main's startPlanned), where its
-   * card is; what main refuses is said. Its Start now and Forget are off meanwhile, as a ghost's are.
+   * Start now…: says where not-started step `s` would start (main's describeStart: a folder it shares while its owner
+   * works there, or a new worktree at a commit) and asks first. What main refuses, then or as it starts, is said.
+   */
+  const askStartStep = (s: SessionInfo) =>
+    whileClosedBusy([s.id], `starting ${titleOf(s)}`, async () => {
+      const where: IpcResult<string> = await window.mb.describeStart(s.id);
+      if (isErr(where)) return closedSay(`Couldn't start ${titleOf(s)}: ${where.error}`);
+      setStartAsk({ step: s, where });
+    });
+  /**
+   * Start now, agreed to: not-started step `s` started from the commit the step before it is on (main's startPlanned),
+   * where its card is. Its Start now and Forget are off meanwhile, as a ghost's are.
    */
   const startStep = (s: SessionInfo) =>
     whileClosedBusy([s.id], `starting ${titleOf(s)}`, async () => {
@@ -3315,6 +3327,17 @@ function App() {
           }}
           forceClose={forceClose}
           forget={forgetSession}
+        />
+      )}
+      {startAsk && (
+        <StartStepDialog
+          title={titleOf(startAsk.step)}
+          where={startAsk.where}
+          onCancel={() => setStartAsk(null)}
+          onStart={() => {
+            setStartAsk(null);
+            void startStep(startAsk.step);
+          }}
         />
       )}
       {closeMany && (

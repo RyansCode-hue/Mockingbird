@@ -19,6 +19,8 @@ const api = {
   planSession: (req: PlanRequest): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("sessions:plan", req),
   /** Start not-started step `id` now, from the commit the step before it is on (Start now). */
   startPlanned: (id: string): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("sessions:startPlanned", id),
+  /** Where Start now would start not-started step `id`, said for its confirm; refused as the start would be. */
+  describeStart: (id: string): Promise<IpcResult<string>> => ipcRenderer.invoke("sessions:describeStart", id),
   /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */
   resumeSession: (id: string): Promise<SessionInfo | { refused: string } | { error: string }> => ipcRenderer.invoke("sessions:resume", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),

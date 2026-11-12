@@ -6,6 +6,7 @@ import { LandscapeShapeError, own, put, stackKeyOf } from "../shared/landscape";
 import type { NewSessionRequest, PlanRequest, PrRepo, SessionInfo } from "../shared/types";
 import {
   createdAtAfter,
+  emptyWireBook,
   gateOf,
   keptNaming,
   newWire,
@@ -314,6 +315,17 @@ export class WireService {
       this.o.log(`wires: not-started step ${info.id} wasn't wired from ${req.after}, and couldn't be forgotten`, err);
     }
     throw new Error(made.refused);
+  }
+
+  /**
+   * Why not-started step `step` mustn't start from session `other`, the folder it shares or the commit it starts at
+   * (SessionManager.startGuard): the rules on a handoff between the two as their ends stand now (the room line, a copy a
+   * teammate continues, a room session outside its sandbox), whatever wires there are. A book that can't be read
+   * doesn't stop it, as these rules aren't the book's.
+   */
+  startRefusal(step: string, other: string): string | null {
+    const book = this.o.store.wires().book ?? emptyWireBook();
+    return wireRefusal(other, step, "handoff", { ...this.context(book), links: {}, kept: {} });
   }
 
   /** Why no handoff could leave session `from` for a step after it now, asked before one is made (shared/wires.ts' stepRefusal). */

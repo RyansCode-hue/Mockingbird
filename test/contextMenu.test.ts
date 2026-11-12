@@ -1,7 +1,8 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ActionBar, LabelledButton, menuHeading, menuKey, nextItem, openMenu, pickActions, placeMenu, tidyMenu, type Action, type MenuEntry } from "../src/renderer/ContextMenu";
+import { ActionBar, LabelledButton, menuHeading, menuKey, menuPickAimed, nextItem, openMenu, pickActions, placeMenu, tidyMenu, type Action, type MenuEntry } from "../src/renderer/ContextMenu";
+import { ANSWER_SETTLE_MS } from "../src/renderer/answerGuard";
 
 const act = (key: string, over: Partial<Action> = {}): Action => ({ key, label: key, onPick: vi.fn(), ...over });
 
@@ -52,6 +53,17 @@ describe("a right-click menu", () => {
   it("leaves other keys to the page", () => {
     const st = openMenu({ x: 0, y: 0 }, items)!;
     expect(menuKey(st, "a")).toEqual({ state: st, handled: false });
+  });
+  it(`picks nothing with a key held down, or pressed within ${ANSWER_SETTLE_MS} ms of opening: that key was aimed at what opened it`, () => {
+    expect(menuPickAimed("key", { repeat: true }, ANSWER_SETTLE_MS * 4)).toBe(false);
+    expect(menuPickAimed("key", { repeat: false }, ANSWER_SETTLE_MS - 1)).toBe(false);
+    expect(menuPickAimed("key", { repeat: false }, ANSWER_SETTLE_MS)).toBe(true);
+  });
+  it("picks nothing with a double click's second landing as it opens; a single click, or one made by code, always picks", () => {
+    expect(menuPickAimed("click", { detail: 2 }, 100)).toBe(false);
+    expect(menuPickAimed("click", { detail: 2 }, ANSWER_SETTLE_MS)).toBe(true);
+    expect(menuPickAimed("click", { detail: 1 }, 0)).toBe(true);
+    expect(menuPickAimed("click", { detail: 0 }, 0)).toBe(true);
   });
 });
 

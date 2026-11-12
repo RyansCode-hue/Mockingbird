@@ -320,7 +320,7 @@ export function ghostActions(s: SessionInfo, env: GhostEnv): ModelAction[] {
 export interface PlannedEnv {
   /** Being started or forgotten now: neither again till that's done. */
   busy: boolean;
-  /** Start it now, from the commit the step before it is on (main's startPlanned), without waiting for its handoff. */
+  /** Start now…: says where it would start and asks, then starts it from the commit the step before it is on. */
   start: () => void;
   /** Let it go: its place and its wires go with it. */
   forget: () => void;
@@ -336,7 +336,7 @@ export const PLANNED_BUSY_WHY = "It's being started or forgotten already";
 export function plannedActions(env: PlannedEnv): ModelAction[] {
   const busy = env.busy ? { no: PLANNED_BUSY_WHY } : null;
   return [
-    { section: "end", key: "start", label: "Start now", primary: true, title: "Start it now, from the commit the step before it is on, without waiting for its handoff", ...can(busy ?? env.start) },
+    { section: "end", key: "start", label: "Start now", menuLabel: "Start now…", primary: true, title: "Start it now, from the commit the step before it is on, without waiting for its handoff: it says where first", ...can(busy ?? env.start) },
     { section: "end", key: "forget", label: "Forget", menuLabel: "Forget it", danger: true, icon: <CloseIcon />, title: env.busy ? PLANNED_BUSY_WHY : "Let it go, with its place and its wires", ...can(busy ?? env.forget) },
   ];
 }

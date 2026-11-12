@@ -11,7 +11,7 @@ const local = !process.env.CI && fs.existsSync(chrome);
 
 type R = { x: number; y: number; w: number; h: number };
 interface Audit {
-  zooms: { zoom: number; band: string | null; ghosts: Record<string, { area: string; rows: string[]; rect: R }> }[];
+  zooms: { zoom: number; band: string | null; ghosts: Record<string, { area: string; rows: string[]; rect: R; kind: boolean; line: string | null }> }[];
   problems: string[];
   error?: string;
 }
@@ -64,6 +64,9 @@ describe.skipIf(!local)("ghosts on the landscape (UI preview)", () => {
     // no actions row: what starts it stands in for a last line, where it will work as its foot
     expect(at(1).g1.rows).toEqual(["head", "line", "foot"]);
     expect(at(0.45).g1.rows).toEqual(["head", "line", "foot"]);
+    // zoomed out its line is the short one, leaving room for its foot; the whole sentence at 100%
+    expect(at(1).g1.line).toMatch(/^Not started\. /);
+    expect(at(0.45).g1.line).toBe("Nothing hands off to it");
     expect(at(0.1).g1.rows[0]).toBe("head");
     expect(at(1).p1.rows).toEqual(["head", "acts", "line", "foot"]);
   }, 120_000);

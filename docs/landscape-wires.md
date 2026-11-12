@@ -2963,6 +2963,109 @@ Attached board does.
   because a shown id is never drawn as a ghost.
 - Steps aren't in the Closed sessions list or ⌘K. Their way in is the landscape.
 
+#### W8 review fixes 1 as built
+
+**Where a step starts, checked before anything is made** (`sessions.ts`'s
+`stepPlace`, H1, M3, L1–L5).
+- Start now and a Send's start both reach `startPlanned`, which now works out the
+  place first and makes nothing when it refuses. For the folder it shares and for
+  the commit it starts at, it asks two things of that other session:
+  - `startGuard` (index.ts wires it to `WireService.startRefusal`): the handoff
+    rule from that session to the step, room line included, ignoring any existing
+    wire. So a step regrouped into a room can't start in a private session's folder
+    or from its commit, nor a room step from a private one.
+  - `relaunchGuard`: a session a teammate continues lends neither.
+  - Either refuses: "“Tester” can't start in “Builder”'s folder: …" or "“QA”
+    can't start from “Builder”'s commit: …". It never falls back to the base.
+- With no upstream commit to use, the pane and the confirm say why, truthfully:
+  "Started at clone's HEAD, abc1234: nothing hands off to it", or "cut from dev,
+  as a new worktree is: …" when the step has a base.
+- A start that fails takes back the worktree and branch it made
+  (`dropNewWorktree`), so a retry gets the same name; a failure to take them back
+  is logged and said.
+- The upstream's branch leads the step's only when `git check-ref-format --branch`
+  takes it; else the step's is `step-<name>` and the pane says why. Every step's
+  branch has a lead, and one that would be a base name (`BASE_NAMES`, or the
+  step's own base) is refused: "rename the step". `git branch --list` gets `--`.
+- A step after a step not started yet has no commit to start at (L4), and can't
+  share its folder. `setGroup` refuses to put a step in a stack (L5).
+
+**A Send that starts its other end waits for its room sandbox** (`wireDelivery.ts`,
+M2).
+- After a start, reopen or resume, `sandboxSettled` polls `guardsOf` until the
+  room's sandbox has confirmed, within what's left of `START_WAIT_MS`. The rules
+  are still asked again at the paste.
+- Still starting at the end: "“Tester” started, but its team room's sandbox hadn't
+  confirmed within 60 s, so nothing was sent: send it again once it has."
+- Failed: "… started, but its sandbox didn't confirm, so nothing crosses its team
+  room's line to it and nothing was sent: restart it in the room, then send this
+  again."
+
+**Start now… asks first** (M1).
+- The menu row reads "Start now…". `askStartStep` asks main's new
+  `sessions:describeStart` for where it starts, the same `stepPlace` that
+  `startPlanned` runs. A refusal is said then. `StartStepDialog` (`Dialogs.tsx`)
+  says it: "It starts in “Builder”'s folder, ~/…, on feat, while “Builder” is
+  working." or "It starts in a new worktree, feat-qa, at “Builder”'s commit
+  abc1234." Start now, or Enter, starts it.
+- The dialog takes no click for `ANSWER_SETTLE_MS`, nor a double click's second.
+  It takes no key held down, nor one of a burst begun before it opened. Its button
+  and backdrop are off meanwhile. That's `useOpenSettle` (`answerGuard.ts`), moved
+  out of NewSession's step mode, which now uses it too.
+- Every context menu (`ContextMenu.tsx`'s `menuPickAimed`): Enter or Space held
+  down, or pressed within `ANSWER_SETTLE_MS` of the menu opening, picks nothing. A
+  double click's second on a row as it opens picks nothing. A single click, or one
+  made by code, always picks. The audits click rows straight after opening, and a
+  click on a row is aimed; a key held through the opening isn't.
+
+**Zoomed out, the step's card** (L8, Zoomed.dc.html's Tester).
+- Off the live band, its line is `plannedShort`: "Waits for approve", "Waits for
+  its handoff" or "Nothing hands off to it". The whole sentence stays its tooltip.
+  At 45% its foot shows under it.
+- Every ghost's head puts title and kind in `.lg-name`, a one-line wrapping row.
+  A kind that doesn't fit whole beside the title wraps out of sight before the
+  title is cut. A closed ghost's "Spi…" is "Spike: strea…" now.
+
+**Tests.**
+- `sessionLifecycle` (+10):
+  - `describeStart`'s wording;
+  - a step moved into a room refused both ways, then started once it's back;
+  - a room step refused a private folder and commit;
+  - a taken-over upstream refused;
+  - no upstream said on the pane;
+  - a failed start leaving no worktree or branch;
+  - a bad lead branch;
+  - base names refused;
+  - a step after a step not started yet;
+  - `setGroup` into a stack.
+- `wireDelivery` (+4), with room launches simulated (`roomSandboxes`): a step
+  started and a closed session reopened by a Send, each held until its sandbox
+  confirms and then sent; a sandbox that fails; one still starting at 60 s, which
+  is sent again once it confirms.
+- `contextMenu` (+2): `menuPickAimed`.
+- `wiresModel` and `workspaceActions`: `plannedShort`; "Start now…".
+- `uiLandscapeWires`' "Add next step" adds two things:
+  - Tester's ⋯ by the keyboard with Enter held through 12 repeats: the menu opens
+    on Start now… and nothing is asked or started;
+  - Start now… from right-click: the confirm says where, and is off at first, so
+    a click straight after it opens starts nothing; Enter after a pause starts it.
+- `uiLandscapeGhosts`: the step's short line at 45%, the sentence at 100%. The
+  audit flags any ghost whose title is cut while its kind shows.
+- Mutation checks:
+  - caught: `startGuard`'s half of `mayUse` (both room tests); `relaunchGuard`'s
+    half (the take-over test); the wait for the sandbox (all four delivery tests);
+    the menu's key guard (the held Enter part).
+- Screenshots `l8-before.png`, `l8-after.png` (45%) and `l8-100.png`: at 45% the
+  card reads "Tester", "Waits for approve", "backoffice · new worktree"; at 100%
+  it's unchanged.
+
+**Deviations.**
+- A context menu lets a pointer's single click through as it opens, and a click
+  made by code. Only a held key, an early key and a double click's second are
+  dropped. Holding back every early click would break every audit that opens a menu
+  and picks.
+- A key the menu drops says nothing: the row stays lit, and the next press picks.
+
 ### W9 · Templates. Size M (changed)
 - `settings.pipelineTemplates` beside `presets` (`types.ts:328`); **Save as
   template** from a chain. Pipeline from a ticket… turns on

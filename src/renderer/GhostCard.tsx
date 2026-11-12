@@ -50,6 +50,7 @@ export function GhostCard({
   onMore,
   inv,
   planned,
+  plannedShort,
 }: {
   ghost: GhostView;
   band: Band;
@@ -62,6 +63,8 @@ export function GhostCard({
   inv: number;
   /** A not-started step's line in place of what it did last: "Not started. Starts when Reviewer hands off." */
   planned?: string;
+  /** Its line zoomed out, one short enough to leave room for its foot (plannedShort): "Waits for approve". */
+  plannedShort?: string;
 }) {
   const s = ghost.front;
   const { line, error } = useClosedLine(s);
@@ -76,7 +79,7 @@ export function GhostCard({
   const forget = notYet ? undefined : shown("forget");
   const where = notYet ? "" : [s.ticketId ? `#${ticketIdOf(s.ticketId)}` : null, s.branch && s.branch !== titleOf(s) ? s.branch : null].filter(Boolean).join(" · ");
   const name = ghost.stack ? ghost.members.map(titleOf).join(" · ") : titleOf(s);
-  const lineText = notYet ? planned : error ? "Couldn't read what it did last" : (line ?? "It wrote nothing before it closed");
+  const lineText = notYet ? (band === "live" ? planned : (plannedShort ?? planned)) : error ? "Couldn't read what it did last" : (line ?? "It wrote nothing before it closed");
   const compact = band === "cards";
   return (
     <div
@@ -92,10 +95,13 @@ export function GhostCard({
       <div className="lg-rows">
         <div className="lg-head" data-row="head">
           <span className="lg-dot" aria-hidden="true" />
-          <span className="lg-title" title={name}>
-            {name}
+          {/* its title wins the room: the chip gives way first, whole (styles.css) */}
+          <span className="lg-name">
+            <span className="lg-title" title={name}>
+              {name}
+            </span>
+            <span className="chip lg-kind">{ghost.stack ? `stack · ${ghost.members.length}` : kindLabel(s)}</span>
           </span>
-          <span className="chip lg-kind">{ghost.stack ? `stack · ${ghost.members.length}` : kindLabel(s)}</span>
           {!compact && (
           <button
             type="button"
@@ -126,7 +132,7 @@ export function GhostCard({
             )}
           </div>
         )}
-        <div className="lg-line" data-row="line" title={lineText}>
+        <div className="lg-line" data-row="line" title={notYet ? planned : lineText}>
           {lineText}
         </div>
         <div className="lg-foot" data-row="foot">

@@ -637,15 +637,17 @@ interface Step {
   stepSend: { opened: { face: string; ends: string; whys: string[]; body: string; buttons: string[] } | null; sends: unknown[][]; cost: number; pop: boolean; ghost: boolean; node: boolean; delivery: string | null };
   double: { dialog: boolean; under: string | null; closed: boolean };
   terminal: { dialog: boolean; note: string | null; plan: Call[] };
-  started: { start: Call[]; ghost: boolean; node: boolean };
+  held: { menu: string[] | null; row: string | null; confirm: boolean; asked: number; start: number };
+  confirm: { open: boolean; head: string | null; says: string | null; off: boolean | null; early: { open: boolean; start: number } };
+  started: { asked: Call[]; start: Call[]; confirm: boolean; ghost: boolean; node: boolean };
 }
 
 describe.skipIf(!local)("Add next step", () => {
-  it("a not-started step's card and menu; a step added from a handle clicked and one dragged into space, its dialog taking no burst's key nor an early click; refused after a terminal; Start now", async () => {
+  it("a not-started step's card and menu; a step added from a handle clicked and one dragged into space, its dialog taking no burst's key nor an early click; refused after a terminal; Start now… asking first, taking no held key", async () => {
     const s = (await audit("lsCamera=0,3040,1&lsPlanned&landscapeWiresAudit=step", "1600x1200", 150_000)) as unknown as Step;
     // Tester, as Inbox.dc.html draws it: no buttons, what starts it in place of a last line, where it will work as its foot
     expect(s.card).toEqual({ rows: ["head", "line", "foot"], buttons: 0, line: "Not started. Starts when Reviewer approves.", status: "backoffice · new worktree" });
-    expect(s.cardMenu).toContain("Start now");
+    expect(s.cardMenu).toContain("Start now…");
     expect(s.cardMenu).toContain("Forget it");
     expect(s.cardMenu!.some((r) => /Reopen/.test(r))).toBe(false);
     // Reviewer's handle clicked mid-burst: the dialog opens for a step after Reviewer, the burst's key and an early click untaken
@@ -679,7 +681,13 @@ describe.skipIf(!local)("Add next step", () => {
     expect(s.double).toEqual({ dialog: true, under: "modal-back", closed: true });
     // a terminal's handle: said, no dialog, nothing made
     expect(s.terminal).toEqual({ dialog: false, note: "No step can follow Dev server: “Dev server” is a terminal: only a shared worktree wire can reach one.", plan: [] });
-    // Start now: started under its id, a workspace where its card was
-    expect(s.started).toEqual({ start: [["wb-tester"]], ghost: false, node: true });
+    // its ⋯ with Enter held: the menu opens on Start now…, and the key's repeats run nothing there nor ask anything
+    expect(s.held).toMatchObject({ row: "Start now…", confirm: false, asked: 0, start: 0 });
+    expect(s.held.menu).toContain("Start now…");
+    // Start now…: a confirm saying where it starts, off for a moment, so a click straight after it opens starts nothing
+    expect(s.confirm).toMatchObject({ open: true, head: "Start Tester now?", off: true, early: { open: true, start: 0 } });
+    expect(s.confirm.says).toBe("It starts in a new worktree, 5120-donor-export-tester, at “Reviewer”'s commit 3f9c2a1. It doesn't wait for its handoff.");
+    // Enter, pressed for it: started under its id, a workspace where its card was
+    expect(s.started).toEqual({ asked: [["wb-tester"]], start: [["wb-tester"]], confirm: false, ghost: false, node: true });
   }, 200_000);
 });

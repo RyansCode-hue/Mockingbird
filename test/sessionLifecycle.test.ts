@@ -9,12 +9,21 @@ import capture from "./fixtures/codex-folder-notice-0.156.1.json";
 import { quote } from "../src/main/shell";
 import { HELPDESK_RULES } from "../src/main/helpdesk";
 import type { PlanRequest } from "../src/shared/types";
+import { LandscapeStore } from "../src/main/landscape";
+import { WireService } from "../src/main/wires";
+import { ROOM_LINE } from "../src/shared/wires";
 
 /** Every pty the manager starts: what it was asked to run and with what environment, what was written to it, and a way to end it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; killed: boolean; signals: string[]; emit(d: string): void; exit(code: number): void };
 const ptys: FakePty[] = [];
+/** `next`: the next spawn fails, as posix_spawnp can. */
+const spawnFails = vi.hoisted(() => ({ next: false }));
 vi.mock("node-pty", () => ({
   spawn: (_file: string, args: string[], opts: { env: Record<string, string> }) => {
+    if (spawnFails.next) {
+      spawnFails.next = false;
+      throw new Error("posix_spawnp failed.");
+    }
     let onData: (d: string) => void = () => {};
     let onExit: (e: { exitCode: number }) => void = () => {};
     const p: FakePty = { args, env: opts.env, writes: [], killed: false, signals: [], emit: (d) => onData(d), exit: (exitCode) => onExit({ exitCode }) };
@@ -1472,7 +1481,7 @@ describe("a step not started yet (W8)", () => {
     expect(started.branch).toBe("feat-tester-2");
     expect(git(started.cwd, "rev-parse", "HEAD")).toBe(work);
     expect(fs.existsSync(path.join(started.cwd, "draft.txt"))).toBe(false);
-    expect(m.buffer(b.id)).toContain("its uncommitted file isn't here");
+    expect(m.buffer(b.id)).toContain(`Started at “Builder”'s commit ${work.slice(0, 7)}: its uncommitted file isn't carried.`);
   });
 
   it("starts in the folder of the session it shares one with, on its branch as it stands (decision 7)", async () => {
@@ -1498,14 +1507,141 @@ describe("a step not started yet (W8)", () => {
     expect(m.planned()).toEqual([]);
   });
 
-  it("is cut from its base, saying why, when the step before it works in another repository", async () => {
+  it("is cut at its repo's HEAD on a branch of its own, saying why, when the step before it works in another repository", async () => {
     const { m, a } = await upstream();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const other = makeRepo({ "b.txt": "1" }, "other");
     const b = m.plan(step(a.id, { repoPath: other, worktree: true }));
     const started = await m.startPlanned(b.id, a.id);
-    expect(started.branch).toBe("tester");
+    expect(started.branch).toBe("step-tester");
     expect(git(started.cwd, "rev-parse", "HEAD")).toBe(git(other, "rev-parse", "HEAD"));
-    expect(m.buffer(b.id)).toContain("“Builder” works in another repository, so this started from its base as a new worktree does.");
+    expect(m.buffer(b.id)).toContain(`Started at ${path.basename(other)}'s HEAD, ${git(other, "rev-parse", "HEAD").slice(0, 7)}: “Builder” works in another repository.`);
+  });
+
+  it("says where it would start, for Start now's confirm, as it then starts there", async () => {
+    const { m, clone, a, work } = await upstream();
+    const shares = m.plan(step(a.id, { sharesFolder: true }));
+    const own = m.plan(step(a.id, { title: "QA", repoPath: clone, worktree: true }));
+    expect(await m.describeStart(shares.id, a.id)).toBe(`It starts in “Builder”'s folder, ${a.cwd}, on feat, while “Builder” is working.`);
+    expect(await m.describeStart(own.id, a.id)).toBe(`It starts in a new worktree, feat-qa, at “Builder”'s commit ${work.slice(0, 7)}.`);
+    expect((await m.startPlanned(own.id, a.id)).branch).toBe("feat-qa");
+  });
+
+  /** Rooms by group: "room" is team room R1's area, every other group private. Starting asks WireService, as index.ts has it. */
+  function roomed(m: Awaited<ReturnType<typeof manager>>["m"]) {
+    const store = new LandscapeStore({ file: path.join(tempDir("ls"), "landscape.json"), emit: () => {}, emitWires: () => {}, log: () => {} });
+    const groupOf = (id: string) => [...m.list(), ...m.resumable(), ...m.planned()].find((s) => s.id === id)?.taskGroup;
+    const wires = new WireService({ store, sessions: m, roomOf: (id) => (groupOf(id) === "room" ? "R1" : null), roomsKnown: () => true, takenOver: () => null, log: () => {} });
+    m.startGuard = (s, o) => wires.startRefusal(s, o);
+    return { wires, steps: { plan: (q: PlanRequest) => m.plan(q), forget: (id: string) => m.kill(id, true) } };
+  }
+
+  it("won't start in the folder of, or from the commit of, a session moved across a team room's line from it, making nothing", async () => {
+    const { m, clone, a } = await upstream();
+    const { wires, steps } = roomed(m);
+    const shares = wires.addStep(step(a.id, { sharesFolder: true }), steps).info;
+    const own = wires.addStep(step(a.id, { title: "QA", repoPath: clone, worktree: true }), steps).info;
+    m.setGroup(a.id, "room");
+    const before = ptys.length;
+    await expect(m.startPlanned(shares.id, a.id)).rejects.toThrow(`“Tester” can't start in “Builder”'s folder: ${ROOM_LINE}`);
+    await expect(m.describeStart(shares.id, a.id)).rejects.toThrow(`“Tester” can't start in “Builder”'s folder: ${ROOM_LINE}`);
+    await expect(m.startPlanned(own.id, a.id)).rejects.toThrow(`“QA” can't start from “Builder”'s commit: ${ROOM_LINE}`);
+    expect(ptys.length).toBe(before);
+    expect(fs.existsSync(path.join(worktreeRoot(clone), "feat-qa"))).toBe(false);
+    expect(m.planned().map((s) => s.id).sort()).toEqual([shares.id, own.id].sort());
+    // back on this side of the line, both start
+    m.setGroup(a.id, "5120");
+    expect((await m.startPlanned(shares.id, a.id)).cwd).toBe(a.cwd);
+    expect((await m.startPlanned(own.id, a.id)).branch).toBe("feat-qa");
+  });
+
+  it("won't start a team room's step in a private session's folder or from its commit", async () => {
+    const { m, clone, a } = await upstream();
+    roomed(m);
+    const shares = m.plan(step(a.id, { sharesFolder: true, taskGroup: "room" }));
+    const own = m.plan(step(a.id, { title: "QA", repoPath: clone, worktree: true, taskGroup: "room" }));
+    const before = ptys.length;
+    await expect(m.startPlanned(shares.id, a.id)).rejects.toThrow(`“Tester” can't start in “Builder”'s folder: ${ROOM_LINE}`);
+    await expect(m.startPlanned(own.id, a.id)).rejects.toThrow(`“QA” can't start from “Builder”'s commit: ${ROOM_LINE}`);
+    expect(ptys.length).toBe(before);
+  });
+
+  it("won't start in the folder of, or from the commit of, a copy a teammate continues", async () => {
+    const { m, clone, a } = await upstream();
+    const shares = m.plan(step(a.id, { sharesFolder: true }));
+    const own = m.plan(step(a.id, { title: "QA", repoPath: clone, worktree: true }));
+    m.kill(a.id, false);
+    const why = "“Builder” continues on Nick's laptop — take it back rather than running this copy again";
+    m.relaunchGuard = (id) => (id === a.id ? why : null);
+    await expect(m.relaunch(a.id)).rejects.toThrow(why);
+    const before = ptys.length;
+    await expect(m.startPlanned(shares.id, a.id)).rejects.toThrow(`“Tester” can't start in “Builder”'s folder: ${why}`);
+    await expect(m.startPlanned(own.id, a.id)).rejects.toThrow(`“QA” can't start from “Builder”'s commit: ${why}`);
+    expect(ptys.length).toBe(before);
+  });
+
+  it("with nothing handing off to it, starts at its repo's HEAD on a branch of its own, and says so", async () => {
+    const { m, clone, a } = await upstream();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const b = m.plan(step(a.id, { repoPath: clone, worktree: true }));
+    const head = git(clone, "rev-parse", "HEAD");
+    expect(await m.describeStart(b.id, null)).toBe(`It starts in a new worktree, step-tester, at clone's HEAD, ${head.slice(0, 7)}: nothing hands off to it.`);
+    const started = await m.startPlanned(b.id, null);
+    expect(started.branch).toBe("step-tester");
+    expect(git(started.cwd, "rev-parse", "HEAD")).toBe(head);
+    expect(m.buffer(b.id)).toContain(`Started at clone's HEAD, ${head.slice(0, 7)}: nothing hands off to it.`);
+  });
+
+  it("takes back the worktree and branch a start that failed made, so starting it again gets the same branch", async () => {
+    const { m, clone, a } = await upstream();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const b = m.plan(step(a.id, { repoPath: clone, worktree: true }));
+    spawnFails.next = true;
+    await expect(m.startPlanned(b.id, a.id)).rejects.toThrow(/posix_spawnp failed/);
+    expect(fs.existsSync(path.join(worktreeRoot(clone), "feat-tester"))).toBe(false);
+    expect(git(clone, "branch", "--list", "feat-tester*")).toBe("");
+    expect(m.planned().map((s) => s.id)).toEqual([b.id]);
+    expect((await m.startPlanned(b.id, a.id)).branch).toBe("feat-tester");
+  });
+
+  it("leaves out the step before's branch name when git would take it for an option", async () => {
+    const { m, clone, a } = await upstream();
+    git(clone, "update-ref", "refs/heads/-x", git(a.cwd, "rev-parse", "HEAD"));
+    git(a.cwd, "symbolic-ref", "HEAD", "refs/heads/-x");
+    const b = m.plan(step(a.id, { repoPath: clone, worktree: true }));
+    const started = await m.startPlanned(b.id, a.id);
+    expect(started.branch).toBe("step-tester");
+    expect(m.buffer(b.id)).toContain(`The branch it follows, "-x", can't lead a branch's name, so its own starts "step".`);
+  });
+
+  it("always leads its branch's name, and refuses one that would be a base branch's", async () => {
+    const { m, clone, a } = await upstream();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const main = m.plan(step(a.id, { title: "Main", repoPath: clone, worktree: true }));
+    expect((await m.startPlanned(main.id, null)).branch).toBe("step-main");
+    const clash = m.plan(step(a.id, { repoPath: clone, worktree: true, base: "feat-tester" }));
+    await expect(m.startPlanned(clash.id, a.id)).rejects.toThrow("“Tester” would start on feat-tester, a base branch's name: rename the step");
+  });
+
+  it("takes a step before it that hasn't started as none: no folder of its to share, no commit of its to start at", async () => {
+    const { m, clone, a } = await upstream();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = m.plan(step(a.id, { title: "S", repoPath: clone, worktree: true }));
+    expect(() => m.plan(step(s.id, { title: "T", sharesFolder: true }))).toThrow("“S” hasn't started, so it has no folder to share yet: give this step a folder of its own");
+    const v = m.plan(step(s.id, { title: "V", repoPath: clone, worktree: true }));
+    const started = await m.startPlanned(v.id, s.id);
+    expect(started.branch).toBe("step-v");
+    expect(git(started.cwd, "rev-parse", "HEAD")).toBe(git(clone, "rev-parse", "HEAD"));
+    expect(m.buffer(v.id)).toContain("“S” hasn't started, so it has no commit to start at.");
+  });
+
+  it("is refused a stack's group, as plan refuses one", async () => {
+    const { m } = await manager();
+    const a = await m.create({ ...agentPane, taskGroup: "5120" });
+    const s = m.plan(step(a.id));
+    expect(() => m.setGroup(s.id, "5120/docs")).toThrow("A not-started step goes in an area, not a stack");
+    expect(m.planned()[0].taskGroup).toBe("5120");
+    m.setGroup(s.id, "5121");
+    expect(m.planned()[0].taskGroup).toBe("5121");
   });
 });

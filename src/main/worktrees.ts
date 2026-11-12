@@ -39,7 +39,7 @@ async function onOrigin(repo: string, branch: string, warn: Warn): Promise<{ has
     return { has: !!(await ownNetworkGit(repo, "ls-remote", ["--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS })), unreachable: false };
   } catch (err) {
     warn(`Origin couldn't be asked whether it has ${branch}, so this went by what was last fetched: ${why(err)}`);
-    return { has: !!(await git(repo, ["branch", "-r", "--list", `origin/${branch}`])), unreachable: true };
+    return { has: !!(await git(repo, ["branch", "-r", "--list", "--", `origin/${branch}`])), unreachable: true };
   }
 }
 
@@ -62,7 +62,7 @@ type StartPoint = { existing: true } | { existing: false; track: boolean; from?:
  * it's origin that didn't answer, as the branch may well be there.
  */
 async function startPoint(repo: string, branch: string, base: string | undefined, mustExist: boolean, warn: Warn, startAt?: string): Promise<StartPoint> {
-  if (await git(repo, ["branch", "--list", branch])) {
+  if (await git(repo, ["branch", "--list", "--", branch])) {
     // a branch that's there already would hold none of the commit it was asked to start at
     if (startAt) throw new Error(`${branch} is there already, so it can't be started at ${startAt.slice(0, 7)}`);
     return { existing: true };
@@ -99,7 +99,7 @@ async function startPoint(repo: string, branch: string, base: string | undefined
     return { existing: false, track: false, from: `origin/${base}` };
   } catch (err) {
     // offline or no origin — fall back to the local base branch, loudly
-    if (!(await git(repo, ["branch", "--list", base]))) throw err;
+    if (!(await git(repo, ["branch", "--list", "--", base]))) throw err;
     warn(`origin/${base} couldn't be fetched, so ${branch} was branched off the local ${base}, which may be behind origin's: ${why(err)}`);
     return { existing: false, track: false, from: base };
   }
@@ -410,6 +410,35 @@ async function inBatches<T, R>(items: T[], size: number, fn: (item: T) => Promis
   const out: R[] = [];
   for (let i = 0; i < items.length; i += size) out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
   return out;
+}
+
+/** Whether `name` is a branch name git takes as one (`check-ref-format --branch`): never one read as an option. */
+export async function isBranchName(repo: string, name: string): Promise<boolean> {
+  if (!name || name.startsWith("-")) return false;
+  return (await git(repo, ["check-ref-format", "--branch", name], { okCodes: [0, 1, 128] })) === name;
+}
+
+/**
+ * Take back what a start that failed made: worktree `folder` and its new `branch`, which holds nothing of its own yet.
+ * Each that can't be removed is logged and thrown, so it's never left behind unsaid.
+ */
+export async function dropNewWorktree(repo: string, folder: string, branch: string): Promise<void> {
+  const problems: string[] = [];
+  if (fs.existsSync(folder)) {
+    try {
+      await removeWorktree(repo, folder);
+    } catch (err) {
+      problems.push(`its worktree ${folder} couldn't be removed: ${why(err)}`);
+    }
+  }
+  if (await git(repo, ["branch", "--list", "--", branch])) {
+    try {
+      await git(repo, ["branch", "-D", branch]);
+    } catch (err) {
+      problems.push(`its branch ${branch} couldn't be deleted: ${why(err)}`);
+    }
+  }
+  if (problems.length) throw new Error(problems.join("; "));
 }
 
 /** Remove a worktree folder (the branch is kept). */

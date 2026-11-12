@@ -13,6 +13,7 @@
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, PlanRequest, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, clearGateTicks, clearsGates, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
+import { tildePath } from "../shared/paths";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, followsBottom, measuredCell } from "../renderer/cachedTerm";
 import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
@@ -1331,6 +1332,26 @@ const sessionsChanged = () => emit("onSessionsChanged", sessions.map((s) => ({ .
 const teamChanged = () => emit("onTeamChanged", JSON.parse(JSON.stringify(team)));
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const byId = (id: string) => sessions.find((s) => s.id === id);
+/**
+ * Where not-started step `p` starts and on which branch, as main's stepPlace says it (the preview has no commits:
+ * 3f9c2a1 stands in for one), or why it can't.
+ */
+function stepStart(p: SessionInfo): { says: string; branch: string | null } | { refused: string } {
+  const titled = (s: SessionInfo) => `“${s.title}”`;
+  if (p.planned?.sharesWith) {
+    const other = byId(p.planned.sharesWith);
+    if (!other) return { refused: `${titled(p)} works in another session's folder, which isn't running in the preview` };
+    const beside = other.status === "dead" ? `, where ${titled(other)} has exited` : `, while ${titled(other)} is ${other.status === "waiting" ? "waiting for you" : other.status}`;
+    return { says: `It starts in ${titled(other)}'s folder, ${tildePath(other.cwd)}${other.branch ? `, on ${other.branch}` : ""}${beside}.`, branch: other.branch ?? null };
+  }
+  const repo = p.repoPath?.split("/").filter(Boolean).pop();
+  if (!repo) return { says: "It starts in your home folder, with no repo.", branch: null };
+  if (!p.planned?.worktree) return { says: `It starts in ${repo}'s checkout, on whatever's out there.`, branch: null };
+  const from = Object.values(wireBook.links).find((w) => w.to === p.id && w.type === "handoff")?.from;
+  const up = from ? byId(from) : undefined;
+  const branch = `${up?.branch ?? "step"}-${stepSlug(p.title)}`;
+  return { says: `It starts in a new worktree, ${branch}, ${up ? `at ${titled(up)}'s commit 3f9c2a1` : `at ${repo}'s HEAD, 3f9c2a1: nothing hands off to it`}.`, branch };
+}
 const later = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(v), ms));
 const suggestQ = new URLSearchParams(location.search).get("suggest");
 const suggestProblem = (): SuggestProblem | null =>
@@ -1431,13 +1452,22 @@ const api: Record<string, (...a: any[]) => any> = {
     }
     return s;
   },
+  // main's sessions:describeStart: where Start now would start a step, as its confirm says it
+  describeStart: async (id: string) => {
+    const p = planned.find((x) => x.id === id);
+    if (!p || byId(id)) return err("It has started already: reopen it instead");
+    const at = stepStart(p);
+    return "refused" in at ? err(at.refused) : at.says;
+  },
   // main's sessions:startPlanned: started under its id, so its wires keep their ends; refused when it isn't one
   startPlanned: async (id: string) => {
     await startLag();
     const p = planned.find((x) => x.id === id);
     if (!p || byId(id)) return err("It has started already: reopen it instead");
+    const at = stepStart(p);
+    if ("refused" in at) return err(at.refused);
     const { planned: _step, ...rest } = p;
-    const next: SessionInfo = { ...rest, status: "working", createdAt: Date.now(), branch: p.planned?.sharesWith ? (byId(p.planned.sharesWith)?.branch ?? null) : stepSlug(p.title) };
+    const next: SessionInfo = { ...rest, status: "working", createdAt: Date.now(), branch: at.branch };
     planned = planned.filter((x) => x.id !== id);
     sessions = [...sessions, next];
     buffers[id] = `${C.dim}(UI preview: the step would start here)${C.reset}\r\n> `;
@@ -6294,7 +6324,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   // ?landscapeGhostAudit (with ?motion=off&lsClosed=y1): ghosts (S6b) drawn at zooms through the cards band and at 45%
   // and 100%. Each ghost: inside its area's patch and clear of another area's name line or header; every row it shows
   // wholly inside it, and its buttons inside their row; the rows it shows the first of its rows (a short one gives up
-  // the last first). Into <script id="mb-landscape-ghost-audit">.
+  // the last first); its kind shown only while its title is whole. Into <script id="mb-landscape-ghost-audit">.
   if (params.has("landscapeGhostAudit")) waitFor(".ls-world .ls-ghost", async () => {
     const out: Record<string, unknown> = {};
     try {
@@ -6307,7 +6337,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const R = (r: DOMRect) => ({ x: r.left, y: r.top, w: r.width, h: r.height });
       const inside = (r: DOMRect, a: DOMRect) => r.left >= a.left - 0.5 && r.top >= a.top - 0.5 && r.right <= a.right + 0.5 && r.bottom <= a.bottom + 0.5;
       const meet = (r: DOMRect, a: DOMRect) => r.left < a.right && a.left < r.right && r.top < a.bottom && a.top < r.bottom;
-      const zooms: { zoom: number; band: string | null; ghosts: Record<string, { area: string; rows: string[]; rect: Rect }> }[] = [];
+      const zooms: { zoom: number; band: string | null; ghosts: Record<string, { area: string; rows: string[]; rect: Rect; kind: boolean; line: string | null }> }[] = [];
       const problems: string[] = [];
       for (const z of [0.1, 0.13, 0.15, 0.2, 0.3, 0.45, 1]) {
         await pinchTo(z);
@@ -6341,7 +6371,13 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
             for (const n of names) if (n.area !== area && meet(rr, n.r)) problems.push(`${at}: its ${r.dataset.row} is under ${n.area}'s name`);
           });
           if (!kept.length) problems.push(`${at}: shows nothing`);
-          ghosts[id] = { area, rows: kept.map((r) => r.dataset.row ?? "?"), rect: R(gr) };
+          // the title wins its head's room: the kind gives way, whole, before the title is cut
+          const title = g.querySelector<HTMLElement>(".lg-title");
+          const kindEl = g.querySelector<HTMLElement>(".lg-kind");
+          const nameEl = g.querySelector<HTMLElement>(".lg-name");
+          const kind = !!kindEl && !!nameEl && shown(kindEl) && inside(kindEl.getBoundingClientRect(), nameEl.getBoundingClientRect());
+          if (title && title.scrollWidth > title.clientWidth + 0.5 && kind) problems.push(`${at}: its title is cut while its kind is shown`);
+          ghosts[id] = { area, rows: kept.map((r) => r.dataset.row ?? "?"), rect: R(gr), kind, line: g.querySelector(".lg-line")?.textContent ?? null };
         }
         zooms.push({ zoom, band, ghosts });
       }

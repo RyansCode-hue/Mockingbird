@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useOpenSettle } from "./answerGuard";
 import { Pick } from "./Menu";
 import { enterConfirms } from "./keys";
 import { titleOf } from "./appModel";
@@ -194,6 +195,36 @@ export function RestartAllDialog({
         </button>
         <button className="primary" onClick={restart} disabled={!!busy || count === 0}>
           {busy ? "restarting…" : count === 0 ? "nothing to restart" : `Restart ${plural(count, "session")}`}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Start now's confirm for not-started step `title`: where it starts (`where`, main's describeStart), and Start. It opens
+ * from a menu row, so a click or keys aimed at the menu don't reach it (useOpenSettle), and Enter starts it only once
+ * pressed for it.
+ */
+export function StartStepDialog({ title, where, onCancel, onStart }: { title: string; where: string; onCancel: () => void; onStart: () => void }) {
+  const head = useRef<HTMLHeadingElement>(null);
+  const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
+  return (
+    <Modal
+      className="modal close-dlg start-step"
+      onClose={onCancel}
+      closeOnBackdrop={!heldOff("settle")}
+      onKeyDown={(e) => e.key === "Enter" && !e.repeat && !heldOff("settle") && enterConfirms(e.target as Element) && (e.preventDefault(), onStart())}
+    >
+      <h3 ref={head}>Start {title} now?</h3>
+      <div className="sub-h">{where} It doesn't wait for its handoff.</div>
+      <div className="row">
+        <span className="kbd foot-hint">⏎ to start</span>
+        <button className="outline" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary" disabled={heldOff("settle")} onClick={onStart}>
+          Start now
         </button>
       </div>
     </Modal>

@@ -6,8 +6,8 @@ import * as path from "path";
 import { WebContents } from "electron";
 import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, stepSlug, ticketIdOf, AgentKind, AGENT_KINDS, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
-import { createWorktree, checkoutBranch } from "./worktrees";
-import { branchesOf, currentBranch, git } from "./git";
+import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
+import { BASE_NAMES, branchesOf, currentBranch, git } from "./git";
 import { uniqueBranch } from "./presets";
 import { samePath } from "./handlers";
 import { adoEnv } from "./ado";
@@ -23,6 +23,7 @@ import { CodexFolderNotice } from "./codexFolderNotice";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
 import { compactBlocker } from "../shared/contextBudget";
+import { tildePath } from "../shared/paths";
 import { isRemotePaneId, type PaneSnapshot } from "../shared/team/livePanes";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
@@ -242,6 +243,17 @@ const BEING_RESUMED = "It's being resumed already";
 const BEING_RELAUNCHED = "It's being reopened already";
 /** Why a not-started step can't be started again, reopened or forgotten while its start is under way (SessionManager.startPlanned). */
 const BEING_STARTED = "It's being started already";
+/** Why a not-started step can't go in a stack's group: a stack holds running sessions' tabs, and a step has none to show. */
+const STEP_NOT_IN_STACK = "A not-started step goes in an area, not a stack";
+/** A session's name as what's said about it quotes it. */
+const titled = (s: Pick<SessionInfo, "title" | "ticketTitle">): string => `“${s.ticketTitle ?? s.title}”`;
+const lowerFirst = (s: string): string => (s.startsWith("“") ? s : s.charAt(0).toLowerCase() + s.slice(1));
+/** What a running session in a folder a step would share is doing, as Start now's confirm says it. */
+const STATUS_WORD: Record<Exclude<SessionStatus, "dead">, string> = { working: "working", waiting: "waiting for you", idle: "idle" };
+/** Where a not-started step starts (SessionManager.stepPlace): create()'s say in it. */
+type StepWhere = Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "useWorktree" | "baseBranch" | "startAt">;
+/** The commit a not-started step starts at, from the step before it (SessionManager.upstreamCommit), or why there's none. */
+type UpstreamCommit = { sha: string; branch: string | null; of: string; dirty: number; gone: boolean } | { why: string };
 
 /** Why not-started step `s` can't be reopened, resumed or restarted: it has no conversation or folder to go back to. */
 export const notStartedWhy = (s: Pick<SessionInfo, "title" | "ticketTitle">): string =>
@@ -373,6 +385,12 @@ export class SessionManager {
   launchInstructions: ((id: string) => string | null) | null = null;
   /** Why a session mustn't run again here (a teammate continues it: team rooms' take-over), or null when it may. */
   relaunchGuard: ((id: string) => string | null) | null = null;
+  /**
+   * Why not-started step `step` mustn't start from session `other` (the folder it shares, or the commit it starts at):
+   * the rules on a handoff between the two as they stand now (WireService.startRefusal: the room line, a copy a
+   * teammate continues), or null when it may. Unset, only relaunchGuard is asked.
+   */
+  startGuard: ((step: string, other: string) => string | null) | null = null;
   /**
    * Makes a conversation free for a relaunch to resume, when the agent's own
    * background sessions hold it (claudeBackground.ts). Returns what the pane
@@ -1294,11 +1312,12 @@ export class SessionManager {
     if (title.length > 120) throw new Error("A step's name is at most 120 characters");
     if (!AGENT_KINDS.includes(req.agent)) throw new Error(`There's no agent ${JSON.stringify(req.agent)}: a step runs Claude or Codex`);
     const group = req.taskGroup?.trim() || null;
-    if (group?.includes("/")) throw new Error("A not-started step goes in an area, not a stack");
+    if (group?.includes("/")) throw new Error(STEP_NOT_IN_STACK);
     let repoPath: string | null;
     let cwd: string;
     let sharesWith: string | undefined;
     if (req.sharesFolder) {
+      if (up.planned) throw new Error(`${titled(up)} hasn't started, so it has no folder to share yet: give this step a folder of its own`);
       if (!fs.existsSync(up.cwd)) throw new Error(`“${up.ticketTitle ?? up.title}”'s folder, ${up.cwd}, isn't there any more, so a step can't work in it`);
       ({ repoPath, cwd } = up);
       sharesWith = up.id;
@@ -1346,97 +1365,180 @@ export class SessionManager {
 
   /**
    * Start not-started step `id` under its id, so its wires keep their ends: create() with reuseId, the running session's
-   * record taking its place. Its folder is made now: the folder it shares (`planned.sharesWith`) as it stands; else a
-   * worktree of its own on a new branch named after `upstream`'s (unique among the repo's), at the commit `upstream`'s
-   * folder is on now, never origin's, when that's in its repo, otherwise cut from its base as any new worktree is, the
-   * pane saying why. Refused, nothing started and its record kept, when it isn't a not-started step of this Mac's, is
-   * being started already, or a teammate continues it.
+   * record taking its place, where `stepPlace` says, the pane saying how it came to start there. A worktree made for it
+   * is taken back when the start then fails, so starting it again gets the same branch. Refused, nothing started and
+   * its record kept, when it can't be started now (`startable`) or where it would start can't be used (`stepPlace`).
    */
   async startPlanned(id: string, upstream?: string | null): Promise<SessionInfo> {
+    const rec = this.startable(id);
+    this.starting.add(id);
+    try {
+      const { where, notes } = await this.stepPlace(rec, upstream ?? null);
+      const repo = where.useWorktree && where.repoPath ? expandHome(where.repoPath) : null;
+      const made = repo && where.branchName ? { repo, folder: path.join(worktreeRoot(repo), where.branchName), branch: where.branchName } : null;
+      const fresh = !!made && !fs.existsSync(made.folder);
+      try {
+        return await this.create(
+          {
+            ...where,
+            ticketId: rec.ticketId ?? undefined,
+            ticketTitle: rec.ticketTitle ?? undefined,
+            taskGroup: rec.taskGroup ?? undefined,
+            extraDirs: rec.extraDirs,
+            title: rec.title,
+            agent: rec.agent ?? "claude",
+            model: rec.model ?? undefined,
+            effort: rec.effort ?? undefined,
+            ...(rec.planned!.prompt ? { initialPrompt: rec.planned!.prompt } : {}),
+            reuseId: id,
+          },
+          { notice: notes.join("\n") || undefined }
+        );
+      } catch (err) {
+        if (made && fresh) await this.takeBackStart(id, made, err);
+        throw err;
+      }
+    } finally {
+      this.starting.delete(id);
+    }
+  }
+
+  /** Where not-started step `id` would start now, as its Start now confirm says it; refused as starting it would be. */
+  async describeStart(id: string, upstream?: string | null): Promise<string> {
+    return (await this.stepPlace(this.startable(id), upstream ?? null)).says;
+  }
+
+  /** Not-started step `id`'s record, when it may be started now; else why not, thrown. */
+  private startable(id: string): SessionInfo {
     this.ownOnly(id, "start it");
     this.refuseWhileQuitting();
     this.notResuming(id);
     if (this.live.has(id)) throw new Error("It's running already");
     const rec = this.recordOf(id);
     if (!rec) throw new Error("Its saved record is gone, so there's nothing to start");
-    const step = rec.planned;
-    if (!step) throw new Error("It has started already: reopen it instead");
+    if (!rec.planned) throw new Error("It has started already: reopen it instead");
     this.mayRun(id);
-    const name = rec.ticketTitle ?? rec.title;
-    this.starting.add(id);
+    return rec;
+  }
+
+  /** A failed start's worktree and branch, made for it, removed; one that can't be is said with the start's failure. */
+  private async takeBackStart(id: string, made: { repo: string; folder: string; branch: string }, failed: unknown): Promise<void> {
     try {
-      const notes: string[] = [];
-      let where: Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "useWorktree" | "baseBranch" | "startAt">;
-      if (step.sharesWith) {
-        const other = this.live.get(step.sharesWith)?.info ?? this.recordOf(step.sharesWith);
-        if (!other) throw new Error(`“${name}” works in another session's folder, and that session was forgotten: forget this step and add it again`);
-        if (!fs.existsSync(other.cwd)) throw new Error(`“${name}” works in “${other.ticketTitle ?? other.title}”'s folder, ${other.cwd}, which isn't there any more`);
-        where = { repoPath: other.repoPath, cwd: other.cwd, branchName: other.branch ?? undefined, useWorktree: false };
-      } else if (step.worktree && rec.repoPath) {
-        const repo = expandHome(rec.repoPath);
-        const from = await this.upstreamCommit(repo, upstream ?? null, notes);
-        const { local, origin } = await branchesOf(repo);
-        const lead = from?.branch ?? null;
-        where = {
-          repoPath: rec.repoPath,
-          useWorktree: true,
-          branchName: uniqueBranch(lead ? `${lead}-${stepSlug(rec.title)}` : stepSlug(rec.title), [...local, ...origin]),
-          ...(from ? { startAt: from.sha } : step.base ? { baseBranch: step.base } : {}),
-        };
-      } else where = { repoPath: rec.repoPath, useWorktree: false };
-      return await this.create(
-        {
-          ...where,
-          ticketId: rec.ticketId ?? undefined,
-          ticketTitle: rec.ticketTitle ?? undefined,
-          taskGroup: rec.taskGroup ?? undefined,
-          extraDirs: rec.extraDirs,
-          title: rec.title,
-          agent: rec.agent ?? "claude",
-          model: rec.model ?? undefined,
-          effort: rec.effort ?? undefined,
-          ...(step.prompt ? { initialPrompt: step.prompt } : {}),
-          reuseId: id,
-        },
-        { notice: notes.join("\n") || undefined }
-      );
-    } finally {
-      this.starting.delete(id);
+      await dropNewWorktree(made.repo, made.folder, made.branch);
+    } catch (err) {
+      console.error(`[sessions] ${id}'s start failed, and what it made couldn't all be taken back:`, err);
+      throw new Error(`${failed instanceof Error ? failed.message : String(failed)}. What it made is still there: ${err instanceof Error ? err.message : err}`, { cause: failed });
     }
   }
 
   /**
-   * The commit a not-started step's new worktree in `repo` starts at: the one upstream session `upId`'s folder is on now
-   * (its branch's tip when its folder is gone), with that branch. Null when there's none to start at in `repo` (no
-   * upstream, one in another repository or none, its folder and branch gone), each said in `notes` for the pane. Throws
-   * when the commit can't be read.
+   * Where not-started step `rec` starts now, the notes its pane shows, and what its Start now confirm says:
+   * - the folder it shares (`sharesWith`, decision 7), on its branch as it stands;
+   * - else a worktree of its own on a new branch led by the step before's (never a base branch's name): at the commit
+   *   `upId`'s folder is on now, never origin's, when that's in its repo; otherwise cut from its base, or at the repo's
+   *   HEAD with none, saying why;
+   * - else its repo's checkout, or home with no repo.
+   * Refused, nothing made, when what it starts from is across a team room's line from it or continued by a teammate
+   * (startGuard, relaunchGuard), not started itself, forgotten, or gone.
    */
-  private async upstreamCommit(repo: string, upId: string | null, notes: string[]): Promise<{ sha: string; branch: string | null } | null> {
-    if (!upId) return null;
-    const up = this.live.get(upId)?.info ?? this.recordOf(upId);
-    const upName = up ? `“${up.ticketTitle ?? up.title}”` : "the step before it";
-    const cut = (why: string) => {
-      notes.push(`${why}, so this started from its base as a new worktree does.`);
-      console.warn(`[sessions] a not-started step after ${upId} in ${repo}: ${why}`);
-      return null;
+  private async stepPlace(rec: SessionInfo, upId: string | null): Promise<{ where: StepWhere; notes: string[]; says: string }> {
+    const step = rec.planned!;
+    const name = titled(rec);
+    const mayUse = (other: SessionInfo, what: string) => {
+      const why = this.startGuard?.(rec.id, other.id) ?? this.relaunchGuard?.(other.id) ?? null;
+      if (why) throw new Error(`${name} can't start ${what}: ${why}`);
     };
-    if (!up) return cut("The step before it was forgotten");
-    if (!up.repoPath || !samePath(expandHome(up.repoPath), repo)) return cut(`${upName} works ${up.repoPath ? "in another repository" : "outside any repository"}`);
+    if (step.sharesWith) {
+      const other = this.live.get(step.sharesWith)?.info ?? this.recordOf(step.sharesWith);
+      if (!other) throw new Error(`${name} works in another session's folder, and that session was forgotten: forget this step and add it again`);
+      if (other.planned) throw new Error(`${name} works in ${titled(other)}'s folder, and ${titled(other)} hasn't started: start it first`);
+      mayUse(other, `in ${titled(other)}'s folder`);
+      if (!fs.existsSync(other.cwd)) throw new Error(`${name} works in ${titled(other)}'s folder, ${other.cwd}, which isn't there any more`);
+      const status = this.live.get(other.id)?.info.status;
+      const beside = status ? (status === "dead" ? `, where ${titled(other)} has exited` : `, while ${titled(other)} is ${STATUS_WORD[status]}`) : "";
+      return {
+        where: { repoPath: other.repoPath, cwd: other.cwd, branchName: other.branch ?? undefined, useWorktree: false },
+        notes: [],
+        says: `It starts in ${titled(other)}'s folder, ${tildePath(other.cwd)}${other.branch ? `, on ${other.branch}` : ""}${beside}.`,
+      };
+    }
+    if (!step.worktree || !rec.repoPath) {
+      return {
+        where: { repoPath: rec.repoPath, useWorktree: false },
+        notes: [],
+        says: rec.repoPath ? `It starts in ${path.basename(expandHome(rec.repoPath))}'s checkout, on whatever's out there.` : "It starts in your home folder, with no repo.",
+      };
+    }
+    const repo = expandHome(rec.repoPath);
+    const notes: string[] = [];
+    const from = await this.upstreamCommit(repo, upId, mayUse);
+    let at: Pick<NewSessionRequest, "startAt" | "baseBranch">;
+    let how: string;
+    if ("sha" in from) {
+      const left = from.dirty === 1 ? ": its uncommitted file isn't carried" : from.dirty ? `: its ${from.dirty} uncommitted files aren't carried` : "";
+      how = from.gone ? `at ${from.of}'s branch ${from.branch} (${from.sha.slice(0, 7)}): its folder is gone` : `at ${from.of}'s commit ${from.sha.slice(0, 7)}${left}`;
+      at = { startAt: from.sha };
+    } else {
+      console.warn(`[sessions] not-started step ${rec.id} in ${repo}: ${from.why}`);
+      if (step.base) {
+        how = `cut from ${step.base}, as a new worktree is: ${lowerFirst(from.why)}`;
+        at = { baseBranch: step.base };
+      } else {
+        const head = await git(repo, ["rev-parse", "--verify", "HEAD"]);
+        how = `at ${path.basename(repo)}'s HEAD, ${head.slice(0, 7)}: ${lowerFirst(from.why)}`;
+        at = { startAt: head };
+      }
+    }
+    notes.push(`Started ${how}.`);
+    const branch = await this.stepBranch(repo, rec, "sha" in from ? from.branch : null, notes);
+    return { where: { repoPath: rec.repoPath, useWorktree: true, branchName: branch, ...at }, notes, says: `It starts in a new worktree, ${branch}, ${how}.` };
+  }
+
+  /**
+   * A not-started step's new branch in `repo`: the step's name led by the branch of the step before (`lead`), or by
+   * "step" with none or one git wouldn't take as a branch's name (said in `notes`), unique among the repo's. Refused
+   * when that would be a base branch's name.
+   */
+  private async stepBranch(repo: string, rec: SessionInfo, lead: string | null, notes: string[]): Promise<string> {
+    let head = lead;
+    if (head && !(await isBranchName(repo, head))) {
+      notes.push(`The branch it follows, ${JSON.stringify(head)}, can't lead a branch's name, so its own starts "step".`);
+      head = null;
+    }
+    const name = `${head ?? "step"}-${stepSlug(rec.title)}`;
+    const bases = [...BASE_NAMES.dev, ...BASE_NAMES.main, ...(rec.planned?.base ? [rec.planned.base] : [])].map((b) => b.toLowerCase());
+    if (bases.includes(name.toLowerCase())) throw new Error(`${titled(rec)} would start on ${name}, a base branch's name: rename the step`);
+    const { local, origin } = await branchesOf(repo);
+    return uniqueBranch(name, [...local, ...origin]);
+  }
+
+  /**
+   * The commit a not-started step's new worktree in `repo` starts at: the one upstream session `upId`'s folder is on now
+   * (its branch's tip when its folder is gone, `gone`), with that branch and how many files there are uncommitted. Else
+   * why there's none to start at in `repo`: nothing hands off to it, the step before it was forgotten or hasn't started
+   * itself, works in another repository or none, or its folder and branch are gone. `mayUse` refuses (throws) an
+   * upstream whose commit mustn't be used; so does a commit that can't be read.
+   */
+  private async upstreamCommit(repo: string, upId: string | null, mayUse: (up: SessionInfo, what: string) => void): Promise<UpstreamCommit> {
+    if (!upId) return { why: "Nothing hands off to it" };
+    const up = this.live.get(upId)?.info ?? this.recordOf(upId);
+    if (!up) return { why: "The step before it was forgotten" };
+    const of = titled(up);
+    if (up.planned) return { why: `${of} hasn't started, so it has no commit to start at` };
+    if (!up.repoPath || !samePath(expandHome(up.repoPath), repo)) return { why: `${of} works ${up.repoPath ? "in another repository" : "outside any repository"}` };
+    mayUse(up, `from ${of}'s commit`);
     try {
       if (fs.existsSync(up.cwd)) {
         const sha = await git(up.cwd, ["rev-parse", "--verify", "HEAD"]);
         const dirty = (await git(up.cwd, ["status", "--porcelain"])).split("\n").filter(Boolean).length;
-        const left = dirty === 1 ? ": its uncommitted file isn't here" : dirty ? `: its ${dirty} uncommitted files aren't here` : "";
-        notes.push(`Started at ${upName}'s commit ${sha.slice(0, 7)}${left}.`);
-        return { sha, branch: await currentBranch(up.cwd) };
+        return { sha, branch: await currentBranch(up.cwd), of, dirty, gone: false };
       }
-      if (!up.branch) return cut(`${upName}'s folder is gone`);
+      if (!up.branch) return { why: `${of}'s folder is gone` };
       const sha = await git(repo, ["rev-parse", "--verify", "-q", `refs/heads/${up.branch}`], { okCodes: [0, 1] });
-      if (!sha) return cut(`${upName}'s folder and its branch, ${up.branch}, are gone`);
-      notes.push(`Started at ${upName}'s branch ${up.branch} (${sha.slice(0, 7)}): its folder is gone.`);
-      return { sha, branch: up.branch };
+      if (!sha) return { why: `${of}'s folder and its branch, ${up.branch}, are gone` };
+      return { sha, branch: up.branch, of, dirty: 0, gone: true };
     } catch (err) {
-      throw new Error(`Couldn't read the commit ${upName} is on: ${err instanceof Error ? err.message : err}`, { cause: err });
+      throw new Error(`Couldn't read the commit ${of} is on: ${err instanceof Error ? err.message : err}`, { cause: err });
     }
   }
 
@@ -1541,6 +1643,7 @@ export class SessionManager {
     const g = group?.trim() || null;
     const s = this.live.get(id);
     if (g && this.roomOfGroup?.(g) && (s?.info ?? this.recordOf(id))?.role === "tasks") throw new Error(`${HELPDESK_IN_ROOM}.`);
+    if (g?.includes("/") && !s && this.recordOf(id)?.planned) throw new Error(STEP_NOT_IN_STACK);
     if (s) {
       s.info.taskGroup = g;
       this.store.upsertSession(s.info);

@@ -431,11 +431,11 @@ describe("a ghost's actions", () => {
 });
 
 describe("a step not started yet's actions", () => {
-  it("are Start now, first and primary, then Forget: never Reopen; both off while either is under way", () => {
+  it("are Start now…, first and primary (it asks first), then Forget: never Reopen; both off while either is under way", () => {
     const e = { busy: false, start: vi.fn(), forget: vi.fn() };
     const acts = plannedActions(e);
     expect(keys(acts)).toEqual(["start", "forget"]);
-    expect(actionOf(acts, "start")).toMatchObject({ primary: true, label: "Start now" });
+    expect(actionOf(acts, "start")).toMatchObject({ primary: true, label: "Start now", menuLabel: "Start now…" });
     expect(actionOf(acts, "forget")).toMatchObject({ danger: true, menuLabel: "Forget it" });
     usable(acts, "start")!.onPick();
     usable(acts, "forget")!.onPick();

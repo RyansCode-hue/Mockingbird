@@ -26,7 +26,8 @@
  * - =fresh (with ?lsSpikeGone): Start fresh from Spike's ghost, its handoff from Fixtures moved to the fresh session, or
  *   with `&freshAs=terminal` refused, gone with Spike and said.
  * - =step (with ?lsPlanned, at 100%): W8's not-started Tester and Add next step, from a handle clicked and from one
- *   dragged into empty space, the dialog's guards against a burst's key and an early click, and Start now (stepAudit).
+ *   dragged into empty space, the dialog's guards against a burst's key and an early click, its ⋯ with Enter held, and
+ *   Start now…'s confirm (stepAudit).
  *
  * W4c's, the send popover (with ?lsGates for the gates `gateBoardBook` sets):
  * - =send, =gatekeys and =dbl (at 100%): Send and Not yet, and the clicks and keys they take or don't;
@@ -39,7 +40,7 @@
 import type { Area, Landscape, Rect } from "../shared/landscape";
 import type { SessionInfo, TicketPipeline } from "../shared/types";
 import { newWire, type MergeView, type Wire, type WireBook } from "../shared/wires";
-import { drive } from "./needsYouAudit";
+import { drive, type Asked } from "./needsYouAudit";
 
 export const WIRE_AREA = "5120";
 const DIR = "5120-donor-export";
@@ -1151,14 +1152,32 @@ async function stepAudit(env: WiresAuditEnv, out: Record<string, unknown>): Prom
   await drive([{ mouse: { ...mid(handleOf("dev")), clickCount: 1 } }]);
   await sleep(300);
   out.terminal = { dialog: !!dialog(), note: noteNow(), plan: since(mark, "planSession") };
-  // Tester started from its menu: a workspace in its place, its card gone
+  // Tester's ⋯ by the keyboard with its Enter held, as the keyboard repeats it: the menu opens, and the repeats run
+  // nothing in it, nor ask anything
+  const confirm = () => document.querySelector<HTMLElement>(".modal.start-step:not(.mb-ghost)");
+  const confirmButton = (label: string) => [...(confirm()?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((b) => b.textContent === label) ?? null;
   await sleep(600);
+  mark = env.calls.length;
+  ghostOf(W("tester"))?.querySelector<HTMLElement>("button.ls-more")?.focus();
+  const repeats: Asked[] = Array.from({ length: 12 }, (): Asked[] => [{ key: "Enter", hold: "down", repeat: true }, { pause: 35 }]).flat();
+  await drive([{ key: "Enter", hold: "down" }, { pause: 350 }, ...repeats, { key: "Enter", hold: "up" }]);
+  await sleep(300);
+  out.held = { menu: menuNow(), row: document.activeElement?.closest(".mb-ctx") ? (document.activeElement.textContent ?? null) : null, confirm: !!confirm(), asked: since(mark, "describeStart").length, start: since(mark, "startPlanned").length };
+  await drive([{ key: "Escape" }]);
+  // Start now… from its right-click: a confirm saying where it starts, which takes no click straight after it opens
+  await sleep(1100);
   mark = env.calls.length;
   await drive([{ mouse: { ...mid(ghostOf(W("tester"))?.querySelector(".lg-line")), clickCount: 1, button: "right" } }]);
   await sleep(300);
-  await drive([{ mouse: { ...mid(menuRow("Start now")), clickCount: 1 } }]);
+  await drive([{ mouse: { ...mid(menuRow("Start now…")), clickCount: 1 } }]);
+  const asked = { open: !!confirm(), head: confirm()?.querySelector("h3")?.textContent ?? null, says: confirm()?.querySelector(".sub-h")?.textContent ?? null, off: confirmButton("Start now")?.disabled ?? null };
+  await drive([{ mouse: { ...mid(confirmButton("Start now")), clickCount: 1 } }]);
+  out.confirm = { ...asked, early: { open: !!confirm(), start: since(mark, "startPlanned").length } };
+  // Enter, pressed for it once it has settled: started, a workspace in its card's place
+  await sleep(700);
+  await drive([{ key: "Enter" }]);
   await sleep(1200);
-  out.started = { start: since(mark, "startPlanned"), ghost: !!ghostOf(W("tester")), node: !!document.querySelector(`.ls-world .ls-node[data-front="${W("tester")}"]`) };
+  out.started = { asked: since(mark, "describeStart"), start: since(mark, "startPlanned"), confirm: !!confirm(), ghost: !!ghostOf(W("tester")), node: !!document.querySelector(`.ls-world .ls-node[data-front="${W("tester")}"]`) };
 }
 
 /** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */

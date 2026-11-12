@@ -3,10 +3,11 @@ import * as path from "path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
-import { SessionManager } from "../src/main/sessions";
+import { SessionManager, type RoomLaunch } from "../src/main/sessions";
 import { AUTOMATIC_HOPS, START_WAIT_MS, WireDelivery, type FrameWire, type OfferHow } from "../src/main/wireDelivery";
 import { WireTools, type PendingsMade } from "../src/main/wireTools";
 import { WireService } from "../src/main/wires";
+import { outsideRoomSandbox } from "../src/shared/team/livePanes";
 import type { SessionInfo } from "../src/shared/types";
 import { gateOf, ROOM_LINE, WIRE_BODY_MAX, type FinishedStep, type FinishOutcome, type SendReply, type Wire, type WireReply, type WireVerdict } from "../src/shared/wires";
 import { askAs, startServer } from "./mcpClient";
@@ -63,7 +64,16 @@ interface Setup {
   reopen?: (id: string, m: SessionManager) => Promise<SessionInfo | null>;
   /** Each new wire's id, in turn; random ones otherwise. */
   ids?: string[];
+  /**
+   * Room launches as team rooms make them: a Claude pane in group "room" starts in the room's sandbox, which confirms
+   * once its marker and its start report in and its check (`probes`, answered by the test) says it's on. `rooms` says
+   * which room each session is shared in.
+   */
+  roomSandboxes?: boolean;
 }
+
+const ROOM_MARKER = "ab".repeat(16);
+const roomLaunch: RoomLaunch = { env: {}, denyReads: [], codexPermissions: [], claudeSettings: { sandbox: { enabled: true } }, instructions: null, allowTools: [], inline: false, guards: { secrets: true, coauthors: true }, sandboxMarker: ROOM_MARKER, agentEnv: {}, codexFolderNotice: false };
 
 function setup(o: Setup = {}) {
   const dir = tempDir("delivery");
@@ -93,6 +103,12 @@ function setup(o: Setup = {}) {
   const rooms: Record<string, string> = {};
   const takenOver: Record<string, string> = {};
   const ids = [...(o.ids ?? [])];
+  const probes: ((on: boolean) => void)[] = [];
+  if (o.roomSandboxes) {
+    m.readVersionAt = async () => "2.1.400";
+    m.sandboxProbe = () => new Promise((resolve) => void probes.push((on) => resolve(on ? { ok: true, why: null, log: "on" } : { ok: false, why: "its sandbox was off", log: "off" })));
+    m.roomLaunch = async (l) => (l.group === "room" && l.agent === "claude" ? roomLaunch : null);
+  }
   const service: WireService = new WireService({
     store,
     sessions: m,
@@ -100,6 +116,7 @@ function setup(o: Setup = {}) {
     takenOver: (id) => (takenOver[id] ? `${takenOver[id]} — take it back rather than wiring it` : null),
     log,
     delivery: { withdraw: (id, w) => d.withdraw(id, w), restoring: (w) => d.restoring(w), restored: (id) => d.restored(id) },
+    ...(o.roomSandboxes ? { outsideSandbox: (id: string) => !!rooms[id] && m.list().some((s) => s.id === id && outsideRoomSandbox(s.agent, m.guardsOf(id))) } : {}),
     ...(o.ids ? { newId: () => ids.shift() ?? `w${Math.random().toString(16).slice(2, 9)}` } : {}),
   });
   const told: { id: string; title: string; body: string }[] = [];
@@ -190,7 +207,14 @@ function setup(o: Setup = {}) {
   };
   /** A step not started yet that follows `after` (W8), by itself in its own folder. */
   const planned = (after: string, title: string) => m.plan({ after, title, agent: "claude", repoPath: null, worktree: false, taskGroup: null });
-  return { dir, file, m, store, service, d, tools, finishing, made, rooms, takenOver, told, logged, opts, reopened, stepsStarted, pane, planned, ptyOf, idle, add, book, wireOf, gate, offer, onDisk, placeGhost };
+  /** Room pane `id`'s sandbox reporting in as it starts: its marker, its start, then its check's answer. */
+  const roomStarts = async (id: string, on = true) => {
+    m.roomSandboxReported(id, ROOM_MARKER, false);
+    idle(id, { started: true });
+    probes.shift()!(on);
+    await vi.advanceTimersByTimeAsync(0);
+  };
+  return { dir, file, m, store, service, d, tools, finishing, made, rooms, takenOver, told, logged, opts, reopened, stepsStarted, pane, planned, ptyOf, idle, add, book, wireOf, gate, offer, onDisk, placeGhost, probes, roomStarts };
 }
 
 const refusal = (r: WireReply | SendReply | { refused: string } | { offered: unknown }) => ("refused" in r ? r.refused : `not refused: ${JSON.stringify(r).slice(0, 200)}`);
@@ -440,6 +464,98 @@ describe("a person's Send, by where the other end is", () => {
     expect(refusal(await t.d.send(t.w, t.p, "  "))).toMatch(/nothing to send/);
     expect(refusal(await t.d.send(t.w, t.p, "x".repeat(WIRE_BODY_MAX + 1)))).toBe(`It's ${WIRE_BODY_MAX + 1} characters; the limit is ${WIRE_BODY_MAX}.`);
     expect(refusal(await t.d.send(t.w, t.p, 42))).toMatch(/isn't text/);
+  });
+});
+
+describe("a Send that starts its other end in a room: nothing crosses until its sandbox confirms", () => {
+  /** Until `cond` holds, as what a start reads off disk settles; fake time doesn't move. */
+  const settled = async (cond: () => boolean) => {
+    for (let i = 0; i < 500 && !cond(); i++) await new Promise((r) => setImmediate(r));
+    expect(cond()).toBe(true);
+  };
+  /** Builder in room R1 with its sandbox on, and a handoff from it with something waiting to the session `make` makes. */
+  async function inRoom(make: (t: ReturnType<typeof setup>, a: SessionInfo) => Promise<SessionInfo> | SessionInfo, o: Setup = {}) {
+    const t = setup({ ...o, roomSandboxes: true });
+    const a = await t.pane("Builder", { taskGroup: "room" });
+    t.rooms[a.id] = "R1";
+    await t.roomStarts(a.id);
+    const b = await make(t, a);
+    t.rooms[b.id] = "R1";
+    const w = t.add(a.id, b.id);
+    const p = await t.offer(w);
+    return { ...t, a, b, w, p };
+  }
+  const step = (t: ReturnType<typeof setup>, a: SessionInfo) => t.m.plan({ after: a.id, title: "Tester", agent: "claude", repoPath: null, worktree: false, taskGroup: "room" });
+  const closed = async (t: ReturnType<typeof setup>) => {
+    const b = await t.pane("Reviewer", { taskGroup: "room" });
+    t.rooms[b.id] = "R1";
+    await t.roomStarts(b.id);
+    return b;
+  };
+
+  it("a step not started yet: started, held while its sandbox reports in, then sent once it's confirmed", async () => {
+    const t = await inRoom(step);
+    const sending = t.d.send(t.w, t.p, "the summary");
+    await settled(() => t.m.guardsOf(t.b.id)?.starting === true);
+    expect(t.stepsStarted).toEqual([{ id: t.b.id, from: t.a.id }]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(t.wireOf(t.w).delivery).toMatchObject({ id: t.p, state: "queued" });
+    expect(t.ptyOf(t.b.id).writes).toEqual([]);
+    await t.roomStarts(t.b.id);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await sending).not.toHaveProperty("refused");
+    await vi.advanceTimersByTimeAsync(1670);
+    expect(t.ptyOf(t.b.id).writes[0]).toBe("|[sent from Builder to Tester] the summary|");
+    expect(t.wireOf(t.w).delivery!.state).toBe("sent");
+  });
+
+  it("reopened from closed: held while its sandbox reports in, then sent once it's confirmed", async () => {
+    const t = await inRoom(closed);
+    t.m.kill(t.b.id, false);
+    t.placeGhost(t.b.id, "Reviewer");
+    const sending = t.d.send(t.w, t.p, "the summary", { start: true });
+    await settled(() => t.m.guardsOf(t.b.id)?.starting === true);
+    expect(t.reopened).toEqual([t.b.id]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(t.ptyOf(t.b.id).writes).toEqual([]);
+    await t.roomStarts(t.b.id);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await sending).not.toHaveProperty("refused");
+    await vi.advanceTimersByTimeAsync(1670);
+    expect(t.ptyOf(t.b.id).writes[0]).toBe("|[sent from Builder to Reviewer] the summary|");
+    expect(t.wireOf(t.w).delivery!.state).toBe("sent");
+  });
+
+  it("its sandbox not confirming: failed saying so, nothing pasted, ready to send again", async () => {
+    const t = await inRoom(step);
+    const sending = t.d.send(t.w, t.p, "the summary");
+    await settled(() => t.m.guardsOf(t.b.id)?.starting === true);
+    await t.roomStarts(t.b.id, false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refusal(await sending)).toBe("“Tester” started, but its sandbox didn't confirm, so nothing crosses its team room's line to it and nothing was sent: restart it in the room, then send this again.");
+    expect(t.wireOf(t.w).delivery).toMatchObject({ id: t.p, state: "failed", why: expect.stringMatching(/its sandbox didn't confirm/) });
+    await vi.advanceTimersByTimeAsync(1520);
+    expect(t.ptyOf(t.b.id).writes).toEqual([]);
+  });
+
+  it(`a sandbox still reporting in ${START_WAIT_MS / 1000} s after the Send: failed saying so; sent again once it's confirmed`, async () => {
+    // the reopen itself takes some of the wait, as a slow start does
+    const t = await inRoom(closed, { reopen: async (id, m) => (await new Promise((r) => setTimeout(r, 10_000)), m.relaunch(id)) });
+    t.m.kill(t.b.id, false);
+    t.placeGhost(t.b.id, "Reviewer");
+    const sending = t.d.send(t.w, t.p, "the summary", { start: true });
+    await settled(() => t.reopened.length === 1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await settled(() => t.m.guardsOf(t.b.id)?.starting === true);
+    await vi.advanceTimersByTimeAsync(START_WAIT_MS - 10_000 + 200);
+    expect(refusal(await sending)).toBe(`“Reviewer” started, but its team room's sandbox hadn't confirmed within ${START_WAIT_MS / 1000} s, so nothing was sent: send it again once it has.`);
+    await t.roomStarts(t.b.id);
+    await vi.advanceTimersByTimeAsync(1520);
+    expect(t.ptyOf(t.b.id).writes).toEqual([]);
+    expect(await t.d.send(t.w, t.p, "the summary")).not.toHaveProperty("refused");
+    await vi.advanceTimersByTimeAsync(1670);
+    expect(t.ptyOf(t.b.id).writes[0]).toBe("|[sent from Builder to Reviewer] the summary|");
+    expect(t.wireOf(t.w).delivery!.state).toBe("sent");
   });
 });
 
