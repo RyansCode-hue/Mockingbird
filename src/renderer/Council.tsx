@@ -166,7 +166,7 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
       <h2>New council</h2>
       <p className="set-lede">
         Pick the models, describe the idea, and they'll discuss it in turns. They can read a repo for context, but nothing is
-        changed until you approve a plan — then one model implements it in a normal session on a new branch.
+        changed until you approve a plan — then an Orchestrator on a new branch proposes the workspaces to build it, for you to lay out.
       </p>
       <label>Repository <span className="wi-note">optional — pick one to let models read the code</span></label>
       <RepoPick none="No repository — ideas only" value={repo} onChange={setRepo} />
@@ -350,7 +350,7 @@ function ApproveButton({ room, m, call }: { room: CollabRoom; m: CollabMessage; 
   return (
     <button
       className="collab-approve"
-      title="Approve this as the plan — then a model can implement it"
+      title="Approve this as the plan — then an Orchestrator can implement it"
       onClick={(e) => {
         e.stopPropagation();
         call("approve", () => window.mb.collabApprove(room.id, m.id));
@@ -662,7 +662,9 @@ function Inspector({
             <div className="ins-actions">
               {planMsg && <button className="link" onClick={() => onJump(planMsg.id)}>Show the plan</button>}
               {room.implementedIn ? (
-                <button className="outline" onClick={() => onOpenSession(room.implementedIn!)}>Open the implementing session</button>
+                <button className="outline council-orch-open" title="The plan's Orchestrator, in its Council's own area on the landscape" onClick={() => onOpenSession(room.implementedIn!)}>
+                  Open the Orchestrator
+                </button>
               ) : room.plan.approved ? (
                 room.repoPath ? (
                   <ImplementMenu
@@ -725,14 +727,14 @@ function SynthMenu({ room, busy, onPick }: { room: CollabRoom; busy: boolean; on
   );
 }
 
-/** One implementing session per plan: the menu stays shut while one is being started. */
+/** One Orchestrator per plan: the menu stays shut while one is being started. */
 function ImplementMenu({ room, busy, onPick }: { room: CollabRoom; busy: boolean; onPick: (key: string) => void }) {
   return (
     <MenuButton
-      label={busy ? "Starting the session…" : "Implement with ▾"}
-      className="primary"
+      label={busy ? "Starting the Orchestrator…" : "Implement via Orchestrator ▾"}
+      className="primary council-implement"
       disabled={busy}
-      title="Start a session that makes the changes, on a new branch in its own worktree"
+      title="Start an Orchestrator with the model you pick, on a new branch in its own worktree: it reads the plan and the code, and proposes the workspaces to build it. Nothing more is made until you lay its plan out."
       items={room.participants
         .filter((p) => !p.removed)
         .map((m) => ({ key: m.key, label: `${m.label}${m.effort ? ` · ${m.effort}` : ""}`, onPick: () => onPick(m.key) }))}

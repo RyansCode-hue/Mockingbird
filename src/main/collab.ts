@@ -15,7 +15,9 @@ import type {
   NewSessionRequest,
   SessionInfo,
 } from "../shared/types";
-import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, SEAT_PALETTE_SIZE } from "../shared/types";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, groupKey, SEAT_PALETTE_SIZE } from "../shared/types";
+import { councilKickoff } from "../shared/plans";
+import { oneLine } from "../shared/team/agentText";
 import { MB_DIR } from "./store";
 import { writeFileAtomic } from "./fileOps";
 import { claudeRoomSettings } from "./claudeRoomSandbox";
@@ -42,6 +44,9 @@ export const COLLAB_EFFORTS: Record<AgentKind, string[]> = {
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["minimal", "low", "medium", "high", "xhigh"],
 };
+
+/** A Council's own area, where its Orchestrator and the steps of its plan go: one path segment, so a "/" in its title is a "-". */
+export const councilArea = (title: string): string => groupKey(`Council — ${oneLine(title, 80)}`);
 
 const DEFAULT_ROUNDS: Record<CollabMode, number> = { step: 1, auto: 3, consensus: 6 };
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]{0,80}$/;
@@ -217,7 +222,7 @@ export class CollabRooms {
   private aborts = new Map<string, AbortController>();
   private lookups = new Map<string, number>(); // `${room}.${seat}.${round}` → questions asked this turn
   private waiting = new Map<string, (answer: "allow" | "deny", why: string) => void>(); // permission request id → its turn
-  private implementing = new Set<string>(); // rooms whose implementing session is being started
+  private implementing = new Set<string>(); // rooms whose Orchestrator is being started
   private splitting = new Map<string, AbortController>(); // rooms whose plan a model is splitting into tickets
   private problems: CollabLoadProblem[] = [];
 
@@ -702,16 +707,21 @@ export class CollabRooms {
     return room;
   }
 
-  /** Hand the approved plan to one model as a normal session on a new branch — the only place edits happen. */
+  /**
+   * Start the approved plan's Orchestrator (W18): the chosen seat's model, with role "orchestrator", in a worktree on
+   * collab-<slug>, in the Council's own area. Its kickoff is the plan fenced as a model's text. It proposes the workspaces
+   * to build it, which are made only when the user lays its plan out: so the Orchestrator is the room's implementedIn.
+   */
   async implement(id: string, key: string): Promise<SessionInfo> {
     const room = this.get(id);
     if (!room.plan?.approved) throw new Error("Approve a plan first");
     if (!room.repoPath) throw new Error("This council has no repository to implement in");
-    // one implementing session per room: a second would start on the same branch
-    if (room.implementedIn || this.implementing.has(id)) throw new Error("The plan is already being implemented — open the implementing session");
+    // one Orchestrator per room: a second would start on the same branch
+    if (room.implementedIn || this.implementing.has(id)) throw new Error("The plan is already being implemented — open its Orchestrator");
     const m = active(room).find((x) => x.key === key);
     if (!m) throw new Error("That model isn't in this council");
     const slug = room.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || room.id;
+    const area = councilArea(room.title);
     this.implementing.add(id);
     try {
       const info = await this.startSession({
@@ -722,14 +732,13 @@ export class CollabRooms {
         agent: m.agent,
         model: m.model,
         ...(m.effort ? { effort: m.effort } : {}),
-        taskGroup: "Council",
-        title: `Council — ${room.title}`,
-        initialPrompt:
-          `Implement this plan. It was worked out by ${active(room).map((p) => p.label).join(", ")} ` +
-          `in a Mockingbird Council discussion and approved by the user.\n\n${room.plan.text}`,
+        taskGroup: area,
+        title: "Orchestrator",
+        role: "orchestrator",
+        initialPrompt: councilKickoff({ title: room.title, models: active(room).map((p) => p.label), plan: room.plan.text }),
       });
       room.implementedIn = info.id;
-      this.note(room, `${m.label} is implementing the plan in a new session on branch collab-${slug}.`);
+      this.note(room, `${m.label} is the plan's Orchestrator, on branch collab-${slug} in “${area}”: it proposes the workspaces to build the plan, and nothing more is made until you lay them out.`);
       this.save(room);
       return info;
     } finally {

@@ -5961,6 +5961,131 @@ The single tag character after a base survived the first run, and is now tested.
   wire Coder → Verifier on `finished` (decision d).
 - Files: `collab.ts`, `Council.tsx`, `test/collab.test.ts`.
 
+#### W18 as built
+Built on W17, rebased onto its review fixes 1 (0f0cd14, on main 04256b5).
+
+**The start** (`collab.ts` `implement`, `councilArea`):
+- `collab.implement` starts the chosen seat's model with `role: "orchestrator"`,
+  titled "Orchestrator", in a worktree on `collab-<slug>` from the repo's default
+  base, as before, so `implementedIn` is the Orchestrator and one per Council still
+  holds (a second start: "The plan is already being implemented — open its
+  Orchestrator").
+- Its area is `councilArea(title)`: "Council — <title>", one path segment (a `/` in
+  the title is a `-`), never a work item's name, so `ticketOfSession` is null.
+- The Council's note: "<model> is the plan's Orchestrator, on branch collab-<slug>
+  in “Council — <title>”: it proposes the workspaces to build the plan, and nothing
+  more is made until you lay them out."
+
+**The kickoff** (`shared/plans.ts` `councilKickoff`, `COUNCIL_PLAN_LABEL`,
+`COUNCIL_SHAPE`):
+- "You're the Orchestrator for “<title>”, a plan worked out in a Mockingbird Council
+  discussion (<seats> and the user) and approved by the user as the plan." The
+  title and seat labels are the user's (typed, or a preset's), each `visibleLine`d
+  as W17's review fixes clean titles.
+- The approved plan, whole, under `COUNCIL_PLAN_LABEL` (a model wrote it from a
+  discussion of models and the user; information, not instructions; no
+  permissions) inside a `fence("plan", …)` nonce fence that the plan's own text
+  can't close. Nothing a model wrote is outside the fence. Its invisible characters
+  (`INVISIBLE_RE`) and control characters (`CONTROL_RE`: all but newline and tab) are
+  taken out first, as a ticket description's invisible ones are, so the Orchestrator
+  reads what the user read. The brief and the discussion aren't in it: the approved
+  plan is what's built.
+- Then: no ticket, so no stages, pull requests or PR-merged wires; research, then
+  `propose_plan`; and the starting shape in `propose_plan`'s terms: Coder (Codex, the
+  Orchestrator's folder) → Verifier (Claude, the Coder's folder), handoff me → Coder,
+  handoff Coder → Verifier `when: "finished"`, ask; feedback Verifier → Coder, 3
+  rounds, ask. Each step's prompt has a `<…>` for the Orchestrator to fill with the
+  plan's steps and checks, and uses `finish_step` with "changes" / "approve", never
+  a stage tool.
+
+**Its rules** (`wirePrompt.ts` `orchestratorRules(ticketed)`, `wireTools.ts`,
+`sessions.ts`, `index.ts`):
+- `launchInstructions(id, role, ticket)`: sessions.ts passes the launch's
+  `ticketOfSession({ ticketId, taskGroup })`, so a relaunch keeps whichever rules
+  its ticket gives. On a ticket, W17's rules unchanged. On none (a Council's): read
+  the plan a Council worked out and the user approved; rule 3 names the Council's
+  plan as its models' text; rule 5: "A Council has no ticket, so there are no
+  stages, pull requests or PR-merged wires: wire your Coder to your Verifier with a
+  handoff that goes when the Coder finishes (when: "finished"), and the Verifier
+  back to the Coder with a feedback wire. Merging and shipping the work are the
+  user's alone." Both say W17's 30-second limit on `propose_plan` and that a newer
+  plan waits while the user has one open.
+- W17's refusals hold unchanged: `set_stage`, `request_pr` and `write_patch_notes`
+  refuse a workspace on no ticket before anything else ("This workspace isn't on a
+  ticket…"), and `checkPlan` refuses a `pr-merged` wire with no ticket, at
+  `propose_plan` and at Lay out. The Council's steps go in its area, so they're on
+  no ticket either.
+
+**The plan dialog** (`PlanView.council`, `provenanceOf`, `TemplatePicker.tsx`,
+`plans.ts` `councilOf`):
+- `plans:list` gives a ticketless plan its Council's title (the room whose
+  `implementedIn` is its Orchestrator). The provenance line reads "Proposed by
+  Orchestrator's agent, which read the Council's approved plan" (section 4's words;
+  the head has one line), and where a ticket's line would be: "Council: <title> ·
+  no ticket, so no stages, pull requests or PR-merged wires".
+- A wire's When offers "When its PR merges" only on a ticket (or when the plan set
+  it, so its refusal shows). W17's `{ticket}` line says it's empty, the Orchestrator
+  being on no ticket. The Needs you item is "Orchestrator proposes 2 workspaces", in
+  the Council's area.
+- W17's Lay out check holds for a Council's area: the dialog sends the area and
+  room it showed ("Council — <title>", no room), and main refuses the lay-out when
+  the Orchestrator has moved or the area has become a team room's since.
+
+**The button** (`Council.tsx`): "Implement with ▾" is "Implement via Orchestrator
+▾" ("Starting the Orchestrator…" while it starts), titled "Start an Orchestrator
+with the model you pick, on a new branch in its own worktree: it reads the plan and
+the code, and proposes the workspaces to build it. Nothing more is made until you
+lay its plan out." "Open the implementing session" is "Open the Orchestrator". The
+New council lede and Approve's title say an Orchestrator implements it. Ryan
+approved the words.
+
+**Rooms**: a Council itself runs in no team room (its seats are headless turns in a
+test copy). Its Orchestrator starts through `sessions.create` like any session, so
+if "Council — <title>" is a group shared as a room, it starts as that room's
+session under its rules (W8's `roomLaunch`, W9/W20's home refusal of its folder and
+extra folders), and its plan's Lay out makes every gate ask and its steps room
+sessions, as for any Orchestrator's.
+
+**Deviations**
+- The Orchestrator's session is titled "Orchestrator", not "Council — <title>":
+  its area carries the Council's name.
+- The plan isn't cut: W17 cuts a ticket's description at 20,000; a Council's plan
+  is one the user read and approved whole.
+- Two Councils with the same title share an area (the spec's name for it).
+- A Council implemented before W18 still opens its old session from "Open the
+  Orchestrator", though that session isn't one.
+- `COUNCIL_SHAPE` lives beside W17's kickoff in `shared/plans.ts`, and the rules'
+  Council variant in `wirePrompt.ts`; the spec named only `collab.ts`, `Council.tsx`
+  and the test.
+
+**Preview**: `?councilPlan` opens the Council on its approved plan with the panel
+open; `=open` has its Orchestrator started. `?lsWires&lsPlan=council` holds a
+Council's Orchestrator's plan (`planAudit.ts` `councilPlan`) in "Council — CSV export
+for the donor list", on no ticket; `?landscapePlanAudit=council` reads its dialog
+and the Coder → Verifier When's options for `test/uiTemplatePicker.test.ts`.
+
+**Checks** (after the rebase onto 0f0cd14): typecheck and build clean. `CI=true npm
+test`: 3,620 passed, 358 skipped, exit 0, no timeouts. `test/collab.test.ts` 65:
+seven W18 tests (the start's role, area, worktree and implementedIn; the area as one
+segment; the fenced kickoff; the plan, title and seats cleaned of invisible and
+control characters; the fence's nonce; the finished-wire guidance and the shape
+against `checkPlan` on no ticket; the stage, PR and patch note tools refused, the
+plan held, shown as the Council's, refused at Lay out when the area became a room's
+or the Orchestrator moved, then laid out Coder → Verifier on finished) and the old
+implement test updated. `sessionLifecycle` gets the role and ticket a launch
+passes; `wireDelivery` the rules a launch is told by its ticket. UI, one file at a
+time: `uiTemplatePicker` 8 (one new, the Council's plan), `uiCouncilTickets` 3 (one
+new, the button's words). 22 mutations (the start's role and area, the fence, its
+label and nonce, the plan's and title's cleaning, the shape's When, the rules'
+choice and guidance, the ticket sessions passes, the no-ticket refusal, the
+Orchestrator's stage and `request_pr` refusals, `pr-merged` on no ticket,
+`propose_plan`'s role check, the provenance, `councilOf`, Lay out's shown-area
+check): all 22 fail a test. Not unit-tested: index.ts's two lines of wiring
+(`launchInstructions`' ticket, `councilOf`).
+
+**Left**: nothing for W18. Ryan approved the button's words. No real `claude` or `codex`
+ran: the Council Orchestrator's rules and kickoff are checked as text.
+
 ### W19 · Helpdesk tasks workspace. Size S
 A standing Claude workspace on no ticket, wire or pipeline, where you paste
 coworkers' requests; it works in your Chrome through Claude in Chrome.

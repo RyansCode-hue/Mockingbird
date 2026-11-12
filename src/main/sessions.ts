@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, stepSlug, ticketIdOf, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
 import { dirtyFileCount } from "./scm";
@@ -391,10 +391,10 @@ export class SessionManager {
   private settingsWatch: SettingsWatch | null = null;
   /**
    * What an agent pane's launch is told on top of its own instructions, beside a room's: its wires (wireTools.ts), so a
-   * relaunched workspace knows to finish its step with finish_step, and an Orchestrator's rules (its `role`). Null when
-   * it has nothing to say.
+   * relaunched workspace knows to finish its step with finish_step, and an Orchestrator's rules (its `role`, and the
+   * ticket it's on, ticketOfSession's, or null). Null when it has nothing to say.
    */
-  launchInstructions: ((id: string, role?: SessionRole) => string | null) | null = null;
+  launchInstructions: ((id: string, role?: SessionRole, ticket?: string | null) => string | null) | null = null;
   /** Why a session mustn't run again here (a teammate continues it: team rooms' take-over), or null when it may. */
   relaunchGuard: ((id: string) => string | null) | null = null;
   /**
@@ -445,9 +445,9 @@ export class SessionManager {
   constructor(private store: Store) {}
 
   /** launchInstructions for session `id`: one that fails is logged, and the agent starts without what it would have said. */
-  private launchNotes(id: string, role?: SessionRole): string | null {
+  private launchNotes(id: string, role: SessionRole | undefined, ticket: string | null): string | null {
     try {
-      return this.launchInstructions?.(id, role) ?? null;
+      return this.launchInstructions?.(id, role, ticket) ?? null;
     } catch (err) {
       console.error(`[sessions] ${id} starts without its wires' instructions, which couldn't be worked out:`, err);
       return null;
@@ -670,7 +670,7 @@ export class SessionManager {
     if (pinned?.version && pinned.version !== this.agentVersions.claude) this.setAgentVersions({ claude: pinned.version });
     const binOf = (a: AgentAdapter) => (pinned && a.binSetting === "claudeBin" ? pinned.bin : this.resolveBin(a));
     const room = req.debrief || tasks ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs })) ?? null);
-    const instructions = tasks ? HELPDESK_RULES : [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id, req.role)].filter(Boolean).join("\n\n");
+    const instructions = tasks ? HELPDESK_RULES : [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id, req.role, ticketOfSession({ ticketId: req.ticketId, taskGroup: group }))].filter(Boolean).join("\n\n");
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
       ...(room?.codexPermissions.length ? { codexPermissions: room.codexPermissions } : {}),

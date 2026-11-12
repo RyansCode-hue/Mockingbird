@@ -19,7 +19,7 @@ import {
   wiredNotice,
   wireInstructions,
   wireMessage,
-  ORCHESTRATOR_RULES,
+  orchestratorRules,
   type Expansion,
   type LabelledEnd,
   type PrMerge,
@@ -502,11 +502,11 @@ export class WireTools {
 
   /**
    * What session `id`'s agent is told as it launches (sessions.launchInstructions), or null: an Orchestrator's rules
-   * (`role`), whatever the wires say, then its wires.
+   * (`role`; a ticket's, else a Council's, by `ticket`, its ticketOfSession), whatever the wires say, then its wires.
    */
-  launchInstructions(id: string, role?: SessionRole): string | null {
+  launchInstructions(id: string, role?: SessionRole, ticket: string | null = null): string | null {
     const wires = this.wiresAtLaunch(id);
-    return [role === "orchestrator" ? ORCHESTRATOR_RULES : null, wires].filter(Boolean).join("\n\n") || null;
+    return [role === "orchestrator" ? orchestratorRules(!!ticket) : null, wires].filter(Boolean).join("\n\n") || null;
   }
 
   private wiresAtLaunch(id: string): string | null {

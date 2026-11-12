@@ -90,6 +90,8 @@ export interface PlansOptions {
   /** The models and efforts they offer, or null when that can't be read. */
   catalog(): Promise<ModelCatalog | null>;
   ticketTitleOf(id: string): string | null;
+  /** The title of the Council whose Orchestrator session `id` is (its implementedIn), or null (W18). */
+  councilOf?(id: string): string | null;
   /** A plan was held, replaced, laid out or dismissed: the windows hear of it (plans:changed). */
   onChanged(): void;
   log: (context: string, err: unknown) => void;
@@ -491,7 +493,8 @@ export class Plans {
         }
         problem = errText(err);
       }
-      out.push({ ...view, problem });
+      const council = held.ticket ? null : this.o.councilOf?.(me.id);
+      out.push({ ...view, problem, council: council ? visibleLine(council, 80) || null : null });
     }
     return out.sort((a, b) => b.held.at - a.held.at);
   }

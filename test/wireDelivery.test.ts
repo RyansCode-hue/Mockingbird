@@ -1734,4 +1734,15 @@ describe("a handoff Lay out sent as its step's prompt (W17)", () => {
     const told = t.tools.launchInstructions(a.id, "orchestrator")!;
     expect(told.indexOf("Create nothing and write no code")).toBeLessThan(told.indexOf("has wired it to other workspaces"));
   });
+
+  it("an Orchestrator on a ticket is told the ticket's rules; one on none, a Council's: Coder → Verifier when it finishes", () => {
+    const t = setup();
+    const ticketed = t.tools.launchInstructions("x", "orchestrator", "4182")!;
+    expect(ticketed).toContain("read your ticket");
+    expect(ticketed).toContain("The ticket stays at BA");
+    const council = t.tools.launchInstructions("x", "orchestrator", null)!;
+    expect(council).toContain("read the plan a Council discussion worked out and the user approved");
+    expect(council).toMatch(/A Council has no ticket, so there are no stages, pull requests or PR-merged wires: wire your Coder to your Verifier with a handoff that goes when the Coder finishes \(when: "finished"\)/);
+    expect(council).not.toMatch(/\bBA\b|Azure DevOps/);
+  });
 });

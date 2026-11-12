@@ -178,6 +178,22 @@ describe.skipIf(!local)("an Orchestrator's plan in the template picker", () => {
     );
     expect(t.after.act).toEqual({ off: false, title: null });
   }, 200_000);
+
+  it("a Council's Orchestrator's plan, on no ticket: the Council named where a ticket would be, Coder → Verifier on finished, no PR-merged When offered", async () => {
+    const t = await audit<{ item: Item; shown: Shown & { sections: string[]; whens: (string | null)[] }; whenOptions: string[] }>("lsPlan=council&landscapePlanAudit=council");
+    expect(t.item.text).toBe("Orchestrator proposes 2 workspaces");
+    expect(t.shown.provenance).toBe("Proposed by Orchestrator's agent, which read the Council's approved plan");
+    expect(t.shown.sections.map((s) => s.split(":")[0])).toEqual(["Council", "Summary"]);
+    expect(t.shown.sections[0]).toBe("Council: CSV export for the donor list · no ticket, so no stages, pull requests or PR-merged wires");
+    expect(t.shown.wires.map((w) => [w.ends, w.type])).toEqual([
+      ["Orchestrator → Coder", "handoff"],
+      ["Coder → Verifier", "handoff"],
+      ["Verifier → Coder", "feedback"],
+    ]);
+    expect(t.shown.whens).toEqual(["When it finishes", "When it finishes", "When it finishes"]);
+    expect(t.whenOptions).toEqual(["When it finishes", "When you send it"]);
+    expect(t.shown).toMatchObject({ act: { off: false }, blocked: null, foot: "in Council — CSV export for the donor list · 2 steps · 3 wires" });
+  }, 200_000);
 });
 
 type Laid = { calls: number; gates: (string | null)[] | null; at: { area: string; room: string | null } | null; open: boolean; error: string | null; note: string | null };

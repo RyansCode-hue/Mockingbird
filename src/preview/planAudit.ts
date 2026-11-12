@@ -3,7 +3,8 @@
  * Orchestrator in the wires board's area, 5120, with a plan held for the ticket (boardPlan): a Coder in its worktree, a
  * Verifier in the Coder's folder, a Dev server terminal on its tree, a handoff to the board's Tester that sends itself,
  * a context link from the board's Reviewer, a link in a prompt and a value redaction took out. `=room` shares 5120 as a
- * team room's area; `=gone` lets the plan go a few seconds in, as a newer one would.
+ * team room's area; `=gone` lets the plan go a few seconds in, as a newer one would; `=council` holds a Council's
+ * Orchestrator's plan instead, in the Council's own area, on no ticket (councilPlan).
  *
  * `?landscapePlanAudit=<part>` (with `?motion=off`) works it as a person would, pressing the mouse and keys for real
  * where the test's driver is there (needsYouAudit.ts' `drive`), and reports into <script id="mb-landscape-plan-audit">
@@ -14,6 +15,7 @@
  * - =dismiss: Dismiss… from the tray, a note typed, Dismiss plan, and what was sent;
  * - =gone (with ?lsPlan=gone): the plan let go while its dialog is open, Lay out off saying why;
  * - =room (with ?lsPlan=room): a team room's area, every gate asking and said;
+ * - =council (with ?lsPlan=council): a Council's Orchestrator's plan (W18: councilPlan), on no ticket;
  * - =builtin: Pipeline from a ticket…'s built-in Orchestrator → Coder → Verifier, its steps behind the Orchestrator
  *   shown as the plan's starting shape, a ticket chosen and Lay out: what it sent, and the Orchestrator started;
  * - =shot and =builtinshot: the plan's dialog, or the built-in in the picker, left open for a screenshot.
@@ -74,6 +76,48 @@ export function boardPlan(make: (id: string, over: Partial<SessionInfo>) => Sess
   };
 }
 
+/** The Council fixture's title (stub.ts' councils[0]), and its own area (collab.ts' councilArea). */
+const COUNCIL_TITLE = "CSV export for the donor list";
+const COUNCIL_AREA = `Council — ${COUNCIL_TITLE}`;
+const COUNCIL_DIR = "collab-csv-export-for-the-donor-list";
+
+/**
+ * A Council's Orchestrator (W18), in its Council's own area on no ticket, and the plan it holds: COUNCIL_SHAPE as an
+ * Orchestrator fills it in, the Coder handing off to the Verifier when it finishes.
+ */
+export function councilPlan(make: (id: string, over: Partial<SessionInfo>) => SessionInfo, wt: (branch: string) => string, now: number) {
+  const orchestrator = make("k1-orch", { title: "Orchestrator", role: "orchestrator", taskGroup: COUNCIL_AREA, branch: COUNCIL_DIR, cwd: wt(COUNCIL_DIR), status: "idle", createdAt: now - 20 * 60_000 });
+  const plan: Plan = {
+    summary: "Stream the donor list's CSV export behind the list's filter DTO, 5k rows a page, with an Export button in its toolbar; then check it against the plan and time the largest org.",
+    steps: [
+      {
+        key: "coder",
+        name: "Coder",
+        agent: "codex",
+        folder: "orchestrator",
+        prompt:
+          "Implement this plan in this folder, on its branch: GET /api/donors/export.csv takes the donor list's filter DTO and streams rows as they're read, paging the donor query 5k rows at a time " +
+          "(keyset on org_id, id); an Export button in the donor list toolbar calls it. Run the tests and commit. Then call finish_step with what you changed and how you checked it. When the Verifier sends changes back, fix them the same way.",
+      },
+      {
+        key: "verifier",
+        name: "Verifier",
+        agent: "claude",
+        folder: { sameAs: "coder" },
+        prompt:
+          "Verify the Coder's work in this folder against this plan: every filter the list has is honoured, and 200k rows stream without buffering the file. Read the diff, run the tests and time the export on the largest org. " +
+          'On a bug, call finish_step with verdict "changes" and what you found. On a pass, call finish_step with verdict "approve" and what you checked.',
+      },
+    ],
+    wires: [
+      { from: "me", to: "coder", type: "handoff" },
+      { from: "coder", to: "verifier", type: "handoff", when: "finished", gate: "ask" },
+      { from: "verifier", to: "coder", type: "feedback", gate: "ask", rounds: 3 },
+    ],
+  };
+  return { orchestrator, held: { id: "pl-council", from: orchestrator.id, at: now - 3 * 60_000, plan } };
+}
+
 // ---- working it ----------------------------------------------------------------------------------
 
 type Pt = { x: number; y: number };
@@ -120,6 +164,8 @@ export const planNow = (el: HTMLElement | null) =>
   el && {
     head: el.querySelector(".tp-head h3")?.textContent ?? null,
     provenance: el.querySelector("[data-provenance]")?.textContent ?? null,
+    sections: [...el.querySelectorAll<HTMLElement>(".tp-sec")].map((s) => `${flat(s.querySelector(".tp-k"))}: ${flat(s.querySelector(".tp-line2, .tp-summary"))}`),
+    whens: [...el.querySelectorAll<HTMLElement>(".tp-wire")].map((w) => w.querySelector(".tp-when .mb-select-val")?.textContent ?? null),
     summary: el.querySelector("[data-summary]")?.textContent ?? null,
     notes: [...el.querySelectorAll<HTMLElement>(":scope > .tp-note")].map((n) => `${n.dataset.flag ?? n.getAttribute("role") ?? ""}: ${flat(n)}`),
     steps: [...el.querySelectorAll<HTMLElement>(".tp-step")].map((s) => {
@@ -281,6 +327,14 @@ export function runPlanAudit(env: PlanAuditEnv, part: string): void {
         actionOf(item, "open")?.click();
         await sleep(900);
         out.shown = planNow(dialog());
+        if (part === "council") {
+          // what the Coder → Verifier handoff's When offers, on no ticket
+          const when = dialog()?.querySelectorAll<HTMLElement>(".tp-wire .tp-when")[1];
+          when?.click();
+          await sleep(300);
+          out.whenOptions = [...document.querySelectorAll(".mb-listbox [role=option]")].map((o) => flat(o.querySelector(".mb-opt-label"))?.replace(/^✓\s*/, "") ?? null);
+          when?.click();
+        }
         if (part === "gone") {
           await sleep(4200);
           out.after = planNow(dialog());

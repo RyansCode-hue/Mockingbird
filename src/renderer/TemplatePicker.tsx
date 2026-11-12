@@ -1017,12 +1017,17 @@ export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut,
           {provenanceOf(view)}
         </span>
       </div>
-      {ticket && (
+      {ticket ? (
         <div className="tp-sec">
           <div className="tp-k">Ticket</div>
           <div className="tp-line2">{ticket}</div>
         </div>
-      )}
+      ) : view.council ? (
+        <div className="tp-sec" data-council>
+          <div className="tp-k">Council</div>
+          <div className="tp-line2">{view.council} · no ticket, so no stages, pull requests or PR-merged wires</div>
+        </div>
+      ) : null}
       <div className="tp-sec">
         <div className="tp-k">Summary</div>
         <div className="tp-summary" data-summary title="Its agent's words">
@@ -1170,7 +1175,8 @@ export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut,
                     className="tp-when"
                     value={w.when ?? "finished"}
                     title="When it readies"
-                    options={WIRE_WHENS.map((x) => ({ value: x, label: WHEN_LABEL[x] }))}
+                    // a plan on no ticket has no pull request to wait for: offered only when it's set already, so its refusal shows
+                    options={WIRE_WHENS.filter((x) => x !== "pr-merged" || view.held.ticket || w.when === x).map((x) => ({ value: x, label: WHEN_LABEL[x] }))}
                     onChange={(v) => setBody((b) => withPlanWire(b, j, { when: v === "finished" ? undefined : (v as WireWhen) }))}
                   />
                 )}

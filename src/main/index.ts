@@ -1587,7 +1587,7 @@ const wireTools: WireTools = new WireTools({
   promptOf: (id) => delivery.promptOf(id),
   log: logError,
 });
-sessions.launchInstructions = (id, role) => wireTools.launchInstructions(id, role);
+sessions.launchInstructions = (id, role, ticket) => wireTools.launchInstructions(id, role, ticket ?? null);
 handle(
   "wires:finish",
   untakenHandler("wires:finish", untaken, (s, summary: unknown, verdict: unknown) => wireTools.finish(s, { summary, ...(verdict === undefined || verdict === null ? {} : { verdict }) }, "you"))
@@ -1652,6 +1652,7 @@ const plans: Plans = new Plans({
     }
   },
   ticketTitleOf: (id) => pipeline.get(id)?.title ?? null,
+  councilOf: (id) => collab.list().find((r) => r.implementedIn === id)?.title ?? null,
   onChanged: () => toWindow("plans:changed"),
   log: logError,
 });

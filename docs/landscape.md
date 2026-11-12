@@ -580,7 +580,7 @@ selected, at every zoom:
 | Take-over, Take it back, Send, Review | The workspace's header and ⋯ menu; a ghost continued on a teammate's Mac shows Take it back |
 | Previous: relaunch, forget, restore all | Ghost cards (Reopen, Forget), Reopen all and Clear ghosts in the area ⋯, the Loose row's menu and ⌘K; the rest of Previous is the Closed sessions list under the area tree (Reopen, Forget, Reopen all) |
 | Group bar: message mode, message log | The area ⋯ |
-| Council: Open the implementing session | Focuses that workspace on the landscape |
+| Council: Open the Orchestrator | Focuses the plan's Orchestrator, in the council's own area, on the landscape |
 
 ## Connections
 

@@ -59,3 +59,27 @@ describe.skipIf(!local)("reviewing an approved plan's House tickets", () => {
     expect(a.created).toMatchObject({ rows: ["Export button in the toolbar", PLAN_TITLES[1]], label: "Create 2 tickets in atticus-backoffice", enabled: true });
   });
 });
+
+describe.skipIf(!local)("an approved plan's Orchestrator, in the Council's panel", () => {
+  /** The panel's implement button, or its Open once the Orchestrator has started: its words and title. */
+  async function button(query: string): Promise<{ text: string; title: string }> {
+    // @ts-expect-error — a plain .mjs build script, no type declarations
+    const { pageResult } = await import("../scripts/ui-preview.mjs");
+    const json: string | null = await pageResult({
+      size: "1400x900",
+      query: `motion=off&${query}`,
+      outDir: path.join(tempDir("council-orch"), "out"),
+      read: `(() => { const b = document.querySelector(".council-implement, .council-orch-open"); return b ? JSON.stringify({ text: b.textContent.trim(), title: b.title }) : null; })()`,
+    });
+    if (!json) throw new Error("the preview didn't show the Council's plan");
+    return JSON.parse(json);
+  }
+
+  it("offers to implement it through an Orchestrator, and once started, to open it", async () => {
+    expect(await button("councilPlan")).toEqual({
+      text: "Implement via Orchestrator ▾",
+      title: "Start an Orchestrator with the model you pick, on a new branch in its own worktree: it reads the plan and the code, and proposes the workspaces to build it. Nothing more is made until you lay its plan out.",
+    });
+    expect(await button("councilPlan=open")).toEqual({ text: "Open the Orchestrator", title: "The plan's Orchestrator, in its Council's own area on the landscape" });
+  });
+});

@@ -49,7 +49,7 @@ import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
-import { boardPlan, runPlanAudit } from "./planAudit";
+import { boardPlan, councilPlan, runPlanAudit } from "./planAudit";
 import { WIRE_AREA, boardTemplates, gateBoardBook, gateMerges, gatePipeline, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { openFinishShot } from "./wireNeedsAudit";
@@ -1352,6 +1352,9 @@ const councils: CollabRoom[] = [
 // House refuses the second ticket. Nothing reaches a House: the tickets are numbered here from #160.
 const ticketsQ = new URLSearchParams(location.search);
 const ticketsMode = ticketsQ.get("councilTickets") ?? ticketsQ.get("councilTicketsAudit");
+// ?councilPlan: the same approved plan, with the Council's panel open on it and its implement menu (W18: the plan's
+// Orchestrator). =open: its Orchestrator has started, so the panel offers to open it.
+const councilPlanMode = ticketsQ.get("councilPlan");
 const TICKETS_PLAN = `## Goal
 Export the donor list to CSV, respecting the user's filters, for up to 200k rows.
 
@@ -1368,12 +1371,22 @@ Export the donor list to CSV, respecting the user's filters, for up to 200k rows
 
 ## Risks
 - Timeouts behind the load balancer`;
-if (ticketsMode !== null) {
+if (ticketsMode !== null || councilPlanMode !== null) {
   const k1 = councils[0];
   const text = ticketsMode === "prose" ? "Stream the export for everyone, measure the biggest org, and add a background job only if it times out." : TICKETS_PLAN;
   k1.messages.push({ id: "m6", speaker: "opus", round: 2, at: now - 3_000_000, kind: "plan", text });
   k1.messages.push({ id: "m7", speaker: "system", round: 2, at: now - 2_900_000, text: "Plan approved: Claude Opus 5.5's write-up." });
   k1.plan = { text, by: "opus", approved: true, at: now - 2_900_000 };
+  if (councilPlanMode === "open") {
+    k1.implementedIn = "s1";
+    k1.messages.push({
+      id: "m8",
+      speaker: "system",
+      round: 2,
+      at: now - 2_800_000,
+      text: "Claude Opus 5.5 is the plan's Orchestrator, on branch collab-csv-export-for-the-donor-list in “Council — CSV export for the donor list”: it proposes the workspaces to build the plan, and nothing more is made until you lay them out.",
+    });
+  }
 }
 let ticketTargets: CouncilHouseTargets =
   ticketsMode === "projects"
@@ -3108,6 +3121,10 @@ if (ticketsMode !== null) {
   set("mb.tab", "collaborate");
   set("mb.collab.inspector", true);
   setTimeout(() => waitFor(".council-tix-open", (el) => el.click()));
+}
+if (councilPlanMode !== null) {
+  set("mb.tab", "collaborate");
+  set("mb.collab.inspector", true);
 }
 // ?new opens New session, as ⌘N does; ?new=connected switches it to the first team room;
 // ?new=room opens it from the first shared group's + instead
@@ -9315,9 +9332,11 @@ Object.assign(api, {
 });
 // ---- W17: the Orchestrators' plans, as main's plans:* calls (src/main/plans.ts) ----
 // ?lsPlan (with ?lsWires): the wires board's area has an Orchestrator with a plan held for #5120 (planAudit.ts'
-// boardPlan); =room shares that area as a team room's; =gone holds it and then lets it go, as a newer plan would.
+// boardPlan); =room shares that area as a team room's; =gone holds it and then lets it go, as a newer plan would;
+// =council holds a Council's Orchestrator's plan instead, in the Council's own area on no ticket (councilPlan, W18).
 const lsPlanQ = params.get("lsPlan");
-const planOrch = wireBoard && lsPlanQ !== null ? boardPlan(session, WT, now) : null;
+const planOrch = wireBoard && lsPlanQ !== null ? (lsPlanQ === "council" ? councilPlan(session, WT, now) : boardPlan(session, WT, now)) : null;
+if (planOrch && lsPlanQ === "council") councils[0].implementedIn = planOrch.orchestrator.id;
 if (planOrch) {
   sessions.push(planOrch.orchestrator);
   const like = team.rooms.find((r) => r.admin === ME) ?? team.rooms[0];
@@ -9333,7 +9352,9 @@ function planView(h: (typeof heldPlans)[number]): PlanView | null {
   if (!me) return null;
   const area = (me.taskGroup ?? "").split("/")[0];
   const room = team.rooms.find((r) => r.groupKey === area)?.id ?? null;
-  const endOf = (x: SessionInfo, refusal: string | null) => ({ id: x.id, title: x.ticketTitle ?? x.title, kind: x.shell ? ("terminal" as const) : ("agent" as const), agent: x.shell ? null : (x.agent ?? "claude"), repo: x.repoPath, branch: x.branch, ticket: x.ticketId ?? area, refusal });
+  // a Council's area is named for it, not a work item: its Orchestrator is on no ticket
+  const ticket = /^\d+$/.test(area) ? area : null;
+  const endOf = (x: SessionInfo, refusal: string | null) => ({ id: x.id, title: x.ticketTitle ?? x.title, kind: x.shell ? ("terminal" as const) : ("agent" as const), agent: x.shell ? null : (x.agent ?? "claude"), repo: x.repoPath, branch: x.branch, ticket: x.ticketId ?? ticket, refusal });
   const existing = Object.fromEntries(
     [...sessions, ...previous, ...planned]
       .filter((x) => x.id !== me.id && (x.taskGroup ?? "").split("/")[0] === area)
@@ -9341,9 +9362,10 @@ function planView(h: (typeof heldPlans)[number]): PlanView | null {
   );
   const view: Omit<PlanView, "problem"> = {
     id: h.id,
-    held: { from: h.from, ticket: area, at: h.at, ...(h.replaces ? { replaces: h.replaces } : {}), plan: clone(h.plan), ...(h.notes ? { notes: [...h.notes] } : {}) },
+    held: { from: h.from, ticket, at: h.at, ...(h.replaces ? { replaces: h.replaces } : {}), plan: clone(h.plan), ...(h.notes ? { notes: [...h.notes] } : {}) },
     me: endOf(me, null),
-    ticketTitle: pipelines[area]?.title ?? "Stream the donor export",
+    ticketTitle: ticket ? (pipelines[ticket]?.title ?? "Stream the donor export") : null,
+    council: councils.find((c) => c.implementedIn === me.id)?.title ?? null,
     area,
     room,
     existing,

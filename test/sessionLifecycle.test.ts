@@ -803,6 +803,19 @@ describe("what an agent is told of its wires as it launches", () => {
     expect(ptys.at(-1)!.args.join(" ")).toContain(`'developer_instructions="WIRES OF ${codex.id}"'`);
     expect(asked).toEqual([s.id, s.id, codex.id]);
   });
+  it("is given the launch's role and the ticket it's on, by its own or its group's, null for a Council's area", async () => {
+    const { m } = await manager();
+    const asked: [string | undefined, string | null | undefined][] = [];
+    m.launchInstructions = (_id, role, ticket) => (asked.push([role, ticket]), null);
+    await m.create({ ...agentPane, role: "orchestrator", taskGroup: "Council — CSV export" });
+    await m.create({ ...agentPane, role: "orchestrator", ticketId: "#4182", taskGroup: "Donors" });
+    await m.create({ ...agentPane, taskGroup: "5120/verify" });
+    expect(asked).toEqual([
+      ["orchestrator", null],
+      ["orchestrator", "4182"],
+      [undefined, "5120"],
+    ]);
+  });
   it("isn't asked for a terminal or a debrief", async () => {
     const { m } = await manager();
     const asked: string[] = [];
