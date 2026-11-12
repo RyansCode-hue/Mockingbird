@@ -654,8 +654,9 @@ Member replace the single admin (creator, else longest-standing member).
   `~/.claude/settings.json` is never touched. It mirrors Codex's profile:
   - **Commands** (Bash and what it starts) write only the session's folders,
     the temp folder, the repository's git data but its config, hooks,
-    attributes, submodules and the other worktrees' folders (as they are at
-    launch), and the room's own caches, as a Codex room session's do. They
+    attributes, submodules and the other worktrees' folders (whole as they
+    are at launch; in one made later, its config, pointers and submodules,
+    by pattern), and the room's own caches, as a Codex room session's do. They
     can't read the home secrets, credential stores, Messages, Mail or the PAT
     file. There's no unsandboxed retry, and Claude won't start without the
     sandbox. Set from `--settings`, that makes the repository's own settings

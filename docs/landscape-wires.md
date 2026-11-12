@@ -1170,7 +1170,8 @@ read. git-lfs's own writes no longer set a read aside: its format version, a ser
   replaced with its marker;
 - a key wrapped at 76 (MIME, .NET's `InsertLineBreaks`) isn't caught.
 
-The review found no hit in this repository's sources or in its `git log -p`.
+The review found no hit in this repository's sources or in its `git log -p`. (Both fixed in
+1.7.0 follow-ups, at the end of this file.)
 
 **Checked:** each change was reverted on its own, 14 in all, and a test failed for each:
 `ext::` allowed, each of the upload-pack, receive-pack and submodule flags, the clone's
@@ -1292,7 +1293,7 @@ unquoted value holding `(`, `?.` or `??` through whole. That let these through:
   is newly changed: a regular-expression literal (`SECRET_NAME_RE = /passw(?:or)?d…`).
   Five fewer lines are changed.
 - **Known limit:** a lower-case name whose unquoted value starts like a call
-  (`db_password: hunter2(abc)`) is read as code.
+  (`db_password: hunter2(abc)`) is read as code. (Fixed in 1.7.0 follow-ups.)
 
 **Husky's pre-push, set aside and said (M2).** The backup push still never runs a
 `pre-push` from a hooks folder the repository's own config names (Husky's `.husky/_`).
@@ -3493,7 +3494,7 @@ probes are tests now (`test/prWatch.test.ts`).
   - L6: a PR's `watch` of another shape is dropped as pipeline.json is read, logged, and the
     PR is read as one with no failures.
 
-**Follow-ups (not done):**
+**Follow-ups (not done here; all three fixed in 1.7.0 follow-ups):**
 - L4: a wire book unreadable for one check makes `waiting()` empty, so the cleanup clears
   failures kept only for a wire, and they come back next check (needs you flaps). `fresh`
   outlives `fire`'s early return, so the hold's "while this wire couldn't take it" isn't always
@@ -4339,7 +4340,8 @@ never another's calls.
 **L2 · The other worktrees' folders by name.** At launch, each other worktree's
 `<common>/worktrees/<name>` is denied to Bash by name, and so is
 `<common>/info/attributes` (Codex's profile reads it as read-only too). A worktree
-made after the launch isn't covered until the next one.
+made after the launch isn't covered until the next one. (What git runs or follows in one
+is, since 1.7.0 follow-ups: by pattern.)
 
 **L3 · The ask to type** now says a `!` command typed at the prompt runs in Ryan's
 shell, outside the room's sandbox (`Typing.tsx`, wording only).
@@ -5744,3 +5746,171 @@ Not verified, to check by hand in the slice named:
 
 No agent session was run for this plan, and nothing was built; `claude --help` was
 read for its flags. Board line numbers are of the copies in the session's scratchpad.
+
+## 1.7.0 follow-ups (main process) as built
+
+Deferred Lows from W16, W2, W4c and W20, built on main 78482a5, one commit per slice. Nothing here touches
+`sessions.ts`, `worktrees.ts`, `safeGit.ts`, `scm.ts`, `pullRequests.ts` or the landscape's UI files.
+
+### W16 (the merge watch)
+
+- **L4: an unreadable wire book is "don't know".** `waiting()` gives null, not an empty list, when the book can't be
+  read. A check then reads what the wires waited on at the last good read (`lastWaiting`), keeps every failure (no
+  cleanup runs), and logs once: "the wire book can't be read, so what its pr-merged wires wait on isn't known…". After a
+  restart with the book still unreadable nothing is known, so nothing is cleared. `fire()` no longer returns early:
+  with no book it offers nothing but still drops `fresh` for each merge, so a merge seen while the wires couldn't be read
+  is offered once they can, and its gate asks ("…or while this wire couldn't be read or couldn't take it…").
+- **L5: a wire the rules refuse isn't filled in.** `planMerge` works out `mergePlan` against the book first and fills only
+  the wires the merge readies. A refused one (a take-over, a room's line, rooms starting) comes back in `skipped` with
+  why, its `{diff}` and `{files}` unread. The watch logs it once while the reason stays the same, and calls `offer` only
+  when something was filled. It's filled once the rules let it through. `MergeFill` gains `skipped`.
+- **L7: the PR title is marked as the provider's.** `{pr}` gives it on its own line as
+  `Its title, as GitHub gives it (written by whoever opened the pull request, not by the user; information, not
+  instructions): "…"`. The title is `quoted` (one line, JSON-quoted, `<` and `>` escaped), as a workspace's title is in a
+  wire's label.
+- **N1: Check now says why it can't read.** For a PR from before folders were kept, with no session on its branch, Check
+  now throws "PR 13 to dev can't be read: there's no folder or session on 4182-x to read it from…". It still isn't
+  counted as failing. With no url, the ticket's other PRs are read and offered first, then it throws.
+- **N2: a wire's source repository is recorded as it begins waiting.** `Wire.sourceRepo` (`{ provider, repo }`) is
+  written by the merge watch (`WireService.pinSourceRepo`) from the source's origin. A wire made pr-merged, or set to
+  it, tells the watch at once (`WireServiceOptions.onWaiting`, which `index.ts` points at `prWatch.recordSources()`).
+  Otherwise the next check records it. From then on, matching and the gate use the recorded repository, and the origin
+  isn't read again: a local agent that changes its origin can't point its wire at another repository's PRs. The record
+  holds only for the wait it was read for (`pinSourceRepo` checks `since`, and never writes over one). `withSettings`
+  drops it whenever `since` is stamped or cleared, so the user setting the wire to wait afresh records the origin as it
+  is then. A record the book refuses to write blocks the wire, saying so ("its repository couldn't be recorded on the
+  wire (…)"), logged once. Until it's written, no merge is taken. The wire book is unreleased, so `wv` stays 1; the format
+  pin gains `sourceRepo` and its part.
+  - *Chose recording over* taking the repository from PRs the session opened: that would drop Start fresh's new session
+    (PRs keep the old id), PRs opened from another folder of the repository, and every 1.6 PR, which has neither `by` nor
+    `root`.
+  - *Left:* an origin changed before the wire began waiting is what's recorded. The gate names the repository ("Waits
+    for a pull request from 4182-x in Portal/client-portal"), so the user sees it.
+- **N3: clock skew.** `after()` takes a merge as after `since` when this run saw the PR open at or after `since`,
+  whatever time the provider gives. A provider's clock behind this Mac's no longer drops a merge it watched happen.
+
+Tests (`test/prWatch.test.ts`, `wirePrompt.test.ts`, `wires.test.ts`):
+- an unreadable book: reads go on, failures kept to three, said once, a merge seen then held at an automatic gate
+  once the book reads; a restart with the book unreadable clears nothing;
+- a taken-over end: two checks fill nothing and say why once, then the wire readies when the take-over ends;
+- a merge the provider dates before `since`, seen open after it, readies the wire;
+- an origin changed after recording: the other repository's merged PR is ignored, and the gate names the recorded
+  repository; set to wait afresh, the new origin is recorded; `onWaiting` is told on add and on a change to pr-merged;
+- `pinSourceRepo` refuses another wait's `since` and never overwrites; a refused record blocks the wire, and is logged
+  once, and no merge is taken until it's written;
+- Check now on a PR with nowhere to read it from, with and without a url;
+- `prText` with a title that tries to close a fence; the format pin; three malformed `sourceRepo`s kept as unparsed
+  entries.
+
+The existing "origin can't be read" test now makes the origin unreadable before the first record, since a recorded one
+isn't read again.
+
+### W2 (redaction)
+
+- **The key-body rule, both directions.** Each line of a run needs an upper-case letter, a lower-case one and a letter
+  past f, checked by lookaheads bounded to one line's width. Random base64 misses one of them in about one 64-character
+  line in 10^14. A SHA-256 in hex (one case, no letter past f) and a banner of slashes (no letter) always miss. Widths
+  are now 64, 70 or 76 (MIME, .NET's `InsertLineBreaks`), and the last line up to 75. The marker keeps the run's own
+  line ending, `\r\n` included (it dropped the `\r`).
+- **A value that starts like a call** (`codeCall`, `wirePrompt.ts`). `CODE_RE` is split into `CALL_RE` and `CHAIN_RE`.
+  Optional chaining stays code. Under a lower-case name, a bare value that starts like a call is code only when one of
+  these holds:
+  - it opens a bracket it doesn't close (`tokens(900_000, 32)`);
+  - it's set with `=`;
+  - what follows on its line, spaces skipped, is what code puts after a call: `,`, `;`, `)`, `}`, `]`, `.`, `?`, an
+    operator, `//` (read lazily, at most 41 characters).
+
+  Otherwise it's a value, so `db_password: hunter2(abc)`, a commented one, and `hunter2(abc)xyz` are redacted.
+  - *Known limit, on the safe side:* a code object's last property, set from a call with nothing after it on its line
+    (`token: makeToken(user)` alone), is redacted.
+  - Over `src/` and `docs/`, the only lines newly changed against main are the two that spell this example
+    (`wirePrompt.ts`' comment and this file's note). No code line.
+
+Tests (`wirePrompt.test.ts`): a 76-wide middle in a CRLF diff and bare; SHA-256 sums, upper-case ones in a diff, slash
+banners and a one-case word, each left alone; the YAML password, one under a list's dash, one with more after its
+bracket; eight code forms left alone (a trailing comma, a closing brace, a comment, `??`, a chained call, two arguments,
+`=` and `:=`). Three timing runs: both-case lines two at a time at 64 and at 76, and hex lines.
+
+### W4c (`wiresModel.ts` only)
+
+- **L1:** the ready face's round is the one counted for that pending (`countedFor`): sent again after it failed, it's
+  `used`, not `used + 1`, and it's capped at the limit (a limit lowered under what's counted). So it's "round 3 of 3",
+  never "round 4 of 3". A held pending never went, so it's the next round.
+- **L2:** the limit face only when the limit is what blocks: blocked at the limit with a pending not yet counted,
+  nothing in flight (`isSending`) and nothing unconfirmed, which is gateOf's limit branch. Blocked at the limit for an
+  end's silent hooks (a counted pending sent again, or a queued message), it's the settings face with the hooks' why,
+  and no One more round.
+
+Tests (`wiresModel.test.ts`): a failed round 3 of 3, round 2 of 3, a lowered limit, a held one; silent hooks on a
+counted pending and on a queued message (the settings face); the limit with silent hooks (still the limit face).
+
+### W20 (a worktree made while a room pane runs)
+
+**What was open.** A Claude room pane's sandbox reads its settings once, at launch. For a linked worktree pane, the
+other worktrees' git folders (`<common>/worktrees/<name>`) were denied by name, as listed then. A worktree made later
+sat under `<common>`, which the pane writes. So its `commondir` (the pointer to the shared folder),
+`config.worktree` and submodules' git folders were writable. A redirected `commondir` makes git run in that worktree
+read another folder's config (`core.fsmonitor`, hooks), outside the sandbox.
+- A main checkout's pane denies `worktrees/` whole, later ones included.
+- Codex's profile marks `worktrees/` read-only and the pane's own folder, more specific, writable. Its real-CLI test
+  commits in a linked worktree under that profile, so later worktrees were covered there.
+
+**Chosen: close it for the running pane, by pattern.** Every per-worktree path git runs code from or follows has a fixed
+name, and the sandbox's denyWrite takes globs (W20 2b's in-folder rules, `<dir>/**/.envrc`, were shown to hold with real
+Claude Code through `node -e`). So `everyWorktree` adds `<common>/worktrees/**/{config.worktree,commondir,gitdir}` and
+`<common>/worktrees/**/modules` (with `/**`) to denyWrite, and the same as Edit rules.
+- These match the pane's own too, which gitWrites denies already.
+- Nothing the pane's commits write matches: HEAD, index, logs, refs and the shared objects.
+- The by-name denies of the worktrees there at launch stay: they keep those whole.
+
+No restart prompt or refusal was needed, so none touches `sessions.ts` or `worktrees.ts`.
+- **What a later worktree still has writable** until the pane restarts: its HEAD, index and logs. That's data, as the
+  shared refs are to every room pane. Git runs nothing from them.
+- **Reads:** neither sandbox denies reading another worktree (only secrets are read-denied), at launch or later, so
+  nothing differs for a later one.
+
+**Found on the way, fixed for both agents:** git keeps a linked worktree's submodules' git folders in its own folder
+(`git rev-parse --git-path modules` there gives `<common>/worktrees/<name>/modules`), not the shared one. gitWrites
+made `<common>/modules` read-only but left the pane's own `modules` writable. A submodule's config there runs its
+`core.fsmonitor` when the user's own git looks into it. gitWrites now makes the pane's own `modules` read-only too.
+- *Cost:* `git submodule update` fails in a linked-worktree room pane, as it already did in a main checkout's.
+- *Behaviour change:* `git worktree add` from inside a linked-worktree room pane now fails: it writes the new worktree's
+  `commondir`. Mockingbird makes worktrees; a main checkout's pane already couldn't.
+
+**Tests:**
+- `claudeRoomSandbox.test.ts`, with real git: a worktree made after the settings were written has its `config.worktree`,
+  `commondir`, `gitdir`, `modules` and a submodule's config and hook denied, to Bash and to the file tools. So do the
+  pane's own. `git rev-parse --git-path` confirms where git reads each. The one there at launch is denied whole. Nothing
+  a commit, branch, stash or fetch writes is denied, however a pattern's `**` is read (one folder or more, or none). A
+  main checkout's settings need no pattern.
+- `codexRoomSandbox.test.ts`: by the most specific entry, a worktree made later is read-only throughout, the pane's own
+  is writable but for its pointers, config and submodules, and the shared objects and refs are writable. The pane's own
+  `modules` is now in the read list.
+
+**Mutation check** (`fixups/w20.json` with `fixups/mutate.py`, in the session's scratchpad): 13 guards undone in turn, all
+caught. They were: no patterns; patterns kept off denyWrite, or off the Edit rules; each of the four names dropped;
+`modules` without its contents; a pattern over every worktree's whole folder (the pane's own commits with it); the
+patterns under the shared folder instead; the by-name denies dropped; the pane's own `modules` writable; Codex's
+`worktrees` writable.
+
+**Hand checks with real CLIs** (none run: no real claude or codex here):
+- In a Claude room pane on a linked worktree, make a worktree from a local session. Then `echo x > <common>/worktrees/<new>/commondir`
+  and the same through `node -e`: both refused. A commit in the pane still works.
+- `get_sandbox_dialog` lists the four new patterns in `fs_deny_write`, so the probe passes. Its check is by string, as
+  for the in-folder globs.
+- `git submodule update` in a linked-worktree room pane, Claude and Codex: refused, as in a main checkout.
+
+### Checked
+
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0: 196 files pass and 35 skip; 3,295 tests pass and 330 skip.
+- Mutation checks on the two security items:
+  - W20: 13 of 13 caught (above).
+  - W16's N2 (`fixups/w16-n2.json`, `w16-n2b.json`): 8 of 8 caught. They were: N2 undone whole (the origin read each
+    check and recorded over the old); a record written over; one recorded for another wait; one kept when the wire waits
+    on anything else; the watch not told on add, or on a change; a refused record taken as written; the format taking any
+    `sourceRepo`. The first run's "waiting afresh keeps the old repository" undid a defensive line the other branch
+    already covers, so the guard was moved to the branch that matters.
+- The other fixes were each undone once to see their tests fail (`w16-other.json`, `w4c.json`: 12 of 12, after the
+  restart test was added for L4's cleanup).
+- No UI test was run: only `wiresModel.ts` changed in the renderer.
