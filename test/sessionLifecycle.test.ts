@@ -1429,6 +1429,14 @@ describe("a step not started yet (W8)", () => {
     expect(store.state.sessions.length).toBe(n);
   });
 
+  it("takes from Add next step only the fields it sends: a stray sharesWith picks no folder", async () => {
+    const { m } = await manager();
+    const a = await m.create({ ...agentPane, taskGroup: "5120" });
+    const other = await m.create({ ...agentPane, taskGroup: "5120", title: "other" });
+    const b = m.plan({ ...step(a.id), sharesWith: other.id } as PlanRequest);
+    expect(b.planned).toEqual({ worktree: false });
+  });
+
   it("is made for a template's lay-out with no step before it, or in the folder of a step that hasn't started either", async () => {
     const { m, store } = await manager();
     const repo = makeRepo({ "a.txt": "1" }, "tpl");
@@ -1707,5 +1715,53 @@ describe("a step not started yet (W8)", () => {
     expect(m.planned()[0].taskGroup).toBe("5120");
     m.setGroup(s.id, "5121");
     expect(m.planned()[0].taskGroup).toBe("5121");
+  });
+});
+
+describe("a team room's session and the home folder", () => {
+  /** Groups under "Shared" are a team room's. */
+  const rooms = (m: { roomOfGroup: ((g: string) => string | null) | null }) => void (m.roomOfGroup = (g) => (g.split("/")[0] === "Shared" ? "R1" : null));
+  const AT_HOME = "A team room's session can't work in your home folder: the room's sandbox would let it write across everything there. Choose a repo for it.";
+
+  it("isn't started at home or in a folder holding it (New session), saying why and starting nothing; outside a room, home is as before", async () => {
+    const { m } = await manager();
+    rooms(m);
+    const n = ptys.length;
+    await expect(m.create({ ...agentPane, taskGroup: "Shared" })).rejects.toThrow(AT_HOME);
+    await expect(m.create({ ...agentPane, taskGroup: "Shared/api", cwd: path.dirname(os.homedir()) })).rejects.toThrow(`A team room's session can't work in ${path.dirname(os.homedir())}, which holds your home folder`);
+    // a terminal resuming an agent runs it in the room's sandbox
+    await expect(m.create({ repoPath: null, useWorktree: false, shell: true, shellResume: { agent: "codex", id: "019a-conv" }, title: "t", taskGroup: "Shared" })).rejects.toThrow(AT_HOME);
+    // a room session on a ticket goes by the ticket's area when it's given no group
+    await expect(m.create({ ...agentPane, ticketId: "Shared" })).rejects.toThrow(AT_HOME);
+    expect(ptys.length).toBe(n);
+    // a plain terminal runs no agent and no sandbox: home is as before
+    await expect(m.create({ repoPath: null, useWorktree: false, shell: true, title: "t", taskGroup: "Shared" })).resolves.toMatchObject({ cwd: os.homedir() });
+    await expect(m.create({ ...agentPane, taskGroup: "Mine" })).resolves.toMatchObject({ cwd: os.homedir() });
+    // a repo's folder is fine in a room
+    const repo = makeRepo({ "a.txt": "1" }, "roomrepo");
+    await expect(m.create({ repoPath: repo, useWorktree: false, agent: "claude", title: "r", taskGroup: "Shared", cwd: repo })).resolves.toMatchObject({ cwd: repo });
+  });
+
+  it("isn't planned at home, by Add next step or a template's lay-out, nor in the folder of a session at home, saving nothing", async () => {
+    const { m, store } = await manager();
+    const a = await m.create({ ...agentPane, taskGroup: "Mine" });
+    rooms(m);
+    const n = store.state.sessions.length;
+    const step: PlanRequest = { after: a.id, title: "Tester", agent: "claude", repoPath: null, worktree: false, taskGroup: "Shared" };
+    expect(() => m.plan(step)).toThrow(AT_HOME);
+    expect(() => m.plan({ ...step, sharesFolder: true })).toThrow(AT_HOME);
+    expect(() => m.planStep({ title: "Tester", agent: "claude", repoPath: null, worktree: false, taskGroup: "Shared" })).toThrow(AT_HOME);
+    expect(() => m.planStep({ title: "Tester", agent: "claude", repoPath: null, worktree: false, taskGroup: "Shared", sharesWith: a.id })).toThrow(AT_HOME);
+    expect(store.state.sessions.length).toBe(n);
+  });
+
+  it("isn't started from a step planned at home before its area was a room's", async () => {
+    const { m } = await manager();
+    const b = m.planStep({ title: "Tester", agent: "claude", repoPath: null, worktree: false, taskGroup: "Shared" });
+    rooms(m);
+    const n = ptys.length;
+    await expect(m.startPlanned(b.id)).rejects.toThrow(AT_HOME);
+    expect(ptys.length).toBe(n);
+    expect(m.planned().map((s) => s.id)).toContain(b.id);
   });
 });

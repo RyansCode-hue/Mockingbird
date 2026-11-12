@@ -46,8 +46,11 @@ import {
 export interface LayOutDeps {
   /** A not-started step's record (SessionManager.planStep). */
   planStep(req: Omit<PlanRequest, "after" | "sharesFolder"> & { sharesWith?: string }): SessionInfo;
-  /** Let a step made go again, with its wires (sessions:kill with forget). */
-  forget(id: string): void;
+  /**
+   * Let a step made go again, with its wires (sessions:kill with forget): throws when it couldn't be, and answers why
+   * its wires stayed when it went but they couldn't (sessionForgotten), else null.
+   */
+  forget(id: string): string | null;
   /**
    * Start a not-started step, placed and its ticket's coding started, as Start now does (index.ts' startPlannedStep):
    * `ticketTitle` names the ticket there, as the step's own record carries only its id.
@@ -418,15 +421,20 @@ export class WireService {
     const idOf = new Map<string, string>();
     const undo = (why: string): never => {
       const left: string[] = [];
+      let wiresLeft: string | null = null;
       for (const m of [...made].reverse()) {
         try {
-          d.forget(m.id);
+          wiresLeft = d.forget(m.id) ?? wiresLeft;
         } catch (err) {
           this.o.log(`wires: laying out ${name}, step ${m.id} couldn't be taken back`, err);
           left.push(`“${m.title}”`);
         }
       }
-      throw new Error(`Couldn't lay out “${name}”: ${why}. ${left.length ? `${left.join(", ")} couldn't be taken back: forget ${left.length === 1 ? "it" : "them"} from ${left.length === 1 ? "its" : "their"} menu.` : "Nothing was left."}`);
+      const said = [
+        ...(left.length ? [`${left.join(", ")} couldn't be taken back: forget ${left.length === 1 ? "it" : "them"} from ${left.length === 1 ? "its" : "their"} menu.`] : []),
+        ...(wiresLeft ? [`Its wires couldn't be taken back (${wiresLeft}): remove them from their right-click.`] : []),
+      ];
+      throw new Error(`Couldn't lay out “${name}”: ${why}. ${said.length ? said.join(" ") : "Nothing was left."}`);
     };
     const line = ticketLine(ticketId, ticketTitle);
     for (const p of plan.steps) {
@@ -534,11 +542,13 @@ export class WireService {
    * Session `id` was forgotten: its wires and note go with it, and the windows are told which went, for the note saying
    * so. Kept entries that name it go too: their ends can be read though the rest of them can't. When the book can't be
    * changed now they stay, logged, and show as blocked with their end gone until they're removed by hand: the session
-   * has gone whichever.
+   * has gone whichever. Answers why they stayed, or null.
    */
-  sessionForgotten(id: string): void {
+  sessionForgotten(id: string): string | null {
     const r = this.o.store.editWires((book, kept) => ({ ...withoutSession(book, id), dropKept: { ...keptNaming(kept, id), why: `named session ${id}, which was forgotten, and went with it` } }));
-    if ("refused" in r) this.o.log(`wires: couldn't drop the wires of forgotten session ${id}`, new Error(r.refused));
+    if (!("refused" in r)) return null;
+    this.o.log(`wires: couldn't drop the wires of forgotten session ${id}`, new Error(r.refused));
+    return r.refused;
   }
 
   /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  asShown,
   kickoffAsTicket,
   layOutPlan,
   parseTemplateBody,
@@ -128,6 +129,14 @@ describe("laying one out (layOutPlan)", () => {
     expect(layOutPlan(fromFirst, { room: false, ticket: false }).problems).toEqual(["Builder → Tester goes when “Builder”'s pull request merges, which needs “Builder” started on a ticket's branch, and no ticket is chosen."]);
     const later = chain({ wires: [{ from: "s1", to: "s2", type: "handoff" }, merged("s2", "s3"), { from: "s1", to: "s4", type: "worktree" }] });
     expect(layOutPlan(later, { room: false, ticket: true }).problems[0]).toMatch(/“Reviewer” isn't the first step, so it waits as this is laid out\.$/);
+  });
+
+  it("writes out what each wire carries as it's shown, a default included, leaving a link's and a tree's alone", () => {
+    const b = chain({ wires: [...chain().wires.slice(0, 2), { from: "s2", to: "s3", type: "handoff", when: "pr-merged", gate: "ask" }, { from: "s3", to: "s2", type: "context" }, chain().wires[3]] });
+    expect(asShown(b).wires.map((w) => w.template ?? null)).toEqual(["{summary}", "{summary}", "{pr}\n\n{summary}", null, null]);
+    const edited = { ...b, wires: b.wires.map((w, i) => (i === 0 ? { ...w, template: "Only the diff: {diff}" } : w)) };
+    expect(asShown(edited).wires[0].template).toBe("Only the diff: {diff}");
+    expect(parseTemplateBody(asShown(b))).toEqual(asShown(b));
   });
 
   it("gives a wire its settings as wires:add takes them", () => {

@@ -10,7 +10,7 @@ import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktree
 import { dirtyFileCount } from "./scm";
 import { BASE_NAMES, branchesOf, currentBranch, git } from "./git";
 import { uniqueBranch } from "./presets";
-import { samePath } from "./handlers";
+import { canonical, samePath } from "./handlers";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, type LaunchContext } from "./agents";
 import { HELPDESK_FOLDER_ONLY, HELPDESK_IN_ROOM, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
@@ -317,6 +317,19 @@ function relaunchPlan(old: SessionInfo): RelaunchPlan {
   };
 }
 
+/**
+ * Why a session in a team room's group can't work in `cwd`: the home folder, or a folder holding it, all of which the
+ * room's sandbox would let its agent write across (bar the names it denies). Null when it can. A plain terminal isn't
+ * asked: it runs no agent and no sandbox.
+ */
+export function roomFolderRefusal(cwd: string, home = os.homedir()): string | null {
+  const h = canonical(home);
+  const c = canonical(cwd);
+  if (c === h) return "A team room's session can't work in your home folder: the room's sandbox would let it write across everything there. Choose a repo for it.";
+  if (h.startsWith(c === "/" ? "/" : `${c}/`)) return `A team room's session can't work in ${cwd}, which holds your home folder: the room's sandbox would let it write across everything there. Choose a repo for it.`;
+  return null;
+}
+
 export class SessionManager {
   private live = new Map<string, LiveSession>();
   /**
@@ -589,6 +602,10 @@ export class SessionManager {
       req.branchName?.trim() ||
       (req.ticketId && req.ticketTitle ? slugBranch(req.ticketId, req.ticketTitle) : null);
     const own = !!this.ownHooksFor?.(req.taskGroup ?? req.ticketId ?? null);
+    // a plain terminal runs no agent and no sandbox, so its folder grants it nothing it hasn't already
+    const runsAgent = !req.shell || !!req.shellResume;
+    // a room session in a repo's checkout: refused before its branch is changed there, as after the folder's known below
+    if (!tasks && !req.debrief && runsAgent && !req.cwd && repoPath && !req.useWorktree) this.refuseRoomFolder(req.taskGroup ?? req.ticketId ?? null, repoPath);
     if (tasks) {
       cwd = helpdeskFolder();
       repoPath = null;
@@ -619,7 +636,8 @@ export class SessionManager {
     }
     // any other agent there (a resumed conversation, a handoff, a brief, a review) would carry the Helpdesk tasks
     // workspace's conversations to a session with Mockingbird's tools; a plain terminal runs no agent
-    if (!tasks && (!req.shell || req.shellResume) && inHelpdeskFolder(cwd)) throw new Error(HELPDESK_FOLDER_ONLY);
+    if (!tasks && runsAgent && inHelpdeskFolder(cwd)) throw new Error(HELPDESK_FOLDER_ONLY);
+    if (!tasks && !req.debrief && runsAgent) this.refuseRoomFolder(req.taskGroup ?? req.ticketId ?? null, cwd);
 
     const agent = agentFor(req.agent);
 
@@ -1322,8 +1340,28 @@ export class SessionManager {
       if (up.planned) throw new Error(`${titled(up)} hasn't started, so it has no folder to share yet: give this step a folder of its own`);
       if (!fs.existsSync(up.cwd)) throw new Error(`“${up.ticketTitle ?? up.title}”'s folder, ${up.cwd}, isn't there any more, so a step can't work in it`);
     }
-    const { after: _after, sharesFolder, ...step } = req;
-    return this.planStep({ ...step, ...(sharesFolder ? { sharesWith: up.id } : {}) });
+    // what Add next step sends, field by field: anything else on the request (a sharesWith) isn't the window's to say
+    return this.planStep({
+      title: req.title,
+      agent: req.agent,
+      model: req.model,
+      effort: req.effort,
+      repoPath: req.repoPath,
+      worktree: req.worktree,
+      base: req.base,
+      taskGroup: req.taskGroup,
+      ticketId: req.ticketId,
+      ticketTitle: req.ticketTitle,
+      prompt: req.prompt,
+      ...(req.sharesFolder ? { sharesWith: up.id } : {}),
+    });
+  }
+
+  /** Refuses a session in a team room's group `group` working in `cwd` when roomFolderRefusal says so. */
+  private refuseRoomFolder(group: string | null, cwd: string): void {
+    if (!group || !this.roomOfGroup?.(group)) return;
+    const why = roomFolderRefusal(cwd);
+    if (why) throw new Error(why);
   }
 
   /**
@@ -1354,6 +1392,7 @@ export class SessionManager {
       if (req.worktree && !repoPath) throw new Error("A worktree needs a repo");
       cwd = repoPath ?? os.homedir();
     }
+    this.refuseRoomFolder(group ?? (req.ticketId?.trim() || null), cwd);
     let id = randomUUID().slice(0, 8);
     while (this.live.has(id) || this.recordOf(id)) id = randomUUID().slice(0, 8);
     const prompt = req.prompt?.trim();

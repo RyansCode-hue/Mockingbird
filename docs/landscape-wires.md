@@ -3241,6 +3241,68 @@ template change, ⌘↵'s repeat check and each dialog's `handsBack` each fail t
 Chrome test when taken out. Forcing a room's gates to ask, in `layOutPlan` or by
 main ignoring the area's room, fails the unit tests.
 
+#### W9 review fixes 1 as built
+
+**M1, Lay out into an area that's there already.** Only an area made for the
+lay-out is tidied along its wires. In an existing area the steps go where the
+layout finds room, nothing there moves, and the note says so: "They went where
+there was room in #5110, and nothing there moved: Tidy in its ⋯ lines them up
+along their wires, with Undo." (`laidOut.tidy` in `main.tsx`.)
+
+**M2, names and tickets.**
+- Step names are editable in Save as template (`StepRows`' `editNames`).
+- The draft renames a step whose name came from its ticket or branch
+  (`namedForTicket`: a `#number`, the ticket's id or title, or the branch or its
+  slug) after its agent ("Claude", "Codex"), and the note asks for a name for what
+  it does. The template's name is made from the step names, so it follows the
+  same rule.
+- L1: a not-started step's prompt filled in with "#5115 — title" turns back into
+  `{ticket}`. The step records keep only the ticket's id, so the title comes from
+  this Mac's record of the ticket (`ticketTitleOf`: the pipeline's). A number still
+  in a prompt is said, not replaced.
+
+**M3, what's laid out is what's shown.** Under each step, each wire into it that
+carries work shows its What flows, whole and editable (the default it would send
+when it has none, `templateOf`). It also shows its files, each with × to leave it
+out. Effort sits beside the model. Lay out and Save send `asShown(body)`, which
+writes each carrying wire's What flows out, so what's sent is the text on screen.
+
+**Room sessions and the home folder** (`sessions.ts`). `roomFolderRefusal`
+refuses a session in a team room's group whose folder is the home folder, or a
+folder holding it. The room's sandbox would let its agent write across all of
+it. It's checked in `create` (New session, a terminal resuming an agent, a
+step's start), where a repo's checkout is checked before its branch is changed,
+and in `planStep` (Add next step and a lay-out, a shared folder included): "A
+team room's session can't work in your home folder: the room's sandbox would let
+it write across everything there. Choose a repo for it." A plain terminal isn't
+refused: it runs no agent and no sandbox, so its folder grants it nothing. The
+team tests' repo-less room sessions now get a folder of their own.
+
+**Lows.**
+- L2: Remove with nothing saved says "That template isn't saved any more: there
+  are no saved templates."
+- L3: the home check catches `$HOME`, `${HOME}`, `~user/`, and a tilde after a
+  redirect, comma, bracket or paren, and a bare `cd ~`. "~5 minutes" is still
+  fine. The draft never takes the home folder, or one holding it, for the chain's
+  folder. It says when a text names home, so save's refusal isn't a surprise.
+- L4: `sessionForgotten` answers why it couldn't drop the wires. A lay-out's
+  take-back says "Its wires couldn't be taken back (…): remove them from their
+  right-click." instead of "Nothing was left."
+- L7: `plan` passes only Add next step's own fields to `planStep`, so a stray
+  `sharesWith` picks no folder.
+- L11: saved templates that aren't a list are offered **Set them aside…** in the
+  picker (`templates:setAside`). A copy is kept as it was in
+  `~/.mockingbird/pipelineTemplates-set-aside-<time>.json` (mode 600, never
+  written over another), it's said where, and the list starts empty. Save and
+  Remove point to it. The preview's `?lsTemplates=broken` shows it.
+
+**Checked.** Typecheck; the suite under CI (198 files, 3493 passed, 343 skipped);
+the build; `uiLandscapeWires` alone in Chrome (31 passed). Mutations: taking out
+the home refusal in `create` or in `planStep`, or
+its "holds home" case, fails the unit tests. Sending the template as read rather
+than as shown, from Lay out or Save, or showing a wire's What flows blank when it
+takes the default, fails the Chrome test.
+
 ### W10 · Tidy along wires. Size M
 - `planTidy` (`landscapeModel.ts:2075`) takes edges. With none it's unchanged, so
   every test of it holds. Layers by longest path over handoffs; a feedback wire

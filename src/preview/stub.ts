@@ -9027,8 +9027,8 @@ Object.assign(api, {
   wiresResetRounds: async (id: string): Promise<WireReply> => gateRounds(id, (r) => ({ limit: r.limit, used: 0 })),
 });
 // ---- W9: pipeline templates, as main's templates:* calls (src/main/templates.ts, WireService.layOut) ----
-/** settings.pipelineTemplates: ?lsTemplates' (boardTemplates), else none saved. */
-let tplStore: unknown[] = params.has("lsTemplates") ? boardTemplates(params.get("lsTemplates")) : [];
+/** settings.pipelineTemplates: ?lsTemplates' (boardTemplates; =broken: not a list), else none saved. */
+let tplStore: unknown = params.has("lsTemplates") ? boardTemplates(params.get("lsTemplates")) : [];
 /** ?lsLayOutFails=<n>: the first n lay-outs are refused, as main refuses one while the wires file is read-only. */
 let layOutFails = Number(params.get("lsLayOutFails") ?? 0);
 const tplWhy = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -9053,6 +9053,7 @@ Object.assign(api, {
         name: x.title,
         agent: x.shell ? "terminal" : (x.agent ?? "claude"),
         ...(x.model && !x.shell ? { model: x.model } : {}),
+        ...(x.effort && !x.shell ? { effort: x.effort } : {}),
         folder: shares && keyOf.has(shares) ? { sameAs: keyOf.get(shares)! } : x.planned ? (x.planned.worktree ? "new" : "checkout") : x.repoPath && x.cwd !== x.repoPath ? "new" : "checkout",
         prompt: kickoffAsTicket(x.planned?.prompt ?? "").text,
       };
@@ -9065,6 +9066,7 @@ Object.assign(api, {
         type: w.type,
         ...(w.type === "handoff" || w.type === "feedback" ? { when: w.when, gate: w.gate } : {}),
         ...(w.template !== undefined ? { template: w.template } : {}),
+        ...(w.files?.length ? { files: w.files } : {}),
         ...(w.rounds ? { rounds: w.rounds.limit } : {}),
       }));
     const body: TemplateBody = { startFirst: true, steps, wires };
@@ -9084,20 +9086,30 @@ Object.assign(api, {
     const n = String(name ?? "").trim();
     if (!n) return err("Name the template.");
     const read = readTemplates(tplStore);
+    if (read.broken) return err(read.broken);
     if ([...read.templates.map((t) => t.template.name), ...read.refused.flatMap((r) => (r.name ? [r.name] : []))].some((t) => t.toLowerCase() === n.toLowerCase()))
       return err(`There's a template called “${n}” already: name this one another way, or remove that one first.`);
     try {
-      tplStore = [...tplStore, { id: `tpl-${Date.now().toString(36)}`, name: n, savedAt: Date.now(), ...parseTemplateBody(body) }];
+      tplStore = [...(tplStore as unknown[]), { id: `tpl-${Date.now().toString(36)}`, name: n, savedAt: Date.now(), ...parseTemplateBody(body) }];
     } catch (e) {
       return err(`It can't be saved: ${tplWhy(e)}`);
     }
     return readTemplates(tplStore);
   },
   templatesRemove: async (id: string) => {
+    const read = readTemplates(tplStore);
+    if (read.broken) return err(read.broken);
+    if (!Array.isArray(tplStore)) return err("That template isn't saved any more: there are no saved templates.");
     const at = tplStore.findIndex((v) => !!v && typeof v === "object" && (v as { id?: unknown }).id === id);
     if (at < 0) return err("That template isn't saved any more.");
     tplStore = tplStore.filter((_v, i) => i !== at);
     return readTemplates(tplStore);
+  },
+  // main's templates:setAside: a copy kept, said, and the list started empty; refused when the list reads fine
+  templatesSetAside: async () => {
+    if (!readTemplates(tplStore).broken) return err("The saved templates read as a list: there's nothing to set aside.");
+    tplStore = [];
+    return { file: "/Users/you/.mockingbird/pipelineTemplates-set-aside-2026-11-12T15-00-00-000Z.json", list: readTemplates([]) };
   },
   // main's WireService.layOut: checked whole first, then the steps (not started), their wires, and the first step started
   // when the template says so, with what waited for it; a refusal once steps are made takes them all back

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { draftTemplate, FOLDER_MARK, removedTemplate, savedTemplates } from "../src/main/templates";
+import * as fs from "fs";
+import * as path from "path";
+import { draftTemplate, FOLDER_MARK, removedTemplate, savedTemplates, setAsideTemplates } from "../src/main/templates";
+import { tempDir } from "./helpers";
 import { readTemplates, ticketKickoffPrompt, type TemplateBody } from "../src/shared/pipelineTemplates";
 import type { SessionInfo } from "../src/shared/types";
 import { emptyWireBook, newWire, type Wire, type WireBook } from "../src/shared/wires";
@@ -130,5 +133,95 @@ describe("removing a template", () => {
     expect(removedTemplate("tpl-b", stored)).toEqual({ list: [stored[0]], name: "Broken" });
     expect(removedTemplate("tpl-a", stored)).toEqual({ list: [stored[1]], name: "A" });
     expect(() => removedTemplate("tpl-z", stored)).toThrow(/isn't saved any more/);
+  });
+});
+
+describe("a draft's names and tickets (review fixes 1)", () => {
+  const ticketed = (id: string, over: Partial<SessionInfo>) => session(id, { ticketId: "5115", ticketTitle: "Stream the donor export", taskGroup: "5115", ...over });
+  const pair = (all: Record<string, SessionInfo>, extra: Partial<Parameters<typeof draftTemplate>[1]> = {}) =>
+    draftTemplate(Object.keys(all), { sessionOf: (id) => all[id], book: () => ({ ...emptyWireBook(), links: { w1: wire(Object.keys(all)[0], Object.keys(all)[1], "handoff", 1) } }), ...extra });
+
+  it("names a step made from its ticket or branch for its agent instead, and the template from those, saying so", () => {
+    const d = pair({
+      a: ticketed("a", { title: "Stream the donor export", agent: "codex" }),
+      b: ticketed("b", { title: "Reviewer" }),
+    });
+    expect(d.body.steps.map((s) => s.name)).toEqual(["Codex", "Reviewer"]);
+    expect(d.name).toBe("Codex → Reviewer");
+    expect(d.notes).toContain("“Stream the donor export” was named for its ticket or branch, so it's named for its agent here: name it for what it does.");
+  });
+
+  it.each([
+    ["the ticket's number", "#5115 — Stream the donor export"],
+    ["the ticket's id in words", "Fix 5115"],
+    ["its branch", "5115-stream-donor-export"],
+  ])("takes %s in a name as the ticket's", (_what, title) => {
+    const d = pair({ a: ticketed("a", { title, ticketTitle: null, branch: "5115-stream-donor-export" }), b: ticketed("b", { title: "Reviewer", ticketTitle: null }) });
+    expect(d.body.steps[0].name).toBe("Claude");
+  });
+
+  it("keeps a name that only shares a word with its ticket", () => {
+    const d = pair({ a: ticketed("a", { title: "Builder" }), b: ticketed("b", { title: "Export reviewer" }) });
+    expect(d.body.steps.map((s) => s.name)).toEqual(["Builder", "Export reviewer"]);
+  });
+
+  it("turns the ticket a laid-out step's prompt was filled in with back into {ticket}, and says when its number is still there", () => {
+    const line = "#5115 — Stream the donor export";
+    const all = {
+      a: session("a", { title: "Builder", ticketId: "5115", planned: { worktree: true, prompt: `Implement ${line}.` } }),
+      b: session("b", { title: "Reviewer", ticketId: "5115", planned: { worktree: false, prompt: `Review ${line}, then compare with #5115's notes.` } }),
+    };
+    // the step records name the ticket by id only: its title comes from this Mac's record of the ticket
+    const d = pair(all, { ticketTitleOf: (id) => (id === "5115" ? "Stream the donor export" : null) });
+    expect(d.body.steps.map((s) => s.prompt)).toEqual(["Implement {ticket}.", "Review {ticket}, then compare with #5115's notes."]);
+    expect(d.notes).toContain("The ticket kickoffs its steps were told are {ticket} here: it's filled in with the ticket it's laid out for.");
+    expect(d.notes).toContain("“Reviewer” still names its ticket by number: say {ticket} where it's the ticket a lay-out is for.");
+    // with the title unknown, nothing is guessed: the number is said
+    const unknown = pair(all);
+    expect(unknown.body.steps[0].prompt).toBe(`Implement ${line}.`);
+    expect(unknown.notes).toContain("“Builder”, “Reviewer” still name their tickets by number: say {ticket} where it's the ticket a lay-out is for.");
+  });
+
+  it("never takes the home folder for the chain's: a step with no repo keeps its home paths, said, and save refuses them", () => {
+    const HOME_DIR = "/Users/sam";
+    const all = {
+      a: session("a", { title: "Planner", repoPath: null, cwd: HOME_DIR, planned: { worktree: false, prompt: `Wait ~5 minutes, then read ~/notes.md and ${HOME_DIR}/.aws/config.` } }),
+      b: session("b", { title: "Doer", repoPath: null, cwd: HOME_DIR, planned: { worktree: false, prompt: "Do it" } }),
+    };
+    const d = pair(all, { home: HOME_DIR });
+    expect(d.body.steps[0].prompt).toBe(`Wait ~5 minutes, then read ~/notes.md and ${HOME_DIR}/.aws/config.`);
+    expect(d.notes).toContain("“Planner”'s prompt names a folder in your home folder: a template is laid out in other folders, so take it out before saving.");
+    expect(() => savedTemplates("Y", d.body, [], { home: HOME_DIR })).toThrow(/“Planner”'s prompt names a folder in your home folder/);
+  });
+});
+
+describe("the home folder, however it's written (review fixes 1)", () => {
+  it.each(["cat $HOME/.ssh/id_rsa", "cat ${HOME}/.aws/credentials", "cat>~/x", "ls ~sam/Code", "cd ~", "cp a,~/b", "x=[~/c]", "(~/d)", "file:///Users/sam/x"])("refuses %s", (p) => {
+    expect(() => save("X", { ...body(), steps: [body().steps[0], { ...body().steps[1], prompt: p }] }, [])).toThrow(/names a folder in your home folder/);
+  });
+  it.each(["Wait ~5 minutes", "a~b", "HOMEWORK", "$HOMER", "/Volumes/Work/x"])("takes %s for what it is", (p) => {
+    expect(() => save("X", { ...body(), steps: [body().steps[0], { ...body().steps[1], prompt: p }] }, [])).not.toThrow();
+  });
+});
+
+describe("saved templates that aren't a list (review fixes 1)", () => {
+  it("says so plainly when there's nothing to remove", () => {
+    expect(() => removedTemplate("tpl-x", undefined)).toThrow("That template isn't saved any more: there are no saved templates.");
+  });
+
+  it("points save and remove at setting them aside", () => {
+    expect(() => save("X", body(), { a: 1 })).toThrow(/Set them aside from Pipeline from a ticket…/);
+    expect(() => removedTemplate("tpl-x", { a: 1 })).toThrow(/Set them aside from Pipeline from a ticket…/);
+  });
+
+  it("sets them aside as a copy only you can read, never over another, and only when they can't be read as a list", () => {
+    const dir = tempDir("tpl-aside");
+    const file = setAsideTemplates({ a: 1 }, { dir, now: () => Date.UTC(2026, 10, 12, 15) });
+    expect(path.basename(file)).toBe("pipelineTemplates-set-aside-2026-11-12T15-00-00-000Z.json");
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ a: 1 });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(() => setAsideTemplates({ b: 2 }, { dir, now: () => Date.UTC(2026, 10, 12, 15) })).toThrow(/EEXIST/);
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ a: 1 });
+    expect(() => setAsideTemplates([], { dir })).toThrow("The saved templates read as a list: there's nothing to set aside.");
   });
 });

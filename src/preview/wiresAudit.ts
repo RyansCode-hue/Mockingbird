@@ -182,10 +182,11 @@ export const LONG_PROMPT = [
  * The saved templates of ?lsTemplates (W9), as settings.pipelineTemplates holds them: WireTemplates.dc.html A's
  * "Build, review, test" (Builder → Reviewer → Tester, Reviewer's feedback to Builder, an automatic gate into Tester, a
  * Dev server on Builder's tree), "Quick fix" (saved by a newer version: fields this one doesn't read), and an entry
- * this version can't use. `?lsTemplates=none`: none saved.
+ * this version can't use. `?lsTemplates=none`: none saved; `=broken`: a setting that isn't a list at all.
  */
-export function boardTemplates(q: string | null): unknown[] {
+export function boardTemplates(q: string | null): unknown {
   if (q === "none") return [];
+  if (q === "broken") return { "tpl-brt": { name: "Build, review, test" } };
   return [
     {
       id: "tpl-brt",
@@ -195,13 +196,13 @@ export function boardTemplates(q: string | null): unknown[] {
       steps: [
         { key: "s1", name: "Builder", agent: "codex", folder: "new", prompt: "Implement {ticket}. Run the tests, commit, then finish the step." },
         { key: "s2", name: "Reviewer", agent: "claude", folder: { sameAs: "s1" }, prompt: "Review the diff for {ticket}. Finish with approve or changes." },
-        { key: "s3", name: "Tester", agent: "claude", folder: "new", prompt: "Run the e2e suite on this branch. Say what fails, then finish." },
+        { key: "s3", name: "Tester", agent: "claude", effort: "high", folder: "new", prompt: "Run the e2e suite on this branch. Say what fails, then finish." },
         { key: "s4", name: "Dev server", agent: "terminal", folder: { sameAs: "s1" }, prompt: "dotnet watch" },
       ],
       wires: [
         { from: "s1", to: "s2", type: "handoff", when: "finished", gate: "ask" },
         { from: "s2", to: "s1", type: "feedback", when: "finished", gate: "ask", rounds: 3 },
-        { from: "s2", to: "s3", type: "handoff", when: "finished", gate: "automatic" },
+        { from: "s2", to: "s3", type: "handoff", when: "finished", gate: "automatic", template: "{summary}\n\nThe specs to run first: {files}", files: ["e2e/donors.spec.ts"] },
         { from: "s1", to: "s4", type: "worktree" },
       ],
     },
@@ -1250,14 +1251,20 @@ const tpNow = (el: HTMLElement | null) =>
     items: [...el.querySelectorAll<HTMLElement>(".tp-item")].map((i) => ({ t: i.querySelector(".t")?.textContent ?? null, s: i.querySelector(".s")?.textContent ?? null, sel: i.classList.contains("sel"), off: i.classList.contains("off"), title: i.title || null })),
     empty: el.querySelector('[data-empty="templates"]')?.textContent ?? null,
     steps: [...el.querySelectorAll<HTMLElement>(".tp-step")].map((s) => {
-      const ta = s.querySelector<HTMLTextAreaElement>("textarea")!;
+      const ta = s.querySelector<HTMLTextAreaElement>(":scope > textarea")!;
+      // shown whole: nothing of it scrolled out of sight, and none of it cut
+      const whole = (t: HTMLTextAreaElement) => t.scrollHeight <= t.clientHeight + 1 && getComputedStyle(t).overflowY !== "scroll";
       return {
-        name: s.querySelector(".tp-name")?.textContent ?? null,
+        name: s.querySelector<HTMLInputElement>("input.tp-name")?.value ?? s.querySelector(".tp-name")?.textContent ?? null,
         agent: s.querySelector(".tp-agent .mb-select-val")?.textContent ?? s.querySelector(".tp-fixed")?.textContent ?? null,
+        effort: s.querySelector(".tp-effort .mb-select-val")?.textContent ?? null,
         prompt: ta.value,
-        // shown whole: nothing of it scrolled out of sight, and none of it cut
-        whole: ta.scrollHeight <= ta.clientHeight + 1 && getComputedStyle(ta).overflowY !== "scroll",
+        whole: whole(ta),
         flags: [...s.querySelectorAll<HTMLElement>("[data-flag]")].map((f) => `${f.dataset.flag}: ${f.textContent?.replace(/\s+/g, " ").trim()}`),
+        flows: [...s.querySelectorAll<HTMLElement>(".tp-flow")].map((f) => {
+          const t = f.querySelector("textarea")!;
+          return { wire: Number(f.dataset.wire), says: f.querySelector(".tp-line")?.textContent?.trim() ?? null, text: t.value, whole: whole(t), files: [...f.querySelectorAll(".tp-file")].map((x) => x.firstChild?.textContent ?? "") };
+        }),
       };
     }),
     boxes: [...el.querySelectorAll<HTMLElement>(".tp-box")].map((b) => b.textContent),
@@ -1358,13 +1365,25 @@ async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
   await rightClickBuilder();
   await sleep(700);
   mark = env.calls.length;
-  // its name: a triple click selects what's there (no ⌘A in the driver), then typed over
+  // the first step renamed: a triple click selects its name (no ⌘A in the driver), then it's typed over
+  const stepAt = mid(saver()?.querySelector(".tp-step input.tp-name"));
+  await drive([{ mouse: { ...stepAt, clickCount: 1 } }, { mouse: { ...stepAt, clickCount: 2 } }, { mouse: { ...stepAt, clickCount: 3 } }, { pause: 200 }, ..."Shaper".split("").map((key) => ({ key })), { pause: 300 }]);
+  const saving = tpNow(saver());
+  // its name the same way
   const nameAt = mid(saver()?.querySelector("input.tp-name-in"));
   await drive([{ mouse: { ...nameAt, clickCount: 1 } }, { mouse: { ...nameAt, clickCount: 2 } }, { mouse: { ...nameAt, clickCount: 3 } }, { pause: 200 }, ..."Donor export".split("").map((key) => ({ key })), { pause: 300 }]);
   await drive([{ mouse: { ...mid(saver()?.querySelector("button[data-act]")), clickCount: 1 } }]);
   await sleep(600);
   const saved = since(mark, "templatesSave");
-  out.saved = { calls: saved.map((a) => [a[0], ((a[1] as { steps?: { name: string }[] }).steps ?? []).map((s) => s.name)]), closed: !saver(), note: noteNow(), keys: keysAt() };
+  out.saved = {
+    calls: saved.map((a) => [a[0], ((a[1] as { steps?: { name: string }[] }).steps ?? []).map((s) => s.name)]),
+    // what each wire carries as it was shown, and as it was saved
+    shownFlows: saving?.steps.flatMap((x) => x.flows.map((f) => [f.wire, f.text, f.files])) ?? null,
+    savedFlows: ((saved[0]?.[1] as { wires?: { template?: string; files?: string[] }[] } | undefined)?.wires ?? []).map((w, j) => [j, w.template ?? null, w.files ?? []]),
+    closed: !saver(),
+    note: noteNow(),
+    keys: keysAt(),
+  };
   // the picker opened once, settled, to learn where Quick fix's row is (the dialog opens centred, so it's there again)
   await sleep(600);
   await openPicker(spaceUnder());
@@ -1393,9 +1412,16 @@ async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
   await drive([{ mouse: { ...mid(lineButton(picker()!, "automatic")), clickCount: 1 } }]);
   await sleep(200);
   const asked = tpNow(picker());
-  await drive([{ mouse: { ...mid(itemOf(picker()!, "Quick fix")), clickCount: 1 } }, { mouse: { ...mid(itemOf(picker()!, "Build, review, test")), clickCount: 1 } }]);
+  // (one at a time: the dialog's height follows what the template shows, so its list moves between them)
+  await drive([{ mouse: { ...mid(itemOf(picker()!, "Quick fix")), clickCount: 1 } }]);
+  await sleep(200);
+  await drive([{ mouse: { ...mid(itemOf(picker()!, "Build, review, test")), clickCount: 1 } }]);
   await sleep(300);
   out.makeAsk = { asked, again: tpNow(picker()) };
+  // what Reviewer sends Tester, edited: it's laid out as it's shown
+  const flow = picker()!.querySelector<HTMLTextAreaElement>('.tp-step[data-step="s3"] .tp-flow textarea');
+  await drive([{ mouse: { ...mid(flow), clickCount: 1 } }, { pause: 200 }, ..." Be brief".split("").map((key) => ({ key }))]);
+  await sleep(200);
   // its ticket: #5115, whose area is new; then ⌘↵ held down, as the keyboard repeats it, the first lay-out refused
   // (?lsLayOutFails=1): said, its area taken back, and the repeats after it lay nothing out
   await choose(".tp-ticket", "#5115");
@@ -1407,22 +1433,26 @@ async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
   await drive([{ pause: 400 }, { key: "Enter", meta: true, hold: "down" }, { pause: 600 }, ...repeats, { key: "Enter", meta: true, hold: "up" }]);
   await sleep(600);
   out.refused = { calls: since(mark, "templatesLayOut").length, open: !!picker(), error: tpNow(picker())?.error ?? null, area: area5115() };
-  // ⌘↵ again, pressed for it: laid out once
+  // ⌘↵ again, pressed for it: laid out once, as it's shown
   await sleep(300);
+  const shownNow = tpNow(picker());
   mark = env.calls.length;
   const linksAt = new Set(Object.keys(await links()));
   await drive([{ key: "Enter", meta: true }]);
   await sleep(3500);
   const lay = since(mark, "templatesLayOut");
   const fresh = Object.entries(await links()).filter(([id]) => !linksAt.has(id)).map(([, w]) => w);
-  const sent = (lay[0]?.[0] ?? null) as { area?: string; ticketId?: string; template?: { steps: { name: string; prompt: string }[]; wires: { gate?: string }[] } } | null;
+  const sent = (lay[0]?.[0] ?? null) as { area?: string; ticketId?: string; template?: { steps: { name: string; prompt: string; effort?: string }[]; wires: { gate?: string; template?: string; files?: string[] }[] } } | null;
   // the steps it made, by the wires it made (their names are the fixture's own too)
   const madeIds = [...new Set(fresh.flatMap((w) => [w.from, w.to]))];
   const madeNamed = (title: string) => madeIds.find((id) => node(id)?.querySelector(".lg-name, .ls-title, .ls-card-title")?.textContent?.startsWith(title)) ?? null;
   const ids = { builder: madeNamed("Builder"), reviewer: madeNamed("Reviewer"), tester: madeNamed("Tester"), dev: madeNamed("Dev server") };
   out.laidOut = {
     calls: lay.length,
-    sent: sent && { area: sent.area, ticketId: sent.ticketId, prompts: sent.template?.steps.map((s) => s.prompt), gates: sent.template?.wires.map((w) => w.gate ?? null) },
+    sent: sent && { area: sent.area, ticketId: sent.ticketId, prompts: sent.template?.steps.map((s) => s.prompt), efforts: sent.template?.steps.map((s) => s.effort ?? null), gates: sent.template?.wires.map((w) => w.gate ?? null) },
+    shownFlows: shownNow?.steps.flatMap((x) => x.flows.map((f) => [f.wire, f.text, f.files])) ?? null,
+    sentFlows: (sent?.template?.wires ?? []).map((w, j) => [j, w.template ?? null, w.files ?? []]),
+    shownEfforts: shownNow?.steps.map((x) => x.effort) ?? null,
     open: !!picker(),
     planned: Object.values(ids).filter((id) => id && node(id)?.classList.contains("planned")).length,
     boxes: Object.fromEntries(Object.entries(ids).map(([k, id]) => [k, id ? box(node(id)) : null])),
@@ -1451,6 +1481,24 @@ async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
   out.roundTrip = await layOutHere("Donor export", null);
   // and Build, review, test for a ticket whose area is a team room's: its automatic gate is laid out asking
   out.room = await layOutHere("Build, review, test", "#5110");
+}
+
+/** ?lsTemplates=broken: the picker says the saved templates can't be read, and sets them aside (its confirm answered yes). */
+async function brokenAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const asked: string[] = [];
+  window.confirm = (m?: string) => (asked.push(String(m)), true);
+  const mark = env.calls.length;
+  await openPicker(spaceUnder());
+  await sleep(700);
+  const before = { broken: picker()?.querySelector("[data-broken]")?.textContent ?? null, act: tpNow(picker())?.act ?? null };
+  await drive([{ mouse: { ...mid(picker()?.querySelector("[data-broken] button")), clickCount: 1 } }]);
+  await sleep(500);
+  out.broken = {
+    before,
+    asked,
+    calls: env.calls.slice(mark).filter((c) => c.fn === "templatesSetAside").length,
+    after: { broken: !!picker()?.querySelector("[data-broken]"), aside: picker()?.querySelector("[data-aside]")?.textContent ?? null, empty: picker()?.querySelector('[data-empty="templates"]')?.textContent ?? null },
+  };
 }
 
 async function showAudit(part: string): Promise<void> {
@@ -1527,6 +1575,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "lost") await lostAudit(env, out);
       else if (part === "step") await stepAudit(env, out);
       else if (part === "template") await templateAudit(env, out);
+      else if (part === "tbroken") await brokenAudit(env, out);
       // which of 5120's workspaces carry a handle at this zoom: those big enough on screen for one
       else if (part === "handles") out.handles = ["shape", "builder", "reviewer", "dev", "tester", "fixtures"].filter((k) => !!handleOf(k));
       else if (part === "send") await sendAudit(env, out);

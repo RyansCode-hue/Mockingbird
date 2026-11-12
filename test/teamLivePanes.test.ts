@@ -120,7 +120,10 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
   });
   live.start();
   running.push(live);
-  const start = (req: Partial<NewSessionRequest> = {}) => sessions.create({ repoPath: null, useWorktree: false, agent: "claude", taskGroup: "5110", title: "donors", ...req });
+  // a room's session never works at home (roomFolderRefusal): a repo-less one is given a folder of its own
+  const work = path.join(dir, m.name, "work");
+  fs.mkdirSync(work, { recursive: true });
+  const start = (req: Partial<NewSessionRequest> = {}) => sessions.create({ repoPath: null, useWorktree: false, cwd: work, agent: "claude", taskGroup: "5110", title: "donors", ...req });
   /** What the window was sent for a pane, as its terminal would show it. */
   const shown = (paneId: string) => window.filter((w) => w[0] === "session:data" && w[1] === paneId).map((w) => w[2]).join("");
   return { m, settings, sessions, live, window, notes, audits, logs, store, start, shown, remoteAudit };
@@ -1270,7 +1273,7 @@ describe("room session launch", () => {
     await reportIn(ryan, s.id);
     const args = ptyOf(s.id).args.join(" ");
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ bin: "/bin/echo", cwd: os.homedir(), version: CLAUDE_ROOM_SANDBOX_SINCE, extraDirs: ["/extra/dir"] });
+    expect(asked[0]).toMatchObject({ bin: "/bin/echo", cwd: s.cwd, version: CLAUDE_ROOM_SANDBOX_SINCE, extraDirs: ["/extra/dir"] });
     expect(args).toContain(quote(asked[0].settingsJson));
     expect(asked[0].written.denyRead.length).toBeGreaterThan(5);
     expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: false, coauthors: true });

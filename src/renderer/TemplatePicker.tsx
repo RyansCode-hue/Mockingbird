@@ -6,7 +6,9 @@ import { ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { ANSWER_SETTLE_MS, useHeldOff, useOpenSettle } from "./answerGuard";
 import { baseName } from "../shared/paths";
 import { isErr, AGENT_NAME, type ModelCatalog } from "../shared/types";
+import { carriesWork, templateOf } from "../shared/wires";
 import {
+  asShown,
   automaticGates,
   layOutPlan,
   ticketLine,
@@ -22,9 +24,10 @@ import {
 
 /**
  * The template picker (docs/landscape-wires.md, W9; section 5's WireTemplates.dc.html A) and Save as template's dialog,
- * which shows a chain the same way. Everything a template does is on screen before Lay out: each step's agent, model
- * and prompt whole (editable), its folder, an automatic gate called out with Make it ask, a terminal's command flagged
- * as one, and where it all goes in the foot.
+ * which shows a chain the same way. Everything a template does is on screen before Lay out, and what's laid out or
+ * saved is exactly that (asShown): each step's agent, model, effort and prompt whole (editable), its folder, what each
+ * wire into it carries (its What flows whole and editable, and its files), an automatic gate called out with Make it
+ * ask, a terminal's command flagged as one, and where it all goes in the foot.
  *
  * Lay out is one deliberate act: it takes no click for ANSWER_SETTLE_MS after the dialog opens or after the template
  * shown changes, never a double click's second, no key of a burst begun before the dialog opened, and no held ⌘↵ (the
@@ -201,6 +204,8 @@ function sendsLine(b: TemplateBody, w: TemplateWire): string {
 
 interface StepsProps {
   body: TemplateBody;
+  /** Each step's name editable (Save as template: a name made from a ticket or a branch is the chain's, not a step's). */
+  editNames?: boolean;
   plan: LayOutPlan;
   catalog: ModelCatalog | null;
   onStep: (key: string, patch: Partial<TemplateStep>) => void;
@@ -208,7 +213,7 @@ interface StepsProps {
   onStartFirst: (starts: boolean) => void;
 }
 
-function StepRows({ body, plan, catalog, onStep, onWire, onStartFirst }: StepsProps) {
+function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst }: StepsProps) {
   return (
     <>
       {body.steps.map((s, i) => {
@@ -216,6 +221,13 @@ function StepRows({ body, plan, catalog, onStep, onWire, onStartFirst }: StepsPr
         const p = plan.steps[i];
         const into = body.wires.map((w, j) => ({ w, p: plan.wires[j], j })).filter((x) => x.w.to === s.key && x.w.type !== "worktree");
         const models = catalog && !terminal ? catalog[s.agent as "claude" | "codex"].models : [];
+        const efforts = catalog && !terminal ? catalog[s.agent as "claude" | "codex"].efforts : [];
+        const effortOptions: SelectOption[] = [
+          { value: "", label: "Default effort" },
+          ...(s.effort && !efforts.includes(s.effort) ? [{ value: s.effort, label: s.effort }] : []),
+          ...efforts.map((e) => ({ value: e, label: e })),
+        ];
+        const nameOf = (k: string) => body.steps.find((x) => x.key === k)?.name ?? k;
         const modelOptions: SelectOption[] = [
           { value: "", label: "Default model" },
           ...(s.model && !models.some((m) => m.id === s.model) ? [{ value: s.model, label: s.model }] : []),
@@ -225,7 +237,11 @@ function StepRows({ body, plan, catalog, onStep, onWire, onStartFirst }: StepsPr
           <div key={s.key} className="tp-step" data-step={s.key}>
             <div className="tp-step-head">
               <span className="tp-dot" />
-              <span className="tp-name">{s.name}</span>
+              {editNames ? (
+                <input type="text" className="tp-name tp-name-edit" aria-label={`Step ${i + 1}'s name`} value={s.name} maxLength={80} onChange={(e) => onStep(s.key, { name: e.target.value })} />
+              ) : (
+                <span className="tp-name">{s.name}</span>
+              )}
               {terminal ? (
                 <span className="tp-fixed" title="A terminal step stays a terminal">Terminal</span>
               ) : (
@@ -241,6 +257,7 @@ function StepRows({ body, plan, catalog, onStep, onWire, onStartFirst }: StepsPr
                     onChange={(v) => onStep(s.key, { agent: v as "claude" | "codex", model: undefined, effort: undefined })}
                   />
                   <Select className="tp-model" value={s.model ?? ""} placeholder="Default model" title={`${s.name}'s model`} options={modelOptions} onChange={(v) => onStep(s.key, { model: v || undefined })} />
+                  <Select className="tp-effort" value={s.effort ?? ""} placeholder="Default effort" title={`${s.name}'s effort`} options={effortOptions} onChange={(v) => onStep(s.key, { effort: v || undefined })} />
                 </>
               )}
             </div>
@@ -254,6 +271,35 @@ function StepRows({ body, plan, catalog, onStep, onWire, onStartFirst }: StepsPr
             {typeof s.folder === "object" && !terminal && (
               <div className="tp-line dim">Works in {body.steps.find((x) => x.key === (s.folder as { sameAs: string }).sameAs)?.name}'s folder.</div>
             )}
+            {into
+              .filter(({ w }) => carriesWork(w.type))
+              .map(({ w, j }) => (
+                <div key={`flow-${j}`} className="tp-flow" data-wire={j}>
+                  <div className="tp-line dim">
+                    What {nameOf(w.from)} sends {w.type === "feedback" ? "back" : "it"} ({w.type}):
+                  </div>
+                  <WholeText
+                    value={templateOf({ template: w.template, when: w.when ?? "finished" })}
+                    mono
+                    label={`What ${nameOf(w.from)} → ${s.name} sends`}
+                    placeholder="{summary}"
+                    onChange={(v) => onWire(j, { template: v })}
+                  />
+                  {w.files?.length ? (
+                    <div className="tp-files">
+                      <span className="dim">Its files:</span>
+                      {w.files.map((f, x) => (
+                        <span key={f} className="tp-file">
+                          {f}
+                          <button type="button" className="link" aria-label={`Leave out ${f}`} title="Leave it out" onClick={() => onWire(j, { files: w.files!.filter((_f, y) => y !== x) })}>
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
             {terminal && (
               <div className="tp-line dim" data-flag="terminal">
                 A terminal runs this as a command. {p.terminal!.why}
@@ -426,7 +472,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
     try {
       why = await onLayOut({
         name: name || "The template",
-        template: body,
+        template: asShown(body),
         ...(ticket ? { ticketId: String(ticket.id), ticketTitle: ticket.title } : {}),
         repoPath: repo || null,
         ...(repo && base ? { base } : {}),
@@ -440,6 +486,20 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
       setBusy(false);
     }
     if (why) setError(why);
+  };
+  // saved templates that aren't a list: a copy kept where main says, and the list started empty
+  const [aside, setAsideNote] = useState("");
+  const setAside = async () => {
+    if (!window.confirm("Set the saved templates aside? A copy of them is kept as it is, and the list starts empty.")) return;
+    let r: { file: string; list: TemplateList } | { error: string };
+    try {
+      r = await window.mb.templatesSetAside();
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) return setError(`Couldn't set them aside: ${r.error}`);
+    setList(r.list);
+    setAsideNote(`Set aside: a copy is kept in ${r.file}, and the list starts empty.`);
   };
   const removeIt = async (id: string, label: string) => {
     if (!window.confirm(`Remove the template “${label}”? Laid-out steps made from it stay.`)) return;
@@ -556,7 +616,19 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
               </button>
             </div>
           )}
-          {list && !isErr(list) && list.broken && <div className="tp-empty red">{list.broken}</div>}
+          {list && !isErr(list) && list.broken && (
+            <div className="tp-empty red" data-broken>
+              {list.broken}{" "}
+              <button type="button" className="link" onClick={() => void setAside()}>
+                Set them aside…
+              </button>
+            </div>
+          )}
+          {aside && (
+            <div className="tp-empty" data-aside>
+              {aside}
+            </div>
+          )}
           {templates.map(({ template: t, unknown }) => {
             const auto = automaticGates(t);
             return (
@@ -680,7 +752,7 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
     setError("");
     let why: string | null;
     try {
-      why = await onSave(name.trim(), body);
+      why = await onSave(name.trim(), asShown(body));
     } catch (err) {
       console.warn(`[mockingbird] saving the template ${name}:`, err);
       why = `Couldn't save it: ${err instanceof Error ? err.message : String(err)}`;
@@ -723,6 +795,7 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
           body={body}
           plan={plan}
           catalog={catalog}
+          editNames
           onStep={(k, p) => setBody((b) => withStep(b, k, p))}
           onWire={(j, p) => setBody((b) => withWire(b, j, p))}
           onStartFirst={(starts) => setBody((b) => ({ ...b, startFirst: starts }))}

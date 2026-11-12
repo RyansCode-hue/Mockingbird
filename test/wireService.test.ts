@@ -484,7 +484,7 @@ describe("a session forgotten", () => {
   });
   it("writes nothing and tells nobody when it had no wires", () => {
     const { service, changes } = setup();
-    service.sessionForgotten("old");
+    expect(service.sessionForgotten("old")).toBeNull();
     expect(changes).toEqual([]);
   });
   it.skipIf(asRoot)("is logged when its wires can't be dropped now, and they show as blocked, their end gone", () => {
@@ -492,12 +492,15 @@ describe("a session forgotten", () => {
     const { id } = made(service.add("a", "old", "handoff"));
     closed.splice(closed.findIndex((s) => s.id === "old"), 1);
     fs.chmodSync(file, 0o444);
+    let why: string | null = null;
     try {
-      service.sessionForgotten("old");
+      why = service.sessionForgotten("old");
     } finally {
       fs.chmodSync(file, 0o644);
     }
     expect(logged.join()).toMatch(/couldn't drop the wires of forgotten session old.*read-only/);
+    // and answered, for a caller that says what it left
+    expect(why).toMatch(/read-only/);
     expect(store.wires().book!.links[id]).toBeTruthy();
     const r = service.linksFor(session("a")) as { result: any };
     expect(r.result.links[0]).toMatchObject({ wire: id, state: "blocked", other: { id: "old", gone: true }, why: expect.stringMatching(/no session "old"/) });
@@ -814,9 +817,9 @@ describe("laying a template out (W9)", () => {
       t.planned.push(s);
       return s;
     });
-    const forget = vi.fn((id: string) => {
+    const forget = vi.fn((id: string): string | null => {
       for (const list of [t.planned, t.running]) if (list.some((s) => s.id === id)) list.splice(list.findIndex((s) => s.id === id), 1);
-      t.service.sessionForgotten(id);
+      return t.service.sessionForgotten(id);
     });
     const start = vi.fn(async (id: string): Promise<SessionInfo> => {
       const p = t.planned.splice(t.planned.findIndex((s) => s.id === id), 1)[0];
@@ -905,6 +908,20 @@ describe("laying a template out (W9)", () => {
     expect(t.start).not.toHaveBeenCalled();
   });
 
+  it("says so when a step taken back leaves its wires behind, rather than that nothing was left", async () => {
+    const t = laying();
+    t.planStep.mockImplementationOnce(t.planStep.getMockImplementation()!).mockImplementationOnce(() => {
+      throw new Error("/code/backoffice isn't a git repo");
+    });
+    t.forget.mockImplementationOnce(((impl) => (id: string): string | null => {
+      impl(id);
+      return "landscape.json is read-only";
+    })(t.forget.getMockImplementation()!));
+    await expect(t.service.layOut(request(), t.d)).rejects.toThrow(
+      "Couldn't lay out “Build, review, test”: “Reviewer” was refused: /code/backoffice isn't a git repo. Its wires couldn't be taken back (landscape.json is read-only): remove them from their right-click."
+    );
+  });
+
   it("takes back its steps and wires when a wire is refused once they're made, naming what couldn't be", async () => {
     const t = laying();
     // Tester made across a team room's line from Reviewer: the handoff into it can't cross
@@ -913,9 +930,9 @@ describe("laying a template out (W9)", () => {
       if (req.title === "Tester") t.rooms[s.id] = "R1";
       return s;
     })(t.planStep.getMockImplementation()!));
-    t.forget.mockImplementation(((impl) => (id: string) => {
+    t.forget.mockImplementation(((impl) => (id: string): string | null => {
       if (id === "p2") throw new Error("sessions.json is read-only");
-      impl(id);
+      return impl(id);
     })(t.forget.getMockImplementation()!));
     await expect(t.service.layOut(request(), t.d)).rejects.toThrow(/^Couldn't lay out “Build, review, test”: Reviewer → Tester was refused: .*team room.*\. “Reviewer” couldn't be taken back: forget it from its menu\.$/);
     expect(t.forget.mock.calls.map((c) => c[0])).toEqual(["p3", "p2", "p1"]);

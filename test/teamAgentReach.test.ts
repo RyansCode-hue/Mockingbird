@@ -171,7 +171,9 @@ describe("a teammate's session someone can watch is one their agent can find and
   it("every session Ryan sees running in the room is listed by the same id, and a listed one that takes messages gets them", async () => {
     await nick.start({ title: "Attom Migration" });
     await nick.start({ title: "API work", taskGroup: "5110/api" });
-    await nick.start({ title: "No repo", repoPath: null, cwd: undefined });
+    const notes = path.join(tempDir("reach"), "notes");
+    fs.mkdirSync(notes);
+    await nick.start({ title: "No repo", repoPath: null, cwd: notes });
     const gone = await nick.start({ title: "Exited" });
     ptyOf(gone.id).exit(1);
     await until(() => viewOf(gone.id)?.status === "dead", "the exit to reach Ryan");

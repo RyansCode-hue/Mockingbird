@@ -2124,7 +2124,8 @@ function App() {
   };
   /**
    * Lay out (W9): template `req.template` as not-started steps and their wires in area `req.area` (made first when it
-   * has none: steps not started make no area), then, once they're drawn, the area tidied along its wires (planTidy).
+   * has none: steps not started make no area), then, once they're drawn, an area made for them tidied along its wires
+   * (planTidy). In an area that was there already they go where there's room, and nothing there moves.
    * The one act that does it, from the picker's Lay out: main checks it all again and makes everything. Settles with
    * why nothing was laid out (an area made for it is taken back), or null.
    */
@@ -2158,12 +2159,12 @@ function App() {
       started ? `${started} started${waiting ? `, ${waiting === 1 ? "1 step waits" : `${waiting} steps wait`} for ${waiting === 1 ? "its" : "their"} handoffs` : ""}.` : `${waiting === 1 ? "its step waits" : `its ${waiting} steps wait`}.`,
       ...r.notes,
     ].join(" ");
-    laidOut.current = { area: req.area, ids: r.steps.map((s) => s.id), wires: r.wires, said, until: Date.now() + LAID_OUT_WAIT_MS };
+    laidOut.current = { area: req.area, ids: r.steps.map((s) => s.id), wires: r.wires, said, tidy: !!area, until: Date.now() + LAID_OUT_WAIT_MS };
     setLaidTick((n) => n + 1);
     return null;
   };
-  /** A lay-out made, until its steps and wires are drawn and its area is tidied along them. */
-  const laidOut = useRef<{ area: string; ids: string[]; wires: string[]; said: string; until: number } | null>(null);
+  /** A lay-out made, until its steps and wires are drawn and (`tidy`: its area was made for it) tidied along them. */
+  const laidOut = useRef<{ area: string; ids: string[]; wires: string[]; said: string; tidy: boolean; until: number } | null>(null);
   const [laidTick, setLaidTick] = useState(0);
   useEffect(() => {
     const p = laidOut.current;
@@ -2178,9 +2179,13 @@ function App() {
         return () => clearTimeout(t);
       }
       laidOut.current = null;
-      return lsSay(`${p.said} Its area wasn't tidied: its steps weren't drawn in time. Tidy it from its ⋯ once they are.`);
+      return lsSay(`${p.said} ${p.tidy ? "Its area wasn't tidied: its steps weren't drawn in time. Tidy it from its ⋯ once they are." : ""}`.trim());
     }
     laidOut.current = null;
+    if (!p.tidy) {
+      goToArea(p.area);
+      return lsSay(`${p.said} They went where there was room in ${areaTitle(p.area)}, and nothing there moved: Tidy in its ⋯ lines them up along their wires, with Undo.`);
+    }
     const plan = planTidy(placed, layout, p.area, areaTitle, wiresInOrder(links).map(([, w]) => w));
     goToArea(p.area);
     if ("refused" in plan) return lsSay(`${p.said} Its area wasn't tidied: ${plan.refused}`);

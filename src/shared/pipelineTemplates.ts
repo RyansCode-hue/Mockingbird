@@ -1,7 +1,7 @@
 import { isObj } from "./landscape";
 import { oneLine } from "./team/agentText";
 import { AGENT_KINDS, ticketIdOf, type AgentKind } from "./types";
-import { carriesWork, linkRefusal, WIRE_GATES, WIRE_TYPES, WIRE_WHENS, type Wire, type WireGate, type WireSettings, type WireType, type WireWhen } from "./wires";
+import { carriesWork, linkRefusal, templateOf, WIRE_GATES, WIRE_TYPES, WIRE_WHENS, type Wire, type WireGate, type WireSettings, type WireType, type WireWhen } from "./wires";
 
 /**
  * Pipeline templates (docs/landscape-wires.md, W9): a chain of steps and the wires between them, saved from the
@@ -410,6 +410,12 @@ export function wireSettingsOf(w: TemplateWire, gate: WireGate): WireSettings {
     ...(w.toolOutput === false ? { toolOutput: false } : {}),
   };
 }
+
+/**
+ * `b` as the picker and Save as template show it: each wire that carries work with its What flows written out
+ * (templateOf: the default it would otherwise take), so what's laid out or saved is the text that was on screen.
+ */
+export const asShown = (b: TemplateBody): TemplateBody => ({ ...b, wires: b.wires.map((w) => (carriesWork(w.type) ? { ...w, template: templateOf({ template: w.template, when: w.when ?? "finished" }) } : w)) });
 
 /** How many of a template's gates are automatic: the picker's "1 automatic". */
 export const automaticGates = (b: Pick<TemplateBody, "wires">): number => b.wires.filter((w) => w.gate === "automatic").length;

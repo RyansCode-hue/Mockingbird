@@ -531,6 +531,14 @@ Member replace the single admin (creator, else longest-standing member).
   tools; its room sandbox (below) covers the home folders, credential stores
   and known files for its commands, but not the secret patterns inside its own
   folders (`cat .env`, M9). Codex's sandbox (below) covers its commands.
+- **Not at home:** a session in a room's area never works in the home folder,
+  or in a folder holding it (`roomFolderRefusal`, `src/main/sessions.ts`). A
+  sandbox lets an agent write in its own folder, which would be all of home but
+  the names it denies. New session, a step's start, Add next step and a
+  template's lay-out are refused, saying so, rather than falling back to home
+  as a repo-less session does elsewhere. A plain terminal isn't: it runs no
+  agent and no sandbox, so its folder grants it nothing (one resuming an agent
+  is refused).
 - **Codex room sessions** (Codex 0.138 or later) run in the room's sandbox:
   a permission profile, `mockingbird-room` (`src/main/codexRoomSandbox.ts`),
   defined and selected entirely by `-c` settings on that launch

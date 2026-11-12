@@ -30,6 +30,8 @@ const api = {
   templatesSave: (name: string, body: TemplateBody): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:save", name, body),
   /** Remove template `id`, one this version can't read too; the list as it is then. */
   templatesRemove: (id: string): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:remove", id),
+  /** Saved templates that aren't a list, set aside: a copy kept at `file`, and the list started empty. */
+  templatesSetAside: (): Promise<IpcResult<{ file: string; list: TemplateList }>> => ipcRenderer.invoke("templates:setAside"),
   /** Lay out: the template as the picker shows it, as not-started steps and their wires (WireService.layOut). */
   templatesLayOut: (req: LayOutRequest): Promise<IpcResult<LayOutReply>> => ipcRenderer.invoke("templates:layOut", req),
   /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */

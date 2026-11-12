@@ -46,7 +46,7 @@ import { WireTools } from "./wireTools";
 import { TicketTools } from "./ticketTools";
 import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
-import { draftTemplate, removedTemplate, savedTemplates } from "./templates";
+import { draftTemplate, removedTemplate, savedTemplates, setAsideTemplates } from "./templates";
 import { readTemplates } from "../shared/pipelineTemplates";
 import { HELPDESK_KEEPS_ITS_CONVERSATION, helpdeskShareRefusal, inHelpdeskFolder } from "./helpdesk";
 import { reviewPrompt } from "./review";
@@ -1513,6 +1513,8 @@ handle("templates:draft", (ids) =>
       const w = landscape.wires();
       return w.book ?? { refused: w.refused ?? "Wires can't be read right now." };
     },
+    ticketTitleOf: (id) => pipeline.get(id)?.title ?? null,
+    home: os.homedir(),
   })
 );
 handle("templates:save", (name, body) => {
@@ -1525,12 +1527,18 @@ handle("templates:remove", (id) => {
   store.setSettings({ pipelineTemplates: list });
   return readTemplates(list);
 });
+// saved templates that aren't a list stop every save and remove: a copy is kept, said, and the list starts empty
+handle("templates:setAside", () => {
+  const file = setAsideTemplates(store.settings.pipelineTemplates, { dir: MB_DIR });
+  store.setSettings({ pipelineTemplates: [] });
+  return { file, list: readTemplates([]) };
+});
 handle("templates:layOut", (req) =>
   wires.layOut(req, {
     planStep: (q) => sessions.planStep(q),
     forget: (id) => {
       sessions.kill(id, true);
-      wires.sessionForgotten(id);
+      return wires.sessionForgotten(id);
     },
     start: (id, ticketTitle) => startPlannedStep(id, undefined, ticketTitle),
     addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
