@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { parseRefs, scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmPull, scmPush, scmRoomPush, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
-import { ownFetch, ownNetworkGit, programOnPath, roomWriteEnv, urlHost } from "../src/main/safeGit";
+import { ownFetch, ownNetworkGit, programOnPath, roomFilters, roomWriteEnv, urlHost } from "../src/main/safeGit";
 import { checkoutBranch, cleanupWorktree, createWorktree, worktreeAt } from "../src/main/worktrees";
 import { prBranchProblem, unrecordedBranch } from "../src/shared/types";
 import { git, makeRepo, tempDir } from "./helpers";
@@ -641,6 +641,65 @@ describe("a room session's git and its repository's config: nothing from a file 
     onTestFinished(() => void vi.unstubAllEnvs());
     git(t.wt, ...id, "commit", "-q", "--allow-empty", "-m", "more");
     await expect(scmPush(t.wt, { own: true })).rejects.toThrow(`x.gitconfig, a file in ${fs.realpathSync(caches)}, which the room's sessions can change, sets core.editor`);
+  });
+
+  it("runs none of it with config from a file in its git folder but the config files room sandboxes keep read-only: an include of .git/team.config", async () => {
+    const repo = makeRepo();
+    fs.writeFileSync(path.join(repo, ".git", "team.config"), "[core]\n\teditor = vi\n");
+    git(repo, "config", "include.path", "team.config"); // relative: from .git/config's folder
+    await expect(roomFilters(repo)).rejects.toThrow(
+      `Mockingbird runs none of a team room session's git with this repository's config: .git/team.config, a file in ${fs.realpathSync(path.join(repo, ".git"))}, which the room's sessions can change, sets core.editor`
+    );
+    // the shared config and a worktree's own config.worktree are read
+    git(repo, "config", "--unset", "include.path");
+    git(repo, "config", "core.repositoryformatversion", "1");
+    git(repo, "config", "extensions.worktreeConfig", "true");
+    const wt = path.join(tempDir("wt"), "5101-x");
+    git(repo, "worktree", "add", "-q", "-b", "5101-x", wt);
+    git(wt, "config", "--worktree", "core.editor", "vi");
+    expect(fs.readFileSync(path.join(repo, ".git", "worktrees", "5101-x", "config.worktree"), "utf8")).toContain("editor = vi");
+    await expect(roomFilters(wt)).resolves.toEqual([]);
+    await expect(roomFilters(repo)).resolves.toEqual([]);
+    // a shared folder outside every working tree (a bare clone's, with a worktree): its team.config is the agent's too
+    const bare = path.join(tempDir("bare"), "app.git");
+    git(path.dirname(bare), "clone", "-q", "--bare", repo, bare);
+    const onBare = path.join(tempDir("wt"), "5102-y");
+    git(bare, "worktree", "add", "-q", "-b", "5102-y", onBare);
+    fs.writeFileSync(path.join(bare, "team.config"), "[core]\n\teditor = vi\n");
+    git(bare, "config", "include.path", "team.config");
+    await expect(roomFilters(onBare)).rejects.toThrow(`team.config, a file in ${fs.realpathSync(bare)}, which the room's sessions can change, sets core.editor`);
+  });
+
+  it("runs none of it while an include names a file its agent can write, whatever that file holds now: missing, empty, or behind a condition that doesn't hold", async () => {
+    const repo = makeRepo();
+    const refused = `Mockingbird runs none of a team room session's git with this repository's config: .git/config includes team.gitconfig, a file in ${fs.realpathSync(repo)}, which the room's sessions can change, and a setting there can name a program git runs as you`;
+    git(repo, "config", "include.path", "../team.gitconfig");
+    await expect(roomFilters(repo)).rejects.toThrow(refused);
+    fs.writeFileSync(path.join(repo, "team.gitconfig"), "");
+    await expect(roomFilters(repo)).rejects.toThrow(refused);
+    git(repo, "config", "--unset", "include.path");
+    git(repo, "config", "includeIf.onbranch:other.path", "../team.gitconfig");
+    await expect(roomFilters(repo)).rejects.toThrow(refused);
+    git(repo, "config", "--unset", "includeIf.onbranch:other.path");
+    // through a file of the user's own, which the agent can't write: one whose includeIf for another branch names it, and
+    // one behind such an includeIf itself, which git doesn't read now, naming it
+    const own = path.join(tempDir("own"), "user.gitconfig");
+    fs.writeFileSync(own, `[includeIf "onbranch:other"]\n\tpath = ${path.join(repo, "team.gitconfig")}\n`);
+    git(repo, "config", "include.path", own);
+    await expect(roomFilters(repo)).rejects.toThrow(/: ~\/own-[^/]+\/user\.gitconfig includes team\.gitconfig, a file in /);
+    git(repo, "config", "--unset", "include.path");
+    fs.writeFileSync(own, `[include]\n\tpath = ${path.join(repo, "team.gitconfig")}\n`);
+    git(repo, "config", "includeIf.onbranch:other.path", own);
+    await expect(roomFilters(repo)).rejects.toThrow(/: ~\/own-[^/]+\/user\.gitconfig includes team\.gitconfig, a file in /);
+    git(repo, "config", "--unset", "includeIf.onbranch:other.path");
+    // one in the room caches folder, not there yet
+    const cached = path.join(os.homedir(), "Library", "Caches", "mockingbird-room-caches", "r2", "later.gitconfig");
+    git(repo, "config", "include.path", cached);
+    await expect(roomFilters(repo)).rejects.toThrow("includes ~/Library/Caches/mockingbird-room-caches/r2/later.gitconfig, a file in");
+    // the user's own file, naming nothing the agent can write, is read
+    fs.writeFileSync(own, "[core]\n\teditor = vi\n");
+    git(repo, "config", "include.path", own);
+    await expect(roomFilters(repo)).resolves.toEqual([]);
   });
 
   it("turns off every filter but git-lfs's for a room session's writes, and refuses to stage, commit for Close session or discard a file one keeps", async () => {

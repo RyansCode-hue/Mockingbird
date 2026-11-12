@@ -125,6 +125,25 @@ describe("git in a room session's folder", () => {
     await expect(git(t.wt, ["status"])).rejects.toThrow(/won't run git/);
   });
 
+  it("refuses a main checkout's .git folder once it holds a commondir, which git would follow to the other folder's config: its fsmonitor never runs", async () => {
+    const t = setup();
+    expect(pinGitDirs(t.repo, (await roomGitDirs(t.repo))!, t.repo)).toBeNull();
+    expect(await git(t.repo, ["status", "--porcelain"])).toBe("");
+    // the agent's commondir in the shared folder, leading to a copy of it whose config has core.fsmonitor
+    const evil = path.join(t.dir, "evilcommon");
+    fs.writeFileSync(path.join(t.repo, ".git", "commondir"), evil + "\n");
+    expect(() => readGitPointer(t.repo)).toThrow(/holds a commondir, which would lead git to another folder's git data/);
+    await expect(git(t.repo, ["status", "--porcelain"])).rejects.toThrow(/won't run git in .*its \.git couldn't be read \(.*holds a commondir/);
+    await expect(guardedGit(t.repo).then((g) => g.status(["--porcelain"]))).rejects.toThrow(/won't run git/);
+    expect(fs.existsSync(t.ran)).toBe(false);
+    // one written before the launch is refused from the start
+    clearGitPins();
+    expect(pinGitDirs(t.repo, (await roomGitDirs(t.repo))!, t.repo)).toMatch(/holds a commondir/);
+    // as git itself does without the check: it reads the other folder's config, and the program runs
+    execFileSync("git", ["-C", t.repo, "status", "--porcelain"], { stdio: "ignore" });
+    expect(fs.existsSync(t.ran)).toBe(true);
+  });
+
   it("leaves every other folder alone", async () => {
     const t = setup();
     pinGitDirs(t.wt, (await roomGitDirs(t.wt))!, t.repo);

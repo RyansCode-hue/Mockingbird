@@ -114,10 +114,27 @@ describe("a Claude room session's settings", () => {
     // what a commit, a branch, a stash and a fetch write stays writable, however a pattern's `**` is read
     const writes = [
       ...["HEAD", "index", "ORIG_HEAD", "logs/HEAD", "refs/bisect/bad", "COMMIT_EDITMSG", "MERGE_HEAD", "AUTO_MERGE", "rebase-merge/done"].map((f) => path.join(dirs.own, f)),
-      ...["objects/ab/cdef", "refs/heads/own", "refs/stash", "packed-refs", "logs/refs/heads/own", "FETCH_HEAD", "refs/remotes/origin/main"].map((f) => path.join(dirs.common, f)),
+      ...["objects/ab/cdef", "objects/pack/pack-1.pack", "objects/info/commit-graph", "objects/info/packs", "refs/heads/own", "refs/stash", "packed-refs", "logs/refs/heads/own", "FETCH_HEAD", "refs/remotes/origin/main"].map((f) => path.join(dirs.common, f)),
     ];
     expect(s.sandbox.filesystem.allowWrite).toEqual([dirs.common, dirs.own]);
     for (const p of writes) expect(deniedBy(denyWrite, p, true), p).toBe(false);
+  });
+
+  it("keeps the shared git folder's config files and pointers read-only, to Bash and to the file tools, for a main checkout's session and a linked worktree's", () => {
+    // git follows a commondir in a main checkout's .git as in a linked worktree's folder, to another folder's config
+    const repo = makeRepo();
+    const elsewhere = tempDir("elsewhere");
+    fs.cpSync(path.join(repo, ".git"), path.join(elsewhere, "git"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".git", "commondir"), path.join(elsewhere, "git") + "\n");
+    expect(fs.realpathSync(git(repo, "rev-parse", "--path-format=absolute", "--git-path", "config"))).toBe(fs.realpathSync(path.join(elsewhere, "git", "config")));
+    const files = ["config", "config.worktree", "commondir", "gitdir", "info/attributes", "objects/info/alternates"];
+    for (const own of ["/code/app/.git", "/code/app/.git/worktrees/5110"]) {
+      const s = settingsOf({ git: { common: "/code/app/.git", own }, hooks: [] });
+      for (const f of files) {
+        expect(s.sandbox.filesystem.denyWrite, `${own}: ${f}`).toContain(`/code/app/.git/${f}`);
+        expect(s.permissions.deny, `${own}: ${f}`).toContain(`Edit(//code/app/.git/${f})`);
+      }
+    }
   });
 
   it("lets a worktree's commits write the shared git folder but its config, hooks, submodules and its own pointers", () => {

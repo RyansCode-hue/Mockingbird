@@ -136,21 +136,32 @@ export async function roomGitDirs(cwd: string): Promise<RoomGitDirs | null> {
 }
 
 /**
+ * The files in the shared git folder that git reads as config, or follows to another folder, when it runs in the main
+ * checkout: its config, and its config.worktree once the config turns extensions.worktreeConfig on; `commondir` and
+ * `gitdir`, which make the folder a linked worktree's and lead git to another folder's config, hooks and attributes;
+ * the attributes that pick a config's drivers for files; and `objects/info/alternates`, which adds another folder's
+ * objects. None is written by a commit, branch, stash or fetch.
+ */
+export const SHARED_GIT_FILES = ["config", "config.worktree", "commondir", "gitdir", path.join("info", "attributes"), path.join("objects", "info", "alternates")];
+
+/**
  * Inside the git folders the session writes, what stays read-only: anything
  * git would run code from, or follow to another folder, when Mockingbird or
- * the user runs git outside the sandbox later — config (core.fsmonitor,
- * aliases, credential helpers), hooks, submodules' git folders, other
- * worktrees, the attributes that pick a config's drivers for files, and this
- * worktree's own config, pointers and submodules' git folders (git keeps a
- * linked worktree's submodules in its own folder, not the shared one). Other
- * worktrees, those made after the launch included, sit inside the read-only
- * `worktrees` folder; in a Codex profile the more specific write of this
- * worktree's own folder keeps that one writable. (Claude's denies outrank its
- * writes whatever their depth, so claudeRoomSandbox.ts denies by name and
+ * the user runs git outside the sandbox later — SHARED_GIT_FILES (config:
+ * core.fsmonitor, aliases, credential helpers; the pointers), hooks,
+ * submodules' git folders, other worktrees, and this worktree's own config,
+ * pointers and submodules' git folders (git keeps a linked worktree's
+ * submodules in its own folder, not the shared one). The same for a main
+ * checkout's session and a linked worktree's: a `commondir` written in the
+ * shared folder repoints the main checkout's git, whichever session wrote it.
+ * Other worktrees, those made after the launch included, sit inside the
+ * read-only `worktrees` folder; in a Codex profile the more specific write of
+ * this worktree's own folder keeps that one writable. (Claude's denies outrank
+ * its writes whatever their depth, so claudeRoomSandbox.ts denies by name and
  * pattern instead.)
  */
 export function gitWrites(g: RoomGitDirs): { write: string[]; read: string[] } {
-  const read = ["config", "hooks", "modules", "worktrees", path.join("info", "attributes")].map((f) => path.join(g.common, f));
+  const read = [...SHARED_GIT_FILES, "hooks", "modules", "worktrees"].map((f) => path.join(g.common, f));
   if (g.own === g.common) return { write: [g.common], read };
   return { write: [g.common, g.own], read: [...read, ...["config.worktree", "commondir", "gitdir", "modules"].map((f) => path.join(g.own, f))] };
 }

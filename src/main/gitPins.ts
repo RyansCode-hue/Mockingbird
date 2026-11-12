@@ -47,13 +47,21 @@ const real = (p: string): string => {
 /**
  * The git folders `.git` in `top` leads to, read from the filesystem: a folder is the repository's own; a file names a
  * linked worktree's folder (`gitdir: …`), whose `commondir` names the shared one. Throws, saying why, when they can't
- * be read; a link is refused, as git would follow it too.
+ * be read; a link is refused, as git would follow it too, and so is a folder holding a `commondir`, which git follows
+ * from a main checkout's `.git` as from a linked worktree's folder, to another folder's config, hooks and attributes.
  */
 export function readGitPointer(top: string): GitFolders {
   const dotGit = path.join(top, ".git");
   const st = fs.lstatSync(dotGit);
   if (st.isSymbolicLink()) throw new Error(`${dotGit} is a link`);
   if (st.isDirectory()) {
+    let pointer: fs.Stats | null = null;
+    try {
+      pointer = fs.lstatSync(path.join(dotGit, "commondir"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    if (pointer) throw new Error(`${dotGit} holds a commondir, which would lead git to another folder's git data`);
     const r = fs.realpathSync(dotGit);
     return { common: r, own: r };
   }

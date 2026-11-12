@@ -114,24 +114,33 @@ function programOf(command: string): string {
   }
 }
 
-const realOr = (p: string) => {
+/** `p` with symlinks followed; a path that isn't there yet, from the nearest folder above it that is (/tmp's link too). */
+const realOr = (p: string): string => {
+  const abs = path.resolve(p);
   try {
-    return fs.realpathSync(p);
+    return fs.realpathSync(abs);
   } catch {
-    return path.resolve(p); // a path that isn't there yet is compared as written
+    const up = path.dirname(abs);
+    return up === abs ? abs : path.join(realOr(up), path.basename(abs));
   }
 };
 
-/** Where `cwd`'s git runs what a setting names (its working tree's top), and each working tree of its repository. */
+/**
+ * Where `cwd`'s git runs what a setting names (its working tree's top), each working tree of its repository, and its
+ * git folders: the shared one and this worktree's own (the same in a main checkout), with the two config files in them
+ * that room sandboxes keep read-only (`configs`: the shared config, and this worktree's config.worktree).
+ */
 interface Trees {
   top: string;
   trees: string[];
+  gitDirs: string[];
+  configs: string[];
 }
 async function treesOf(cwd: string): Promise<Trees> {
-  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  const [top, common, own] = (await git(cwd, ["rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir", "--git-dir"])).split("\n").map(realOr);
   const listed = await git(cwd, ["worktree", "list", "--porcelain", "-z"], { env: OWN_WRITE_ENV, trim: false });
   const trees = listed.split("\0").filter((l) => l.startsWith("worktree ")).map((l) => realOr(l.slice("worktree ".length)));
-  return { top: realOr(top), trees: [...new Set([realOr(top), ...trees])] };
+  return { top, trees: [...new Set([top, ...trees])], gitDirs: [...new Set([common, own])], configs: [path.join(common, "config"), path.join(own, "config.worktree")] };
 }
 
 /**
@@ -145,16 +154,20 @@ function treeHolding(p: string, t: Trees): string | null {
 }
 
 /**
- * The working tree holding the file `v` is set in (its origin), when that's a file in one of the repository's working
- * trees, outside its .git: a config file there (one the user's config includes, a team's tracked .gitconfig) is the
- * session's agent's to write.
+ * The folder holding config file `file` (a whole path, symlinks followed) that a room session's agent can write, when
+ * there's one: a working tree of the repository (a team's tracked .gitconfig, a file the user's config includes from
+ * there), or the repository's git folders, which room sessions write but for the parts their sandboxes keep read-only.
+ * Of the config files in those, only `t.configs` are kept so: any other (an include's `.git/team.config`) is the agent's.
  */
+function agentFolder(file: string, t: Trees): string | null {
+  if (t.configs.includes(file)) return null;
+  return t.gitDirs.find((d) => within(file, d)) ?? treeHolding(file, t);
+}
+
+/** agentFolder for the file `v` is set in (its origin); null for a command line's or a blob's. */
 function originTree(v: Pick<Scoped, "origin">, t: Trees): string | null {
   const file = originFile(v, t);
-  const tree = file && treeHolding(file, t);
-  if (!file || !tree) return null;
-  const rel = path.relative(tree, file);
-  return rel === ".git" || rel.startsWith(`.git${path.sep}`) ? null : tree;
+  return file && agentFolder(file, t);
 }
 
 /** The file `v` is set in, as a whole path with symlinks followed (a repository's own is named from its top), or null for a command line's or a blob's. */
@@ -176,22 +189,74 @@ interface Listed {
   value: string | null;
 }
 
-/** Every setting git reads in `cwd`, includes and includeIfs followed: one git. */
-async function configListing(cwd: string): Promise<Listed[]> {
-  const parts = (await git(cwd, ["config", "-z", "--list", "--show-origin", "--includes"], { trim: false })).split("\0");
-  const out: Listed[] = [];
+/** `git config -z --list --show-origin`'s answer, parsed. */
+function parseListing(out: string): Listed[] {
+  const parts = out.split("\0");
+  const listed: Listed[] = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const nl = parts[i + 1].indexOf("\n");
-    out.push({ origin: parts[i], key: nl < 0 ? parts[i + 1] : parts[i + 1].slice(0, nl), value: nl < 0 ? null : parts[i + 1].slice(nl + 1) });
+    listed.push({ origin: parts[i], key: nl < 0 ? parts[i + 1] : parts[i + 1].slice(0, nl), value: nl < 0 ? null : parts[i + 1].slice(nl + 1) });
   }
-  return out;
+  return listed;
+}
+
+/** Every setting git reads in `cwd`, includes and includeIfs followed: one git. */
+async function configListing(cwd: string): Promise<Listed[]> {
+  return parseListing(await git(cwd, ["config", "-z", "--list", "--show-origin", "--includes"], { trim: false }));
+}
+
+/** An include's key: `include.path`, or `includeIf.<condition>.path` (the condition as written, `.`s and all). */
+const INCLUDE_KEY = /^include(?:if\..*)?\.path$/i;
+
+/**
+ * The file an include in `origin` (`--show-origin`'s) names with `value`, as git resolves it: `~/` from the home
+ * folder, a relative path from the folder of the file that holds it, symlinks followed. Null when git reads none: an
+ * include from the command line or a blob must be a whole path, and `%(prefix)/` is git's own install folder.
+ */
+function includeTarget(origin: string, value: string, t: Trees): string | null {
+  if (value.startsWith("%(prefix)/")) return null;
+  if (value === "~" || value.startsWith("~/")) return realOr(path.join(os.homedir(), value.slice(1)));
+  if (path.isAbsolute(value)) return realOr(value);
+  const from = originFile({ origin }, t);
+  return from ? realOr(path.resolve(path.dirname(from), value)) : null;
+}
+
+/**
+ * The first file a room session's agent can write (agentFolder, or the room caches folder) that an include in `cwd`'s
+ * config names, with the file naming it: whatever it holds, so one empty, missing, or behind an includeIf whose
+ * condition doesn't hold now passes no check the agent could fill in before the git runs. Every include is followed
+ * through the files it names in turn, conditions or not, as the agent can't write those: they're read alone
+ * (`--no-includes`), each once. Null when there's none.
+ */
+async function writableInclude(cwd: string, listing: Listed[], t: Trees): Promise<{ target: string; from: string | null; folder: string } | null> {
+  const queue = listing.filter((e) => INCLUDE_KEY.test(e.key) && e.value);
+  const read = new Set<string>();
+  for (let e = queue.shift(); e; e = queue.shift()) {
+    const target = includeTarget(e.origin, e.value!, t);
+    if (!target) continue;
+    const folder = agentFolder(target, t) ?? (within(target, ROOM_CACHES_DIR) ? ROOM_CACHES_DIR : null);
+    if (folder) return { target, from: originFile(e, t), folder };
+    if (read.has(target)) continue;
+    read.add(target);
+    let inner: string;
+    try {
+      inner = await git(cwd, ["config", "-z", "--file", target, "--list", "--show-origin", "--no-includes"], { trim: false });
+    } catch (err) {
+      if (!fs.existsSync(target)) continue; // git reads no file that isn't there; one there it can't read is refused below
+      throw new Error(`the config file ${shownPath(target, t.top)}, which this repository's config includes, couldn't be read, so what it includes can't be checked: ${(err as Error).message}`);
+    }
+    queue.push(...parseListing(inner).filter((x) => INCLUDE_KEY.test(x.key) && x.value));
+  }
+  return null;
 }
 
 /**
  * What a team room session's git in `cwd` runs with, from one listing of its config (configListing). Throws when a
- * setting comes from a file the room's agent can write: one in a working tree of the repository outside its .git (a
- * team's tracked .gitconfig the repository's config includes; a file the user's config includes from there), or in the
- * folder room sessions keep their caches in. Such a file can name a program git runs as the user (credential.helper, a
+ * setting comes from a file the room's agent can write (agentFolder: one in a working tree of the repository, a team's
+ * tracked .gitconfig the repository's config includes, a file the user's config includes from there; one in its git
+ * folders but the config files kept read-only; one in the folder room sessions keep their caches in), or when an
+ * include names such a file at all (writableInclude), since what it holds when this checks isn't what it holds when
+ * the git runs. Such a file can name a program git runs as the user (credential.helper, a
  * filter's command, an ssh, an editor), so none of the session's git runs with it, whatever the key. Otherwise gives
  * the filter drivers to turn off (driversToTurnOff): every one but git-lfs's own, as for a guarded read, since a
  * filter runs from the working tree's top and can load code from it (`python -m nbstripout`).
@@ -209,6 +274,13 @@ async function roomConfig(cwd: string, t: Trees): Promise<{ filtersOff: string[]
     const named = keys.length > 3 ? `${keys.slice(0, 3).join(", ")} and ${keys.length - 3} more` : keys.join(", ");
     throw new Error(
       `Mockingbird runs none of a team room session's git with this repository's config: ${shownPath(file, t.top)}, a file in ${where}, which the room's sessions can change, sets ${named}, and a setting there can name a program git runs as you`
+    );
+  }
+  const include = await writableInclude(cwd, listing, t);
+  if (include) {
+    const by = include.from ? shownPath(include.from, t.top) : "its config";
+    throw new Error(
+      `Mockingbird runs none of a team room session's git with this repository's config: ${by} includes ${shownPath(include.target, t.top)}, a file in ${include.folder}, which the room's sessions can change, and a setting there can name a program git runs as you`
     );
   }
   const filters = listing
@@ -265,7 +337,7 @@ async function ownSsh(cwd: string): Promise<{ command: string; setAside: SetAsid
     setAside ??= {
       value: v.value,
       why: setIn
-        ? `it's set in ${shownPath(path.resolve(t.top, v.origin.slice("file:".length)), t.top)}, a file in ${tree}, a working tree of this repository, which a session there can change`
+        ? `it's set in ${shownPath(path.resolve(t.top, v.origin.slice("file:".length)), t.top)}, a file in ${tree}, ${t.trees.includes(tree) ? "a working tree" : "a git folder"} of this repository, which a session there can change`
         : `its program, ${program}, is in ${tree}, a working tree of this repository, which a session there can change`,
     };
   }

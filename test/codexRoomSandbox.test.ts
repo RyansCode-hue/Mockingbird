@@ -59,13 +59,14 @@ describe("a Codex room session's permission profile", () => {
     const profile = profileOf(codexRoomPermissions(places({ git: { common: "/r/.git", own: "/r/.git/worktrees/wt" }, caches: "/c/rooms/r1" })).config);
     for (const w of ["/r/.git", "/r/.git/worktrees/wt", "/c/rooms/r1"]) expect(profile).toContain(`"${w}"="write"`);
     for (const w of ["~/.npm", "~/Library/Caches", "~/.cache", "~/go/pkg", "~/.nuget/packages", "~/.cargo/registry"]) expect(profile).not.toContain(`"${w}"="write"`);
-    for (const r of ["config", "hooks", "modules", "worktrees", "info/attributes", "worktrees/wt/config.worktree", "worktrees/wt/commondir", "worktrees/wt/gitdir", "worktrees/wt/modules"]) expect(profile).toContain(`"/r/.git/${r}"="read"`);
+    const shared = ["config", "config.worktree", "commondir", "gitdir", "info/attributes", "objects/info/alternates", "hooks", "modules", "worktrees"];
+    for (const r of [...shared, "worktrees/wt/config.worktree", "worktrees/wt/commondir", "worktrees/wt/gitdir", "worktrees/wt/modules"]) expect(profile).toContain(`"/r/.git/${r}"="read"`);
     // no folder on PATH
     for (const bin of ["~/.yarn\"", "~/go\"", "~/.cargo\"", "~/.dotnet", "~/.local/bin", "~/Library/pnpm\""]) expect(profile).not.toContain(bin);
-    // a main checkout: one git folder
+    // a main checkout: one git folder, whose commondir would lead the main checkout's git (the user's own) elsewhere
     const main = profileOf(codexRoomPermissions(places({ git: { common: "/r/.git", own: "/r/.git" } })).config);
     expect(main).toContain(`"/r/.git"="write"`);
-    expect(main).not.toContain("commondir");
+    for (const r of shared) expect(main).toContain(`"/r/.git/${r}"="read"`);
     // outside a repository nothing of git's is writable
     expect(profileOf(codexRoomPermissions(places()).config)).not.toContain(`.git"="write"`);
   });

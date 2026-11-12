@@ -565,7 +565,9 @@ Member replace the single admin (creator, else longest-standing member).
     first install downloads afresh. Inside the git folder, what git would
     later run code from or follow when Mockingbird or the user runs git
     outside the sandbox stays read-only: `config` (fsmonitor, aliases,
-    credential helpers), `hooks`, `modules`, `info/attributes`, other
+    credential helpers) and `config.worktree`, the shared folder's own `commondir`
+    and `gitdir` (which would repoint the main checkout's git), `hooks`,
+    `modules`, `info/attributes`, `objects/info/alternates`, other
     worktrees, and this worktree's `config.worktree`, `commondir` and
     `gitdir`. So `git config`, `git remote add` and new upstream tracking
     fail. Nothing on `PATH` (`~/.local/bin`, `~/go/bin`, `~/.cargo/bin`) is

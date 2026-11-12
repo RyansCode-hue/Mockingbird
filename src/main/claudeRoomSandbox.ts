@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { CREDENTIAL_STORES, gitWrites, IN_FOLDER_RUNS_CODE, type RoomGitDirs } from "./codexRoomSandbox";
+import { CREDENTIAL_STORES, gitWrites, IN_FOLDER_RUNS_CODE, type RoomGitDirs, SHARED_GIT_FILES } from "./codexRoomSandbox";
 import { HOME_PRIVATE_DATA, HOME_RUNS_CODE, HOME_SECRETS, knownSecretFiles, notDeniedByPath } from "./secrets";
 
 /**
@@ -19,7 +19,7 @@ import { HOME_PRIVATE_DATA, HOME_RUNS_CODE, HOME_SECRETS, knownSecretFiles, notD
  *   (agents.ts), so the repository's hooks and MCP servers, which would run outside the sandbox, never start.
  * - The network is open, as for Codex and Council: any domain, and local services.
  * - The file tools (Edit, Write, NotebookEdit) refuse paths outside the session's folders, HOME_RUNS_CODE and the git
- *   folder's config, hooks and attributes, and inside the session's folders IN_FOLDER_RUNS_CODE: by rule, in every
+ *   folder's config files, pointers and hooks (SHARED_GIT_FILES), and inside the session's folders IN_FOLDER_RUNS_CODE: by rule, in every
  *   permission mode. Hooks, the status line and MCP servers run outside
  *   the sandbox, as Mockingbird's own need to.
  * - Its own SessionStart hook (`marker`) tells Mockingbird the settings were taken: a settings file Claude Code
@@ -131,8 +131,8 @@ export function claudeRoomSettings(p: ClaudeRoomPlaces): { settings: Record<stri
   // denied config says so)
   const worktreesNow = p.git ? everyWorktree(p.git) : [];
   const gitDenied = [...git.read.filter((r) => !git.write.some((w) => w.startsWith(r + path.sep))), ...siblings, ...worktreesNow];
-  // what git would run code from: its config and hooks, and the attributes that choose a config's drivers
-  const gitRuns = p.git ? [path.join(p.git.common, "config"), path.join(p.git.common, "hooks"), path.join(p.git.common, "info", "attributes")] : [];
+  // what git would run code from or follow elsewhere: its config files and pointers (SHARED_GIT_FILES), and its hooks
+  const gitRuns = p.git ? [...SHARED_GIT_FILES, "hooks"].map((f) => path.join(p.git!.common, f)) : [];
   return {
     settings: {
       sandbox: {

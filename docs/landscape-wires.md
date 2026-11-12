@@ -4479,6 +4479,149 @@ so (a) and (b) above still ran on every turn.
     - the restore refusal;
     - take-over's apply refusal.
 
+#### W15 review fixes 6 as built
+
+Rebased onto main 4d67e28 (the 1.7.0 follow-ups). Two conflicts came up, and both sides were kept:
+- `stub.ts`: the imports, and the `?lsGates` and `?prRequest` fixtures;
+- `answerGuard.ts`: `useAimedKeys` and `useArrivalGuard`.
+
+The verify of fixes 4 and 5 found one High, a sandbox gap that predates W15.
+
+- **H-1. A room agent could repoint the main checkout's git folder.** `gitWrites` left
+  `<common>/commondir` writable. Git follows a `commondir` in a main checkout's `.git`
+  as it does in a linked worktree's folder, and reads config, hooks and attributes from
+  where it points. In the reviewer's probe that ran three programs:
+  - a filter named in that config, run as the user by a local session's turn snapshot;
+  - a credential helper, run by a room push;
+  - `core.fsmonitor`, run by a plain `git status` in the main checkout.
+
+  `gitPinRefusal` didn't notice, and `roomFilters` passed, since everything under
+  `.git/` was exempt.
+
+- **The sandboxes (fix 1).**
+  - `SHARED_GIT_FILES` (`codexRoomSandbox.ts`) lists the files in the shared folder
+    that git reads as config or follows elsewhere:
+    - `config`;
+    - `config.worktree`, the main checkout's own once `extensions.worktreeConfig` is on;
+    - `commondir` and `gitdir`;
+    - `info/attributes`;
+    - `objects/info/alternates`.
+  - `gitWrites` keeps them read-only, with `hooks`, `modules` and `worktrees`. This
+    holds for a main checkout's session and a linked worktree's alike, since either
+    can write the shared folder.
+  - Claude's sandbox takes the list as `denyWrite`. Its file tools take
+    `SHARED_GIT_FILES` and `hooks` as Edit rules (before, only config, hooks and
+    attributes).
+  - None of these is written by a commit, branch, stash, fetch, `gc` (commit-graph,
+    packs) or repack.
+  - The other files git reads from a git folder:
+    - `info/sparse-checkout`: left writable. It picks which tracked files a checkout
+      writes, names no program and leads nowhere. Turning it on needs the read-only
+      config.
+    - `info/exclude`, `info/grafts`, `shallow`, `remotes/` and `branches/`: left
+      writable as data. A legacy remote file is read only for a remote the config
+      doesn't define, and its URL can't be `ext::`, which git refuses by default and
+      Mockingbird's own gits refuse outright.
+    - HEAD, the index, refs, logs and objects: what commits write.
+    - Include targets: `roomConfig`, below.
+- **`readGitPointer` (fix 2).** A `.git` folder holding a `commondir` throws: "… holds
+  a commondir, which would lead git to another folder's git data".
+  - A room session pinned on a main checkout then has every git refused from the
+    moment one appears: the status poll, snapshots, guarded reads, its own network
+    gits.
+  - One written before the launch is refused at pinning.
+- **The origin check (fix 3, and L-2).**
+  - `treesOf` now also gives the git folders (shared and own) and the two config files
+    room sandboxes keep read-only: `<common>/config` and `<own>/config.worktree`.
+  - `agentFolder` takes any other file in the git folders as the agent's, as it does a
+    file in a working tree. That covers an include of `.git/team.config`, and a bare
+    shared folder outside every working tree.
+  - `ownSsh`'s set-aside says "a git folder of this repository" for those.
+- **Includes, whatever they hold (L-1).**
+  - `writableInclude` reads every `include.path` and `includeIf.*.path` from the same
+    listing, with their origins.
+  - It resolves each as git does: `~/` from home, a relative path from the folder of
+    the file that holds it, `%(prefix)/` skipped.
+  - It refuses one that names a file in `agentFolder` or the room caches folder,
+    whether the file is missing, empty or behind a condition that doesn't hold now.
+  - It follows the files it names in turn, conditions or not, each read alone
+    (`--no-includes`) and once. An includeIf in the user's own file therefore can't
+    reach an agent's file after a branch switch.
+  - `realOr` resolves a path that isn't there yet from its nearest existing folder. A
+    missing file under `/tmp`'s link failed to match the caches folder.
+- **The rest of the sweep.** Every raw git in these files runs nothing a config names,
+  as none reads the index or the working tree. So no filter, textconv, fsmonitor or
+  hook runs:
+  - `files.ts`: `for-each-ref`, `rev-parse` (HEAD, a ref's commit), `rev-list --count`,
+    `merge-base` (twice), `show-ref`. Its diffs and status go through `guardedGit`.
+  - `teamChanges.ts`:
+    - `rev-parse` (a snapshot's parent, a teammate's branch, a migration's ref);
+    - `diff --name-only` between commits (twice);
+    - `ls-tree` (three);
+    - `merge-base`;
+    - the teammate-diff tool's two patches, which are tree-to-tree with
+      `--no-ext-diff --no-textconv`.
+
+    Its `ls-files` is guarded.
+  - `claims.ts`: `worktree list --porcelain` and `rev-parse --git-common-dir`. Its
+    `ls-files` is guarded.
+  - `pullRequests.ts`: `rev-list --count`. The rest is guarded.
+- **Residual.**
+  - A Claude deny on a file that doesn't exist yet (`<common>/commondir` in most
+    repositories) is taken by path, as `info/attributes` already was. Only a real CLI
+    shows it holds (below).
+  - A local session's git in the main checkout isn't pinned. It relies on the
+    sandboxes keeping `commondir` read-only.
+- **Hand checks with real CLIs** (added to the list above):
+  - In a Claude room pane and a Codex one, each on the main checkout, then each on a
+    linked worktree: `echo x > <common>/commondir`, and the same through `node -e`.
+    Both are refused, and a commit in the pane still works.
+  - The same for `<common>/config.worktree` and `<common>/objects/info/alternates`.
+  - `get_sandbox_dialog` lists the shared folder's new denies in `fs_deny_write`.
+- **Tests.**
+  - `codexRoomSandbox.test.ts`: the old "no commondir rule" for a main checkout now
+    reads every shared file as read-only, for a main checkout and a linked worktree.
+  - `claudeRoomSandbox.test.ts`:
+    - real git follows a main checkout's `.git/commondir` to another folder's config;
+    - all six shared files are denied to Bash and the file tools, in both session
+      kinds;
+    - gc's and repack's writes stay writable.
+  - `gitPins.test.ts`: a main checkout's `.git` gaining a `commondir` refuses every git
+    there, guarded reads too, and the other folder's fsmonitor never runs. One written
+    before the launch is refused at pinning. Plain git, without the check, runs it.
+  - `scm.test.ts`:
+    - an include of `.git/team.config` is refused, and so is one of a bare clone's
+      `team.config`; the shared config and a linked worktree's `config.worktree` are
+      read;
+    - an include of a worktree file is refused while the file is missing, empty or
+      behind `includeIf.onbranch:other`, and through the user's own file whose
+      includeIf names it;
+    - an include of a cache file not there yet is refused;
+    - the user's own file is read.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0, with the main checkout's `node_modules` linked in for
+  `leakGuard`'s nested run (the link was removed afterwards): 196 files pass and 35
+  skip; 3,354 tests pass and 339 skip.
+- `uiLandscapeNeeds` alone, without CI, after the rebase's `answerGuard.ts` merge: 24 tests pass.
+- Each change undone in turn (`w15/mutate7.mjs`) fails a test, 13 mutations:
+  - Fix 1 (5): `commondir`, the shared `config.worktree` and `alternates` each left
+    writable; a main checkout's session without them; Claude's file tools not kept
+    off them.
+  - Fix 2 (1): a `.git` folder's `commondir` not refused.
+  - Fix 3 (2): the git folders not counted as the agent's; all of `.git/` exempt
+    again.
+  - L-1 (5):
+    - includes not checked;
+    - includes not followed;
+    - a relative include resolved from the top;
+    - the caches folder unchecked;
+    - a missing file's path not resolved through its folder.
+  - The first run's "not followed" survived: the test's user file was included
+    unconditionally, so git's own listing showed what it named. A case with the user's
+    file itself behind an unmatched includeIf now catches it.
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn
