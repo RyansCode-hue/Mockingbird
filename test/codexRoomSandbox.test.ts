@@ -59,7 +59,7 @@ describe("a Codex room session's permission profile", () => {
     const profile = profileOf(codexRoomPermissions(places({ git: { common: "/r/.git", own: "/r/.git/worktrees/wt" }, caches: "/c/rooms/r1" })).config);
     for (const w of ["/r/.git", "/r/.git/worktrees/wt", "/c/rooms/r1"]) expect(profile).toContain(`"${w}"="write"`);
     for (const w of ["~/.npm", "~/Library/Caches", "~/.cache", "~/go/pkg", "~/.nuget/packages", "~/.cargo/registry"]) expect(profile).not.toContain(`"${w}"="write"`);
-    for (const r of ["config", "hooks", "modules", "worktrees", "info/attributes", "worktrees/wt/config.worktree", "worktrees/wt/commondir", "worktrees/wt/gitdir"]) expect(profile).toContain(`"/r/.git/${r}"="read"`);
+    for (const r of ["config", "hooks", "modules", "worktrees", "info/attributes", "worktrees/wt/config.worktree", "worktrees/wt/commondir", "worktrees/wt/gitdir", "worktrees/wt/modules"]) expect(profile).toContain(`"/r/.git/${r}"="read"`);
     // no folder on PATH
     for (const bin of ["~/.yarn\"", "~/go\"", "~/.cargo\"", "~/.dotnet", "~/.local/bin", "~/Library/pnpm\""]) expect(profile).not.toContain(bin);
     // a main checkout: one git folder
@@ -68,6 +68,17 @@ describe("a Codex room session's permission profile", () => {
     expect(main).not.toContain("commondir");
     // outside a repository nothing of git's is writable
     expect(profileOf(codexRoomPermissions(places()).config)).not.toContain(`.git"="write"`);
+  });
+
+  it("keeps every other worktree read-only, one made after the launch included, by the folder that holds them, its own alone writable", () => {
+    const profile = profileOf(codexRoomPermissions(places({ git: { common: "/r/.git", own: "/r/.git/worktrees/wt" } })).config);
+    // the profile's path entries, each with its access; Codex goes by the most specific one that holds a path
+    const entries = [...profile.matchAll(/"(\/[^"]*)"="(write|read|deny)"/g)].map((m) => ({ at: m[1], access: m[2] }));
+    const access = (p: string) => entries.filter((e) => p === e.at || p.startsWith(e.at + "/")).sort((a, b) => b.at.length - a.at.length)[0]?.access;
+    for (const f of ["HEAD", "index", "commondir", "gitdir", "config.worktree", "modules/lib/config"]) expect(access(`/r/.git/worktrees/made-later/${f}`), f).toBe("read");
+    for (const f of ["HEAD", "index", "logs/HEAD", "refs/bisect/bad"]) expect(access(`/r/.git/worktrees/wt/${f}`), f).toBe("write");
+    for (const f of ["commondir", "gitdir", "config.worktree", "modules/lib/config"]) expect(access(`/r/.git/worktrees/wt/${f}`), f).toBe("read");
+    for (const f of ["objects/ab/cdef", "refs/heads/wt", "packed-refs"]) expect(access(`/r/.git/${f}`), f).toBe("write");
   });
 
   it("says when the PAT file can't be worked out, and still denies everything else", () => {

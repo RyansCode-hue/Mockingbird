@@ -2,8 +2,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { claudeRoomSettings } from "../src/main/claudeRoomSandbox";
+import { roomGitDirs } from "../src/main/codexRoomSandbox";
 import { HOME_RUNS_CODE } from "../src/main/secrets";
-import { tempDir } from "./helpers";
+import { git, makeRepo, tempDir } from "./helpers";
 
 /** A Claude team room session's sandbox and deny rules (--settings), as main writes them. */
 
@@ -71,12 +72,58 @@ describe("a Claude room session's settings", () => {
     expect(s.permissions.deny).toEqual(expect.arrayContaining([`Edit(/${path.join(common, "info", "attributes")})`]));
   });
 
+  it("denies what git runs or follows in every worktree's git folder by pattern, so one made after the launch is covered, and leaves its own commits writable", async () => {
+    const repo = makeRepo();
+    const at = tempDir("wt");
+    git(repo, "worktree", "add", "-q", "-b", "own", path.join(at, "own"));
+    git(repo, "worktree", "add", "-q", "-b", "before", path.join(at, "before"));
+    const dirs = (await roomGitDirs(path.join(at, "own")))!;
+    const s = settingsOf({ git: dirs, hooks: [] });
+    // made while the pane runs, after its settings were written
+    const later = path.join(at, "later");
+    git(repo, "worktree", "add", "-q", "-b", "later", later);
+    const laterGit = path.resolve(later, git(later, "rev-parse", "--git-dir"));
+    expect(path.dirname(laterGit)).toBe(path.join(dirs.common, "worktrees"));
+    // where git reads a linked worktree's config, pointers and submodules: its own folder, not the shared one
+    for (const name of ["config.worktree", "commondir", "modules"]) expect(path.resolve(later, git(later, "rev-parse", "--git-path", name))).toBe(path.join(laterGit, name));
+
+    const denyWrite: string[] = s.sandbox.filesystem.denyWrite;
+    const editDenied: string[] = s.permissions.deny;
+    // a pattern matches what it names, `**` one folder or more (narrow) or none at all too (wide), and a path what's under it
+    const matches = (pattern: string, p: string, wide: boolean) => {
+      if (!pattern.includes("*")) return p === pattern || p.startsWith(pattern + "/");
+      const re = pattern
+        .split(/(\*\*\/|\*\*|\*)/)
+        .map((part) => (part === "**/" ? (wide ? "(?:.*/)?" : "(?:[^/]+/)+") : part === "**" ? ".*" : part === "*" ? "[^/]*" : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")))
+        .join("");
+      return new RegExp(`^${re}$`).test(p);
+    };
+    const deniedBy = (list: string[], p: string, wide = false) => list.some((d) => matches(d, p, wide));
+    const editRules = editDenied.flatMap((r) => (r.startsWith("Edit(//") ? [r.slice("Edit(/".length, -1)] : []));
+
+    const runs = (gitDir: string) => ["config.worktree", "commondir", "gitdir", "modules", "modules/lib/config", "modules/lib/hooks/pre-commit"].map((f) => path.join(gitDir, f));
+    for (const p of [...runs(laterGit), ...runs(dirs.own)]) {
+      expect(deniedBy(denyWrite, p), p).toBe(true);
+      expect(deniedBy(editRules, p), p).toBe(true);
+    }
+    // one there at launch is denied whole, by name
+    const before = path.join(dirs.common, "worktrees", "before");
+    for (const f of ["HEAD", "index", "commondir", "modules/lib/config"]) expect(deniedBy(denyWrite, path.join(before, f)), f).toBe(true);
+    // what a commit, a branch, a stash and a fetch write stays writable, however a pattern's `**` is read
+    const writes = [
+      ...["HEAD", "index", "ORIG_HEAD", "logs/HEAD", "refs/bisect/bad", "COMMIT_EDITMSG", "MERGE_HEAD", "AUTO_MERGE", "rebase-merge/done"].map((f) => path.join(dirs.own, f)),
+      ...["objects/ab/cdef", "refs/heads/own", "refs/stash", "packed-refs", "logs/refs/heads/own", "FETCH_HEAD", "refs/remotes/origin/main"].map((f) => path.join(dirs.common, f)),
+    ];
+    expect(s.sandbox.filesystem.allowWrite).toEqual([dirs.common, dirs.own]);
+    for (const p of writes) expect(deniedBy(denyWrite, p, true), p).toBe(false);
+  });
+
   it("lets a worktree's commits write the shared git folder but its config, hooks, submodules and its own pointers", () => {
     const git = { common: "/code/app/.git", own: "/code/app/.git/worktrees/5110" };
     const s = settingsOf({ git, hooks: ["/h/githooks", "/h/coauthors"] });
     expect(s.sandbox.filesystem.allowWrite.slice(0, 2)).toEqual([git.common, git.own]);
     const denied = s.sandbox.filesystem.denyWrite;
-    expect(denied).toEqual(expect.arrayContaining(["/code/app/.git/config", "/code/app/.git/hooks", "/code/app/.git/modules", `${git.own}/config.worktree`, `${git.own}/commondir`, `${git.own}/gitdir`]));
+    expect(denied).toEqual(expect.arrayContaining(["/code/app/.git/config", "/code/app/.git/hooks", "/code/app/.git/modules", `${git.own}/config.worktree`, `${git.own}/commondir`, `${git.own}/gitdir`, `${git.own}/modules`]));
     // a denied folder holding its own git folder would stop every commit: Claude's denyWrite outranks allowWrite
     expect(denied).not.toContain("/code/app/.git/worktrees");
     for (const d of denied) expect(git.own.startsWith(d + "/")).toBe(false);
@@ -86,6 +133,8 @@ describe("a Claude room session's settings", () => {
     const main = settingsOf({ git: { common: "/code/app/.git", own: "/code/app/.git" }, hooks: [] });
     expect(main.sandbox.filesystem.allowWrite[0]).toBe("/code/app/.git");
     expect(main.sandbox.filesystem.denyWrite).toContain("/code/app/.git/worktrees");
+    // which holds every worktree's, later ones too: no pattern needed
+    expect(main.sandbox.filesystem.denyWrite.filter((d: string) => d.includes("*") && d.startsWith("/code/app/.git"))).toEqual([]);
   });
 
   it("denies the secrets to its commands as Codex's sandbox does, the known PAT file included, and says what it couldn't find", () => {

@@ -139,12 +139,18 @@ export async function roomGitDirs(cwd: string): Promise<RoomGitDirs | null> {
  * the user runs git outside the sandbox later — config (core.fsmonitor,
  * aliases, credential helpers), hooks, submodules' git folders, other
  * worktrees, the attributes that pick a config's drivers for files, and this
- * worktree's own config and pointers.
+ * worktree's own config, pointers and submodules' git folders (git keeps a
+ * linked worktree's submodules in its own folder, not the shared one). Other
+ * worktrees, those made after the launch included, sit inside the read-only
+ * `worktrees` folder; in a Codex profile the more specific write of this
+ * worktree's own folder keeps that one writable. (Claude's denies outrank its
+ * writes whatever their depth, so claudeRoomSandbox.ts denies by name and
+ * pattern instead.)
  */
 export function gitWrites(g: RoomGitDirs): { write: string[]; read: string[] } {
   const read = ["config", "hooks", "modules", "worktrees", path.join("info", "attributes")].map((f) => path.join(g.common, f));
   if (g.own === g.common) return { write: [g.common], read };
-  return { write: [g.common, g.own], read: [...read, ...["config.worktree", "commondir", "gitdir"].map((f) => path.join(g.own, f))] };
+  return { write: [g.common, g.own], read: [...read, ...["config.worktree", "commondir", "gitdir", "modules"].map((f) => path.join(g.own, f))] };
 }
 
 export interface CodexRoomPlaces {

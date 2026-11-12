@@ -7,7 +7,8 @@ import { HOME_PRIVATE_DATA, HOME_RUNS_CODE, HOME_SECRETS, knownSecretFiles, notD
  * The sandbox a Claude team room session runs in (docs/team-rooms.md), given with `--settings` on that launch alone,
  * so ~/.claude/settings.json stays untouched. It mirrors a Codex room session's (codexRoomSandbox.ts):
  * - Bash, and whatever it starts, writes only in the session's folders, the temp folder, the repository's git data but
- *   what git runs code from (gitWrites' read-only parts, and the other worktrees' folders), and the room's own caches.
+ *   what git runs code from (gitWrites' read-only parts, the other worktrees' folders, and what git runs or follows in
+ *   any worktree's, one made after the launch included), and the room's own caches.
  *   HOME_RUNS_CODE is denied by name as well, since the git data could otherwise sit above one of them, and so is
  *   IN_FOLDER_RUNS_CODE inside the session's folders.
  * - It can't read HOME_SECRETS, HOME_PRIVATE_DATA, CREDENTIAL_STORES or the known secret files, but for Mockingbird's
@@ -75,8 +76,32 @@ function inFolderWriteDenies(dir: string): string[] {
 }
 
 /**
- * The other worktrees' own git folders, as they are at launch: a linked worktree writes its own, and Claude's
- * denyWrite outranks allowWrite whatever their depth, so the folder that holds them all can't be denied whole.
+ * What git reads, in any worktree's own git folder, as config or as a pointer to another folder: its config, the
+ * pointers to the shared folder and back, and its submodules' git folders, each with a config and hooks of its own.
+ * Folders end in "/".
+ */
+const WORKTREE_RUNS_CODE = ["config.worktree", "commondir", "gitdir", "modules/"];
+
+/**
+ * WORKTREE_RUNS_CODE in every worktree's own git folder, as denyWrite globs (a `**` for the worktree's name): the
+ * sandbox reads its settings once, at launch, so a worktree made later is covered only by a pattern, never by a name.
+ * The pane's own match too, as gitWrites denies them already. A main checkout's worktrees folder is denied whole.
+ */
+function everyWorktree(g: RoomGitDirs): string[] {
+  if (g.own === g.common) return [];
+  return WORKTREE_RUNS_CODE.flatMap((name) => {
+    const folder = name.endsWith("/");
+    const at = path.join(g.common, "worktrees", "**", folder ? name.slice(0, -1) : name);
+    return folder ? [at, `${at}/**`] : [at];
+  });
+}
+
+/**
+ * The other worktrees' own git folders, as they are at launch, denied whole: a linked worktree writes its own, and
+ * Claude's denyWrite outranks allowWrite whatever their depth, so the folder that holds them all can't be denied whole.
+ * One made after the launch has what git runs or follows denied by everyWorktree's patterns, and the rest of its git
+ * folder (its HEAD, index and logs) writable until the pane restarts, as the shared refs are to every room pane: git
+ * runs nothing from those.
  */
 function otherWorktrees(g: RoomGitDirs): string[] {
   const all = path.join(g.common, "worktrees");
@@ -104,7 +129,8 @@ export function claudeRoomSettings(p: ClaudeRoomPlaces): { settings: Record<stri
   // Claude's denyWrite outranks allowWrite whatever their depth, so a worktree's own git folder can't sit inside a denied
   // one: the other worktrees' folders are denied one by one instead (their config.worktree is read only once the
   // denied config says so)
-  const gitDenied = [...git.read.filter((r) => !git.write.some((w) => w.startsWith(r + path.sep))), ...siblings];
+  const worktreesNow = p.git ? everyWorktree(p.git) : [];
+  const gitDenied = [...git.read.filter((r) => !git.write.some((w) => w.startsWith(r + path.sep))), ...siblings, ...worktreesNow];
   // what git would run code from: its config and hooks, and the attributes that choose a config's drivers
   const gitRuns = p.git ? [path.join(p.git.common, "config"), path.join(p.git.common, "hooks"), path.join(p.git.common, "info", "attributes")] : [];
   return {
@@ -127,6 +153,7 @@ export function claudeRoomSettings(p: ClaudeRoomPlaces): { settings: Record<stri
         deny: [
           ...HOME_RUNS_CODE.map((x) => `Edit(${x})`),
           ...gitRuns.flatMap((x) => editDeny(x, true)),
+          ...worktreesNow.map((x) => `Edit(/${x})`),
           ...(p.folders ?? []).flatMap((d) => inFolderDenies(path.resolve(d))),
         ],
         blockWritesOutsideWorkingDirectories: true,
