@@ -69,6 +69,7 @@ describe("making a wire", () => {
   it.each([
     ["itself", "a", "a", "handoff", /to itself/],
     ["a teammate's session", "a", "r~abc", "handoff", /teammate's session/],
+    ["a teammate's workspace as the landscape names it, a wire dropped on it", "a", "r~0f1e2d3c4b5a~n1", "context", /teammate's session/],
     ["a session it doesn't know", "a", "nope", "handoff", /no session "nope"/],
     ["a debrief", "a", "brief", "context", /debrief/],
     ["the Helpdesk tasks workspace, as its target", "a", "helpdesk", "handoff", /Helpdesk tasks workspace/],

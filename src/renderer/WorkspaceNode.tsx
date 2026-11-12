@@ -271,6 +271,8 @@ export function WorkspaceNode({
         </>
       )}
       {mode !== "focus" && mode !== "placeholder" && RESIZE_EDGES.map((e) => <div key={e} className={`ls-rz ${e}`} data-edge={e} aria-hidden="true" />)}
+      {/* the edge handle a wire is dragged from (Cards.dc.html), over the right edge's resize strip; shown on hover or selection */}
+      {mode !== "focus" && mode !== "placeholder" && <div className="ls-wh" aria-hidden="true" data-tip="Drag to another workspace to wire them" style={{ ["--ls-inv" as string]: inv }} />}
     </div>
   );
 }

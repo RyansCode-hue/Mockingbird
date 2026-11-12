@@ -4,7 +4,7 @@ import type { Camera, Rect } from "../shared/landscape";
 import type { WireState } from "../shared/wires";
 import { createIpcStore } from "./ipcStore";
 import { GHOST_INSET, type Band, type Point } from "./landscapeModel";
-import { pillBox, shiftedBox, translateOf, wireCurve, type WireAnchor, type WireLook, type WireView } from "./wiresModel";
+import { pillBox, shiftedBox, translateOf, wireCurve, wireNear, type WireAnchor, type WireCurve, type WireLook, type WireView } from "./wiresModel";
 
 /** The wire book as main last said it (wires:get, then wires:changed), and why it couldn't be read when it couldn't. */
 export interface WiresRead {
@@ -49,6 +49,8 @@ const MARKS = ["idle", "amber", "green", "red"];
 export interface WireLayerHandle {
   /** Draw the wires again where their ends are now: a workspace being dragged (its `translate`) or let go. */
   follow: () => void;
+  /** The wire whose line runs within `within` of landscape point `p`, as last drawn: what a right-click there is on (W4b). */
+  wireAt: (p: Point, within: number) => string | null;
 }
 
 /**
@@ -56,7 +58,7 @@ export interface WireLayerHandle {
  * and their labels beside it, kept at screen size by --ls-inv (Landscape's paintScale). React draws what each wire is;
  * where it runs is written straight to the elements, as the guides are: when the layout changes, when the zoom does
  * (a card's inset and a pill's size are a few screen px), and as a dragged workspace moves (`follow`), never through a
- * render. Nothing here takes a pointer or the keyboard.
+ * render. Nothing here takes a pointer or the keyboard: a right-click on a wire is found from where it was last drawn (`wireAt`).
  */
 export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; band: Band; cam: React.MutableRefObject<Camera>; listeners: Set<(c: Camera) => void> }>(function WireLayer(
   { views, band, cam, listeners },
@@ -66,6 +68,8 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
   const labels = useRef<HTMLDivElement>(null);
   const now = useRef({ views, band });
   now.current = { views, band };
+  /** Each wire's curve as last painted, for `wireAt`: the layer itself takes no pointer. */
+  const curves = useRef(new Map<string, WireCurve>());
 
   const paint = () => {
     const s = svg.current;
@@ -97,6 +101,7 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
     for (const el of lb.querySelectorAll<HTMLElement>("[data-wire]")) texts.set(el.dataset.wire!, [...(texts.get(el.dataset.wire!) ?? []), el]);
     const groups = new Map<string, SVGGElement>();
     for (const g of s.querySelectorAll<SVGGElement>(":scope > g.ls-wire")) groups.set(g.dataset.wire!, g);
+    curves.current.clear();
     for (const v of now.current.views) {
       const g = groups.get(v.id);
       if (!g) continue;
@@ -104,6 +109,7 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
       g.style.display = c ? "" : "none";
       for (const t of texts.get(v.id) ?? []) t.style.display = c ? "" : "none";
       if (!c) continue;
+      curves.current.set(v.id, c);
       for (const p of g.querySelectorAll("path")) p.setAttribute("d", c.d);
       const dot = g.querySelector("circle");
       if (dot) {
@@ -122,7 +128,7 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
   };
   const paintNow = useRef(paint);
   paintNow.current = paint;
-  useImperativeHandle(ref, () => ({ follow: () => paintNow.current() }), []);
+  useImperativeHandle(ref, () => ({ follow: () => paintNow.current(), wireAt: (p, within) => wireNear(curves.current, p, within) }), []);
   useLayoutEffect(() => paint());
   useEffect(() => {
     let zoom = cam.current.zoom;

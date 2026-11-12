@@ -30,6 +30,8 @@ export type DeliveryState = (typeof DELIVERY_STATES)[number];
 
 /** A feedback wire's rounds until a person says otherwise. */
 export const DEFAULT_ROUNDS = 3;
+/** What a handoff or feedback wire carries when its template says nothing else. */
+export const DEFAULT_TEMPLATE = "{summary}";
 
 export interface WireRounds {
   limit: number;

@@ -10,7 +10,7 @@ import { firstName } from "./team/connectedModel";
  * of them can offer what the others don't, or word it differently. Each action has its label, whether it can be done
  * now and why not (`disabled`, `title`), its shortcut (`kbd`) and its handler; `section` groups the menu's rows.
  */
-export type ActionSection = "session" | "stack" | "tools" | "terminal" | "handon" | "room" | "area" | "ghosts" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "needs" | "end";
+export type ActionSection = "session" | "stack" | "tools" | "terminal" | "handon" | "wires" | "room" | "area" | "ghosts" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "needs" | "wire" | "end";
 
 /** A section's heading in a menu; null: its rows follow a separator only. */
 const SECTION_NAME: Record<ActionSection, string | null> = {
@@ -19,6 +19,7 @@ const SECTION_NAME: Record<ActionSection, string | null> = {
   tools: "Tools",
   terminal: "Terminal",
   handon: "Hand on",
+  wires: "Wires",
   room: "Team room",
   area: "Area",
   ghosts: "Ghosts",
@@ -29,6 +30,7 @@ const SECTION_NAME: Record<ActionSection, string | null> = {
   several: null,
   move: "Move to area",
   needs: null,
+  wire: null,
   end: null,
 };
 
@@ -83,6 +85,11 @@ export interface WorkspaceEnv {
   addTerminal?: Can;
   close: () => void;
   resume: Can;
+  /**
+   * Connect…: a menu of the workspaces a wire can be made to, as Move to area lists areas (the landscape's; left out
+   * where wires aren't made, as in ⌘K), or why none can be.
+   */
+  connect?: Can;
 }
 
 const can = (c: Can): Pick<Action, "onPick" | "disabled" | "title"> => (typeof c === "function" ? { onPick: c } : { onPick: () => {}, disabled: true, title: c.no });
@@ -201,6 +208,7 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
       { section: "handon", key: "brief", label: "Brief", menuLabel: "Fresh session from a brief…", ...can(tookIt(env.brief, "to hand it on")) },
       { section: "handon", key: "review", label: "Second opinion", menuLabel: `Second opinion from ${other}`, ...can(tookIt(env.secondOpinion, "to have its branch reviewed")) }
     );
+  if (env.connect) out.push({ section: "wires", key: "connect", label: "Connect", menuLabel: "Connect…", title: "Wire it to another workspace: a handoff, a context link, a feedback loop or a shared worktree", ...can(env.connect) });
   out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
   if (dead && local) out.push({ section: "end", key: "resume", label: "Resume", menuLabel: "Resume", primary: true, title: "Start it again, resuming its conversation", ...can(tookIt(env.resume, "rather than resuming this copy")) });
   out.push({ section: "end", key: "close", label: "Close", menuLabel: dead ? "Close & clean up…" : "Close…", icon: <CloseIcon />, danger: true, onPick: env.close, ...theirs("close") });
@@ -471,6 +479,53 @@ export function needsActions(env: NeedsEnv): ModelAction[] {
     { section: "needs", key: "dismiss", label: "Dismiss", title: "Take it off the list until its state changes", onPick: env.dismiss },
   ];
 }
+
+/** A workspace Connect… can wire to: its title, its area's (a heading over its rows), and why no wire to it can be made. */
+export interface ConnectTarget {
+  id: string;
+  title: string;
+  area: string;
+  refused: string | null;
+  pick: () => void;
+}
+
+/**
+ * Connect…'s menu: under which workspace it wires, each workspace a wire can go to, under its area's name, off saying
+ * why when no type of wire can be made to it (the type picker then says which can).
+ */
+export function connectMenu(from: string, targets: readonly ConnectTarget[]): MenuEntry[] {
+  const out: MenuEntry[] = [];
+  let at: string | null = null;
+  for (const t of targets) {
+    if (t.area !== at) {
+      at = t.area;
+      out.push("-", menuHeading(t.area));
+    }
+    out.push({ key: `connect:${t.id}`, label: t.title, onPick: t.pick, ...(t.refused ? { disabled: true, title: t.refused } : { title: `Pick the type of wire from “${from}” to “${t.title}”` }) });
+  }
+  return [menuHeading(`Connect “${from}” to`), ...tidyMenu(out)];
+}
+
+/** What a wire's actions need (a right-click on it): its ends' names and type, and what each does, or why it can't. */
+export interface WireEnv {
+  /** "Builder → Tester". */
+  title: string;
+  /** Its type's name ("Feedback loop"). */
+  kind: string;
+  settings: Can;
+  remove: () => void;
+}
+
+/** A wire's actions, in menu order (its right-click): Settings… and Remove. */
+export function wireActions(env: WireEnv): ModelAction[] {
+  return [
+    { section: "wire", key: "settings", label: "Settings", menuLabel: "Settings…", title: "What it sends, when, its rounds and its gate", ...can(env.settings) },
+    { section: "end", key: "remove", label: "Remove", menuLabel: "Remove the wire", danger: true, title: "Undo in the note puts it back as it was", onPick: env.remove },
+  ];
+}
+
+/** A wire's actions as a menu, under its ends and type. */
+export const wireMenu = (env: WireEnv): MenuEntry[] => [menuHeading(`${env.title} · ${env.kind}`), ...menuOf(wireActions(env))];
 
 /** Several workspaces' actions as a menu: under how many are picked, Move to area's rows under their own heading. */
 export const severalMenu = (count: number, actions: readonly ModelAction[]): MenuEntry[] => [menuHeading(`${count} selected`), ...menuOf(actions)];

@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { formatTokens, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
+import { formatTokens, isErr, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
+import { gateOf, settingsRefusal, type WireSettings } from "../shared/wires";
 import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, GAP, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
 import type { LandscapeSave, Migrating } from "./useLandscape";
 import {
   BAND_SETTLE_MS,
+  GHOST_INSET,
   PEEK_HOVER_MS,
   REVEAL_WAIT_MS,
   ZOOM_MAX,
@@ -89,7 +91,7 @@ import {
 import { WorkspaceNode, edgesOf, ownTermHasKeys, type NodeMode, type ResizeEdge, type WorkspaceChrome } from "./WorkspaceNode";
 import { ToolWindow } from "./ToolWindow";
 import { LiftOut } from "./lift";
-import { actionOf, menuOf, severalActions, severalMenu, type ModelAction } from "./workspaceActions";
+import { actionOf, connectMenu, menuOf, severalActions, severalMenu, wireMenu, type Can, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { GhostCard } from "./GhostCard";
 import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
@@ -113,7 +115,8 @@ import { isRemote } from "./team/RoomLive";
 import { typingAsksOf } from "./needsYouModel";
 import { cameraMoved } from "./answerGuard";
 import { WireLayer, rereadWires, useWires, type WireLayerHandle } from "./WireLayer";
-import { wireBanners, wireViews, type WireRoom } from "./wiresModel";
+import { WIRE_TYPE_NAME, commonReason, gateContextOf, noChoice, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
+import { WireSettingsPopover, WireTypePicker, type WirePick } from "./WireMaking";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
 export const CAMERA_PREF = "mb.landscape.camera";
@@ -195,14 +198,21 @@ const SWITCHER_STRIP = 56;
 const NOTE_MS = 5000;
 /** How long a dropped workspace or area waits, where it was dropped, for the layout that has it there. */
 const SETTLE_MS = 1500;
+/** How near a wire, in screen px, a right-click is on it. */
+const WIRE_HIT_PX = 6;
+/** Why no wire can be made while the wire book hasn't been read. */
+const WIRES_UNREAD = "The wires haven't been read yet, so none can be made: try again in a moment.";
 
 /**
  * A press that may become a drag: a marquee over the bare landscape, a workspace by its header (or a card), or an
  * area by its header. `on` once it has moved DRAG_PX; `els` are what move with it until the layout has them there.
  */
 interface Gesture {
-  /** `resize`: a workspace by an edge or corner (`edges`); `tab`: a stack's tab (`sid`) dragged out of it. */
-  kind: "marquee" | "tile" | "area" | "window" | "card" | "resize" | "tab";
+  /**
+   * `resize`: a workspace by an edge or corner (`edges`); `tab`: a stack's tab (`sid`) dragged out of it; `wire`: a wire
+   * from a workspace's edge handle, to the workspace it's dropped on.
+   */
+  kind: "marquee" | "tile" | "area" | "window" | "card" | "resize" | "tab" | "wire";
   id: number;
   x0: number;
   y0: number;
@@ -304,6 +314,7 @@ export function Landscape({
   onShowTree,
   treeHidden,
   actionsFor,
+  connectRef,
   chromeFor,
   windowFor,
   onCloseWindow,
@@ -364,9 +375,13 @@ export function Landscape({
   onShowTree: () => void;
   /** The area tree isn't showing: the side bar is hidden, or shows Team rooms in its place. */
   treeHidden: boolean;
-  /** A workspace's actions (its front session's): what its chips, ⋯ and right-click offer, in every band. */
-  /** A workspace's actions: its front session's, or `s`'s, one of its stack's tabs (a right-click on that tab). */
-  actionsFor: (t: Tile, s?: SessionInfo) => ModelAction[];
+  /**
+   * A workspace's actions: its front session's, or `s`'s, one of its stack's tabs (a right-click on that tab). `extra` is
+   * what only the landscape has: Connect… in its ⋯ and right-click.
+   */
+  actionsFor: (t: Tile, s?: SessionInfo, extra?: Pick<WorkspaceEnv, "connect">) => ModelAction[];
+  /** Filled with the landscape's Connect…, for the workspace menus offered outside it (the side bar's rows). */
+  connectRef?: React.MutableRefObject<((s: SessionInfo) => Can) | null>;
   /** Something to say over the landscape, as a gesture's refusal is said (a resize or a tool window refused); a new `n` says it again. */
   notice: LandscapeNote | null;
   /**
@@ -514,6 +529,9 @@ export function Landscape({
   const sizeBox = useRef<HTMLDivElement>(null);
   const settling = useRef<Settling[]>([]);
   const wiresRef = useRef<WireLayerHandle>(null);
+  /** While a wire is dragged from a handle: its line to the pointer, and the outline of the workspace it would go to. */
+  const draftEl = useRef<SVGSVGElement>(null);
+  const hotEl = useRef<HTMLDivElement>(null);
   /** Elements a drag moved, back where the layout has them; their wires with them. */
   const release = (els: readonly HTMLElement[]) => {
     releaseEls(els);
@@ -607,7 +625,7 @@ export function Landscape({
   const paintScale = (zoom: number) => {
     const inv = String(1 / zoom);
     const hs = String(Math.max(1, 1 / zoom));
-    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-window, .ls-acard, .ls-ghost, .ls-wires, .ls-wire-labels") ?? []) {
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-wh, .ls-window, .ls-acard, .ls-ghost, .ls-wires, .ls-wire-labels") ?? []) {
       el.style.setProperty("--ls-inv", inv);
       el.style.setProperty("--ls-hs", hs);
     }
@@ -1522,6 +1540,8 @@ export function Landscape({
       if (marquee.current) marquee.current.hidden = false;
       return true;
     }
+    // a wire changes no layout: a locked area's workspaces are wired as any are
+    if (g.kind === "wire") return l.tiles.some((x) => x.key === g.key);
     if (g.kind === "window" || g.kind === "card") {
       const v = g.kind === "window" ? l.windows.find((x) => x.id === g.key) : l.cards.find((x) => x.id === g.key);
       if (!v) return false;
@@ -1577,6 +1597,7 @@ export function Landscape({
       viewport.current?.classList.add("ls-dragging");
     }
     e.preventDefault();
+    if (g.kind === "wire") return drawDraft(g.key, e);
     if (g.kind === "marquee") {
       const r = viewport.current!.getBoundingClientRect();
       const box = rectFrom({ x: g.x0 - r.left, y: g.y0 - r.top }, { x: e.clientX - r.left, y: e.clientY - r.top });
@@ -1696,6 +1717,16 @@ export function Landscape({
       }
       return;
     }
+    if (g.kind === "wire") {
+      if (!g.on) return;
+      // the release's click lands on nothing: not a button on the workspace it was dropped on
+      swallowClick();
+      const from = l.tiles.find((x) => x.key === g.key);
+      const to = wireTargetAt(e);
+      // dropped on nothing, or back on its own workspace: the wire goes (Add next step, W8, makes one into space)
+      if (!from || !to || to.key === from.key) return;
+      return offerWire(from.front, to.s, { x: e.clientX, y: e.clientY });
+    }
     if (!g.on) {
       // a click on an area's bare header, or its name zoomed out, selects it; a drag moves it
       if (g.kind === "area") selectArea(g.key);
@@ -1785,6 +1816,12 @@ export function Landscape({
   };
   const gestureKey = (e: KeyboardEvent) => {
     const g = gesture.current;
+    // while a wire is dragged nothing typed acts, on the landscape or in a terminal: Esc alone, which drops it
+    if (g?.kind === "wire" && typed(e) && e.key !== "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (e.key !== "Escape" || !g?.on) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1814,6 +1851,7 @@ export function Landscape({
     if (marquee.current) marquee.current.hidden = true;
     drawGuides([]);
     showBox(null);
+    hideDraft();
     setHot(null);
     viewport.current?.classList.remove("ls-gesture");
     // a drop's settling starts as it's carried out, just after this: the bar waits for it
@@ -1957,7 +1995,11 @@ export function Landscape({
         const card = t.closest<HTMLElement>(".ls-world .ls-acard");
         const rz = t.closest<HTMLElement>(".ls-world .ls-rz");
         const tab = t.closest<HTMLElement>(".ls-world .ls-tab[data-sid]");
-        if (node && rz && !e.shiftKey) {
+        if (node && t.closest(".ls-world .ls-wh") && !e.shiftKey) {
+          // the edge handle draws a wire from it (the press's own focus move gives the landscape the keyboard, armed)
+          e.stopPropagation();
+          startRef.current({ ...press, kind: "wire", key: node.dataset.ws! });
+        } else if (node && rz && !e.shiftKey) {
           // an edge or a corner resizes it
           e.stopPropagation();
           startRef.current({ ...press, kind: "resize", key: node.dataset.ws!, edges: edgesOf(rz.dataset.edge as ResizeEdge) });
@@ -2013,7 +2055,8 @@ export function Landscape({
         hover.current = { key: p?.key ?? null, timer: null };
         return;
       }
-      const key = t?.closest?.<HTMLElement>(".ls-world .ls-node")?.dataset.ws ?? null;
+      // resting on a workspace's edge handle, to drag a wire from it, peeks nothing: a peek would cover the handle
+      const key = t?.closest?.(".ls-wh") ? null : (t?.closest?.<HTMLElement>(".ls-world .ls-node")?.dataset.ws ?? null);
       if (key === hover.current.key) return;
       stopHover();
       hover.current.key = key;
@@ -2133,6 +2176,177 @@ export function Landscape({
   const stops = useMemo(() => (loose ? [...layout.areas, loose] : layout.areas), [loose, layout]);
   const wireBook = useWires().state;
   const wireList = useMemo(() => wireViews(wireBook, layout, rooms), [wireBook, layout, rooms]);
+  const wireBookNow = useRef(wireBook);
+  wireBookNow.current = wireBook;
+  const roomsNow = useRef(rooms);
+  roomsNow.current = rooms;
+
+  // ---- making wires (W4b): dragged from a handle, or Connect… in a workspace's ⋯; and a wire's right-click ----
+  const [wirePick, setWirePick] = useState<WirePick | null>(null);
+  const [wireEdit, setWireEdit] = useState<{ id: string; at: { x: number; y: number } } | null>(null);
+  /** Where the last workspace menu opened: Connect…'s menu, and its type picker, open there too. */
+  const menuAt = useRef({ x: 0, y: 0 });
+  /** The rules' view of what's drawn, with `also`'s sessions as ends (gateContextOf); null while the book can't be used. */
+  const wireCtx = (also: readonly string[] = []) => {
+    const st = wireBookNow.current;
+    return st ? gateContextOf(layoutNow.current, st, roomsNow.current, [], also) : null;
+  };
+  /** A session on the landscape: a workspace's, a stack's closed tab's, or a ghost's. */
+  const sessionOn = (id: string): SessionInfo | undefined => {
+    for (const t of [...layoutNow.current.tiles, ...layoutNow.current.ghosts]) {
+      const s = t.members.find((m) => m.id === id) ?? t.closed?.find((m) => m.id === id);
+      if (s) return s;
+    }
+    return undefined;
+  };
+  const named = (id: string) => {
+    const s = sessionOn(id);
+    return s ? titleOf(s) : id;
+  };
+  /** The types a wire from `from` to `to` can be, or why none can (a teammate's workspace, a debrief, a room's line). */
+  const choicesFor = (from: SessionInfo, to: SessionInfo): WireChoice[] | { no: string } => {
+    const ctx = wireCtx([from.id, to.id]);
+    if (!ctx) return { no: wireBookNow.current?.refused ?? WIRES_UNREAD };
+    const choices = wireChoices({ id: from.id, title: titleOf(from) }, { id: to.id, title: titleOf(to) }, ctx);
+    const no = noChoice(choices);
+    return no ? { no } : choices;
+  };
+  /** The type picker for a wire from `from` to `to`, at `at` on screen; a wire none of whose types can be made is refused, saying why. */
+  const offerWire = (from: SessionInfo, to: SessionInfo, at: { x: number; y: number }) => {
+    const c = choicesFor(from, to);
+    if ("no" in c) return say(c.no);
+    setWirePick({ from: { id: from.id, title: titleOf(from) }, to: { id: to.id, title: titleOf(to) }, at, choices: c });
+  };
+  /** Main's word on a wire change (wires:*): why it wasn't made, or null. The wires are drawn again from its change notice, which has what the reply lacks. */
+  const wireCall = async (what: string, call: () => Promise<unknown>): Promise<string | null> => {
+    try {
+      const r = (await call()) as { error: string } | { refused: string } | { state: unknown };
+      if (isErr(r as { error: string })) return `Couldn't ${what}: ${(r as { error: string }).error}`;
+      return "refused" in r ? r.refused : null;
+    } catch (err) {
+      console.error(`[mockingbird] ${what}:`, err);
+      return `Couldn't ${what}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
+  const makeWire = async (c: WireChoice) => {
+    setWirePick(null);
+    const no = await wireCall("make the wire", () => window.mb.wiresAdd(c.from, c.to, c.type));
+    if (no) say(no);
+  };
+  const removeWire = async (id: string, title: string) => {
+    const no = await wireCall("remove the wire", () => window.mb.wiresRemove(id));
+    if (no) return say(no);
+    say(`Removed the wire ${title}`, {
+      label: "Undo",
+      run: () => void wireCall("put the wire back", () => window.mb.wiresRestore(id)).then((why) => why && say(why)),
+    });
+  };
+  /**
+   * Connect…: every workspace on the landscape a wire from `s` can go to, under its area, off saying why none can; the
+   * type picker for the one picked, where the menu was. Off, saying why, when no wire from `s` can go anywhere.
+   */
+  const connectOf = (s: SessionInfo): Can => {
+    const targets = wireTargets(layoutNow.current, s.id);
+    if (!targets.length) return { no: "There's no other workspace on the landscape to wire it to" };
+    const rules = wireCtx([s.id, ...targets.map((t) => t.s.id)]);
+    if (!rules) return { no: wireBookNow.current?.refused ?? WIRES_UNREAD };
+    const me = { id: s.id, title: titleOf(s) };
+    const rows = targets.map((t) => {
+      const choices = wireChoices(me, { id: t.s.id, title: titleOf(t.s) }, rules);
+      return { t, choices, refused: noChoice(choices) };
+    });
+    if (rows.every((r) => r.refused)) return { no: commonReason(rows.map((r) => r.refused))! };
+    return () => {
+      // where the menu it was picked from is (a workspace's ⋯ or right-click, or its selection bar's), still there as its row runs
+      const menu = document.activeElement?.closest?.(".mb-ctx")?.getBoundingClientRect();
+      const at = menu ? { x: menu.left, y: menu.top } : { ...menuAt.current };
+      // once the menu it was picked from has given the keyboard back, so this one gives it back there too
+      requestAnimationFrame(() =>
+        ctx.openAt(
+          at,
+          connectMenu(
+            me.title,
+            rows.map((r) => ({
+              id: r.t.s.id,
+              title: r.t.closed ? `${titleOf(r.t.s)} (closed)` : titleOf(r.t.s),
+              area: r.t.area === LOOSE_GROUP ? "Loose" : areaTitle(r.t.area),
+              refused: r.refused,
+              pick: () => setWirePick({ from: me, to: { id: r.t.s.id, title: titleOf(r.t.s) }, at: { ...at }, choices: r.choices }),
+            }))
+          )
+        )
+      );
+    };
+  };
+  /** A workspace's actions as its ⋯ and right-click offer them: Connect… with the rest. */
+  const menuActions = (t: Tile, s: SessionInfo = t.front): ModelAction[] => actionsFor(t, s, { connect: connectOf(s) });
+  if (connectRef) connectRef.current = connectOf;
+  /** A right-click on wire `id`: its settings, or removing it. */
+  const wireMenuAt = (id: string, at: { x: number; y: number }) => {
+    const w = wireBookNow.current?.book?.links[id];
+    if (!w) return;
+    const title = `${named(w.from)} → ${named(w.to)}`;
+    ctx.openAt(
+      at,
+      wireMenu({
+        title,
+        kind: WIRE_TYPE_NAME[w.type],
+        settings: w.type === "worktree" ? { no: "A shared worktree wire has nothing to set: its terminal runs in its agent's folder, and the agent reads it" } : () => setWireEdit({ id, at }),
+        remove: () => void removeWire(id, title),
+      })
+    );
+  };
+  /** The wire being set, as main last said it, with what its settings form needs; null once it's gone. */
+  const editing = (() => {
+    if (!wireEdit) return null;
+    const w = wireBook?.book?.links[wireEdit.id];
+    const ctx = w ? wireCtx([w.from, w.to]) : null;
+    if (!w || !ctx) return null;
+    return { id: wireEdit.id, at: wireEdit.at, w, ctx, room: !!(ctx.end(w.from)?.room || ctx.end(w.to)?.room) };
+  })();
+  useEffect(() => {
+    if (wireEdit && !editing) setWireEdit(null);
+  }, [wireEdit, !!editing]);
+
+  /** What's under the pointer a wire would go to: a workspace (the tab under it, of a stack, else its front), or a ghost. */
+  const wireTargetAt = (e: { clientX: number; clientY: number }): { key: string; rect: Rect; s: SessionInfo } | null => {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const l = layoutNow.current;
+    const n = el?.closest<HTMLElement>(".ls-world .ls-node[data-ws]");
+    const t = n ? l.tiles.find((x) => x.key === n.dataset.ws) : el?.closest<HTMLElement>(".ls-world .ls-ghost[data-ghost]") ? l.ghosts.find((x) => x.key === el.closest<HTMLElement>(".ls-ghost")!.dataset.ghost) : undefined;
+    if (!t) return null;
+    const tab = el?.closest<HTMLElement>(".ls-tab[data-sid], .ls-tab[data-closed]");
+    const id = tab?.dataset.sid ?? tab?.dataset.closed;
+    const s = (id && (t.members.find((m) => m.id === id) ?? t.closed?.find((m) => m.id === id))) || t.front;
+    return { key: t.key, rect: t.rect, s };
+  };
+  /** The wire being dragged from workspace `key`'s handle, drawn to the pointer, and the workspace it would go to outlined: never through a render. */
+  const drawDraft = (key: string, e: PointerEvent) => {
+    const svg = draftEl.current;
+    const hot = hotEl.current;
+    const from = layoutNow.current.tiles.find((x) => x.key === key);
+    if (!svg || !hot || !from) return;
+    const z = cam.current.zoom;
+    const inset = bandNow.current === "cards" ? GHOST_INSET / z : 0;
+    const to = wireTargetAt(e);
+    const onto = to && to.key !== from.key ? to : null;
+    const p = atPoint(e);
+    const c = wireCurve(shiftedBox(from.rect, undefined, inset), onto ? shiftedBox(onto.rect, undefined, inset) : { x: p.x, y: p.y, w: 0, h: 0 }, 1 / z);
+    svg.style.setProperty("--ls-inv", String(1 / z));
+    svg.style.display = c ? "" : "none";
+    if (c) svg.querySelector("path.draft")?.setAttribute("d", c.d);
+    hot.hidden = !onto;
+    if (!onto) return;
+    const r = shiftedBox(onto.rect, undefined, inset);
+    Object.assign(hot.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
+    hot.style.setProperty("--ls-inv", String(1 / z));
+    // a workspace no wire can go to (a teammate's, a debrief, across a room's line) is outlined as refused; the drop says why
+    hot.classList.toggle("no", "no" in choicesFor(from.front, onto.s));
+  };
+  function hideDraft() {
+    if (draftEl.current) draftEl.current.style.display = "none";
+    if (hotEl.current) hotEl.current.hidden = true;
+  }
 
   const tileActions = (t: Tile): ModelAction[] => actionsFor(t);
   /** The picked workspaces still drawn, in layout order. */
@@ -2216,7 +2430,8 @@ export function Landscape({
       // a picked stack's front tab is the stack, as its header is: the picked ones' menu
       if (!inFocus && !(of && of.id !== tile.front.id) && pickedNow.current.includes(tile.key)) return ctx.openAt({ x: e.clientX, y: e.clientY }, pickedMenu());
       select(tile);
-      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(of && of.id !== tile.front.id ? actionsFor(tile, of) : tileActions(tile)));
+      menuAt.current = { x: e.clientX, y: e.clientY };
+      ctx.openAt(menuAt.current, menuOf(menuActions(tile, of ?? tile.front)));
       return;
     }
     if (t.closest(".ls-window, .ls-acard, .ls-hud, .ls-minimap, .ls-switcher, .ls-peek, .ls-selbar, .ls-banners, .ls-focus, .ls-note")) return;
@@ -2225,6 +2440,19 @@ export function Landscape({
     const a = areaAt(layout.areas, p);
     if (a) selectArea(a.key);
     ctx.openAt({ x: e.clientX, y: e.clientY }, emptyMenu(a?.key ?? null, p));
+  };
+  /**
+   * A right-click a few screen px from a wire's line, on the landscape between what's drawn over the wires (workspaces,
+   * ghosts, windows, cards): the wire's menu, before an area's own right-click under it takes it.
+   */
+  const onWireMenu = (e: React.MouseEvent) => {
+    const t = e.target as Element;
+    if (t.closest(".ls-node, .ls-ghost, .ls-window, .ls-acard, .ls-hud, .ls-minimap, .ls-switcher, .ls-peek, .ls-selbar, .ls-banners, .ls-focus, .ls-note, .ls-empty, button, a, input")) return;
+    const id = wiresRef.current?.wireAt(atPoint(e), WIRE_HIT_PX / cam.current.zoom);
+    if (!id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    wireMenuAt(id, { x: e.clientX, y: e.clientY });
   };
   const dockWindow = (id: string) => {
     const plan = planDockWindow(storedNow.current, id);
@@ -2292,7 +2520,7 @@ export function Landscape({
     }
     if (!sel || sel.hidden || band === "live") return null;
     const t = sel;
-    return <WorkspaceBar key={`ws:${t.key}`} session={t.front} actions={tileActions(t)} runs={chromeFor(t.front).chips.runCount ?? 0} onFocus={() => enterFocus(t)} place={place(t.rect, "none", within(t))} />;
+    return <WorkspaceBar key={`ws:${t.key}`} session={t.front} actions={menuActions(t)} runs={chromeFor(t.front).chips.runCount ?? 0} onFocus={() => enterFocus(t)} place={place(t.rect, "none", within(t))} />;
   };
 
   const node = (t: Tile, mode: NodeMode, size: Size) => (
@@ -2316,7 +2544,9 @@ export function Landscape({
       chrome={chromeFor(t.front)}
       onMore={(tile, from) => {
         select(tile);
-        ctx.openBelow(from, menuOf(tileActions(tile)));
+        const r = from.getBoundingClientRect();
+        menuAt.current = { x: r.left, y: r.bottom + 2 };
+        ctx.openAt(menuAt.current, menuOf(menuActions(tile)));
       }}
       onClosedTab={(s, from) => ctx.openBelow(from, menuOf(ghostActions(s)))}
       body={(s, sz) => body(s, sz, mode === "focus" ? { w: t.rect.w, h: t.rect.h } : null)}
@@ -2333,6 +2563,7 @@ export function Landscape({
         aria-label="Landscape — scroll to pan, ⌘-scroll or pinch to zoom, ⌘0 fits everything, ⌘1 is 100%, ⌥-arrows move between workspaces, Enter focuses"
         onKeyDown={onKeyDown}
         onContextMenu={onContextMenu}
+        onContextMenuCapture={onWireMenu}
         onBlur={(e) => e.target === viewport.current && space.current && dropSpace()}
       >
         <LiftOut.Provider value={true}>
@@ -2403,6 +2634,15 @@ export function Landscape({
             <span />
           </div>
           <div ref={guidesEl} className="ls-guides" aria-hidden="true" />
+          <div ref={hotEl} className="ls-wire-hot" hidden aria-hidden="true" />
+          <svg ref={draftEl} className="ls-wire-draft" width="1" height="1" style={{ display: "none" }} aria-hidden="true">
+            <defs>
+              <marker id="ls-wd-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M2 1L8 5L2 9" />
+              </marker>
+            </defs>
+            <path className="draft" markerEnd="url(#ls-wd-arrow)" />
+          </svg>
         </div>
         </LiftOut.Provider>
         <div ref={marquee} className="ls-marquee" hidden aria-hidden="true" />
@@ -2499,6 +2739,26 @@ export function Landscape({
           </div>
         )}
       </div>
+      {wirePick && <WireTypePicker key={`${wirePick.from.id}>${wirePick.to.id}`} pick={wirePick} onPick={(c) => void makeWire(c)} onClose={() => setWirePick(null)} />}
+      {editing && (
+        <WireSettingsPopover
+          key={editing.id}
+          at={editing.at}
+          wire={editing.w}
+          fromTitle={named(editing.w.from)}
+          toTitle={named(editing.w.to)}
+          state={gateOf(editing.id, editing.w, editing.ctx).state}
+          room={editing.room}
+          refusal={(st: WireSettings) => settingsRefusal(editing.w, st, editing.ctx)}
+          onSet={(st) => wireCall("change the wire", () => window.mb.wiresSet(editing.id, st))}
+          onResetRounds={() => wireCall("reset its rounds", () => window.mb.wiresResetRounds(editing.id))}
+          onRemove={() => {
+            setWireEdit(null);
+            void removeWire(editing.id, `${named(editing.w.from)} → ${named(editing.w.to)}`);
+          }}
+          onClose={() => setWireEdit(null)}
+        />
+      )}
       {tourList && (
         <LandscapeTour
           steps={tourList}

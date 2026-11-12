@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { anchorOf, gateContextOf, pillBox, shiftedBox, translateOf, wireBanners, wireCurve, wireViews, type WireView } from "../src/renderer/wiresModel";
+import { anchorOf, commonReason, curveDistance, defaultChoice, gateContextOf, noChoice, pillBox, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
@@ -230,5 +230,105 @@ describe("a wire's curve", () => {
     expect(translateOf("")).toBeUndefined();
     expect(shiftedBox(a, { x: 12, y: 30 }, 0)).toEqual({ x: 12, y: 30, w: 100, h: 100 });
     expect(shiftedBox(a, undefined, 5)).toEqual({ x: 5, y: 5, w: 90, h: 90 });
+  });
+
+  it("is found by a point near its line, the nearest of two, and not by one farther than it reaches", () => {
+    const side = wireCurve(a, { x: 300, y: 0, w: 100, h: 100 }, 1)!;
+    const down = wireCurve(a, { x: 0, y: 300, w: 100, h: 100 }, 1)!;
+    expect(curveDistance(side, { x: 200, y: 50 })).toBeLessThan(0.5);
+    expect(curveDistance(side, { x: 200, y: 56 })).toBeCloseTo(6, 0);
+    const curves = new Map([["side", side], ["down", down]]);
+    expect(wireNear(curves, { x: 200, y: 54 }, 6)).toBe("side");
+    expect(wireNear(curves, { x: 54, y: 200 }, 6)).toBe("down");
+    expect(wireNear(curves, { x: 200, y: 60 }, 6)).toBeNull();
+    expect(wireNear(new Map(), { x: 0, y: 0 }, 6)).toBeNull();
+  });
+});
+
+describe("making a wire", () => {
+  const layout = layoutOf();
+  const end = (id: string) => ({ id, title: id });
+  const ctxOf = (links: Record<string, Wire> = {}, shown = layout) => gateContextOf(shown, stateOf(links), undefined, [], ["builder", "reviewer", "tester", "dev", "spike", "docs", "notes", "r~0f1e2d3c4b5a~n1"])!;
+
+  it("offers the four types, each with what it does, Handoff first and taken by ↵", () => {
+    const c = wireChoices(end("builder"), end("tester"), ctxOf());
+    expect(c.map((x) => [x.type, x.name, x.from, x.to, x.refused])).toEqual([
+      ["handoff", "Handoff", "builder", "tester", null],
+      ["context", "Context link", "builder", "tester", null],
+      ["feedback", "Feedback loop", "builder", "tester", null],
+      ["worktree", "Shared worktree", "builder", "tester", "A shared worktree wire runs from an agent to a terminal."],
+    ]);
+    expect(c.map((x) => x.line).slice(0, 3)).toEqual(["builder's result becomes tester's next prompt.", "tester can read builder. Nothing is pushed.", "builder's notes go back to tester, 3 rounds at most."]);
+    expect(defaultChoice(c)?.type).toBe("handoff");
+    expect(noChoice(c)).toBeNull();
+  });
+
+  it("says why a type can't be made between these two, as main's rules do, and ↵ takes the first that can", () => {
+    // a handoff already there, and one back would be a cycle
+    const c = wireChoices(end("tester"), end("builder"), ctxOf({ h: wire("builder", "tester", "handoff") }));
+    expect(c.find((x) => x.type === "handoff")?.refused).toMatch(/cycle of handoffs/);
+    expect(defaultChoice(c)?.type).toBe("context");
+    // a terminal takes only a shared worktree, which runs from the agent to it whichever way it was dragged
+    const toTerm = wireChoices(end("builder"), end("dev"), ctxOf());
+    expect(toTerm.filter((x) => !x.refused).map((x) => [x.type, x.from, x.to])).toEqual([["worktree", "builder", "dev"]]);
+    expect(toTerm[0].refused).toBe("“dev” is a terminal: only a shared worktree wire can reach one.");
+    const fromTerm = wireChoices(end("dev"), end("builder"), ctxOf());
+    expect(fromTerm.filter((x) => !x.refused).map((x) => [x.type, x.from, x.to, x.line])).toEqual([["worktree", "builder", "dev", worktreeLine("builder", "dev")]]);
+    expect(defaultChoice(fromTerm)?.type).toBe("worktree");
+  });
+
+  it("is refused outright onto a teammate's workspace, saying why: no type can be made, and main refuses it too", () => {
+    const c = wireChoices(end("builder"), end("r~0f1e2d3c4b5a~n1"), ctxOf());
+    expect(c.every((x) => x.refused === "That's a teammate's session: wires across Macs come later.")).toBe(true);
+    expect(noChoice(c)).toBe("That's a teammate's session: wires across Macs come later.");
+    expect(defaultChoice(c)).toBeNull();
+    // and from one
+    expect(noChoice(wireChoices(end("r~0f1e2d3c4b5a~n1"), end("builder"), ctxOf()))).toMatch(/teammate's session/);
+  });
+
+  it("says, when no type can be made, the reason most of them give", () => {
+    // dev already shares builder's worktree: the other three are refused as a terminal
+    expect(noChoice(wireChoices(end("dev"), end("builder"), ctxOf({ t: wire("builder", "dev", "worktree") })))).toBe("“dev” is a terminal: only a shared worktree wire can reach one.");
+    expect(commonReason(["b", "a", "a"])).toBe("a");
+    expect(commonReason(["a", "b"])).toBe("a");
+    expect(commonReason(["a", null])).toBeNull();
+    expect(commonReason([])).toBeNull();
+  });
+
+  it("goes to closed workspaces too: a ghost, and a stack's tabs each", () => {
+    expect(noChoice(wireChoices(end("builder"), end("spike"), ctxOf()))).toBeNull();
+    expect(noChoice(wireChoices(end("builder"), end("notes"), ctxOf()))).toBeNull();
+  });
+
+  it("lists, for Connect…, every other workspace drawn, its own area's first, each area's ghosts after its workspaces", () => {
+    const t = wireTargets(layout, "tester");
+    expect(t.map((x) => [x.s.id, x.area, x.closed])).toEqual([
+      ["builder", "a", false],
+      ["reviewer", "a", false],
+      ["docs", "a", false],
+      ["notes", "a", false],
+      ["dev", "a", false],
+      ["spike", "a", true],
+      ["pathways", "b", false],
+    ]);
+    // a stack's tab lists neither itself nor its own stack's other tab; a collapsed area's aren't drawn
+    expect(wireTargets(layout, "docs").map((x) => x.s.id)).not.toContain("notes");
+    expect(wireTargets(layoutOf(["b"]), "tester").map((x) => x.s.id)).not.toContain("pathways");
+    expect(wireTargets(layoutOf(["b"]), "pathways")[0].area).toBe("a");
+  });
+
+  it("names its ends as a possessive reads", () => {
+    expect(whose("Builder")).toBe("Builder's");
+    expect(whose("Fixtures")).toBe("Fixtures'");
+  });
+});
+
+describe("a wire's template chips", () => {
+  it("add a placeholder on a line of its own, and take it out with the line it leaves", () => {
+    expect(togglePart("{summary}", "diff")).toBe("{summary}\n{diff}");
+    expect(togglePart("", "ticket")).toBe("{ticket}");
+    expect(togglePart("Fix these:\n{summary}\n\n{diff}", "summary")).toBe("Fix these:\n\n{diff}");
+    expect(togglePart("{summary}\n{diff}", "diff")).toBe("{summary}");
+    expect(togglePart("Review {diff} please", "diff")).toBe("Review please");
   });
 });

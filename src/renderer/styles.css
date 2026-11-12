@@ -3430,6 +3430,76 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-wire-tab[data-side="right"] { transform: scale(var(--ls-inv, 1)) translate(8px, calc(-100% - 4px)); }
 .ls-wire-tab[data-side="top"] { transform: scale(var(--ls-inv, 1)) translate(8px, calc(-100% - 6px)); }
 .ls-wire-tab[data-side="bottom"] { transform: scale(var(--ls-inv, 1)) translate(8px, 6px); }
+/* W4b: making wires (WireMaking.tsx). A workspace's edge handle (Cards.dc.html): a dot just inside its right edge's
+   middle (a workspace clips what's outside it), over the resize strip there, at screen size at any zoom, shown on hover
+   or while it's selected. Never on a teammate's workspace, nor in focus. The wire dragged from it runs dashed to the
+   pointer, and the workspace it would go to is outlined: dashed red when no wire can go there, which the drop says */
+.ls-wh {
+  position: absolute; z-index: 5; top: 50%; right: 0; box-sizing: border-box;
+  width: calc(18px * var(--ls-inv, 1)); height: calc(22px * var(--ls-inv, 1)); transform: translateY(-50%);
+  cursor: crosshair; opacity: 0; transition: opacity .12s;
+}
+.ls-wh::after {
+  content: ""; position: absolute; top: 50%; right: calc(5px * var(--ls-inv, 1)); box-sizing: border-box;
+  width: calc(8px * var(--ls-inv, 1)); height: calc(8px * var(--ls-inv, 1)); transform: translateY(-50%); border-radius: 50%;
+  background: var(--bg-app); border: calc(1.5px * var(--ls-inv, 1)) solid var(--text-1);
+}
+.ls-wh:hover::after { border-color: var(--amber); background: var(--amber); }
+.ls-node:hover > .ls-wh, .ls-node.selected > .ls-wh { opacity: 1; }
+.ls-node.remote > .ls-wh, .ls-viewport.ls-dragging .ls-node:not(:hover) > .ls-wh { display: none; }
+.ls-wire-draft { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 31; }
+.ls-wire-draft path.draft { fill: none; stroke: var(--text-1); stroke-width: calc(1.6px * var(--ls-inv, 1)); stroke-dasharray: calc(5px * var(--ls-inv, 1)) calc(4px * var(--ls-inv, 1)); }
+.ls-wire-draft marker path { fill: none; stroke: var(--text-1); stroke-width: 1.5; stroke-linecap: round; }
+.ls-wire-hot {
+  position: absolute; z-index: 30; box-sizing: border-box; pointer-events: none;
+  border: calc(1.5px * var(--ls-inv, 1)) solid var(--text-1); border-radius: calc(8px * min(1, var(--ls-inv, 1)));
+}
+.ls-wire-hot.no { border-style: dashed; border-color: var(--red); }
+/* the type picker (WireTypePicker.dc.html A), where the wire was dropped */
+.mb-menu.wp-pick { width: 360px; max-width: calc(100vw - 16px); gap: 9px; padding: 12px 14px; border-radius: 10px; background: var(--bg-pane-header); border-color: var(--line-strong2); outline: none; box-shadow: 0 10px 28px rgba(0, 0, 0, .45); }
+.wp-head { display: flex; align-items: center; gap: 8px; }
+.wp-ends { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px var(--ui); color: var(--text-1); }
+.wp-hint { font: 400 11px var(--ui); color: var(--text-4); }
+.wp-rows { display: flex; flex-direction: column; gap: 2px; margin: 0 -6px; }
+.mb-menu.wp-pick button.wp-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; color: var(--text-1); }
+.mb-menu.wp-pick button.wp-row.on { background: var(--fill-selected); }
+.mb-menu.wp-pick button.wp-row:disabled { opacity: .5; background: none; }
+.wp-line { flex-shrink: 0; }
+.wp-line path { fill: none; stroke: var(--text-3); stroke-width: 1.5; stroke-linecap: round; }
+.wp-line.t-context path { stroke: var(--teal); stroke-width: 1.6; stroke-dasharray: 4 3; }
+.wp-line.t-worktree path { stroke: var(--wire-tree); stroke-width: 4; }
+.wp-text { display: flex; flex-direction: column; min-width: 0; }
+.wp-name { font: 400 12.5px var(--ui); }
+.wp-line-t { font: 400 11px/1.35 var(--ui); color: var(--text-4); white-space: normal; }
+.wp-foot { font: 400 11.5px var(--ui); color: var(--text-4); }
+/* a wire's settings (WireSettings.dc.html A); the send popover (W4c) shows the same form for an idle wire */
+.mb-menu.wr-pop { width: 360px; max-width: calc(100vw - 16px); max-height: 80vh; padding: 12px 14px; border-radius: 10px; background: var(--bg-pane-header); border-color: var(--line-strong2); outline: none; box-shadow: 0 10px 28px rgba(0, 0, 0, .45); }
+.wr-form { display: flex; flex-direction: column; gap: 9px; font: 400 12px var(--ui); color: var(--text-2); }
+.wr-head { display: flex; align-items: center; gap: 8px; }
+.wr-ends { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px var(--ui); color: var(--text-1); }
+.wr-kind { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.wr-label { font-size: 11.5px; color: var(--text-4); min-width: 44px; }
+.wr-tpl { resize: vertical; box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-app); font: 400 10.5px/16px var(--mono); color: var(--text-2); }
+.wr-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.mb-menu.wr-pop button.wr-chip { padding: 2px 6px; border: 1px dashed var(--line-btn); border-radius: 4px; font-size: 11px; color: var(--text-4); }
+.mb-menu.wr-pop button.wr-chip.on { border-style: solid; border-color: transparent; background: var(--fill-selected); color: var(--text-2); }
+.wr-row { display: flex; align-items: center; gap: 10px; }
+.wr-files { flex: 1; min-width: 0; padding: 3px 6px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--bg-app); font: 400 11px var(--mono); color: var(--text-2); }
+.wr-seg { display: inline-flex; padding: 2px; border-radius: 5px; background: var(--fill-selected); }
+.mb-menu.wr-pop .wr-seg button { padding: 3px 9px; font-size: 11.5px; white-space: nowrap; color: var(--text-3); }
+.mb-menu.wr-pop .wr-seg button[aria-pressed="true"] { background: var(--line-btn); color: var(--text-1); }
+.wr-step { display: inline-flex; align-items: center; border: 1px solid var(--line-btn); border-radius: 5px; }
+.mb-menu.wr-pop .wr-step button { padding: 2px 8px; font-size: 12px; }
+.wr-n { padding: 0 6px; color: var(--text-1); }
+.wr-used { font-size: 11.5px; color: var(--text-4); }
+.mb-menu.wr-pop button.wr-link { padding: 0; color: var(--amber-text); font-size: 11.5px; }
+.mb-menu.wr-pop button.wr-link:disabled { color: var(--text-4); }
+.wr-say { font-size: 11.5px; color: var(--text-3); }
+.wr-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-3); }
+.wr-err { font-size: 11.5px; color: var(--red); }
+.wr-foot { display: flex; align-items: center; gap: 6px; }
+.mb-menu.wr-pop button.wr-btn { padding: 5px 12px; border: 1px solid var(--line-btn); border-radius: 5px; font-size: 12px; color: var(--text-2); }
+.wr-spacer { flex: 1; }
 /* a stack (design E): its card has the tabs it holds stacked behind it; a closed tab is faded, and opens its ghost's menu */
 /* its layers at least 3 and 6 px apart on screen however far it's zoomed out (--ls-inv, which paintScale keeps on stacks) */
 .ls-node.stack { --so: max(4px, calc(3px * var(--ls-inv, 1))); --so2: max(8px, calc(6px * var(--ls-inv, 1))); }

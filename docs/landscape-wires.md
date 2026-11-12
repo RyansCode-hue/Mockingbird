@@ -2076,6 +2076,126 @@ the boards beside them in `boards/project/`):
   refused drop, a drop onto a stack, at 100%, 60% and 13%.
 - Boards: WireTypePicker.dc.html A.
 
+#### W4b as built
+
+**The handle** (`WorkspaceNode.tsx`, `.ls-wh`): a dot just inside a workspace's right edge, at its middle, over the
+resize strip there (`z-index` 5 to `.ls-rz`'s 4), at screen size at any zoom (`--ls-inv`, set as it renders and kept by
+`paintScale`). It shows while the workspace is hovered or selected, never on a teammate's workspace, in focus or as a
+placeholder. A workspace clips what's outside it (`overflow: hidden`), so the dot sits inside the edge rather than on
+it as Cards.dc.html draws it. Resting on it opens no peek: a peek would cover it.
+
+**The gesture** (`Landscape.tsx`, kind `wire`): a press on the handle starts it, the press's own focus move giving the
+landscape the keyboard, armed (as a resize edge's does), and selecting nothing. Once it has moved `DRAG_PX`, a dashed
+line runs from the workspace to the pointer (`.ls-wire-draft`, `wireCurve` to the box under the pointer, or to the
+pointer itself), and the workspace it would go to is outlined (`.ls-wire-hot`): dashed red when no wire can go there.
+Both are written straight to the elements, never through a render, and go with `endGesture`. What it would go to is
+what's under the pointer (`elementFromPoint`): a workspace, the stack tab under the pointer or else the stack's front,
+or a ghost. A wire changes no layout, so a locked area's workspaces are wired as any are.
+- Let go on another workspace: the type picker, at the drop. Let go on nothing, or on its own workspace: the wire goes
+  (W8's Add next step makes one into space).
+- A drop no wire can go to (every type refused: a teammate's workspace, a debrief, the Helpdesk tasks workspace, across a
+  room's line, a terminal that has its worktree wire already) is refused saying why, the reason most of the four
+  types give (`noChoice`), with no picker and nothing asked of main. Main refuses it too: `wireRefusal` is the same
+  function there (`test/wireService.test.ts` has the landscape's own `r~<member>~<session>` form).
+- The release's click is taken (`swallowClick`), so it presses nothing on the workspace dropped on.
+- While it lasts nothing typed acts (`gestureKey`, at the window's capture): not on the landscape, not in a terminal.
+  Esc drops it.
+
+**The type picker** (`WireMaking.tsx`'s `WireTypePicker`, WireTypePicker.dc.html A): an `AnchoredPopover` at the drop
+point, which now takes a point on screen as well as an element. "Builder → Tester · pick a type", a row for each type
+with its line, its name and what it does (`wireChoices`, with the board's words), or, for one that can't be made
+between these two, why (the rules' own words, as main would say them). A shared worktree dragged from a terminal to an
+agent runs from the agent. ↵ takes Handoff, or the first type that can be made (`defaultChoice`); ↑ ↓ choose another;
+Esc cancels and the wire goes. Picked, `wires:add`; the wire is drawn from the change notice, which carries what the
+reply lacks (W4a's note), and what main refuses is said in the landscape's note.
+
+**Wire settings** (`WireSettingsForm`, its own component for W4c's idle popover; WireSettings.dc.html A): its ends and
+type · state in the title; on a handoff or feedback wire, Sends (the template, saved when it's left or as the settings
+close) with chips that add or take out `{summary}`, `{ticket}`, `{diff}` and `{files}` (and a Files field while
+`{files}` is in it), When (When it says it's finished, Only when I send; a wire already on "When its PR merges" shows it
+pressed, W4c offers it), a feedback wire's Rounds (− n +, n used, Reset), and Send automatically, off saying why where
+`settingsRefusal` refuses it (a room's area); on a context link, Include tool output (and, in a room's area, that what it
+reads can land on teammates' screens); on a shared worktree, what it does. Each change goes to `wires:set` as it's made,
+checked by `settingsRefusal` first; a refusal is said under the form. The form shows the wire as main last said it.
+`actions` is where W4c puts Send now.
+
+**A wire's right-click** (`wireActions`, `wireMenu`): found from where the wire was last drawn (`WireLayer.wireAt`, the
+painted curves sampled by `curveDistance`, within 6 screen px), on the landscape between what's drawn over the wires, in
+the capture phase so an area's own right-click under it doesn't take it. The layer still takes no pointer. Its menu,
+under "Reviewer → Tester · Handoff": Settings… (off on a shared worktree, which has nothing to set), and Remove the wire,
+whose note's Undo is `wires:restore`.
+
+**Connect…** (`workspaceActions.tsx`'s `connect` row, under Wires; `connectMenu`): in a workspace's ⋯, its right-click
+and its selection bar's menu, which the landscape builds with it (`actionsFor`'s `extra`), and in its side bar rows'
+(the tree's, the Team view's), which the landscape lends it to through `connectRef`; ⌘K has no row. It opens,
+where the menu it was picked from was, a menu of every other workspace drawn (`wireTargets`: its own area's first, each
+area's ghosts after its workspaces, a stack's tabs each), under their areas' names, each off saying why no wire can go
+to it; picked, the type picker opens there. Off itself, saying why, when no wire from it can go anywhere (a teammate's
+workspace, the Helpdesk tasks workspace) or there's nowhere else.
+
+**Keys and clicks** (keyArm.ts, answerGuard.ts):
+- The picker takes the keyboard as it opens and gives it back to what had it (`useDialogFocus`): armed after Esc or a
+  press, disarmed after ↵. It's never given to a terminal that didn't have it: the handle's press already moved it to
+  the landscape, and a menu's Connect… gives it back to what had it before the menu.
+- Keys typed in a burst (no `TYPING_MS` pause, `afterPause`) do nothing in the picker, Tab, arrows and ↵ included: a
+  stray ↵ straight after a Connect… row picked with Enter, or after keys typed while dragging, makes no wire, and the
+  picker says to pause. Its rows are no Tab stops, and a key's click on one (`detail` 0) does nothing.
+- A row that came up under the pointer takes no click for `ANSWER_SETTLE_MS`, shown off meanwhile (`useHeldOff`).
+- The settings popover swallows burst keys outside its text fields, so a burst can't Tab onto Remove or Send
+  automatically and press it.
+- Both popovers are outside the viewport, so their keys never reach the landscape's handlers.
+
+**Preview** (`src/preview/wiresAudit.ts`): `?landscapeWiresAudit=make|keys|menus`, the mouse and keys pressed for real by
+the test's driver (`drive`, needsYouAudit.ts); `=pick` and `=settings` leave the picker and Reviewer → Tester's settings
+open for a screenshot. No new `window.mb` call: `wiresAdd`, `wiresSet`, `wiresRemove`, `wiresRestore` and
+`wiresResetRounds` are the stub's already.
+
+**Tests:**
+- `test/workspaceActions.test.ts`: Connect… under Wires, on, off with its reason, and absent where wires aren't made;
+  Connect…'s menu (area headings, a row off with its reason, a pick); a wire's actions (Settings… off on a shared
+  worktree, Remove).
+- `test/wiresModel.test.ts`: the four types and their lines, each refusal as the rules say it, a terminal's worktree
+  running from the agent, a teammate's workspace refused outright, the reason most give, ghosts and a stack's tabs,
+  Connect…'s order, a right-click's hit (`curveDistance`, `wireNear`), the template chips.
+- `test/wireService.test.ts`: main refuses the landscape's form of a teammate's id.
+- `test/uiLandscapeWires.test.ts` (Chrome, local), at 100%, 60% and 13%: a drag's line and outline, the picker's rows,
+  ↵ making a handoff drawn from the change notice, Esc while dragging and in the picker, a refused drop (a terminal onto
+  its worktree's agent at 100%, Nick's workspace at 60% and 13%) said with no picker and no call, a drop onto a stack
+  (its front, and at 100% its Docs tab). At 100%: Builder's terminal typed in, then keys while dragging (nothing written,
+  no landscape key), a burst's ↵ after the drop (no wire) and one after a pause (the wire), a click on a row that just
+  came up (let go, off), a click by code (nothing) and the next real one (made), Enter twice through Connect… (no wire),
+  the keyboard on the landscape after each; Connect…'s rows (the same from the tree's row), a wire's right-click, its settings saved as changed,
+  Settings… opened with Enter and Tab ×8 and Enter in the same burst (nothing pressed, Remove being the eighth stop), a
+  shared worktree's Settings… off, Remove and Undo.
+- `test/uiLandscapeBar.test.ts` and `test/uiLandscapeTools.test.ts`: the workspace's menu, the same everywhere it's
+  offered, now ends with Wires · Connect… before Close….
+
+**Checked by reverting** (each alone, its test failing): the picker's burst check (`afterPause`), the row's settle
+wait, the key's-click check, the gesture swallowing typed keys, the settings popover's burst check, the drop's refusal
+(`noChoice`, opening the picker instead), and the teammate rule in `wireRefusal` (main's tests and the window's all
+fail).
+
+**Boards** (screenshots in the session's scratchpad,
+`/private/tmp/claude-501/-Users-ryanellerbroek-Code-Mockingbird/5aa8eb2c-2175-488e-ab1b-5588bc1fbc8a/scratchpad/w4b/`;
+the boards beside them in `boards/project/`):
+- `w4b-pick-100.png` beside WireTypePicker.dc.html A (and Cards.dc.html:84–87 for the handle, on Shape donor export):
+  the title, the four rows with their lines, the refused row at half strength saying why, the foot. Differences: the
+  refused worktree row says the rules' words ("A shared worktree wire runs from an agent to a terminal.") where the
+  board says "Only for a terminal. Tester is an agent."; the picker opens at the drop point, placed as a menu is, not
+  under the workspace; the handle is inside the edge.
+- `w4b-pick-60.png`, `w4b-pick-13.png`: the picker at screen size, and the handle at screen size on a card.
+- `w4b-settings-100.png` beside WireSettings.dc.html A: the title, Sends with its chips, When, Remove and Send
+  automatically. Not there: ⇄ (swap direction; below) and Send now (W4c).
+
+**Deviations:**
+- No ⇄ in the settings: `wires:set` doesn't move a wire's ends by design, and swapping is a remove and an add that a
+  cycle or a duplicate can refuse halfway. Remove it and drag the other way.
+- The handle sits inside the edge (above), and the worktree row's reason is the rules' (above).
+- The selection bar's menu and the side bar's rows have Connect… too, as the workspace's menu is one model everywhere.
+- **Not done, now that wires can be made:** Start fresh still forgets the old session's wires (W1 left the renderer's
+  `wiresRekey` before `forgetGhosts`, `main.tsx`'s Start fresh, to the first UI slice; W4a didn't take it, and it wasn't
+  in W4b's list). Main announces the drop in `wires:changed`'s `dropped`, but nothing shows that note yet.
+
 ### W4c · The send popover. Size M
 - `WirePopover.tsx`: Cards.dc.html:162–170, opened by the gate dot and Show, at
   screen size at any zoom. Its variants: blocked, at the limit, unconfirmed,

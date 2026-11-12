@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, createActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, usable, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, connectMenu, createActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, usable, wireActions, wireMenu, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -173,6 +173,20 @@ describe("a workspace's actions as a menu", () => {
     expect(actionOf(taken, "addTerminal")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back to add a terminal on its tree/) });
     // the Helpdesk tasks workspace takes no wires
     expect(actionOf(workspaceActions(sess({ role: "tasks" }), env({ addTerminal })), "addTerminal")).toBeUndefined();
+  });
+
+  it("on the landscape, offer Connect… under Wires, before a room's actions; off saying why no wire can go anywhere", () => {
+    const connect = vi.fn<() => void>();
+    const acts = workspaceActions(sess(), env({ connect, room: [{ key: "takeover", label: "Take over", onPick: vi.fn() }] }));
+    expect(rows(menuOf(acts)).slice(-9)).toEqual(["review", "-", "# Wires", "connect", "-", "# Team room", "takeover", "-", "close"]);
+    expect(actionOf(acts, "connect")).toMatchObject({ section: "wires", menuLabel: "Connect…" });
+    expect(actionOf(acts, "connect")?.disabled).toBeFalsy();
+    usable(acts, "connect")!.onPick();
+    expect(connect).toHaveBeenCalledOnce();
+    const off = workspaceActions(sess(), env({ connect: { no: "That's a teammate's session: wires across Macs come later." } }));
+    expect(actionOf(off, "connect")).toMatchObject({ disabled: true, title: "That's a teammate's session: wires across Macs come later." });
+    // where wires aren't made (⌘K), there's no row at all
+    expect(actionOf(workspaceActions(sess(), env()), "connect")).toBeUndefined();
   });
 
   it("keep an area's own rows in the section they're given, ready to join the model", () => {
@@ -413,5 +427,41 @@ describe("a ghost's actions", () => {
     expect(actionOf(acts, "reopen")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back rather than reopening this copy/) });
     expect(actionOf(acts, "fresh")).toBeUndefined();
     expect(usable(acts, "takeback")).toMatchObject({ section: "room", label: "Take it back" });
+  });
+});
+
+describe("Connect…'s menu", () => {
+  it("lists the workspaces under their areas' names, each off saying why no wire can go to it, and picks the one chosen", () => {
+    const pick = vi.fn();
+    const menu = connectMenu("Builder", [
+      { id: "r", title: "Reviewer", area: "#5120", refused: null, pick },
+      { id: "d", title: "Dev server", area: "#5120", refused: null, pick: vi.fn() },
+      { id: "n", title: "CSV writer", area: "#5101", refused: "That's a teammate's session: wires across Macs come later.", pick: vi.fn() },
+    ]);
+    expect(rows(menu)).toEqual(["# Connect “Builder” to", "# #5120", "connect:r", "connect:d", "-", "# #5101", "connect:n"]);
+    const nick = menu.find((e): e is Action => e !== "-" && e.key === "connect:n")!;
+    expect(nick).toMatchObject({ label: "CSV writer", disabled: true, title: "That's a teammate's session: wires across Macs come later." });
+    const reviewer = menu.find((e): e is Action => e !== "-" && e.key === "connect:r")!;
+    expect(reviewer.disabled).toBeUndefined();
+    reviewer.onPick();
+    expect(pick).toHaveBeenCalledOnce();
+  });
+});
+
+describe("a wire's actions", () => {
+  it("are Settings… and Remove, under its ends and type; Settings… off saying why on a wire with nothing to set", () => {
+    const settings = vi.fn<() => void>();
+    const remove = vi.fn();
+    const menu = wireMenu({ title: "Reviewer → Tester", kind: "Handoff", settings, remove });
+    expect(rows(menu)).toEqual(["# Reviewer → Tester · Handoff", "settings", "-", "remove"]);
+    const acts = wireActions({ title: "Reviewer → Tester", kind: "Handoff", settings, remove });
+    expect(acts.map((a) => [a.key, a.menuLabel, !!a.danger])).toEqual([["settings", "Settings…", false], ["remove", "Remove the wire", true]]);
+    usable(acts, "settings")!.onPick();
+    usable(acts, "remove")!.onPick();
+    expect(settings).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledOnce();
+    const tree = wireActions({ title: "Builder → Dev server", kind: "Shared worktree", settings: { no: "A shared worktree wire has nothing to set" }, remove });
+    expect(actionOf(tree, "settings")).toMatchObject({ disabled: true, title: "A shared worktree wire has nothing to set" });
+    expect(usable(tree, "remove")).toBeTruthy();
   });
 });

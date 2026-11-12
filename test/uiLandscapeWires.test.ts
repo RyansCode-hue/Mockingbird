@@ -6,7 +6,8 @@ import { tempDir } from "./helpers";
 
 // The landscape's wires (W4a) in the UI preview, in real headless Chrome: local only (CI runners have no desktop); the
 // script passes a mock keychain. ?landscapeWiresAudit (src/preview/wiresAudit.ts) reads the wires board (?lsWires) as
-// drawn, drags Builder and pinches, and reports each step once it has settled.
+// drawn, drags Builder and pinches, and reports each step once it has settled. W4b's parts make wires with the mouse
+// and keys pressed for real by the driver.
 const chrome = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const local = !process.env.CI && fs.existsSync(chrome);
 
@@ -40,7 +41,7 @@ interface Audit {
   error?: string;
 }
 
-async function audit(query: string, size = "1600x1000"): Promise<Audit> {
+async function audit(query: string, size = "1600x1000", limitMs = 60_000): Promise<Audit> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
   const json: string | null = await pageResult({
@@ -48,6 +49,7 @@ async function audit(query: string, size = "1600x1000"): Promise<Audit> {
     query: `motion=off&lsWires&${query}`,
     outDir: path.join(tempDir("ls-wires"), "out"),
     read: `document.getElementById("mb-landscape-wires-audit")?.textContent ?? null`,
+    limitMs,
   });
   if (!json) throw new Error("the preview didn't finish its wires audit");
   const out = JSON.parse(json);
@@ -207,4 +209,143 @@ describe.skipIf(!local)("the landscape's wires", () => {
     // a frame at 60 Hz is 16.7 ms, read as 16.7–16.8 (S6a)
     for (const p of p95s) expect(p).toBeLessThanOrEqual(16.8);
   }, 200_000);
+});
+
+// ---- W4b: making wires (?landscapeWiresAudit=make|keys|menus) ----
+type Shown = { ends: string; rows: { type: string; off: boolean; on: boolean; line: string }[]; foot: string; keyboard: boolean } | null;
+type Draft = { line: boolean; hot: { box: Box; no: boolean } | null };
+type Call = unknown[];
+interface Make {
+  drop: { during: Draft; picker: Shown; made: Call[]; afterPicker: Shown; drawn: number; keys: string };
+  escDrag: { held: Draft; after: Draft; picker: Shown; made: Call[] };
+  escPick: { open: Shown; picker: Shown; made: Call[]; keys: string };
+  refused: { onto: string; hot: { no: boolean } | null; note: string | null; picker: Shown; made: Call[] };
+  stack: { picker: Shown };
+  stackTab?: { picker: Shown };
+  writes: number;
+}
+interface Keys {
+  before: string;
+  control: number;
+  dragKeys: string;
+  burst: { dragging: { picker: Shown; draft: boolean }; writes: number; layout: number; picker: Shown; made: Call[] };
+  paused: { made: Call[]; picker: Shown; keys: string };
+  click: { early: { made: Call[]; off: boolean; picker: boolean }; byCode: { made: Call[]; picker: boolean }; made: Call[]; picker: Shown };
+  connect: { picker: Shown; made: Call[]; after: Shown; keys: string };
+  writes: string[];
+}
+interface Menus {
+  wsMenu: string[];
+  connect: string[];
+  fromTree: string[] | string;
+  wireMenu: string[];
+  settings: { opened: Record<string, unknown>; set: Call[]; after: Record<string, unknown> };
+  settingsClosed: { form: unknown; keys: string };
+  treeMenu: string[];
+  settingsBurst: { shown: { open: boolean; keyboard: string }; open: boolean; keyboard: boolean; set: Call[]; removed: Call[]; closed: boolean };
+  remove: { removed: { calls: Call[]; note: string; drawn: boolean }; restore: Call[]; drawn: boolean };
+}
+const TEAMMATE = "That's a teammate's session: wires across Macs come later.";
+
+describe.skipIf(!local)("making wires", () => {
+  it.each([
+    ["100%", "lsCamera=0,3040,1", "1600x1000", "builder"],
+    ["60%", "lsCamera=-100,1850,0.6", "1600x1200", "nick"],
+    ["13%", "lsCamera=-1200,-600,0.13", "1600x1000", "nick"],
+  ])("at %s: dragged from a handle and dropped, Esc while dragging and in the picker, a refused drop, and a drop onto a stack", async (_at, camera, size, refusedOnto) => {
+    const m = (await audit(`${camera}&landscapeWiresAudit=make`, size, 120_000)) as unknown as Make;
+    // the drag draws its line and outlines where it would go; the drop asks for a type, the keyboard in the picker
+    expect(m.drop.during.line).toBe(true);
+    expect(m.drop.during.hot?.no).toBe(false);
+    expect(m.drop.picker).toMatchObject({ ends: "Shape donor export → Reviewer", foot: "↵ takes Handoff · Esc cancels, and the wire goes", keyboard: true });
+    expect(m.drop.picker!.rows.map((r) => [r.type, r.off, r.on])).toEqual([["handoff", false, true], ["context", false, false], ["feedback", false, false], ["worktree", true, false]]);
+    expect(m.drop.picker!.rows[0].line).toBe("Shape donor export's result becomes Reviewer's next prompt.");
+    expect(m.drop.picker!.rows[3].line).toBe("A shared worktree wire runs from an agent to a terminal.");
+    // ↵ after a pause makes the handoff, drawn from main's change notice; the keyboard back on the landscape
+    expect(m.drop.made).toEqual([["wb-shape", "wb-reviewer", "handoff"]]);
+    expect(m.drop.afterPicker).toBeNull();
+    expect(m.drop.drawn).toBe(1);
+    expect(m.drop.keys).toBe("landscape");
+    // Esc while dragging: the line and the outline go, and no picker comes up when it's let go
+    expect(m.escDrag.held.line).toBe(true);
+    expect(m.escDrag.after).toEqual({ line: false, hot: null });
+    expect(m.escDrag.picker).toBeNull();
+    expect(m.escDrag.made).toEqual([]);
+    // Esc in the picker; a type that's there already is off, saying so, and ↵ takes the first that can be made
+    expect(m.escPick.open?.ends).toBe("Shape donor export → Builder");
+    expect(m.escPick.open?.rows.find((r) => r.type === "handoff")).toMatchObject({ off: true, line: "There's a handoff wire between these two already." });
+    expect(m.escPick.open?.foot).toBe("↵ takes Context link · Esc cancels, and the wire goes");
+    expect(m.escPick.picker).toBeNull();
+    expect(m.escPick.made).toEqual([]);
+    expect(m.escPick.keys).toBe("landscape");
+    // a drop no wire can take: outlined as refused while over it, and said, with no picker and nothing asked of main
+    expect(m.refused.onto).toBe(refusedOnto);
+    expect(m.refused.hot?.no).toBe(true);
+    expect(m.refused.note).toBe(refusedOnto === "nick" ? TEAMMATE : "“Dev server” is a terminal: only a shared worktree wire can reach one.");
+    expect(m.refused.picker).toBeNull();
+    expect(m.refused.made).toEqual([]);
+    // onto a stack: its front tab, or the tab dropped on
+    expect(m.stack.picker?.ends).toBe("Shape donor export → Fixtures");
+    if (camera.endsWith(",1")) {
+      expect(m.stackTab?.picker?.ends).toBe("Shape donor export → Docs");
+      expect(m.stackTab?.picker?.rows.find((r) => r.type === "context")).toMatchObject({ off: true, line: "There's a context wire between these two already." });
+    } else expect(m.stackTab).toBeUndefined();
+    expect(m.writes).toBe(0);
+  }, 150_000);
+
+  it("take no key that wasn't for them: none typed while dragging acts, a burst's Enter makes no wire, nor a click on a row that just came up", async () => {
+    const k = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=keys", "1600x1000", 120_000)) as unknown as Keys;
+    // Builder's terminal was being typed in (a key reached it); the press on Shape's handle gives the landscape the keyboard
+    expect(k.before).toBe("terminal:wb-builder");
+    expect(k.control).toBe(1);
+    expect(k.dragKeys).toBe("landscape");
+    // t, x, Tab and Enter while dragging: nothing typed into a terminal, no landscape key run, no picker yet
+    expect(k.burst.dragging).toEqual({ picker: null, draft: true });
+    expect(k.burst.writes).toBe(0);
+    expect(k.burst.layout).toBe(0);
+    // Enter straight after the drop is the same burst: no wire, and the picker says why
+    expect(k.burst.picker).toMatchObject({ ends: "Shape donor export → Tester", keyboard: true, foot: "Keys typed just before this opened don't pick: pause, then ↵" });
+    expect(k.burst.made).toEqual([]);
+    // after a pause, ↵ makes it, and the keyboard goes back to the landscape, never to a terminal
+    expect(k.paused.made).toEqual([["wb-shape", "wb-tester", "handoff"]]);
+    expect(k.paused.picker).toBeNull();
+    expect(k.paused.keys).toBe("landscape");
+    // a click on a row that came up under the pointer is let go, its row off; the next, once it has settled, counts
+    expect(k.click.early).toEqual({ made: [], off: true, picker: true });
+    // a click with no pointer behind it picks nothing, however long the row has been there
+    expect(k.click.byCode).toEqual({ made: [], picker: true });
+    expect(k.click.made).toEqual([["wb-shape", "wb-reviewer", "context"]]);
+    expect(k.click.picker).toBeNull();
+    // Connect…'s row picked with Enter, then Enter again in the same burst: the picker is up, and nothing is made
+    expect(k.connect.picker).toMatchObject({ ends: "Dev server → Tester", keyboard: true });
+    expect(k.connect.picker!.rows.find((r) => r.type === "worktree")).toMatchObject({ off: false, on: true, line: "Dev server runs in Tester's worktree, and Tester reads its output." });
+    expect(k.connect.made).toEqual([]);
+    expect(k.connect.after).toBeNull();
+    expect(k.connect.keys).toBe("landscape");
+    // the one key that reached a terminal was the one typed into it on purpose
+    expect(k.writes).toEqual(["wb-builder"]);
+  }, 150_000);
+
+  it("Connect… lists where a wire can go, saying why not; a wire's right-click opens its settings, saved as changed, and Remove has Undo", async () => {
+    const m = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=menus", "1600x1000", 120_000)) as unknown as Menus;
+    expect(m.wsMenu.slice(-5)).toEqual(["-", "# Wires", "Connect…", "-", "Close…"]);
+    // its own area first, each workspace a wire can't reach off with the reason
+    expect(m.connect.slice(0, 9)).toEqual(["# Connect “Shape donor export” to", "# #5120", "Builder", "Reviewer", "Dev server", "Tester", "Fixtures", "Docs", "Spike: streaming (closed)"]);
+    expect(m.connect).toContain(`off Donor export: CSV writer — ${TEAMMATE}`);
+    expect(m.connect.some((r) => r.startsWith("off Org dropdowns remember the last org — Both ends have to be in the same team room"))).toBe(true);
+    // the same menu from its row in the side bar's tree
+    expect(m.fromTree).toEqual(m.connect);
+    // a wire's right-click, a few px from its line
+    expect(m.wireMenu).toEqual(["# Reviewer → Tester · Handoff", "Settings…", "-", "Remove the wire"]);
+    expect(m.settings.opened).toMatchObject({ ends: "Reviewer → Tester", kind: "handoff · blocked", template: "{summary}", chips: ["+ summary", "add ticket", "add diff", "add files"], when: ["* When it says it's finished", "Only when I send"], auto: false, keyboard: true });
+    expect(m.settings.set).toEqual([["wb-held", { when: "manual" }]]);
+    expect(m.settings.after).toMatchObject({ when: ["When it says it's finished", "* Only when I send"] });
+    expect(m.settingsClosed).toEqual({ form: null, keys: "landscape" });
+    expect(m.treeMenu).toEqual(["# Builder → Dev server · Shared worktree", expect.stringMatching(/^off Settings… — A shared worktree wire has nothing to set/), "-", "Remove the wire"]);
+    // Settings… picked with Enter, then Tab ×8 and Enter in the same burst: the keyboard stays on the popover, nothing pressed
+    expect(m.settingsBurst).toEqual({ shown: { open: true, keyboard: "settings" }, open: true, keyboard: true, set: [], removed: [], closed: true });
+    expect(m.remove.removed).toEqual({ calls: [["wb-held"]], note: "Removed the wire Reviewer → Tester", drawn: false });
+    expect(m.remove.restore).toEqual([["wb-held"]]);
+    expect(m.remove.drawn).toBe(true);
+  }, 150_000);
 });

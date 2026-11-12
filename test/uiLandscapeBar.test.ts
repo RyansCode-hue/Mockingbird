@@ -107,6 +107,7 @@ const WORKSPACE_MENU = [
   "-", "# Tools", "Files [⇧⌘E]", "Changes [⌃⇧G]", "Search [⇧⌘F]", "Run & debug [⇧⌘D]", "Artifacts",
   "-", "# Terminal", "Repaint", "Hide the agent's diff panel (off)", "Undo the last turn…", "Add terminal on its tree",
   "-", "# Hand on", "Continue in Codex…", "Fresh session from a brief…", "Second opinion from Codex",
+  "-", "# Wires", "Connect…",
   "-", "Close…",
 ];
 const CREATE_ROWS = ["# New workspace", "Claude…", "Codex…", "Terminal…", "Helpdesk tasks…", "From a ticket…", "Resume a conversation…", "Import conversations…", "Collab… (coming) (off)", "Pipeline from a ticket… (coming) (off)"];

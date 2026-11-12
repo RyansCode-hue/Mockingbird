@@ -14,10 +14,20 @@
  * - =area (zoomed out to cards): 5120 dragged by its name, the wires on its workspaces and still under the others;
  * - =pill (with ?lsCollapsed=5102): the wire to Pathways ending at 5102's pill;
  * - =tidy: 5120 tidied from its toolbar (W10), laid out along its wires, and what the note says.
+ *
+ * W4b's parts press the mouse and keys for real where the test's driver is there (needsYouAudit.ts' `drive`):
+ * - =make (at the ?lsCamera's zoom): a wire dragged from Shape export's handle and dropped on Tester, the picker's ↵
+ *   making a handoff; Esc while dragging; Esc in the picker; a refused drop (Dev server onto Builder at 100%, onto Nick's
+ *   workspace when it is on screen), and drops onto the docs stack (its body, and at 100% its Docs tab);
+ * - =keys (at 100%): Builder's terminal typed in, then keys typed while a wire is dragged and straight after its drop,
+ *   a click on a row that came up under the pointer, and Enter straight after a row of Connect…'s menu picked with it;
+ * - =menus (at 100%): Connect…'s rows, a wire's right-click, its settings changed, and its Remove and Undo;
+ * - =pick and =settings: the picker, and Reviewer → Tester's settings, left open for a screenshot (synthetic events).
  */
 import type { Area, Landscape, Rect } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
 import { newWire, type Wire, type WireBook } from "../shared/wires";
+import { drive } from "./needsYouAudit";
 
 export const WIRE_AREA = "5120";
 const DIR = "5120-donor-export";
@@ -177,6 +187,294 @@ const wiresNow = () => {
   });
 };
 
+// ---- W4b: making wires --------------------------------------------------------------------
+
+type Pt = { x: number; y: number };
+const mid = (el: Element | null | undefined): Pt => {
+  const r = el?.getBoundingClientRect();
+  if (!r || !r.width) throw new Error("what was to be pressed isn't drawn");
+  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+};
+/** The middle of what of `el` is in the landscape's view. */
+const midShown = (el: Element): Pt => {
+  const r = el.getBoundingClientRect();
+  const v = document.querySelector(".ls-viewport")!.getBoundingClientRect();
+  const [t, b] = [Math.max(r.top, v.top), Math.min(r.bottom, v.bottom)];
+  const [l, rt] = [Math.max(r.left, v.left), Math.min(r.right, v.right)];
+  return { x: Math.round((l + rt) / 2), y: Math.round((t + b) / 2) };
+};
+const handleOf = (k: string) => node(W(k))?.querySelector<HTMLElement>(".ls-wh");
+const stackEl = () => document.querySelector<HTMLElement>(`.ls-world .ls-node[data-front="${W("fixtures")}"]`);
+/** A wire's middle on screen, where a right-click on it lands. */
+const wireMid = (id: string): Pt => {
+  const p = document.querySelector<SVGPathElement>(`.ls-wires g[data-wire="${CSS.escape(id)}"] path.line`);
+  const m = p?.getScreenCTM();
+  if (!p || !m) throw new Error(`wire ${id} isn't drawn`);
+  const q = p.getPointAtLength(p.getTotalLength() / 2).matrixTransform(m);
+  return { x: Math.round(q.x), y: Math.round(q.y) };
+};
+const pickerNow = () => {
+  const p = document.querySelector<HTMLElement>(".wp-pick:not(.mb-ghost)");
+  if (!p) return null;
+  return {
+    ends: p.querySelector(".wp-ends")?.textContent?.replace(/\s+/g, " ").trim() ?? null,
+    rows: [...p.querySelectorAll<HTMLButtonElement>(".wp-row")].map((b) => ({ type: b.dataset.type, off: b.disabled, on: b.classList.contains("on"), line: b.querySelector(".wp-line-t")?.textContent ?? null })),
+    foot: p.querySelector(".wp-foot")?.textContent ?? null,
+    keyboard: p.contains(document.activeElement),
+  };
+};
+const noteNow = () => document.querySelector<HTMLElement>(".ls-note")?.firstChild?.textContent ?? null;
+const draftNow = () => {
+  const d = document.querySelector<SVGSVGElement>(".ls-wire-draft");
+  const h = document.querySelector<HTMLElement>(".ls-wire-hot");
+  return { line: !!d && d.style.display !== "none" && !!d.querySelector("path.draft")?.getAttribute("d"), hot: h && !h.hidden ? { box: box(h), no: h.classList.contains("no") } : null };
+};
+/** Where the keyboard is, as wire making cares: a terminal, the landscape, the picker, a menu, or a settings popover. */
+const keysAt = () => {
+  const a = document.activeElement;
+  if (a?.closest(".xterm")) return `terminal:${a.closest<HTMLElement>(".ls-node")?.dataset.front ?? "?"}`;
+  if (a?.classList.contains("ls-viewport")) return "landscape";
+  if (a?.closest(".wp-pick")) return "picker";
+  if (a?.closest(".wr-pop")) return "settings";
+  if (a?.closest(".mb-ctx")) return "menu";
+  return a?.tagName ?? "none";
+};
+const menuNow = () => {
+  const m = document.querySelector<HTMLElement>(".mb-ctx:not(.mb-ghost)");
+  return m ? [...m.children].map((c) => (c.classList.contains("mb-ctx-sep") ? "-" : c.classList.contains("mb-ctx-h") ? `# ${c.textContent}` : `${(c as HTMLButtonElement).disabled ? "off " : ""}${c.querySelector(".mb-ctx-t")?.textContent}${(c as HTMLElement).title && (c as HTMLButtonElement).disabled ? ` — ${(c as HTMLElement).title}` : ""}`)) : null;
+};
+const menuRow = (label: string) => [...document.querySelectorAll<HTMLButtonElement>(".mb-ctx:not(.mb-ghost) button")].find((b) => b.querySelector(".mb-ctx-t")?.textContent === label) ?? null;
+/** A wire dragged with the mouse from `a`, held there (`hold`) or let go at `b`. */
+const dragWire = (a: Pt, b: Pt, hold?: "down" | "up") => drive([{ move: a }, { drag: { x0: a.x, y0: a.y, x1: b.x, y1: b.y, ...(hold ? { hold } : {}) } }]);
+/** Synthetic events, for a screenshot with no driver: a wire dragged from `a` and dropped at `b`. */
+async function dragWireBy(a: Pt, b: Pt, el: Element) {
+  const init = { bubbles: true, cancelable: true, pointerId: 31, button: 0, buttons: 1 };
+  el.dispatchEvent(new PointerEvent("pointerdown", { ...init, clientX: a.x, clientY: a.y }));
+  for (let i = 1; i <= 6; i++) {
+    window.dispatchEvent(new PointerEvent("pointermove", { ...init, clientX: a.x + ((b.x - a.x) * i) / 6, clientY: a.y + ((b.y - a.y) * i) / 6 }));
+    await sleep(30);
+  }
+  // what's under the drop is found with elementFromPoint, as a person's would be
+  window.dispatchEvent(new PointerEvent("pointerup", { ...init, buttons: 0, clientX: b.x, clientY: b.y }));
+}
+
+async function makeAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const z = zoomNow();
+  const since = (mark: number, fn: string) => env.calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
+  // where its handle is, read while it is drawn: a dragged wire hides the handles it is not over
+  const S = mid(handleOf("shape"));
+  // a drop on Reviewer, ↵ in the picker after a pause: a handoff
+  let mark = env.calls.length;
+  const drawnBefore = document.querySelectorAll(".ls-wires g.ls-wire").length;
+  await dragWire(S, mid(node(W("reviewer"))), "down");
+  const during = draftNow();
+  await dragWire(S, mid(node(W("reviewer"))), "up");
+  const picked = pickerNow();
+  await sleep(1100);
+  await drive([{ key: "Enter" }]);
+  await sleep(500);
+  out.drop = { during, picker: picked, made: since(mark, "wiresAdd"), afterPicker: pickerNow(), drawn: document.querySelectorAll(".ls-wires g.ls-wire").length - drawnBefore, keys: keysAt() };
+  // Esc while dragging: the wire goes, and no picker comes up
+  mark = env.calls.length;
+  await dragWire(S, mid(node(W("builder"))), "down");
+  const held = draftNow();
+  await drive([{ key: "Escape" }]);
+  const after = draftNow();
+  await dragWire(S, mid(node(W("builder"))), "up");
+  await sleep(300);
+  out.escDrag = { held, after, picker: pickerNow(), made: since(mark, "wiresAdd") };
+  // Esc in the picker
+  await sleep(1100);
+  mark = env.calls.length;
+  await dragWire(S, mid(node(W("builder"))));
+  const open = pickerNow();
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  out.escPick = { open, picker: pickerNow(), made: since(mark, "wiresAdd"), keys: keysAt() };
+  // a refused drop: Nick's workspace (a teammate's), or Dev server, a terminal, onto Builder, whose shared worktree it has
+  await sleep(600);
+  mark = env.calls.length;
+  const nick = document.querySelector<HTMLElement>(`.ls-world .ls-node.remote[data-front*="n1"]`) ?? [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node.remote")][0];
+  const nickOn = !!nick && (() => {
+    const r = nick.getBoundingClientRect();
+    return r.bottom > 60 && r.top < innerHeight - 40;
+  })();
+  const [from, onto] = nickOn ? [S, midShown(nick)] : [mid(handleOf("dev")), mid(node(W("builder")))];
+  await dragWire(from, onto, "down");
+  const refusedHot = draftNow().hot;
+  await dragWire(from, onto, "up");
+  await sleep(300);
+  out.refused = { onto: nickOn ? "nick" : "builder", hot: refusedHot, note: noteNow(), picker: pickerNow(), made: since(mark, "wiresAdd") };
+  // a drop onto the docs stack: its front, Fixtures; at 100%, its Docs tab, the session the wire goes to
+  await sleep(600);
+  await dragWire(S, midShown(stackEl()!));
+  out.stack = { picker: pickerNow() };
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  if (z >= 0.75) {
+    await sleep(1100);
+    await dragWire(S, mid(document.querySelector(`.ls-world .ls-tab[data-sid="${W("docs")}"]`)));
+    out.stackTab = { picker: pickerNow() };
+    await drive([{ key: "Escape" }]);
+    await sleep(300);
+  }
+  out.writes = env.calls.filter((c) => c.fn === "sessionWrite").length;
+}
+
+async function keysAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const since = (mark: number, fn: string) => env.calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
+  const start = env.calls.length;
+  // where its handle is, read while it is drawn: a dragged wire hides the handles it is not over
+  const S = mid(handleOf("shape"));
+  // Builder's terminal is typed in
+  await drive([{ mouse: { ...mid(node(W("builder"))?.querySelector(".ls-term")), clickCount: 1 } }]);
+  await sleep(300);
+  out.before = keysAt();
+  const typedMark = env.calls.length;
+  await drive([{ key: "q" }]);
+  out.control = since(typedMark, "sessionWrite").length;
+  // keys typed while a wire is dragged act nowhere, and Enter straight after the drop, in the same burst, makes no wire
+  await sleep(1100);
+  let mark = env.calls.length;
+  await dragWire(S, mid(node(W("tester"))), "down");
+  out.dragKeys = keysAt();
+  await drive([{ key: "t" }, { key: "x" }, { key: "Tab" }, { key: "Enter" }]);
+  const mid1 = { dragging: { picker: pickerNow(), draft: draftNow().line }, writes: since(mark, "sessionWrite").length, layout: since(mark, "landscapeUpdate").length };
+  await dragWire(S, mid(node(W("tester"))), "up");
+  await drive([{ key: "Enter" }]);
+  out.burst = { ...mid1, picker: pickerNow(), made: since(mark, "wiresAdd") };
+  await sleep(1200);
+  await drive([{ key: "Enter" }]);
+  await sleep(400);
+  out.paused = { made: since(mark, "wiresAdd"), picker: pickerNow(), keys: keysAt() };
+  // a click on a row that came up under the pointer: let go, its row off until a click there counts
+  await sleep(600);
+  mark = env.calls.length;
+  await dragWire(S, mid(node(W("reviewer"))));
+  const row = () => document.querySelector<HTMLElement>(`.wp-pick .wp-row[data-type="context"]`);
+  await drive([{ mouse: { ...mid(row()), clickCount: 1 } }]);
+  const early = { made: since(mark, "wiresAdd"), off: (row() as HTMLButtonElement | null)?.disabled ?? null, picker: !!pickerNow() };
+  await sleep(700);
+  // a click with no pointer behind it (a key's on a focused row, or code's) picks nothing, settled or not
+  row()?.click();
+  await sleep(200);
+  const byCode = { made: since(mark, "wiresAdd"), picker: !!pickerNow() };
+  await drive([{ mouse: { ...mid(row()), clickCount: 1 } }]);
+  await sleep(400);
+  out.click = { early, byCode, made: since(mark, "wiresAdd"), picker: pickerNow() };
+  // Connect…'s menu: Tester picked with Enter, and Enter again straight after, in the same burst, makes no wire
+  await sleep(600);
+  mark = env.calls.length;
+  await drive([{ mouse: { ...mid(node(W("dev"))?.querySelector(".ls-head .ls-spacer")), clickCount: 1, button: "right" } }]);
+  await sleep(200);
+  await drive([{ mouse: { ...mid(menuRow("Connect…")), clickCount: 1 } }]);
+  await sleep(300);
+  await drive([{ move: mid(menuRow("Tester")) }]);
+  await sleep(100);
+  await drive([{ key: "Enter" }, { key: "Enter" }]);
+  const connect = { picker: pickerNow(), made: since(mark, "wiresAdd") };
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  out.connect = { ...connect, after: pickerNow(), keys: keysAt() };
+  out.writes = since(start, "sessionWrite").map((a) => a[0]);
+}
+
+async function menusAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const since = (mark: number, fn: string) => env.calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
+  // Connect…'s rows
+  await drive([{ mouse: { ...mid(node(W("shape"))?.querySelector(".ls-head .ls-spacer")), clickCount: 1, button: "right" } }]);
+  await sleep(200);
+  out.wsMenu = menuNow();
+  await drive([{ mouse: { ...mid(menuRow("Connect…")), clickCount: 1 } }]);
+  await sleep(300);
+  out.connect = menuNow();
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  // the same from its row in the side bar's tree, outside the landscape
+  const treeRow = document.querySelector<HTMLElement>(`.area-tree .lt-ws[data-sid="${CSS.escape(W("shape"))}"]`);
+  if (treeRow) {
+    await drive([{ mouse: { ...mid(treeRow), clickCount: 1, button: "right" } }]);
+    await sleep(200);
+    await drive([{ mouse: { ...mid(menuRow("Connect…")), clickCount: 1 } }]);
+    await sleep(300);
+    out.fromTree = menuNow();
+    await drive([{ key: "Escape" }]);
+    await sleep(300);
+  } else out.fromTree = "no row in the tree";
+  // a wire's right-click: Reviewer → Tester, held till approve
+  await drive([{ mouse: { ...wireMid(W("held")), clickCount: 1, button: "right" } }]);
+  await sleep(200);
+  out.wireMenu = menuNow();
+  await drive([{ mouse: { ...mid(menuRow("Settings…")), clickCount: 1 } }]);
+  await sleep(300);
+  const form = () => {
+    const f = document.querySelector<HTMLElement>(".wr-pop:not(.mb-ghost)");
+    return f
+      ? {
+          ends: f.querySelector(".wr-ends")?.textContent?.replace(/\s+/g, " ").trim(),
+          kind: f.querySelector(".wr-kind")?.textContent,
+          template: f.querySelector<HTMLTextAreaElement>(".wr-tpl")?.value,
+          chips: [...f.querySelectorAll<HTMLElement>(".wr-chip")].map((c) => c.textContent),
+          when: [...f.querySelectorAll<HTMLElement>(".wr-seg button")].map((b) => `${b.getAttribute("aria-pressed") === "true" ? "* " : ""}${b.textContent}`),
+          auto: f.querySelector<HTMLInputElement>(".wr-check input")?.checked ?? null,
+          keyboard: f.contains(document.activeElement),
+        }
+      : null;
+  };
+  const opened = form();
+  let mark = env.calls.length;
+  await drive([{ mouse: { ...mid([...document.querySelectorAll(".wr-seg button")].find((b) => b.textContent === "Only when I send")), clickCount: 1 } }]);
+  await sleep(400);
+  out.settings = { opened, set: since(mark, "wiresSet"), after: form() };
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  out.settingsClosed = { form: form(), keys: keysAt() };
+  // a shared worktree has nothing to set
+  await drive([{ mouse: { ...wireMid(W("tree")), clickCount: 1, button: "right" } }]);
+  await sleep(200);
+  out.treeMenu = menuNow();
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  // Settings… picked with Enter, and Tab eight times and Enter in the same burst: Tab walks onto no control, Enter
+  // presses nothing (Remove is the eighth stop), and nothing is changed
+  await sleep(1100);
+  mark = env.calls.length;
+  await drive([{ mouse: { ...wireMid(W("held")), clickCount: 1, button: "right" } }]);
+  await sleep(200);
+  await drive([{ key: "Enter" }]);
+  const shown = { open: !!form(), keyboard: keysAt() };
+  await drive([...Array.from({ length: 8 }, () => ({ key: "Tab" })), { key: "Enter" }]);
+  await sleep(300);
+  const burstKeys = { shown, open: !!form(), keyboard: document.activeElement?.classList.contains("wr-pop") ?? false, set: since(mark, "wiresSet"), removed: since(mark, "wiresRemove") };
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  out.settingsBurst = { ...burstKeys, closed: !form() };
+  // Remove, and the note's Undo
+  mark = env.calls.length;
+  await drive([{ mouse: { ...wireMid(W("held")), clickCount: 1, button: "right" } }]);
+  await sleep(200);
+  await drive([{ mouse: { ...mid(menuRow("Remove the wire")), clickCount: 1 } }]);
+  await sleep(400);
+  const removed = { calls: since(mark, "wiresRemove"), note: noteNow(), drawn: !!document.querySelector(`.ls-wires g[data-wire="${W("held")}"]`) };
+  await drive([{ mouse: { ...mid(document.querySelector(".ls-note .ls-note-act")), clickCount: 1 } }]);
+  await sleep(400);
+  out.remove = { removed, restore: since(mark, "wiresRestore"), drawn: !!document.querySelector(`.ls-wires g[data-wire="${W("held")}"]`) };
+}
+
+/** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */
+async function showAudit(part: string): Promise<void> {
+  if (part === "pick") {
+    const h = handleOf("shape")!;
+    h.style.opacity = "1";
+    await dragWireBy(mid(h), mid(node(W("tester"))), h);
+    return;
+  }
+  const at = wireMid(W("held"));
+  document.querySelector(".ls-viewport")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 2 }));
+  await sleep(300);
+  menuRow("Settings…")?.click();
+}
+
 export function runWiresAudit(env: WiresAuditEnv, part: string): void {
   const report = (out: unknown) => {
     const tag = document.createElement("script");
@@ -188,8 +486,16 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
   env.waitFor(`.ls-wires g.ls-wire`, async () => {
     const out: Record<string, unknown> = { part };
     try {
-      await sleep(1200);
+      // the screenshots' parts open theirs at once: a screenshot is taken a few seconds of virtual time in
+      await sleep(part === "pick" || part === "settings" ? 300 : 1200);
       out.zoom = zoomNow();
+      if (part === "pick" || part === "settings") {
+        await showAudit(part);
+        out.shown = { picker: pickerNow(), settings: !!document.querySelector(".wr-pop:not(.mb-ghost)"), note: noteNow() };
+      }
+      if (part === "make") await makeAudit(env, out);
+      else if (part === "keys") await keysAudit(env, out);
+      else if (part === "menus") await menusAudit(env, out);
       const boxes = () => Object.fromEntries(["shape", "builder", "reviewer", "dev", "tester", "fixtures", "spike"].map((k) => [k, box(node(W(k)))]));
       if (part === "near" || part === "far") {
         out.wires = wiresNow();

@@ -13,8 +13,9 @@ import { useLiftOut } from "./lift";
  * `align` "end" lines its right edge up with the element's (a button at the window's right end); its left by default.
  * `below` keeps it under the element however tall it grows, its height capped at the window's bottom (its content
  * scrolls), and placed again whenever its size changes; otherwise a tall one flips above, as a menu does. `anchor` can
- * be a function, read whenever it's placed, for an element that's swapped for another while it's open; `placeKey`
- * changing places it again.
+ * be a function, read whenever it's placed, for an element that's swapped for another while it's open, or a point on
+ * screen (the same object while it's open), where it opens as a menu does at the pointer; `placeKey` changing places
+ * it again.
  */
 export function AnchoredPopover({
   anchor,
@@ -27,7 +28,7 @@ export function AnchoredPopover({
   onKeyDown,
   placeKey,
 }: {
-  anchor: HTMLElement | (() => HTMLElement | null);
+  anchor: HTMLElement | (() => HTMLElement | null) | { x: number; y: number };
   className: string;
   label: string;
   onClose: (how: "escape" | "outside" | "away") => void;
@@ -40,7 +41,10 @@ export function AnchoredPopover({
   useEscape(() => onClose("escape"));
   const anchorNow = useRef(anchor);
   anchorNow.current = anchor;
-  const anchorEl = () => (typeof anchorNow.current === "function" ? anchorNow.current() : anchorNow.current);
+  const anchorEl = () => {
+    const a = anchorNow.current;
+    return typeof a === "function" ? a() : a instanceof HTMLElement ? a : null;
+  };
   const fixed = typeof anchor === "function" ? null : anchor;
   const box = useRef<HTMLDivElement | null>(null);
   const presence = usePresence<HTMLDivElement>("menu", { also: box });
@@ -51,10 +55,11 @@ export function AnchoredPopover({
     const el = box.current;
     if (!el) return;
     const place = () => {
+      const to = anchorNow.current;
       const a = anchorEl();
+      const r = typeof to === "function" || to instanceof HTMLElement ? a?.getBoundingClientRect() : { left: to.x, right: to.x, bottom: to.y };
       // one that has left the page has no place: it stays where it was
-      if (!a?.isConnected) return;
-      const r = a.getBoundingClientRect();
+      if (!r || (a && !a.isConnected)) return;
       const x = align === "end" ? r.right - el.offsetWidth : r.left;
       const view = { width: window.innerWidth, height: window.innerHeight };
       const at = placeMenu({ x, y: r.bottom + 4 }, { width: el.offsetWidth, height: below ? 0 : el.scrollHeight }, view);

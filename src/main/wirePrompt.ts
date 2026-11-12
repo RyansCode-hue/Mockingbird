@@ -319,8 +319,7 @@ export function wireInstructions(lines: readonly WireLine[], verdictDue: boolean
 
 // ---- a wire's template ------------------------------------------------------------------------
 
-/** What a wire carries when its template says nothing else. */
-export const DEFAULT_TEMPLATE = "{summary}";
+export { DEFAULT_TEMPLATE } from "../shared/wires";
 
 /** One placeholder's text, what the gate should say about it, and how many values redaction replaced in it. */
 export interface Expansion {

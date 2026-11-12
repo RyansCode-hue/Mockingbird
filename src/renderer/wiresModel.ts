@@ -3,7 +3,7 @@
  * (the tile holding the session, a ghost's card, or a collapsed area's pill), what state it shows, and its curve
  * (Main.dc.html's). WireLayer.tsx draws them and keeps them on their ends as workspaces move.
  */
-import { ROOM_LINE, gateOf, wireEndOf, wiresInOrder, type Gate, type GateContext, type Wire, type WireEnd, type WireState, type WireType } from "../shared/wires";
+import { DEFAULT_ROUNDS, ROOM_LINE, gateOf, wireEndOf, wireRefusal, wiresInOrder, type Gate, type GateContext, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
 import { topOfKey, type SessionInfo } from "../shared/types";
 import { LOOSE_GROUP, type Rect } from "../shared/landscape";
@@ -86,21 +86,23 @@ function endOf(s: SessionInfo, running: boolean, state: Pick<WireState, "folders
 
 /**
  * The rules' view of what's drawn, for gateOf: running sessions are tiles' members, closed ones a stack's closed tabs
- * and ghosts', each named by a wire made into an end. A pr-merged wire's merge view is main's (WireState.merges): the
- * merge watch is main's. Main's view also knows its file's write access and whether team rooms have started; a wire
- * that's blocked only for those draws as its state otherwise is, and main refuses what's tried on it, saying why. A
- * session's take-over is read from its room tag, which a closed one doesn't have. `closed`: closed sessions with no place
- * (the Closed sessions list), which the pipeline strip names and nothing draws; a wire to one is blocked till it's reopened.
+ * and ghosts', each named by a wire (or in `also`, the ends of one being made) made into an end. A pr-merged wire's
+ * merge view is main's (WireState.merges): the merge watch is main's. Main's view also knows its file's write access
+ * and whether team rooms have started; a wire that's blocked only for those draws as its state otherwise is, and main
+ * refuses what's tried on it, saying why. A session's take-over is read from its room tag, which a closed one doesn't
+ * have. `closed`: closed sessions with no place (the Closed sessions list), which the pipeline strip names and nothing
+ * draws; a wire to one is blocked till it's reopened.
  */
 export function gateContextOf(
   layout: Pick<ResolvedLayout, "tiles" | "ghosts">,
   state: Pick<WireState, "book" | "merges" | "folders">,
   rooms?: readonly WireRoom[],
-  closed: readonly SessionInfo[] = []
+  closed: readonly SessionInfo[] = [],
+  also: readonly string[] = []
 ): GateContext | null {
   const book = state.book;
   if (!book) return null;
-  const named = new Set(Object.values(book.links).flatMap((w) => [w.from, w.to]));
+  const named = new Set([...Object.values(book.links).flatMap((w) => [w.from, w.to]), ...also]);
   const ends = new Map<string, WireEnd>();
   const add = (s: SessionInfo, running: boolean, placed = true) => named.has(s.id) && !ends.has(s.id) && ends.set(s.id, endOf(s, running, state, rooms, placed));
   if (named.size) {
@@ -190,6 +192,9 @@ export interface WireCurve {
   /** Halfway along it: the gate dot and the label's place. */
   mid: Point;
   bend: Bend;
+  /** Its control points: `d` is from, c1, c2, to. */
+  c1: Point;
+  c2: Point;
 }
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -246,7 +251,30 @@ export function wireCurve(a: Rect, b: Rect, px = 1): WireCurve | null {
   }
   const mid = { x: (p0.x + 3 * c1.x + 3 * c2.x + p3.x) / 8, y: (p0.y + 3 * c1.y + 3 * c2.y + p3.y) / 8 };
   const d = `M${r1(p0.x)} ${r1(p0.y)} C${r1(c1.x)} ${r1(c1.y)}, ${r1(c2.x)} ${r1(c2.y)}, ${r1(p3.x)} ${r1(p3.y)}`;
-  return { d, from: p0, to: p3, fromSide, toSide, mid, bend };
+  return { d, from: p0, to: p3, fromSide, toSide, mid, bend, c1, c2 };
+}
+
+/** How far from point `p` curve `c` passes, found along it in steps: near enough for a right-click on a thin line. */
+export function curveDistance(c: Pick<WireCurve, "from" | "c1" | "c2" | "to">, p: Point): number {
+  let best = Infinity;
+  for (let i = 0; i <= 48; i++) {
+    const t = i / 48;
+    const u = 1 - t;
+    const x = u * u * u * c.from.x + 3 * u * u * t * c.c1.x + 3 * u * t * t * c.c2.x + t * t * t * c.to.x;
+    const y = u * u * u * c.from.y + 3 * u * u * t * c.c1.y + 3 * u * t * t * c.c2.y + t * t * t * c.to.y;
+    best = Math.min(best, Math.hypot(x - p.x, y - p.y));
+  }
+  return best;
+}
+
+/** The wire whose curve passes nearest `p`, within `within` (landscape px), or null: what a right-click there is on. */
+export function wireNear(curves: ReadonlyMap<string, WireCurve>, p: Point, within: number): string | null {
+  let best: { id: string; d: number } | null = null;
+  for (const [id, c] of curves) {
+    const d = curveDistance(c, p);
+    if (d <= within && (!best || d < best.d)) best = { id, d };
+  }
+  return best?.id ?? null;
 }
 
 /** Box `r` moved by `by` and drawn `inset` in from its edges (a card's, zoomed out to cards). */
@@ -282,4 +310,98 @@ export function wireBanners(r: { state: Pick<WireState, "refused" | "problems"> 
   if (r.state?.refused) out.add(r.state.refused);
   for (const p of r.state?.problems ?? []) out.add(p.message);
   return [...out];
+}
+
+// ---- making a wire ------------------------------------------------------------------------
+
+/** Each type's name, as the type picker and a wire's settings say it. */
+export const WIRE_TYPE_NAME: Record<WireType, string> = { handoff: "Handoff", context: "Context link", feedback: "Feedback loop", worktree: "Shared worktree" };
+
+/** One row of the type picker (WireTypePicker.dc.html A): the wire it makes, what it does in a line, or why it can't be made. */
+export interface WireChoice {
+  type: WireType;
+  name: string;
+  line: string;
+  /** The ends it makes the wire between: a shared worktree runs from the agent to the terminal, whichever was dragged from. */
+  from: string;
+  to: string;
+  refused: string | null;
+}
+
+/** What a wire's template can name, as the chips under it add or take out (wirePrompt.ts fills them in as it goes). */
+export const TEMPLATE_PARTS = ["summary", "ticket", "diff", "files"] as const;
+export const hasPart = (t: string, p: string): boolean => t.includes(`{${p}}`);
+/** Template `t` with placeholder `p` put at its end on a line of its own, or taken out with the blank line it leaves. */
+export function togglePart(t: string, p: string): string {
+  if (!hasPart(t, p)) return t.trim() ? `${t.replace(/\s+$/, "")}\n{${p}}` : `{${p}}`;
+  return t
+    .split(` {${p}}`)
+    .join("")
+    .split(`{${p}}`)
+    .join("")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** `name`'s, as a possessive reads: Builder's, Fixtures'. */
+export const whose = (name: string): string => (/s$/i.test(name) ? `${name}'` : `${name}'s`);
+/** What a shared worktree wire does, said the same in the picker and the wire's settings. */
+export const worktreeLine = (agent: string, terminal: string): string => `${terminal} runs in ${whose(agent)} worktree, and ${agent} reads its output.`;
+
+/** A session as the picker names it. */
+export interface ChoiceEnd {
+  id: string;
+  title: string;
+}
+
+/**
+ * The four types a wire dragged from `a` to `b` can be, each with why it can't be made between them now (wireRefusal,
+ * which main checks again as it makes it). A shared worktree dragged from a terminal to an agent runs from the agent.
+ */
+export function wireChoices(a: ChoiceEnd, b: ChoiceEnd, ctx: WireContext): WireChoice[] {
+  const back = ctx.end(a.id)?.kind === "terminal" && ctx.end(b.id)?.kind === "agent";
+  const [agent, term] = back ? [b, a] : [a, b];
+  const row = (type: WireType, line: string, from = a, to = b): WireChoice => ({ type, name: WIRE_TYPE_NAME[type], line, from: from.id, to: to.id, refused: wireRefusal(from.id, to.id, type, ctx) });
+  return [
+    row("handoff", `${whose(a.title)} result becomes ${whose(b.title)} next prompt.`),
+    row("context", `${b.title} can read ${a.title}. Nothing is pushed.`),
+    row("feedback", `${whose(a.title)} notes go back to ${b.title}, ${DEFAULT_ROUNDS} rounds at most.`),
+    row("worktree", worktreeLine(agent.title, term.title), agent, term),
+  ];
+}
+
+/** The row ↵ takes: Handoff, or the first that can be made; null when none can. */
+export const defaultChoice = (choices: readonly WireChoice[]): WireChoice | null => choices.find((c) => c.type === "handoff" && !c.refused) ?? choices.find((c) => !c.refused) ?? null;
+
+/** When every one of `reasons` is a refusal, the one given most (the first of those tied); null when any is null. */
+export function commonReason(reasons: readonly (string | null)[]): string | null {
+  if (!reasons.length || reasons.some((r) => r === null)) return null;
+  const count = new Map<string, number>();
+  for (const r of reasons as string[]) count.set(r, (count.get(r) ?? 0) + 1);
+  return [...count].reduce((best, c) => (c[1] > best[1] ? c : best))[0];
+}
+
+/** Why no wire at all can be made between two workspaces (every row refused): the reason most rows give. Null when one can. */
+export const noChoice = (choices: readonly WireChoice[]): string | null => commonReason(choices.map((c) => c.refused));
+
+/** A session a wire can be made to from the landscape: a workspace's (each tab of a stack), or a ghost's. */
+export interface WireTarget {
+  s: SessionInfo;
+  area: string;
+  closed: boolean;
+}
+
+/**
+ * Every session drawn on the landscape but those in `from`'s own workspace: what Connect… lists, area by area, `from`'s
+ * own area first, each area's running workspaces before its ghosts, in layout order.
+ */
+export function wireTargets(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, from: string): WireTarget[] {
+  const own = layout.tiles.find((t) => t.members.some((m) => m.id === from));
+  const all = [
+    ...layout.tiles.filter((t) => t !== own && !t.hidden).flatMap((t) => t.members.map((s) => ({ s, area: t.area, closed: false }))),
+    ...layout.ghosts.filter((g) => !g.hidden).flatMap((g) => g.members.map((s) => ({ s, area: g.area, closed: true }))),
+  ];
+  const order = [...new Set([...(own ? [own.area] : []), ...all.map((t) => t.area)])];
+  return order.flatMap((a) => all.filter((t) => t.area === a));
 }

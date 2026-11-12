@@ -1624,7 +1624,8 @@ function App() {
   };
   const tileOfSession = (id: string) => landscapeLayout?.tiles.find((t) => t.members.some((m) => m.id === id)) ?? null;
   /** A landscape workspace's actions: its front session's (or `s`'s, a tab of its stack), with its size. */
-  const actionsFor = (t: Tile, s: SessionInfo = t.front): ModelAction[] => workspaceActions(s, wsEnv(s, t));
+  const actionsFor = (t: Tile, s: SessionInfo = t.front, extra: Partial<WorkspaceEnv> = {}): ModelAction[] => workspaceActions(s, { ...wsEnv(s, t), ...extra });
+  const connectRef = useRef<((s: SessionInfo) => Can) | null>(null);
 
   // ---- closed sessions (S6b): ghosts where they were on the landscape, and the Closed sessions list ----
   /** Say what happened to closed sessions: over the landscape when it's shown, else in a dialog (it's still being read in). */
@@ -2213,6 +2214,7 @@ function App() {
         <div className="ls-row">
         <BadgeContext.Provider value={badgeEnv}>
         <Landscape
+          connectRef={connectRef}
           rooms={teamRooms}
           layout={landscapeLayout}
           stored={landscapeState.landscape}
@@ -2525,7 +2527,7 @@ function App() {
   const rowMenu = useContextMenu("Session");
 
   /** Everything a session's row and right-click menu offer, in menu order: its workspace's actions, as its ⋯ does. */
-  const sessionActions = (s: SessionInfo): MenuEntry[] => menuOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))));
+  const sessionActions = (s: SessionInfo): MenuEntry[] => menuOf(workspaceActions(s, { ...wsEnv(s, tileOfSession(s.id)), connect: connectRef.current?.(s) }));
 
   /** A session's row: its name, with its actions at the end of that line, and what it is underneath. */
   const sessionRow = (s: SessionInfo) => {
