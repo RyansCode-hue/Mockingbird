@@ -474,7 +474,7 @@ interface GatesRun {
   unconfirmed: { opened: Pop; calls: string[]; marked: string[][]; pop: Pop | null; look: string };
   merge: { opened: Pop; checked: Pop; asked: Pop; early: { marked: number; pop: Pop }; calls: string[]; check: string[][]; marked: string[][]; after: Pop; look: string };
   held: { early: { set: number; when: string[] | null }; opened: Pop; set: [string, unknown][]; after: Pop };
-  limit: { opened: Pop; more: Pop; under: Pop; moreRounds: string[][]; sends: number };
+  limit: { opened: Pop; under: Pop; moreRounds: string[][]; sends: number };
 }
 const PR_URL = "https://dev.azure.com/acme/Backoffice/_git/backoffice/pullrequest/11";
 
@@ -549,7 +549,7 @@ describe.skipIf(!local)("the send popover", () => {
     expect(g.merge.opened.whys).toEqual(["Can't tell whether PR 11 to dev merged (3 tries): the provider answered 503 Service Unavailable."]);
     expect(g.merge.check).toEqual([["5120", PR_URL]]);
     expect(g.merge.checked.err).toBe("Couldn't check the pull request: UI preview: no pull request is read");
-    expect(g.merge.asked.question).toBe("Mark PR 11 to dev merged? Mockingbird can't read whether it merged. The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent.");
+    expect(g.merge.asked.question).toBe("Mark PR 11 to dev in backoffice merged? Mockingbird can't read whether it merged. The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent.");
     expect(g.merge.asked.buttons).toEqual(["Check now", "Mark merged", "Cancel", "Remove"]);
     // its confirm, clicked as it came up, is let go; once settled, it marks it, and the wire waits at its gate, flagged
     expect(g.merge.early.marked).toBe(0);
@@ -570,7 +570,58 @@ describe.skipIf(!local)("the send popover", () => {
     const g = (await audit("lsGates=limit&lsCamera=0,3040,1&landscapeWiresAudit=gates", "1600x1000", 120_000)) as unknown as GatesRun;
     expect(g.limit.opened).toMatchObject({ face: "limit", kind: "feedback loop · at the limit · 3 of 3", whys: ["At the limit: 3 of 3 rounds."], buttons: ["One more round", "Not yet"] });
     expect(g.limit.moreRounds).toEqual([["wb-loop"]]);
-    expect(g.limit.more).toMatchObject({ face: "ready", kind: "feedback loop · round 4 of 4", buttons: ["Send", "Not yet"] });
+    // Send clicked where it came up, about 250 ms after: let go, and shown off a moment
+    expect(g.limit.under).toMatchObject({ face: "ready", kind: "feedback loop · round 4 of 4", buttons: ["off Send", "Not yet"] });
     expect(g.limit.sends).toBe(0);
   }, 150_000);
+
+  it("takes the keyboard off Send when a newer finish replaces what's shown, and keeps it when the face changes under it", async () => {
+    const r = ((await audit("lsCamera=0,3040,1&landscapeWiresAudit=refocus", "1600x1000", 120_000)) as unknown as { refocus: { newer: { onSend: string; moved: string; sends: number; pop: Pop }; gone: { again: string; focus: string; pop: Pop } } }).refocus;
+    // Send reached by keys; Reviewer finishes again; Enter just after: the keyboard had left Send, nothing is sent
+    expect(r.newer).toMatchObject({ onSend: "Send", moved: "popover", sends: 0 });
+    expect(r.newer.pop).toMatchObject({ face: "ready", body: "1. NEWER: not read yet.", whys: ["Reviewer finished again: this is what it sends now."], buttons: ["Send", "Not yet"] });
+    // Send reached again, and what waited sent from elsewhere: Send goes with the face, the keyboard stays in the popover
+    expect(r.gone).toMatchObject({ again: "Send", focus: "popover", pop: { face: "settings", kind: "feedback loop · sent" } });
+  }, 150_000);
+
+  it("holds a Send reached by keys as it comes up under One more round, and sends from keys after a pause", async () => {
+    const r = ((await audit("lsGates=limit&lsCamera=0,3040,1&landscapeWiresAudit=limitkeys", "1600x1000", 120_000)) as unknown as { limitkeys: { onMore: string; burst: { sends: number; moreRounds: number; focus: string; pop: Pop }; onSend: string; sends: number; pop: Pop | null } }).limitkeys;
+    expect(r.onMore).toBe("One more round");
+    // Enter on One more round, then Tab Tab Enter straight on: the Send that just came up is held, and shown off
+    expect(r.burst).toMatchObject({ sends: 0, moreRounds: 1, focus: "popover", pop: { face: "ready", kind: "feedback loop · round 4 of 4", buttons: ["off Send", "Not yet"] } });
+    expect(r).toMatchObject({ onSend: "Send", sends: 1, pop: null });
+  }, 150_000);
+
+  it("takes no burst begun before it opened, a Shift in it too", async () => {
+    const r = ((await audit("lsCamera=0,3040,1&landscapeWiresAudit=shift", "1600x1000", 120_000)) as unknown as { shift: { sends: number; writes: number; pop: Pop } }).shift;
+    expect(r).toMatchObject({ sends: 0, writes: 1, pop: { face: "ready", hint: "Keys typed just before this opened don't press anything here: pause, then go on." } });
+  }, 150_000);
+
+  it("leaves the cost question unanswered by an Enter held on Send, and says so when Esc answers it", async () => {
+    const r = ((await audit("lsGates&lsBigResume=wb-spike&lsCamera=0,3040,1&landscapeWiresAudit=costrepeat", "1600x1000", 120_000)) as unknown as {
+      costrepeat: { onSend: string; asked: { dialog: boolean; focus: string }; held: { dialog: boolean; hint: string | null; sends: number }; sends: Sends; resumeCost: number; dialog: boolean; pop: Pop };
+    }).costrepeat;
+    expect(r.onSend).toBe("Send");
+    expect(r.asked).toEqual({ dialog: true, focus: "Continue" });
+    expect(r.held).toEqual({ dialog: true, hint: "Keys typed just before this opened don't press anything here: pause, then go on.", sends: 1 });
+    // the one send was main's first, which asked about starting Spike: none went with { start: true }
+    expect(r.sends.map((x) => x[3])).toEqual([null]);
+    expect(r).toMatchObject({ resumeCost: 1, dialog: false, pop: { face: "ready", err: "Nothing was sent: “Spike: streaming” stays as it is.", keyboard: true } });
+  }, 150_000);
+
+  it("stays open while its cost is asked, says a refusal that comes once it has closed, and closes no other popover", async () => {
+    const l = ((await audit("lsGates&lsBigResume=wb-spike&lsCamera=0,3040,1&landscapeWiresAudit=costlost", "1600x1000", 120_000)) as unknown as {
+      costlost: { asked: { dialog: boolean; pop: boolean }; answered: { dialog: boolean; pop: Pop }; sends: Sends; pop: Pop; note: string | null };
+    }).costlost;
+    // a press on Continue is the question's: the popover stays, shows the newer finish, and says why main refused the earlier
+    expect(l.asked).toEqual({ dialog: true, pop: true });
+    expect(l.answered.pop).toMatchObject({ body: "Newer fixtures: 41k donors.", buttons: ["off Sending…", "Not yet"] });
+    expect(l.sends.map((x) => [x[1], x[3]])).toEqual([["pd-fixtures", null], ["pd-fixtures", { start: true }]]);
+    expect(l.pop).toMatchObject({ face: "ready", body: "Newer fixtures: 41k donors.", buttons: ["Send", "Not yet"], err: "What was waiting there has been replaced by something newer: send that instead." });
+    const o = ((await audit("lsGates&lsBigResume=wb-spike&lsCamera=0,3040,1&landscapeWiresAudit=closeother", "1600x1000", 120_000)) as unknown as { closeother: { opened: string; after: string; sends: Sends; note: string | null } }).closeother;
+    // Spike's popover closed for Tester's while its send ran: Tester's stays, and the refusal goes to the note
+    expect(o).toMatchObject({ opened: "Reviewer → Tester", after: "Reviewer → Tester" });
+    expect(o.sends).toHaveLength(2);
+    expect(o.note).toBe("Fixtures → Spike: streaming: What was waiting there has been replaced by something newer: send that instead.");
+  }, 250_000);
 });

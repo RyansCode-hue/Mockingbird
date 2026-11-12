@@ -175,7 +175,7 @@ describe("a pr-merged wire in the windows", () => {
     t.answer(11, { state: "closed", closedAt: Date.now() });
     await t.tick();
     expect(t.checked).toBe(1);
-    expect(t.service.get().merges).toEqual({ [w]: { blocked: "PR 11 to dev was closed without merging." } });
+    expect(t.service.get().merges).toEqual({ [w]: { blocked: "PR 11 to dev was closed without merging.", prs: [urlOf(11)] } });
     expect(drawn(t, w)).toMatchObject({ look: "blocked", label: { text: "PR 11 to dev was closed without merging", tone: "blocked" }, why: t.gate(w).why });
   });
 
@@ -557,7 +557,7 @@ describe("a pull request merging as a wire's When", () => {
     await t.tick();
     expect(prMergeNote(t.prOf(11))).toEqual({ text: "closed without merging", problem: true });
     expect(markMergedQuestion(t.prOf(11))).toBe(
-      "Mark PR 11 to dev merged? Its provider says it was closed without merging. The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent."
+      "Mark PR 11 to dev in Portal/client-portal merged? Its provider says it was closed without merging. The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent."
     );
     t.merged(11);
     for (let i = 0; i < 4; i++) await t.tick();

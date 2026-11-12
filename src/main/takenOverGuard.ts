@@ -23,6 +23,9 @@ export type UntakenCall = keyof typeof UNTAKEN_CALLS;
 export const UNTAKEN_WIRE_CALLS = {
   "wires:send": "sending along this copy's wire",
   "wires:sendAgain": "sending along this copy's wire",
+  "wires:markSent": "settling what this copy's wire sent",
+  "wires:moreRounds": "allowing this copy's wire another round",
+  "wires:resetRounds": "resetting this copy's wire's rounds",
 } as const;
 
 export type UntakenWireCall = keyof typeof UNTAKEN_WIRE_CALLS;

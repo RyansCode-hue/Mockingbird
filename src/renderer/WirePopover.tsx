@@ -1,13 +1,13 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isErr, type IpcResult, type TicketPipeline } from "../shared/types";
 import { AnchoredPopover } from "./Popover";
 import { useDialogFocus } from "./Modal";
-import { afterPause, typed } from "./keyArm";
-import { ANSWER_SETTLE_MS, keyClick, useHeldOff, useSettledRows } from "./answerGuard";
+import { keyboardNowhere } from "./keyArm";
+import { ANSWER_SETTLE_MS, EARLY_KEYS_HINT, keyClick, useAimedKeys, useHeldOff, useSettledRows } from "./answerGuard";
 import { usePipelines } from "./TicketPipeline";
-import { markMergedQuestion } from "./ticketPipelineModel";
+import { markMergedQuestion, prLabel } from "./ticketPipelineModel";
 import { WireSettingsForm, type WireSettingsProps } from "./WireMaking";
-import { blockingPr, type GateView } from "./wiresModel";
+import { mergePrsOf, type GateView } from "./wiresModel";
 
 /**
  * The send popover (docs/landscape-wires.md, W4c; Cards.dc.html:162–170, WireSettings.dc.html A), opened by a wire's gate
@@ -22,10 +22,15 @@ import { blockingPr, type GateView } from "./wiresModel";
  * - nothing in it takes a click for ANSWER_SETTLE_MS after it opens (the click that opened it, a double click's second
  *   landing where it flipped up under the pointer: the settings face's form holds its own); its own buttons, Send among
  *   them, also not until they've stayed put that long after content moved (a newer finish, One more round turning into
- *   Send), shown off meanwhile;
- * - keys typed in a burst that began before it opened press nothing here, whatever has the keyboard in it, until a pause;
- *   a key's click counts only as Enter or Space pressed (not held) on that button, and a click made by code never;
- * - one act at a time: Send is off from its click until main answers, so Send twice sends once;
+ *   Send), shown off meanwhile, a key's click as much as a pointer's;
+ * - keys typed in a burst that began before it opened press nothing here, whatever has the keyboard in it, until a pause
+ *   (useAimedKeys); a key's click counts only as Enter or Space pressed (not held) on that button, and a click made by
+ *   code never;
+ * - a newer finish takes the keyboard off the button it was on, and a face that changes under it keeps it in the
+ *   popover: what Enter pressed next was aimed at has gone;
+ * - one act at a time: Send is off from its click until main answers, so Send twice sends once; a press on a dialog it
+ *   opened (Send's cost question) leaves it open, and what an act comes to once it has closed anyway is said
+ *   (`onLost`);
  * - it takes the keyboard as it opens and gives it back as it closes, never to a terminal: there the landscape gets it.
  */
 export interface WirePopoverProps {
@@ -34,23 +39,21 @@ export interface WirePopoverProps {
   view: GateView;
   /** The wire's settings, as Settings… shows them, and its ends' titles: the face of a wire with nothing at its gate. */
   form: WireSettingsProps;
-  /** Its source's ticket and branch: where the pull request a blocked merge waits on is found. */
-  source: { ticket: string | null; branch: string | null };
+  /** Its source's ticket: whose record (pipeline.json) holds the pull requests a blocked merge waits on. */
+  ticket: string | null;
   /** Send `body` as pending `pendingId` (`again`: Send again, after it may have arrived); settles with why nothing was sent, or null. */
   onSend: (pendingId: string, body: string, again: boolean) => Promise<string | null>;
   /** Say what may have arrived did; settles with why not, or null. */
   onMarkSent: (pendingId: string) => Promise<string | null>;
   /** One more round, at the limit; settles with why not, or null. */
   onMoreRounds: () => Promise<string | null>;
+  /** Why an act started here didn't go, once the popover has closed: said elsewhere, as it can't be here. */
+  onLost: (why: string) => void;
   /** Where the keyboard goes as it closes when it would go back to a terminal. */
   home: () => HTMLElement | null;
   onClose: () => void;
 }
 
-const swallow = (e: React.KeyboardEvent) => {
-  e.preventDefault();
-  e.stopPropagation();
-};
 /** A pipeline call's word: why it didn't go, or null. */
 async function pipeCall(what: string, call: () => Promise<IpcResult<TicketPipeline>>): Promise<string | null> {
   try {
@@ -62,7 +65,7 @@ async function pipeCall(what: string, call: () => Promise<IpcResult<TicketPipeli
   }
 }
 
-export function WirePopover({ at, view, form, source, onSend, onMarkSent, onMoreRounds, home, onClose }: WirePopoverProps) {
+export function WirePopover({ at, view, form, ticket, onSend, onMarkSent, onMoreRounds, onLost, home, onClose }: WirePopoverProps) {
   useDialogFocus({
     handsBack: (to) => {
       if (!to.closest(".xterm")) return true;
@@ -83,17 +86,25 @@ export function WirePopover({ at, view, form, source, onSend, onMarkSent, onMore
     });
   const [err, setErr] = useState<string | null>(null);
   const [working, setWorking] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
-  const [stale, setStale] = useState(false);
+  /** The pull request Mark merged… is asking about, by url: the question goes with the face it was asked on. */
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [face, setFace] = useState(view.face);
+  if (face !== view.face) {
+    setFace(view.face);
+    setConfirming(null);
+  }
   const busy = useRef(false);
-  /** A key typed after a pause since it opened: typing from then on is the user's for it. */
-  const mine = useRef(false);
-  /** The button Enter or Space was just pressed on, whose click that key makes. */
-  const keyed = useRef<Element | null>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => void (alive.current = false);
+  }, []);
+  const { onKeyDown, keyAimed, stale } = useAimedKeys("button[data-act]");
   const box = useRef<HTMLDivElement>(null);
+  const pop = () => box.current?.closest<HTMLElement>(".wg-pop") ?? null;
   const settle = useSettledRows(box, "button[data-act]", (el) => `${el.dataset.act}:${shown.id}`, (el) => el.offsetTop * 10_000 + el.offsetLeft);
   const { holdOff, heldOff } = useHeldOff();
-  // a blocked merge's pull request is the source's ticket record's (pipeline.json)
+  // the pull requests a blocked merge waits on are in its source's ticket record (pipeline.json)
   const pipes = usePipelines();
 
   const opened = useRef(Date.now());
@@ -109,31 +120,37 @@ export function WirePopover({ at, view, form, source, onSend, onMarkSent, onMore
     e.stopPropagation();
   };
 
-  const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!typed(e) || e.key === "Escape") return;
-    if (afterPause() && !e.repeat) mine.current = true;
-    if (!mine.current) {
-      swallow(e);
-      return setStale(true);
-    }
-    setStale(false);
-    const b = (e.target as Element).closest?.("button[data-act]") ?? null;
-    keyed.current = (e.key === "Enter" || e.key === " ") && !e.repeat && b ? b : null;
-  };
   /** A button going off (held, or while its act runs) drops the keyboard it took: the popover keeps it. */
-  const keepKeys = () => box.current?.closest<HTMLElement>(".wg-pop")?.focus({ preventScroll: true });
+  const keepKeys = () => pop()?.focus({ preventScroll: true });
+  // a newer finish takes the keyboard off the button it was on: Enter pressed there next was aimed at the text before
+  const shownWas = useRef(shown.id);
+  useLayoutEffect(() => {
+    if (shownWas.current === shown.id) return;
+    shownWas.current = shown.id;
+    const at = document.activeElement;
+    if (at?.closest("button") && box.current?.contains(at)) keepKeys();
+  }, [shown.id]);
+  // a face changing under the keyboard (the button it was on gone) leaves it with the popover, not on the page
+  useEffect(() => {
+    const el = pop();
+    if (!el) return;
+    const out = (e: FocusEvent) => {
+      if (e.relatedTarget) return;
+      requestAnimationFrame(() => {
+        if (el.isConnected && keyboardNowhere()) el.focus({ preventScroll: true });
+      });
+    };
+    el.addEventListener("focusout", out);
+    return () => el.removeEventListener("focusout", out);
+  }, []);
   /** Button `key`'s click, aimed: it runs `run` once, with nothing else running, and closes after when `closes`. */
   const act = (key: string, run: () => Promise<string | null>, closes = false) => (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (busy.current) return;
-    if (keyClick(e)) {
-      if (keyed.current !== e.currentTarget) return;
-      keyed.current = null;
-    } else {
-      const wait = settle(`${key}:${shown.id}`);
-      if (wait > 0) {
-        keepKeys();
-        return holdOff(key, wait);
-      }
+    // a key's click is checked, and its key spent, even when nothing else is let through
+    if (!keyAimed(e) || busy.current) return;
+    const wait = settle(`${key}:${shown.id}`);
+    if (wait > 0) {
+      keepKeys();
+      return holdOff(key, wait);
     }
     keepKeys();
     busy.current = true;
@@ -142,6 +159,7 @@ export function WirePopover({ at, view, form, source, onSend, onMarkSent, onMore
     void run()
       .catch((x: unknown) => `Couldn't do that: ${x instanceof Error ? x.message : String(x)}`)
       .then((why) => {
+        if (!alive.current) return void (why && onLost(why));
         if (!why && closes) return onClose();
         busy.current = false;
         setWorking(null);
@@ -166,33 +184,34 @@ export function WirePopover({ at, view, form, source, onSend, onMarkSent, onMore
           {err}
         </div>
       )}
-      {stale && <div className="wg-hint">Keys typed just before this opened don't press anything here: pause, then go on.</div>}
+      {stale && <div className="wg-hint">{EARLY_KEYS_HINT}</div>}
     </>
   );
 
   let body: React.ReactNode;
   if (view.face === "settings") {
-    const pr = view.merge && source.ticket ? blockingPr(pipes[source.ticket], source.branch) : null;
-    const ticket = source.ticket;
+    const prs =view.merge && ticket ? mergePrsOf(pipes[ticket], view.merge.prs) : [];
+    const asking = prs.find((x) => x.url === confirming) ?? null;
     const about = (
       <>
         {why}
         {view.merge && ticket && (
           <div className="wg-acts">
-            {btn("check", "Check now", "Checking…", act("check", () => pipeCall("check the pull request", () => window.mb.pipelinePrCheck(ticket, pr?.url))))}
-            {pr && !confirming && (
-              <button type="button" className="wr-btn" disabled={!!working} onClick={() => setConfirming(true)}>
-                Mark merged…
-              </button>
-            )}
+            {btn("check", "Check now", "Checking…", act("check", () => pipeCall("check the pull request", () => window.mb.pipelinePrCheck(ticket, prs.length === 1 ? prs[0].url : undefined))))}
+            {!asking &&
+              prs.map((x) => (
+                <button key={x.url} type="button" className="wr-btn" disabled={!!working} onClick={() => setConfirming(x.url)}>
+                  {prs.length > 1 ? `Mark ${prLabel(x)} merged…` : "Mark merged…"}
+                </button>
+              ))}
           </div>
         )}
-        {pr && confirming && (
+        {asking && ticket && (
           <div className="wg-confirm">
-            <div className="wg-q">{markMergedQuestion(pr)}</div>
+            <div className="wg-q">{markMergedQuestion(asking)}</div>
             <div className="wg-acts">
-              {btn("mark", "Mark merged", "Marking…", act("mark", () => pipeCall("mark it merged", () => window.mb.pipelinePrMarkMerged(ticket!, pr.url))), { main: true })}
-              <button type="button" className="wr-btn" onClick={() => setConfirming(false)}>
+              {btn("mark", "Mark merged", "Marking…", act("mark", () => pipeCall("mark it merged", () => window.mb.pipelinePrMarkMerged(ticket, asking.url))), { main: true })}
+              <button type="button" className="wr-btn" onClick={() => setConfirming(null)}>
                 Cancel
               </button>
             </div>
@@ -277,7 +296,17 @@ export function WirePopover({ at, view, form, source, onSend, onMarkSent, onMore
   }
 
   return (
-    <AnchoredPopover anchor={at} className={`wr-pop wg-pop f-${view.face} t-${w.type}`} label={`Wire ${form.fromTitle} → ${form.toTitle}`} onClose={() => onClose()} onKeyDown={onKey}>
+    <AnchoredPopover
+      anchor={at}
+      className={`wr-pop wg-pop f-${view.face} t-${w.type}`}
+      label={`Wire ${form.fromTitle} → ${form.toTitle}`}
+      onClose={(how) => {
+        // a press on a dialog opened by what's running (Send's cost question) is the dialog's: it stays for the answer
+        if (how === "outside" && busy.current && document.querySelector(".modal-back")) return;
+        onClose();
+      }}
+      onKeyDown={onKeyDown}
+    >
       <div ref={box} className={`wg-${view.face}`} onClickCapture={view.face === "settings" ? undefined : onClickFirst}>
         {body}
       </div>

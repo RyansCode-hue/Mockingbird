@@ -57,6 +57,7 @@ export function mergeViewOf(w: Wire, source: Pick<WireEnd, "title" | "ticket" | 
   const place = { ...repo, branch: source.branch };
   const prs = Array.isArray(p?.prs) ? p!.prs : [];
   const blocked: string[] = [];
+  const blocking: string[] = [];
   const open: string[] = [];
   for (const target of ["dev", "main"] as const) {
     const pr = latestPr(prs, target, (x) => samePrPlace(x, place));
@@ -64,8 +65,9 @@ export function mergeViewOf(w: Wire, source: Pick<WireEnd, "title" | "ticket" | 
     if (pr.closedAt) blocked.push(`${prName(pr)} was closed without merging.`);
     else if (pr.watch) blocked.push(`Can't tell whether ${prName(pr)} merged (${tries(pr.watch.failures)}): ${pr.watch.why}`);
     else open.push(prName(pr));
+    if (pr.closedAt || pr.watch) blocking.push(pr.url);
   }
-  if (blocked.length) return { blocked: blocked.join(" ") };
+  if (blocked.length) return { blocked: blocked.join(" "), prs: blocking };
   return { waits: open.length ? `Waits for ${open.join(" or ")} to merge.` : `Waits for a pull request from ${source.branch} in ${repo.repo}.` };
 }
 

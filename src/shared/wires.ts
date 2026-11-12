@@ -786,9 +786,10 @@ export interface Gate {
 
 /**
  * What a pr-merged wire's source's pull requests say while nothing waits at its gate (prWatch.ts' mergeViewOf): blocked
- * saying why (one can't be read, or was closed without merging), or idle saying what it waits for.
+ * saying why (one can't be read, or was closed without merging) and which those are (`prs`, by url: what the send
+ * popover's Check now and Mark merged… act on), or idle saying what it waits for.
  */
-export type MergeView = { blocked: string } | { waits: string };
+export type MergeView = { blocked: string; prs?: string[] } | { waits: string };
 
 export interface GateContext extends WireContext {
   notes: Readonly<Record<string, SourceNote>>;

@@ -667,6 +667,26 @@ describe("the round limit", () => {
     expect(t.wireOf(t.w).rounds).toEqual({ limit: 2, used: 0 });
   });
 
+  it("Mark sent, One more round and Reset rounds are refused while a teammate has either end, and change nothing", async () => {
+    const t = await ready({}, "feedback", { limit: 1 });
+    t.store.editWires((bk) => ({ book: { ...bk, links: { ...bk.links, [t.w]: { ...bk.links[t.w], rounds: { limit: 1, used: 1 }, delivery: { id: t.p, state: "unconfirmed", at: 1 } } } } }));
+    const before = t.wireOf(t.w);
+    t.takenOver[t.b.id] = "“Reviewer” continues on Nick's laptop";
+    expect(refusal(t.d.markSent(t.w, t.p))).toBe("“Reviewer” continues on Nick's laptop — take it back rather than settling what this copy's wire sent");
+    expect(refusal(t.d.moreRounds(t.w))).toBe("“Reviewer” continues on Nick's laptop — take it back rather than allowing this copy's wire another round");
+    expect(refusal(t.d.resetRounds(t.w))).toBe("“Reviewer” continues on Nick's laptop — take it back rather than resetting this copy's wire's rounds");
+    delete t.takenOver[t.b.id];
+    t.takenOver[t.a.id] = "“Builder” continues on Nick's laptop";
+    expect(refusal(t.d.moreRounds(t.w))).toMatch(/^“Builder” continues on Nick's laptop/);
+    expect(t.wireOf(t.w)).toEqual(before);
+    // taken back, each goes
+    delete t.takenOver[t.a.id];
+    expect(t.d.moreRounds(t.w)).not.toHaveProperty("refused");
+    expect(t.d.resetRounds(t.w)).not.toHaveProperty("refused");
+    expect(t.d.markSent(t.w, t.p)).not.toHaveProperty("refused");
+    expect(t.wireOf(t.w)).toMatchObject({ rounds: { limit: 2, used: 0 }, delivery: { state: "sent" } });
+  });
+
   it("isn't reset by a relaunch, a restart or the counter being in a newer pending", async () => {
     const t = await ready({}, "feedback", { limit: 2 });
     await t.d.send(t.w, t.p, "round one");

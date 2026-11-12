@@ -29,7 +29,10 @@
  * W4c's, the send popover (with ?lsGates for the gates `gateBoardBook` sets):
  * - =send, =gatekeys and =dbl (at 100%): Send and Not yet, and the clicks and keys they take or don't;
  * - =gates: B closed, unconfirmed, a merge that can't be read, a blocked wire's settings; with lsGates=limit, the limit;
- * - =pop&pop=<wire> (&popConfirm): a wire's popover left open for a screenshot (synthetic events).
+ * - =pop&pop=<wire> (&popConfirm): a wire's popover left open for a screenshot (synthetic events);
+ * - review fixes 1: =refocus (a newer finish, or a face change, under the keyboard), =limitkeys (lsGates=limit: Send
+ *   reached by keys as it comes up), =shift (a Shift in a burst), and with lsGates&lsBigResume=wb-spike =costrepeat (a
+ *   held Enter at the cost question), =costlost and =closeother (what a Send comes to as its popover stays or goes).
  */
 import type { Area, Landscape, Rect } from "../shared/landscape";
 import type { SessionInfo, TicketPipeline } from "../shared/types";
@@ -124,7 +127,7 @@ export function gateBoardBook(book: WireBook, at: number, limit: boolean): WireB
   return { ...book, links };
 }
 /** Main's merge view of `?lsGates`' pr-merged wire: its pull request can't be read. */
-export const gateMerges = (): Record<string, MergeView> => ({ [W("sent")]: { blocked: GATE_PR_WHY } });
+export const gateMerges = (): Record<string, MergeView> => ({ [W("sent")]: { blocked: GATE_PR_WHY, prs: [GATE_PR_URL] } });
 /** 5120's ticket record with that pull request, its reads failing. */
 export const gatePipeline = (at: number): TicketPipeline => ({
   ticketId: WIRE_AREA,
@@ -184,6 +187,8 @@ export interface WiresAuditEnv {
   waitFor: (selector: string, then: (el: HTMLElement) => void, tries?: number) => void;
   /** Wire `id`'s source finishes again, as its finish_step would: a new pending, `body`, replaces what waited. */
   finish?: (id: string, body: string) => void;
+  /** What waits at wire `id`'s gate is sent from elsewhere (another window's Send): its gate goes idle. */
+  sent?: (id: string) => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -833,12 +838,11 @@ async function gatesAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
     await clickAt(dotMid(W("loop")));
     await sleep(700);
     const opened = popNow();
-    const at = mid(popButton("One more round"));
-    await clickAt(at);
-    await sleep(250);
-    const more = popNow();
-    await clickAt(at);
-    out.limit = { opened, more, under: popNow(), moreRounds: since("wiresMoreRounds"), sends: since("wiresSend").length };
+    // Send, where it came up, clicked as soon as the driver can: it presses what's asked every 250 ms, so with nothing
+    // waited for in between, this lands about 250 ms after One more round's click (one more wait, and it's 500)
+    await clickAt(mid(popButton("One more round")));
+    await clickAt(mid(popButton("Send")));
+    out.limit = { opened, under: popNow(), moreRounds: since("wiresMoreRounds"), sends: since("wiresSend").length };
     return;
   }
   // a ready handoff to Spike, closed: Send asks main, which says it's stopped; its cost is asked; then sent, starting it
@@ -865,10 +869,13 @@ async function gatesAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
   await clickAt(mid(popButton("Check now")));
   await sleep(500);
   const checked = popNow();
+  // Mark merged…, its confirm read off and cancelled; then Mark merged… and its confirm in one go, 150 ms apart (let go)
   await clickAt(mid(popButton("Mark merged…")));
-  await sleep(100);
   const asked = popNow();
-  await clickAt(mid(popButton("Mark merged")));
+  const confirmAt = mid(popButton("Mark merged"));
+  await clickAt(mid(popButton("Cancel")));
+  await sleep(700);
+  await drive([{ mouse: { ...mid(popButton("Mark merged…")), clickCount: 1 } }, { pause: 150 }, { mouse: { ...confirmAt, clickCount: 1 } }]);
   const early = { marked: since("pipelinePrMarkMerged").length, pop: popNow() };
   await sleep(700);
   await clickAt(mid(popButton("Mark merged")));
@@ -887,6 +894,136 @@ async function gatesAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
   await clickAt(mid(popButton("add diff")));
   await sleep(400);
   out.held = { early: asOpened, opened: held, set: since("wiresSet"), after: popNow() };
+}
+
+/** Where the keyboard is: the popover itself, else the text of what has it. */
+const focusNow = () => (document.activeElement === popEl() ? "popover" : (document.activeElement?.textContent ?? document.activeElement?.tagName ?? null));
+/** Tab on to the popover's Send (at most six stops): what has the keyboard then. */
+async function tabToSend(): Promise<string | null> {
+  for (let i = 0; i < 6 && document.activeElement?.textContent !== "Send"; i++) await drive([{ key: "Tab" }]);
+  return focusNow();
+}
+const costDialog = () => document.querySelector<HTMLElement>(".cost-dlg");
+const costButton = (label: string) => [...(costDialog()?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((b) => b.textContent === label) ?? null;
+
+/**
+ * Keys after what's shown moved (at 100%): Send reached by keys after a pause, Reviewer finishing again just before
+ * Enter (the keyboard leaves Send, and Enter sends nothing); Send reached again, and what waits sent from elsewhere (its
+ * face goes to its settings, Send with it): the keyboard stays in the popover.
+ */
+async function refocusAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const sends = () => env.calls.slice(start).filter((c) => c.fn === "wiresSend").length;
+  const loop = W("loop");
+  await clickAt(dotMid(loop));
+  await sleep(1300);
+  const onSend = await tabToSend();
+  env.finish?.(loop, "1. NEWER: not read yet.");
+  await sleep(60);
+  const moved = focusNow();
+  await drive([{ key: "Enter" }]);
+  await sleep(1600);
+  const newer = { onSend, moved, sends: sends(), pop: popNow() };
+  const again = await tabToSend();
+  env.sent?.(loop);
+  await sleep(400);
+  out.refocus = { newer, gone: { again, focus: focusNow(), pop: popNow() } };
+}
+
+/**
+ * Keys as content moves (?lsGates=limit): One more round by keys after a pause, then Tab Tab Enter at once onto the Send
+ * that came up under it (held, nothing sent); after a pause, Send by keys sends.
+ */
+async function limitKeysAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const since = (fn: string) => env.calls.slice(start).filter((c) => c.fn === fn).map((c) => c.args);
+  await clickAt(dotMid(W("loop")));
+  await sleep(1300);
+  await drive([{ key: "Tab" }]);
+  const onMore = focusNow();
+  await drive([{ key: "Enter" }, { pause: 150 }, { key: "Tab" }, { key: "Tab" }, { key: "Enter" }]);
+  const burst = { sends: since("wiresSend").length, moreRounds: since("wiresMoreRounds").length, focus: focusNow(), pop: popNow() };
+  await sleep(1300);
+  const onSend = await tabToSend();
+  await drive([{ key: "Enter" }]);
+  await sleep(2000);
+  out.limitkeys = { onMore, burst, onSend, sends: since("wiresSend").length, pop: popNow() };
+}
+
+/** A key in Builder's terminal after a pause; its dot clicked, then Shift alone, Tab, Tab and Enter, all in one burst. */
+async function shiftAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const since = (fn: string) => env.calls.slice(start).filter((c) => c.fn === fn).length;
+  await clickAt(mid(node(W("builder"))?.querySelector(".ls-term")));
+  await sleep(1300);
+  await drive([{ key: "q" }, { mouse: { ...dotMid(W("loop")), clickCount: 1 } }, { key: "Shift" }, { key: "Tab" }, { key: "Tab" }, { key: "Enter" }]);
+  await sleep(1800);
+  out.shift = { sends: since("wiresSend"), writes: since("sessionWrite"), pop: popNow() };
+}
+
+/**
+ * The cost question (with ?lsGates&lsBigResume=wb-spike): Send to Spike, closed, by Enter after a pause; once the question
+ * is up, Enter held (a repeat) presses nothing in it; Esc answers it, and the popover says nothing was sent.
+ */
+async function costRepeatAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const since = (fn: string) => env.calls.slice(start).filter((c) => c.fn === fn).map((c) => c.args);
+  await clickAt(dotMid(W("ghost")));
+  await sleep(1300);
+  const onSend = await tabToSend();
+  await drive([{ key: "Enter" }]);
+  await sleep(2600);
+  const asked = { dialog: !!costDialog(), focus: document.activeElement?.textContent ?? null };
+  await drive([{ key: "Enter", repeat: true }]);
+  await sleep(1000);
+  const held = { dialog: !!costDialog(), hint: costDialog()?.querySelector(".cost-hint")?.textContent ?? null, sends: since("wiresSend").length };
+  await drive([{ key: "Escape" }]);
+  await sleep(600);
+  out.costrepeat = { onSend, asked, held, sends: since("wiresSend"), resumeCost: since("resumeCost").length, dialog: !!costDialog(), pop: popNow() };
+}
+
+/**
+ * Send to Spike by the pointer (?lsGates&lsBigResume=wb-spike): the popover stays while its cost is asked; Fixtures
+ * finishes again meanwhile; Continue sends the earlier one, which main refuses, and the popover says so.
+ */
+async function costLostAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const since = (fn: string) => env.calls.slice(start).filter((c) => c.fn === fn).map((c) => c.args);
+  await clickAt(dotMid(W("ghost")));
+  await sleep(1300);
+  await clickAt(mid(popButton("Send")));
+  await sleep(2600);
+  const asked = { dialog: !!costDialog(), pop: !!popEl() };
+  env.finish?.(W("ghost"), "Newer fixtures: 41k donors.");
+  await sleep(300);
+  await clickAt(mid(costButton("Continue")));
+  await sleep(600);
+  const answered = { dialog: !!costDialog(), pop: popNow() };
+  await sleep(2400);
+  out.costlost = { asked, answered, sends: since("wiresSend"), pop: popNow(), note: noteNow() };
+}
+
+/**
+ * Send to Spike by the pointer (?lsGates&lsBigResume=wb-spike), Continue; Fixtures finishes again, so main will refuse it;
+ * Reviewer → Tester's dot clicked meanwhile (Spike's popover closes, Tester's opens): when the refusal comes, it's said
+ * in the note, and Tester's popover stays.
+ */
+async function closeOtherAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const since = (fn: string) => env.calls.slice(start).filter((c) => c.fn === fn).map((c) => c.args);
+  await clickAt(dotMid(W("ghost")));
+  await sleep(1300);
+  await clickAt(mid(popButton("Send")));
+  await sleep(2600);
+  await clickAt(mid(costButton("Continue")));
+  await sleep(100);
+  env.finish?.(W("ghost"), "Newer fixtures: 41k donors.");
+  await sleep(100);
+  await clickAt(dotMid(W("held")));
+  await sleep(200);
+  const opened = popNow()?.ends ?? null;
+  await sleep(2600);
+  out.closeother = { opened, after: popNow()?.ends ?? null, sends: since("wiresSend"), note: noteNow() };
 }
 
 /** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */
@@ -947,6 +1084,12 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "dbl") await dblAudit(env, out);
       else if (part === "gatekeys") await gateKeysAudit(env, out);
       else if (part === "gates") await gatesAudit(env, out);
+      else if (part === "refocus") await refocusAudit(env, out);
+      else if (part === "limitkeys") await limitKeysAudit(env, out);
+      else if (part === "shift") await shiftAudit(env, out);
+      else if (part === "costrepeat") await costRepeatAudit(env, out);
+      else if (part === "costlost") await costLostAudit(env, out);
+      else if (part === "closeother") await closeOtherAudit(env, out);
       const boxes = () => Object.fromEntries(["shape", "builder", "reviewer", "dev", "tester", "fixtures", "spike"].map((k) => [k, box(node(W(k)))]));
       if (part === "near" || part === "far") {
         out.wires = wiresNow();

@@ -5,7 +5,7 @@
  */
 import { DEFAULT_ROUNDS, ROOM_LINE, gateOf, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type GateContext, type MergeView, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
-import { latestPr, samePrPlace, topOfKey, type PipelinePr, type SessionInfo, type TicketPipeline } from "../shared/types";
+import { topOfKey, type PipelinePr, type SessionInfo, type TicketPipeline } from "../shared/types";
 import { LOOSE_GROUP, type Rect } from "../shared/landscape";
 import { areaShown, type Point, type ResolvedLayout } from "./landscapeModel";
 import { titleOf } from "./appModel";
@@ -464,8 +464,8 @@ export interface GateView {
   pendingId: string | null;
   /** Its other end isn't running: sending reopens it (closed, with its place) or resumes it (exited). */
   starts: "reopen" | "resume" | null;
-  /** Blocked by its pull request, as the merge watch has it: Check now and Mark merged… apply. */
-  merge: boolean;
+  /** Blocked by its pull requests, as the merge watch has them: Check now applies, and Mark merged… to each of `prs` (urls). */
+  merge: { prs: readonly string[] } | null;
 }
 
 /** The face wire `w` shows in the send popover, from its gate (gateOf), its other end, and main's merge view of it. */
@@ -473,26 +473,18 @@ export function gateView(w: Wire, gate: Gate, to: WireEnd | null, merge: MergeVi
   const name = WIRE_TYPE_NAME[w.type].toLowerCase();
   const pendingId = gate.pendingId ?? null;
   const starts: GateView["starts"] = to?.where === "closed" ? "reopen" : to?.where === "dead" ? "resume" : null;
-  const base = { why: gate.why ?? null, pendingId, starts, merge: false };
+  const base = { why: gate.why ?? null, pendingId, starts, merge: null };
   if (gate.state === "ready" && pendingId) return { ...base, face: "ready", kind: `${name} · ${w.rounds ? `round ${w.rounds.used + 1} of ${w.rounds.limit}` : "ready"}` };
   if (gate.state === "blocked" && gate.atLimit && w.rounds && pendingId) return { ...base, face: "limit", kind: `${name} · at the limit · ${w.rounds.used} of ${w.rounds.limit}` };
   if (gate.unconfirmed && pendingId) return { ...base, face: "unconfirmed", kind: `${name} · may have arrived` };
   const byMerge = gate.state === "blocked" && !!merge && "blocked" in merge && merge.blocked === gate.why;
-  return { ...base, face: "settings", kind: `${name} · ${gate.state}`, pendingId: null, starts: null, merge: byMerge };
+  return { ...base, face: "settings", kind: `${name} · ${gate.state}`, pendingId: null, starts: null, merge: byMerge ? { prs: merge.prs ?? [] } : null };
 }
 
 /**
- * The pull request a blocked pr-merged wire waits on, from its source's ticket record (pipeline.json): the latest from
- * the source's branch, not merged, that the merge watch can't read or that was closed without merging and isn't
- * replaced by a newer one from its repository and branch. Mark merged… names it; null when there's none to name.
+ * The pull requests a blocked pr-merged wire waits on, from its source's ticket record (pipeline.json), as main's merge
+ * view names them (`urls`): main alone tells which are its source's (repository and branch, the latest to each target,
+ * none it has fired for), so Mark merged… names and marks exactly those.
  */
-export function blockingPr(p: TicketPipeline | undefined, branch: string | null | undefined): PipelinePr | null {
-  if (!p || !branch) return null;
-  let best: PipelinePr | null = null;
-  for (const x of p.prs) {
-    if (x.branch !== branch || x.mergedAt) continue;
-    const stuck = x.closedAt ? latestPr(p.prs, x.target, (y) => samePrPlace(y, x)) === x : !!x.watch;
-    if (stuck && (!best || x.at > best.at)) best = x;
-  }
-  return best;
-}
+export const mergePrsOf = (p: TicketPipeline | undefined, urls: readonly string[]): PipelinePr[] =>
+  urls.flatMap((url) => p?.prs.find((x) => x.url === url) ?? []);

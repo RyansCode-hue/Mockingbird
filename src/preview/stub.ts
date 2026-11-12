@@ -8670,7 +8670,8 @@ if (lsGatesQ !== null) {
   wireMerges = gateMerges();
 }
 // W4a: ?landscapeWiresAudit=near|far|drag|area|pill works the wires drawn (wiresAudit.ts) for test/uiLandscapeWires.test.ts.
-// W4c's parts have a finish arrive at a gate while its popover is open (`finish`), as finish_step's would
+// W4c's parts have a finish arrive at a gate while its popover is open (`finish`), as finish_step's would, or what waits
+// there sent from elsewhere (`sent`), as another window's Send would
 if (params.has("landscapeWiresAudit"))
   runWiresAudit(
     {
@@ -8679,6 +8680,12 @@ if (params.has("landscapeWiresAudit"))
       finish: (id, body) => {
         const w = wireBook.links[id];
         if (w) wireChanged(withLink(id, { ...w, pending: { id: `${w.pending?.id ?? "pd"}-again`, body, at: Date.now(), flags: [] } }));
+      },
+      sent: (id) => {
+        const w = wireBook.links[id];
+        if (!w?.pending) return;
+        const { pending, ...rest } = w;
+        wireChanged(withLink(id, { ...rest, delivery: { id: pending.id, state: "sent", at: Date.now() } }));
       },
     },
     params.get("landscapeWiresAudit") || "near"

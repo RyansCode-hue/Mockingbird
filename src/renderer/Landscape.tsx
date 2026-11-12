@@ -2367,19 +2367,19 @@ export function Landscape({
   useEffect(() => {
     if (wireGate && !gating) setWireGate(null);
   }, [wireGate, !!gating]);
+  /** Only popover `n` closes: an act of an earlier one, ending after another opened, leaves that one be. */
+  const closeGate = (n: number) => setWireGate((g) => (g?.n === n ? null : g));
   /** A person's Send along wire `id`: main first; a stopped other end asks about its cost before it's started (wireSend.ts). */
   const sendWire = async (id: string, to: string, pendingId: string, body: string, again: boolean): Promise<string | null> => {
     const b = sessionOn(to);
     const call = again ? window.mb.wiresSendAgain : window.mb.wiresSend;
-    try {
+    let declined = false;
+    const no = await wireCall("send it", async () => {
       const r = await sendAlongWire({ send: (start) => call(id, pendingId, body, start ? { start } : undefined), costOk: () => (b && resumeOk ? resumeOk(b) : Promise.resolve(true)) });
-      if (r === undefined) return `Nothing was sent: “${b ? titleOf(b) : named(to)}” stays as it is.`;
-      if (isErr(r)) return `Couldn't send it: ${r.error}`;
-      return "refused" in r ? r.refused : null;
-    } catch (err) {
-      console.error("[mockingbird] send along the wire:", err);
-      return `Couldn't send it: ${err instanceof Error ? err.message : String(err)}`;
-    }
+      declined = r === undefined;
+      return r ?? { state: null };
+    });
+    return declined ? `Nothing was sent: “${b ? titleOf(b) : named(to)}” stays as it is.` : no;
   };
 
   /** What's under the pointer a wire would go to: a workspace (the tab under it, of a stack, else its front), or a ghost. */
@@ -2820,13 +2820,18 @@ export function Landscape({
           key={`${gating.id}:${wireGate.n}`}
           at={wireGate.at}
           view={gateView(gating.w, gating.gate, gating.ctx.end(gating.w.to), gating.ctx.mergeView?.(gating.w) ?? null)}
-          form={wireForm(gating, () => setWireGate(null))}
-          source={{ ticket: gating.ctx.end(gating.w.from)?.ticket ?? null, branch: gating.ctx.end(gating.w.from)?.branch ?? null }}
+          form={wireForm(gating, () => closeGate(wireGate.n))}
+          ticket={gating.ctx.end(gating.w.from)?.ticket ?? null}
           onSend={(pendingId, text, again) => sendWire(gating.id, gating.w.to, pendingId, text, again)}
           onMarkSent={(pendingId) => wireCall("mark it sent", () => window.mb.wiresMarkSent(gating.id, gating.w.delivery?.id ?? pendingId))}
           onMoreRounds={() => wireCall("allow one more round", () => window.mb.wiresMoreRounds(gating.id))}
+          onLost={(why) => {
+            const what = `${named(gating.w.from)} → ${named(gating.w.to)}: ${why}`;
+            console.warn(`[mockingbird] the send popover had closed: ${what}`);
+            say(what);
+          }}
           home={surfaceEl}
-          onClose={() => setWireGate(null)}
+          onClose={() => closeGate(wireGate.n)}
         />
       )}
       {tourList && (

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { QUIET_KEYS, afterPause, typed } from "./keyArm";
 
 /**
  * Answers a click gives (a teammate's ask to type, in the Needs you tray and on its workspace's strip) are let go when
@@ -68,4 +69,44 @@ export function useHeldOff(): { holdOff: (key: string, ms: number) => void; held
     timer.current = setTimeout(() => setHeld(null), ms);
   }, []);
   return { holdOff, heldOff: (key) => held === key };
+}
+
+/** What a surface that swallowed early keys (`useAimedKeys`) says. */
+export const EARLY_KEYS_HINT = "Keys typed just before this opened don't press anything here: pause, then go on.";
+
+/**
+ * Keys aimed at what just opened over the user (a popover, a dialog): ones typed in a burst that began before it opened,
+ * or held down, press nothing in it (`onKeyDown` swallows them, Tab too, and `stale` says so) until a key comes after a
+ * pause (keyArm's TYPING_MS); from then on they're the user's. Esc and a modifier on its own always go through, and a
+ * modifier never ends a burst. `keyAimed(e)`: a click made by a key counts only from Enter or Space pressed (not held) on
+ * that very button (`buttons`); a pointer's always does, for the caller to settle.
+ */
+export function useAimedKeys(buttons = "button"): {
+  onKeyDown: (e: KeyboardEvent) => void;
+  keyAimed: (e: { detail: number; currentTarget: EventTarget }) => boolean;
+  stale: boolean;
+} {
+  const mine = useRef(false);
+  const keyed = useRef<Element | null>(null);
+  const [stale, setStale] = useState(false);
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (!typed(e) || QUIET_KEYS.has(e.key)) return;
+    if (afterPause() && !e.repeat) mine.current = true;
+    if (!mine.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      keyed.current = null;
+      return setStale(true);
+    }
+    setStale(false);
+    const b = (e.target as Element).closest?.(buttons) ?? null;
+    keyed.current = (e.key === "Enter" || e.key === " ") && !e.repeat && b ? b : null;
+  };
+  const keyAimed = (e: { detail: number; currentTarget: EventTarget }) => {
+    if (!keyClick(e)) return true;
+    const aimed = keyed.current === e.currentTarget;
+    keyed.current = null;
+    return aimed;
+  };
+  return { onKeyDown, keyAimed, stale };
 }

@@ -18,6 +18,7 @@ import { readPref, writePref } from "./prefs";
 import { contextTarget } from "./usageFormat";
 import { Modal } from "./Modal";
 import { Popover } from "./Popover";
+import { EARLY_KEYS_HINT, useAimedKeys } from "./answerGuard";
 import { useAction } from "./useAction";
 
 /**
@@ -283,15 +284,19 @@ export function CostLine({ doing, e, agent, what }: { doing: string; e: CostEsti
  * Before an expensive action: the estimate in plain words, with Continue and
  * Cancel. The estimate comes from the conversation's size and the cache
  * multipliers (CostEstimate); a share of the limit only when the plan's
- * reading can give one.
+ * reading can give one. Continue has the keyboard, so keys typed in a burst
+ * that began before it opened, or held (an Enter held or pressed twice on what
+ * asked), press nothing in it until a pause (useAimedKeys).
  */
 export function CostDialog({ title, doing, e, agent, note, onAnswer }: { title: string; doing: string; e: CostEstimate; agent: AgentKind; note?: string; onAnswer: (go: boolean) => void }) {
+  const { onKeyDown, stale } = useAimedKeys();
   return (
-    <Modal className="modal cost-dlg" onClose={() => onAnswer(false)}>
+    <Modal className="modal cost-dlg" onClose={() => onAnswer(false)} onKeyDown={onKeyDown}>
       <h3>{title}</h3>
       <CostLine doing={doing} e={e} agent={agent} />
       {note && <div className="sub-h cost-note">{note}</div>}
       <div className="sub-h">An estimate from this Mac's sessions: use elsewhere (claude.ai, another computer) isn't counted, so shares can read high.</div>
+      {stale && <div className="sub-h cost-hint">{EARLY_KEYS_HINT}</div>}
       <div className="row">
         <button className="outline" onClick={() => onAnswer(false)}>
           Cancel

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { anchorOf, blockingPr, commonReason, curveDistance, defaultChoice, droppedNote, gateContextOf, gateView, noChoice, pillBox, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
+import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
+import { mergeViewOf } from "../src/main/prWatch";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
 import type { PipelinePr, SessionInfo, TicketPipeline } from "../src/shared/types";
 import { ROOM_LINE, gateOf, newWire, type GateContext, type Wire, type WireBook, type WireState } from "../src/shared/wires";
@@ -369,7 +370,7 @@ describe("the send popover's face", () => {
   };
 
   it("is what waits, with its round on a feedback loop, and says when sending starts its other end", () => {
-    expect(faceOf({ h: wire("builder", "reviewer", "handoff", waiting("p1")) }, "h")).toEqual({ face: "ready", kind: "handoff · ready", why: null, pendingId: "p1", starts: null, merge: false });
+    expect(faceOf({ h: wire("builder", "reviewer", "handoff", waiting("p1")) }, "h")).toEqual({ face: "ready", kind: "handoff · ready", why: null, pendingId: "p1", starts: null, merge: null });
     expect(faceOf({ f: wire("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, ...waiting("p2") }) }, "f")).toMatchObject({ face: "ready", kind: "feedback loop · round 2 of 3" });
     // spike is closed with its place (a ghost): sending reopens it; tester exited: sending resumes it
     expect(faceOf({ g: wire("builder", "spike", "handoff", waiting("p3")) }, "g")).toMatchObject({ face: "ready", starts: "reopen" });
@@ -384,7 +385,7 @@ describe("the send popover's face", () => {
       why: "At the limit: 3 of 3 rounds.",
       pendingId: "p1",
       starts: null,
-      merge: false,
+      merge: null,
     });
     const maybe = wire("builder", "reviewer", "handoff", { ...waiting("p2"), delivery: { id: "p2", state: "unconfirmed", at: 1, why: "It may have reached “reviewer”." } });
     expect(faceOf({ u: maybe }, "u")).toMatchObject({ face: "unconfirmed", kind: "handoff · may have arrived", why: "It may have reached “reviewer”.", pendingId: "p2" });
@@ -393,25 +394,37 @@ describe("the send popover's face", () => {
   it("is otherwise its settings, saying why it's blocked or what it waits for, a merge that can't be read with Check now", () => {
     const pr = wire("builder", "reviewer", "handoff", { when: "pr-merged" });
     const unread = "Can't tell whether PR 12 to dev merged (3 tries): 503";
-    expect(faceOf({ pr }, "pr", { merges: { pr: { blocked: unread } } })).toEqual({ face: "settings", kind: "handoff · blocked", why: unread, pendingId: null, starts: null, merge: true });
-    expect(faceOf({ pr }, "pr", { merges: { pr: { waits: "Waits for PR 12 to dev to merge." } } })).toMatchObject({ face: "settings", kind: "handoff · idle", why: "Waits for PR 12 to dev to merge.", merge: false });
+    expect(faceOf({ pr }, "pr", { merges: { pr: { blocked: unread, prs: ["u/12"] } } })).toEqual({ face: "settings", kind: "handoff · blocked", why: unread, pendingId: null, starts: null, merge: { prs: ["u/12"] } });
+    // a view from before main named them: Check now, and no pull request to mark
+    expect(faceOf({ pr }, "pr", { merges: { pr: { blocked: unread } } })).toMatchObject({ merge: { prs: [] } });
+    expect(faceOf({ pr }, "pr", { merges: { pr: { waits: "Waits for PR 12 to dev to merge." } } })).toMatchObject({ face: "settings", kind: "handoff · idle", why: "Waits for PR 12 to dev to merge.", merge: null });
     // blocked for another reason first: no Check now
     const held = { h: wire("reviewer", "tester", "handoff", { when: "pr-merged" }), f: wire("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 } }) };
-    expect(faceOf(held, "h", { merges: { h: { blocked: unread } }, notes: { reviewer: { verdict: "changes", hops: 0 } } })).toMatchObject({ face: "settings", why: "needs approve", merge: false });
+    expect(faceOf(held, "h", { merges: { h: { blocked: unread } }, notes: { reviewer: { verdict: "changes", hops: 0 } } })).toMatchObject({ face: "settings", why: "needs approve", merge: null });
     // on its way: nothing to send from here
     expect(faceOf({ q: wire("builder", "reviewer", "handoff", { ...waiting("p1"), delivery: { id: "p1", state: "queued", at: 1 } }) }, "q")).toMatchObject({ face: "settings", kind: "handoff · sending", pendingId: null });
   });
 
-  it("names, for Mark merged…, the source's latest pull request from its branch that's stuck: unreadable, or closed and not replaced", () => {
-    const pr = (id: number, over: Partial<PipelinePr> = {}): PipelinePr => ({ target: "dev", provider: "ado", id, url: `u/${id}`, repo: "r", branch: "4182-x", base: "dev", at: id, ...over });
+  it("names, for Mark merged…, exactly the pull requests main's merge view is blocked on: its source's repository and branch, the latest to each target, none fired", () => {
+    const at = 1_000_000;
+    const pr = (id: number, over: Partial<PipelinePr> = {}): PipelinePr => ({ target: "dev", provider: "ado", id, url: `u/${id}`, repo: "api", branch: "4182-x", base: "dev", at: at + id, ...over });
     const p = (prs: PipelinePr[]): TicketPipeline => ({ ticketId: "4182", stage: "pr-dev", history: [], prs, feedback: [], drafts: [], checks: {} });
-    const failing = { watch: { failures: 3, why: "503", at: 1 } };
-    expect(blockingPr(p([pr(1, failing), pr(2, failing), pr(3, { ...failing, branch: "other" })]), "4182-x")?.id).toBe(2);
-    expect(blockingPr(p([pr(1, { closedAt: 5 })]), "4182-x")?.id).toBe(1);
-    // a closed one replaced by a newer one from its branch, a merged one, and one being read fine aren't stuck
-    expect(blockingPr(p([pr(1, { closedAt: 5 }), pr(2)]), "4182-x")).toBeNull();
-    expect(blockingPr(p([pr(1, { ...failing, mergedAt: 9 })]), "4182-x")).toBeNull();
-    expect(blockingPr(undefined, "4182-x")).toBeNull();
-    expect(blockingPr(p([pr(1, failing)]), null)).toBeNull();
+    const failing = { watch: { failures: 3, why: "503", at } };
+    const w = wire("builder", "reviewer", "handoff", { when: "pr-merged" });
+    const source = { title: "Builder", ticket: "4182", branch: "4182-x" };
+    const api = { provider: "ado", repo: "api" } as const;
+    const blockedOn = (prs: PipelinePr[], wire = w) => {
+      const view = mergeViewOf(wire, source, p(prs), api);
+      return view && "blocked" in view ? mergePrsOf(p(prs), view.prs ?? []).map((x) => x.url) : view;
+    };
+    // the same branch in another repository, closed and newer, isn't this source's
+    expect(blockedOn([pr(11, failing), pr(30, { repo: "ui", closedAt: at })])).toEqual(["u/11"]);
+    // the latest to dev replaces an older one; one to main is its own
+    expect(blockedOn([pr(11, failing), pr(12, failing), pr(13, { target: "main", closedAt: at })])).toEqual(["u/12", "u/13"]);
+    // fired for already: behind it, so nothing to mark
+    expect(blockedOn([pr(11, failing)], { ...w, fired: ["u/11"] })).toMatchObject({ waits: expect.any(String) });
+    // read fine: waits, nothing to mark
+    expect(blockedOn([pr(11)])).toEqual({ waits: "Waits for PR 11 to dev to merge." });
+    expect(mergePrsOf(undefined, ["u/11"])).toEqual([]);
   });
 });

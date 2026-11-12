@@ -329,13 +329,29 @@ export class WireDelivery {
    */
   async send(wireRaw: unknown, pendingRaw: unknown, body: unknown, opts?: unknown): Promise<SendReply> {
     const go = this.prepare(String(wireRaw ?? ""), String(pendingRaw ?? ""), body, { automatic: false, start: isObj(opts) && opts.start === true, call: "wires:send" });
-    return "refused" in go ? go : this.deliver(go);
+    return "refused" in go ? this.refusedSend("wires:send", wireRaw, go) : this.deliver(go);
   }
 
   /** A person's Send again, after a message may have reached its end: a new pending, so a new round, sent as Send is. */
   async sendAgain(wireRaw: unknown, pendingRaw: unknown, body: unknown, opts?: unknown): Promise<SendReply> {
     const go = this.prepare(String(wireRaw ?? ""), String(pendingRaw ?? ""), body, { automatic: false, again: true, start: isObj(opts) && opts.start === true, call: "wires:sendAgain" });
-    return "refused" in go ? go : this.deliver(go);
+    return "refused" in go ? this.refusedSend("wires:sendAgain", wireRaw, go) : this.deliver(go);
+  }
+
+  /** A person's send refused before anything was written or started, logged; a stopped other end's cost question isn't one. */
+  private refusedSend<R extends { refused: string; start?: "resume" | "reopen" }>(call: UntakenWireCall, wireRaw: unknown, r: R): R {
+    if (!r.start) this.o.log(`wires: ${call} along ${JSON.stringify(String(wireRaw ?? ""))} was refused`, new Error(r.refused));
+    return r;
+  }
+
+  /** Why `call` can't be done to `w` while a teammate has one of its ends (refuseTakenOver), or null. */
+  private takenOverRefusal(w: Pick<Wire, "from" | "to">, call: UntakenWireCall): string | null {
+    try {
+      for (const end of [w.from, w.to]) refuseTakenOver(end, call, this.o.takenOver());
+      return null;
+    } catch (err) {
+      return (err as Error).message;
+    }
   }
 
   /** A person says what may have reached its end did: it's sent. */
@@ -345,6 +361,8 @@ export class WireDelivery {
     return this.o.store.editWires((book) => {
       const w = own(book.links, wireId);
       if (!w) return { refused: `There's no wire ${JSON.stringify(wireId)}.` };
+      const taken = this.takenOverRefusal(w, "wires:markSent");
+      if (taken) return { refused: taken };
       if (w.delivery?.id !== pendingId || w.delivery.state !== "unconfirmed") return { refused: "Only what may have reached the other end can be marked sent." };
       const next: Wire = { ...w, delivery: { ...w.delivery, state: "sent", at: Date.now(), why: "Marked sent by you." } };
       if (next.pending?.id === pendingId) delete next.pending;
@@ -354,19 +372,21 @@ export class WireDelivery {
 
   /** Allow one more round, at the limit: a person's, from the window. No tool reaches it. */
   moreRounds(wireRaw: unknown): WireReply {
-    return this.rounds(wireRaw, (r) => (r.used < r.limit ? "It has rounds left." : { limit: r.used + 1, used: r.used }));
+    return this.rounds(wireRaw, "wires:moreRounds", (r) => (r.used < r.limit ? "It has rounds left." : { limit: r.used + 1, used: r.used }));
   }
 
   /** Reset rounds: a person's, from the window. No tool reaches it, and nothing else resets them. */
   resetRounds(wireRaw: unknown): WireReply {
-    return this.rounds(wireRaw, (r) => ({ limit: r.limit, used: 0 }));
+    return this.rounds(wireRaw, "wires:resetRounds", (r) => ({ limit: r.limit, used: 0 }));
   }
 
-  private rounds(wireRaw: unknown, change: (r: NonNullable<Wire["rounds"]>) => NonNullable<Wire["rounds"]> | string): WireReply {
+  private rounds(wireRaw: unknown, call: UntakenWireCall, change: (r: NonNullable<Wire["rounds"]>) => NonNullable<Wire["rounds"]> | string): WireReply {
     const wireId = String(wireRaw ?? "");
     return this.o.store.editWires((book) => {
       const w = own(book.links, wireId);
       if (!w) return { refused: `There's no wire ${JSON.stringify(wireId)}.` };
+      const taken = this.takenOverRefusal(w, call);
+      if (taken) return { refused: taken };
       if (!w.rounds) return { refused: "Only a feedback wire counts rounds." };
       const next = change(w.rounds);
       if (typeof next === "string") return { refused: next };
@@ -540,13 +560,8 @@ export class WireDelivery {
     const w = own(state.book.links, wireId);
     if (!w) return { refused: `There's no wire ${JSON.stringify(wireId)}.` };
     if (!carriesWork(w.type)) return { refused: `A ${w.type} wire carries nothing to send.` };
-    if (how.call) {
-      try {
-        for (const end of [w.from, w.to]) refuseTakenOver(end, how.call, this.o.takenOver());
-      } catch (err) {
-        return { refused: (err as Error).message };
-      }
-    }
+    const taken = how.call ? this.takenOverRefusal(w, how.call) : null;
+    if (taken) return { refused: taken };
     const ctx = this.o.context(state.book);
     const refused = sendRefusal(wireId, w, pendingId, ctx, !!how.again) ?? bodyRefusal(body);
     if (refused) return { refused };

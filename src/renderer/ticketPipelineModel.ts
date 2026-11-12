@@ -76,9 +76,14 @@ export function prMergeNote(pr: Pick<PipelinePr, "mergedAt" | "mergedBy" | "clos
   return null;
 }
 
-/** What Mark merged… asks first: it's the user's word for a merge Mockingbird can't see, and the ticket and its wires act on it. */
-export function markMergedQuestion(pr: Pick<PipelinePr, "provider" | "id" | "target" | "closedAt" | "watch">): string {
-  const name = `${pr.provider === "ado" ? `PR ${pr.id}` : `#${pr.id}`} to ${pr.target}`;
+/** "PR 4231 to dev", "#9 to main". */
+export const prLabel = (pr: Pick<PipelinePr, "provider" | "id" | "target">): string => `${pr.provider === "ado" ? `PR ${pr.id}` : `#${pr.id}`} to ${pr.target}`;
+
+/**
+ * What Mark merged… asks first: it's the user's word for a merge Mockingbird can't see, and the ticket and its wires act
+ * on it. It names the repository too: a ticket can have pull requests to the same target from several.
+ */
+export function markMergedQuestion(pr: Pick<PipelinePr, "provider" | "id" | "target" | "repo" | "closedAt" | "watch">): string {
   const why = pr.closedAt ? "Its provider says it was closed without merging." : "Mockingbird can't read whether it merged.";
-  return `Mark ${name} merged? ${why} The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent.`;
+  return `Mark ${prLabel(pr)}${pr.repo ? ` in ${pr.repo}` : ""} merged? ${why} The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent.`;
 }

@@ -2372,6 +2372,47 @@ the boards beside them in `boards/project/`), each `--size 1600x1000 --query "mo
 - Show has no caller until W5; its keyboard rule (never to a terminal) can't be reached by the dot, so no test reaches
   it.
 
+#### W4c review fixes 1 as built
+
+The review of 3595801 found one High and five Mediums, each confirmed by a probe. The probes are tests now
+(`test/uiLandscapeWires.test.ts`, "the send popover"; `wiresAudit.ts`' `refocus`, `limitkeys`, `shift`, `costrepeat`,
+`costlost` and `closeother` parts).
+
+- **H1: a key's click settles too.** Enter on a focused Send skipped `useSettledRows`, so Enter pressed just after a
+  newer finish sent text no one had read. Now a key's click is held off just as a pointer's is, and a newer finish
+  moves the keyboard off the popover's button it was on, to the popover. Tested both ways: Enter 60 ms after a finish
+  sends nothing, and Tab Tab Enter onto the Send that comes up under One more round is held.
+- **M1: a modifier ends no burst.** keyArm doesn't count a modifier on its own as a key of a burst, but the popover
+  asked `afterPause()` on Shift's keydown and took the burst as the user's from then on. The rule now lives in one hook,
+  `useAimedKeys` (answerGuard.ts), which skips `QUIET_KEYS`. The other users of `afterPause()`/`tabPast()` were checked
+  and have no such latch: the picker and `burstKey` (WireMaking.tsx) and the landscape's `tabbedOff` decide per key, and a
+  modifier on its own presses nothing there.
+- **M2: the cost question takes no held or early Enter.** `CostDialog` gives Continue the keyboard, so Enter held on Send
+  (or pressed twice) answered it, and the second `wiresSend` went with `{start: true}`. CostDialog now uses
+  `useAimedKeys`: a repeat, or a key of a burst begun before it opened, presses nothing and says so. This holds wherever
+  it asks, not just from the popover.
+- **M3: a Send's result has a home.** A press on the cost dialog no longer closes the popover: an outside press while an
+  act runs with a dialog up is the dialog's. When the popover has gone anyway, a refusal goes to `onLost` (the note,
+  and `console.warn`), not to an unmounted component. Closing applies only to the popover it came from (`closeGate(n)`),
+  so a Send ending after another wire's popover opened leaves that one open.
+- **M4: Mark merged… marks the PR main is blocked on.** `blockingPr` matched by branch alone. Main's `MergeView` now
+  carries the blocking PRs' urls (`prs`), and the popover finds those in the ticket record (`mergePrsOf`), one Mark
+  merged… per PR when there are two. Check now names the one PR, or none when there are two. `markMergedQuestion` names
+  the repository ("Mark PR 11 to dev in backoffice merged?"), in the pipeline panel too.
+- **M5: a refused Send is logged.** `sendWire` goes through `wireCall`, which warns on refusals and errors. Main logs
+  a person's send that `prepare` refused (`refusedSend`), but not a stopped end's cost question.
+- **Lows:**
+  - L3: a face that changes under the keyboard (the button it was on gone) leaves it on the popover (focusout, as
+    Modal does), not on the page.
+  - L5: Mark merged…'s confirm goes when the face changes.
+  - L6: a key's click is spent even when an act is already running.
+  - L7: main refuses `wires:markSent`, `wires:moreRounds` and `wires:resetRounds` while a teammate has either end, as
+    it does Send (`UNTAKEN_WIRE_CALLS`; `test/wireDelivery.test.ts`).
+- **The tests' early clicks.** The driver presses what a page asks every 250 ms, so a wait between two asks can put
+  500 ms between their clicks, past the settle. The gates part's early clicks no longer wait in between: Mark merged…'s
+  confirm is clicked in the same ask, 150 ms after Mark merged…, where it came up before. The limit's second click now
+  aims at Send where it came up, so the test checks Send is held (it had passed with the click missing Send).
+
 ### W5 · Needs you and Finish step. Size S
 - `NeedsKind` gains `wire` (`needsYouModel.ts:13`), rank 0 (`:42`); `sig` is
   wire and pending id. Actions in `needsActions` (`workspaceActions.tsx:414`).
