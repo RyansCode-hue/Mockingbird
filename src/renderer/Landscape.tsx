@@ -1584,6 +1584,8 @@ export function Landscape({
   const gestureMove = (e: PointerEvent) => {
     const g = gesture.current;
     if (!g || e.pointerId !== g.id) return;
+    // a wire's drag whose release was lost (the window lost the pointer) ends, so it can't go on swallowing typing
+    if (g.kind === "wire" && e.buttons === 0) return dropWireDrag();
     const dx = e.clientX - g.x0;
     const dy = e.clientY - g.y0;
     if (!g.on) {
@@ -1816,10 +1818,11 @@ export function Landscape({
   };
   const gestureKey = (e: KeyboardEvent) => {
     const g = gesture.current;
-    // while a wire is dragged nothing typed acts, on the landscape or in a terminal: Esc alone, which drops it
-    if (g?.kind === "wire" && typed(e) && e.key !== "Escape") {
+    // while a wire is pressed or dragged nothing typed acts, on the landscape or in a terminal: Esc alone, which drops it
+    if (g?.kind === "wire" && (e.key === "Escape" || typed(e))) {
       e.preventDefault();
       e.stopPropagation();
+      if (e.key === "Escape") dropWireDrag();
       return;
     }
     if (e.key !== "Escape" || !g?.on) return;
@@ -1829,13 +1832,21 @@ export function Landscape({
     release(g.els);
     if (g.kind === "marquee" && !g.add) setPicked([]);
   };
-  const handlers = useRef({ move: gestureMove, up: gestureUp, key: gestureKey });
-  handlers.current = { move: gestureMove, up: gestureUp, key: gestureKey };
+  /** A wire's press or drag let go with nothing made: Esc, a release the window never saw, or the window losing focus. */
+  function dropWireDrag() {
+    const g = gesture.current;
+    if (g?.kind !== "wire") return;
+    endGesture();
+    release(g.els);
+  }
+  const handlers = useRef({ move: gestureMove, up: gestureUp, key: gestureKey, blur: dropWireDrag });
+  handlers.current = { move: gestureMove, up: gestureUp, key: gestureKey, blur: dropWireDrag };
   // the window's listeners for a gesture, the same functions for its whole life so they can be taken off again
   const [listen] = useState(() => ({
     move: (e: PointerEvent) => handlers.current.move(e),
     up: (e: PointerEvent) => handlers.current.up(e),
     key: (e: KeyboardEvent) => handlers.current.key(e),
+    blur: () => handlers.current.blur(),
   }));
   /** The click a drag's release would make (a tab's: switching to it) is taken before it reaches anything. */
   function swallowClick() {
@@ -1860,6 +1871,7 @@ export function Landscape({
     window.removeEventListener("pointerup", listen.up, true);
     window.removeEventListener("pointercancel", listen.up, true);
     window.removeEventListener("keydown", listen.key, true);
+    window.removeEventListener("blur", listen.blur);
   }
   /** A press that may become a drag. It holds the peek off while it lasts: a press already ended any peek and its hover. */
   const startGesture = (g: Omit<Gesture, "on" | "els">) => {
@@ -1876,6 +1888,7 @@ export function Landscape({
     window.addEventListener("pointerup", listen.up, true);
     window.addEventListener("pointercancel", listen.up, true);
     window.addEventListener("keydown", listen.key, true);
+    window.addEventListener("blur", listen.blur);
   };
   const startRef = useRef(startGesture);
   startRef.current = startGesture;
@@ -2221,8 +2234,9 @@ export function Landscape({
   const wireCall = async (what: string, call: () => Promise<unknown>): Promise<string | null> => {
     try {
       const r = (await call()) as { error: string } | { refused: string } | { state: unknown };
-      if (isErr(r as { error: string })) return `Couldn't ${what}: ${(r as { error: string }).error}`;
-      return "refused" in r ? r.refused : null;
+      const no = isErr(r as { error: string }) ? `Couldn't ${what}: ${(r as { error: string }).error}` : "refused" in r ? r.refused : null;
+      if (no) console.warn(`[mockingbird] ${what}: ${no}`);
+      return no;
     } catch (err) {
       console.error(`[mockingbird] ${what}:`, err);
       return `Couldn't ${what}: ${err instanceof Error ? err.message : String(err)}`;
@@ -2752,6 +2766,7 @@ export function Landscape({
           refusal={(st: WireSettings) => settingsRefusal(editing.w, st, editing.ctx)}
           onSet={(st) => wireCall("change the wire", () => window.mb.wiresSet(editing.id, st))}
           onResetRounds={() => wireCall("reset its rounds", () => window.mb.wiresResetRounds(editing.id))}
+          onLost={(why) => say(`${named(editing.w.from)} → ${named(editing.w.to)}: the change made as its settings closed wasn't saved. ${why}`)}
           onRemove={() => {
             setWireEdit(null);
             void removeWire(editing.id, `${named(editing.w.from)} → ${named(editing.w.to)}`);

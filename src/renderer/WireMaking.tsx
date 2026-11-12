@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DEFAULT_TEMPLATE, carriesWork, type Wire, type WireSettings } from "../shared/wires";
 import { AnchoredPopover } from "./Popover";
 import { useDialogFocus } from "./Modal";
@@ -23,6 +23,8 @@ function burstKey(e: React.KeyboardEvent): boolean {
   if (!typed(e) || e.key === "Escape" || afterPause()) return false;
   return !(e.target as Element).closest?.("textarea, input:not([type=checkbox])");
 }
+/** How far the pointer moves from where it rested as the picker came up before hovering a row chooses it, in px. */
+const HOVER_PX = 6;
 const swallow = (e: React.KeyboardEvent) => {
   e.preventDefault();
   e.stopPropagation();
@@ -96,6 +98,18 @@ export function WireTypePicker({ pick, onPick, onClose }: { pick: WirePick; onPi
     }
     onPick(c);
   };
+  // the picker comes up under a resting pointer (at the drop, or where Connect…'s menu was): hover chooses a row only
+  // once the rows have settled and the pointer has moved off from where it was first seen
+  const rest = useRef<{ x: number; y: number } | null>(null);
+  const aimed = useRef(false);
+  const onHover = (i: number, e: React.MouseEvent) => {
+    if (!aimed.current) {
+      const p = (rest.current ??= { x: e.clientX, y: e.clientY });
+      if (Date.now() - opened.current < ANSWER_SETTLE_MS || Math.hypot(e.clientX - p.x, e.clientY - p.y) < HOVER_PX) return;
+      aimed.current = true;
+    }
+    if (!pick.choices[i].refused) setActive(i);
+  };
   const takes = pick.choices[active];
   return (
     <AnchoredPopover anchor={pick.at} className="wp-pick" label={`Wire from ${pick.from.title} to ${pick.to.title}: pick a type`} onClose={onClose} onKeyDown={onKey}>
@@ -115,7 +129,7 @@ export function WireTypePicker({ pick, onPick, onClose }: { pick: WirePick; onPi
             className={`wp-row${i === active ? " on" : ""}`}
             disabled={!!c.refused || heldOff(c.type)}
             title={c.refused ?? undefined}
-            onMouseEnter={() => !c.refused && setActive(i)}
+            onMouseMove={(e) => onHover(i, e)}
             onClick={(e) => onRow(c, e)}
           >
             <TypeLine type={c.type} />
@@ -147,6 +161,8 @@ export interface WireSettingsProps {
   /** A feedback wire's count back to none used (wires:resetRounds); settles with why it was refused, or null. */
   onResetRounds: () => Promise<string | null>;
   onRemove: () => void;
+  /** Why a change saved as the form went (its template or files, left as it closed) was refused: said where it was. */
+  onLost: (why: string) => void;
   /** What's beside Remove: the send popover's Send now (W4c). */
   actions?: React.ReactNode;
 }
@@ -155,43 +171,75 @@ export interface WireSettingsProps {
  * A wire's settings (WireSettings.dc.html A): its ends and type in the title; on a handoff or feedback wire what it
  * sends, with chips that add or take out the summary, ticket, diff and files, When, a feedback wire's Rounds with Reset,
  * and Send automatically; on a context link whether its reader gets tool output. Each change is saved as it's made
- * (wires:set), the template once it's left; what main refuses is said under it. It shows the wire as main last said it.
+ * (wires:set), the template once it's left; what main refuses is said under it, or, once the form has gone, by `onLost`.
+ * It shows the wire as main last said it.
+ *
+ * It takes no click that wasn't aimed at it: for ANSWER_SETTLE_MS after it opens (it can come up under the pointer, over
+ * the menu row that opened it), and never a double click's second, every click on it is let go before it reaches a
+ * control, a checkbox's or its label's included, and its controls show off meanwhile.
  */
-export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusal, onSet, onResetRounds, onRemove, actions }: WireSettingsProps) {
+export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusal, onSet, onResetRounds, onRemove, onLost, actions }: WireSettingsProps) {
   const saved = wire.template ?? DEFAULT_TEMPLATE;
   const [draft, setDraft] = useState(saved);
   const [files, setFiles] = useState((wire.files ?? []).join(", "));
   const [err, setErr] = useState<string | null>(null);
   const dirty = useRef(false);
-  const now = useRef({ draft, onSet, saved });
-  now.current = { draft, onSet, saved };
+  const alive = useRef(true);
+  const now = useRef({ draft, onSet, onLost, saved });
+  now.current = { draft, onSet, onLost, saved };
+  const form = useRef<HTMLDivElement>(null);
+  const { holdOff, heldOff } = useHeldOff();
+  // before the browser paints it, so a double click's second, close behind, finds the guard there
+  useLayoutEffect(() => {
+    const opened = Date.now();
+    holdOff("settle", ANSWER_SETTLE_MS);
+    // capturing on the form, so a click let go never reaches a control (a checkbox isn't changed, a label passes nothing on)
+    const aimed = (e: MouseEvent) => {
+      if (e.detail >= 2 || (e.detail >= 1 && Date.now() - opened < ANSWER_SETTLE_MS)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    const el = form.current;
+    el?.addEventListener("click", aimed, true);
+    return () => el?.removeEventListener("click", aimed, true);
+  }, [holdOff]);
   // what main says changes the field only while nothing typed there is waiting to be saved
   useEffect(() => {
     if (!dirty.current) setDraft(saved);
   }, [saved]);
   useEffect(() => setFiles((wire.files ?? []).join(", ")), [JSON.stringify(wire.files ?? [])]);
-  const set = (s: WireSettings) => {
+  /** Saves `s`; what main refuses is said under the form, or by onLost once the form has gone (a field left as it closed). */
+  const set = (s: WireSettings, refused?: () => void) => {
     const no = refusal(s);
-    if (no) return setErr(no);
-    void onSet(s).then(setErr);
+    if (no) {
+      setErr(no);
+      return refused?.();
+    }
+    void onSet(s).then((why) => {
+      if (!alive.current) return why && now.current.onLost(why);
+      setErr(why);
+      if (why) refused?.();
+    });
   };
-  const saveTemplate = (t: string) => {
+  const saveTemplate = (t: string, refused?: () => void) => {
     dirty.current = false;
     if (t === now.current.saved) return;
-    set({ template: t === DEFAULT_TEMPLATE ? null : t });
+    set({ template: t === DEFAULT_TEMPLATE ? null : t }, refused);
   };
   // a template still being typed when the settings close is saved as they go
   useEffect(
     () => () => {
+      alive.current = false;
       const n = now.current;
-      if (dirty.current && n.draft !== n.saved) void n.onSet({ template: n.draft === DEFAULT_TEMPLATE ? null : n.draft });
+      if (dirty.current && n.draft !== n.saved) void n.onSet({ template: n.draft === DEFAULT_TEMPLATE ? null : n.draft }).then((why) => why && n.onLost(why));
     },
     []
   );
   const auto = refusal({ gate: "automatic" });
   const carries = carriesWork(wire.type);
   return (
-    <div className="wr-form">
+    <div ref={form} className={`wr-form${heldOff("settle") ? " held" : ""}`}>
       <div className="wr-head">
         <span className="wr-ends">
           {fromTitle} → {toTitle}
@@ -227,7 +275,8 @@ export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusa
                   onClick={() => {
                     const next = togglePart(draft, p);
                     setDraft(next);
-                    saveTemplate(next);
+                    // refused, what's drawn goes back to what it sends
+                    saveTemplate(next, () => setDraft(now.current.saved));
                   }}
                 >
                   {on ? `+ ${p}` : `add ${p}`}

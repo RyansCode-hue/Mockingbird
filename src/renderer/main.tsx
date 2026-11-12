@@ -798,11 +798,14 @@ function App() {
       const was = placeHint.replaces ? resumable.find((s) => s.id === placeHint.replaces) : undefined;
       if (!was) return setPlaceHint(null);
       if (lettingGo.current === was.id) return;
+      // its wires go first, to the session its dialog made (onCreated), whichever took the place; until the dialog has
+      // said which that is, it waits (onCreated's change to the hint runs this again)
+      const move = freshMove.current?.from === was.id ? freshMove.current : null;
+      if (!move) return;
       lettingGo.current = was.id;
       const hint = placeHint;
-      const fresh = placeHint.took;
-      // its wires go to the fresh session first; those that can't go with it, and the note says why
-      void moveWires(was, fresh)
+      // those that can't move go with it, and the note says why
+      void move.done
         .then((why) => {
           if (why) unmovedWires.current.set(was.id, why);
           return forgetGhosts([was], `letting ${titleOf(was)} go for the fresh session in its place`, true);
@@ -812,6 +815,7 @@ function App() {
           const left = unmovedWires.current.get(was.id);
           unmovedWires.current.delete(was.id);
           if (left) lsSay(unmovedNote(titleOf(was), left));
+          if (freshMove.current === move) freshMove.current = null;
           lettingGo.current = null;
           setPlaceHint((h) => (h === hint ? null : h));
         });
@@ -1207,13 +1211,15 @@ function App() {
   };
   /** The closed session a Start fresh stands in for, while its New session is open. */
   const freshFrom = useRef<SessionInfo | null>(null);
+  /** A Start fresh's move of the old session's wires to the session its dialog made, for its ghost's letting go to wait on. */
+  const freshMove = useRef<{ from: string; done: Promise<string | null> } | null>(null);
   /** Why a Start fresh's session couldn't take the old one's wires, by the old one's id, for the note as they go with it. */
   const unmovedWires = useRef(new Map<string, string>());
   /** The closed sessions being forgotten now (forgetGhosts), so a note on wires dropped with one names it. */
   const forgettingNow = useRef(new Set<string>());
   /**
-   * Start fresh: session `old`'s wires and note go to `next` (wires:rekey, all or none; again is harmless, as the second
-   * finds nothing left to move). Resolves to why they couldn't, logged, or null.
+   * Start fresh: session `old`'s wires and note go to `next` (wires:rekey, all or none). Resolves to why they couldn't,
+   * logged, or null.
    */
   const moveWires = async (old: SessionInfo, next: string): Promise<string | null> => {
     const r = await Promise.resolve(window.mb.wiresRekey(old.id, next)).catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }));
@@ -2375,15 +2381,17 @@ function App() {
   }, [modal]);
 
   const onCreated = async (s: SessionInfo, since?: number) => {
-    setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
-    // Start fresh: the old session's wires come to this one. One in its ghost's place moves them again as the ghost is
-    // let go, and says it there; otherwise the old one stays closed, and keeps them if they can't come.
+    // Start fresh: the old session's wires come to this one, before the hint below lets its ghost go. One in its ghost's
+    // place: those that can't come go with the ghost, and that's said as it goes; otherwise the old one stays closed and
+    // keeps them, which is said here.
     const was = freshFrom.current;
     if (was) {
-      void moveWires(was, s.id).then((why) => {
-        if (why && placeHint?.replaces !== was.id) lsSay(`${unmovedNote(titleOf(was), why)}. They stay with it.`);
-      });
+      const done = moveWires(was, s.id);
+      freshMove.current = { from: was.id, done };
+      const replacing = placeHint?.replaces === was.id && areaKeyOf(s) === placeHint.area;
+      void done.then((why) => why && !replacing && lsSay(`${unmovedNote(titleOf(was), why)}. They stay with it.`));
     }
+    setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
     // the lone pane joins its new workspace — unless the dialog put the session elsewhere
     const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
     if (lone && pendingWs) {
@@ -2583,8 +2591,20 @@ function App() {
   // ---- session rows, in the Team view's room lists ----
   const rowMenu = useContextMenu("Session");
 
+  /**
+   * A side bar row's Connect…: the landscape's, worked out as it's picked (every row, every render, it would be many
+   * rules each), so why no wire can go from it is said then.
+   */
+  const connectFromRow = (s: SessionInfo): Can | undefined =>
+    landscapeShown
+      ? () => {
+          const c = connectRef.current?.(s);
+          if (typeof c === "function") return c();
+          lsSay(c?.no ?? `Connect… is the landscape's, and ${LAYOUT_LOADING}`);
+        }
+      : undefined;
   /** Everything a session's row and right-click menu offer, in menu order: its workspace's actions, as its ⋯ does. */
-  const sessionActions = (s: SessionInfo): MenuEntry[] => menuOf(workspaceActions(s, { ...wsEnv(s, tileOfSession(s.id)), connect: connectRef.current?.(s) }));
+  const sessionActions = (s: SessionInfo): MenuEntry[] => menuOf(workspaceActions(s, { ...wsEnv(s, tileOfSession(s.id)), connect: connectFromRow(s) }));
 
   /** A session's row: its name, with its actions at the end of that line, and what it is underneath. */
   const sessionRow = (s: SessionInfo) => {

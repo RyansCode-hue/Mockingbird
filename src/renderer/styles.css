@@ -3431,11 +3431,12 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-wire-tab[data-side="top"] { transform: scale(var(--ls-inv, 1)) translate(8px, calc(-100% - 6px)); }
 .ls-wire-tab[data-side="bottom"] { transform: scale(var(--ls-inv, 1)) translate(8px, 6px); }
 /* W4b: making wires (WireMaking.tsx). A workspace's edge handle (Cards.dc.html): a dot just inside its right edge's
-   middle (a workspace clips what's outside it), over the resize strip there, at screen size at any zoom, shown on hover
-   or while it's selected. Never on a teammate's workspace, nor in focus. The wire dragged from it runs dashed to the
-   pointer, and the workspace it would go to is outlined: dashed red when no wire can go there, which the drop says */
+   middle (a workspace clips what's outside it), just in from the resize strip there so the whole edge resizes, at screen
+   size at any zoom, shown on hover or while it's selected; not on a card too small for it (WorkspaceNode). Never on a
+   teammate's workspace, nor in focus. The wire dragged from it runs dashed to the pointer, and the workspace it would go
+   to is outlined: dashed red when no wire can go there, which the drop says */
 .ls-wh {
-  position: absolute; z-index: 5; top: 50%; right: 0; box-sizing: border-box;
+  position: absolute; z-index: 5; top: 50%; right: 6px; box-sizing: border-box;
   width: calc(18px * var(--ls-inv, 1)); height: calc(22px * var(--ls-inv, 1)); transform: translateY(-50%);
   cursor: crosshair; opacity: 0; transition: opacity .12s;
 }
@@ -3444,6 +3445,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   width: calc(8px * var(--ls-inv, 1)); height: calc(8px * var(--ls-inv, 1)); transform: translateY(-50%); border-radius: 50%;
   background: var(--bg-app); border: calc(1.5px * var(--ls-inv, 1)) solid var(--text-1);
 }
+.ls-node.card > .ls-wh { right: calc(6 * var(--u)); }
 .ls-wh:hover::after { border-color: var(--amber); background: var(--amber); }
 .ls-node:hover > .ls-wh, .ls-node.selected > .ls-wh { opacity: 1; }
 .ls-node.remote > .ls-wh, .ls-viewport.ls-dragging .ls-node:not(:hover) > .ls-wh { display: none; }
@@ -3475,6 +3477,8 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 /* a wire's settings (WireSettings.dc.html A); the send popover (W4c) shows the same form for an idle wire */
 .mb-menu.wr-pop { width: 360px; max-width: calc(100vw - 16px); max-height: 80vh; padding: 12px 14px; border-radius: 10px; background: var(--bg-pane-header); border-color: var(--line-strong2); outline: none; box-shadow: 0 10px 28px rgba(0, 0, 0, .45); }
 .wr-form { display: flex; flex-direction: column; gap: 9px; font: 400 12px var(--ui); color: var(--text-2); }
+/* just opened: its clicks are let go (WireSettingsForm), and its controls show off till they'd count */
+.wr-form.held button, .wr-form.held .wr-check { opacity: .45; cursor: default; }
 .wr-head { display: flex; align-items: center; gap: 8px; }
 .wr-ends { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px var(--ui); color: var(--text-1); }
 .wr-kind { font-size: 11px; color: var(--text-3); white-space: nowrap; }

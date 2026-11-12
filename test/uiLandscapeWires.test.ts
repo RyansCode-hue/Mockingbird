@@ -251,7 +251,6 @@ describe.skipIf(!local)("making wires", () => {
   it.each([
     ["100%", "lsCamera=0,3040,1", "1600x1000", "builder"],
     ["60%", "lsCamera=-100,1850,0.6", "1600x1200", "nick"],
-    ["13%", "lsCamera=-1200,-600,0.13", "1600x1000", "nick"],
   ])("at %s: dragged from a handle and dropped, Esc while dragging and in the picker, a refused drop, and a drop onto a stack", async (_at, camera, size, refusedOnto) => {
     const m = (await audit(`${camera}&landscapeWiresAudit=make`, size, 120_000)) as unknown as Make;
     // the drag draws its line and outlines where it would go; the drop asks for a type, the keyboard in the picker
@@ -281,7 +280,8 @@ describe.skipIf(!local)("making wires", () => {
     // a drop no wire can take: outlined as refused while over it, and said, with no picker and nothing asked of main
     expect(m.refused.onto).toBe(refusedOnto);
     expect(m.refused.hot?.no).toBe(true);
-    expect(m.refused.note).toBe(refusedOnto === "nick" ? TEAMMATE : "“Dev server” is a terminal: only a shared worktree wire can reach one.");
+    // (Dev server shares Builder's worktree already: the one wire they can have is there, which is what's said)
+    expect(m.refused.note).toBe(refusedOnto === "nick" ? TEAMMATE : "There's a worktree wire between these two already.");
     expect(m.refused.picker).toBeNull();
     expect(m.refused.made).toEqual([]);
     // onto a stack: its front tab, or the tab dropped on
@@ -291,6 +291,14 @@ describe.skipIf(!local)("making wires", () => {
       expect(m.stackTab?.picker?.rows.find((r) => r.type === "context")).toMatchObject({ off: true, line: "There's a context wire between these two already." });
     } else expect(m.stackTab).toBeUndefined();
     expect(m.writes).toBe(0);
+  }, 150_000);
+
+  it("draws a handle only on a card with room for it: none at 13%, the bigger ones at 30%", async () => {
+    // on a smaller card a press there moves it, as anywhere else on it (Connect… makes its wires)
+    const at13 = (await audit("lsCamera=-1200,-600,0.13&landscapeWiresAudit=handles")) as unknown as { handles: string[] };
+    expect(at13.handles).toEqual([]);
+    const at30 = (await audit("lsCamera=-100,850,0.3&landscapeWiresAudit=handles")) as unknown as { handles: string[] };
+    expect(at30.handles).toEqual(["shape", "builder", "reviewer", "fixtures"]);
   }, 150_000);
 
   it("take no key that wasn't for them: none typed while dragging acts, a burst's Enter makes no wire, nor a click on a row that just came up", async () => {
@@ -347,6 +355,60 @@ describe.skipIf(!local)("making wires", () => {
     expect(m.remove.removed).toEqual({ calls: [["wb-held"]], note: "Removed the wire Reviewer → Tester", drawn: false });
     expect(m.remove.restore).toEqual([["wb-held"]]);
     expect(m.remove.drawn).toBe(true);
+  }, 150_000);
+});
+
+interface Double {
+  hit: { x: number; what: string } | null;
+  double: { open: boolean; held: boolean; changed: Call[]; err: string | null };
+  settled: { changed: number };
+}
+interface Guards {
+  handle: { edge: string | null; handleRight: number };
+  hover: { at: string | null; on: string | null; made: unknown[] };
+  earlyEsc: { pressed: boolean; after: boolean; selected: string | null };
+  lostRelease: { dragging: { gesture: boolean; draft: boolean }; lost: { gesture: boolean; draft: boolean }; writes: number; picker: boolean };
+  blur: { before: boolean; after: boolean; draft: boolean };
+  picker: boolean;
+}
+interface Lost {
+  chip: { was: string | null; now: string | null; err: string | null };
+  closed: { open: boolean; note: string | null };
+}
+
+describe.skipIf(!local)("what wasn't aimed at a wire's popovers or its drag", () => {
+  // 1600 × 1000 inside the window (its frame is 87 px): the cameras put the wire near the window's foot, so its menu and
+  // its settings both come up above the pointer, the form over the Settings… row
+  it.each([
+    ["Shape → Builder", "lsCamera=0,2340,1", "wb-sent"],
+    ["Shape → Docs", "lsCamera=0,2470,1", "wb-context"],
+  ])("a double click on %s's Settings… changes nothing on the form that comes up under it; settled, a click there counts", async (_w, camera, id) => {
+    const d = (await audit(`${camera}&landscapeWiresAudit=double&dblWire=${id}`, "1600x1087", 120_000)) as unknown as Double;
+    // the form comes up under the row: its second click lands on one of its controls
+    expect(d.hit).not.toBeNull();
+    expect(d.double).toEqual({ open: true, held: true, changed: [], err: null });
+    expect(d.settled.changed).toBe(1);
+  }, 150_000);
+
+  it("the picker under a resting pointer, an Esc before the drag, a lost release and the window losing focus", async () => {
+    const g = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=guards", "1600x1000", 120_000)) as unknown as Guards;
+    // the handle is just in from the right resize strip, which keeps the edge's middle
+    expect(g.handle).toEqual({ edge: "r", handleRight: 6 });
+    // Connect…'s picker comes up with the pointer on Context link: a tremble chooses nothing, and ↵ takes Handoff
+    expect(g.hover).toEqual({ at: "context", on: "handoff", made: ["handoff"] });
+    // Esc on a handle pressed but not dragged yet drops it, and doesn't reach the landscape (Builder stays selected)
+    expect(g.earlyEsc).toEqual({ pressed: true, after: false, selected: "wb-builder" });
+    // a drag whose release never came ends at the next move with no button down: the click after is a click, and typing
+    // reaches the terminal
+    expect(g.lostRelease).toEqual({ dragging: { gesture: true, draft: true }, lost: { gesture: false, draft: false }, writes: 1, picker: false });
+    expect(g.blur).toEqual({ before: true, after: false, draft: false });
+    expect(g.picker).toBe(false);
+  }, 150_000);
+
+  it("a refused chip goes back off the field, and a template refused as the settings close is said over the landscape", async () => {
+    const l = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=lost", "1600x1000", 120_000)) as unknown as Lost;
+    expect(l.chip).toEqual({ was: "{summary}", now: "{summary}", err: "The wire book can't be written right now." });
+    expect(l.closed).toEqual({ open: false, note: "Reviewer → Tester: the change made as its settings closed wasn't saved. The wire book can't be written right now." });
   }, 150_000);
 });
 

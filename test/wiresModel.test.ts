@@ -286,9 +286,12 @@ describe("making a wire", () => {
     expect(noChoice(wireChoices(end("r~0f1e2d3c4b5a~n1"), end("builder"), ctxOf()))).toMatch(/teammate's session/);
   });
 
-  it("says, when no type can be made, the reason most of them give", () => {
-    // dev already shares builder's worktree: the other three are refused as a terminal
-    expect(noChoice(wireChoices(end("dev"), end("builder"), ctxOf({ t: wire("builder", "dev", "worktree") })))).toBe("“dev” is a terminal: only a shared worktree wire can reach one.");
+  it("says, when no type can be made, that the one they can have is there, or else the reason most of them give", () => {
+    // dev already shares builder's worktree: that's said, though the other three are refused as a terminal
+    expect(noChoice(wireChoices(end("dev"), end("builder"), ctxOf({ t: wire("builder", "dev", "worktree") })))).toBe("There's a worktree wire between these two already.");
+    expect(wireChoices(end("dev"), end("builder"), ctxOf({ t: wire("builder", "dev", "worktree") })).map((c) => c.exists)).toEqual([false, false, false, true]);
+    // a feedback wire is there either way round
+    expect(wireChoices(end("reviewer"), end("builder"), ctxOf({ f: wire("builder", "reviewer", "feedback") })).find((c) => c.type === "feedback")?.exists).toBe(true);
     expect(commonReason(["b", "a", "a"])).toBe("a");
     expect(commonReason(["a", "b"])).toBe("a");
     expect(commonReason(["a", null])).toBeNull();

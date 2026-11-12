@@ -24,6 +24,8 @@ export const ownTermHasKeys = (el: Element): boolean => {
  * counts cells in.
  */
 const PAD = WORKSPACE_CHROME.w / 2;
+/** The least a workspace takes on screen, in px, to carry its edge handle (18 × 22): on a smaller card a press there moves it. */
+const HANDLE_ROOM = { w: 96, h: 64 };
 
 /**
  * What a workspace shows (Landscape.tsx decides): `live`, its terminal attached; `focus`, that filling the
@@ -271,8 +273,10 @@ export function WorkspaceNode({
         </>
       )}
       {mode !== "focus" && mode !== "placeholder" && RESIZE_EDGES.map((e) => <div key={e} className={`ls-rz ${e}`} data-edge={e} aria-hidden="true" />)}
-      {/* the edge handle a wire is dragged from (Cards.dc.html), over the right edge's resize strip; shown on hover or selection */}
-      {mode !== "focus" && mode !== "placeholder" && <div className="ls-wh" aria-hidden="true" data-tip="Drag to another workspace to wire them" style={{ ["--ls-inv" as string]: inv }} />}
+      {/* the edge handle a wire is dragged from (Cards.dc.html), inside the right edge's resize strip; shown on hover or selection */}
+      {mode !== "focus" && mode !== "placeholder" && tile.rect.w / inv >= HANDLE_ROOM.w && tile.rect.h / inv >= HANDLE_ROOM.h && (
+        <div className="ls-wh" aria-hidden="true" data-tip="Drag to another workspace to wire them" style={{ ["--ls-inv" as string]: inv }} />
+      )}
     </div>
   );
 }

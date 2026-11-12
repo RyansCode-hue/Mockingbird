@@ -326,6 +326,8 @@ export interface WireChoice {
   from: string;
   to: string;
   refused: string | null;
+  /** A wire of this type is there already (a feedback wire either way round). */
+  exists: boolean;
 }
 
 /** What a wire's template can name, as the chips under it add or take out (wirePrompt.ts fills them in as it goes). */
@@ -362,7 +364,17 @@ export interface ChoiceEnd {
 export function wireChoices(a: ChoiceEnd, b: ChoiceEnd, ctx: WireContext): WireChoice[] {
   const back = ctx.end(a.id)?.kind === "terminal" && ctx.end(b.id)?.kind === "agent";
   const [agent, term] = back ? [b, a] : [a, b];
-  const row = (type: WireType, line: string, from = a, to = b): WireChoice => ({ type, name: WIRE_TYPE_NAME[type], line, from: from.id, to: to.id, refused: wireRefusal(from.id, to.id, type, ctx) });
+  const there = (type: WireType, from: string, to: string) =>
+    Object.values(ctx.links).some((w) => w.type === type && ((w.from === from && w.to === to) || (type === "feedback" && w.from === to && w.to === from)));
+  const row = (type: WireType, line: string, from = a, to = b): WireChoice => ({
+    type,
+    name: WIRE_TYPE_NAME[type],
+    line,
+    from: from.id,
+    to: to.id,
+    refused: wireRefusal(from.id, to.id, type, ctx),
+    exists: there(type, from.id, to.id),
+  });
   return [
     row("handoff", `${whose(a.title)} result becomes ${whose(b.title)} next prompt.`),
     row("context", `${b.title} can read ${a.title}. Nothing is pushed.`),
@@ -382,8 +394,14 @@ export function commonReason(reasons: readonly (string | null)[]): string | null
   return [...count].reduce((best, c) => (c[1] > best[1] ? c : best))[0];
 }
 
-/** Why no wire at all can be made between two workspaces (every row refused): the reason most rows give. Null when one can. */
-export const noChoice = (choices: readonly WireChoice[]): string | null => commonReason(choices.map((c) => c.refused));
+/**
+ * Why no wire at all can be made between two workspaces (every row refused): that one is there already when one is (the
+ * only wire they can have, most likely), else the reason most rows give. Null when one can be made.
+ */
+export function noChoice(choices: readonly WireChoice[]): string | null {
+  const common = commonReason(choices.map((c) => c.refused));
+  return common && (choices.find((c) => c.exists)?.refused ?? common);
+}
 
 /** A session a wire can be made to from the landscape: a workspace's (each tab of a stack), or a ghost's. */
 export interface WireTarget {
