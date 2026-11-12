@@ -110,7 +110,7 @@ const WORKSPACE_MENU = [
   "-", "# Wires", "Connect…",
   "-", "Close…",
 ];
-const CREATE_ROWS = ["# New workspace", "Claude…", "Codex…", "Terminal…", "Helpdesk tasks…", "From a ticket…", "Resume a conversation…", "Import conversations…", "Collab… (coming) (off)", "Pipeline from a ticket… (coming) (off)"];
+const CREATE_ROWS = ["# New workspace", "Claude…", "Codex…", "Terminal…", "Helpdesk tasks…", "From a ticket…", "Resume a conversation…", "Import conversations…", "Collab… (coming) (off)", "Pipeline from a ticket…"];
 const TAKEN_BACK = /^Nick Smith continues it on their laptop: take it back/;
 
 describe.skipIf(!local)("the selection bar", () => {
@@ -210,7 +210,7 @@ describe.skipIf(!local)("the selection bar", () => {
     expect(i.rows!.slice(0, CREATE_ROWS.length)).toEqual(CREATE_ROWS);
     expect(i.rows!.slice(CREATE_ROWS.length, CREATE_ROWS.length + 2)).toEqual(["-", "# Area"]);
     expect(i.rows).not.toContain("New session here…");
-    expect(i.why).toEqual({ "Collab… (coming)": expect.stringMatching(/later version/), "Pipeline from a ticket… (coming)": expect.stringMatching(/later version/) });
+    expect(i.why).toEqual({ "Collab… (coming)": expect.stringMatching(/later version/) });
     expect(i.selected).toBe("5102");
     expect(i.dialog).toMatchObject({ title: "New session", launch: "Claude", mode: "New", group: "group: 5102▾", repo: path.basename(i.firstRepo!) });
     // made, it's in that area, by where it was clicked (near its foot and right edge, where an agent doesn't fit in the

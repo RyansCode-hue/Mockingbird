@@ -3086,6 +3086,161 @@ M2).
   each step's prompt shown whole, a terminal step flagged.
 - Boards: WireTemplates.dc.html A; Empty.dc.html's tile.
 
+#### W9 as built
+
+**A template** (`src/shared/pipelineTemplates.ts`, new).
+- `PipelineTemplate`: `id`, `name`, `savedAt`, `startFirst`, `steps`, `wires`. A
+  step is `key`, `name`, `agent` (claude, codex or terminal), `model`, `effort`,
+  `folder` (`"new"`, `"checkout"` or `{ sameAs: key }`) and `prompt` (its "Tell
+  it", `{ticket}` filled in at Lay out; a terminal's command). A wire is `from`,
+  `to`, `type` and the settings a person sets on one: `when`, `gate`, `template`,
+  `files`, `rounds`, `toolOutput`. A template names no session, folder, branch,
+  repo or ticket. At most 8 steps and 16 wires.
+- `parseTemplateBody` is strict: a field it doesn't know is refused. `bodyRules`
+  holds what the wire rules would once the steps are sessions: the first step is an
+  agent; keys and names are unique; a step shares an earlier agent step's folder; a
+  terminal runs on one agent step's tree, joined by that step's worktree wire, takes
+  no other wire and no model; each wire has only its type's settings; no duplicate,
+  no second feedback wire, no handoff cycle (`linkRefusal`).
+- A terminal's command refuses `{ticket}`: a ticket's title is text others wrote,
+  and typed into a shell it would run.
+- `readTemplates(settings.pipelineTemplates)` reads entry by entry. A field another
+  version wrote is listed in `unknown` and kept in the setting as it was. An entry
+  it can't read is refused by itself with why, and kept. A setting that isn't a
+  list is `broken`: nothing in it is used and nothing is saved over it.
+- `layOutPlan(body, { room, ticket })`: which step starts, each wire's gate, which
+  wires wait for the first step to start, and what stops Lay out. In a team room's
+  area an automatic gate is laid out as ask, and counted (`forced`).
+- `settings.pipelineTemplates?: unknown[]` (`types.ts`). Main is its only writer:
+  `settings:set` refuses the field.
+- `notes[session].stage` is gone from `SourceNote` and its check (decision a). No
+  build wrote one; `test/wires.test.ts`'s format table says so.
+
+**Two rules the spec didn't settle.**
+- *A terminal can't wait as a step.* It takes no handoff, so nothing would start it.
+  It's laid out only when its agent is the first step and starts at Lay out: as that
+  starts, W7's Add terminal makes it on its tree, titled with the step's name and
+  running its command. Otherwise the picker flags it ("It isn't laid out: …"), and
+  Lay out's note says how to add it once its agent has started.
+- *A wire that goes when its PR merges needs its source on a ticket's branch.* So
+  only the first step, starting on a ticket, can be its source, and the wire is made
+  once it has started. Otherwise the picker shows the problem with Go when it
+  finishes, and Lay out stays off.
+
+**Save as template** (`src/main/templates.ts`, new; `templates:draft`, `templates:save`).
+- Wired workspaces' ⋯ and right-click get **Save as template…** under Wires, after
+  Connect… (`workspaceActions.tsx`). There's no row when no wire touches the
+  workspace. A terminal, a teammate's session or one that can't be read have it off,
+  saying why. The chain is the strip's (`chainOf`).
+- `draftTemplate(ids)` keeps each step's agent, name, model, effort and folder
+  choice. Folder choice comes from a not-started step's record, or by folder: an
+  earlier step's folder → `sameAs`, its own worktree → `new`, the repo → `checkout`.
+  It keeps the terminals on the chain's trees and the wires among them, with their
+  settings. A not-started step's Tell it is its prompt. A running one's prompt isn't
+  kept anywhere, so it's left empty and the dialog says so.
+- In the text: a ticket kickoff (`ticketKickoffPrompt`, now in shared and
+  re-exported by `renderer/tickets.ts`) becomes `{ticket}`, the chain's folders in
+  each spelling become `[its folder]`, and secret-looking values are redacted with
+  W2's `redactSecrets`. Each is said in the dialog's notes.
+- The dialog (`SaveTemplateDialog`) shows exactly what's saved: each step whole,
+  editable, with its flags, the wires as chips, "kept on this Mac, never sent to
+  teammates".
+- `savedTemplates` checks it all again and refuses, changing nothing: a name that
+  is empty, two lines, over 60 or another's (any case, refused entries' too); a
+  body `parseTemplateBody` refuses; any text with a secret-looking value; and any
+  text naming the home folder or `~/`. So what's saved never holds what a
+  redaction would change. It appends; every entry there is kept as it was.
+  `templates:remove` takes one out by id, an unreadable one too.
+
+**Pipeline from a ticket…** (`TemplatePicker.tsx`, new; `templates:list`, `templates:layOut`).
+- The create menu's row turns on. The dialog is WireTemplates.dc.html A:
+  templates, a sketch of the chain, each step whole (its prompt in a textarea sized
+  to it, never scrolled or cut), the wires' chips, the foot saying where.
+- It offers saved templates only. With none: "No templates yet. Save one from a
+  chain: …", and the built-in comes with W17. A newer version's template says
+  "another version's", listing what it doesn't read. A malformed one is off with
+  why, and has Remove….
+- Per lay-out, without changing the template: the agent and model of each agent
+  step, Let it wait on the first step, Make it ask on an automatic gate, Go when it
+  finishes on a PR-merged wire it can't keep. The terminal is flagged as one.
+- Ticket and Repo rows (ADO tickets, `RepoPick` and base). The area is the clicked
+  area, else the ticket's id, else the template's name. In a team room's area the
+  foot says "team room: gates ask", and each automatic gate is shown asking.
+- **Lay out** is one act (`layOutTemplate` in `main.tsx`), which W17 can call with
+  a template and a ticket. The window makes the area first, since not-started steps
+  make none (`newAreaPatch`, right of everything), and takes it back if Lay out is
+  refused. Main's `WireService.layOut` does the rest. Once the steps and wires are
+  drawn, the area is tidied along them (W10's `planTidy`) and the note says what
+  was laid out.
+
+**Main's lay-out** (`WireService.layOut`, `SessionManager.planStep`).
+- Checked whole before any step is made: the template, the area (a top-level
+  group), the repo that its worktrees need, the rooms known, a writable book, and
+  each wire between the steps to be, probed in the area's room (`wireRefusal`,
+  `settingsRefusal`).
+- `planStep` is `plan` without a step before it: with `sharesWith` it takes the
+  folder of any own record, a not-started one included. Steps are made under the
+  room rules as Add next step's are, and the first starts through
+  `startPlannedStep`, as Start now does (W8, W20's launch rules).
+- Each step gets the ticket's id, but not its title: a session's `ticketTitle` is
+  its name on the landscape, and every step would read as the ticket. The title is
+  in the prompt's `{ticket}` ("#5115 — Stream the donor export"), and goes to the
+  ticket's own record as the first step starts its coding (`LayOutDeps.start`).
+- A step or wire refused once others are made: everything made is forgotten, in
+  reverse, and the error says "Nothing was left" or names what couldn't be taken
+  back. Once all are made, what doesn't go is a note and the rest stays: the first
+  step not starting (all wait, for Start now), a wire or terminal that needed it.
+- One lay-out at a time: a second is refused while one runs.
+- Templates live in this Mac's settings: no room publishes them.
+
+**Safety.**
+- Both dialogs use `useOpenSettle`: no click for a moment after opening, never a
+  double click's second, no key from a burst begun before they opened. Lay out is
+  also held off for a moment after the template changes, so a click aimed at the
+  list doesn't land on it. ⌘↵ lays out only when it isn't a repeat, so a held key
+  lays out once. The Modal backdrop takes W15's `useArrivalGuard`.
+- `Modal`'s new `handsBack` keeps both dialogs from handing the keyboard back to a
+  terminal (`.xterm`). It goes to the landscape. A right-click takes the keyboard
+  off the terminal first, so this matters where a menu opened without moving the
+  keyboard hands it back to the terminal as the dialog opens: the audit opens each
+  dialog that way.
+- A held ⌘↵ on a refused lay-out tries once: the refusal is said in the dialog,
+  which stays, and the area made for it is taken back.
+- Every failure is said in the dialog or the landscape's note, and logged.
+
+**Preview.** `src/preview/stub.ts` has `templatesList`, `templatesDraft`,
+`templatesSave`, `templatesRemove` and `templatesLayOut` as main's. `?lsTemplates`
+loads three (`boardTemplates`): Build, review, test; a newer version's Quick fix
+with a long prompt; and a malformed one. `?lsTemplates=none` loads none.
+`?lsLayOutFails=<n>` refuses the first n lay-outs, as main does while the wires
+file is read-only. `?landscapeWiresAudit=template` drives it all with the real
+mouse and keys, and `tpick`, `tpickroom` and `tsave` leave each dialog open for a
+screenshot.
+
+**Deviations from the board.** The Repo row (board A has none: a ticket's repo
+isn't known before W13's). The Remove links. Per-step agent and model, editable
+prompts in the Save dialog. Empty.dc.html's tile is left to W11, which builds
+that screen.
+
+**Tests.** `test/pipelineTemplates.test.ts` (new: body rules, the saved list read
+entry by entry, `layOutPlan`, `{ticket}` and the kickoff),
+`test/templates.test.ts` (new: the draft and its redactions, every save refusal,
+the save → read round trip, remove), `test/wireService.test.ts` (laying out:
+steps, wires, the start and the terminal; a room's gates; nothing starting; each
+whole refusal; taking back on a refused step and on a refused wire; a failed
+start; one at a time), `test/sessionLifecycle.test.ts` (`planStep`),
+`test/landscapeArrange.test.ts` (`newAreaPatch`), `test/workspaceActions.test.ts`
+(the rows), and the Chrome test "Pipeline templates" in
+`test/uiLandscapeWires.test.ts`.
+
+**Checked.** Typecheck; the whole suite under CI (198 files, 3,463 tests passed,
+342 skipped); the build; in Chrome, `uiLandscapeWires` (all 30, then "Pipeline
+templates" again after the last changes), `uiLandscapeBar` (8) and
+`uiLandscapeTools` (4). Mutations: the open settle, the hold after a
+template change, ⌘↵'s repeat check and each dialog's `handsBack` each fail the
+Chrome test when taken out. Forcing a room's gates to ask, in `layOutPlan` or by
+main ignoring the area's room, fails the unit tests.
+
 ### W10 · Tidy along wires. Size M
 - `planTidy` (`landscapeModel.ts:2075`) takes edges. With none it's unchanged, so
   every test of it holds. Layers by longest path over handoffs; a feedback wire

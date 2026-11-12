@@ -1,0 +1,748 @@
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Modal } from "./Modal";
+import { Pick, Select, type SelectOption } from "./Menu";
+import { RepoPick } from "./RepoPick";
+import { ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
+import { ANSWER_SETTLE_MS, useHeldOff, useOpenSettle } from "./answerGuard";
+import { baseName } from "../shared/paths";
+import { isErr, AGENT_NAME, type ModelCatalog } from "../shared/types";
+import {
+  automaticGates,
+  layOutPlan,
+  ticketLine,
+  ROOM_ASKS,
+  type LayOutPlan,
+  type LayOutRequest,
+  type TemplateBody,
+  type TemplateDraft,
+  type TemplateList,
+  type TemplateStep,
+  type TemplateWire,
+} from "../shared/pipelineTemplates";
+
+/**
+ * The template picker (docs/landscape-wires.md, W9; section 5's WireTemplates.dc.html A) and Save as template's dialog,
+ * which shows a chain the same way. Everything a template does is on screen before Lay out: each step's agent, model
+ * and prompt whole (editable), its folder, an automatic gate called out with Make it ask, a terminal's command flagged
+ * as one, and where it all goes in the foot.
+ *
+ * Lay out is one deliberate act: it takes no click for ANSWER_SETTLE_MS after the dialog opens or after the template
+ * shown changes, never a double click's second, no key of a burst begun before the dialog opened, and no held ⌘↵ (the
+ * dialog guard, useOpenSettle); it runs once until main answers. As the dialog closes, the keyboard never goes to a
+ * terminal: the landscape (`home`) gets it.
+ */
+
+/** Never back to a terminal: what had the keyboard as a dialog here opened may have been one, and it's out of sight now. */
+const notToTerminal =
+  (home: () => HTMLElement | null) =>
+  (to: HTMLElement): boolean => {
+    if (!to.closest(".xterm")) return true;
+    home()?.focus({ preventScroll: true });
+    return false;
+  };
+
+// ---- the chain drawn small ---------------------------------------------------------------------
+
+const BOX_H = 38;
+const TERM_H = 24;
+const COL_GAP = 24;
+const ROW_GAP = 16;
+
+export interface SketchBox {
+  key: string;
+  name: string;
+  sub: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  terminal: boolean;
+}
+export interface SketchPath {
+  d: string;
+  kind: "handoff" | "feedback" | "context" | "worktree";
+  chip: { x: number; y: number; text: string; tone: "amber" | "plain" } | null;
+}
+export interface Sketch {
+  w: number;
+  h: number;
+  boxes: SketchBox[];
+  paths: SketchPath[];
+}
+
+/**
+ * Template `b` drawn small, `width` wide (WireTemplates.dc.html A): agents in columns by the longest path of handoffs
+ * into each, a column's steps one under another, each terminal under its agent; handoffs across, a feedback loop under
+ * the steps with its rounds, a context link dashed, a shared worktree the thick stub. An automatic gate (`plan`'s gate
+ * in force) is the amber chip on its wire.
+ */
+export function chainSketch(b: TemplateBody, plan: LayOutPlan, width: number): Sketch {
+  const agents = b.steps.filter((s) => s.agent !== "terminal");
+  const col = new Map<string, number>();
+  const colOf = (k: string, seen: Set<string> = new Set()): number => {
+    if (col.has(k)) return col.get(k)!;
+    if (seen.has(k)) return 0;
+    seen.add(k);
+    const ins = b.wires.filter((w) => w.type === "handoff" && w.to === k).map((w) => colOf(w.from, seen) + 1);
+    const c = ins.length ? Math.max(...ins) : 0;
+    col.set(k, c);
+    return c;
+  };
+  for (const s of agents) colOf(s.key);
+  const cols = Math.max(1, ...agents.map((s) => col.get(s.key)! + 1));
+  const bw = Math.max(64, Math.min(108, Math.floor((width - (cols - 1) * COL_GAP) / cols)));
+  const rowIn = new Map<number, number>();
+  const boxes: SketchBox[] = [];
+  const at = new Map<string, SketchBox>();
+  for (const s of agents) {
+    const c = col.get(s.key)!;
+    const r = rowIn.get(c) ?? 0;
+    rowIn.set(c, r + 1);
+    const box: SketchBox = { key: s.key, name: s.name, sub: s.agent, x: c * (bw + COL_GAP), y: 2 + r * (BOX_H + ROW_GAP), w: bw, h: BOX_H, terminal: false };
+    boxes.push(box);
+    at.set(s.key, box);
+  }
+  const rows = Math.max(1, ...rowIn.values());
+  const loops = b.wires.some((w) => w.type === "feedback");
+  const agentsBottom = 2 + rows * BOX_H + (rows - 1) * ROW_GAP;
+  const termTop = agentsBottom + (loops ? 36 : 22);
+  for (const s of b.steps) {
+    if (s.agent !== "terminal") continue;
+    const agent = at.get((s.folder as { sameAs: string }).sameAs);
+    const box: SketchBox = { key: s.key, name: s.name, sub: "terminal", x: agent?.x ?? 0, y: termTop, w: Math.round(bw * 0.86), h: TERM_H, terminal: true };
+    boxes.push(box);
+    at.set(s.key, box);
+  }
+  const paths: SketchPath[] = [];
+  b.wires.forEach((w, i) => {
+    const a = at.get(w.from);
+    const z = at.get(w.to);
+    if (!a || !z) return;
+    const p = plan.wires[i];
+    const automatic = p?.gate === "automatic";
+    if (w.type === "worktree") {
+      paths.push({ d: `M${a.x + 18} ${a.y + a.h} V ${z.y}`, kind: "worktree", chip: null });
+      return;
+    }
+    if (w.type === "feedback" || (w.type !== "context" && z.x <= a.x)) {
+      const y = Math.max(a.y + a.h, z.y + z.h);
+      const ax = a.x + a.w / 2;
+      const zx = z.x + z.w / 2;
+      paths.push({
+        d: `M${ax} ${a.y + a.h} C ${ax} ${y + 32}, ${zx} ${y + 32}, ${zx} ${z.y + z.h + 2}`,
+        kind: w.type === "feedback" ? "feedback" : "handoff",
+        chip: { x: (ax + zx) / 2 - 26, y: y + 16, text: automatic ? "automatic" : w.type === "feedback" ? `↺ ${w.rounds ?? 3} rounds` : "", tone: automatic ? "amber" : "plain" },
+      });
+      return;
+    }
+    const x1 = a.x + a.w;
+    const y1 = a.y + a.h / 2;
+    const x2 = z.x - 2;
+    const y2 = z.y + z.h / 2;
+    const mid = (x1 + x2) / 2;
+    paths.push({
+      d: `M${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`,
+      kind: w.type === "context" ? "context" : "handoff",
+      chip: automatic ? { x: mid - 26, y: (y1 + y2) / 2 + 22, text: "automatic", tone: "amber" } : null,
+    });
+  });
+  const right = Math.max(...boxes.map((x) => x.x + x.w));
+  const bottom = Math.max(...boxes.map((x) => x.y + x.h), agentsBottom + (loops ? 34 : 0));
+  return { w: Math.max(right, 1), h: bottom + 2, boxes, paths: paths.map((p) => (p.chip && !p.chip.text ? { ...p, chip: null } : p)) };
+}
+
+function ChainSketch({ body, plan, width }: { body: TemplateBody; plan: LayOutPlan; width: number }) {
+  const s = useMemo(() => chainSketch(body, plan, width), [body, plan, width]);
+  return (
+    <div className="tp-sketch" style={{ height: s.h, width: s.w }} aria-label="The chain, drawn small" role="img">
+      <svg width={s.w} height={s.h} aria-hidden="true">
+        <defs>
+          <marker id="tp-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </marker>
+        </defs>
+        {s.paths.map((p, i) => (
+          <path key={i} className={`tp-w tp-w-${p.kind}`} d={p.d} fill="none" markerEnd={p.kind === "worktree" || p.kind === "context" ? undefined : "url(#tp-arrow)"} />
+        ))}
+      </svg>
+      {s.boxes.map((b) => (
+        <div key={b.key} className={`tp-box${b.terminal ? " term" : ""}`} data-step={b.key} style={{ left: b.x, top: b.y, width: b.w, height: b.h }}>
+          <span className="t">{b.name}</span>
+          {!b.terminal && <span className="s">{b.sub}</span>}
+        </div>
+      ))}
+      {s.paths.map((p, i) => p.chip && <span key={i} className={`tp-chip ${p.chip.tone}`} style={{ left: p.chip.x, top: p.chip.y }}>{p.chip.text}</span>)}
+    </div>
+  );
+}
+
+// ---- each step, whole ---------------------------------------------------------------------------
+
+/** A textarea as tall as what it holds: a step's prompt is shown whole, never cut or scrolled. */
+function WholeText({ value, onChange, label, placeholder, mono }: { value: string; onChange: (v: string) => void; label: string; placeholder: string; mono?: boolean }) {
+  const el = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const t = el.current;
+    if (!t) return;
+    t.style.height = "auto";
+    t.style.height = `${t.scrollHeight + 2}px`;
+  }, [value]);
+  return <textarea ref={el} className={`tp-prompt${mono ? " mono" : ""}`} rows={1} aria-label={label} placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} />;
+}
+
+/** What a wire into a step does, said under it: "Sends without asking once Reviewer approves." */
+function sendsLine(b: TemplateBody, w: TemplateWire): string {
+  const from = b.steps.find((s) => s.key === w.from)!.name;
+  if (w.type === "feedback") return `Sends ${from}'s changes back without asking.`;
+  if (w.when === "pr-merged") return `Sends without asking once ${from}'s pull request merges.`;
+  const verdict = b.wires.some((x) => x.type === "feedback" && x.from === w.from);
+  return `Sends without asking once ${from} ${verdict ? "approves" : "finishes"}.`;
+}
+
+interface StepsProps {
+  body: TemplateBody;
+  plan: LayOutPlan;
+  catalog: ModelCatalog | null;
+  onStep: (key: string, patch: Partial<TemplateStep>) => void;
+  onWire: (index: number, patch: Partial<TemplateWire>) => void;
+  onStartFirst: (starts: boolean) => void;
+}
+
+function StepRows({ body, plan, catalog, onStep, onWire, onStartFirst }: StepsProps) {
+  return (
+    <>
+      {body.steps.map((s, i) => {
+        const terminal = s.agent === "terminal";
+        const p = plan.steps[i];
+        const into = body.wires.map((w, j) => ({ w, p: plan.wires[j], j })).filter((x) => x.w.to === s.key && x.w.type !== "worktree");
+        const models = catalog && !terminal ? catalog[s.agent as "claude" | "codex"].models : [];
+        const modelOptions: SelectOption[] = [
+          { value: "", label: "Default model" },
+          ...(s.model && !models.some((m) => m.id === s.model) ? [{ value: s.model, label: s.model }] : []),
+          ...models.map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
+        ];
+        return (
+          <div key={s.key} className="tp-step" data-step={s.key}>
+            <div className="tp-step-head">
+              <span className="tp-dot" />
+              <span className="tp-name">{s.name}</span>
+              {terminal ? (
+                <span className="tp-fixed" title="A terminal step stays a terminal">Terminal</span>
+              ) : (
+                <>
+                  <Select
+                    className="tp-agent"
+                    value={s.agent}
+                    title={`${s.name}'s agent`}
+                    options={[
+                      { value: "claude", label: AGENT_NAME.claude },
+                      { value: "codex", label: AGENT_NAME.codex },
+                    ]}
+                    onChange={(v) => onStep(s.key, { agent: v as "claude" | "codex", model: undefined, effort: undefined })}
+                  />
+                  <Select className="tp-model" value={s.model ?? ""} placeholder="Default model" title={`${s.name}'s model`} options={modelOptions} onChange={(v) => onStep(s.key, { model: v || undefined })} />
+                </>
+              )}
+            </div>
+            <WholeText
+              value={s.prompt}
+              mono
+              label={terminal ? `${s.name}'s command` : `${s.name}'s prompt`}
+              placeholder={terminal ? "The command it runs, e.g. npm run dev" : "What it's told as it starts"}
+              onChange={(v) => onStep(s.key, { prompt: v })}
+            />
+            {typeof s.folder === "object" && !terminal && (
+              <div className="tp-line dim">Works in {body.steps.find((x) => x.key === (s.folder as { sameAs: string }).sameAs)?.name}'s folder.</div>
+            )}
+            {terminal && (
+              <div className="tp-line dim" data-flag="terminal">
+                A terminal runs this as a command. {p.terminal!.why}
+              </div>
+            )}
+            {i === 0 && (
+              <div className="tp-line dim" data-flag="start">
+                <span className="grow">{body.startFirst ? "Starts as it's laid out." : "Waits: nothing starts until you send or Start now."}</span>
+                <button type="button" className="link" onClick={() => onStartFirst(!body.startFirst)}>
+                  {body.startFirst ? "Let it wait" : "Start it as it's laid out"}
+                </button>
+              </div>
+            )}
+            {into.map(({ w, p: pw, j }) =>
+              pw.problem ? (
+                <div key={j} className="tp-line red" data-flag="problem">
+                  <span className="grow">{pw.problem}</span>
+                  <button type="button" className="link" onClick={() => onWire(j, { when: "finished" })}>
+                    Go when it finishes
+                  </button>
+                </div>
+              ) : pw.forced ? (
+                <div key={j} className="tp-line dim" data-flag="asks">
+                  {body.steps.find((x) => x.key === w.from)?.name} → {s.name} asks, not automatic. {ROOM_ASKS}.
+                </div>
+              ) : w.gate === "automatic" ? (
+                <div key={j} className="tp-line amber" data-flag="automatic">
+                  <span className="grow">{sendsLine(body, w)}</span>
+                  <button type="button" className="link" onClick={() => onWire(j, { gate: "ask" })}>
+                    Make it ask
+                  </button>
+                </div>
+              ) : null
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/** The model catalog, read once (models offered on this Mac); none while it's read or when it can't be. */
+function useCatalog(): ModelCatalog | null {
+  const [c, setC] = useState<ModelCatalog | null>(null);
+  useEffect(() => {
+    let live = true;
+    window.mb.modelCatalog().then(
+      (r: ModelCatalog | { error: string }) => {
+        if (!live) return;
+        if (isErr(r)) console.warn(`[mockingbird] the template picker's models: ${r.error}`);
+        else setC(r);
+      },
+      (err: unknown) => console.warn("[mockingbird] the template picker's models:", err)
+    );
+    return () => void (live = false);
+  }, []);
+  return c;
+}
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+/** A body with step `key` changed. */
+const withStep = (b: TemplateBody, key: string, patch: Partial<TemplateStep>): TemplateBody => ({
+  ...b,
+  steps: b.steps.map((s) => {
+    if (s.key !== key) return s;
+    const next: TemplateStep = { ...s, ...patch };
+    for (const k of ["model", "effort"] as const) if (next[k] === undefined) delete next[k];
+    return next;
+  }),
+});
+const withWire = (b: TemplateBody, i: number, patch: Partial<TemplateWire>): TemplateBody => ({ ...b, wires: b.wires.map((w, j) => (j === i ? { ...w, ...patch } : w)) });
+
+// ---- Pipeline from a ticket… --------------------------------------------------------------------
+
+/** Where the picker lays a template out, as the landscape knows it. */
+export interface PickerWhere {
+  /** The area it was opened in (a right-click there), or null: its ticket's area, else one named after the template. */
+  area: string | null;
+  /** That area's first repo and the base it keeps for it. */
+  seed: { repo?: string; base?: string | null };
+  /** Whether a group has an area on the landscape already, and its title. */
+  areaTitle: (key: string) => string | null;
+  /** Whether a group is a team room's area: its gates all ask. */
+  inRoom: (key: string) => boolean;
+}
+
+export interface TemplatePickerProps {
+  where: PickerWhere;
+  /** A template offered first, ahead of the saved ones (W17's plan, laid out here as a template is). */
+  offered?: { name: string; body: TemplateBody; provenance: string };
+  /** Lay out: settles with why nothing was laid out, or null once it was (and the dialog closes). */
+  onLayOut: (req: LayOutRequest) => Promise<string | null>;
+  /** Where the keyboard goes as it closes, rather than back to a terminal. */
+  home: () => HTMLElement | null;
+  onClose: () => void;
+}
+
+export function TemplatePicker({ where, offered, onLayOut, home, onClose }: TemplatePickerProps) {
+  const head = useRef<HTMLDivElement>(null);
+  const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
+  const shownHold = useHeldOff();
+  const catalog = useCatalog();
+  const [list, setList] = useState<TemplateList | { error: string } | null>(null);
+  const read = () =>
+    window.mb.templatesList().then(
+      (r: TemplateList | { error: string }) => setList(r),
+      (err: unknown) => setList({ error: err instanceof Error ? err.message : String(err) })
+    );
+  useEffect(() => void read(), []);
+  const OFFERED = "offered";
+  const [chosen, setChosen] = useState<string | null>(offered ? OFFERED : null);
+  const [body, setBody] = useState<TemplateBody | null>(offered?.body ?? null);
+  const templates = list && !isErr(list) ? list.templates : [];
+  const choose = (id: string) => {
+    const t = id === OFFERED ? offered : templates.find((x) => x.template.id === id)?.template;
+    if (!t) return;
+    setChosen(id);
+    setBody(structuredClone("body" in t ? t.body : { startFirst: t.startFirst, steps: t.steps, wires: t.wires }));
+    setError("");
+    // what Lay out lays out just changed under the pointer
+    shownHold.holdOff("layout", ANSWER_SETTLE_MS);
+  };
+  // the first saved template, once they're read, when nothing's offered
+  useEffect(() => {
+    if (chosen === null && templates[0]) choose(templates[0].template.id);
+  }, [list]);
+  const name = chosen === OFFERED ? offered!.name : (templates.find((x) => x.template.id === chosen)?.template.name ?? "");
+
+  // the ticket, as New session picks one: yours first, then anyone's
+  const ado = useAdoTickets();
+  const all = ado.items ?? [];
+  const [whoPick, setWhoPick] = useState("");
+  const who = whoPick || (ado.items ? ado.me || "*" : "");
+  const people = useMemo(() => {
+    const names = [...new Set(all.map((t) => t.assignedTo).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const mine = who && who !== "*" ? names.filter((n) => n === who) : [];
+    return [...mine, ...names.filter((n) => !mine.includes(n))];
+  }, [all, who]);
+  const columns = useMemo(() => ticketsByColumn(who && who !== "*" ? all.filter((t) => t.assignedTo === who) : all, ado.stateOrder), [all, who, ado.stateOrder]);
+  const [ticketSel, setTicketSel] = useState("");
+  const ticket = all.find((t) => String(t.id) === ticketSel) ?? null;
+  const tLine = ticket ? ticketLine(String(ticket.id), ticket.title) : "";
+
+  const [repo, setRepo] = useState(where.seed.repo ?? "");
+  const { branches, base, setBase, error: branchError } = useRepoBranches(repo || null);
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current || !branches || repo !== where.seed.repo || !where.seed.base) return;
+    seeded.current = true;
+    if (branches.branches.includes(where.seed.base)) setBase(where.seed.base);
+  }, [branches]);
+
+  // an area is a top-level group: a "/" in the template's name would make it a stack's
+  const area = where.area ?? (ticket ? String(ticket.id) : name.replace(/\//g, "-"));
+  const room = !!area && where.inRoom(area);
+  const plan = useMemo(() => (body ? layOutPlan(body, { room, ticket: !!ticket }) : null), [body, room, ticket]);
+  const needsRepo = !!body && body.steps.some((s) => s.folder === "new") && !repo;
+  const blocked = !body ? "Choose a template" : plan!.problems[0] ?? (needsRepo ? "Its steps work in worktrees of their own: choose a repo" : !area ? "Choose a ticket, so its steps have an area" : null);
+
+  const [busy, setBusy] = useState(false);
+  const busyNow = useRef(false);
+  const [error, setError] = useState("");
+  const layOut = async () => {
+    if (busyNow.current || !body || blocked || heldOff("settle") || shownHold.heldOff("layout")) return;
+    busyNow.current = true;
+    setBusy(true);
+    setError("");
+    let why: string | null;
+    try {
+      why = await onLayOut({
+        name: name || "The template",
+        template: body,
+        ...(ticket ? { ticketId: String(ticket.id), ticketTitle: ticket.title } : {}),
+        repoPath: repo || null,
+        ...(repo && base ? { base } : {}),
+        area,
+      });
+    } catch (err) {
+      console.warn(`[mockingbird] laying out ${name}:`, err);
+      why = `Couldn't lay it out: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      busyNow.current = false;
+      setBusy(false);
+    }
+    if (why) setError(why);
+  };
+  const removeIt = async (id: string, label: string) => {
+    if (!window.confirm(`Remove the template “${label}”? Laid-out steps made from it stay.`)) return;
+    let r: TemplateList | { error: string };
+    try {
+      r = await window.mb.templatesRemove(id);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) return setError(`Couldn't remove “${label}”: ${r.error}`);
+    setList(r);
+    if (chosen === id) {
+      setChosen(null);
+      setBody(null);
+    }
+  };
+
+  const existing = area ? where.areaTitle(area) : null;
+  const usesWorktree = !!body?.steps.some((s) => s.folder === "new");
+  const foot = [
+    !area ? "no area yet" : existing ? `in ${existing}` : `new area ${ticket ? `#${ticket.id}` : area}`,
+    !repo ? "no repo" : usesWorktree ? `worktree from ${base ? `origin/${base}` : `${baseName(repo)}'s HEAD`}` : `${baseName(repo)}'s checkout`,
+    ...(room ? ["team room: gates ask"] : []),
+  ].join(" · ");
+  const held = heldOff("settle") || shownHold.heldOff("layout");
+
+  return (
+    <Modal
+      className="modal tp"
+      onClose={onClose}
+      closeOnBackdrop={!heldOff("settle")}
+      handsBack={notToTerminal(home)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          if (!e.repeat) void layOut();
+        }
+      }}
+    >
+      <div className="tp-head" ref={head}>
+        <h3>Pipeline from a ticket</h3>
+        {chosen === OFFERED && offered && <span className="tp-prov">{offered.provenance}</span>}
+      </div>
+      <div className="tp-sec">
+        <div className="tp-k">Ticket</div>
+        <div className="tp-line2">
+          <Pick
+            className="tp-who"
+            value={who}
+            onChange={(e) => {
+              setWhoPick(e.target.value);
+              setTicketSel("");
+            }}
+            disabled={!all.length}
+            title="Whose tickets to choose from"
+          >
+            <option value="*">Anyone</option>
+            {people.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </Pick>
+          <Pick className="tp-ticket" value={ticketSel} onChange={(e) => setTicketSel(e.target.value)} title="The ticket its steps are on: {ticket} in a prompt names it">
+            <option value="">{ado.items === null ? (ado.error ? "No ticket (the board can't be read)" : "No ticket (reading the board…)") : "No ticket"}</option>
+            {columns.map((c) => (
+              <optgroup key={c.state} label={c.state}>
+                {c.items.map((t) => (
+                  <option key={t.id} value={String(t.id)}>
+                    #{t.id} · {t.title}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </Pick>
+        </div>
+      </div>
+      {ado.error && <div className="tp-note dim">Azure DevOps: {ado.error}</div>}
+      {body?.steps.some((s) => s.agent !== "terminal" && s.prompt.includes("{ticket}")) && (
+        <div className="tp-note dim" data-flag="ticket">
+          {tLine ? `{ticket} in a prompt is “${tLine}”.` : "{ticket} in a prompt is empty: no ticket is chosen."}
+        </div>
+      )}
+      <div className="tp-sec">
+        <div className="tp-k">Repo</div>
+        <div className="tp-line2">
+          <RepoPick className="tp-repo" value={repo} onChange={setRepo} none="No repo" title="The repo its steps' worktrees are made in" />
+          <Pick className="tp-base" value={base} onChange={(e) => setBase(e.target.value)} disabled={!branches} title="A new worktree with nothing before it to start from is cut from origin's branch of this name">
+            <option value="">{repo ? "base: its HEAD" : "no base"}</option>
+            {(branches?.branches ?? []).map((b) => (
+              <option key={b} value={b}>
+                base: origin/{b}
+              </option>
+            ))}
+          </Pick>
+        </div>
+      </div>
+      {branchError && <div className="tp-note red">{branchError}</div>}
+      <div className="tp-main">
+        <div className="tp-list" role="listbox" aria-label="Templates">
+          <div className="tp-k pad">Templates</div>
+          {offered && (
+            <button type="button" role="option" aria-selected={chosen === OFFERED} className={`tp-item${chosen === OFFERED ? " sel" : ""}`} onClick={() => choose(OFFERED)}>
+              <span className="t">{offered.name}</span>
+              <span className="s">{offered.provenance}</span>
+            </button>
+          )}
+          {list === null && <div className="tp-empty">Reading the saved templates…</div>}
+          {list && isErr(list) && (
+            <div className="tp-empty red">
+              The saved templates couldn't be read: {list.error}{" "}
+              <button type="button" className="link" onClick={() => void read()}>
+                Try again
+              </button>
+            </div>
+          )}
+          {list && !isErr(list) && list.broken && <div className="tp-empty red">{list.broken}</div>}
+          {templates.map(({ template: t, unknown }) => {
+            const auto = automaticGates(t);
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="option"
+                aria-selected={chosen === t.id}
+                className={`tp-item${chosen === t.id ? " sel" : ""}`}
+                data-template={t.id}
+                title={unknown.length ? `Saved by another version of Mockingbird: this one doesn't read ${unknown.join(", ")}, which ${unknown.length === 1 ? "is" : "are"} kept as ${unknown.length === 1 ? "it is" : "they are"}` : undefined}
+                onClick={() => choose(t.id)}
+              >
+                <span className="t">{t.name}</span>
+                <span className="s">
+                  {plural(t.steps.length, "step")}
+                  {auto ? (
+                    <>
+                      {" · "}
+                      <span className="amber">{auto} automatic</span>
+                    </>
+                  ) : null}
+                  {unknown.length ? " · another version's" : ""}
+                </span>
+              </button>
+            );
+          })}
+          {list && !isErr(list) &&
+            list.refused.map((r) => (
+              <div key={`refused-${r.index}`} className="tp-item off" data-refused={r.index} title={r.why}>
+                <span className="t">{r.name ?? `Template ${r.index + 1}`}</span>
+                <span className="s red">Can't be used here: {r.why}</span>
+                {r.id && (
+                  <button type="button" className="link" onClick={() => void removeIt(r.id!, r.name ?? `template ${r.index + 1}`)}>
+                    Remove…
+                  </button>
+                )}
+              </div>
+            ))}
+          {list && !isErr(list) && !templates.length && !offered && (
+            <div className="tp-empty" data-empty="templates">
+              No templates yet. Save one from a chain: a wired workspace's ⋯, Save as template…. The built-in Orchestrator → Coder → Verifier comes in a later version.
+            </div>
+          )}
+          {chosen && chosen !== OFFERED && (
+            <button type="button" className="link tp-remove" onClick={() => void removeIt(chosen, name)}>
+              Remove this template…
+            </button>
+          )}
+        </div>
+        <div className="tp-steps">
+          {body && plan ? (
+            <>
+              <ChainSketch body={body} plan={plan} width={354} />
+              <StepRows
+                body={body}
+                plan={plan}
+                catalog={catalog}
+                onStep={(k, p) => setBody((b) => b && withStep(b, k, p))}
+                onWire={(j, p) => setBody((b) => b && withWire(b, j, p))}
+                onStartFirst={(starts) => setBody((b) => b && { ...b, startFirst: starts })}
+              />
+            </>
+          ) : (
+            <div className="tp-empty">Choose a template to see its steps.</div>
+          )}
+        </div>
+      </div>
+      {error && (
+        <div className="tp-note red" role="alert">
+          {error}
+        </div>
+      )}
+      <div className="tp-foot">
+        <span className="tp-where" title={foot}>
+          {foot}
+        </span>
+        <button className="outline" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="primary" data-act="layout" disabled={busy || !!blocked || held} title={blocked ?? undefined} onClick={() => void layOut()}>
+          {busy ? "Laying out…" : "Lay out"}
+          {!busy && <span className="kbd"> ⌘↵</span>}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ---- Save as template ---------------------------------------------------------------------------
+
+export interface SaveTemplateProps {
+  draft: TemplateDraft;
+  /** What the chain leaves out that main can't see: the other branches at its steps. */
+  leftOut: string[];
+  /** Save it: settles with why it wasn't saved, or null once it was (and the dialog closes). */
+  onSave: (name: string, body: TemplateBody) => Promise<string | null>;
+  home: () => HTMLElement | null;
+  onClose: () => void;
+}
+
+/**
+ * Save as template: the chain as it'll be kept, every step's prompt whole, what was redacted or left out said above
+ * it. What's saved is what's shown: main refuses text holding a secret-looking value or a home folder's path rather
+ * than changing it. Kept on this Mac only, never sent to teammates.
+ */
+export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: SaveTemplateProps) {
+  const head = useRef<HTMLDivElement>(null);
+  const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
+  const catalog = useCatalog();
+  const [name, setName] = useState(draft.name);
+  const [body, setBody] = useState<TemplateBody>(() => structuredClone(draft.body));
+  const plan = useMemo(() => layOutPlan(body, { room: false, ticket: true }), [body]);
+  const [busy, setBusy] = useState(false);
+  const busyNow = useRef(false);
+  const [error, setError] = useState("");
+  const save = async () => {
+    if (busyNow.current || heldOff("settle") || !name.trim()) return;
+    busyNow.current = true;
+    setBusy(true);
+    setError("");
+    let why: string | null;
+    try {
+      why = await onSave(name.trim(), body);
+    } catch (err) {
+      console.warn(`[mockingbird] saving the template ${name}:`, err);
+      why = `Couldn't save it: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      busyNow.current = false;
+      setBusy(false);
+    }
+    if (why) setError(why);
+  };
+  const notes = [...draft.notes, ...(leftOut.length ? [`Not in the chain, so not kept: ${leftOut.join(", ")} (other branches).`] : [])];
+  return (
+    <Modal
+      className="modal tp tp-save"
+      onClose={onClose}
+      closeOnBackdrop={!heldOff("settle")}
+      handsBack={notToTerminal(home)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          if (!e.repeat) void save();
+        }
+      }}
+    >
+      <div className="tp-head" ref={head}>
+        <h3>Save as template</h3>
+        <span className="tp-prov">kept on this Mac, never sent to teammates</span>
+      </div>
+      <div className="tp-sec">
+        <div className="tp-k">Name</div>
+        <input type="text" className="tp-name-in" aria-label="The template's name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} autoFocus />
+      </div>
+      {notes.map((n) => (
+        <div key={n} className="tp-note dim" data-note>
+          {n}
+        </div>
+      ))}
+      <div className="tp-steps solo">
+        <ChainSketch body={body} plan={plan} width={540} />
+        <StepRows
+          body={body}
+          plan={plan}
+          catalog={catalog}
+          onStep={(k, p) => setBody((b) => withStep(b, k, p))}
+          onWire={(j, p) => setBody((b) => withWire(b, j, p))}
+          onStartFirst={(starts) => setBody((b) => ({ ...b, startFirst: starts }))}
+        />
+      </div>
+      {error && (
+        <div className="tp-note red" role="alert">
+          {error}
+        </div>
+      )}
+      <div className="tp-foot">
+        <span className="tp-where">{plural(body.steps.length, "step")} · {plural(body.wires.length, "wire")} · {automaticGates(body)} automatic</span>
+        <button className="outline" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="primary" data-act="save" disabled={busy || !name.trim() || heldOff("settle")} onClick={() => void save()}>
+          {busy ? "Saving…" : "Save template"}
+          {!busy && <span className="kbd"> ⌘↵</span>}
+        </button>
+      </div>
+    </Modal>
+  );
+}

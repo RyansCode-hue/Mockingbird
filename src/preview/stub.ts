@@ -47,7 +47,8 @@ import { runFirstRunAudit } from "./firstRunAudit";
 // the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
 import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
-import { WIRE_AREA, gateBoardBook, gateMerges, gatePipeline, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
+import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
+import { WIRE_AREA, boardTemplates, gateBoardBook, gateMerges, gatePipeline, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
@@ -8995,7 +8996,7 @@ Object.assign(api, {
   },
   // W7, as main's WireService.addTerminal: refused before it starts when the wire couldn't be made, else a terminal in
   // the agent's folder and group, wired to it by a shared worktree wire
-  wiresAddTerminal: async (id: string) => {
+  wiresAddTerminal: async (id: string, as: { title?: string; command?: string } = {}) => {
     const s = byId(id);
     if (!s) return err("Session is no longer running");
     const ends = wireEnds();
@@ -9004,7 +9005,7 @@ Object.assign(api, {
     const probe = agent && { ...agent, id: next, title: "its terminal", kind: "terminal" as const, debrief: false, tasks: false, where: "running" as const };
     const refused = wireRefusal(id, next, "worktree", { links: wireBook.links, end: (x) => (x === next ? probe : ends.end(x)) });
     if (refused) return err(refused);
-    const made: SessionInfo = await api.createSession({ repoPath: s.repoPath, useWorktree: false, shell: true, title: `${s.ticketTitle ?? s.title} · terminal`, taskGroup: s.taskGroup ?? undefined });
+    const made: SessionInfo = await api.createSession({ repoPath: s.repoPath, useWorktree: false, shell: true, title: as.title ?? `${s.ticketTitle ?? s.title} · terminal`, taskGroup: s.taskGroup ?? undefined });
     const t: SessionInfo = { ...made, cwd: s.cwd, repoPath: s.repoPath, branch: s.branch };
     sessions = sessions.map((x) => (x.id === t.id ? t : x));
     sessionsChanged();
@@ -9024,6 +9025,156 @@ Object.assign(api, {
   },
   wiresMoreRounds: async (id: string): Promise<WireReply> => gateRounds(id, (r) => (r.used < r.limit ? "It has rounds left." : { limit: r.used + 1, used: r.used })),
   wiresResetRounds: async (id: string): Promise<WireReply> => gateRounds(id, (r) => ({ limit: r.limit, used: 0 })),
+});
+// ---- W9: pipeline templates, as main's templates:* calls (src/main/templates.ts, WireService.layOut) ----
+/** settings.pipelineTemplates: ?lsTemplates' (boardTemplates), else none saved. */
+let tplStore: unknown[] = params.has("lsTemplates") ? boardTemplates(params.get("lsTemplates")) : [];
+/** ?lsLayOutFails=<n>: the first n lay-outs are refused, as main refuses one while the wires file is read-only. */
+let layOutFails = Number(params.get("lsLayOutFails") ?? 0);
+const tplWhy = (e: unknown) => (e instanceof Error ? e.message : String(e));
+Object.assign(api, {
+  templatesList: async () => readTemplates(tplStore),
+  // main's draft: the chain's steps and their terminals, the wires among them, a ticket kickoff as {ticket}; nothing here
+  // is secret, so nothing is redacted
+  templatesDraft: async (ids: string[]) => {
+    const known = (id: string) => byId(id) ?? previous.find((x) => x.id === id) ?? planned.find((x) => x.id === id);
+    const agents = ids.map(known);
+    if (agents.some((a) => !a)) return err("This Mac has no session in that chain any more.");
+    const links = Object.values(wireBook.links);
+    const terms = [...new Set(links.filter((w) => w.type === "worktree" && ids.includes(w.from) && !ids.includes(w.to)).map((w) => w.to))].flatMap((id) => (known(id)?.shell ? [known(id)!] : []));
+    const all = [...(agents as SessionInfo[]), ...terms];
+    const keyOf = new Map(all.map((x, i) => [x.id, `s${i + 1}`]));
+    const unsaid: string[] = [];
+    const steps: TemplateStep[] = all.map((x, i) => {
+      const shares = x.shell ? links.find((w) => w.type === "worktree" && w.to === x.id)!.from : x.planned?.sharesWith ?? (agents as SessionInfo[]).slice(0, i).find((y) => !y.planned && !x.planned && y.cwd === x.cwd)?.id;
+      if (!x.planned && !x.shell) unsaid.push(x.title);
+      return {
+        key: keyOf.get(x.id)!,
+        name: x.title,
+        agent: x.shell ? "terminal" : (x.agent ?? "claude"),
+        ...(x.model && !x.shell ? { model: x.model } : {}),
+        folder: shares && keyOf.has(shares) ? { sameAs: keyOf.get(shares)! } : x.planned ? (x.planned.worktree ? "new" : "checkout") : x.repoPath && x.cwd !== x.repoPath ? "new" : "checkout",
+        prompt: kickoffAsTicket(x.planned?.prompt ?? "").text,
+      };
+    });
+    const wires: TemplateWire[] = links
+      .filter((w) => keyOf.has(w.from) && keyOf.has(w.to))
+      .map((w) => ({
+        from: keyOf.get(w.from)!,
+        to: keyOf.get(w.to)!,
+        type: w.type,
+        ...(w.type === "handoff" || w.type === "feedback" ? { when: w.when, gate: w.gate } : {}),
+        ...(w.template !== undefined ? { template: w.template } : {}),
+        ...(w.rounds ? { rounds: w.rounds.limit } : {}),
+      }));
+    const body: TemplateBody = { startFirst: true, steps, wires };
+    try {
+      parseTemplateBody(body);
+    } catch (e) {
+      return err(`This chain can't be a template: ${tplWhy(e)}`);
+    }
+    const notes = unsaid.length
+      ? [`What ${unsaid.map((t) => `“${t}”`).join(", ")} ${unsaid.length === 1 ? "was" : "were"} told as ${unsaid.length === 1 ? "it" : "they"} started isn't kept once running: say it here${terms.length ? `, and what ${terms.length === 1 ? "its terminal runs" : "each terminal runs"}` : ""}.`]
+      : terms.length
+        ? [`What ${terms.length === 1 ? "its terminal runs" : "its terminals run"} isn't kept: say it here.`]
+        : [];
+    return { name: (agents as SessionInfo[]).map((x) => x.title).join(" → ").slice(0, 60), body, notes } satisfies TemplateDraft;
+  },
+  templatesSave: async (name: string, body: unknown) => {
+    const n = String(name ?? "").trim();
+    if (!n) return err("Name the template.");
+    const read = readTemplates(tplStore);
+    if ([...read.templates.map((t) => t.template.name), ...read.refused.flatMap((r) => (r.name ? [r.name] : []))].some((t) => t.toLowerCase() === n.toLowerCase()))
+      return err(`There's a template called “${n}” already: name this one another way, or remove that one first.`);
+    try {
+      tplStore = [...tplStore, { id: `tpl-${Date.now().toString(36)}`, name: n, savedAt: Date.now(), ...parseTemplateBody(body) }];
+    } catch (e) {
+      return err(`It can't be saved: ${tplWhy(e)}`);
+    }
+    return readTemplates(tplStore);
+  },
+  templatesRemove: async (id: string) => {
+    const at = tplStore.findIndex((v) => !!v && typeof v === "object" && (v as { id?: unknown }).id === id);
+    if (at < 0) return err("That template isn't saved any more.");
+    tplStore = tplStore.filter((_v, i) => i !== at);
+    return readTemplates(tplStore);
+  },
+  // main's WireService.layOut: checked whole first, then the steps (not started), their wires, and the first step started
+  // when the template says so, with what waited for it; a refusal once steps are made takes them all back
+  templatesLayOut: async (req: LayOutRequest) => {
+    await startLag();
+    if (layOutFails > 0) {
+      layOutFails--;
+      return err("landscape.json is read-only: wires can't be saved until it can be written");
+    }
+    let body: TemplateBody;
+    try {
+      body = parseTemplateBody(req.template);
+    } catch (e) {
+      return err(`“${req.name}” can't be laid out: ${tplWhy(e)}`);
+    }
+    const room = team.rooms.find((r) => r.groupKey === req.area)?.id ?? null;
+    const plan = layOutPlan(body, { room: !!room, ticket: !!req.ticketId });
+    if (plan.problems.length) return err(`“${req.name}” can't be laid out as it is: ${plan.problems.join(" ")}`);
+    if (!req.repoPath && body.steps.some((x) => x.folder === "new")) return err("Its steps work in worktrees of their own, which need a repo: choose one.");
+    const steps: LayOutReply["steps"] = [];
+    const idOf = new Map<string, string>();
+    const undo = (why: string) => {
+      const gone = new Set(steps.map((x) => x.id));
+      planned = planned.filter((x) => !gone.has(x.id));
+      wireBook = { ...wireBook, links: Object.fromEntries(Object.entries(wireBook.links).filter(([, w]) => !gone.has(w.from) && !gone.has(w.to))) };
+      wiresRev++;
+      emit("onWiresChanged", wireState());
+      return err(`Couldn't lay out “${req.name}”: ${why}. Nothing was left.`);
+    };
+    const line = ticketLine(req.ticketId, req.ticketTitle);
+    let n = 0;
+    for (const p of plan.steps) {
+      const st = p.step;
+      if (st.agent === "terminal") continue;
+      const id = `pl${Date.now().toString(36)}${n++}`;
+      const shares = typeof st.folder === "object" ? planned.find((x) => x.id === idOf.get((st.folder as { sameAs: string }).sameAs)) : undefined;
+      planned = [
+        ...planned,
+        {
+          ...session(id, { title: st.name, agent: st.agent as "claude" | "codex", taskGroup: req.area, status: "idle", createdAt: Date.now(), branch: null, ...(req.ticketId ? { ticketId: req.ticketId } : {}) }),
+          repoPath: shares ? shares.repoPath : req.repoPath,
+          cwd: shares ? shares.cwd : (req.repoPath ?? "/Users/you"),
+          ...(st.model ? { model: st.model } : {}),
+          planned: { worktree: st.folder === "new", ...(shares ? { sharesWith: shares.id } : {}), ...(st.prompt.trim() ? { prompt: withTicket(st.prompt, line) } : {}) },
+        },
+      ];
+      steps.push({ key: st.key, id, title: st.name });
+      idOf.set(st.key, id);
+    }
+    const wires: string[] = [];
+    for (const p of plan.wires) {
+      if (p.skipped || p.afterStart) continue;
+      const r: WireReply = await api.wiresAdd(idOf.get(p.wire.from), idOf.get(p.wire.to), p.wire.type, wireSettingsOf(p.wire, p.gate));
+      if ("refused" in r) return undo(`${p.wire.from} → ${p.wire.to} was refused: ${r.refused}`);
+      wires.push(r.id!);
+    }
+    sessionsChanged();
+    const notes = [...(plan.forced ? [roomAsked(plan.forced)] : []), ...plan.steps.flatMap((p) => (p.terminal && !p.terminal.laid ? [`“${p.step.name}” ${p.terminal.why.replace(/^It /, "")}`] : []))];
+    if (!body.startFirst) return { steps, wires, started: null, notes } satisfies LayOutReply;
+    const first = plan.steps[0].step;
+    const started = await api.startPlanned(idOf.get(first.key)!);
+    if (started && typeof started === "object" && "error" in started) return { steps, wires, started: null, notes: [...notes, `“${first.name}” didn't start: ${started.error}.`] } satisfies LayOutReply;
+    for (const p of plan.wires) {
+      if (!p.afterStart || p.skipped) continue;
+      const to = body.steps.find((x) => x.key === p.wire.to)!;
+      if (p.wire.type === "worktree") {
+        const t = await api.wiresAddTerminal(started.id, { title: to.name, command: to.prompt });
+        if (t && "error" in t) notes.push(`“${to.name}” wasn't made on “${first.name}”'s tree: ${t.error}`);
+        else steps.push({ key: to.key, id: t.id, title: to.name });
+        continue;
+      }
+      const r: WireReply = await api.wiresAdd(idOf.get(p.wire.from), idOf.get(p.wire.to), p.wire.type, wireSettingsOf(p.wire, p.gate));
+      if ("refused" in r) notes.push(`${p.wire.from} → ${p.wire.to} wasn't made: ${r.refused}`);
+      else wires.push(r.id!);
+    }
+    return { steps, wires, started: started.id, notes } satisfies LayOutReply;
+  },
 });
 /** How long main takes to write a send ahead and answer, and then for the other end's queue to take it. */
 const GATE_ANSWER_MS = 1600;

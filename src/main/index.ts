@@ -46,6 +46,8 @@ import { WireTools } from "./wireTools";
 import { TicketTools } from "./ticketTools";
 import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
+import { draftTemplate, removedTemplate, savedTemplates } from "./templates";
+import { readTemplates } from "../shared/pipelineTemplates";
 import { HELPDESK_KEEPS_ITS_CONVERSATION, helpdeskShareRefusal, inHelpdeskFolder } from "./helpdesk";
 import { reviewPrompt } from "./review";
 import { shouldNotify, toolsLostNotice } from "./notifications";
@@ -797,16 +799,16 @@ function upstreamOf(id: string): string | null {
 /**
  * Start not-started step `id` (SessionManager.startPlanned) from upstream session `from`'s commit as it is now: the
  * Send's source, or (Start now) upstreamOf's. Placed in its own area as a reopened session is; a step on a ticket starts
- * its coding, as a session opened on one does.
+ * its coding, as a session opened on one does (`ticketTitle` naming the ticket there when its record has none).
  */
-async function startPlannedStep(id: string, from?: string): Promise<SessionInfo> {
+async function startPlannedStep(id: string, from?: string, ticketTitle?: string | null): Promise<SessionInfo> {
   const info = await sessions.startPlanned(id, from ?? upstreamOf(id));
   try {
     landscape.sessionReopened(info);
   } catch (err) {
     logError(`landscape: placing started step ${info.id}`, err);
   }
-  return sessionOpened(info, info.ticketId, info.ticketTitle);
+  return sessionOpened(info, info.ticketId, info.ticketTitle ?? ticketTitle);
 }
 handle("sessions:resume", (id) => sessions.resume(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
@@ -1197,6 +1199,8 @@ handle("collab:openTicket", async (id, n) => {
 handle("setup:status", () => setupStatus(store, { binFor: (kind) => sessions.binFor(kind), refresh: () => lookUpBins(true) }));
 handle("settings:get", () => store.settings);
 handle("settings:set", (s) => {
+  // templates are saved through templates:save, which checks and redacts what's kept
+  if (s && typeof s === "object" && Object.hasOwn(s, "pipelineTemplates")) throw new Error("Pipeline templates are saved with Save as template, not as a setting");
   const before = store.settings;
   store.setSettings(s);
   // a new claude or codex path applies without a restart
@@ -1499,6 +1503,39 @@ handle("wires:rekey", (old, next) => wires.rekey(old, next));
 handle(
   "wires:addTerminal",
   untakenHandler("wires:addTerminal", untaken, (s) => wires.addTerminal(s, { create: (req) => sessions.create(req), forget: (id) => sessions.kill(id, true) }))
+);
+// ---- pipeline templates (W9): saved from a chain, laid out from a ticket; kept in settings, on this Mac only ----
+handle("templates:list", () => readTemplates(store.settings.pipelineTemplates));
+handle("templates:draft", (ids) =>
+  draftTemplate(ids, {
+    sessionOf: (id) => [...sessions.list(), ...sessions.resumable(), ...sessions.planned()].find((s) => s.id === id),
+    book: () => {
+      const w = landscape.wires();
+      return w.book ?? { refused: w.refused ?? "Wires can't be read right now." };
+    },
+  })
+);
+handle("templates:save", (name, body) => {
+  const { list } = savedTemplates(name, body, store.settings.pipelineTemplates, { home: os.homedir() });
+  store.setSettings({ pipelineTemplates: list });
+  return readTemplates(list);
+});
+handle("templates:remove", (id) => {
+  const { list } = removedTemplate(id, store.settings.pipelineTemplates);
+  store.setSettings({ pipelineTemplates: list });
+  return readTemplates(list);
+});
+handle("templates:layOut", (req) =>
+  wires.layOut(req, {
+    planStep: (q) => sessions.planStep(q),
+    forget: (id) => {
+      sessions.kill(id, true);
+      wires.sessionForgotten(id);
+    },
+    start: (id, ticketTitle) => startPlannedStep(id, undefined, ticketTitle),
+    addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
+    roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
+  })
 );
 // the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an
 // agent is told of its wires as it launches

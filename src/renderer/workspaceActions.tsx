@@ -90,6 +90,8 @@ export interface WorkspaceEnv {
    * where wires aren't made, as in ⌘K), or why none can be.
    */
   connect?: Can;
+  /** Save as template (W9): the chain of wires through it, as a pipeline template. Absent where it isn't offered. */
+  saveTemplate?: Can;
 }
 
 const can = (c: Can): Pick<Action, "onPick" | "disabled" | "title"> => (typeof c === "function" ? { onPick: c } : { onPick: () => {}, disabled: true, title: c.no });
@@ -209,6 +211,8 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
       { section: "handon", key: "review", label: "Second opinion", menuLabel: `Second opinion from ${other}`, ...can(tookIt(env.secondOpinion, "to have its branch reviewed")) }
     );
   if (env.connect) out.push({ section: "wires", key: "connect", label: "Connect", menuLabel: "Connect…", title: "Wire it to another workspace: a handoff, a context link, a feedback loop or a shared worktree", ...can(env.connect) });
+  if (env.saveTemplate && s.role !== "tasks")
+    out.push({ section: "wires", key: "saveTemplate", label: "Save as template", menuLabel: "Save as template…", title: "Keep the chain of wires through it as a pipeline template, to lay out again from a ticket", ...can(env.saveTemplate) });
   out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
   if (dead && local) out.push({ section: "end", key: "resume", label: "Resume", menuLabel: "Resume", primary: true, title: "Start it again, resuming its conversation", ...can(tookIt(env.resume, "rather than resuming this copy")) });
   out.push({ section: "end", key: "close", label: "Close", menuLabel: dead ? "Close & clean up…" : "Close…", icon: <CloseIcon />, danger: true, onPick: env.close, ...theirs("close") });
@@ -226,6 +230,8 @@ export interface CreateEnv {
   importIt: () => void;
   /** Import conversations: several from this Mac at once, each reopened in its own folder (⌘K's Import sessions). */
   importMany: () => void;
+  /** Pipeline from a ticket…: the template picker (W9). */
+  pipeline: () => void;
 }
 
 /** The kinds of workspace that can be made here, and those still to come (docs/landscape.md, Workspaces: Create). */
@@ -240,7 +246,7 @@ export function createActions(env: CreateEnv): ModelAction[] {
     { section: "create", key: "new:import", label: "Resume a conversation", menuLabel: "Resume a conversation…", onPick: env.importIt },
     { section: "create", key: "new:import-many", label: "Import conversations", menuLabel: "Import conversations…", onPick: env.importMany },
     coming("new:collab", "Collab…", "Collab workspaces, where several agents talk a change through, come in a later version"),
-    coming("new:pipeline", "Pipeline from a ticket…", "Pipeline templates come in a later version"),
+    { section: "create", key: "new:pipeline", label: "Pipeline from a ticket", menuLabel: "Pipeline from a ticket…", title: "Lay out a saved pipeline template's steps and wires, on a ticket", onPick: env.pipeline },
   ];
 }
 

@@ -189,6 +189,20 @@ describe("a workspace's actions as a menu", () => {
     expect(actionOf(workspaceActions(sess(), env()), "connect")).toBeUndefined();
   });
 
+  it("offer Save as template… after Connect… on a wired workspace, off saying why; none where no wire touches it", () => {
+    const saveTemplate = vi.fn<() => void>();
+    const acts = workspaceActions(sess(), env({ connect: vi.fn<() => void>(), saveTemplate }));
+    expect(rows(menuOf(acts)).slice(-5)).toEqual(["# Wires", "connect", "saveTemplate", "-", "close"]);
+    expect(actionOf(acts, "saveTemplate")).toMatchObject({ section: "wires", menuLabel: "Save as template…" });
+    usable(acts, "saveTemplate")!.onPick();
+    expect(saveTemplate).toHaveBeenCalledOnce();
+    const off = workspaceActions(sess(), env({ connect: vi.fn<() => void>(), saveTemplate: { no: "It's a terminal: save the chain from an agent on it" } }));
+    expect(actionOf(off, "saveTemplate")).toMatchObject({ disabled: true, title: "It's a terminal: save the chain from an agent on it" });
+    expect(actionOf(workspaceActions(sess(), env({ connect: vi.fn<() => void>() })), "saveTemplate")).toBeUndefined();
+    // the Helpdesk tasks workspace takes no wires
+    expect(actionOf(workspaceActions(sess({ role: "tasks" }), env({ saveTemplate })), "saveTemplate")).toBeUndefined();
+  });
+
   it("keep an area's own rows in the section they're given, ready to join the model", () => {
     const area = inSection("area", [{ key: "rename", label: "Rename", onPick: vi.fn() }, "-", { key: "lock", label: "Lock", onPick: vi.fn() }]);
     expect(area.map((a) => [a.key, a.section])).toEqual([["rename", "area"], ["lock", "area"]]);
@@ -217,28 +231,27 @@ describe("the Helpdesk tasks workspace's actions", () => {
 });
 
 describe("a right-click on the empty landscape", () => {
-  it("offers today's ways to make a workspace, Collab and Pipeline off as coming, under New workspace", () => {
+  it("offers today's ways to make a workspace, Pipeline from a ticket among them and Collab off as coming, under New workspace", () => {
     const launch = vi.fn();
     const ticket = vi.fn();
     const importIt = vi.fn();
     const importMany = vi.fn();
-    const acts = createActions({ launch, helpdesk: vi.fn(), ticket, importIt, importMany });
+    const pipeline = vi.fn();
+    const acts = createActions({ launch, helpdesk: vi.fn(), ticket, importIt, importMany, pipeline });
     expect(rows(menuOf(acts))).toEqual(["# New workspace", "new:claude", "new:codex", "new:shell", "new:helpdesk", "new:ticket", "new:import", "new:import-many", "new:collab", "new:pipeline"]);
     // resuming one conversation and importing several are told apart
     expect(["new:import", "new:import-many"].map((k) => actionOf(acts, k)?.menuLabel)).toEqual(["Resume a conversation…", "Import conversations…"]);
-    expect(acts.filter((a) => a.disabled).map((a) => [a.key, a.menuLabel])).toEqual([
-      ["new:collab", "Collab… (coming)"],
-      ["new:pipeline", "Pipeline from a ticket… (coming)"],
-    ]);
+    expect(acts.filter((a) => a.disabled).map((a) => [a.key, a.menuLabel])).toEqual([["new:collab", "Collab… (coming)"]]);
     for (const a of acts.filter((x) => x.disabled)) expect(a.title).toMatch(/later version/);
     // each runs today's flow: the New Session dialog for its kind, the ticket popover, its Import, Import conversations
-    for (const k of ["new:claude", "new:codex", "new:shell", "new:ticket", "new:import", "new:import-many"]) usable(acts, k)!.onPick(null as unknown as HTMLElement);
+    for (const k of ["new:claude", "new:codex", "new:shell", "new:ticket", "new:import", "new:import-many", "new:pipeline"]) usable(acts, k)!.onPick(null as unknown as HTMLElement);
     expect(launch.mock.calls).toEqual([["claude"], ["codex"], ["shell"]]);
-    expect([ticket.mock.calls.length, importIt.mock.calls.length, importMany.mock.calls.length]).toEqual([1, 1, 1]);
+    expect([ticket.mock.calls.length, importIt.mock.calls.length, importMany.mock.calls.length, pipeline.mock.calls.length]).toEqual([1, 1, 1, 1]);
+    expect(actionOf(acts, "new:pipeline")?.menuLabel).toBe("Pipeline from a ticket…");
   });
   it("offers the Helpdesk tasks workspace as its own row, which runs its own flow", () => {
     const helpdesk = vi.fn();
-    const row = usable(createActions({ launch: vi.fn(), helpdesk, ticket: vi.fn(), importIt: vi.fn(), importMany: vi.fn() }), "new:helpdesk")!;
+    const row = usable(createActions({ launch: vi.fn(), helpdesk, ticket: vi.fn(), importIt: vi.fn(), importMany: vi.fn(), pipeline: vi.fn() }), "new:helpdesk")!;
     expect(row).toMatchObject({ section: "create", menuLabel: "Helpdesk tasks…" });
     row.onPick(null as unknown as HTMLElement);
     expect(helpdesk).toHaveBeenCalledOnce();

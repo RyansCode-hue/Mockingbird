@@ -3923,3 +3923,69 @@ button.ls-empty-link { pointer-events: auto; }
 .ls-tour-acts { display: flex; gap: 8px; margin-top: 4px; }
 .ls-tour-acts button { padding: 6px 14px; font: 500 13px var(--ui); }
 .ls-tour-acts button.outline { font-weight: 400; }
+
+/* ---- W9: the template picker (TemplatePicker.tsx; WireTemplates.dc.html A) and Save as template ---- */
+.modal.tp { width: 556px; max-width: calc(100vw - 32px); max-height: 88vh; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.modal.tp-save { width: 600px; }
+.tp-head { display: flex; align-items: baseline; gap: 10px; padding: 13px 16px 10px; border-bottom: 1px solid var(--line-med); flex-shrink: 0; }
+.tp-head h3 { margin: 0; font: 500 14px var(--ui); color: var(--text-1); }
+.tp-prov { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 11.5px var(--ui); color: var(--text-4); }
+.tp-sec { display: grid; grid-template-columns: 50px minmax(0, 1fr); column-gap: 10px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line-med); flex-shrink: 0; }
+.tp-k { font: 400 11px var(--ui); color: var(--idle); text-transform: uppercase; letter-spacing: .06em; }
+.tp-k.pad { padding: 0 9px 6px; }
+.tp-line2 { display: flex; gap: 8px; min-width: 0; }
+.modal.tp .mb-select { background: var(--bg-pane-dead); border-color: var(--line-btn); border-radius: 5px; padding: 4px 8px; font: 400 12px var(--ui); }
+.modal.tp .mb-select.tp-who { flex: 0 0 110px; width: 110px; }
+.modal.tp .mb-select.tp-ticket, .modal.tp .mb-select.tp-repo { flex: 1; min-width: 0; }
+.modal.tp .mb-select.tp-base { flex: 0 0 170px; width: 170px; }
+.modal.tp input.tp-name-in { padding: 5px 8px; font: 400 12px var(--ui); }
+.tp-main { display: flex; min-height: 0; flex: 1; }
+.tp-list { width: 178px; flex-shrink: 0; box-sizing: border-box; border-right: 1px solid var(--line-med); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.tp-item { display: block; width: 100%; text-align: left; background: none; color: var(--text-1); border: 0; border-radius: 6px; padding: 7px 9px; font: inherit; }
+.tp-item:hover { background: var(--fill-subtle); }
+.tp-item.sel { background: var(--fill-selected); }
+.tp-item .t { display: block; font: 400 12.5px var(--ui); color: var(--text-1); overflow-wrap: anywhere; }
+.tp-item .s { display: block; margin-top: 1px; font: 400 11px var(--ui); color: var(--idle); overflow-wrap: anywhere; }
+.tp-item .amber { color: var(--amber); }
+.tp-item.off .t { color: var(--text-3); }
+.tp-item.off .s.red, .tp-empty.red { color: var(--red); }
+.tp-item.off button.link { margin-top: 3px; font-size: 11px; }
+.tp-empty { padding: 6px 9px; font: 400 11.5px/16px var(--ui); color: var(--text-4); }
+.tp-list button.link.tp-remove { margin: 8px 9px 0; align-self: flex-start; font-size: 11px; color: var(--text-4); }
+.tp-steps { flex: 1; min-width: 0; box-sizing: border-box; padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+.tp-steps.solo { padding: 12px 16px; flex: 1; min-height: 0; }
+.tp-sketch { position: relative; flex-shrink: 0; max-width: 100%; color: var(--text-4); }
+.tp-sketch svg { position: absolute; left: 0; top: 0; overflow: visible; }
+.tp-w { stroke: #6b675f; stroke-width: 1.5; color: #6b675f; }
+.tp-w-context { stroke: var(--teal); stroke-dasharray: 4 3; }
+.tp-w-worktree { stroke: #5d5a53; stroke-width: 5; stroke-linecap: round; }
+.tp-box { position: absolute; box-sizing: border-box; background: var(--bg-pane-header); border: 1px solid var(--line-btn); border-radius: 6px; display: flex; flex-direction: column; justify-content: center; padding: 0 8px; overflow: hidden; }
+.tp-box .t { font: 500 12px var(--ui); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-box .s { font: 400 10.5px var(--ui); color: var(--idle); }
+.tp-box.term { background: var(--bg-pane-dead); flex-direction: row; align-items: center; }
+.tp-box.term .t { font: 400 11.5px var(--ui); }
+.tp-chip { position: absolute; font: 400 10.5px var(--ui); white-space: nowrap; border-radius: 9px; padding: 1px 7px; }
+.tp-chip.plain { color: var(--text-2); background: var(--bg-pane-header); border: 1px solid var(--line-strong2); }
+.tp-chip.amber { color: var(--on-amber); background: var(--amber); font-weight: 500; }
+.tp-step { display: flex; flex-direction: column; gap: 4px; }
+.tp-step-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tp-dot { width: 7px; height: 7px; border-radius: 4px; background: var(--idle); flex-shrink: 0; }
+.tp-name { font: 500 12.5px var(--ui); color: var(--text-1); flex-grow: 1; min-width: 0; overflow-wrap: anywhere; }
+.modal.tp .mb-select.tp-agent { width: 84px; flex: 0 0 84px; font-size: 11.5px; }
+.modal.tp .mb-select.tp-model { width: 132px; flex: 0 0 132px; font-size: 11.5px; }
+.tp-fixed { flex: 0 0 auto; box-sizing: border-box; min-width: 84px; background: var(--bg-pane-dead); color: var(--text-3); border: 1px solid var(--line-btn); border-radius: 5px; padding: 4px 8px; font: 400 11.5px var(--ui); }
+.modal.tp textarea.tp-prompt { min-height: 0; resize: none; overflow: hidden; background: var(--bg-pane-dead); border: 1px solid var(--line-med); border-radius: 6px; padding: 5px 8px; font: 400 10.5px/16px var(--mono); color: var(--text-2); }
+.tp-line { display: flex; align-items: baseline; gap: 6px; font: 400 11.5px/16px var(--ui); }
+.tp-line .grow { flex: 1; min-width: 0; }
+.tp-line.dim { color: var(--idle); }
+.tp-line.amber { color: var(--amber); }
+.tp-line.red { color: var(--red); }
+.tp-line button.link { flex-shrink: 0; font: 400 11.5px var(--ui); text-decoration: underline; }
+.tp-line.amber button.link { color: var(--amber); }
+.tp-line.red button.link { color: var(--red); }
+.tp-note { padding: 6px 16px; font: 400 11.5px/16px var(--ui); flex-shrink: 0; }
+.tp-note.dim { color: var(--text-3); }
+.tp-note.red { color: var(--red); }
+.tp-foot { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-top: 1px solid var(--line-med); background: var(--bg-chrome); flex-shrink: 0; }
+.tp-where { flex-grow: 1; min-width: 0; font: 400 10px var(--mono); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-foot button { padding: 5px 12px; font-size: 12px; white-space: nowrap; }

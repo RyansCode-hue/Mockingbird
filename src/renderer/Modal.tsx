@@ -140,6 +140,7 @@ export function Modal({
   onClose,
   closeOnBackdrop = true,
   onKeyDown,
+  handsBack,
   children,
 }: {
   /** The dialog box's classes ("modal close-dlg"). */
@@ -148,6 +149,8 @@ export function Modal({
   closeOnBackdrop?: boolean;
   /** Keys pressed anywhere in the dialog (a ⌘↵ shortcut for its main action). */
   onKeyDown?: (e: KeyboardEvent<HTMLDivElement>) => void;
+  /** Whether the keyboard goes back to `to` as it closes (useDialogFocus): false when this placed it elsewhere itself. */
+  handsBack?: (to: HTMLElement) => boolean;
   children: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -155,7 +158,7 @@ export function Modal({
   const lift = useLiftOut();
   const guard = useArrivalGuard();
   useEscape(() => onClose?.());
-  useDialogFocus();
+  useDialogFocus({ handsBack });
   useEffect(() => {
     const el = box.current;
     if (!el) return;

@@ -2328,6 +2328,20 @@ function alongWires(tiles: readonly Tile[], wires: readonly TidyWire[]): { bands
 }
 
 /**
+ * An empty area for group `key`, right of everything and level with the topmost area, as resolveLayout makes one for a
+ * group with no area: what a template's steps are laid out in (W9), as not-started steps make no area of their own.
+ * Null when `key` has one already.
+ */
+export function newAreaPatch(l: Landscape, key: string, repo: { path: string; base: string | null } | null, cell: Cell = CELL_ESTIMATE): LandscapePatch | null {
+  if (own(l.areas, key)) return null;
+  const areas = Object.values(l.areas);
+  const all = boundsOf([...areas, ...Object.values(l.workspaces), ...Object.values(l.stacks).map((s) => s.placement), ...Object.values(l.ghosts).map((g) => g.placement), ...extraPlaces(l)]);
+  const m = presetSize("agent", "M", cell);
+  const area: Area = { x: all ? all.x + all.w + AREA_GAP : 0, y: boundsOf(areas)?.y ?? 0, w: 2 * AREA_PAD + m.w, h: AREA_HEADER + AREA_PAD, repos: repo ? [repo] : [] };
+  return { areas: { [key]: area } };
+}
+
+/**
  * Tidy area `key` (T, or its ⋯): everything in it packed in rows, left to right in the order it was made, from its
  * top-left inside the padding and under the header, each row as wide as the area is inside. Its workspaces and ghosts
  * go by when their sessions were made; a workspace's tool window right after it; then what else it keeps (its own

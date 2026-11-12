@@ -257,7 +257,7 @@ describe("reading a stored book", () => {
         f: { ...good, type: "feedback", rounds: { limit: 3, used: 1 } },
         m: { ...good, when: "pr-merged", since: 5, fired: ["https://github.com/o/r/pull/1"], sourceRepo: { provider: "github", repo: "o/r" } },
       },
-      { a: { hops: 1, verdict: "changes", stage: "coding", summary: { text: "t", at: 4, conversation: "c" } } }
+      { a: { hops: 1, verdict: "changes", summary: { text: "t", at: 4, conversation: "c" } } }
     );
     const r = parseWireBook(full);
     expect(r.status).toBe("ok");
@@ -349,7 +349,8 @@ const FORMATS: Record<number, typeof WIRE_FORMAT> = {
     pending: { fields: ["at", "body", "flags", "id", "verdict"], required: ["at", "body", "flags", "id"] },
     // attempt and automatic came before any release wrote a wire book; a W1-only dev build keeps such a wire verbatim
     delivery: { fields: ["at", "attempt", "automatic", "id", "state", "why"], required: ["at", "id", "state"] },
-    note: { fields: ["hops", "stage", "summary", "verdict"], required: ["hops"] },
+    // a note's stage went with W9 (stages move by W13's events, not a step finishing); no build ever wrote one
+    note: { fields: ["hops", "summary", "verdict"], required: ["hops"] },
     summary: { fields: ["at", "conversation", "text"], required: ["at", "text"] },
   },
 };

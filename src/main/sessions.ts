@@ -1318,6 +1318,21 @@ export class SessionManager {
     this.ownOnly(after, "add a step after it");
     const up = this.live.get(after)?.info ?? this.recordOf(after);
     if (!up) throw new Error(`This Mac has no session "${after}" to add a step after`);
+    if (req.sharesFolder) {
+      if (up.planned) throw new Error(`${titled(up)} hasn't started, so it has no folder to share yet: give this step a folder of its own`);
+      if (!fs.existsSync(up.cwd)) throw new Error(`“${up.ticketTitle ?? up.title}”'s folder, ${up.cwd}, isn't there any more, so a step can't work in it`);
+    }
+    const { after: _after, sharesFolder, ...step } = req;
+    return this.planStep({ ...step, ...(sharesFolder ? { sharesWith: up.id } : {}) });
+  }
+
+  /**
+   * A not-started step's record (`plan`'s, and a template's Lay out's, W9), saved and said. `sharesWith`: it works in that
+   * session's folder (decision 7), which may be a step not started yet itself (a template's reviewing step in its
+   * builder's): stepPlace refuses to start it until that one has. Refused, saving nothing, as `plan` says.
+   */
+  planStep(req: Omit<PlanRequest, "after" | "sharesFolder"> & { sharesWith?: string }): SessionInfo {
+    this.refuseWhileQuitting();
     const title = String(req.title ?? "").trim().replace(/\s+/g, " ");
     if (!title) throw new Error("Name the step");
     if (title.length > 120) throw new Error("A step's name is at most 120 characters");
@@ -1327,11 +1342,12 @@ export class SessionManager {
     let repoPath: string | null;
     let cwd: string;
     let sharesWith: string | undefined;
-    if (req.sharesFolder) {
-      if (up.planned) throw new Error(`${titled(up)} hasn't started, so it has no folder to share yet: give this step a folder of its own`);
-      if (!fs.existsSync(up.cwd)) throw new Error(`“${up.ticketTitle ?? up.title}”'s folder, ${up.cwd}, isn't there any more, so a step can't work in it`);
-      ({ repoPath, cwd } = up);
-      sharesWith = up.id;
+    if (req.sharesWith) {
+      this.ownOnly(req.sharesWith, "add a step in its folder");
+      const other = this.live.get(req.sharesWith)?.info ?? this.recordOf(req.sharesWith);
+      if (!other) throw new Error(`This Mac has no session "${req.sharesWith}" whose folder a step could work in`);
+      ({ repoPath, cwd } = other);
+      sharesWith = other.id;
     } else {
       repoPath = req.repoPath ? expandHome(req.repoPath) : null;
       if (repoPath && !fs.existsSync(repoPath)) throw new Error(`${repoPath} isn't there`);

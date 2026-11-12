@@ -1,6 +1,6 @@
 import { LandscapeShapeError, fail, fields, isObj, list, name, num, own, put, str, type Check, type Part } from "./landscape";
 import { isRemotePaneId, parseRemoteId } from "./team/livePanes";
-import { TICKET_STAGES, ticketOfSession, type PrRepo, type SessionInfo, type TicketStage } from "./types";
+import { ticketOfSession, type PrRepo, type SessionInfo } from "./types";
 
 /**
  * Typed links between workspaces (docs/landscape.md, Connections; docs/landscape-wires.md). The wire book is stored in
@@ -100,7 +100,6 @@ export interface SourceNote {
   verdict?: WireVerdict;
   /** Automatic sends in a row reaching this session. */
   hops: number;
-  stage?: TicketStage;
 }
 export interface WireBook {
   wv: typeof WIRE_VERSION;
@@ -165,7 +164,6 @@ const NOTE: Part = {
     summary: (v, where) => fields(v, where, SUMMARY),
     verdict: oneOf(WIRE_VERDICTS),
     hops: whole(0),
-    stage: oneOf(TICKET_STAGES.map((s) => s.id)),
   } satisfies Record<keyof SourceNote, Check<unknown>>,
   required: ["hops"],
 };

@@ -393,6 +393,11 @@ export interface Settings {
   hiddenTabs?: OptionalTab[];
   /** One-click session setups. */
   presets?: SessionPreset[];
+  /**
+   * Pipeline templates (W9): kept as written, read entry by entry (shared/pipelineTemplates.ts' readTemplates), as one
+   * written by another version may hold what this one can't read. Main is their only writer (templates:save).
+   */
+  pipelineTemplates?: unknown[];
   /** Per group (top-level key), overriding agentMessagesSubmit for messages to that group's sessions. */
   agentMessagesByGroup?: Record<string, MessageMode>;
   /** No session notifications between these times (they can span midnight). */

@@ -4,7 +4,8 @@ import * as path from "path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
-import { WireService } from "../src/main/wires";
+import { WireService, type LayOutDeps } from "../src/main/wires";
+import type { LayOutRequest, TemplateBody } from "../src/shared/pipelineTemplates";
 import { freeWorktree } from "../src/main/handlers";
 import type { NewSessionRequest, PlanRequest, SessionInfo } from "../src/shared/types";
 import { MESSAGE_ROOM_LINE, newWire, ROOM_LINE, ROOMS_STARTING, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
@@ -764,5 +765,187 @@ describe("the token folder", () => {
     expect(fs.existsSync(live)).toBe(true);
     retireMcpLaunch(launch);
     expect(path.dirname(live)).toBe(path.join(os.homedir(), ".mockingbird", "mcp-tokens"));
+  });
+});
+
+describe("laying a template out (W9)", () => {
+  /** Builder (own worktree) → Reviewer (Builder's folder) → Tester, Reviewer's feedback to Builder, Dev server on Builder's tree. */
+  const chainBody = (over: Partial<TemplateBody> = {}): TemplateBody => ({
+    startFirst: true,
+    steps: [
+      { key: "s1", name: "Builder", agent: "codex", model: "gpt-5.5", folder: "new", prompt: "Implement {ticket}." },
+      { key: "s2", name: "Reviewer", agent: "claude", folder: { sameAs: "s1" }, prompt: "Review {ticket}." },
+      { key: "s3", name: "Tester", agent: "claude", folder: "new", prompt: "" },
+      { key: "s4", name: "Dev server", agent: "terminal", folder: { sameAs: "s1" }, prompt: "dotnet watch" },
+    ],
+    wires: [
+      { from: "s1", to: "s2", type: "handoff", when: "finished", gate: "ask" },
+      { from: "s2", to: "s1", type: "feedback", when: "finished", gate: "ask", rounds: 3 },
+      { from: "s2", to: "s3", type: "handoff", when: "finished", gate: "automatic" },
+      { from: "s1", to: "s4", type: "worktree" },
+    ],
+    ...over,
+  });
+  const request = (over: Partial<LayOutRequest> = {}): LayOutRequest => ({ name: "Build, review, test", template: chainBody(), ticketId: "5115", ticketTitle: "Stream the donor export", repoPath: "/code/backoffice", base: "dev", area: "5115", ...over });
+
+  /** setup()'s, with the sessions' side of a lay-out as main's is: steps planned, started, forgotten, and a terminal. */
+  function laying(opts: Parameters<typeof setup>[0] & { groupRooms?: Record<string, string> } = {}) {
+    const t = setup(opts);
+    const groupRooms = { ...opts.groupRooms };
+    const roomOfGroup = (g: string) => groupRooms[g] ?? null;
+    const asked: Parameters<LayOutDeps["planStep"]>[0][] = [];
+    const created: NewSessionRequest[] = [];
+    let n = 0;
+    const planStep = vi.fn((req: Parameters<LayOutDeps["planStep"]>[0]): SessionInfo => {
+      asked.push(req);
+      const id = `p${++n}`;
+      const shares = req.sharesWith ? t.planned.find((s) => s.id === req.sharesWith) : undefined;
+      const s = session(id, {
+        title: req.title,
+        agent: req.agent,
+        taskGroup: req.taskGroup,
+        repoPath: shares ? shares.repoPath : req.repoPath,
+        cwd: shares ? shares.cwd : `/w/${id}`,
+        branch: null,
+        planned: { worktree: req.worktree, ...(req.sharesWith ? { sharesWith: req.sharesWith } : {}), ...(req.prompt ? { prompt: req.prompt } : {}) },
+      });
+      const room = roomOfGroup(req.taskGroup ?? "");
+      if (room) t.rooms[id] = room;
+      t.planned.push(s);
+      return s;
+    });
+    const forget = vi.fn((id: string) => {
+      for (const list of [t.planned, t.running]) if (list.some((s) => s.id === id)) list.splice(list.findIndex((s) => s.id === id), 1);
+      t.service.sessionForgotten(id);
+    });
+    const start = vi.fn(async (id: string): Promise<SessionInfo> => {
+      const p = t.planned.splice(t.planned.findIndex((s) => s.id === id), 1)[0];
+      const { planned: _step, ...rest } = p;
+      const s = { ...rest, status: "working", branch: `5115-${id}` } as SessionInfo;
+      t.running.push(s);
+      return s;
+    });
+    const create = async (req: NewSessionRequest) => {
+      created.push(req);
+      const m = session(`t${created.length}`, { shell: true, agent: undefined, title: req.title!, cwd: req.cwd!, repoPath: req.repoPath, branch: req.branchName ?? null, taskGroup: req.taskGroup ?? null });
+      const room = roomOfGroup(req.taskGroup ?? "");
+      if (room) t.rooms[m.id] = room;
+      t.running.push(m);
+      return m;
+    };
+    const addTerminal = vi.fn((agent: SessionInfo, as: { title: string; command: string }) => t.service.addTerminal(agent, { create, forget }, as));
+    const d: LayOutDeps = { planStep, forget, start, addTerminal, roomOfGroup };
+    const links = () => (Object.values(onDisk(t.file).wires?.links ?? {}) as Wire[]).sort((a, b) => a.createdAt - b.createdAt);
+    return { ...t, groupRooms, asked, created, d, planStep, forget, start, addTerminal, links };
+  }
+
+  it("makes its steps not started, joined by its wires, starts the first with its terminal on its tree, all in its area", async () => {
+    const t = laying();
+    const r = await t.service.layOut(request(), t.d);
+    // each step planned in the area, on the ticket, its prompt's {ticket} filled in; the ticket's title in no step's name
+    expect(t.asked).toEqual([
+      { title: "Builder", agent: "codex", model: "gpt-5.5", repoPath: "/code/backoffice", worktree: true, base: "dev", taskGroup: "5115", ticketId: "5115", prompt: "Implement #5115 — Stream the donor export." },
+      { title: "Reviewer", agent: "claude", repoPath: null, worktree: false, taskGroup: "5115", ticketId: "5115", prompt: "Review #5115 — Stream the donor export.", sharesWith: "p1" },
+      { title: "Tester", agent: "claude", repoPath: "/code/backoffice", worktree: true, base: "dev", taskGroup: "5115", ticketId: "5115" },
+    ]);
+    expect(r).toEqual({ steps: [{ key: "s1", id: "p1", title: "Builder" }, { key: "s2", id: "p2", title: "Reviewer" }, { key: "s3", id: "p3", title: "Tester" }, { key: "s4", id: "t1", title: "Dev server" }], wires: [expect.any(String), expect.any(String), expect.any(String)], started: "p1", notes: [] });
+    expect(t.start).toHaveBeenCalledWith("p1", "Stream the donor export");
+    // its terminal: on Builder's tree as it started, running its command
+    expect(t.created).toEqual([expect.objectContaining({ shell: true, title: "Dev server", initialPrompt: "dotnet watch", cwd: "/w/p1", taskGroup: "5115" })]);
+    expect(t.links().map((w) => [w.from, w.to, w.type, w.gate, w.rounds?.limit ?? null])).toEqual([
+      ["p1", "p2", "handoff", "ask", null],
+      ["p2", "p1", "feedback", "ask", 3],
+      ["p2", "p3", "handoff", "automatic", null],
+      ["p1", "t1", "worktree", "ask", null],
+    ]);
+    expect(t.forget).not.toHaveBeenCalled();
+  });
+
+  it("makes every gate ask in a team room's area, its steps made in the room, and says so", async () => {
+    const t = laying({ groupRooms: { "5110": "R1" } });
+    const r = await t.service.layOut(request({ ticketId: "5110", area: "5110" }), t.d);
+    expect(t.links().filter((w) => w.type === "handoff").map((w) => w.gate)).toEqual(["ask", "ask"]);
+    expect(r.notes).toEqual(["In a team room's area every gate asks, so its automatic gate was laid out asking."]);
+    expect(t.asked.every((a) => a.taskGroup === "5110")).toBe(true);
+  });
+
+  it("leaves every step waiting when the first doesn't start, and makes no terminal: none can wait", async () => {
+    const t = laying();
+    const r = await t.service.layOut(request({ template: chainBody({ startFirst: false }) }), t.d);
+    expect(t.start).not.toHaveBeenCalled();
+    expect(t.addTerminal).not.toHaveBeenCalled();
+    expect(r.started).toBeNull();
+    expect(r.steps.map((s) => s.title)).toEqual(["Builder", "Reviewer", "Tester"]);
+    expect(r.notes).toEqual([expect.stringMatching(/^“Dev server” isn't laid out: a terminal takes no handoff/)]);
+    expect(t.links().map((w) => w.type)).toEqual(["handoff", "feedback", "handoff"]);
+  });
+
+  it.each<[string, Partial<LayOutRequest>, RegExp]>([
+    ["a template that isn't one", { template: { ...chainBody(), steps: [] } }, /“Build, review, test” can't be laid out: It has no steps/],
+    ["a field this version doesn't know", { template: { ...chainBody(), colour: "teal" } as TemplateBody }, /doesn't know \(colour\)/],
+    ["no area", { area: " " }, /Choose the area/],
+    ["a stack for its area", { area: "5115/api" }, /an area, not a stack/],
+    ["worktrees with no repo", { repoPath: null }, /“Builder”, “Tester” work in a worktree of their own, which needs a repo/],
+    ["a PR-merged wire with no ticket", { ticketId: null, template: chainBody({ wires: [...chainBody().wires.slice(0, 2), { from: "s1", to: "s3", type: "handoff", when: "pr-merged" }, chainBody().wires[3]] }) }, /pull request merges.*no ticket is chosen/],
+  ])("is refused whole for %s, before any step is made", async (_what, over, re) => {
+    const t = laying();
+    await expect(t.service.layOut(request(over), t.d)).rejects.toThrow(re);
+    expect(t.planStep).not.toHaveBeenCalled();
+    expect(t.links()).toEqual([]);
+  });
+
+  it("takes back every step made when one is then refused: nothing is left", async () => {
+    const t = laying();
+    t.planStep.mockImplementationOnce(t.planStep.getMockImplementation()!).mockImplementationOnce(() => {
+      throw new Error("/code/backoffice isn't a git repo");
+    });
+    await expect(t.service.layOut(request(), t.d)).rejects.toThrow("Couldn't lay out “Build, review, test”: “Reviewer” was refused: /code/backoffice isn't a git repo. Nothing was left.");
+    expect(t.forget).toHaveBeenCalledWith("p1");
+    expect(t.planned).toEqual([]);
+    expect(t.start).not.toHaveBeenCalled();
+  });
+
+  it("takes back its steps and wires when a wire is refused once they're made, naming what couldn't be", async () => {
+    const t = laying();
+    // Tester made across a team room's line from Reviewer: the handoff into it can't cross
+    t.planStep.mockImplementation(((impl) => (req: Parameters<LayOutDeps["planStep"]>[0]) => {
+      const s = impl(req);
+      if (req.title === "Tester") t.rooms[s.id] = "R1";
+      return s;
+    })(t.planStep.getMockImplementation()!));
+    t.forget.mockImplementation(((impl) => (id: string) => {
+      if (id === "p2") throw new Error("sessions.json is read-only");
+      impl(id);
+    })(t.forget.getMockImplementation()!));
+    await expect(t.service.layOut(request(), t.d)).rejects.toThrow(/^Couldn't lay out “Build, review, test”: Reviewer → Tester was refused: .*team room.*\. “Reviewer” couldn't be taken back: forget it from its menu\.$/);
+    expect(t.forget.mock.calls.map((c) => c[0])).toEqual(["p3", "p2", "p1"]);
+    expect(t.links().filter((w) => w.from !== "p2" && w.to !== "p2")).toEqual([]);
+    expect(t.logged.some((l) => /step p2 couldn't be taken back: sessions.json is read-only/.test(l))).toBe(true);
+  });
+
+  it("keeps its steps when the first then fails to start, saying so and what waits on it", async () => {
+    const t = laying();
+    t.start.mockRejectedValueOnce(new Error("origin/dev isn't there"));
+    const r = await t.service.layOut(request(), t.d);
+    expect(r.started).toBeNull();
+    expect(r.notes).toEqual([
+      "“Builder” didn't start: origin/dev isn't there. Its 3 steps are laid out and wait: start it with Start now in its menu.",
+      "“Dev server” wasn't made, as it runs on “Builder”'s tree: once that has started, Add terminal on its tree makes one.",
+    ]);
+    expect(t.addTerminal).not.toHaveBeenCalled();
+    expect(t.planned.map((s) => s.id)).toEqual(["p1", "p2", "p3"]);
+  });
+
+  it("lays out one template at a time", async () => {
+    const t = laying();
+    let go = () => {};
+    t.start.mockImplementationOnce((id: string) => new Promise((ok) => (go = () => ok(t.start.getMockImplementation()!(id)))) as Promise<SessionInfo>);
+    const first = t.service.layOut(request(), t.d);
+    await vi.waitFor(() => expect(t.start).toHaveBeenCalled());
+    await expect(t.service.layOut(request({ area: "5116" }), t.d)).rejects.toThrow("A template is being laid out already: wait for that to finish.");
+    go();
+    await expect(first).resolves.toMatchObject({ started: "p1" });
+    // and once it has, the next goes
+    await expect(t.service.layOut(request({ area: "5116", ticketId: "5116" }), t.d)).resolves.toMatchObject({ started: "p4" });
   });
 });

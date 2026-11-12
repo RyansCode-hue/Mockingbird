@@ -88,6 +88,10 @@ import { viewOnlyPatch, accentOf, accentsOf, areaSelectionNow, areaSummary, card
 import { wiresInOrder } from "../shared/wires";
 import { wiresNow } from "./WireLayer";
 import { droppedNote, unmovedNote } from "./wiresModel";
+import { chainOf } from "./pipelineChain";
+import { newAreaPatch } from "./landscapeModel";
+import { SaveTemplateDialog, TemplatePicker } from "./TemplatePicker";
+import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
@@ -128,6 +132,8 @@ const NO_OVERLAPS: OverlapReport = { bySession: {}, unread: {} };
 const EXPECT_MS = 10_000;
 /** How long a right-click's place waits, once its session is made, for the session to reach the landscape. */
 const PLACE_HINT_MS = 10_000;
+/** How long a template's steps and wires, once laid out, have to reach the landscape before its area is tidied along them. */
+const LAID_OUT_WAIT_MS = 8000;
 /** What readClosed reads, as a failed read says it. */
 const CLOSED_READ = "the previous sessions";
 /** What a failed read of the closed sessions' missing folders is called in the status bar's error. */
@@ -267,6 +273,9 @@ function App() {
   const [closeQueue, setCloseQueue] = useState<string[]>([]);
   // Start now's confirm: the not-started step, and where main says it starts
   const [startAsk, setStartAsk] = useState<{ step: SessionInfo; where: string } | null>(null);
+  // pipeline templates (W9): the picker, opened in an area (or none), and Save as template's dialog
+  const [templatePicker, setTemplatePicker] = useState<{ area: string | null } | null>(null);
+  const [templateSave, setTemplateSave] = useState<{ draft: TemplateDraft; leftOut: string[] } | null>(null);
   // a lone pane's "+" promotes it to a workspace, but only once the new session
   // actually exists — cancelling the dialog must leave the pane exactly as it was
   const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
@@ -1639,6 +1648,37 @@ function App() {
     if (layout.areas.find((a) => a.key === t.area)?.rect.locked) return { no: `${areaTitle(t.area)} is locked: unlock it to stack its workspaces` };
     return () => startWorkspaceFrom(s, `${t.area}/${newStackName(l, layout, t.area)}`);
   };
+  /** Where a template dialog gives the keyboard as it closes, rather than back to a terminal: the landscape (focus's frame in focus). */
+  const landscapeHome = () => document.querySelector<HTMLElement>(".ls-focus") ?? document.querySelector<HTMLElement>(".ls-viewport");
+  /**
+   * Save as template (W9) from `s`: the chain of handoff and feedback wires through it (the pipeline strip's, chainOf),
+   * first to last, drafted by main (what it keeps, redacted) and shown whole before it's saved. Not offered on a
+   * workspace no wire reaches, as its strip isn't; off, saying why, on a terminal, a teammate's workspace, or one no
+   * handoff or feedback wire runs through.
+   */
+  const saveTemplateOf = (s: SessionInfo): Can | undefined => {
+    const read = wiresNow();
+    const links = read.state?.book?.links;
+    if (links && !Object.values(links).some((w) => w.from === s.id || w.to === s.id)) return undefined;
+    if (s.shell) return { no: "It's a terminal: save the chain from an agent on its tree" };
+    if (isRemote(s)) return { no: `${s.room?.ownerName ?? "A teammate"}'s session: a template is saved from your own workspaces` };
+    if (!links) return { no: `Wires can't be read right now${read.error ? `: ${read.error}` : ""}` };
+    const known = [...sessions, ...resumable, ...planned];
+    const chain = chainOf(
+      s.id,
+      links,
+      (id) => ((x) => (x ? { title: titleOf(x), agent: x.shell ? "terminal" : (x.agent ?? "claude"), status: x.status, where: "open" as const } : null))(known.find((x) => x.id === id)),
+      () => ({ state: "idle", gate: "ask" })
+    );
+    if (!chain || (!chain.up.length && !chain.down.length)) return { no: "No handoff or feedback wire runs through it: a template is a chain of steps" };
+    const steps = [...chain.up, chain.here, ...chain.down];
+    const leftOut = [...new Set(steps.flatMap((x) => x.also.map((a) => a.end?.title ?? a.id)))];
+    return () =>
+      void window.mb.templatesDraft(steps.map((x) => x.id)).then(
+        (r: IpcResult<TemplateDraft>) => (isErr(r) ? lsSay(`Couldn't save it as a template: ${r.error}`) : setTemplateSave({ draft: r, leftOut })),
+        (err: unknown) => lsSay(`Couldn't save it as a template: ${err instanceof Error ? err.message : String(err)}`)
+      );
+  };
   /** What a workspace's actions need (workspaceActions.tsx): `t` is its tile on the landscape, null off it. */
   const wsEnv = (s: SessionInfo, t: Tile | null): WorkspaceEnv => {
     const own = !isRemote(s);
@@ -1688,6 +1728,7 @@ function App() {
       close: () => requestClose(s),
       // a copy a teammate took over is taken back, not resumed or worked on: the model refuses those (workspaceActions)
       resume: () => resumeDead(s),
+      saveTemplate: saveTemplateOf(s),
     };
   };
   const tileOfSession = (id: string) => landscapeLayout?.tiles.find((t) => t.members.some((m) => m.id === id)) ?? null;
@@ -2081,6 +2122,86 @@ function App() {
     setNextFrom(from);
     setModal("new");
   };
+  /**
+   * Lay out (W9): template `req.template` as not-started steps and their wires in area `req.area` (made first when it
+   * has none: steps not started make no area), then, once they're drawn, the area tidied along its wires (planTidy).
+   * The one act that does it, from the picker's Lay out: main checks it all again and makes everything. Settles with
+   * why nothing was laid out (an area made for it is taken back), or null.
+   */
+  const layOutTemplate = async (req: LayOutRequest): Promise<string | null> => {
+    const l = lsNow.current?.landscape;
+    if (!l) return `The landscape isn't read in yet: ${LAYOUT_LOADING}`;
+    const area = newAreaPatch(l, req.area, req.repoPath ? { path: req.repoPath, base: req.base ?? null } : null);
+    if (area) {
+      const why = await lsSaves.update(area, `making ${req.area}'s area`);
+      if (why) return `Its area couldn't be made: ${why}`;
+    }
+    let r: IpcResult<LayOutReply>;
+    try {
+      r = await window.mb.templatesLayOut(req);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) {
+      console.warn(`[mockingbird] laying out ${req.name}: ${r.error}`);
+      if (area) await lsChange({ areas: { [req.area]: null } }, `taking back ${req.area}'s area`);
+      return r.error;
+    }
+    setTemplatePicker(null);
+    await refresh();
+    const started = r.steps.find((s) => s.id === r.started)?.title;
+    // a terminal made on the first step's tree runs already: it waits for nothing
+    const terminals = new Set(req.template.steps.filter((s) => s.agent === "terminal").map((s) => s.key));
+    const waiting = r.steps.filter((s) => s.id !== r.started && !terminals.has(s.key)).length;
+    const said = [
+      `Laid out “${req.name}” in ${areaTitle(req.area)}:`,
+      started ? `${started} started${waiting ? `, ${waiting === 1 ? "1 step waits" : `${waiting} steps wait`} for ${waiting === 1 ? "its" : "their"} handoffs` : ""}.` : `${waiting === 1 ? "its step waits" : `its ${waiting} steps wait`}.`,
+      ...r.notes,
+    ].join(" ");
+    laidOut.current = { area: req.area, ids: r.steps.map((s) => s.id), wires: r.wires, said, until: Date.now() + LAID_OUT_WAIT_MS };
+    setLaidTick((n) => n + 1);
+    return null;
+  };
+  /** A lay-out made, until its steps and wires are drawn and its area is tidied along them. */
+  const laidOut = useRef<{ area: string; ids: string[]; wires: string[]; said: string; until: number } | null>(null);
+  const [laidTick, setLaidTick] = useState(0);
+  useEffect(() => {
+    const p = laidOut.current;
+    if (!p) return;
+    const layout = layoutNow.current;
+    const placed = placedNow.current;
+    const links = wiresNow().state?.book?.links ?? {};
+    const drawn = new Set([...(layout?.tiles ?? []), ...(layout?.ghosts ?? [])].flatMap((t) => t.members.map((m) => m.id)));
+    if (!layout || !placed || !p.ids.every((id) => drawn.has(id)) || !p.wires.every((id) => Object.hasOwn(links, id))) {
+      if (Date.now() < p.until) {
+        const t = setTimeout(() => setLaidTick((n) => n + 1), 200);
+        return () => clearTimeout(t);
+      }
+      laidOut.current = null;
+      return lsSay(`${p.said} Its area wasn't tidied: its steps weren't drawn in time. Tidy it from its ⋯ once they are.`);
+    }
+    laidOut.current = null;
+    const plan = planTidy(placed, layout, p.area, areaTitle, wiresInOrder(links).map(([, w]) => w));
+    goToArea(p.area);
+    if ("refused" in plan) return lsSay(`${p.said} Its area wasn't tidied: ${plan.refused}`);
+    if (!plan.patch) return lsSay(p.said);
+    void lsSaves.save(plan.patch, `tidying ${areaTitle(p.area)}`).then((s) => lsSay("error" in s ? `${p.said} Its area wasn't tidied: ${s.error}` : p.said));
+  }, [laidTick, landscapeLayout]);
+  const saveTemplateNow = async (name: string, body: TemplateBody): Promise<string | null> => {
+    let r: IpcResult<TemplateList>;
+    try {
+      r = await window.mb.templatesSave(name, body);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) {
+      console.warn(`[mockingbird] saving the template ${name}: ${r.error}`);
+      return r.error;
+    }
+    setTemplateSave(null);
+    lsSay(`Saved the template “${name}”: Pipeline from a ticket… lays it out`);
+    return null;
+  };
   const newAt = (area: string | null, at: { x: number; y: number }, seed: { launch?: LaunchKind; ticket?: boolean; mode?: "new" | "import" }) => {
     setNewGroup(area ?? "");
     setNewLaunch(seed.launch ?? "claude");
@@ -2113,6 +2234,7 @@ function App() {
         ticket: () => newAt(area, at, { ticket: true }),
         importIt: () => newAt(area, at, { mode: "import" }),
         importMany: () => setModal("import"),
+        pipeline: () => setTemplatePicker({ area }),
       }),
       ...(area ? [] : looseGhostRows()),
     ],
@@ -3351,6 +3473,23 @@ function App() {
           forceClose={forceClose}
           forget={forgetSession}
         />
+      )}
+      {templatePicker && (
+        <TemplatePicker
+          where={{
+            area: templatePicker.area,
+            // the area it was opened in, else the first with a repo: its repo and base to start from
+            seed: templatePicker.area ? areaSeed(templatePicker.area) : ((landscapeLayout?.areas ?? []).map((a) => areaSeed(a.key)).find((x) => x.repo) ?? {}),
+            areaTitle: (k) => (landscapeLayout?.areas.some((a) => a.key === k) ? areaTitle(k) : null),
+            inRoom: (k) => !!roomOfGroup(teamStatus, k),
+          }}
+          onLayOut={layOutTemplate}
+          home={landscapeHome}
+          onClose={() => setTemplatePicker(null)}
+        />
+      )}
+      {templateSave && (
+        <SaveTemplateDialog draft={templateSave.draft} leftOut={templateSave.leftOut} onSave={saveTemplateNow} home={landscapeHome} onClose={() => setTemplateSave(null)} />
       )}
       {startAsk && (
         <StartStepDialog

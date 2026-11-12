@@ -1429,6 +1429,21 @@ describe("a step not started yet (W8)", () => {
     expect(store.state.sessions.length).toBe(n);
   });
 
+  it("is made for a template's lay-out with no step before it, or in the folder of a step that hasn't started either", async () => {
+    const { m, store } = await manager();
+    const repo = makeRepo({ "a.txt": "1" }, "tpl");
+    const first = m.planStep({ title: "Builder", agent: "codex", repoPath: repo, worktree: true, base: "dev", taskGroup: "5115", ticketId: "5115", prompt: " Implement #5115. " });
+    expect(first).toMatchObject({ title: "Builder", agent: "codex", repoPath: repo, cwd: repo, taskGroup: "5115", ticketId: "5115", ticketTitle: null, planned: { worktree: true, base: "dev", prompt: "Implement #5115." } });
+    const next = m.planStep({ title: "Reviewer", agent: "claude", repoPath: null, worktree: false, taskGroup: "5115", sharesWith: first.id });
+    expect(next).toMatchObject({ repoPath: repo, cwd: repo, planned: { worktree: false, sharesWith: first.id } });
+    expect(m.planned().map((s) => s.id).sort()).toEqual([first.id, next.id].sort());
+    const n = store.state.sessions.length;
+    const shares = (sharesWith: string) => () => m.planStep({ title: "Tester", agent: "claude", repoPath: null, worktree: false, taskGroup: "5115", sharesWith });
+    expect(shares("nope")).toThrow('This Mac has no session "nope" whose folder a step could work in');
+    expect(shares("r~0f1e2d3c4b5a~n1")).toThrow("That's a teammate's session: only its owner can add a step in its folder");
+    expect(store.state.sessions.length).toBe(n);
+  });
+
   it("is never relaunched, resumed or restarted: each is refused saying why, starting nothing", async () => {
     const { m, store } = await manager();
     const a = await m.create({ ...agentPane, taskGroup: "5120" });

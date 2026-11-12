@@ -336,7 +336,7 @@ describe.skipIf(!local)("making wires", () => {
 
   it("Connect… lists where a wire can go, saying why not; a wire's right-click opens its settings, saved as changed, and Remove has Undo", async () => {
     const m = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=menus", "1600x1000", 120_000)) as unknown as Menus;
-    expect(m.wsMenu.slice(-5)).toEqual(["-", "# Wires", "Connect…", "-", "Close…"]);
+    expect(m.wsMenu.slice(-6)).toEqual(["-", "# Wires", "Connect…", "Save as template…", "-", "Close…"]);
     // its own area first, each workspace a wire can't reach off with the reason
     expect(m.connect.slice(0, 9)).toEqual(["# Connect “Shape donor export” to", "# #5120", "Builder", "Reviewer", "Dev server", "Tester", "Fixtures", "Docs", "Spike: streaming (closed)"]);
     expect(m.connect).toContain(`off Donor export: CSV writer — ${TEAMMATE}`);
@@ -689,5 +689,127 @@ describe.skipIf(!local)("Add next step", () => {
     expect(s.confirm.says).toBe("It starts in a new worktree, 5120-donor-export-tester, at “Reviewer”'s commit 3f9c2a1. It doesn't wait for its handoff.");
     // Enter, pressed for it: started under its id, a workspace where its card was
     expect(s.started).toEqual({ asked: [["wb-tester"]], start: [["wb-tester"]], confirm: false, ghost: false, node: true });
+  }, 200_000);
+});
+
+// ---- W9: pipeline templates (?landscapeWiresAudit=template, with ?lsTemplates) ----
+interface TP {
+  head: string | null;
+  items: { t: string | null; s: string | null; sel: boolean; off: boolean; title: string | null }[];
+  empty: string | null;
+  steps: { name: string | null; agent: string | null; prompt: string; whole: boolean; flags: string[] }[];
+  boxes: string[];
+  chips: string[];
+  notes: string[];
+  foot: string | null;
+  act: { off: boolean; title: string | null } | null;
+  error: string | null;
+  keyboard: boolean;
+}
+interface Laid {
+  calls: number;
+  steps: string[];
+  wires: string[];
+  open: boolean;
+  error: string | null;
+  note: string | null;
+}
+interface Templates {
+  overTerminal: Record<"picker" | "save", { before: string; open: boolean; closed: boolean; keys: string }>;
+  saveEsc: { before: string; menu: { row: boolean; off: boolean | null }; drafts: unknown[][]; draft: TP; closed: boolean; keys: string };
+  saved: { calls: [string, string[]][]; closed: boolean; note: string | null; keys: string };
+  early: { opened: TP; layOuts: number; open: boolean };
+  refused: { calls: number; open: boolean; error: string | null; area: boolean };
+  shown: TP;
+  quick: TP;
+  makeAsk: { asked: TP; again: TP };
+  ticketed: TP;
+  laidOut: { calls: number; sent: { area: string; ticketId: string; prompts: string[]; gates: (string | null)[] } | null; open: boolean; planned: number; boxes: Record<"builder" | "reviewer" | "tester" | "dev", Box | null>; wires: string[]; note: string | null };
+  roundTrip: { shown: TP; chosen: TP; laid: Laid };
+  room: { shown: TP; chosen: TP; laid: Laid };
+}
+const flagsOf = (t: TP, name: string) => t.steps.find((s) => s.name === name)?.flags ?? null;
+
+describe.skipIf(!local)("Pipeline templates", () => {
+  it("Save as template from a chain, Esc leaving its terminal's keyboard; the picker taking no early click or key, each step's prompt whole, a terminal flagged, Make it ask; a refused lay-out said and its area taken back, a held ⌘↵ trying once; Lay out tidied along its wires; the saved one laid out as saved; a team room's gates all ask", async () => {
+    const t = (await audit("lsTemplates&lsLayOutFails=1&lsCamera=0,3040,1&landscapeWiresAudit=template", "1600x1200", 150_000)) as unknown as Templates;
+    // each dialog opened while Builder's terminal has the keyboard, which its menu hands back to it: Esc gives the
+    // keyboard to the landscape, never to the terminal
+    for (const k of ["picker", "save"] as const) expect(t.overTerminal[k], k).toEqual({ before: "terminal:wb-builder", open: true, closed: true, keys: "landscape" });
+    // Save as template… from Builder's right-click, its terminal having had the keyboard: the chain whole, Esc closes it
+    // and the keyboard goes to the landscape, not back to the terminal
+    expect(t.saveEsc).toMatchObject({ before: "terminal:wb-builder", menu: { row: true, off: false }, closed: true, keys: "landscape" });
+    expect(t.saveEsc.drafts).toEqual([[["wb-shape", "wb-builder", "wb-reviewer", "wb-tester"]]]);
+    expect(t.saveEsc.draft.head).toContain("never sent to teammates");
+    expect(t.saveEsc.draft.steps.map((s) => [s.name, s.agent])).toEqual([["Shape donor export", "Claude"], ["Builder", "Codex"], ["Reviewer", "Claude"], ["Tester", "Claude"], ["Dev server", "Terminal"]]);
+    expect(t.saveEsc.draft.notes).toEqual(["What “Shape donor export”, “Builder”, “Reviewer”, “Tester” were told as they started isn't kept once running: say it here, and what its terminal runs."]);
+    expect(t.saveEsc.draft.foot).toBe("5 steps · 5 wires · 0 automatic");
+    // a terminal is flagged as one, and why it isn't laid out when the agent whose tree it runs on doesn't start
+    expect(flagsOf(t.saveEsc.draft, "Dev server")![0]).toMatch(/^terminal: A terminal runs this as a command\. It isn't laid out: a terminal takes no handoff/);
+    // named and saved: what was shown is what's saved, and the keyboard stays off the terminal
+    expect(t.saved).toEqual({ calls: [["Donor export", ["Shape donor export", "Builder", "Reviewer", "Tester", "Dev server"]]], closed: true, note: "Saved the template “Donor export”: Pipeline from a ticket… lays it out", keys: "landscape" });
+    // the picker, opened by a double click with ⌘↵ straight after: its Lay out off for a moment, nothing laid out
+    expect(t.early).toMatchObject({ layOuts: 0, open: true, opened: { head: "Pipeline from a ticket", act: { off: true }, keyboard: true } });
+    // and a click on Quick fix's row straight after it opened chose nothing
+    expect(t.early.opened.items.filter((i) => i.sel).map((i) => i.t)).toEqual(["Build, review, test"]);
+    // the saved templates: one from a newer version offered (what it doesn't read kept), a malformed one refused saying why
+    expect(t.shown.items).toEqual([
+      { t: "Build, review, test", s: "4 steps · 1 automatic", sel: true, off: false, title: null },
+      { t: "Quick fix", s: "2 steps · another version's", sel: false, off: false, title: "Saved by another version of Mockingbird: this one doesn't read colour, steps[0].icon, which are kept as they are" },
+      { t: "Donor export", s: "5 steps", sel: false, off: false, title: null },
+      { t: "Ticket → build → review", s: "Can't be used here: Its steps aren't a list.", sel: false, off: true, title: "Its steps aren't a list." },
+    ]);
+    // each step's prompt whole, a terminal's command flagged as one, the first step's start, the automatic gate
+    expect(t.shown.steps.map((s) => [s.name, s.agent, s.whole])).toEqual([["Builder", "Codex", true], ["Reviewer", "Claude", true], ["Tester", "Claude", true], ["Dev server", "Terminal", true]]);
+    expect(t.shown.steps[0].prompt).toBe("Implement {ticket}. Run the tests, commit, then finish the step.");
+    expect(flagsOf(t.shown, "Builder")).toEqual(["start: Starts as it's laid out.Let it wait"]);
+    expect(flagsOf(t.shown, "Tester")).toEqual(["automatic: Sends without asking once Reviewer approves.Make it ask"]);
+    expect(flagsOf(t.shown, "Dev server")).toEqual(["terminal: A terminal runs this as a command. It's made on “Builder”'s tree as “Builder” starts."]);
+    expect(t.shown).toMatchObject({ chips: ["↺ 3 rounds", "automatic"], foot: "new area Build, review, test · worktree from origin/dev", act: { off: false }, error: null });
+    // another template chosen: Lay out is off for a moment, as what it lays out just changed under the pointer
+    expect(t.quick.act).toEqual({ off: true, title: null });
+    expect(t.roundTrip.chosen.act).toEqual({ off: true, title: null });
+    // a long prompt shown whole, not cut nor scrolled
+    expect(t.quick.steps[0]).toMatchObject({ name: "Fixer", whole: true });
+    expect(t.quick.steps[0].prompt.length).toBeGreaterThan(400);
+    expect(t.quick.steps[0].prompt.endsWith("what you didn't touch.")).toBe(true);
+    // Make it ask takes the automatic gate off this lay-out only: choosing the template again puts it back
+    expect(flagsOf(t.makeAsk.asked, "Tester")).toEqual([]);
+    expect(t.makeAsk.asked.chips).toEqual(["↺ 3 rounds"]);
+    expect(flagsOf(t.makeAsk.again, "Tester")).toEqual(["automatic: Sends without asking once Reviewer approves.Make it ask"]);
+    // its ticket, #5115: a new area named for it
+    expect(t.ticketed.foot).toBe("new area #5115 · worktree from origin/dev");
+    // ⌘↵ held, as the keyboard repeats it, and the lay-out refused: said in the dialog, which stays, its new area taken
+    // back, and the repeats after the refusal try nothing
+    expect(t.refused).toEqual({ calls: 1, open: true, error: "landscape.json is read-only: wires can't be saved until it can be written", area: false });
+    // ⌘↵ pressed again: laid out once, as shown, and closed
+    expect(t.laidOut.calls).toBe(1);
+    expect(t.laidOut.sent).toEqual({ area: "5115", ticketId: "5115", prompts: t.shown.steps.map((s) => s.prompt), gates: ["ask", "ask", "automatic", null] });
+    expect(t.laidOut.open).toBe(false);
+    // Builder started, Reviewer and Tester not started yet, Dev server on Builder's tree, every wire made
+    expect(t.laidOut.planned).toBe(2);
+    expect(t.laidOut.wires).toEqual(["feedback:ask", "handoff:ask", "handoff:automatic", "worktree:ask"]);
+    expect(t.laidOut.note).toBe("Laid out “Build, review, test” in #5115: Builder started, 2 steps wait for their handoffs.");
+    // tidied along its wires: Builder → Reviewer → Tester in a row, left to right, Dev server under Builder
+    const b = t.laidOut.boxes;
+    for (const k of ["builder", "reviewer", "tester", "dev"] as const) expect(b[k], k).toBeTruthy();
+    near(b.reviewer!.t, b.builder!.t);
+    near(b.tester!.t, b.builder!.t);
+    expect(b.builder!.r).toBeLessThan(b.reviewer!.l);
+    expect(b.reviewer!.r).toBeLessThan(b.tester!.l);
+    expect(b.dev!.t).toBeGreaterThan(b.builder!.b);
+    near(b.dev!.l, b.builder!.l);
+    // the saved one, laid out (no ticket) as it was saved; its terminal, on a tree that isn't started, said and not made
+    expect(t.roundTrip.chosen.steps.map((s) => s.name)).toEqual(["Shape donor export", "Builder", "Reviewer", "Tester", "Dev server"]);
+    expect(t.roundTrip.chosen.foot).toBe("new area Donor export · worktree from origin/dev");
+    expect(t.roundTrip.laid).toMatchObject({ calls: 1, open: false, error: null, wires: ["feedback:ask", "handoff:ask", "handoff:ask", "handoff:ask"] });
+    expect(t.roundTrip.laid.steps.map((s) => s.replace(/(Claude|Codex)$/, ""))).toEqual(["Shape donor export", "Builder", "Reviewer", "Tester"]);
+    expect(t.roundTrip.laid.note).toMatch(/^Laid out “Donor export” in Donor export: Shape donor export started, 3 steps wait for their handoffs\. “Dev server” isn't laid out: /);
+    // #5110's area is a team room's: the automatic gate is shown asking, and laid out asking
+    expect(flagsOf(t.room.chosen, "Tester")).toEqual(["asks: Reviewer → Tester asks, not automatic. In a team room's area every gate asks."]);
+    expect(t.room.chosen.foot).toBe("in #5110 · worktree from origin/dev · team room: gates ask");
+    expect(t.room.chosen.chips).not.toContain("automatic");
+    expect(t.room.laid).toMatchObject({ calls: 1, open: false, error: null, wires: ["feedback:ask", "handoff:ask", "handoff:ask", "worktree:ask"] });
+    expect(t.room.laid.note).toBe("Laid out “Build, review, test” in #5110: Builder started, 2 steps wait for their handoffs. In a team room's area every gate asks, so its automatic gate was laid out asking.");
   }, 200_000);
 });

@@ -25,6 +25,8 @@
  * - =pick and =settings: the picker, and Reviewer → Tester's settings, left open for a screenshot (synthetic events);
  * - =fresh (with ?lsSpikeGone): Start fresh from Spike's ghost, its handoff from Fixtures moved to the fresh session, or
  *   with `&freshAs=terminal` refused, gone with Spike and said.
+ * - =template (with ?lsTemplates, at 100%): W9's picker and Save as template (templateAudit); =tpick, =tpickroom and
+ *   =tsave leave the picker (its ticket's area new, or a team room's) and Save as template open for a screenshot;
  * - =step (with ?lsPlanned, at 100%): W8's not-started Tester and Add next step, from a handle clicked and from one
  *   dragged into empty space, the dialog's guards against a burst's key and an early click, its ⋯ with Enter held, and
  *   Start now…'s confirm (stepAudit).
@@ -161,6 +163,62 @@ export function stripBoardBook(board: StripBoard, at: number): WireBook {
     book.links[W("to-docs")] = wire(W("builder"), W("docs"), "handoff", 2);
   }
   return book;
+}
+
+/** Quick fix's first prompt: long enough, and over enough lines, that one cut short or scrolled would show. */
+export const LONG_PROMPT = [
+  "Fix {ticket}.",
+  "",
+  "1. Reproduce it first, with a failing test that names the ticket.",
+  "2. Keep the change small: one commit, no drive-by refactors, and no new dependencies.",
+  "3. Run the whole suite, not just the new test, and say what you ran.",
+  "4. If the fix needs a migration or a config change, stop and say so instead of making it.",
+  "5. Write the commit message as a sentence about what the user sees now.",
+  "",
+  "Finish the step with a summary a reviewer can read in a minute: what was wrong, what changed, and what you didn't touch.",
+].join("\n");
+
+/**
+ * The saved templates of ?lsTemplates (W9), as settings.pipelineTemplates holds them: WireTemplates.dc.html A's
+ * "Build, review, test" (Builder → Reviewer → Tester, Reviewer's feedback to Builder, an automatic gate into Tester, a
+ * Dev server on Builder's tree), "Quick fix" (saved by a newer version: fields this one doesn't read), and an entry
+ * this version can't use. `?lsTemplates=none`: none saved.
+ */
+export function boardTemplates(q: string | null): unknown[] {
+  if (q === "none") return [];
+  return [
+    {
+      id: "tpl-brt",
+      name: "Build, review, test",
+      savedAt: 1,
+      startFirst: true,
+      steps: [
+        { key: "s1", name: "Builder", agent: "codex", folder: "new", prompt: "Implement {ticket}. Run the tests, commit, then finish the step." },
+        { key: "s2", name: "Reviewer", agent: "claude", folder: { sameAs: "s1" }, prompt: "Review the diff for {ticket}. Finish with approve or changes." },
+        { key: "s3", name: "Tester", agent: "claude", folder: "new", prompt: "Run the e2e suite on this branch. Say what fails, then finish." },
+        { key: "s4", name: "Dev server", agent: "terminal", folder: { sameAs: "s1" }, prompt: "dotnet watch" },
+      ],
+      wires: [
+        { from: "s1", to: "s2", type: "handoff", when: "finished", gate: "ask" },
+        { from: "s2", to: "s1", type: "feedback", when: "finished", gate: "ask", rounds: 3 },
+        { from: "s2", to: "s3", type: "handoff", when: "finished", gate: "automatic" },
+        { from: "s1", to: "s4", type: "worktree" },
+      ],
+    },
+    {
+      id: "tpl-quick",
+      name: "Quick fix",
+      savedAt: 2,
+      startFirst: true,
+      colour: "teal",
+      steps: [
+        { key: "s1", name: "Fixer", agent: "claude", folder: "new", prompt: LONG_PROMPT, icon: "wrench" },
+        { key: "s2", name: "Checker", agent: "codex", folder: { sameAs: "s1" }, prompt: "Check the fix for {ticket} against its test, then finish." },
+      ],
+      wires: [{ from: "s1", to: "s2", type: "handoff", when: "finished", gate: "ask" }],
+    },
+    { id: "tpl-old", name: "Ticket → build → review", savedAt: 3, startFirst: true, steps: "three", wires: [] },
+  ];
 }
 
 /**
@@ -1181,7 +1239,242 @@ async function stepAudit(env: WiresAuditEnv, out: Record<string, unknown>): Prom
 }
 
 /** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */
+// ---- W9: pipeline templates (?lsTemplates) ----------------------------------------------------
+
+const picker = () => document.querySelector<HTMLElement>(".modal.tp:not(.tp-save):not(.mb-ghost)");
+const saver = () => document.querySelector<HTMLElement>(".modal.tp-save:not(.mb-ghost)");
+/** What a template dialog shows: its templates, each step whole with what's said under it, the chain's chips, its foot. */
+const tpNow = (el: HTMLElement | null) =>
+  el && {
+    head: el.querySelector(".tp-head")?.textContent ?? null,
+    items: [...el.querySelectorAll<HTMLElement>(".tp-item")].map((i) => ({ t: i.querySelector(".t")?.textContent ?? null, s: i.querySelector(".s")?.textContent ?? null, sel: i.classList.contains("sel"), off: i.classList.contains("off"), title: i.title || null })),
+    empty: el.querySelector('[data-empty="templates"]')?.textContent ?? null,
+    steps: [...el.querySelectorAll<HTMLElement>(".tp-step")].map((s) => {
+      const ta = s.querySelector<HTMLTextAreaElement>("textarea")!;
+      return {
+        name: s.querySelector(".tp-name")?.textContent ?? null,
+        agent: s.querySelector(".tp-agent .mb-select-val")?.textContent ?? s.querySelector(".tp-fixed")?.textContent ?? null,
+        prompt: ta.value,
+        // shown whole: nothing of it scrolled out of sight, and none of it cut
+        whole: ta.scrollHeight <= ta.clientHeight + 1 && getComputedStyle(ta).overflowY !== "scroll",
+        flags: [...s.querySelectorAll<HTMLElement>("[data-flag]")].map((f) => `${f.dataset.flag}: ${f.textContent?.replace(/\s+/g, " ").trim()}`),
+      };
+    }),
+    boxes: [...el.querySelectorAll<HTMLElement>(".tp-box")].map((b) => b.textContent),
+    chips: [...el.querySelectorAll<HTMLElement>(".tp-chip")].map((c) => c.textContent),
+    notes: [...el.querySelectorAll<HTMLElement>("[data-note]")].map((n) => n.textContent),
+    foot: el.querySelector(".tp-where")?.textContent ?? null,
+    act: ((b) => b && { off: b.disabled, title: b.title || null })(el.querySelector<HTMLButtonElement>("button[data-act]")),
+    error: el.querySelector('[role="alert"]')?.textContent ?? null,
+    keyboard: el.contains(document.activeElement),
+  };
+/** An empty spot of the landscape in view, outside every area: where a right-click's New workspace rows make what's loose. */
+const spaceUnder = (): Pt => {
+  const v = document.querySelector<HTMLElement>(".ls-viewport")!.getBoundingClientRect();
+  const areas = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-area, .ls-world .ls-area-pill")].map((a) => a.getBoundingClientRect());
+  for (let y = v.bottom - 90; y > v.top + 40; y -= 24)
+    for (let x = v.left + 40; x < v.right - 200; x += 24) {
+      const el = document.elementFromPoint(x, y);
+      if (areas.some((a) => x >= a.left - 8 && x <= a.right + 8 && y >= a.top - 8 && y <= a.bottom + 8)) continue;
+      if (el && (el.classList.contains("ls-viewport") || el.classList.contains("ls-world"))) return { x: Math.round(x), y: Math.round(y) };
+    }
+  throw new Error("no empty spot of the landscape is in view");
+};
+/** Pipeline from a ticket…, from a right-click at `at`, as a person picks it. */
+async function openPicker(at: Pt): Promise<void> {
+  await drive([{ mouse: { ...at, clickCount: 1, button: "right" } }]);
+  await sleep(300);
+  await drive([{ mouse: { ...mid(menuRow("Pipeline from a ticket…")), clickCount: 1 } }]);
+  await sleep(150);
+}
+/** Choose `label` in the template dialog's dropdown `sel` (a Select), as a person does: open it, click the row. */
+async function choose(sel: string, label: string): Promise<void> {
+  await drive([{ mouse: { ...mid(picker()!.querySelector(sel)), clickCount: 1 } }]);
+  await sleep(250);
+  const row = [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.querySelector(".mb-opt-label")?.textContent?.includes(label));
+  await drive([{ mouse: { ...mid(row), clickCount: 1 } }]);
+  await sleep(250);
+}
+const itemOf = (el: HTMLElement, name: string) => [...el.querySelectorAll<HTMLElement>(".tp-item")].find((i) => i.querySelector(".t")?.textContent === name) ?? null;
+const lineButton = (el: HTMLElement, flag: string) => el.querySelector<HTMLButtonElement>(`[data-flag="${flag}"] button`);
+
+/**
+ * W9's Save as template and picker, with the real mouse and keys (?lsTemplates): each dialog opened over Builder's
+ * terminal while it has the keyboard, Esc leaving it off the terminal; Save as template from the fixture's wired
+ * Builder's right-click, and the save; the picker opened from a right-click,
+ * an early click and key let go, each template's steps whole with what's said under them (a terminal's command, an
+ * automatic gate and Make it ask, `{ticket}`), the saved one offered; a held ⌘↵ whose lay-out is refused
+ * (?lsLayOutFails=1: said, its area taken back) trying once, then Lay out made and its steps tidied along their wires;
+ * the saved one laid out as it was saved; and a ticket whose area is a team room's, every gate laid out asking.
+ */
+async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const since = (mark: number, fn: string) => env.calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
+  const links = async () => ((await window.mb.wiresGet()) as { book?: { links: Record<string, Wire> } }).book?.links ?? {};
+  const builder = () => node(W("builder"));
+  const termKeys = async () => {
+    await drive([{ mouse: { ...mid(builder()?.querySelector(".ls-term")), clickCount: 1 } }]);
+    await sleep(1100);
+  };
+  /**
+   * A menu opened over Builder's terminal while it has the keyboard, by an event that moves no focus (as a menu key
+   * would), and its row `label` picked: the menu hands the keyboard back to the terminal as the dialog opens, so the
+   * dialog's Esc is what decides where it goes. `at`: where the menu opens (Builder's head, or the empty canvas).
+   */
+  const overTerminal = async (at: Pt, label: string, dialog: () => HTMLElement | null) => {
+    await termKeys();
+    const before = keysAt();
+    document.elementFromPoint(at.x, at.y)!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 2 }));
+    await sleep(300);
+    menuRow(label)?.click();
+    await sleep(800);
+    const open = !!dialog();
+    await drive([{ key: "Escape" }]);
+    await sleep(300);
+    return { before, open, closed: !dialog(), keys: keysAt() };
+  };
+  const head = () => mid(builder()?.querySelector(".ls-head .ls-spacer") ?? builder()?.querySelector(".ls-head"));
+  // the picker and Save as template, each opened over Builder's terminal: Esc gives the keyboard to the landscape
+  out.overTerminal = { picker: await overTerminal(spaceUnder(), "Pipeline from a ticket…", picker), save: await overTerminal(head(), "Save as template…", saver) };
+  // Save as template from Builder's right-click, as a person opens it: the chain whole, closed by Esc
+  const rightClickBuilder = async () => {
+    await drive([{ mouse: { ...head(), clickCount: 1, button: "right" } }]);
+    await sleep(300);
+    const row = menuRow("Save as template…");
+    const offered = { row: !!row, off: row?.disabled ?? null };
+    if (row) await drive([{ mouse: { ...mid(row), clickCount: 1 } }]);
+    await sleep(500);
+    return offered;
+  };
+  await termKeys();
+  const before = keysAt();
+  let mark = env.calls.length;
+  const menu = await rightClickBuilder();
+  const draft = tpNow(saver());
+  await sleep(700);
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  out.saveEsc = { before, menu, drafts: since(mark, "templatesDraft"), draft, closed: !saver(), keys: keysAt() };
+  await sleep(600);
+  await rightClickBuilder();
+  await sleep(700);
+  mark = env.calls.length;
+  // its name: a triple click selects what's there (no ⌘A in the driver), then typed over
+  const nameAt = mid(saver()?.querySelector("input.tp-name-in"));
+  await drive([{ mouse: { ...nameAt, clickCount: 1 } }, { mouse: { ...nameAt, clickCount: 2 } }, { mouse: { ...nameAt, clickCount: 3 } }, { pause: 200 }, ..."Donor export".split("").map((key) => ({ key })), { pause: 300 }]);
+  await drive([{ mouse: { ...mid(saver()?.querySelector("button[data-act]")), clickCount: 1 } }]);
+  await sleep(600);
+  const saved = since(mark, "templatesSave");
+  out.saved = { calls: saved.map((a) => [a[0], ((a[1] as { steps?: { name: string }[] }).steps ?? []).map((s) => s.name)]), closed: !saver(), note: noteNow(), keys: keysAt() };
+  // the picker opened once, settled, to learn where Quick fix's row is (the dialog opens centred, so it's there again)
+  await sleep(600);
+  await openPicker(spaceUnder());
+  await sleep(700);
+  const quickAt = mid(itemOf(picker()!, "Quick fix"));
+  await drive([{ key: "Escape" }]);
+  await sleep(400);
+  // then opened by a double click on its menu row, a click on Quick fix's row and ⌘↵ straight after: the second
+  // click, the early click and the key take nothing
+  mark = env.calls.length;
+  await drive([{ mouse: { ...spaceUnder(), clickCount: 1, button: "right" } }]);
+  await sleep(300);
+  const row = mid(menuRow("Pipeline from a ticket…"));
+  await drive([{ mouse: { ...row, clickCount: 1 } }, { mouse: { ...row, clickCount: 2 } }, { pause: 120 }, { mouse: { ...quickAt, clickCount: 1 } }, { key: "Enter", meta: true }]);
+  const opened = tpNow(picker());
+  out.early = { opened, layOuts: since(mark, "templatesLayOut").length, open: !!picker() };
+  await sleep(700);
+  out.shown = tpNow(picker());
+  // Quick fix, saved by a newer version: its long prompt whole
+  await drive([{ mouse: { ...mid(itemOf(picker()!, "Quick fix")), clickCount: 1 } }]);
+  await sleep(300);
+  out.quick = tpNow(picker());
+  // back to Build, review, test: Make it ask takes the automatic gate off, and choosing it again puts it back
+  await drive([{ mouse: { ...mid(itemOf(picker()!, "Build, review, test")), clickCount: 1 } }]);
+  await sleep(300);
+  await drive([{ mouse: { ...mid(lineButton(picker()!, "automatic")), clickCount: 1 } }]);
+  await sleep(200);
+  const asked = tpNow(picker());
+  await drive([{ mouse: { ...mid(itemOf(picker()!, "Quick fix")), clickCount: 1 } }, { mouse: { ...mid(itemOf(picker()!, "Build, review, test")), clickCount: 1 } }]);
+  await sleep(300);
+  out.makeAsk = { asked, again: tpNow(picker()) };
+  // its ticket: #5115, whose area is new; then ⌘↵ held down, as the keyboard repeats it, the first lay-out refused
+  // (?lsLayOutFails=1): said, its area taken back, and the repeats after it lay nothing out
+  await choose(".tp-ticket", "#5115");
+  out.ticketed = tpNow(picker());
+  await sleep(700);
+  mark = env.calls.length;
+  const area5115 = () => !!document.querySelector('.ls-world [data-area="5115"]');
+  const repeats: Asked[] = Array.from({ length: 6 }, (): Asked[] => [{ key: "Enter", meta: true, repeat: true }, { pause: 60 }]).flat();
+  await drive([{ pause: 400 }, { key: "Enter", meta: true, hold: "down" }, { pause: 600 }, ...repeats, { key: "Enter", meta: true, hold: "up" }]);
+  await sleep(600);
+  out.refused = { calls: since(mark, "templatesLayOut").length, open: !!picker(), error: tpNow(picker())?.error ?? null, area: area5115() };
+  // ⌘↵ again, pressed for it: laid out once
+  await sleep(300);
+  mark = env.calls.length;
+  const linksAt = new Set(Object.keys(await links()));
+  await drive([{ key: "Enter", meta: true }]);
+  await sleep(3500);
+  const lay = since(mark, "templatesLayOut");
+  const fresh = Object.entries(await links()).filter(([id]) => !linksAt.has(id)).map(([, w]) => w);
+  const sent = (lay[0]?.[0] ?? null) as { area?: string; ticketId?: string; template?: { steps: { name: string; prompt: string }[]; wires: { gate?: string }[] } } | null;
+  // the steps it made, by the wires it made (their names are the fixture's own too)
+  const madeIds = [...new Set(fresh.flatMap((w) => [w.from, w.to]))];
+  const madeNamed = (title: string) => madeIds.find((id) => node(id)?.querySelector(".lg-name, .ls-title, .ls-card-title")?.textContent?.startsWith(title)) ?? null;
+  const ids = { builder: madeNamed("Builder"), reviewer: madeNamed("Reviewer"), tester: madeNamed("Tester"), dev: madeNamed("Dev server") };
+  out.laidOut = {
+    calls: lay.length,
+    sent: sent && { area: sent.area, ticketId: sent.ticketId, prompts: sent.template?.steps.map((s) => s.prompt), gates: sent.template?.wires.map((w) => w.gate ?? null) },
+    open: !!picker(),
+    planned: Object.values(ids).filter((id) => id && node(id)?.classList.contains("planned")).length,
+    boxes: Object.fromEntries(Object.entries(ids).map(([k, id]) => [k, id ? box(node(id)) : null])),
+    wires: fresh.map((w) => `${w.type}:${w.gate ?? ""}`).sort(),
+    note: noteNow(),
+  };
+  // the picker again: the saved one offered, and laid out (no ticket) as it was saved
+  const layOutHere = async (pick: string, ticket: string | null) => {
+    await sleep(600);
+    await openPicker(spaceUnder());
+    await sleep(700);
+    const shown = tpNow(picker());
+    await drive([{ mouse: { ...mid(itemOf(picker()!, pick)), clickCount: 1 } }]);
+    await sleep(300);
+    if (ticket) await choose(".tp-ticket", ticket);
+    const chosen = tpNow(picker());
+    await sleep(700);
+    const m = env.calls.length;
+    const at = new Set(Object.keys(await links()));
+    await drive([{ mouse: { ...mid(picker()!.querySelector("button[data-act]")), clickCount: 1 } }]);
+    await sleep(3500);
+    const made = Object.entries(await links()).filter(([id]) => !at.has(id)).map(([, w]) => w);
+    const steps = [...new Set(made.flatMap((w) => [w.from, w.to]))].map((id) => node(id)?.querySelector(".lg-name, .ls-title, .ls-card-title")?.textContent ?? id);
+    return { shown, chosen, laid: { calls: since(m, "templatesLayOut").length, steps, wires: made.map((w) => `${w.type}:${w.gate ?? ""}`).sort(), open: !!picker(), error: tpNow(picker())?.error ?? null, note: noteNow() } };
+  };
+  out.roundTrip = await layOutHere("Donor export", null);
+  // and Build, review, test for a ticket whose area is a team room's: its automatic gate is laid out asking
+  out.room = await layOutHere("Build, review, test", "#5110");
+}
+
 async function showAudit(part: string): Promise<void> {
+  if (part === "tpick" || part === "tpickroom") {
+    // the template picker, opened from a right-click under 5120 (synthetic events), its ticket chosen
+    const at = spaceUnder();
+    document.querySelector(".ls-viewport")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 2 }));
+    await sleep(300);
+    menuRow("Pipeline from a ticket…")?.click();
+    await sleep(800);
+    const ticket = picker()?.querySelector<HTMLElement>(".tp-ticket");
+    ticket?.click();
+    await sleep(250);
+    [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.textContent?.includes(part === "tpick" ? "#5115" : "#5110"))?.click();
+    return;
+  }
+  if (part === "tsave") {
+    const head = node(W("builder"))?.querySelector(".ls-head") ?? node(W("builder"));
+    const at = mid(head);
+    head!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 2 }));
+    await sleep(300);
+    menuRow("Save as template…")?.click();
+    return;
+  }
   if (part === "pop") {
     // the send popover of ?pop=<wire> (wb- left off), opened by a click on its dot; &popConfirm asks Mark merged…
     const q = new URLSearchParams(location.search);
@@ -1218,7 +1511,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
     const out: Record<string, unknown> = { part };
     try {
       // the screenshots' parts open theirs at once: a screenshot is taken a few seconds of virtual time in
-      const shot = part === "pick" || part === "settings" || part === "pop";
+      const shot = part === "pick" || part === "settings" || part === "pop" || part === "tpick" || part === "tpickroom" || part === "tsave";
       await sleep(shot ? 300 : 1200);
       out.zoom = zoomNow();
       if (shot) {
@@ -1233,6 +1526,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "guards") await guardsAudit(env, out);
       else if (part === "lost") await lostAudit(env, out);
       else if (part === "step") await stepAudit(env, out);
+      else if (part === "template") await templateAudit(env, out);
       // which of 5120's workspaces carry a handle at this zoom: those big enough on screen for one
       else if (part === "handles") out.handles = ["shape", "builder", "reviewer", "dev", "tester", "fixtures"].filter((k) => !!handleOf(k));
       else if (part === "send") await sendAudit(env, out);

@@ -12,6 +12,7 @@ import {
   forgetPatch,
   ghostDrawnHeight,
   minWorkspace,
+  newAreaPatch,
   newStackName,
   notePlacement,
   NOTE_BOTTOM,
@@ -1031,5 +1032,22 @@ describe("ghosts", () => {
     expect(ghostDrawnHeight(rect, z, [{ ...name, y: 900 }])).toBe(800);
     // too little left of it: drawn whole, over the name line
     expect(ghostDrawnHeight(rect, z, [{ ...name, y: 120 }])).toBe(800);
+  });
+});
+
+describe("an area for a template's steps (newAreaPatch)", () => {
+  it("is made right of everything, level with the topmost area, keeping its repo; none when the group has one", () => {
+    const l: Landscape = {
+      ...emptyLandscape(),
+      areas: { "5101": { x: 0, y: 40, w: 800, h: 400, repos: [] }, "5102": { x: 0, y: 600, w: 500, h: 300, repos: [] } },
+      workspaces: { far: { x: 1200, y: 900, w: 300, h: 200 } as never },
+    };
+    const p = newAreaPatch(l, "5115", { path: "/code/backoffice", base: "dev" });
+    const m = presetSize("agent", "M");
+    expect(p).toEqual({ areas: { "5115": { x: 1500 + AREA_GAP, y: 40, w: 2 * AREA_PAD + m.w, h: AREA_HEADER + AREA_PAD, repos: [{ path: "/code/backoffice", base: "dev" }] } } });
+    const made = applyPatch(l, p!);
+    expect(Object.entries(made.areas).filter(([k]) => k !== "5115").some(([, a]) => overlaps(a, made.areas["5115"]))).toBe(false);
+    expect(newAreaPatch(made, "5115", null)).toBeNull();
+    expect(newAreaPatch(emptyLandscape(), "Donor export", null)).toMatchObject({ areas: { "Donor export": { x: 0, y: 0, repos: [] } } });
   });
 });

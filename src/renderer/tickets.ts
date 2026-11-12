@@ -7,14 +7,8 @@ import { useEffect, useState } from "react";
 import { isErr, type AdoWorkItem, type RepoBranches } from "../shared/types";
 import { orderColumns } from "./boardView";
 
-/** Kickoff prompt for a session started from an Azure DevOps ticket. */
-export function ticketKickoffPrompt(id: number | string, title: string, description: string): string {
-  return (
-    `You're picking up Azure DevOps ticket #${id}: ${title}.\n\n` +
-    (description.trim() ? `Ticket description:\n${description.trim()}\n\n` : "") +
-    `Get familiar with the relevant code first and propose an approach before making changes.`
-  );
-}
+// shared with Save as template, which reads a step's kickoff back as {ticket} (kickoffAsTicket)
+export { ticketKickoffPrompt } from "../shared/pipelineTemplates";
 
 /** "Filter orgs by foundation" → "filterOrgsByFoundation" (branch-friendly). */
 export function suggestTicketName(title: string): string {

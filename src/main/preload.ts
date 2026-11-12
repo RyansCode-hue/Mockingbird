@@ -1,5 +1,6 @@
 import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
+import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -21,6 +22,16 @@ const api = {
   startPlanned: (id: string): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("sessions:startPlanned", id),
   /** Where Start now would start not-started step `id`, said for its confirm; refused as the start would be. */
   describeStart: (id: string): Promise<IpcResult<string>> => ipcRenderer.invoke("sessions:describeStart", id),
+  /** Pipeline templates (W9): the saved ones as this version reads them, each refused one with why. */
+  templatesList: (): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:list"),
+  /** Save as template's draft of chain `ids` (first to last): what it keeps, redacted, and what it leaves out. */
+  templatesDraft: (ids: string[]): Promise<IpcResult<TemplateDraft>> => ipcRenderer.invoke("templates:draft", ids),
+  /** Save template `name`, refused while its text holds a secret-looking value or a home folder's path. */
+  templatesSave: (name: string, body: TemplateBody): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:save", name, body),
+  /** Remove template `id`, one this version can't read too; the list as it is then. */
+  templatesRemove: (id: string): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:remove", id),
+  /** Lay out: the template as the picker shows it, as not-started steps and their wires (WireService.layOut). */
+  templatesLayOut: (req: LayOutRequest): Promise<IpcResult<LayOutReply>> => ipcRenderer.invoke("templates:layOut", req),
   /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */
   resumeSession: (id: string): Promise<SessionInfo | { refused: string } | { error: string }> => ipcRenderer.invoke("sessions:resume", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),
