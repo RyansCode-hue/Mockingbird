@@ -9,6 +9,10 @@ import * as path from "path";
  * and git.ts asks gitPinRefusal before every git it runs: one in a pinned folder whose `.git` no longer leads where it
  * did, or with a new `.git` between it and the pinned top, is refused. Only the filesystem is read for this, never git,
  * which would follow the pointer it's checking.
+ *
+ * Any folder, pinned or not, whose `.git` is a folder holding a `commondir` is refused too (strayCommondir): git
+ * follows that pointer from a main checkout as from a linked worktree's folder, and a room session's agent shares the
+ * main checkout's git folder with every session there, local ones included.
  */
 
 /** Where a repository's git data is: the shared folder, and a linked worktree's own (the same folder outside one). */
@@ -23,12 +27,25 @@ interface Pin {
   real: string;
   /** Its git folders, resolved; or why git is never run there. */
   dirs: GitFolders | { bad: string };
+  /** Those folders' device and inode (folderIds), so one swapped in under the same path is told apart. */
+  ids?: string;
 }
 
 const pins = new Map<string, Pin>();
 const listeners = new Set<(top: string, why: string) => void>();
 /** Each folder's refusal is told once (onGitPinRefused) until it's pinned again. */
 const toldFor = new Set<string>();
+/** The unpinned folders whose stray commondir has been told, until git there is let run again. */
+const strayTold = new Set<string>();
+
+/** `d`'s folders as the disk knows them, device and inode: a folder moved away and another put in its place differs. */
+const folderIds = (d: GitFolders): string =>
+  [d.common, d.own]
+    .map((p) => {
+      const st = fs.statSync(p);
+      return `${st.dev}:${st.ino}`;
+    })
+    .join(" ");
 
 /** Hear the first refusal in each pinned folder; returns the way to stop. */
 export function onGitPinRefused(cb: (top: string, why: string) => void): () => void {
@@ -127,7 +144,15 @@ export function pinGitDirs(cwd: string, found: GitFolders | null, repoPath?: str
   } catch (err) {
     why = `its git data couldn't be read (${(err as Error).message})`;
   }
-  pins.set(top, { top, real: real(top), dirs: why || !dirs ? { bad: why ?? "its git data couldn't be read" } : dirs });
+  let ids: string | undefined;
+  if (!why && dirs) {
+    try {
+      ids = folderIds(dirs);
+    } catch (err) {
+      why = `its git folders couldn't be looked at (${(err as Error).message})`;
+    }
+  }
+  pins.set(top, { top, real: real(top), dirs: why || !dirs ? { bad: why ?? "its git data couldn't be read" } : dirs, ids });
   // refused from the start: the caller tells why, so its refusals aren't told again
   if (why) toldFor.add(top);
   else toldFor.delete(top);
@@ -156,7 +181,7 @@ function pinOf(cwd: string): Pin | null {
  */
 export function gitPinRefusal(cwd: string): string | null {
   const p = pinOf(cwd);
-  if (!p) return null;
+  if (!p) return strayCommondir(cwd);
   let why: string | null = null;
   if ("bad" in p.dirs) why = p.dirs.bad;
   else {
@@ -166,6 +191,7 @@ export function gitPinRefusal(cwd: string): string | null {
       else {
         const now = readGitPointer(p.top);
         if (!same(now, p.dirs)) why = `its .git now leads to ${now.own}, not ${p.dirs.own} as when its room session started`;
+        else if (p.ids !== undefined && folderIds(now) !== p.ids) why = `its git folder ${now.own} isn't the one its room session started with: another was put in its place`;
       }
     } catch (err) {
       why = `its .git couldn't be read (${(err as Error).message})`;
@@ -187,8 +213,50 @@ export function gitPinRefusal(cwd: string): string | null {
   return refusal;
 }
 
+/**
+ * Why git mustn't run in `cwd`, a folder no room session pinned: the `.git` git would find there is a folder holding a
+ * `commondir` (readGitPointer's refusal), which would lead it to another folder's config, hooks and attributes. Told
+ * (logged and to onGitPinRefused) once per folder, until git there is let run again. Null otherwise; and when no
+ * `.git` can be looked for above `cwd`, as git then finds no repository either and says so itself.
+ */
+function strayCommondir(cwd: string): string | null {
+  let top: string | null;
+  try {
+    top = gitTop(cwd);
+  } catch {
+    return null;
+  }
+  if (!top) return null;
+  const dotGit = path.join(top, ".git");
+  let why: string | null = null;
+  try {
+    if (fs.lstatSync(dotGit).isDirectory() && fs.lstatSync(path.join(dotGit, "commondir"))) why = "its .git holds a commondir";
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") why = `its .git couldn't be checked for a commondir (${(err as Error).message})`;
+  }
+  if (!why) {
+    strayTold.delete(top);
+    return null;
+  }
+  const refusal = `Mockingbird won't run git in ${top}: ${why}, which would lead git to another folder's config, hooks and attributes and run what they name. A team room session's agent may have written it; a checkout's own .git has none. Check ${path.join(dotGit, "commondir")}.`;
+  if (!strayTold.has(top)) {
+    strayTold.add(top);
+    console.warn(`[git] ${refusal}`);
+    for (const cb of listeners) {
+      try {
+        cb(top, refusal);
+      } catch (err) {
+        console.error(`[git] telling the user git was refused in ${top} failed:`, err);
+      }
+    }
+  }
+  return refusal;
+}
+
 /** Forget every pin (tests). */
 export function clearGitPins(): void {
   pins.clear();
   toldFor.clear();
+  strayTold.clear();
 }

@@ -1,12 +1,14 @@
 import { execFileSync } from "child_process";
 import * as fs from "fs";
+import * as http from "http";
 import * as path from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { git } from "../src/main/git";
 import { clearGitPins, gitPinRefusal, onGitPinRefused, pinGitDirs, readGitPointer } from "../src/main/gitPins";
 import { roomGitDirs } from "../src/main/codexRoomSandbox";
 import { worktreeState } from "../src/main/worktrees";
-import { guardedGit, logOwnGitFailuresTo, ownFetch, ownNetworkGit, OWN_WRITE_ENV, WRITE_ENV } from "../src/main/safeGit";
+import { guardedGit, logOwnGitFailuresTo, ownFetch, ownNetworkGit, OWN_WRITE_ENV, roomFilters, WRITE_ENV } from "../src/main/safeGit";
+import { takeSnapshot } from "../src/main/snapshots";
 import { searchFiles } from "../src/main/find";
 import { tempDir } from "./helpers";
 
@@ -136,12 +138,89 @@ describe("git in a room session's folder", () => {
     await expect(git(t.repo, ["status", "--porcelain"])).rejects.toThrow(/won't run git in .*its \.git couldn't be read \(.*holds a commondir/);
     await expect(guardedGit(t.repo).then((g) => g.status(["--porcelain"]))).rejects.toThrow(/won't run git/);
     expect(fs.existsSync(t.ran)).toBe(false);
-    // one written before the launch is refused from the start
+    // one written before the launch is refused from the start: the launch's own git, and the pin
     clearGitPins();
-    expect(pinGitDirs(t.repo, (await roomGitDirs(t.repo))!, t.repo)).toMatch(/holds a commondir/);
+    await expect(roomGitDirs(t.repo)).rejects.toThrow(/won't run git in .*its \.git holds a commondir/);
+    expect(pinGitDirs(t.repo, { common: path.join(t.repo, ".git"), own: path.join(t.repo, ".git") }, t.repo)).toMatch(/holds a commondir/);
     // as git itself does without the check: it reads the other folder's config, and the program runs
     execFileSync("git", ["-C", t.repo, "status", "--porcelain"], { stdio: "ignore" });
     expect(fs.existsSync(t.ran)).toBe(true);
+  });
+
+  it("refuses a pinned .git folder another was put in place of, under the same path: its fsmonitor never runs", async () => {
+    const t = setup();
+    expect(pinGitDirs(t.repo, (await roomGitDirs(t.repo))!, t.repo)).toBeNull();
+    // the agent's: the git folder moved away, and a copy whose config has core.fsmonitor put in its place
+    const fsm = path.join(t.dir, "fsm.sh");
+    fs.renameSync(path.join(t.repo, ".git"), path.join(t.repo, ".git-old"));
+    fs.cpSync(path.join(t.repo, ".git-old"), path.join(t.repo, ".git"), { recursive: true });
+    sh(t.repo, "config", "core.fsmonitor", fsm);
+    expect(readGitPointer(t.repo)).toEqual({ common: path.join(t.repo, ".git"), own: path.join(t.repo, ".git") });
+    await expect(git(t.repo, ["status", "--porcelain"])).rejects.toThrow(/won't run git in .*its git folder .*\.git isn't the one its room session started with/);
+    expect(fs.existsSync(t.ran)).toBe(false);
+  });
+
+  it("refuses git in a folder no room session pinned whose .git holds a commondir: a local session's snapshot, a room's config check and a room repository's push run nothing the other folder's config names", async () => {
+    const dir = fs.realpathSync(tempDir("stray"));
+    const server = http.createServer((_req, res) => {
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="t"' });
+      res.end();
+    });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", () => ok()));
+    onTestFinished(() => void server.close());
+    const main = path.join(dir, "main");
+    fs.mkdirSync(main);
+    sh(main, "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(main, "README"), "x\n");
+    sh(main, "add", "-A");
+    sh(main, "commit", "-q", "-m", "base");
+    sh(main, "remote", "add", "origin", `http://127.0.0.1:${(server.address() as { port: number }).port}/repo.git`);
+    // the agent's: a commondir to a folder of its own under .git, whose config names a filter for every file and a credential helper
+    const mark = (n: string) => path.join(dir, `RAN-${n}`);
+    const fake = path.join(main, ".git", "fake");
+    fs.mkdirSync(path.join(fake, "info"), { recursive: true });
+    for (const d of ["objects", "refs", "logs"]) fs.symlinkSync(`../${d}`, path.join(fake, d));
+    const config = fs.readFileSync(path.join(main, ".git", "config"), "utf8");
+    fs.writeFileSync(path.join(fake, "config"), `${config}[filter "evil"]\n\tclean = "echo x >> '${mark("filter")}'; cat"\n[credential]\n\thelper = "!f() { echo x >> '${mark("helper")}'; }; f"\n`);
+    fs.writeFileSync(path.join(fake, "info", "attributes"), "* filter=evil\n");
+    fs.writeFileSync(path.join(main, ".git", "commondir"), "fake\n");
+    fs.appendFileSync(path.join(main, "README"), "edit\n");
+
+    const told: string[] = [];
+    const off = onGitPinRefused((top, why) => told.push(`${top}: ${why}`));
+    const refused = `Mockingbird won't run git in ${main}: its .git holds a commondir, which would lead git to another folder's config`;
+    const before = logOwnGitFailuresTo(() => {});
+    try {
+      await expect(takeSnapshot(main, "local1", "a local turn")).rejects.toThrow(refused);
+      await expect(takeSnapshot(main, "room1", "a room turn", { room: true })).rejects.toThrow(refused);
+      await expect(roomFilters(main)).rejects.toThrow(refused);
+      await expect(ownNetworkGit(main, "push", ["--no-verify", "-q", "origin", "HEAD:refs/mockingbird/x"], { roomRepo: true, timeoutMs: 20_000 })).rejects.toThrow(refused);
+      await expect(git(main, ["status", "--porcelain"])).rejects.toThrow(refused);
+    } finally {
+      logOwnGitFailuresTo(before);
+      off();
+    }
+    expect(fs.existsSync(mark("filter"))).toBe(false);
+    expect(fs.existsSync(mark("helper"))).toBe(false);
+    expect(told).toEqual([expect.stringContaining(refused)]); // told once
+    // with it gone, git runs there again
+    fs.rmSync(path.join(main, ".git", "commondir"));
+    expect(await git(main, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+    // as git itself does without the check: it reads the other folder's config, and the filter runs
+    fs.writeFileSync(path.join(main, ".git", "commondir"), "fake\n");
+    execFileSync("git", ["-C", main, "add", "-A"], { stdio: "ignore" });
+    expect(fs.existsSync(mark("filter"))).toBe(true);
+  });
+
+  it("refuses a room's git when git takes a .git folder's data from elsewhere, as GIT_COMMON_DIR makes it", async () => {
+    const t = setup();
+    const fake = path.join(t.repo, ".git", "fake");
+    fs.mkdirSync(fake);
+    for (const d of ["objects", "refs", "logs"]) fs.symlinkSync(`../${d}`, path.join(fake, d));
+    fs.copyFileSync(path.join(t.repo, ".git", "config"), path.join(fake, "config"));
+    vi.stubEnv("GIT_COMMON_DIR", fake);
+    onTestFinished(() => void vi.unstubAllEnvs());
+    await expect(roomFilters(t.repo)).rejects.toThrow(`Mockingbird won't run git in ${t.repo}: git reads its git data from ${fake}, not from its .git folder`);
   });
 
   it("leaves every other folder alone", async () => {

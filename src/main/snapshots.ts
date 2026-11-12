@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { parseNameStatus } from "./files";
 import { git, headCommit, repoTop } from "./git";
-import { guardedGit, keptByFilters, OWN_WRITE_ENV, roomFilters, withFiltersOff } from "./safeGit";
+import { guardedGit, keptByFilters, OWN_WRITE_ENV, REAL_OBJECTS, roomFilters, withFiltersOff } from "./safeGit";
 import { SNAPSHOT_MAX_FILE_BYTES, type TurnChange, type TurnSnapshot } from "../shared/types";
 
 /**
@@ -314,7 +314,7 @@ export async function changesSince(cwd: string, sessionId: string, n: number, op
 
 /** Files that differ: "restore" (changed or deleted since — its old content comes back) or "remove" (new since). */
 async function diffTrees(top: string, from: string, to: string): Promise<TurnChange[]> {
-  const out = await git(top, ["diff", "--no-renames", "--name-status", "-z", from, to], { trim: false });
+  const out = await git(top, ["diff", "--no-renames", "--name-status", "-z", from, to], { trim: false, env: REAL_OBJECTS });
   return parseNameStatus(out).map((c) => ({ path: c.path, action: c.status === "A" ? "remove" : "restore" }));
 }
 

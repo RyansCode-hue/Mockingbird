@@ -10,9 +10,9 @@ import { listAllFiles } from "../src/main/find";
 import { repoState } from "../src/main/handoff";
 import { prDescriptionPrompt } from "../src/main/pullRequests";
 import { ignoredCandidates } from "../src/main/runDraft";
-import { driversToTurnOff, guardedGit, ownFetch, ownNetworkEnv, programOnPath } from "../src/main/safeGit";
+import { driversToTurnOff, guardedGit, OWN_WRITE_ENV, ownFetch, ownNetworkEnv, programOnPath, roomWriteEnv } from "../src/main/safeGit";
 import { scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
-import { dropSnapshots, leftOutIn, snapshotCommit, takeSnapshot } from "../src/main/snapshots";
+import { dropSnapshots, leftOutIn, restoreSnapshot, snapshotCommit, takeSnapshot } from "../src/main/snapshots";
 import { fetchOrigin } from "../src/main/team/branchFiles";
 import { excludeInRepo } from "../src/main/team/claims";
 import { makeTestCopy } from "../src/main/testCopy";
@@ -579,5 +579,36 @@ describe("the drivers turned off", () => {
     expect(driversToTurnOff("filter.clean\nx\0", true)).toEqual([]);
     expect(driversToTurnOff("", true)).toEqual([]);
     expect(() => driversToTurnOff("core.fsmonitor\nx\0", true)).toThrow(/among the filter and LFS settings/);
+  });
+});
+
+describe("the objects Mockingbird reads", () => {
+  it("are the ones a push sends, never what a replace ref or a grafts file says stands in for them", async () => {
+    const repo = makeRepo({ "a.txt": "base\n" });
+    write(repo, { "a.txt": "what is pushed\n" });
+    git(repo, "commit", "-qam", "change");
+    const pushed = git(repo, "rev-parse", "HEAD:a.txt");
+    const shown = spawnSync("git", ["-C", repo, "hash-object", "-w", "--stdin"], { input: "what is shown\n", encoding: "utf8" }).stdout.trim();
+    // a ref under refs/replace, which a room session's agent writes with the rest, and a grafts file cutting HEAD's parent
+    git(repo, "replace", pushed, shown);
+    fs.writeFileSync(path.join(repo, ".git", "info", "grafts"), `${git(repo, "rev-parse", "HEAD")}\n`);
+    expect(git(repo, "show", "HEAD:a.txt")).toBe("what is shown"); // as plain git reads them
+    const diff = await (await guardedGit(repo)).diff(["HEAD~1", "HEAD"]);
+    expect(diff).toContain("+what is pushed");
+    expect(diff).not.toContain("what is shown");
+    const read = (env: Record<string, string>, ...args: string[]) => spawnSync("git", ["-C", repo, ...args], { env: { ...process.env, ...env }, encoding: "utf8" }).stdout.trim();
+    for (const [name, env] of [
+      ["own writes", OWN_WRITE_ENV],
+      ["a room's writes", await roomWriteEnv(repo)],
+      ["a room's network gits", await ownNetworkEnv(repo, { roomRepo: true })],
+    ] as const) {
+      expect(read(env, "show", "HEAD:a.txt"), name).toBe("what is pushed");
+      expect(read(env, "rev-list", "--count", "HEAD"), name).toBe("2");
+    }
+    // a turn's snapshot restored puts back what was stored
+    const snap = (await takeSnapshot(repo, "s1", "a turn"))!;
+    write(repo, { "a.txt": "edited\n" });
+    await restoreSnapshot(repo, "s1", snap.n);
+    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("what is pushed\n");
   });
 });

@@ -13,7 +13,7 @@ import { transcriptRefusal } from "./roomLimits";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, leftOutIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
-import { guardedGit, keptByFilters, loggedAlready, OWN_WRITE_ENV, ownFetch, ownNetworkGit, prePushNote, roomFilters, type SetAside, shownFailure, withFiltersOff } from "../safeGit";
+import { guardedGit, keptByFilters, loggedAlready, OWN_WRITE_ENV, ownFetch, ownNetworkGit, prePushNote, REAL_OBJECTS, roomFilters, type SetAside, shownFailure, withFiltersOff } from "../safeGit";
 import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, realpathOr } from "../agentFiles";
@@ -1728,7 +1728,7 @@ export class TakeoverService {
       });
       const files = await changedFiles(top, base, commit.sha);
       if (!files.length) throw new Error(`Nothing to send: ${name} has everything in this copy`);
-      const patch = await gitBytes(top, ["diff", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", base, commit.sha]);
+      const patch = await gitBytes(top, ["diff", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", base, commit.sha], { env: REAL_OBJECTS });
       if (patch.length > MAX_BUNDLE) throw new Error(`The changes come to ${mb(patch.length)}, over the ${mb(MAX_BUNDLE)} sent peer to peer`);
       await this.d.team.request(now.owner, "takeover.changes", { roomId, sessionId, title: rec.title, files, patch: patch.toString("base64") }, { roomId, timeoutMs: SEND_TIMEOUT_MS });
       await git(top, ["update-ref", roomBackupRef(roomId, sessionId, SENT_ROOT), commit.sha], { env: OWN_WRITE_ENV });

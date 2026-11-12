@@ -56,6 +56,15 @@ const NO_HOOKS: Pair = ["core.hooksPath", "/dev/null"];
  */
 export const WRITE_ENV: Readonly<Record<string, string>> = configEnv(NEUTRAL_OVERRIDES);
 
+/**
+ * The objects themselves, as a push sends them: no replace refs (refs/replace, which a room session's agent writes with
+ * the rest of the refs) and no grafts file standing in for them, so a diff, a snapshot or a tree Mockingbird reads shows
+ * what's stored, not what one says stands in its place. The grafts file named is one that can't exist: with one git can
+ * open (/dev/null), every git it reaches, a push's receive-pack too, prints grafts' deprecation advice into what
+ * Mockingbird shows.
+ */
+export const REAL_OBJECTS: Readonly<Record<string, string>> = { GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null/no-grafts" };
+
 /** No `ext::` transport: its URL names a command, which a repository's `url.*.insteadOf` could make of any remote. */
 const NO_EXT: Pair = ["protocol.ext.allow", "never"];
 
@@ -63,9 +72,9 @@ const NO_EXT: Pair = ["protocol.ext.allow", "never"];
  * WRITE_ENV with no hooks and no `ext::` transport: for the writes Mockingbird makes on its own, which nobody asked to
  * run a hook for: a turn's snapshot (its throwaway index, its refs), take-over's own refs (backups, pins, copies), and
  * under ownNetworkGit its own fetches. A fetch reads the index (for submodules), so fsmonitor off matters there too.
- * Filters stay on, as for WRITE_ENV.
+ * Filters stay on, as for WRITE_ENV. REAL_OBJECTS: a snapshot restored, a backup or a take-over's copy is what was stored.
  */
-export const OWN_WRITE_ENV: Readonly<Record<string, string>> = configEnv([...NEUTRAL_OVERRIDES, NO_HOOKS, NO_EXT]);
+export const OWN_WRITE_ENV: Readonly<Record<string, string>> = { ...configEnv([...NEUTRAL_OVERRIDES, NO_HOOKS, NO_EXT]), ...REAL_OBJECTS };
 
 /**
  * What each of Mockingbird's own network gits adds before its arguments: git's own upload-pack or receive-pack, never
@@ -114,6 +123,16 @@ function programOf(command: string): string {
   }
 }
 
+/** Whether `p` is a folder, symlinks followed; false when it isn't there. */
+function isFolder(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT" || (err as NodeJS.ErrnoException).code === "ENOTDIR") return false;
+    throw err;
+  }
+}
+
 /** `p` with symlinks followed; a path that isn't there yet, from the nearest folder above it that is (/tmp's link too). */
 const realOr = (p: string): string => {
   const abs = path.resolve(p);
@@ -138,6 +157,12 @@ interface Trees {
 }
 async function treesOf(cwd: string): Promise<Trees> {
   const [top, common, own] = (await git(cwd, ["rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir", "--git-dir"])).split("\n").map(realOr);
+  // a .git folder is the repository's own git data: git taking it from elsewhere (a commondir there, GIT_COMMON_DIR)
+  // would make another folder's config "the shared config" below
+  const dotGit = path.join(top, ".git");
+  if (isFolder(dotGit) && (common !== realOr(dotGit) || own !== realOr(dotGit))) {
+    throw new Error(`Mockingbird won't run git in ${top}: git reads its git data from ${common === realOr(dotGit) ? own : common}, not from its .git folder, so it would run what another folder's config names`);
+  }
   const listed = await git(cwd, ["worktree", "list", "--porcelain", "-z"], { env: OWN_WRITE_ENV, trim: false });
   const trees = listed.split("\0").filter((l) => l.startsWith("worktree ")).map((l) => realOr(l.slice("worktree ".length)));
   return { top, trees: [...new Set([top, ...trees])], gitDirs: [...new Set([common, own])], configs: [path.join(common, "config"), path.join(own, "config.worktree")] };
@@ -477,9 +502,11 @@ async function lfsRedirect(cwd: string, remote: string): Promise<string | null> 
   return null;
 }
 
-/** A room session's git environment with hooks from `folder` (usersHooks'): NEUTRAL_OVERRIDES, and no ext:: transport. */
-const roomEnvAt = (g: { folder: string; filtersOff: readonly string[] }): Record<string, string> =>
-  configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", g.folder], NO_EXT, ...filtersOffPairs(g.filtersOff)]);
+/** A room session's git environment with hooks from `folder` (usersHooks'): NEUTRAL_OVERRIDES, no ext:: transport, and REAL_OBJECTS. */
+const roomEnvAt = (g: { folder: string; filtersOff: readonly string[] }): Record<string, string> => ({
+  ...configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", g.folder], NO_EXT, ...filtersOffPairs(g.filtersOff)]),
+  ...REAL_OBJECTS,
+});
 
 /**
  * How git writes a team room session's folder when someone asks (Source Control's stage, unstage, discard and commit,
@@ -818,6 +845,7 @@ export async function guardedGit(cwd: string, o: { timeoutMs?: number } = {}): P
       ]),
     ]),
     GIT_OPTIONAL_LOCKS: "0",
+    ...REAL_OBJECTS,
   };
   const checked = async <T extends string | Buffer>(args: readonly string[], opts: GitOptions, f: (cwd: string, args: string[], opts: GitOptions) => Promise<T>): Promise<T> => {
     const out = await f(cwd, [...args], { ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}), ...opts, env: { ...opts.env, ...env } });

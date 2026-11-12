@@ -4622,6 +4622,105 @@ The verify of fixes 4 and 5 found one High, a sandbox gap that predates W15.
     unconditionally, so git's own listing showed what it named. A case with the user's
     file itself behind an unmatched includeIf now catches it.
 
+#### W15 review fixes 7 as built
+
+The verify of fixes 6 found H-1 holding under a real `codex sandbox`, in a main
+checkout and a linked worktree:
+- writes to `commondir`, `gitdir`, `config.worktree`, `alternates` and
+  `info/attributes` are refused;
+- so are moving or removing their folders, moving `hooks` or `.git`, and writing
+  through hard links.
+
+It found L-1 and L-2 closed. One Medium and one Low were left.
+
+- **M-1. Mockingbird's own backstop, outside pins.** For Claude room sessions, H-1 rests
+  on Claude's sandbox denying a file that isn't there yet and blocking a parent
+  folder's move, which no one has run. The reviewer's `commondir3` probe showed what
+  happened with the main checkout unpinned:
+  - `roomFilters` passed, since `treesOf` took git's own `--git-common-dir`;
+  - a local session's snapshot ran the redirected filter;
+  - a `roomRepo` push ran its credential helper.
+
+  The fixes:
+  - **Every git, pinned or not (`gitPins.ts`'s `strayCommondir`).**
+    - `gitPinRefusal`, which `git.ts` asks before every git it runs, now refuses one
+      in an unpinned folder whose `.git` is a folder holding a `commondir`. That
+      covers status, snapshots, guarded reads, own network gits and room writes.
+    - The refusal names the file. It's logged (`[git] …`) and sent to
+      `onGitPinRefused` once per folder, and told again if it comes back after git
+      ran there.
+    - When no `.git` can be looked for above the folder, the check passes, and git
+      then finds no repository and says so itself.
+    - A room launch there fails at `roomGitDirs`.
+  - **`treesOf`.** For a `.git` folder, it refuses when `--git-common-dir` or
+    `--git-dir` isn't that folder, as with a `commondir` or `GIT_COMMON_DIR`. So
+    another folder's config is never taken as the shared config.
+  - **A swapped folder.** The pin records each git folder's device and inode. A
+    `.git` moved away, with a copy put in its place under the same path, is refused:
+    "its git folder … isn't the one its room session started with".
+- **Low. Replace refs and grafts.** `REAL_OBJECTS` (`GIT_NO_REPLACE_OBJECTS=1`,
+  `GIT_GRAFT_FILE=/dev/null/no-grafts`) is in the places below.
+  - Not `/dev/null`, as asked. Git opens that, and every git it reaches then prints
+    grafts' deprecation advice. That includes a local push's receive-pack, and it
+    pushed the real cause out of a backup push's error (`teamTakeover.test.ts`
+    caught it).
+  - A path that can't exist reads no grafts and prints nothing.
+
+  The places:
+  - guarded reads;
+  - `OWN_WRITE_ENV`, so snapshots, take-over and Mockingbird's own network gits;
+  - `roomEnvAt`, so a room's writes and network gits;
+  - snapshots' `diffTrees`;
+  - take-over's Send to patch;
+  - the teammate-diff tool's two patches.
+
+  A diff, a restore or a backup then reads the stored objects, as a push sends them,
+  not what a `refs/replace` ref the agent wrote stands in for. Local sessions'
+  Source Control keeps git's own reading (`WRITE_ENV`).
+- **Left for the follow-up list**, as noted:
+  - legacy `remotes/` and `branches/` files;
+  - `~user/` include expansion;
+  - `info/exclude` hiding files from snapshots.
+- **Tests.**
+  - `gitPins.test.ts`:
+    - The reviewer's `commondir3` with the main checkout unpinned: a local and a room
+      turn snapshot, `roomFilters`, a `roomRepo` push to a 127.0.0.1 listener
+      answering 401, and a status are all refused. Neither the filter nor the
+      credential helper ran. It's told once. With the file gone, git runs again;
+      plain git with it runs the filter.
+    - `GIT_COMMON_DIR` set to another folder: `roomFilters` refuses.
+    - A pinned `.git` swapped for a copy with `core.fsmonitor`: refused, and the
+      fsmonitor never ran.
+    - Fixes 6's pin test now sees a launch's `roomGitDirs` refused.
+  - `safeGit.test.ts` (from `replace6`), with a replace ref and a grafts file:
+    - a guarded diff shows the pushed content;
+    - `show` and `rev-list` under the own, room-write and room-network environments
+      read the stored objects;
+    - a snapshot restore puts back the stored file.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0, with the main checkout's `node_modules` linked in for
+  `leakGuard`'s nested run (the link was removed afterwards): 196 files pass and 35
+  skip; 3,358 tests pass and 339 skip.
+  - The run before the grafts change failed only `teamTakeover`'s failed-push case,
+    on the advice above.
+- Each change undone in turn (`w15/mutate8.mjs`) fails a test, 11 mutations:
+  - M-1 (5):
+    - no check outside pins;
+    - told on every git;
+    - `treesOf` trusting `--git-common-dir`;
+    - a swapped folder not compared;
+    - its identity not recorded.
+  - Low (6):
+    - `REAL_OBJECTS` empty;
+    - replace refs on;
+    - grafts on;
+    - guarded reads, the room environment or own writes without it.
+
+  The three on its value were run again after the grafts path changed.
+- Diff: 7 source and test files, 226 lines added and 20 removed, before these notes.
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn

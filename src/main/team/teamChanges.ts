@@ -3,7 +3,7 @@ import * as path from "path";
 import { git, originUrl } from "../git";
 import { baseRef } from "../files";
 import { mainCheckout } from "../runProfile";
-import { guardedGit, shownFailure } from "../safeGit";
+import { guardedGit, REAL_OBJECTS, shownFailure } from "../safeGit";
 import { changedFiles, type TeammateChanges } from "../conflicts";
 import { isSecretFileName } from "../secrets";
 import { isMissing } from "../fileOps";
@@ -692,10 +692,10 @@ export class TeamChanges {
     if (c.sources.snapshot) {
       const sha = c.sources.snapshot.sha;
       const from = base ? await git(c.clone, ["merge-base", base, sha]) : `${sha}^`;
-      diff = await git(c.clone, [...opts, from, sha, "--", file], { trim: false });
+      diff = await git(c.clone, [...opts, from, sha, "--", file], { trim: false, env: REAL_OBJECTS });
       what = `against the base branch, committed and uncommitted, as its snapshot from ${iso(c.sources.snapshot.takenAt)} has it`;
     } else if (c.sources.pushed && base) {
-      diff = await git(c.clone, [...opts, `${base}...${c.sources.pushed.tip}`, "--", file], { trim: false });
+      diff = await git(c.clone, [...opts, `${base}...${c.sources.pushed.tip}`, "--", file], { trim: false, env: REAL_OBJECTS });
       what = `on its pushed branch against ${base}, as last fetched`;
     } else {
       return { error: `${who}'s change to ${quoted(file, 500)} can't be read here: ${c.problems.map((p) => fenced(p, 300)).join("; ") || "no base branch to compare it with"}` };
