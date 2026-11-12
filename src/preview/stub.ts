@@ -12,7 +12,7 @@
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
-import { DEFAULT_SETTINGS, clearGateTicks, clearsGates, splitGroupKey } from "../shared/types";
+import { DEFAULT_SETTINGS, clearGateTicks, clearsGates, splitGroupKey, ticketOfSession } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, followsBottom, measuredCell } from "../renderer/cachedTerm";
 import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
@@ -46,7 +46,7 @@ import { runFirstRunAudit } from "./firstRunAudit";
 // the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
 import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
-import { manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
+import { WIRE_AREA, gateBoardBook, gateMerges, gatePipeline, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
@@ -266,6 +266,10 @@ const pipelines: Record<string, TicketPipeline> = {
     checkedBy: { "dev:tests": { by: "you", at: now - 31 * 60 * min }, "dev:smoke": { by: "you", at: now - 30 * 60 * min } },
   },
 };
+// W4c, ?lsGates (with ?lsWires): the wires board's gates as the send popover shows them (wiresAudit.ts' gateBoardBook),
+// =limit with Reviewer's feedback loop at its limit; 5120's pull request to dev can't be read
+const lsGatesQ = wireBoard ? new URLSearchParams(location.search).get("lsGates") : null;
+if (lsGatesQ !== null) pipelines[WIRE_AREA] = gatePipeline(now);
 
 const usage: UsageReport = {
   claude: { agent: "claude", plan: "Max", at: now - 2 * min, limits: [{ label: "5-hour limit", window: "5h", usedPct: 38, resetsAt: now + 2.5 * 60 * min }, { label: "Weekly · all models", window: "week", usedPct: 61, resetsAt: now + 3 * 24 * 60 * min }] },
@@ -3179,7 +3183,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu") || params.has("stripMore"))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu") || params.has("stripMore") || ["pick", "settings", "pop"].includes(params.get("landscapeWiresAudit") ?? ""))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {
@@ -8634,6 +8638,7 @@ w.__mbPrefsAtLoad = Object.fromEntries([...Object.values(LEGACY_PREF_KEYS), "mb.
 import {
   createdAtAfter,
   emptyWireBook,
+  isSending,
   newWire,
   parseWireSettings,
   rekeyedBook,
@@ -8645,6 +8650,7 @@ import {
   wireRefusal,
   withSettings,
   withoutSession,
+  type MergeView,
   type SendReply,
   type Wire,
   type WireBook,
@@ -8657,11 +8663,29 @@ import {
 let wireBook: WireBook = emptyWireBook();
 if (wireBoard) wireBook = stripBoard ? stripBoardBook(stripBoard, now) : wireBoardBook(now);
 else if (lsWiresQ !== null && manyQ) wireBook = manyWiresBook(sessions, Number(lsWiresQ) || 20, now);
-// W4a: ?landscapeWiresAudit=near|far|drag|area|pill works the wires drawn (wiresAudit.ts) for test/uiLandscapeWires.test.ts
-if (params.has("landscapeWiresAudit")) runWiresAudit({ calls, waitFor }, params.get("landscapeWiresAudit") || "near");
+/** Main's merge views (WireState.merges): the merge watch's, which nothing here runs. */
+let wireMerges: Record<string, MergeView> = {};
+if (lsGatesQ !== null) {
+  wireBook = gateBoardBook(wireBook, now, lsGatesQ === "limit");
+  wireMerges = gateMerges();
+}
+// W4a: ?landscapeWiresAudit=near|far|drag|area|pill works the wires drawn (wiresAudit.ts) for test/uiLandscapeWires.test.ts.
+// W4c's parts have a finish arrive at a gate while its popover is open (`finish`), as finish_step's would
+if (params.has("landscapeWiresAudit"))
+  runWiresAudit(
+    {
+      calls,
+      waitFor,
+      finish: (id, body) => {
+        const w = wireBook.links[id];
+        if (w) wireChanged(withLink(id, { ...w, pending: { id: `${w.pending?.id ?? "pd"}-again`, body, at: Date.now(), flags: [] } }));
+      },
+    },
+    params.get("landscapeWiresAudit") || "near"
+  );
 let wiresRev = 0;
 const removedWires = new Map<string, Wire>();
-const wireState = (): WireState => clone({ book: wireBook, refused: null, wiresRev, problems: [] });
+const wireState = (): WireState => clone({ book: wireBook, refused: null, wiresRev, problems: [], ...(Object.keys(wireMerges).length ? { merges: wireMerges } : {}) });
 /** The rules' view of this file's sessions: running ones, and closed ones (previous) as main's resumable. */
 const wireEnds = (): Pick<WireContext, "end"> => ({
   end: (id) => {
@@ -8680,6 +8704,8 @@ const wireEnds = (): Pick<WireContext, "end"> => ({
       placed: running || Object.hasOwn(landscape.ghosts, id),
       folder: s.cwd,
       hooksSilent: !!s.hooksSilent,
+      ticket: ticketOfSession(s),
+      branch: s.branch,
     };
   },
 });
@@ -8761,13 +8787,78 @@ Object.assign(api, {
     const r = await api.wiresAdd(id, t.id, "worktree");
     return "refused" in r ? err(r.refused) : t;
   },
-  // a gate's acts: nothing in the preview runs an agent to send to, and nothing waits at a gate here
-  wiresSend: async (_id: string, _pendingId: string, _body: string, _opts?: { start?: boolean }): Promise<SendReply> => ({ refused: "The preview doesn't send along wires." }),
-  wiresSendAgain: async (_id: string, _pendingId: string, _body: string, _opts?: { start?: boolean }): Promise<SendReply> => ({ refused: "The preview doesn't send along wires." }),
-  wiresMarkSent: async (): Promise<WireReply> => ({ refused: "Only what may have reached the other end can be marked sent." }),
-  wiresMoreRounds: async (): Promise<WireReply> => ({ refused: "The preview doesn't count rounds." }),
-  wiresResetRounds: async (): Promise<WireReply> => ({ refused: "The preview doesn't count rounds." }),
+  // a gate's acts, as main's delivery has them (wireDelivery.ts): checked, written ahead as queued, then sent a moment
+  // later. Nothing reaches a pane; a stopped other end is "started" once the window says so
+  wiresSend: (id: string, pendingId: string, body: string, opts?: { start?: boolean }) => gateSend(id, pendingId, body, opts, false),
+  wiresSendAgain: (id: string, pendingId: string, body: string, opts?: { start?: boolean }) => gateSend(id, pendingId, body, opts, true),
+  wiresMarkSent: async (id: string, pendingId: string): Promise<WireReply> => {
+    const w = Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined;
+    if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
+    if (w.delivery?.id !== pendingId || w.delivery.state !== "unconfirmed") return { refused: "Only what may have reached the other end can be marked sent." };
+    const { pending, ...rest } = w;
+    return wireChanged(withLink(id, { ...rest, ...(pending && pending.id !== pendingId ? { pending } : {}), delivery: { ...w.delivery, state: "sent", at: Date.now(), why: "Marked sent by you." } }));
+  },
+  wiresMoreRounds: async (id: string): Promise<WireReply> => gateRounds(id, (r) => (r.used < r.limit ? "It has rounds left." : { limit: r.used + 1, used: r.used })),
+  wiresResetRounds: async (id: string): Promise<WireReply> => gateRounds(id, (r) => ({ limit: r.limit, used: 0 })),
 });
+/** How long main takes to write a send ahead and answer, and then for the other end's queue to take it. */
+const GATE_ANSWER_MS = 1600;
+const GATE_SENT_MS = 900;
+async function gateSend(id: string, pendingId: string, body: string, opts: { start?: boolean } | undefined, again: boolean): Promise<SendReply> {
+  await later(null, GATE_ANSWER_MS);
+  const w = Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined;
+  if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
+  const b = wireEnds().end(w.to);
+  const to = b ? `“${b.title}”` : "the other end";
+  if (isSending(w)) return { refused: w.delivery!.id === pendingId ? `It's on its way to ${to} already.` : `Another message on this wire is still on its way to ${to}: send this once it has gone.` };
+  if (!w.pending || w.pending.id !== pendingId) {
+    if (w.delivery?.id === pendingId && (w.delivery.state === "sent" || w.delivery.state === "placed")) return { refused: `That was sent to ${to} already.` };
+    return { refused: w.pending ? "What was waiting there has been replaced by something newer: send that instead." : "There's nothing waiting on this wire to send." };
+  }
+  const unconfirmed = w.delivery?.id === pendingId && w.delivery.state === "unconfirmed";
+  if (!again && unconfirmed) return { refused: `It may have reached ${to} already: send it again, or mark it sent.` };
+  if (again && !unconfirmed) return { refused: "Send again is for what may have reached the other end already: this one can simply be sent." };
+  if (!body.trim()) return { refused: "There's nothing to send." };
+  if (b && b.where !== "running" && !opts?.start) {
+    const start = b.where === "dead" ? "resume" : "reopen";
+    return { refused: `${to} isn't running: sending this ${start === "resume" ? "resumes" : "reopens"} it, which rereads its conversation.`, start };
+  }
+  const sent = again ? `${pendingId}-sent` : pendingId;
+  const counted = !again && w.delivery?.id === pendingId && w.delivery.state !== "held";
+  const rounds = w.rounds && !counted ? { ...w.rounds, used: w.rounds.used + 1 } : w.rounds;
+  wireChanged(withLink(id, { ...w, pending: { ...w.pending, id: sent, body }, delivery: { id: sent, state: "queued", at: Date.now(), attempt: `a-${sent}` }, ...(rounds ? { rounds } : {}) }));
+  setTimeout(() => {
+    const now = wireBook.links[id];
+    if (now?.delivery?.id !== sent || now.delivery.state !== "queued") return;
+    const { pending, ...rest } = now;
+    wireChanged(withLink(id, { ...rest, ...(pending && pending.id !== sent ? { pending } : {}), delivery: { ...now.delivery, state: "sent", at: Date.now() } }));
+  }, GATE_SENT_MS);
+  return { state: wireState() };
+}
+function gateRounds(id: string, change: (r: NonNullable<Wire["rounds"]>) => NonNullable<Wire["rounds"]> | string): WireReply {
+  const w = Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined;
+  if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
+  if (!w.rounds) return { refused: "Only a feedback wire counts rounds." };
+  const next = change(w.rounds);
+  if (typeof next === "string") return { refused: next };
+  return wireChanged(next.limit === w.rounds.limit && next.used === w.rounds.used ? wireBook : withLink(id, { ...w, rounds: next }));
+}
+// Mark merged… readies the wires waiting on that pull request, flagged and held, as main's merge watch does once the user marks it
+const markMergedBeforeWires = api.pipelinePrMarkMerged;
+api.pipelinePrMarkMerged = async (ticket: string, url: string) => {
+  const r = await markMergedBeforeWires(ticket, url);
+  if (r && typeof r === "object" && "error" in r) return r;
+  const pr = pipelines[ticket]?.prs.find((x) => x.url === url);
+  for (const [id, w] of Object.entries(wireBook.links)) {
+    const a = wireEnds().end(w.from);
+    if (w.when !== "pr-merged" || !Object.hasOwn(wireMerges, id) || !pr || !a) continue;
+    const { [id]: _was, ...rest } = wireMerges;
+    wireMerges = rest;
+    const flag = `You marked PR ${pr.id} to ${pr.target} merged: Mockingbird couldn't read it.`;
+    wireChanged(withLink(id, { ...w, pending: { id: `pd-merge-${pr.id}`, body: `PR ${pr.id} to ${pr.target} (${pr.branch} → ${pr.base}) merged.\n\n“${a.title}” hasn't finished a step with a summary yet.`, at: Date.now(), flags: [flag] } }));
+  }
+  return r;
+};
 // a forgotten session's wires go with it, as main drops them at sessions:kill once the kill has gone through
 const killSessionBeforeWires = api.killSession;
 api.killSession = async (id: string, forget?: boolean) => {

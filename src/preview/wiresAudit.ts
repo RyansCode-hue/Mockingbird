@@ -25,10 +25,15 @@
  * - =pick and =settings: the picker, and Reviewer → Tester's settings, left open for a screenshot (synthetic events);
  * - =fresh (with ?lsSpikeGone): Start fresh from Spike's ghost, its handoff from Fixtures moved to the fresh session, or
  *   with `&freshAs=terminal` refused, gone with Spike and said.
+ *
+ * W4c's, the send popover (with ?lsGates for the gates `gateBoardBook` sets):
+ * - =send, =gatekeys and =dbl (at 100%): Send and Not yet, and the clicks and keys they take or don't;
+ * - =gates: B closed, unconfirmed, a merge that can't be read, a blocked wire's settings; with lsGates=limit, the limit;
+ * - =pop&pop=<wire> (&popConfirm): a wire's popover left open for a screenshot (synthetic events).
  */
 import type { Area, Landscape, Rect } from "../shared/landscape";
-import type { SessionInfo } from "../shared/types";
-import { newWire, type Wire, type WireBook } from "../shared/wires";
+import type { SessionInfo, TicketPipeline } from "../shared/types";
+import { newWire, type MergeView, type Wire, type WireBook } from "../shared/wires";
 import { drive } from "./needsYouAudit";
 
 export const WIRE_AREA = "5120";
@@ -99,6 +104,39 @@ export function wireBoardBook(at: number): WireBook {
   };
 }
 
+/** W4c's pull request on 5120, which the merge watch can't read (`?lsGates`). */
+export const GATE_PR_URL = "https://dev.azure.com/acme/Backoffice/_git/backoffice/pullrequest/11";
+const GATE_PR_WHY = "Can't tell whether PR 11 to dev merged (3 tries): the provider answered 503 Service Unavailable.";
+
+/**
+ * The wires board's gates as the send popover shows them (W4c, `?lsGates`): Builder's handoff to Reviewer may have
+ * arrived (unconfirmed); Fixtures' handoff to Spike, a ghost, waits at its gate (Send reopens it); Shape export's handoff
+ * to Builder waits for PR 11 to dev to merge, which can't be read (`gateMerges`, `gatePipeline`); with `limit`,
+ * Reviewer's feedback loop is at its limit, 3 of 3, with its changes waiting.
+ */
+export function gateBoardBook(book: WireBook, at: number, limit: boolean): WireBook {
+  const links = { ...book.links };
+  links[W("sending")] = { ...links[W("sending")], delivery: { id: "pd-build", state: "unconfirmed", at, why: "It may have reached “Reviewer”: Mockingbird quit while it was being pasted." } };
+  links[W("ghost")] = { ...links[W("ghost")], pending: { id: "pd-fixtures", body: "The streaming fixtures are in fixtures/stream: 40k donors, one with no email.", at, flags: [] } };
+  const { delivery: _sent, ...shape } = links[W("sent")];
+  links[W("sent")] = { ...shape, when: "pr-merged", since: at };
+  if (limit) links[W("loop")] = { ...links[W("loop")], rounds: { limit: 3, used: 3 } };
+  return { ...book, links };
+}
+/** Main's merge view of `?lsGates`' pr-merged wire: its pull request can't be read. */
+export const gateMerges = (): Record<string, MergeView> => ({ [W("sent")]: { blocked: GATE_PR_WHY } });
+/** 5120's ticket record with that pull request, its reads failing. */
+export const gatePipeline = (at: number): TicketPipeline => ({
+  ticketId: WIRE_AREA,
+  title: "Shape donor export",
+  stage: "pr-dev",
+  history: [],
+  prs: [{ target: "dev", provider: "ado", id: 11, url: GATE_PR_URL, repo: "backoffice", branch: DIR, base: "dev", at: at - 3_600_000, watch: { failures: 3, why: "the provider answered 503 Service Unavailable", at } }],
+  feedback: [],
+  drafts: [],
+  checks: {},
+});
+
 /** The pipeline strip's boards over the wires board (W6, `?wires=`), focused on Builder. */
 export type StripBoard = "chain" | "fanout";
 export const stripBoardOf = (q: string | null): StripBoard | null => (q === "chain" || q === "fanout" ? q : null);
@@ -144,6 +182,8 @@ export function manyWiresBook(sessions: readonly SessionInfo[], count: number, a
 export interface WiresAuditEnv {
   calls: { fn: string; args: unknown[] }[];
   waitFor: (selector: string, then: (el: HTMLElement) => void, tries?: number) => void;
+  /** Wire `id`'s source finishes again, as its finish_step would: a new pending, `body`, replaces what waited. */
+  finish?: (id: string, body: string) => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -237,6 +277,7 @@ const keysAt = () => {
   if (a?.closest(".xterm")) return `terminal:${a.closest<HTMLElement>(".ls-node")?.dataset.front ?? "?"}`;
   if (a?.classList.contains("ls-viewport")) return "landscape";
   if (a?.closest(".wp-pick")) return "picker";
+  if (a?.closest(".wg-pop")) return "popover";
   if (a?.closest(".wr-pop")) return "settings";
   if (a?.closest(".mb-ctx")) return "menu";
   return a?.tagName ?? "none";
@@ -441,15 +482,15 @@ async function menusAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
   out.treeMenu = menuNow();
   await drive([{ key: "Escape" }]);
   await sleep(300);
-  // Settings… picked with Enter, and Tab eight times and Enter in the same burst: Tab walks onto no control, Enter
-  // presses nothing (Remove is the eighth stop), and nothing is changed
+  // Settings… picked with Enter, and Tab nine times and Enter in the same burst: Tab walks onto no control, Enter
+  // presses nothing (Remove is the ninth stop, after a handoff's three Whens), and nothing is changed
   await sleep(1100);
   mark = env.calls.length;
   await drive([{ mouse: { ...wireMid(W("held")), clickCount: 1, button: "right" } }]);
   await sleep(200);
   await drive([{ key: "Enter" }]);
   const shown = { open: !!form(), keyboard: keysAt() };
-  await drive([...Array.from({ length: 8 }, () => ({ key: "Tab" })), { key: "Enter" }]);
+  await drive([...Array.from({ length: 9 }, () => ({ key: "Tab" })), { key: "Enter" }]);
   await sleep(300);
   const burstKeys = { shown, open: !!form(), keyboard: document.activeElement?.classList.contains("wr-pop") ?? false, set: since(mark, "wiresSet"), removed: since(mark, "wiresRemove") };
   await drive([{ key: "Escape" }]);
@@ -641,8 +682,227 @@ async function freshAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
   };
 }
 
+// ---- W4c: the send popover ----------------------------------------------------------------
+
+/** Wire `id`'s gate dot on screen, its middle. */
+const dotMid = (id: string): Pt => mid(document.querySelector(`.ls-wires g[data-wire="${CSS.escape(id)}"] circle.dot`));
+const popEl = () => document.querySelector<HTMLElement>(".wg-pop:not(.mb-ghost)");
+const popButton = (label: string) => [...(popEl()?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((b) => b.textContent === label) ?? null;
+/** The send popover as shown: its face, title, whys, what it sends, its buttons (off ones marked), and what it said. */
+const popNow = () => {
+  const p = popEl();
+  if (!p) return null;
+  const text = (sel: string) => p.querySelector(sel)?.textContent?.replace(/\s+/g, " ").trim() ?? null;
+  const field = p.querySelector<HTMLTextAreaElement | HTMLPreElement>(".wg-body");
+  return {
+    face: [...(p.firstElementChild?.classList ?? [])].find((c) => c.startsWith("wg-"))?.slice(3) ?? null,
+    ends: text(".wr-ends"),
+    kind: text(".wr-kind"),
+    whys: [...p.querySelectorAll(".wg-why")].map((e) => e.textContent),
+    body: field ? (field instanceof HTMLTextAreaElement ? field.value : field.textContent) : null,
+    flags: [...p.querySelectorAll(".wg-flags li")].map((e) => e.textContent),
+    buttons: [...p.querySelectorAll<HTMLButtonElement>("button")].filter((b) => b.closest(".wr-foot, .wg-acts")).map((b) => `${b.disabled ? "off " : ""}${b.textContent}`),
+    question: text(".wg-q"),
+    when: [...p.querySelectorAll<HTMLButtonElement>(".wr-seg button")].map((b) => `${b.getAttribute("aria-pressed") === "true" ? "* " : ""}${b.disabled ? "off " : ""}${b.textContent}`),
+    err: text(".wr-err"),
+    hint: text(".wg-hint"),
+    keyboard: p.contains(document.activeElement),
+    box: box(p),
+  };
+};
+const lookNow = (id: string) => [...(document.querySelector(`.ls-wires g[data-wire="${CSS.escape(id)}"]`)?.classList ?? [])].find((c) => c.startsWith("lk-"))?.slice(3) ?? null;
+const clickAt = (p: Pt, clickCount = 1) => drive([{ mouse: { ...p, clickCount } }]);
+
+/**
+ * Send, Not yet and what they take (at 100%): opened by a click on Reviewer → Builder's dot, a click straight after where
+ * Send came up, a click made by code, Not yet; reopened, edited, a second finish arriving while it's open, a click on
+ * Send as that lands, then Send double-clicked, and clicked again while main is still answering.
+ */
+async function sendAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const sends = () => env.calls.slice(start).filter((c) => c.fn === "wiresSend").map((c) => c.args);
+  const loop = W("loop");
+  await clickAt(dotMid(loop));
+  out.opened = popNow();
+  await clickAt(mid(popButton("Send")));
+  out.early = { sends: sends().length, pop: popNow() };
+  await sleep(700);
+  popButton("Send")?.click();
+  await sleep(200);
+  out.byCode = { sends: sends().length, open: !!popEl() };
+  await clickAt(mid(popButton("Not yet")));
+  await sleep(400);
+  out.notYet = { sends: sends().length, pop: popNow(), look: lookNow(loop), keys: keysAt() };
+  // reopened, Send automatically clicked as it comes up (let go); then edited, and Reviewer finishes again while it's open
+  await sleep(600);
+  await clickAt(dotMid(loop));
+  const auto = () => popEl()?.querySelector<HTMLInputElement>(".wr-check input") ?? null;
+  await clickAt(mid(auto()));
+  const autoEarly = { set: env.calls.slice(start).filter((c) => c.fn === "wiresSet").length, checked: auto()?.checked ?? null };
+  await sleep(700);
+  const field = () => popEl()?.querySelector<HTMLTextAreaElement>("textarea.wg-body") ?? null;
+  await drive([{ mouse: { ...mid(field()), clickCount: 1 } }, { key: " " }, { key: "o" }, { key: "k" }]);
+  const edited = popNow();
+  env.finish?.(loop, "1. The stream still disposes early.\n2. Email needs DonorPII.\n3. Add a test for the cap.");
+  await sleep(150);
+  const replaced = popNow();
+  await clickAt(mid(popButton("Send")));
+  const onArrival = { sends: sends().length, pop: popNow() };
+  await sleep(700);
+  await drive([{ mouse: { ...mid(field()), clickCount: 1 } }, { key: " " }, { key: "o" }, { key: "k" }]);
+  await sleep(1100);
+  const shown = field()?.value ?? null;
+  // Send double-clicked; then, while main is still answering (stub.ts' GATE_ANSWER_MS), clicked once more
+  const at = mid(popButton("Send"));
+  await clickAt(at);
+  await clickAt(at, 2);
+  await sleep(200);
+  const during = popNow();
+  await clickAt(at);
+  const again = popNow();
+  await sleep(1600);
+  out.send = { autoEarly, edited, replaced, onArrival, shown, during, again, sends: sends(), pop: popNow(), look: lookNow(loop), keys: keysAt() };
+  await sleep(1200);
+  out.sent = { look: lookNow(loop), sends: sends().length };
+}
+
+/**
+ * A double click on Reviewer → Builder's dot near the window's foot (the popover flips up over it): the second click
+ * lands in the popover and presses nothing; then a click on its Send as soon as it would count.
+ */
+async function dblAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const sends = () => env.calls.slice(start).filter((c) => c.fn === "wiresSend").length;
+  // the view panned so the dot is 50 px above the landscape's foot
+  const v = document.querySelector(".ls-viewport")!.getBoundingClientRect();
+  const was = dotMid(W("loop"));
+  await drive([{ wheel: { x: Math.round(v.left + v.width / 2), y: Math.round(v.top + v.height / 2), dy: was.y - (v.bottom - 50) } }]);
+  await sleep(800);
+  const at = dotMid(W("loop"));
+  await drive([{ mouse: { ...at, clickCount: 1 } }, { mouse: { ...at, clickCount: 2 } }]);
+  const p = popNow();
+  out.dbl = { dot: at, pop: p, under: document.elementFromPoint(at.x, at.y)?.closest(".wg-pop") ? "popover" : "landscape", sends: sends() };
+  await sleep(600);
+  await clickAt(mid(popButton("Send")));
+  await sleep(2200);
+  out.after = { sends: sends(), pop: popNow(), keys: keysAt() };
+}
+
+/**
+ * Keys (at 100%): Builder's terminal typed in, its dot clicked and Tab, Tab, Enter in the same burst (nothing pressed,
+ * nothing written there, a word on why); after a pause Tab, Tab, Enter sending it; the keyboard on the landscape after.
+ */
+async function gateKeysAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const since = (fn: string) => env.calls.slice(start).filter((c) => c.fn === fn).map((c) => c.args);
+  const loop = W("loop");
+  const dot = dotMid(loop);
+  await clickAt(mid(node(W("builder"))?.querySelector(".ls-term")));
+  await sleep(300);
+  out.before = keysAt();
+  await drive([{ key: "q" }, { mouse: { ...dot, clickCount: 1 } }, { key: "Tab" }, { key: "Tab" }, { key: "Enter" }, { key: " " }]);
+  await sleep(300);
+  out.burst = { pop: popNow(), sends: since("wiresSend").length, writes: since("sessionWrite").length };
+  await sleep(1200);
+  await drive([{ key: "Tab" }, { key: "Tab" }]);
+  const onSend = document.activeElement?.textContent ?? null;
+  await drive([{ key: "Enter" }]);
+  await sleep(1500);
+  out.paused = { onSend, sends: since("wiresSend"), pop: popNow(), keys: keysAt(), writes: since("sessionWrite").length };
+  // Esc closes it: the keyboard goes back to the landscape, not to Builder's terminal, which had it before
+  await clickAt(mid(node(W("builder"))?.querySelector(".ls-term")));
+  await sleep(1200);
+  await clickAt(dotMid(W("held")));
+  await sleep(300);
+  const opened = keysAt();
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  out.esc = { opened, pop: !!popEl(), keys: keysAt() };
+}
+
+/**
+ * The other faces (with ?lsGates): a ready handoff to a ghost (Send reopens it, its cost asked first), what may have
+ * arrived (Mark sent), a merge that can't be read (Check now, Mark merged… and its confirm), a blocked wire's settings
+ * (When its PR merges, edits saved); with =limit, a feedback loop at its limit (One more round, then Send under it).
+ */
+async function gatesAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const start = env.calls.length;
+  const since = (fn: string) => env.calls.slice(start).filter((c) => c.fn === fn).map((c) => c.args);
+  const fns = (mark: number) => env.calls.slice(mark).map((c) => c.fn).filter((f) => /^wires|^pipeline|^resumeCost/.test(f) && f !== "wiresGet");
+  if (new URLSearchParams(location.search).get("lsGates") === "limit") {
+    await clickAt(dotMid(W("loop")));
+    await sleep(700);
+    const opened = popNow();
+    const at = mid(popButton("One more round"));
+    await clickAt(at);
+    await sleep(250);
+    const more = popNow();
+    await clickAt(at);
+    out.limit = { opened, more, under: popNow(), moreRounds: since("wiresMoreRounds"), sends: since("wiresSend").length };
+    return;
+  }
+  // a ready handoff to Spike, closed: Send asks main, which says it's stopped; its cost is asked; then sent, starting it
+  let mark = env.calls.length;
+  await clickAt(dotMid(W("ghost")));
+  await sleep(700);
+  const ghost = popNow();
+  await clickAt(mid(popButton("Send")));
+  await sleep(3800);
+  out.closed = { opened: ghost, calls: fns(mark), sends: since("wiresSend"), pop: popNow() };
+  // what may have arrived: Mark sent
+  mark = env.calls.length;
+  await clickAt(dotMid(W("sending")));
+  await sleep(700);
+  const unconfirmed = popNow();
+  await clickAt(mid(popButton("Mark sent")));
+  await sleep(500);
+  out.unconfirmed = { opened: unconfirmed, calls: fns(mark), marked: since("wiresMarkSent"), pop: popNow(), look: lookNow(W("sending")) };
+  // a merge that can't be read: Check now; Mark merged…, its confirm clicked as it comes up (let go), then once settled
+  mark = env.calls.length;
+  await clickAt(dotMid(W("sent")));
+  await sleep(700);
+  const merge = popNow();
+  await clickAt(mid(popButton("Check now")));
+  await sleep(500);
+  const checked = popNow();
+  await clickAt(mid(popButton("Mark merged…")));
+  await sleep(100);
+  const asked = popNow();
+  await clickAt(mid(popButton("Mark merged")));
+  const early = { marked: since("pipelinePrMarkMerged").length, pop: popNow() };
+  await sleep(700);
+  await clickAt(mid(popButton("Mark merged")));
+  await sleep(600);
+  out.merge = { opened: merge, checked, asked, early, calls: fns(mark), check: since("pipelinePrCheck"), marked: since("pipelinePrMarkMerged"), after: popNow(), look: lookNow(W("sent")) };
+  await clickAt(mid(popButton("Not yet")));
+  await sleep(400);
+  // a blocked wire's face is its settings: a click on When its PR merges as it opens is let go; then it, and a chip, saved as made
+  await clickAt(dotMid(W("held")));
+  await clickAt(mid(popButton("When its PR merges")));
+  const asOpened = { set: since("wiresSet").length, when: popNow()?.when ?? null };
+  await sleep(700);
+  const held = popNow();
+  await clickAt(mid(popButton("When its PR merges")));
+  await sleep(400);
+  await clickAt(mid(popButton("add diff")));
+  await sleep(400);
+  out.held = { early: asOpened, opened: held, set: since("wiresSet"), after: popNow() };
+}
+
 /** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */
 async function showAudit(part: string): Promise<void> {
+  if (part === "pop") {
+    // the send popover of ?pop=<wire> (wb- left off), opened by a click on its dot; &popConfirm asks Mark merged…
+    const q = new URLSearchParams(location.search);
+    const at = dotMid(W(q.get("pop") ?? "loop"));
+    const init = { bubbles: true, cancelable: true, pointerId: 41, button: 0, buttons: 1, clientX: at.x, clientY: at.y };
+    document.elementFromPoint(at.x, at.y)?.dispatchEvent(new PointerEvent("pointerdown", init));
+    window.dispatchEvent(new PointerEvent("pointerup", { ...init, buttons: 0 }));
+    if (!q.has("popConfirm")) return;
+    await sleep(600);
+    popButton("Mark merged…")?.click();
+    return;
+  }
   if (part === "pick") {
     const h = handleOf("shape")!;
     h.style.opacity = "1";
@@ -667,11 +927,12 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
     const out: Record<string, unknown> = { part };
     try {
       // the screenshots' parts open theirs at once: a screenshot is taken a few seconds of virtual time in
-      await sleep(part === "pick" || part === "settings" ? 300 : 1200);
+      const shot = part === "pick" || part === "settings" || part === "pop";
+      await sleep(shot ? 300 : 1200);
       out.zoom = zoomNow();
-      if (part === "pick" || part === "settings") {
+      if (shot) {
         await showAudit(part);
-        out.shown = { picker: pickerNow(), settings: !!document.querySelector(".wr-pop:not(.mb-ghost)"), note: noteNow() };
+        out.shown = { picker: pickerNow(), settings: !!document.querySelector(".wr-pop:not(.mb-ghost)"), pop: popNow(), note: noteNow() };
       }
       if (part === "make") await makeAudit(env, out);
       else if (part === "keys") await keysAudit(env, out);
@@ -682,6 +943,10 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "lost") await lostAudit(env, out);
       // which of 5120's workspaces carry a handle at this zoom: those big enough on screen for one
       else if (part === "handles") out.handles = ["shape", "builder", "reviewer", "dev", "tester", "fixtures"].filter((k) => !!handleOf(k));
+      else if (part === "send") await sendAudit(env, out);
+      else if (part === "dbl") await dblAudit(env, out);
+      else if (part === "gatekeys") await gateKeysAudit(env, out);
+      else if (part === "gates") await gatesAudit(env, out);
       const boxes = () => Object.fromEntries(["shape", "builder", "reviewer", "dev", "tester", "fixtures", "spike"].map((k) => [k, box(node(W(k)))]));
       if (part === "near" || part === "far") {
         out.wires = wiresNow();

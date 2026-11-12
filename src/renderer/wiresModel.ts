@@ -3,9 +3,9 @@
  * (the tile holding the session, a ghost's card, or a collapsed area's pill), what state it shows, and its curve
  * (Main.dc.html's). WireLayer.tsx draws them and keeps them on their ends as workspaces move.
  */
-import { DEFAULT_ROUNDS, ROOM_LINE, gateOf, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type GateContext, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
+import { DEFAULT_ROUNDS, ROOM_LINE, gateOf, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type GateContext, type MergeView, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
-import { topOfKey, type SessionInfo } from "../shared/types";
+import { latestPr, samePrPlace, topOfKey, type PipelinePr, type SessionInfo, type TicketPipeline } from "../shared/types";
 import { LOOSE_GROUP, type Rect } from "../shared/landscape";
 import { areaShown, type Point, type ResolvedLayout } from "./landscapeModel";
 import { titleOf } from "./appModel";
@@ -443,4 +443,56 @@ export function droppedNote(dropped: readonly DroppedWire[], gone: string | null
 /** Why a Start fresh's session didn't take session `title`'s wires (`wiresRekey` refused), as a note says it. */
 export function unmovedNote(title: string, why: string): string {
   return `“${title}”'s wires couldn't move to the fresh session: ${why.replace(/\.$/, "")}`;
+}
+
+// ---- the send popover (W4c) ----
+
+/**
+ * Which of the send popover's faces a wire shows (Cards.dc.html:162–170, WireSettings.dc.html A): `ready`, what waits at
+ * its gate, with Send and Not yet (its other end closed or exited: Send reopens or resumes it); `limit`, a feedback wire
+ * at its round limit, with One more round; `unconfirmed`, what may have reached its other end, with Send again and Mark
+ * sent; anything else, its settings, with why it's blocked or what it waits for.
+ */
+export type GateFace = "ready" | "limit" | "unconfirmed" | "settings";
+export interface GateView {
+  face: GateFace;
+  /** The title's right: its type and where it stands ("feedback loop · round 2 of 3"). */
+  kind: string;
+  /** The gate's why, whole: why it's blocked, what went wrong the last time it was sent, or what an idle one waits for. */
+  why: string | null;
+  /** What's waiting: what Send, Send again and Not yet act on. */
+  pendingId: string | null;
+  /** Its other end isn't running: sending reopens it (closed, with its place) or resumes it (exited). */
+  starts: "reopen" | "resume" | null;
+  /** Blocked by its pull request, as the merge watch has it: Check now and Mark merged… apply. */
+  merge: boolean;
+}
+
+/** The face wire `w` shows in the send popover, from its gate (gateOf), its other end, and main's merge view of it. */
+export function gateView(w: Wire, gate: Gate, to: WireEnd | null, merge: MergeView | null): GateView {
+  const name = WIRE_TYPE_NAME[w.type].toLowerCase();
+  const pendingId = gate.pendingId ?? null;
+  const starts: GateView["starts"] = to?.where === "closed" ? "reopen" : to?.where === "dead" ? "resume" : null;
+  const base = { why: gate.why ?? null, pendingId, starts, merge: false };
+  if (gate.state === "ready" && pendingId) return { ...base, face: "ready", kind: `${name} · ${w.rounds ? `round ${w.rounds.used + 1} of ${w.rounds.limit}` : "ready"}` };
+  if (gate.state === "blocked" && gate.atLimit && w.rounds && pendingId) return { ...base, face: "limit", kind: `${name} · at the limit · ${w.rounds.used} of ${w.rounds.limit}` };
+  if (gate.unconfirmed && pendingId) return { ...base, face: "unconfirmed", kind: `${name} · may have arrived` };
+  const byMerge = gate.state === "blocked" && !!merge && "blocked" in merge && merge.blocked === gate.why;
+  return { ...base, face: "settings", kind: `${name} · ${gate.state}`, pendingId: null, starts: null, merge: byMerge };
+}
+
+/**
+ * The pull request a blocked pr-merged wire waits on, from its source's ticket record (pipeline.json): the latest from
+ * the source's branch, not merged, that the merge watch can't read or that was closed without merging and isn't
+ * replaced by a newer one from its repository and branch. Mark merged… names it; null when there's none to name.
+ */
+export function blockingPr(p: TicketPipeline | undefined, branch: string | null | undefined): PipelinePr | null {
+  if (!p || !branch) return null;
+  let best: PipelinePr | null = null;
+  for (const x of p.prs) {
+    if (x.branch !== branch || x.mergedAt) continue;
+    const stuck = x.closedAt ? latestPr(p.prs, x.target, (y) => samePrPlace(y, x)) === x : !!x.watch;
+    if (stuck && (!best || x.at > best.at)) best = x;
+  }
+  return best;
 }

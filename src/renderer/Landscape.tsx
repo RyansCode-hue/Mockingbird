@@ -115,8 +115,10 @@ import { isRemote } from "./team/RoomLive";
 import { typingAsksOf } from "./needsYouModel";
 import { cameraMoved } from "./answerGuard";
 import { WireLayer, rereadWires, useWires, type WireLayerHandle } from "./WireLayer";
-import { WIRE_TYPE_NAME, commonReason, gateContextOf, noChoice, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
-import { WireSettingsPopover, WireTypePicker, type WirePick } from "./WireMaking";
+import { WIRE_TYPE_NAME, commonReason, gateContextOf, gateView, noChoice, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
+import { WireSettingsPopover, WireTypePicker, type WirePick, type WireSettingsProps } from "./WireMaking";
+import { WirePopover } from "./WirePopover";
+import { sendAlongWire } from "./wireSend";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
 export const CAMERA_PREF = "mb.landscape.camera";
@@ -200,6 +202,8 @@ const NOTE_MS = 5000;
 const SETTLE_MS = 1500;
 /** How near a wire, in screen px, a right-click is on it. */
 const WIRE_HIT_PX = 6;
+/** How near a wire's gate dot's centre, in screen px, a click opens its send popover: the dot's radius and a little. */
+const DOT_HIT_PX = 10;
 /** Why no wire can be made while the wire book hasn't been read. */
 const WIRES_UNREAD = "The wires haven't been read yet, so none can be made: try again in a moment.";
 
@@ -332,6 +336,8 @@ export function Landscape({
   tour,
   rooms,
   closed = NO_SESSIONS,
+  resumeOk,
+  wireShowRef,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -424,6 +430,10 @@ export function Landscape({
   rooms?: readonly WireRoom[];
   /** Closed sessions with no place on the landscape (the Closed sessions list): the pipeline strip names them. */
   closed?: readonly SessionInfo[];
+  /** Whether starting session `s` is worth its cost (useCostGate's resume, which may ask): a Send along a wire to a stopped one. */
+  resumeOk?: (s: SessionInfo) => Promise<boolean>;
+  /** Filled with Show: wire `id`'s send popover, for what offers it outside the landscape (W5's Needs you item). */
+  wireShowRef?: React.MutableRefObject<((id: string) => void) | null>;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -1710,6 +1720,12 @@ export function Landscape({
     const dx = (e.clientX - g.x0) / z;
     const dy = (e.clientY - g.y0) / z;
     if (g.kind === "marquee") {
+      // a click on a wire's gate dot (where it was pressed) opens its send popover, and the click it makes lands on nothing
+      const dot = !g.on && !g.add ? (wiresRef.current?.dotAt(atPoint({ clientX: g.x0, clientY: g.y0 }), DOT_HIT_PX / z) ?? null) : null;
+      if (dot) {
+        swallowClick();
+        return openGate(dot);
+      }
       // a click on the bare landscape selects the area it's in, as a click on a section does in Figma; outside every
       // area it lets the selection go
       if (!g.on && !g.add) {
@@ -2310,17 +2326,61 @@ export function Landscape({
       })
     );
   };
-  /** The wire being set, as main last said it, with what its settings form needs; null once it's gone. */
-  const editing = (() => {
-    if (!wireEdit) return null;
-    const w = wireBook?.book?.links[wireEdit.id];
+  /** Wire `id` as main last said it, with the rules' view of its ends and its gate; null once it's gone. */
+  const liveWire = (id: string) => {
+    const w = wireBook?.book?.links[id];
     const ctx = w ? wireCtx([w.from, w.to]) : null;
-    if (!w || !ctx) return null;
-    return { id: wireEdit.id, at: wireEdit.at, w, ctx, room: !!(ctx.end(w.from)?.room || ctx.end(w.to)?.room) };
-  })();
+    return w && ctx ? { id, w, ctx, gate: gateOf(id, w, ctx) } : null;
+  };
+  /** What wire `id`'s settings form needs, Settings…'s and the send popover's alike; `close` closes what it's in. */
+  const wireForm = ({ id, w, ctx, gate }: NonNullable<ReturnType<typeof liveWire>>, close: () => void): WireSettingsProps => ({
+    wire: w,
+    fromTitle: named(w.from),
+    toTitle: named(w.to),
+    state: gate.state,
+    room: !!(ctx.end(w.from)?.room || ctx.end(w.to)?.room),
+    refusal: (st: WireSettings) => settingsRefusal(w, st, ctx),
+    onSet: (st) => wireCall("change the wire", () => window.mb.wiresSet(id, st)),
+    onResetRounds: () => wireCall("reset its rounds", () => window.mb.wiresResetRounds(id)),
+    onLost: (why) => say(`${named(w.from)} → ${named(w.to)}: the change made as its settings closed wasn't saved. ${why}`),
+    onRemove: () => {
+      close();
+      void removeWire(id, `${named(w.from)} → ${named(w.to)}`);
+    },
+  });
+  /** The wire being set (Settings…). */
+  const editing = wireEdit ? liveWire(wireEdit.id) : null;
   useEffect(() => {
     if (wireEdit && !editing) setWireEdit(null);
   }, [wireEdit, !!editing]);
+
+  // ---- the send popover (W4c): a wire's gate dot clicked, or Show ----
+  const [wireGate, setWireGate] = useState<{ id: string; at: { x: number; y: number }; n: number } | null>(null);
+  /** Wire `id`'s send popover, under its gate dot while that's drawn, else where it's asked for (`at`), else the view's middle. */
+  const openGate = (id: string, at?: { x: number; y: number }) => {
+    const r = viewport.current?.getBoundingClientRect();
+    const place = wiresRef.current?.dotOnScreen(id) ?? at ?? (r ? { x: r.left + r.width / 2 - 180, y: r.top + r.height / 3 } : { x: 0, y: 0 });
+    setWireGate((g) => ({ id, at: place, n: (g?.n ?? 0) + 1 }));
+  };
+  if (wireShowRef) wireShowRef.current = openGate;
+  const gating = wireGate ? liveWire(wireGate.id) : null;
+  useEffect(() => {
+    if (wireGate && !gating) setWireGate(null);
+  }, [wireGate, !!gating]);
+  /** A person's Send along wire `id`: main first; a stopped other end asks about its cost before it's started (wireSend.ts). */
+  const sendWire = async (id: string, to: string, pendingId: string, body: string, again: boolean): Promise<string | null> => {
+    const b = sessionOn(to);
+    const call = again ? window.mb.wiresSendAgain : window.mb.wiresSend;
+    try {
+      const r = await sendAlongWire({ send: (start) => call(id, pendingId, body, start ? { start } : undefined), costOk: () => (b && resumeOk ? resumeOk(b) : Promise.resolve(true)) });
+      if (r === undefined) return `Nothing was sent: “${b ? titleOf(b) : named(to)}” stays as it is.`;
+      if (isErr(r)) return `Couldn't send it: ${r.error}`;
+      return "refused" in r ? r.refused : null;
+    } catch (err) {
+      console.error("[mockingbird] send along the wire:", err);
+      return `Couldn't send it: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
 
   /** What's under the pointer a wire would go to: a workspace (the tab under it, of a stack, else its front), or a ghost. */
   const wireTargetAt = (e: { clientX: number; clientY: number }): { key: string; rect: Rect; s: SessionInfo } | null => {
@@ -2754,24 +2814,19 @@ export function Landscape({
         )}
       </div>
       {wirePick && <WireTypePicker key={`${wirePick.from.id}>${wirePick.to.id}`} pick={wirePick} onPick={(c) => void makeWire(c)} onClose={() => setWirePick(null)} />}
-      {editing && (
-        <WireSettingsPopover
-          key={editing.id}
-          at={editing.at}
-          wire={editing.w}
-          fromTitle={named(editing.w.from)}
-          toTitle={named(editing.w.to)}
-          state={gateOf(editing.id, editing.w, editing.ctx).state}
-          room={editing.room}
-          refusal={(st: WireSettings) => settingsRefusal(editing.w, st, editing.ctx)}
-          onSet={(st) => wireCall("change the wire", () => window.mb.wiresSet(editing.id, st))}
-          onResetRounds={() => wireCall("reset its rounds", () => window.mb.wiresResetRounds(editing.id))}
-          onLost={(why) => say(`${named(editing.w.from)} → ${named(editing.w.to)}: the change made as its settings closed wasn't saved. ${why}`)}
-          onRemove={() => {
-            setWireEdit(null);
-            void removeWire(editing.id, `${named(editing.w.from)} → ${named(editing.w.to)}`);
-          }}
-          onClose={() => setWireEdit(null)}
+      {editing && wireEdit && <WireSettingsPopover key={editing.id} at={wireEdit.at} {...wireForm(editing, () => setWireEdit(null))} onClose={() => setWireEdit(null)} />}
+      {gating && wireGate && (
+        <WirePopover
+          key={`${gating.id}:${wireGate.n}`}
+          at={wireGate.at}
+          view={gateView(gating.w, gating.gate, gating.ctx.end(gating.w.to), gating.ctx.mergeView?.(gating.w) ?? null)}
+          form={wireForm(gating, () => setWireGate(null))}
+          source={{ ticket: gating.ctx.end(gating.w.from)?.ticket ?? null, branch: gating.ctx.end(gating.w.from)?.branch ?? null }}
+          onSend={(pendingId, text, again) => sendWire(gating.id, gating.w.to, pendingId, text, again)}
+          onMarkSent={(pendingId) => wireCall("mark it sent", () => window.mb.wiresMarkSent(gating.id, gating.w.delivery?.id ?? pendingId))}
+          onMoreRounds={() => wireCall("allow one more round", () => window.mb.wiresMoreRounds(gating.id))}
+          home={surfaceEl}
+          onClose={() => setWireGate(null)}
         />
       )}
       {tourList && (

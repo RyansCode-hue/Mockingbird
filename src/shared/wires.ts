@@ -32,6 +32,10 @@ export type DeliveryState = (typeof DELIVERY_STATES)[number];
 export const DEFAULT_ROUNDS = 3;
 /** What a handoff or feedback wire carries when its template says nothing else. */
 export const DEFAULT_TEMPLATE = "{summary}";
+/** What a pr-merged wire with no template of its own carries: the merge, then its source's last summary. */
+export const MERGE_TEMPLATE = "{pr}\n\n{summary}";
+/** What wire `w` carries with no template of its own. */
+export const templateOf = (w: Pick<Wire, "template" | "when">): string => w.template ?? (w.when === "pr-merged" ? MERGE_TEMPLATE : DEFAULT_TEMPLATE);
 
 export interface WireRounds {
   limit: number;

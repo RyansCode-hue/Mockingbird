@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { DEFAULT_TEMPLATE, carriesWork, type Wire, type WireSettings } from "../shared/wires";
+import { carriesWork, templateOf, type Wire, type WireSettings } from "../shared/wires";
 import { AnchoredPopover } from "./Popover";
 import { useDialogFocus } from "./Modal";
 import { afterPause, typed } from "./keyArm";
@@ -163,30 +163,35 @@ export interface WireSettingsProps {
   onRemove: () => void;
   /** Why a change saved as the form went (its template or files, left as it closed) was refused: said where it was. */
   onLost: (why: string) => void;
-  /** What's beside Remove: the send popover's Send now (W4c). */
+  /** What's beside Remove. */
   actions?: React.ReactNode;
+  /** What's under the title: the send popover's why it's blocked or what it waits for, and a blocked merge's Check now. */
+  about?: React.ReactNode;
 }
 
 /**
  * A wire's settings (WireSettings.dc.html A): its ends and type in the title; on a handoff or feedback wire what it
- * sends, with chips that add or take out the summary, ticket, diff and files, When, a feedback wire's Rounds with Reset,
- * and Send automatically; on a context link whether its reader gets tool output. Each change is saved as it's made
- * (wires:set), the template once it's left; what main refuses is said under it, or, once the form has gone, by `onLost`.
- * It shows the wire as main last said it.
+ * sends, with chips that add or take out the summary, ticket, diff and files, When (a handoff's When its PR merges off,
+ * saying why, while its source is on no ticket or branch), a feedback wire's Rounds with Reset, and Send automatically;
+ * on a context link whether its reader gets tool output. Each change is saved as it's made (wires:set), the template
+ * once it's left; what main refuses is said under it, or, once the form has gone, by `onLost`. It shows the wire as main
+ * last said it.
  *
  * It takes no click that wasn't aimed at it: for ANSWER_SETTLE_MS after it opens (it can come up under the pointer, over
  * the menu row that opened it), and never a double click's second, every click on it is let go before it reaches a
  * control, a checkbox's or its label's included, and its controls show off meanwhile.
  */
-export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusal, onSet, onResetRounds, onRemove, onLost, actions }: WireSettingsProps) {
-  const saved = wire.template ?? DEFAULT_TEMPLATE;
+export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusal, onSet, onResetRounds, onRemove, onLost, actions, about }: WireSettingsProps) {
+  // with no template of its own a wire carries its When's: a pr-merged one the merge, then the summary
+  const fallback = templateOf({ when: wire.when });
+  const saved = templateOf(wire);
   const [draft, setDraft] = useState(saved);
   const [files, setFiles] = useState((wire.files ?? []).join(", "));
   const [err, setErr] = useState<string | null>(null);
   const dirty = useRef(false);
   const alive = useRef(true);
-  const now = useRef({ draft, onSet, onLost, saved });
-  now.current = { draft, onSet, onLost, saved };
+  const now = useRef({ draft, onSet, onLost, saved, fallback });
+  now.current = { draft, onSet, onLost, saved, fallback };
   const form = useRef<HTMLDivElement>(null);
   const { holdOff, heldOff } = useHeldOff();
   // before the browser paints it, so a double click's second, close behind, finds the guard there
@@ -225,18 +230,19 @@ export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusa
   const saveTemplate = (t: string, refused?: () => void) => {
     dirty.current = false;
     if (t === now.current.saved) return;
-    set({ template: t === DEFAULT_TEMPLATE ? null : t }, refused);
+    set({ template: t === now.current.fallback ? null : t }, refused);
   };
   // a template still being typed when the settings close is saved as they go
   useEffect(
     () => () => {
       alive.current = false;
       const n = now.current;
-      if (dirty.current && n.draft !== n.saved) void n.onSet({ template: n.draft === DEFAULT_TEMPLATE ? null : n.draft }).then((why) => why && n.onLost(why));
+      if (dirty.current && n.draft !== n.saved) void n.onSet({ template: n.draft === n.fallback ? null : n.draft }).then((why) => why && n.onLost(why));
     },
     []
   );
   const auto = refusal({ gate: "automatic" });
+  const merges = wire.type === "handoff" ? refusal({ when: "pr-merged" }) : null;
   const carries = carriesWork(wire.type);
   return (
     <div ref={form} className={`wr-form${heldOff("settle") ? " held" : ""}`}>
@@ -248,6 +254,7 @@ export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusa
           {WIRE_TYPE_NAME[wire.type].toLowerCase()} · {state}
         </span>
       </div>
+      {about}
       {carries && (
         <>
           <div className="wr-label">Sends</div>
@@ -308,8 +315,8 @@ export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusa
               <button type="button" aria-pressed={wire.when === "manual"} onClick={() => set({ when: "manual" })}>
                 Only when I send
               </button>
-              {wire.when === "pr-merged" && (
-                <button type="button" aria-pressed>
+              {wire.type === "handoff" && (
+                <button type="button" aria-pressed={wire.when === "pr-merged"} disabled={!!merges && wire.when !== "pr-merged"} title={merges ?? "Send when the pull request from its source's branch merges"} onClick={() => set({ when: "pr-merged" })}>
                   When its PR merges
                 </button>
               )}

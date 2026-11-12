@@ -345,12 +345,12 @@ describe.skipIf(!local)("making wires", () => {
     expect(m.fromTree).toEqual(m.connect);
     // a wire's right-click, a few px from its line
     expect(m.wireMenu).toEqual(["# Reviewer → Tester · Handoff", "Settings…", "-", "Remove the wire"]);
-    expect(m.settings.opened).toMatchObject({ ends: "Reviewer → Tester", kind: "handoff · blocked", template: "{summary}", chips: ["+ summary", "add ticket", "add diff", "add files"], when: ["* When it says it's finished", "Only when I send"], auto: false, keyboard: true });
+    expect(m.settings.opened).toMatchObject({ ends: "Reviewer → Tester", kind: "handoff · blocked", template: "{summary}", chips: ["+ summary", "add ticket", "add diff", "add files"], when: ["* When it says it's finished", "Only when I send", "When its PR merges"], auto: false, keyboard: true });
     expect(m.settings.set).toEqual([["wb-held", { when: "manual" }]]);
-    expect(m.settings.after).toMatchObject({ when: ["When it says it's finished", "* Only when I send"] });
+    expect(m.settings.after).toMatchObject({ when: ["When it says it's finished", "* Only when I send", "When its PR merges"] });
     expect(m.settingsClosed).toEqual({ form: null, keys: "landscape" });
     expect(m.treeMenu).toEqual(["# Builder → Dev server · Shared worktree", expect.stringMatching(/^off Settings… — A shared worktree wire has nothing to set/), "-", "Remove the wire"]);
-    // Settings… picked with Enter, then Tab ×8 and Enter in the same burst: the keyboard stays on the popover, nothing pressed
+    // Settings… picked with Enter, then Tab ×9 and Enter in the same burst: the keyboard stays on the popover, nothing pressed
     expect(m.settingsBurst).toEqual({ shown: { open: true, keyboard: "settings" }, open: true, keyboard: true, set: [], removed: [], closed: true });
     expect(m.remove.removed).toEqual({ calls: [["wb-held"]], note: "Removed the wire Reviewer → Tester", drawn: false });
     expect(m.remove.restore).toEqual([["wb-held"]]);
@@ -436,5 +436,141 @@ describe.skipIf(!local)("Start fresh", () => {
     expect(f.note).toBe(
       "“Spike: streaming”'s wires couldn't move to the fresh session: “new session” isn't the same kind of workspace as “Spike: streaming”, so its wires can't move there. Its wire went with it: Fixtures → Spike: streaming (handoff)."
     );
+  }, 150_000);
+});
+
+// W4c: the send popover, opened by a wire's gate dot (src/preview/wiresAudit.ts' send, gatekeys, dbl and gates parts)
+interface Pop {
+  face: string;
+  ends: string;
+  kind: string;
+  whys: string[];
+  body: string | null;
+  flags: string[];
+  buttons: string[];
+  question: string | null;
+  when: string[];
+  err: string | null;
+  hint: string | null;
+  keyboard: boolean;
+}
+type Sends = [string, string, string, unknown][];
+interface SendRun {
+  opened: Pop;
+  early: { sends: number; pop: Pop };
+  byCode: { sends: number; open: boolean };
+  notYet: { sends: number; pop: Pop | null; look: string; keys: string };
+  send: { autoEarly: { set: number; checked: boolean | null }; edited: Pop; replaced: Pop; onArrival: { sends: number; pop: Pop }; shown: string; during: Pop; again: Pop; sends: Sends; pop: Pop | null; look: string; keys: string };
+  sent: { look: string; sends: number };
+}
+interface KeysRun {
+  before: string;
+  burst: { pop: Pop; sends: number; writes: number };
+  paused: { onSend: string; sends: Sends; pop: Pop | null; keys: string; writes: number };
+  esc: { opened: string; pop: boolean; keys: string };
+}
+interface GatesRun {
+  closed: { opened: Pop; calls: string[]; sends: Sends; pop: Pop | null };
+  unconfirmed: { opened: Pop; calls: string[]; marked: string[][]; pop: Pop | null; look: string };
+  merge: { opened: Pop; checked: Pop; asked: Pop; early: { marked: number; pop: Pop }; calls: string[]; check: string[][]; marked: string[][]; after: Pop; look: string };
+  held: { early: { set: number; when: string[] | null }; opened: Pop; set: [string, unknown][]; after: Pop };
+  limit: { opened: Pop; more: Pop; under: Pop; moreRounds: string[][]; sends: number };
+}
+const PR_URL = "https://dev.azure.com/acme/Backoffice/_git/backoffice/pullrequest/11";
+
+describe.skipIf(!local)("the send popover", () => {
+  it("sends exactly what it shows, once: no click as it opens, none made by code; Not yet leaves it waiting; a newer finish replaces what's shown", async () => {
+    const s = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=send", "1600x1000", 120_000)) as unknown as SendRun;
+    // Cards.dc.html's popover: the ends, the loop's round, what it sends, Send and Not yet; the keyboard in it
+    expect(s.opened).toMatchObject({ face: "ready", ends: "Reviewer → Builder", kind: "feedback loop · round 2 of 3", body: "1. The stream disposes early.\n2. Email needs DonorPII.", buttons: ["Send", "Not yet"], keyboard: true });
+    // a click where Send came up, straight away, is let go and Send is off a moment; one made by code never counts
+    expect(s.early.sends).toBe(0);
+    expect(s.early.pop.buttons).toEqual(["off Send", "Not yet"]);
+    expect(s.early.pop.keyboard).toBe(true);
+    expect(s.byCode).toEqual({ sends: 0, open: true });
+    // Not yet: nothing sent, it's still ready, and the landscape has the keyboard back
+    expect(s.notYet).toEqual({ sends: 0, pop: null, look: "ready", keys: "landscape" });
+    // reopened, Send automatically clicked as it came up: let go, unchanged
+    expect(s.send.autoEarly).toEqual({ set: 0, checked: false });
+    // edited, then Reviewer finishes again while it's open: the newer one replaces it, saying the edit was set aside,
+    // and a click on Send as that lands is let go
+    expect(s.send.edited.body).toBe("1. The stream disposes early.\n2. Email needs DonorPII. ok");
+    expect(s.send.replaced.body).toBe("1. The stream still disposes early.\n2. Email needs DonorPII.\n3. Add a test for the cap.");
+    expect(s.send.replaced.whys).toEqual(["Reviewer finished again: this is what it sends now, and your edit of the earlier one was set aside."]);
+    expect(s.send.onArrival.sends).toBe(0);
+    // Send double-clicked, then clicked again while main answers: one send, of the text shown, for the pending shown
+    expect(s.send.during.buttons).toEqual(["off Sending…", "Not yet"]);
+    expect(s.send.again.buttons).toEqual(["off Sending…", "Not yet"]);
+    expect(s.send.shown).toBe("1. The stream still disposes early.\n2. Email needs DonorPII. ok\n3. Add a test for the cap.");
+    expect(s.send.sends).toEqual([["wb-loop", "pd-review-again", s.send.shown, null]]);
+    // it closes once main has it, the keyboard on the landscape, and the wire sends, then shows sent
+    expect(s.send).toMatchObject({ pop: null, keys: "landscape" });
+    expect(["sending", "sent"]).toContain(s.send.look);
+    expect(s.sent).toEqual({ look: "sent", sends: 1 });
+  }, 150_000);
+
+  it("takes no key typed before it opened, sends from keys typed after a pause, and never gives the keyboard to a terminal", async () => {
+    const k = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=gatekeys", "1600x1000", 120_000)) as unknown as KeysRun;
+    expect(k.before).toBe("terminal:wb-builder");
+    // a key typed in Builder's terminal, the dot clicked, and Tab Tab Enter Space in the same burst: nothing pressed,
+    // nothing more written there, and the popover says why
+    expect(k.burst.sends).toBe(0);
+    expect(k.burst.writes).toBe(1);
+    expect(k.burst.pop).toMatchObject({ face: "ready", keyboard: true, hint: "Keys typed just before this opened don't press anything here: pause, then go on." });
+    // after a pause, Tab Tab reaches Send and Enter sends it
+    expect(k.paused.onSend).toBe("Send");
+    expect(k.paused.sends).toEqual([["wb-loop", "pd-review", "1. The stream disposes early.\n2. Email needs DonorPII.", null]]);
+    expect(k.paused).toMatchObject({ pop: null, keys: "landscape", writes: 1 });
+    // opened after Builder's terminal had the keyboard, and closed with Esc: the landscape gets it, not the terminal
+    expect(k.esc).toEqual({ opened: "popover", pop: false, keys: "landscape" });
+  }, 150_000);
+
+  it("presses nothing with a double click's second on its dot, where it flips up over the dot near the window's foot", async () => {
+    const d = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=dbl", "1600x1000", 120_000)) as unknown as { dbl: { under: string; sends: number; pop: Pop }; after: { sends: number; pop: Pop | null; keys: string } };
+    expect(d.dbl.under).toBe("popover");
+    expect(d.dbl.sends).toBe(0);
+    expect(d.dbl.pop).toMatchObject({ face: "ready", buttons: ["Send", "Not yet"], keyboard: true });
+    expect(d.after).toEqual({ sends: 1, pop: null, keys: "landscape" });
+  }, 150_000);
+
+  it("shows its other faces: a stopped end started once its cost is asked, Mark sent, Check now, Mark merged… behind its confirm, and a blocked wire's settings", async () => {
+    const g = (await audit("lsGates&lsCamera=0,3040,1&landscapeWiresAudit=gates", "1600x1000", 120_000)) as unknown as GatesRun;
+    // a handoff to Spike, closed: it says Send reopens it; main is asked, says it's stopped, its cost is asked, then it starts it
+    expect(g.closed.opened).toMatchObject({ face: "ready", kind: "handoff · ready", whys: ["“Spike: streaming” is closed: sending reopens it, which rereads its conversation."] });
+    expect(g.closed.calls).toEqual(["wiresSend", "resumeCost", "wiresSend"]);
+    expect(g.closed.sends.map((x) => x[3])).toEqual([null, { start: true }]);
+    expect(g.closed.pop).toBeNull();
+    // what may have arrived: the why whole, Send again and Mark sent; Mark sent settles it
+    expect(g.unconfirmed.opened).toMatchObject({ face: "unconfirmed", kind: "handoff · may have arrived", whys: ["It may have reached “Reviewer”: Mockingbird quit while it was being pasted."], buttons: ["Send again", "Mark sent", "Not yet"] });
+    expect(g.unconfirmed.marked).toEqual([["wb-sending", "pd-build"]]);
+    expect(g.unconfirmed).toMatchObject({ calls: ["wiresMarkSent"], pop: null, look: "sent" });
+    // a pull request that can't be read: the why whole, Check now (its error said), Mark merged… asking first
+    expect(g.merge.opened).toMatchObject({ face: "settings", kind: "handoff · blocked", buttons: ["Check now", "Mark merged…", "Remove"], when: ["When it says it's finished", "Only when I send", "* When its PR merges"] });
+    expect(g.merge.opened.whys).toEqual(["Can't tell whether PR 11 to dev merged (3 tries): the provider answered 503 Service Unavailable."]);
+    expect(g.merge.check).toEqual([["5120", PR_URL]]);
+    expect(g.merge.checked.err).toBe("Couldn't check the pull request: UI preview: no pull request is read");
+    expect(g.merge.asked.question).toBe("Mark PR 11 to dev merged? Mockingbird can't read whether it merged. The ticket moves on as for a merge, and its wires get it, saying you marked it; their gates ask before anything is sent.");
+    expect(g.merge.asked.buttons).toEqual(["Check now", "Mark merged", "Cancel", "Remove"]);
+    // its confirm, clicked as it came up, is let go; once settled, it marks it, and the wire waits at its gate, flagged
+    expect(g.merge.early.marked).toBe(0);
+    expect(g.merge.early.pop.buttons).toContain("off Mark merged");
+    expect(g.merge.marked).toEqual([["5120", PR_URL]]);
+    expect(g.merge.calls).toEqual(["pipelinePrCheck", "pipelinePrMarkMerged"]);
+    expect(g.merge.after).toMatchObject({ face: "ready", flags: ["You marked PR 11 to dev merged: Mockingbird couldn't read it."], buttons: ["Send", "Not yet"] });
+    expect(g.merge.look).toBe("ready");
+    // a blocked wire shows its settings with why. A click on its form as it opens is let go; then When its PR merges
+    // and a chip are saved as they're changed
+    expect(g.held.early).toEqual({ set: 0, when: ["* When it says it's finished", "Only when I send", "When its PR merges"] });
+    expect(g.held.opened).toMatchObject({ face: "settings", kind: "handoff · blocked", whys: ["needs approve"], when: ["* When it says it's finished", "Only when I send", "When its PR merges"] });
+    expect(g.held.set).toEqual([["wb-held", { when: "pr-merged" }], ["wb-held", { template: "{pr}\n\n{summary}\n{diff}" }]]);
+    expect(g.held.after.when).toEqual(["When it says it's finished", "Only when I send", "* When its PR merges"]);
+  }, 150_000);
+
+  it("at its limit offers One more round, and the Send that comes up under it takes no click straight away", async () => {
+    const g = (await audit("lsGates=limit&lsCamera=0,3040,1&landscapeWiresAudit=gates", "1600x1000", 120_000)) as unknown as GatesRun;
+    expect(g.limit.opened).toMatchObject({ face: "limit", kind: "feedback loop · at the limit · 3 of 3", whys: ["At the limit: 3 of 3 rounds."], buttons: ["One more round", "Not yet"] });
+    expect(g.limit.moreRounds).toEqual([["wb-loop"]]);
+    expect(g.limit.more).toMatchObject({ face: "ready", kind: "feedback loop · round 4 of 4", buttons: ["Send", "Not yet"] });
+    expect(g.limit.sends).toBe(0);
   }, 150_000);
 });

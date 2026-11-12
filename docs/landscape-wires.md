@@ -2262,6 +2262,116 @@ the boards beside them in `boards/project/`):
   while open; Send twice sends once; idle edits saved.
 - Boards: Cards.dc.html popover, WireSettings.dc.html A, beside shots.
 
+#### W4c as built
+
+**Opening it.** A click on a ready or blocked wire's gate dot, in the live band where dots are drawn, opens it under the
+dot. The layer still takes no pointer: the landscape's press is a marquee's, and its release, unmoved and unshifted,
+asks `WireLayer.dotAt` (the painted curves' middles, within 10 screen px) before it selects the area; its click is
+taken (`swallowClick`). `dotOnScreen` places it. Show is `openGate(id)` lent through Landscape's `wireShowRef` (as
+`connectRef` is), for W5's Needs you item; nothing passes it yet. It's an `AnchoredPopover` at a point, over
+everything, so it keeps its size at any zoom; it closes as menus do (a press or wheel outside, Esc, a resize), and
+when its wire goes.
+
+**Its faces** (`gateView`, wiresModel.ts, pure; the face is the popover's `f-*` class):
+- **ready** (Cards.dc.html:162–170): the ends, the type and round ("feedback loop · round 2 of 3"), what failed last
+  time when it's ready again, Sends with what waits (editable), its flags, Send, Not yet, Send automatically. Edged
+  and tagged amber, red on a feedback loop, as the board's.
+- **B closed** is ready with its other end closed (a ghost) or exited: "“Spike: streaming” is closed: sending reopens
+  it, which rereads its conversation." Send goes through `sendAlongWire` (wireSend.ts): main first, then, told it's
+  stopped, the cost question (`resumeOk`, main.tsx's `costGate.resume`), then main again with `{ start: true }`.
+- **at the limit**: what waits, read-only, "At the limit: 3 of 3 rounds.", One more round (`wiresMoreRounds`), after
+  which it's ready, and Not yet.
+- **unconfirmed**: the gate's why whole, what waits (editable), Send again (`wiresSendAgain` with what's shown), Mark
+  sent (`wiresMarkSent` with the delivery's id), Not yet.
+- **anything else**, idle, blocked with nothing waiting, sending or sent: the wire's settings (W4b's
+  `WireSettingsForm`, through its new `about`), with the gate's why under the title: blocked in red, an idle pr-merged
+  one's "Waits for PR 11 to dev to merge." quietly. Blocked by its pull request (`merge`: the gate's why is main's merge
+  view's), it has **Check now** (`pipelinePrCheck(ticket, url?)`, its error said under it) and **Mark merged…**, which
+  asks in the popover (`markMergedQuestion`) before `pipelinePrMarkMerged(ticket, url)`; the PR is `blockingPr`'s, the
+  source's ticket record's latest from its branch that can't be read or was closed and not replaced (read through
+  `usePipelines`). Only a person's click or key reaches it; no tool does (W16).
+
+**What it sends is what it shows.** The text and the pending it's for are one piece of state: Send sends
+`(pendingId, text)` as shown. A newer finish arriving while it's open replaces both at once and says so ("Reviewer
+finished again: this is what it sends now, and your edit of the earlier one was set aside."); main refuses an older
+pending's Send as replaced. Not yet closes it and leaves what waits. Send is off with nothing to send.
+
+**Send twice sends once.** One act at a time: from Send's click until main answers, `busy` lets no other act run and
+the button is off ("Sending…"); on success it closes, else it says why and Send is back. Main's pending id stays the
+key for what the window can't see (another window, a retried call).
+
+**Keys and clicks** (keyArm.ts, answerGuard.ts):
+- Nothing in it takes a pointer click for `ANSWER_SETTLE_MS` after it opens: the click that opened it, and a double
+  click's second landing where it flipped up over the dot near the window's foot. The settings face is W4b's form,
+  which holds its own clicks so (W4b review fixes 1); the other faces get the same from a capture-phase guard on their
+  content (Not yet, Send automatically), not a second one on the form. Its own buttons (Send, Send again, Mark sent, One more round, Check now, Mark merged)
+  also take none until they've stayed put that long after content moved (`useSettledRows`, by offset in the popover,
+  keyed by the pending shown): a newer finish, One more round turning into Send, the confirm coming up where Mark
+  merged… was. A click let go shows the button off (`useHeldOff`), and the popover keeps the keyboard.
+- Keys typed in a burst that began before it opened press nothing in it, Tab, Enter and Space included, whatever has
+  the keyboard inside it, until a pause (`afterPause`): then it says "Keys typed just before this opened don't press
+  anything here: pause, then go on." A burst begun after a pause is the user's: Tab Tab Enter sends. A key's click
+  counts only as Enter or Space pressed on that very button, not a held key's repeat; a click made by code never.
+- It takes the keyboard as it opens and gives it back as it closes (`useDialogFocus`), never to a terminal: there
+  `home` (the landscape's surface) gets it, disarmed. A dot's press already gave the landscape the keyboard, so in
+  practice it goes back there; the terminal rule is for Show.
+
+**When its PR merges** (W16's line here): a handoff's When row offers it, off saying why while `settingsRefusal`
+refuses it (its source on no ticket or branch); main refuses it too. A handoff's three Whens don't fit the row at 360
+px, so the segmented control wraps (`.wr-seg`). A pr-merged wire with no template of its own carries `{pr}` then
+`{summary}`: `MERGE_TEMPLATE` moved to shared/wires.ts beside `templateOf`, and the form shows and saves against it
+(it showed `{summary}`).
+
+**Preview** (`src/preview/wiresAudit.ts`, `stub.ts`): the stub now acts at gates as main's delivery does
+(`gateSend`: the refusals in `sendRefusal`'s words, a stopped end refused with `start`, written ahead as queued after
+`GATE_ANSWER_MS`, sent after `GATE_SENT_MS`; Mark sent, More rounds, Reset), its ends carry ticket and branch, and
+Mark merged… readies the waiting pr-merged wire flagged. `?lsGates` sets the board's gates: Builder → Reviewer
+unconfirmed, Fixtures → Spike waiting (B closed), Shape → Builder waiting on PR 11 to dev that can't be read (`merges`,
+5120's ticket record); `=limit` puts Reviewer's loop at 3 of 3. `?landscapeWiresAudit=pop&pop=<wire>` (`&popConfirm`)
+leaves a popover open for a screenshot (the stub holds off the screenshot's resize for it, as for menus); `=send`,
+`=gatekeys`, `=dbl` and `=gates` drive it for the tests. No new `window.mb` call.
+
+**Tests:**
+- `test/wiresModel.test.ts`: each face (ready with its round, reopen and resume, the limit, unconfirmed, settings
+  blocked by a merge with Check now, idle waiting, blocked for another reason first, sending) and `blockingPr`.
+- `test/uiLandscapeWires.test.ts` (Chrome, local), "the send popover": a click where Send came up as it opened (let go,
+  Send off), one by code, Not yet (nothing sent, still ready, the keyboard on the landscape), an edit, a newer finish
+  replacing what's shown and saying so, Send clicked as that lands (let go), Send double-clicked and clicked again
+  while main answers (one `wiresSend`, of the text shown, under the newer pending), closing with the keyboard on the
+  landscape and the wire sending, then sent; a key typed in Builder's terminal then the dot and Tab Tab Enter Space in
+  the same burst (nothing pressed, no more writes, the word said), then after a pause Tab Tab Enter sending it, and Esc
+  after the terminal had the keyboard (the landscape gets it); a double click on the dot near the window's foot (its
+  second lands in the popover, nothing pressed, open); B closed (`wiresSend`, `resumeCost`, `wiresSend` with start),
+  Mark sent, Check now and its error, Mark merged…'s question, its confirm clicked as it came up (let go) then marking
+  it once, the wire then ready and flagged; a blocked wire's settings, When its PR merges and a chip saved; the limit's
+  One more round, then the Send that came up under it taking no click.
+
+**Boards** (screenshots in the session's scratchpad,
+`/private/tmp/claude-501/-Users-ryanellerbroek-Code-Mockingbird/5aa8eb2c-2175-488e-ab1b-5588bc1fbc8a/scratchpad/w4c/`,
+the boards beside them in `boards/project/`), each `--size 1600x1000 --query "motion=off&lsWires&…&landscapeWiresAudit=pop&pop=…"`:
+- `w4c-ready.png` (`pop=loop`, and `w4c-ready-light.png`, `w4c-ready-80.png` at 80%) beside Cards.dc.html:162–170: the
+  title, the red tag "feedback loop · round 2 of 3", Sends in mono, Send and Not yet, Send automatically, the red edge.
+  Differences: no chips (below); it opens under the dot, as a menu does at a point.
+- `w4c-blocked.png` (`pop=held`), `w4c-blocked-pr.png` and `w4c-blocked-pr-confirm.png` (`lsGates&pop=sent`) beside
+  WireSettings.dc.html A: the settings as W4b drew them, with the why, Check now and Mark merged…, and the When row
+  wrapped. Not there: Send now and ⇄ (below).
+- `w4c-limit.png` (`lsGates=limit&pop=loop`), `w4c-unconfirmed.png` (`lsGates&pop=sending`), `w4c-closed.png`
+  (`lsGates&pop=ghost`): no board draws these; they're the ready face's chrome with their own lines and buttons.
+
+**Deviations:**
+- **No Send now** in the idle face. It needs a pending made for one wire, which no main call makes: `wires:finish`
+  readies every finished wire out of the source and never a manual one ("keeps", W2). W5's Finish step (a summary
+  from the latest message, or one you write) is where a person makes a pending; Send now waits for a one-wire offer
+  there.
+- **No chips in the ready face.** What waits was filled in when the step finished; a chip changes the template for the
+  next one, not what Send sends, so showing them there would say otherwise. Its flags show instead.
+- Opening over its dot: an `AnchoredPopover` at a point flips up over the point near the window's foot, as menus do;
+  the open guard is what keeps the double click's second from pressing anything there.
+- The ready face's border and tag go by the wire's type (amber for a handoff, red for a feedback loop), from the board's
+  one red example.
+- Show has no caller until W5; its keyboard rule (never to a terminal) can't be reached by the dot, so no test reaches
+  it.
+
 ### W5 · Needs you and Finish step. Size S
 - `NeedsKind` gains `wire` (`needsYouModel.ts:13`), rank 0 (`:42`); `sig` is
   wire and pending id. Actions in `needsActions` (`workspaceActions.tsx:414`).

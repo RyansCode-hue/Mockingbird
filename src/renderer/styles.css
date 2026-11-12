@@ -3489,7 +3489,8 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .mb-menu.wr-pop button.wr-chip.on { border-style: solid; border-color: transparent; background: var(--fill-selected); color: var(--text-2); }
 .wr-row { display: flex; align-items: center; gap: 10px; }
 .wr-files { flex: 1; min-width: 0; padding: 3px 6px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--bg-app); font: 400 11px var(--mono); color: var(--text-2); }
-.wr-seg { display: inline-flex; padding: 2px; border-radius: 5px; background: var(--fill-selected); }
+/* a handoff's three Whens don't fit the row: the last wraps inside the control rather than running out of the popover */
+.wr-seg { display: inline-flex; flex-wrap: wrap; min-width: 0; padding: 2px; border-radius: 5px; background: var(--fill-selected); }
 .mb-menu.wr-pop .wr-seg button { padding: 3px 9px; font-size: 11.5px; white-space: nowrap; color: var(--text-3); }
 .mb-menu.wr-pop .wr-seg button[aria-pressed="true"] { background: var(--line-btn); color: var(--text-1); }
 .wr-step { display: inline-flex; align-items: center; border: 1px solid var(--line-btn); border-radius: 5px; }
@@ -3504,6 +3505,23 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .wr-foot { display: flex; align-items: center; gap: 6px; }
 .mb-menu.wr-pop button.wr-btn { padding: 5px 12px; border: 1px solid var(--line-btn); border-radius: 5px; font-size: 12px; color: var(--text-2); }
 .wr-spacer { flex: 1; }
+/* the send popover (W4c, Cards.dc.html:162–170): the settings form's chrome, edged and tagged in the gate's colour */
+.mb-menu.wg-pop.f-ready { border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+.mb-menu.wg-pop:is(.f-ready.t-feedback, .f-limit, .f-unconfirmed) { border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.wg-pop.f-ready .wg-kind { color: var(--amber-text); }
+.wg-pop:is(.f-ready.t-feedback, .f-limit, .f-unconfirmed) .wg-kind { color: var(--red); }
+.wg-why { font-size: 11.5px; line-height: 1.4; color: var(--text-3); }
+.wg-why.t-blocked { color: var(--red); }
+.wg-why.t-ready { color: var(--amber-text); }
+.wr-tpl.wg-body { max-height: 40vh; overflow: auto; }
+pre.wg-body { margin: 0; resize: none; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wg-flags { margin: 0; padding-left: 16px; font-size: 11px; color: var(--amber-text); }
+.mb-menu.wg-pop button.wr-btn.wg-main { border-color: transparent; background: var(--primary); color: var(--on-primary); font-weight: 500; }
+.mb-menu.wg-pop button.wr-btn:disabled, .mb-menu.wg-pop .wr-seg button:disabled { opacity: .5; }
+.wg-acts { display: flex; align-items: center; gap: 6px; }
+.wg-confirm { display: flex; flex-direction: column; gap: 7px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 6px; }
+.wg-q { font-size: 11.5px; line-height: 1.4; color: var(--text-2); }
+.wg-hint { font-size: 11px; color: var(--text-4); }
 /* a stack (design E): its card has the tabs it holds stacked behind it; a closed tab is faded, and opens its ghost's menu */
 /* its layers at least 3 and 6 px apart on screen however far it's zoomed out (--ls-inv, which paintScale keeps on stacks) */
 .ls-node.stack { --so: max(4px, calc(3px * var(--ls-inv, 1))); --so2: max(8px, calc(6px * var(--ls-inv, 1))); }

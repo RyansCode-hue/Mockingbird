@@ -51,6 +51,10 @@ export interface WireLayerHandle {
   follow: () => void;
   /** The wire whose line runs within `within` of landscape point `p`, as last drawn: what a right-click there is on (W4b). */
   wireAt: (p: Point, within: number) => string | null;
+  /** The wire whose gate dot, as drawn (in the live band), is within `within` of landscape point `p`: what a click there opens (W4c). */
+  dotAt: (p: Point, within: number) => string | null;
+  /** Where wire `id`'s gate dot is on screen, its foot's middle, while it's drawn: where its send popover opens. */
+  dotOnScreen: (id: string) => { x: number; y: number } | null;
 }
 
 /**
@@ -58,7 +62,8 @@ export interface WireLayerHandle {
  * and their labels beside it, kept at screen size by --ls-inv (Landscape's paintScale). React draws what each wire is;
  * where it runs is written straight to the elements, as the guides are: when the layout changes, when the zoom does
  * (a card's inset and a pill's size are a few screen px), and as a dragged workspace moves (`follow`), never through a
- * render. Nothing here takes a pointer or the keyboard: a right-click on a wire is found from where it was last drawn (`wireAt`).
+ * render. Nothing here takes a pointer or the keyboard: a right-click on a wire, and a click on its gate dot, are found
+ * from where it was last drawn (`wireAt`, `dotAt`).
  */
 export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; band: Band; cam: React.MutableRefObject<Camera>; listeners: Set<(c: Camera) => void> }>(function WireLayer(
   { views, band, cam, listeners },
@@ -128,7 +133,34 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
   };
   const paintNow = useRef(paint);
   paintNow.current = paint;
-  useImperativeHandle(ref, () => ({ follow: () => paintNow.current(), wireAt: (p, within) => wireNear(curves.current, p, within) }), []);
+  /** A wire's dot element while it's drawn: none zoomed out of the live band, where the dots are hidden. */
+  const dotEl = (id: string): SVGCircleElement | null => {
+    if (now.current.band !== "live") return null;
+    const c = svg.current?.querySelector<SVGCircleElement>(`:scope > g.ls-wire[data-wire="${CSS.escape(id)}"] > circle.dot`);
+    return c && c.parentElement?.style.display !== "none" ? c : null;
+  };
+  useImperativeHandle(
+    ref,
+    () => ({
+      follow: () => paintNow.current(),
+      wireAt: (p, within) => wireNear(curves.current, p, within),
+      dotAt: (p, within) => {
+        let best: string | null = null;
+        let near = within;
+        for (const v of now.current.views) {
+          const c = v.dot ? curves.current.get(v.id) : undefined;
+          const d = c ? Math.hypot(c.mid.x - p.x, c.mid.y - p.y) : Infinity;
+          if (d <= near && dotEl(v.id)) [best, near] = [v.id, d];
+        }
+        return best;
+      },
+      dotOnScreen: (id) => {
+        const r = dotEl(id)?.getBoundingClientRect();
+        return r && r.width ? { x: r.left + r.width / 2, y: r.bottom } : null;
+      },
+    }),
+    []
+  );
   useLayoutEffect(() => paint());
   useEffect(() => {
     let zoom = cam.current.zoom;

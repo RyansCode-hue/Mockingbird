@@ -2269,6 +2269,7 @@ function App() {
         <BadgeContext.Provider value={badgeEnv}>
         <Landscape
           connectRef={connectRef}
+          resumeOk={costGate.resume}
           rooms={teamRooms}
           layout={landscapeLayout}
           stored={landscapeState.landscape}

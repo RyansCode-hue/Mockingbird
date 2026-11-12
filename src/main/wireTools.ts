@@ -33,6 +33,7 @@ import {
   carriesWork,
   finishPlan,
   gateOf,
+  MERGE_TEMPLATE,
   verdictDue,
   verdictRefusal,
   WIRE_VERDICTS,
@@ -88,8 +89,6 @@ export interface MergeFill {
   fills: FinishFill["fills"];
 }
 
-/** What a pr-merged wire with no template of its own carries: the merge, then its source's last summary. */
-export const MERGE_TEMPLATE = "{pr}\n\n{summary}";
 
 export interface WireToolsOptions {
   store: Pick<LandscapeStore, "wires" | "editWires">;
