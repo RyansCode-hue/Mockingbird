@@ -84,12 +84,12 @@ import { LandscapeTopBar, type TopTab } from "./TopBar";
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type NoteAction } from "./Landscape";
 import { useLandscape, useLandscapeMigration, type LandscapeSave } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
-import { viewOnlyPatch, accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { viewOnlyPatch, accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, plannedIn, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { wiresInOrder } from "../shared/wires";
 import { wiresNow } from "./WireLayer";
 import { droppedNote, unmovedNote } from "./wiresModel";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
-import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
 import { currentIndex, goCan, selectionAfter, stepItem, targetOf, typingAsksOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
 import { decideTyping } from "./team/Typing";
@@ -144,6 +144,8 @@ const spaced = (words: string): string => (words ? ` ${words}` : "");
 function App() {
   const [ownSessions, setSessions] = useState<SessionInfo[]>([]);
   const [resumable, setResumable] = useState<SessionInfo[]>([]);
+  /** The steps not started yet (main's planned ones, W8): drawn as ghosts are, never among `resumable`. Read with it. */
+  const [planned, setPlanned] = useState<SessionInfo[]>([]);
   /** The closed (resumable) sessions whose folders are gone, by id, and whether each still reopens: main's missingFolders, read with the lists. */
   const [goneFolders, setGoneFolders] = useState<ReadonlyMap<string, MissingFolder>>(() => new Map());
   // which session lists have been read at least once (the landscape reads the grid's layout in only once they have)
@@ -250,6 +252,8 @@ function App() {
   const [newGroup, setNewGroup] = useState("");
   // and, from a right-click on the landscape, its repo and base (the area's), its ticket picker or its Import
   const [newSeed, setNewSeed] = useState<{ repo?: string; base?: string | null; ticket?: boolean; mode?: "new" | "import" }>({});
+  // Add next step (W8): the session New session makes a not-started step after, while it's open
+  const [nextFrom, setNextFrom] = useState<SessionInfo | null>(null);
   // the landscape's selection besides the selected session: an area selected as a whole (the selection bar's)
   const [selArea, setSelArea] = useState<string | null>(null);
   // where the workspace a right-click's New workspace makes goes (resolveLayout); `took` names the session placed
@@ -545,14 +549,18 @@ function App() {
    * (closedFails), as the Closed sessions list, the ghosts and a rename on its way (renamesLeft) all wait on it.
    */
   const readClosed = async (): Promise<boolean> => {
-    const previous: SessionInfo[] | { error: string } = await window.mb.resumableSessions();
-    if (isErr(previous)) {
-      readFailed(CLOSED_READ, previous);
+    const [previous, notYet]: (SessionInfo[] | { error: string })[] = await Promise.all([window.mb.resumableSessions(), window.mb.plannedSessions()]);
+    // the not-started steps are read with the closed sessions, and a read of either failing is the read failing: a step
+    // left out would be placed over by a new workspace (withoutGone), and its wires drawn to nothing
+    const failed = isErr(previous) ? previous : isErr(notYet) ? notYet : null;
+    if (failed) {
+      readFailed(CLOSED_READ, failed);
       setClosedFails((n) => n + 1);
       return false;
     }
+    setPlanned(notYet as SessionInfo[]);
     // debriefs aren't reopened with the other sessions: they live on the WorkTracker tab
-    setResumable(previous.filter((s) => !s.debrief));
+    setResumable((previous as SessionInfo[]).filter((s) => !s.debrief));
     listLoaded("resumable");
     setClosedFails(0);
     readCleared(CLOSED_READ);
@@ -769,20 +777,23 @@ function App() {
   // the closed sessions this Mac can reopen, with their room tags as a running one has (a copy a teammate took over says
   // so): the landscape's ghosts, and the Closed sessions list
   const closedSessions = useMemo(() => mergeRoomSessions(resumable, roomLive.state && { ...roomLive.state, remote: [] }), [resumable, roomLive.state]);
+  // what the landscape draws as ghosts: the closed sessions and the steps not started yet (resolveLayout's `closed`),
+  // so places, groups, renames and pushes are the ghost machinery's for both. Never published, listed or reopened as closed
+  const lsClosed = useMemo(() => (planned.length ? [...closedSessions, ...planned] : closedSessions), [closedSessions, planned]);
   useEffect(() => {
     if (!lsRenames.length || !landscapeState) return;
-    const left = renamesLeft(lsRenames, landscapeState.landscape, workSessions, closedSessions);
+    const left = renamesLeft(lsRenames, landscapeState.landscape, workSessions, lsClosed);
     if (left.length !== lsRenames.length) setLsRenames(left);
-  }, [lsRenames, landscapeState, workSessions, closedSessions]);
+  }, [lsRenames, landscapeState, workSessions, lsClosed]);
   // every session there is, once each list has been read: a place kept for none of them takes no room (withoutGone)
   const knownSessions = useMemo(
-    () => (listsLoaded.live && listsLoaded.resumable && roomLive.state !== null ? [...sessions, ...resumable] : null),
-    [listsLoaded.live, listsLoaded.resumable, roomLive.state, sessions, resumable]
+    () => (listsLoaded.live && listsLoaded.resumable && roomLive.state !== null ? [...sessions, ...resumable, ...planned] : null),
+    [listsLoaded.live, listsLoaded.resumable, roomLive.state, sessions, resumable, planned]
   );
   const lsPlaced = useMemo(() => (landscapeState ? withoutGone(landscapeState.landscape, knownSessions, lsRenames) : null), [landscapeState, knownSessions, lsRenames]);
   const landscapeLayout = useMemo(
-    () => (landscapeShown && lsPlaced ? resolveLayout(lsPlaced, workSessions, undefined, lsRenames, placeHint, closedSessions) : null),
-    [landscapeShown, lsPlaced, workSessions, lsRenames, placeHint, closedSessions]
+    () => (landscapeShown && lsPlaced ? resolveLayout(lsPlaced, workSessions, undefined, lsRenames, placeHint, lsClosed) : null),
+    [landscapeShown, lsPlaced, workSessions, lsRenames, placeHint, lsClosed]
   );
   /** The Closed sessions list: the closed sessions with no ghost on the landscape; all of them until it's laid out. */
   const closedList = useMemo(() => closedListOf(closedSessions, landscapeLayout), [closedSessions, landscapeLayout]);
@@ -1827,7 +1838,32 @@ function App() {
     };
   };
   /** A ghost's actions (its card's buttons, ⋯ and right-click; a stack's closed tab's): `tabs` a stack ghost's closed tabs. */
-  const ghostActionsFor = (s: SessionInfo, tabs?: readonly SessionInfo[]): ModelAction[] => ghostActions(s, ghostEnv(s, tabs));
+  const ghostActionsFor = (s: SessionInfo, tabs?: readonly SessionInfo[]): ModelAction[] =>
+    s.planned
+      ? plannedActions({
+          busy: closedBusy.has(s.id),
+          start: () => void startStep(s),
+          forget: () => void forgetGhosts([s], `forgetting ${titleOf(s)}`),
+        })
+      : ghostActions(s, ghostEnv(s, tabs));
+  /** A ghost's foot: a closed session's status (closedStatus), a not-started step's where it will work (plannedWhere). */
+  const ghostStatusOf = (s: SessionInfo): string => {
+    if (!s.planned) return closedStatus(s, goneFolders.get(s.id));
+    const titled = (id: string) => [...sessions, ...resumable, ...planned].find((x) => x.id === id);
+    return plannedWhere(s, (id) => ((x) => (x ? titleOf(x) : null))(titled(id)));
+  };
+  /**
+   * Start now: not-started step `s` started from the commit the step before it is on (main's startPlanned), where its
+   * card is; what main refuses is said. Its Start now and Forget are off meanwhile, as a ghost's are.
+   */
+  const startStep = (s: SessionInfo) =>
+    whileClosedBusy([s.id], `starting ${titleOf(s)}`, async () => {
+      const info: IpcResult<SessionInfo> = await window.mb.startPlanned(s.id);
+      await refresh();
+      if (isErr(info)) return closedSay(`Couldn't start ${titleOf(s)}: ${info.error}`);
+      setFocused(info.id);
+      revealWorkspace(info.id);
+    });
   /**
    * Reopen all and Clear over closed sessions `list` (GhostsEnv), each a `what` ("closed workspace"), `where` the
    * words saying where they are ("in 5101"; none for the Closed sessions list, which is where they are).
@@ -1958,7 +1994,7 @@ function App() {
       stored: a ?? null,
       room: !!room,
       // an area outlives its sessions (their ghosts come back to it); one with none, and no ghost, can go
-      empty: !!a && !sessionsOfGroup(key).length && !(landscapeLayout && closedIn(landscapeLayout, key).length),
+      empty: !!a && !sessionsOfGroup(key).length && !(landscapeLayout && (closedIn(landscapeLayout, key).length || plannedIn(landscapeLayout, key).length)),
       messages: { mode: msgModes[key], defaultSend: msgDefaultSend, set: (mode) => void setMsgMode(key, mode), log: () => setMsgLogFor({}) },
       // following one of the room's teammates (FollowButtons' handlers): a room's area's only
       follow: ((f) => ({ leader: f.leader?.name ?? null, candidates: f.candidates, stop: f.stop, start: (member: string) => f.follow(member) }))(followIn(follow, room)),
@@ -2012,6 +2048,24 @@ function App() {
    * area's group and its first repo (with the base the area keeps for it), and the new workspace placed where it was
    * clicked (resolveLayout's PlaceHint).
    */
+  /**
+   * Add next step (W8) from `from`'s edge handle: New session's dialog for a not-started step after it, seeded as a
+   * right-click's create rows are (the area's group, its first repo and base, `from`'s agent), with `from`'s repo first.
+   * Dropped into an area, the step goes there at the drop; dropped outside every area or clicked, it goes in `from`'s
+   * area, at the drop or beside `from` (resolveLayout's PlaceHint), the area growing to hold it.
+   */
+  const addNextStep = (from: SessionInfo, at: { area: string | null; point: { x: number; y: number } } | null) => {
+    const own = areaKeyOf(from);
+    // dropped into space: the area it was let go in, or none outside every area; from a handle's click, the source's
+    const area = at ? at.area : own === LOOSE_GROUP ? null : own;
+    setNewGroup(area ?? "");
+    setNewLaunch(from.shell ? "claude" : (from.agent ?? "claude"));
+    setNewSeed({ ...(area ? areaSeed(area) : {}), ...(from.repoPath && (!at?.area || at.area === own) ? { repo: from.repoPath } : {}) });
+    if (at) setPlaceHint({ area: area ?? LOOSE_GROUP, at: at.point, since: Date.now() });
+    else placeBesideOf(from);
+    setNextFrom(from);
+    setModal("new");
+  };
   const newAt = (area: string | null, at: { x: number; y: number }, seed: { launch?: LaunchKind; ticket?: boolean; mode?: "new" | "import" }) => {
     setNewGroup(area ?? "");
     setNewLaunch(seed.launch ?? "claude");
@@ -2062,7 +2116,7 @@ function App() {
   /** A gesture's sessions moved into their groups, one at a time; the first that can't be is said and the rest left. */
   const runMoves = async (moves: readonly GroupMove[], what: string): Promise<MovesFailed | null> => {
     // a closed session moved (a stack's closed tab goes with it) is read again: main says only live ones changed
-    const closed = moves.some((m) => resumable.some((s) => s.id === m.id));
+    const closed = moves.some((m) => [...resumable, ...planned].some((s) => s.id === m.id));
     try {
       for (const [i, m] of moves.entries()) {
         const r = await settled(window.mb.setGroup(m.id, m.group));
@@ -2194,7 +2248,7 @@ function App() {
     const shownItems = new Map(treeOf(visible, order).map((g) => [g.key, g.items]));
     const keys = [...all.keys()];
     // loose ghosts have the Loose row (its right-click holds their Reopen all and Clear ghosts) with no running workspace loose
-    if (!all.has(LOOSE_GROUP) && landscapeLayout && closedIn(landscapeLayout, LOOSE_GROUP).length) keys.push(LOOSE_GROUP);
+    if (!all.has(LOOSE_GROUP) && landscapeLayout && (closedIn(landscapeLayout, LOOSE_GROUP).length || plannedIn(landscapeLayout, LOOSE_GROUP).length)) keys.push(LOOSE_GROUP);
     return keys.map((key): TreeArea => {
       const a = landscapeLayout?.areas.find((x) => x.key === key);
       const room = roomOfGroup(teamStatus, key);
@@ -2306,7 +2360,7 @@ function App() {
           cardFor={cardFor}
           notice={lsNotice}
           ghostActions={ghostActionsFor}
-          ghostStatus={(s) => closedStatus(s, goneFolders.get(s.id))}
+          ghostStatus={ghostStatusOf}
           needs={needs.byArea}
           onNeeds={stepNeeds}
           keysTo={landscapeKeys}
@@ -2316,6 +2370,7 @@ function App() {
           newAsk={newAsk}
           tour={{ due: tourDue, onEnd: endTour }}
           closed={closedSessions}
+          nextStep={addNextStep}
         />
         </BadgeContext.Provider>
         {dockColumn()}
@@ -2376,10 +2431,20 @@ function App() {
     setNewGroup("");
     setNewLaunch("claude");
     setNewSeed({});
+    setNextFrom(null);
     freshFrom.current = null;
     // a right-click's place lasts until its session is placed; closed without one, it's let go
     setPlaceHint((h) => (h?.created ? h : null));
   }, [modal]);
+
+  /** Add next step's step made: placed where its hint says once it's read, and said with what starts it. */
+  const onPlanned = async (s: SessionInfo) => {
+    const after = nextFrom;
+    setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
+    setModal(null);
+    await refresh();
+    lsSay(`Added ${titleOf(s)}${after ? ` after ${titleOf(after)}` : ""}: it starts when ${after ? `${titleOf(after)}'s` : "its"} handoff is sent, or with Start now in its menu`);
+  };
 
   const onCreated = async (s: SessionInfo, since?: number) => {
     // Start fresh: the old session's wires come to this one, before the hint below lets its ghost go. One in its ghost's
@@ -3456,6 +3521,8 @@ function App() {
           }}
           onClose={() => setModal(null)}
           onCreated={onCreated}
+          nextStep={nextFrom ? { from: nextFrom } : undefined}
+          onPlanned={(s) => void onPlanned(s)}
         />
       )}
       {modal === "import" && (

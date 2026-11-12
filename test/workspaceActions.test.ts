@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, connectMenu, createActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, usable, wireActions, wireMenu, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, connectMenu, createActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, PLANNED_BUSY_WHY, plannedActions, plannedWhere, usable, wireActions, wireMenu, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -427,6 +427,34 @@ describe("a ghost's actions", () => {
     expect(actionOf(acts, "reopen")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back rather than reopening this copy/) });
     expect(actionOf(acts, "fresh")).toBeUndefined();
     expect(usable(acts, "takeback")).toMatchObject({ section: "room", label: "Take it back" });
+  });
+});
+
+describe("a step not started yet's actions", () => {
+  it("are Start now, first and primary, then Forget: never Reopen; both off while either is under way", () => {
+    const e = { busy: false, start: vi.fn(), forget: vi.fn() };
+    const acts = plannedActions(e);
+    expect(keys(acts)).toEqual(["start", "forget"]);
+    expect(actionOf(acts, "start")).toMatchObject({ primary: true, label: "Start now" });
+    expect(actionOf(acts, "forget")).toMatchObject({ danger: true, menuLabel: "Forget it" });
+    usable(acts, "start")!.onPick();
+    usable(acts, "forget")!.onPick();
+    expect([e.start.mock.calls.length, e.forget.mock.calls.length]).toEqual([1, 1]);
+    const busy = plannedActions({ ...e, busy: true });
+    expect([actionOf(busy, "start"), actionOf(busy, "forget")].map((a) => [a?.disabled, a?.title])).toEqual([
+      [true, PLANNED_BUSY_WHY],
+      [true, PLANNED_BUSY_WHY],
+    ]);
+  });
+
+  it("say where it will work: another session's folder, a new worktree or its repo's checkout, its ticket first", () => {
+    const step = (planned: SessionInfo["planned"], over: Partial<SessionInfo> = {}) => sess({ status: "idle", planned, ...over });
+    const titleOf = (id: string) => (id === "b1" ? "Builder" : null);
+    expect(plannedWhere(step({ worktree: true }), titleOf)).toBe("backoffice · new worktree");
+    expect(plannedWhere(step({ worktree: false }, { ticketId: "#5101" }), titleOf)).toBe("#5101 · backoffice · its checkout");
+    expect(plannedWhere(step({ worktree: false, sharesWith: "b1" }), titleOf)).toBe("in Builder's folder");
+    expect(plannedWhere(step({ worktree: false, sharesWith: "gone" }), titleOf)).toBe("in another session's folder");
+    expect(plannedWhere(step({ worktree: false }, { repoPath: null }), titleOf)).toBe("no repo");
   });
 });
 

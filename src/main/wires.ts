@@ -2,8 +2,8 @@ import { randomUUID } from "crypto";
 import type { LandscapeStore } from "./landscape";
 import type { Reply } from "./messaging";
 import { canonical, companionRequest } from "./handlers";
-import { LandscapeShapeError, own, put } from "../shared/landscape";
-import type { NewSessionRequest, PrRepo, SessionInfo } from "../shared/types";
+import { LandscapeShapeError, own, put, stackKeyOf } from "../shared/landscape";
+import type { NewSessionRequest, PlanRequest, PrRepo, SessionInfo } from "../shared/types";
 import {
   createdAtAfter,
   gateOf,
@@ -20,6 +20,7 @@ import {
   ROOMS_STARTING,
   sameWire,
   settingsRefusal,
+  stepRefusal,
   WIRE_TYPES,
   wireEndOf,
   wireRefusal,
@@ -53,8 +54,8 @@ export interface WireDeliveryHooks {
 
 export interface WireServiceOptions {
   store: Pick<LandscapeStore, "get" | "wires" | "editWires" | "wiresWriteRefusal">;
-  /** Every session this Mac has: running, and closed. */
-  sessions: { list(): SessionInfo[]; resumable(): SessionInfo[] };
+  /** Every session this Mac has: running, closed, and not started (planned). */
+  sessions: { list(): SessionInfo[]; resumable(): SessionInfo[]; planned?(): SessionInfo[] };
   /** The team room a session of this Mac's is in. */
   roomOf: (id: string) => string | null;
   /**
@@ -297,6 +298,34 @@ export class WireService {
   }
 
   /**
+   * Add next step (W8): a not-started step (`plan`) after session `req.after`, joined to it by a handoff wire. Refused
+   * before it's made when no handoff could leave `req.after` now (stepRefusal); one made that the wire is then refused
+   * for (its group across a room's line, the book changed meanwhile) is forgotten (`forget`), and the refusal thrown.
+   */
+  addStep(req: PlanRequest, d: { plan(req: PlanRequest): SessionInfo; forget(id: string): void }): { info: SessionInfo; wire: string } {
+    const refused = this.stepRefusal(String(req?.after ?? ""));
+    if (refused) throw new Error(refused);
+    const info = d.plan(req);
+    const made = this.add(req.after, info.id, "handoff");
+    if (!("refused" in made)) return { info, wire: made.id! };
+    try {
+      d.forget(info.id);
+    } catch (err) {
+      this.o.log(`wires: not-started step ${info.id} wasn't wired from ${req.after}, and couldn't be forgotten`, err);
+    }
+    throw new Error(made.refused);
+  }
+
+  /** Why no handoff could leave session `from` for a step after it now, asked before one is made (shared/wires.ts' stepRefusal). */
+  stepRefusal(from: string): string | null {
+    const unwritable = this.o.store.wiresWriteRefusal();
+    if (unwritable) return unwritable;
+    const state = this.o.store.wires();
+    if (!state.book) return state.refused ?? "Wires can't be read right now.";
+    return stepRefusal(from, this.context(state.book));
+  }
+
+  /**
    * Whether session `id` is the terminal of a shared worktree wire: on its agent's tree, so it closes with that worktree
    * rather than holding it (freeWorktree). False while the book can't be read: then it holds it, as any session does.
    */
@@ -401,20 +430,23 @@ export class WireService {
    */
   context(book: WireBook, kept?: Readonly<KeptEntries>): GateContext {
     const running = new Map(this.o.sessions.list().map((s) => [s.id, s]));
-    const closed = new Map(this.o.sessions.resumable().map((s) => [s.id, s]));
-    const ghosts = this.o.store.get().landscape.ghosts;
+    const closed = new Map([...(this.o.sessions.planned?.() ?? []), ...this.o.sessions.resumable()].map((s) => [s.id, s]));
+    const l = this.o.store.get().landscape;
     const ends = new Map<string, WireEnd | null>();
     const end = (id: string): WireEnd | null => {
       const known = ends.get(id);
       if (known !== undefined) return known;
       const s = running.get(id) ?? closed.get(id);
+      // on the landscape: running, or kept a place there (its own, its stack's, or an older file's ghost record), as the
+      // window draws a ghost (resolveLayout)
+      const stack = s ? stackKeyOf(s) : null;
       const made: WireEnd | null = s
         ? wireEndOf(s, {
             room: this.o.roomOf(id),
             takenOver: this.o.takenOver(id),
             outsideSandbox: !!this.o.outsideSandbox?.(id),
             running: running.has(id),
-            placed: running.has(id) || Object.hasOwn(ghosts, id),
+            placed: running.has(id) || Object.hasOwn(l.workspaces, id) || (!!stack && Object.hasOwn(l.stacks, stack)) || Object.hasOwn(l.ghosts, id),
             folder: canonical(s.cwd),
           })
         : null;

@@ -100,6 +100,8 @@ export interface WireToolsOptions {
   sessions: {
     list(): SessionInfo[];
     resumable(): SessionInfo[];
+    /** Steps not started yet (SessionManager.planned): a wire's end as the rules have it, with no output or conversation. */
+    planned?(): SessionInfo[];
     /** Whether Mockingbird's notice under `key` still waits in its queue (SessionManager.noticeWaiting). */
     noticeWaiting(id: string, key: string): boolean;
     /** Mockingbird's notice, replacing the one under `key` still waiting (SessionManager.deliverNotice). */
@@ -564,9 +566,10 @@ export class WireTools {
 
   // ---- helpers ----------------------------------------------------------------------------
 
-  /** A session of this Mac's, running or closed. */
+  /** A session of this Mac's, running, closed or not started: whatever the rules can name as a wire's end (WireService.context). */
   private session(id: string): SessionInfo | null {
-    return this.o.sessions.list().find((s) => s.id === id) ?? this.o.sessions.resumable().find((s) => s.id === id) ?? null;
+    const known = (list: SessionInfo[] | undefined) => list?.find((s) => s.id === id);
+    return known(this.o.sessions.list()) ?? known(this.o.sessions.resumable()) ?? known(this.o.sessions.planned?.()) ?? null;
   }
 
   /** A read along a wire, or a refused one, in the message log: who read whom, how much and how it went, never what. */

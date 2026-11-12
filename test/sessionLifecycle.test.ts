@@ -8,6 +8,7 @@ import { FOLDER_NOTICE_SETTLE_MS, FOLDER_NOTICE_WAIT_MS } from "../src/main/code
 import capture from "./fixtures/codex-folder-notice-0.156.1.json";
 import { quote } from "../src/main/shell";
 import { HELPDESK_RULES } from "../src/main/helpdesk";
+import type { PlanRequest } from "../src/shared/types";
 
 /** Every pty the manager starts: what it was asked to run and with what environment, what was written to it, and a way to end it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; killed: boolean; signals: string[]; emit(d: string): void; exit(code: number): void };
@@ -1378,5 +1379,133 @@ describe("the Helpdesk tasks workspace", () => {
     await m.create(tasksPane);
     const other = await m.create(agentPane);
     expect(m.digest().map((d) => d.info.id)).toEqual([other.id]);
+  });
+});
+
+describe("a step not started yet (W8)", () => {
+  /** A clone of an origin, and step A: a worktree session on `feat` with a commit of its own that origin hasn't got. */
+  async function upstream() {
+    const { m, store } = await manager();
+    const origin = makeRepo({ "a.txt": "1" }, "origin");
+    const clone = path.join(path.dirname(origin), "clone");
+    git(path.dirname(origin), "clone", "-q", origin, clone);
+    const a = await m.create({ repoPath: clone, useWorktree: true, branchName: "feat", agent: "claude", title: "Builder", taskGroup: "5120" });
+    git(a.cwd, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "unpushed work");
+    return { m, store, origin, clone, a, work: git(a.cwd, "rev-parse", "HEAD") };
+  }
+  const step = (after: string, over: Partial<PlanRequest> = {}): PlanRequest => ({ after, title: "Tester", agent: "claude", repoPath: null, worktree: false, taskGroup: "5120", ...over });
+
+  it("is a record with no pty, kept out of resumable() and list(), and among planned()", async () => {
+    const { m } = await manager();
+    const a = await m.create({ ...agentPane, taskGroup: "5120" });
+    const started = ptys.length;
+    const b = m.plan(step(a.id));
+    expect(ptys.length).toBe(started);
+    expect(b).toMatchObject({ title: "Tester", taskGroup: "5120", branch: null, planned: { worktree: false } });
+    expect(m.planned().map((s) => s.id)).toEqual([b.id]);
+    expect(m.resumable().map((s) => s.id)).not.toContain(b.id);
+    expect(m.list().map((s) => s.id)).not.toContain(b.id);
+    expect(() => m.closedOutput(b.id)).toThrow("hasn't started, so it has no output");
+  });
+
+  it("is refused, saving nothing, for what can't be one", async () => {
+    const { m, store } = await manager();
+    const a = await m.create({ ...agentPane, taskGroup: "5120" });
+    const n = store.state.sessions.length;
+    expect(() => m.plan(step("nope"))).toThrow('This Mac has no session "nope" to add a step after');
+    expect(() => m.plan(step(a.id, { title: "  " }))).toThrow("Name the step");
+    expect(() => m.plan(step(a.id, { taskGroup: "5120/docs" }))).toThrow("A not-started step goes in an area, not a stack");
+    expect(() => m.plan(step(a.id, { agent: "shell" as never }))).toThrow(/a step runs Claude or Codex/);
+    expect(() => m.plan(step(a.id, { worktree: true }))).toThrow("A worktree needs a repo");
+    expect(store.state.sessions.length).toBe(n);
+  });
+
+  it("is never relaunched, resumed or restarted: each is refused saying why, starting nothing", async () => {
+    const { m, store } = await manager();
+    const a = await m.create({ ...agentPane, taskGroup: "5120" });
+    const b = m.plan(step(a.id));
+    const started = ptys.length;
+    const why = "“Tester” hasn't started yet: it starts when the handoff into it is sent, or with Start now in its menu";
+    await expect(m.relaunch(b.id)).rejects.toThrow(why);
+    expect(await m.resume(b.id)).toEqual({ refused: why });
+    await expect(m.restart(b.id)).rejects.toThrow(why);
+    expect(ptys.length).toBe(started);
+    expect(store.state.sessions.find((s: any) => s.id === b.id)?.planned).toBeTruthy();
+  });
+
+  it("starts under its id at the commit the step before it is on, not origin's, on a branch named after that one's", async () => {
+    const { m, store, clone, a, work } = await upstream();
+    const b = m.plan(step(a.id, { repoPath: clone, worktree: true, base: "main" }));
+    const started = await m.startPlanned(b.id, a.id);
+    expect(started.id).toBe(b.id);
+    expect(started.branch).toBe("feat-tester");
+    expect(started.cwd).toBe(path.join(worktreeRoot(clone), "feat-tester"));
+    expect(git(started.cwd, "rev-parse", "HEAD")).toBe(work);
+    expect(git(started.cwd, "rev-parse", "HEAD")).not.toBe(git(clone, "rev-parse", "origin/main"));
+    expect(m.buffer(b.id)).toContain(`Started at “Builder”'s commit ${work.slice(0, 7)}.`);
+    // its record is the running session's now: nothing of planned left, and it's neither planned nor closed
+    expect(store.state.sessions.find((s: any) => s.id === b.id)?.planned).toBeUndefined();
+    expect(m.planned()).toEqual([]);
+    expect(m.list().map((s) => s.id)).toContain(b.id);
+    await expect(m.startPlanned(b.id, a.id)).rejects.toThrow("It's running already");
+  });
+
+  it("is started once: a second start, a resume or a forget while its start is under way is refused", async () => {
+    const { m, store, clone, a } = await upstream();
+    const b = m.plan(step(a.id, { repoPath: clone, worktree: true }));
+    const before = ptys.length;
+    const first = m.startPlanned(b.id, a.id);
+    await expect(m.startPlanned(b.id, a.id)).rejects.toThrow("It's being started already");
+    expect(await m.resume(b.id)).toEqual({ refused: "It's being started already" });
+    expect(() => m.kill(b.id, true)).toThrow("It's being started already: forget it once it has opened");
+    expect((await first).id).toBe(b.id);
+    expect(ptys.length).toBe(before + 1);
+    expect(store.state.sessions.filter((s: any) => s.id === b.id)).toHaveLength(1);
+  });
+
+  it("says in its pane that the step before's uncommitted files aren't there, and takes a branch no other has", async () => {
+    const { m, clone, a, work } = await upstream();
+    fs.writeFileSync(path.join(a.cwd, "draft.txt"), "not committed");
+    git(clone, "branch", "-q", "feat-tester");
+    const b = m.plan(step(a.id, { repoPath: clone, worktree: true }));
+    const started = await m.startPlanned(b.id, a.id);
+    expect(started.branch).toBe("feat-tester-2");
+    expect(git(started.cwd, "rev-parse", "HEAD")).toBe(work);
+    expect(fs.existsSync(path.join(started.cwd, "draft.txt"))).toBe(false);
+    expect(m.buffer(b.id)).toContain("its uncommitted file isn't here");
+  });
+
+  it("starts in the folder of the session it shares one with, on its branch as it stands (decision 7)", async () => {
+    const { m, a } = await upstream();
+    const b = m.plan(step(a.id, { sharesFolder: true, repoPath: "/elsewhere", worktree: true }));
+    expect(b.planned).toEqual({ worktree: false, sharesWith: a.id });
+    const started = await m.startPlanned(b.id, a.id);
+    expect(started).toMatchObject({ id: b.id, cwd: a.cwd, branch: "feat" });
+  });
+
+  it("refuses to start, keeping its record, when the folder it shares has gone, or its session was forgotten", async () => {
+    const { m, store, clone, a } = await upstream();
+    const b = m.plan(step(a.id, { sharesFolder: true }));
+    m.kill(a.id, false);
+    git(clone, "worktree", "remove", "--force", a.cwd);
+    const started = ptys.length;
+    await expect(m.startPlanned(b.id, a.id)).rejects.toThrow(`“Tester” works in “Builder”'s folder, ${a.cwd}, which isn't there any more`);
+    expect(ptys.length).toBe(started);
+    expect(store.state.sessions.find((s: any) => s.id === b.id)?.planned).toBeTruthy();
+    m.kill(a.id, true);
+    await expect(m.startPlanned(b.id, a.id)).rejects.toThrow("works in another session's folder, and that session was forgotten");
+    m.kill(b.id, true);
+    expect(m.planned()).toEqual([]);
+  });
+
+  it("is cut from its base, saying why, when the step before it works in another repository", async () => {
+    const { m, a } = await upstream();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const other = makeRepo({ "b.txt": "1" }, "other");
+    const b = m.plan(step(a.id, { repoPath: other, worktree: true }));
+    const started = await m.startPlanned(b.id, a.id);
+    expect(started.branch).toBe("tester");
+    expect(git(started.cwd, "rev-parse", "HEAD")).toBe(git(other, "rev-parse", "HEAD"));
+    expect(m.buffer(b.id)).toContain("“Builder” works in another repository, so this started from its base as a new worktree does.");
   });
 });

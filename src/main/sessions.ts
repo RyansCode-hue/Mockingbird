@@ -4,10 +4,12 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, ticketIdOf, AgentKind, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, stepSlug, ticketIdOf, AgentKind, AGENT_KINDS, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
-import { currentBranch, git } from "./git";
+import { branchesOf, currentBranch, git } from "./git";
+import { uniqueBranch } from "./presets";
+import { samePath } from "./handlers";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, type LaunchContext } from "./agents";
 import { HELPDESK_FOLDER_ONLY, HELPDESK_IN_ROOM, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
@@ -238,6 +240,12 @@ interface LiveSession {
 const BEING_RESUMED = "It's being resumed already";
 /** Why a pane can't be relaunched, resumed, restarted or forgotten while a relaunch of it is under way (SessionManager.relaunch). */
 const BEING_RELAUNCHED = "It's being reopened already";
+/** Why a not-started step can't be started again, reopened or forgotten while its start is under way (SessionManager.startPlanned). */
+const BEING_STARTED = "It's being started already";
+
+/** Why not-started step `s` can't be reopened, resumed or restarted: it has no conversation or folder to go back to. */
+export const notStartedWhy = (s: Pick<SessionInfo, "title" | "ticketTitle">): string =>
+  `“${s.ticketTitle ?? s.title}” hasn't started yet: it starts when the handoff into it is sent, or with Start now in its menu`;
 
 /**
  * What closed session `s`'s missing folder means for reopening it (SessionManager.missingFolders). A worktree session
@@ -307,6 +315,8 @@ export class SessionManager {
    * would drop a record that create() then writes back with no history. Both are refused while it's here.
    */
   private relaunching = new Set<string>();
+  /** Not-started steps being started now (startPlanned), until each runs or has failed: a second start, a relaunch or a forget meanwhile is refused. */
+  private starting = new Set<string>();
   /** Every pty that hasn't exited yet, closed panes' included, with its exit: quitting waits for them (shutdown). */
   private running = new Map<pty.IPty, Promise<void>>();
   /** Set by shutdown: ptys ending now are the app quitting, which leaves each pane's saved state as it was. */
@@ -477,7 +487,17 @@ export class SessionManager {
    */
   resumable(): SessionInfo[] {
     const liveIds = new Set(this.live.keys());
-    return this.store.state.sessions.filter((s) => !liveIds.has(s.id));
+    // a not-started step (planned) has nothing to resume, and what reads this (rooms publishing, Reopen, the Closed
+    // sessions list, missingFolders) must never take one for a closed session
+    return this.store.state.sessions.filter((s) => !liveIds.has(s.id) && !s.planned);
+  }
+
+  /**
+   * The steps not started yet (SessionInfo.planned): the landscape draws them where their places are kept, as it does
+   * closed sessions' ghosts, and startPlanned starts one. Never among resumable(), so nothing reopens or publishes one.
+   */
+  planned(): SessionInfo[] {
+    return this.store.state.sessions.filter((s) => !!s.planned && !this.live.has(s.id));
   }
 
   /**
@@ -487,7 +507,9 @@ export class SessionManager {
    */
   closedOutput(id: string, max = CLOSED_OUTPUT_MAX): string {
     if (this.live.has(id)) throw new Error(`${id} is running: its output is its pane's`);
-    if (!this.store.state.sessions.some((s) => s.id === id)) throw new Error(`${id} isn't one of this Mac's closed sessions`);
+    const rec = this.recordOf(id);
+    if (!rec) throw new Error(`${id} isn't one of this Mac's closed sessions`);
+    if (rec.planned) throw new Error(`${id} hasn't started, so it has no output`);
     const held = this.debriefScrollback.get(id);
     if (held !== undefined) return tailOf(held, max);
     let fd: number;
@@ -548,7 +570,7 @@ export class SessionManager {
       branch = req.branchName?.trim() || null;
     } else if (repoPath && req.useWorktree) {
       branch = wanted || `mb-${Date.now().toString(36)}`;
-      cwd = await createWorktree(repoPath, branch, req.baseBranch, { warn });
+      cwd = await createWorktree(repoPath, branch, req.baseBranch, { warn, ...(req.startAt ? { startAt: req.startAt } : {}) });
     } else if (repoPath && wanted) {
       // ticket branch in the checkout itself — one branch per checkout, so
       // another live session there on a different branch blocks this. One with
@@ -1013,6 +1035,7 @@ export class SessionManager {
   private notResuming(id: string): void {
     if (this.resuming.has(id)) throw new Error(BEING_RESUMED);
     if (this.relaunching.has(id)) throw new Error(BEING_RELAUNCHED);
+    if (this.starting.has(id)) throw new Error(BEING_STARTED);
   }
 
   /**
@@ -1037,6 +1060,8 @@ export class SessionManager {
   async restart(id: string): Promise<SessionInfo> {
     this.ownOnly(id, "restart it");
     this.notResuming(id);
+    const planned = !this.live.has(id) && this.recordOf(id)?.planned ? this.recordOf(id) : undefined;
+    if (planned) throw new Error(notStartedWhy(planned));
     this.mayRun(id);
     this.kill(id, false); // keep the store entry so relaunch can resume it
     const info = await this.relaunch(id);
@@ -1162,7 +1187,10 @@ export class SessionManager {
     if (isRemotePaneId(id)) return "That's a teammate's session: only its owner can resume it";
     if (!asking && this.resuming.has(id)) return BEING_RESUMED;
     if (this.relaunching.has(id)) return BEING_RELAUNCHED;
+    if (this.starting.has(id)) return BEING_STARTED;
     const pane = this.live.get(id);
+    const planned = !pane && this.recordOf(id)?.planned ? this.recordOf(id) : undefined;
+    if (planned) return notStartedWhy(planned);
     if (!pane) return "It isn't an exited pane here: reopen it from its ghost card or Closed sessions";
     if (pane.info.status !== "dead") return "It's running already";
     const refusal = this.relaunchGuard?.(id);
@@ -1228,8 +1256,10 @@ export class SessionManager {
     this.notResuming(id);
     const pane = this.live.get(id);
     if (pane && pane.info.status !== "dead") throw new Error("It's running already");
-    this.mayRun(id);
     const old = this.recordOf(id);
+    // a not-started step has no conversation or folder to go back to: it's started, never reopened (startPlanned)
+    if (old?.planned && !pane) throw new Error(notStartedWhy(old));
+    this.mayRun(id);
     if (!old) return null;
     this.relaunching.add(id);
     try {
@@ -1245,6 +1275,169 @@ export class SessionManager {
 
   private recordOf(id: string): SessionInfo | undefined {
     return this.store.state.sessions.find((s) => s.id === id);
+  }
+
+  /**
+   * A step not started yet after session `req.after` (Add next step, docs/landscape-wires.md W8): saved as a record with
+   * no pty and no folder (`planned`), drawn by the landscape where its place is kept, as a ghost is, and started under
+   * its id by startPlanned. Refused, saving nothing, for what can't be one: an unknown or teammate's session to follow,
+   * a group that's a stack's, a repo that isn't there, a folder to share that's gone. The wire into it is the caller's.
+   */
+  plan(req: PlanRequest): SessionInfo {
+    this.refuseWhileQuitting();
+    const after = String(req?.after ?? "");
+    this.ownOnly(after, "add a step after it");
+    const up = this.live.get(after)?.info ?? this.recordOf(after);
+    if (!up) throw new Error(`This Mac has no session "${after}" to add a step after`);
+    const title = String(req.title ?? "").trim().replace(/\s+/g, " ");
+    if (!title) throw new Error("Name the step");
+    if (title.length > 120) throw new Error("A step's name is at most 120 characters");
+    if (!AGENT_KINDS.includes(req.agent)) throw new Error(`There's no agent ${JSON.stringify(req.agent)}: a step runs Claude or Codex`);
+    const group = req.taskGroup?.trim() || null;
+    if (group?.includes("/")) throw new Error("A not-started step goes in an area, not a stack");
+    let repoPath: string | null;
+    let cwd: string;
+    let sharesWith: string | undefined;
+    if (req.sharesFolder) {
+      if (!fs.existsSync(up.cwd)) throw new Error(`“${up.ticketTitle ?? up.title}”'s folder, ${up.cwd}, isn't there any more, so a step can't work in it`);
+      ({ repoPath, cwd } = up);
+      sharesWith = up.id;
+    } else {
+      repoPath = req.repoPath ? expandHome(req.repoPath) : null;
+      if (repoPath && !fs.existsSync(repoPath)) throw new Error(`${repoPath} isn't there`);
+      if (req.worktree && !repoPath) throw new Error("A worktree needs a repo");
+      cwd = repoPath ?? os.homedir();
+    }
+    let id = randomUUID().slice(0, 8);
+    while (this.live.has(id) || this.recordOf(id)) id = randomUUID().slice(0, 8);
+    const prompt = req.prompt?.trim();
+    const planned: PlannedStep = {
+      worktree: !sharesWith && !!repoPath && !!req.worktree,
+      ...(!sharesWith && repoPath && req.base ? { base: req.base } : {}),
+      ...(sharesWith ? { sharesWith } : {}),
+      ...(prompt ? { prompt } : {}),
+    };
+    const ticketId = req.ticketId?.trim() || null;
+    const info: SessionInfo = {
+      id,
+      title,
+      repoPath,
+      cwd,
+      branch: null,
+      ticketId,
+      ticketTitle: (ticketId && req.ticketTitle?.trim()) || null,
+      // as create() would group it: its group, else its ticket's
+      taskGroup: group ?? ticketId,
+      status: "idle",
+      createdAt: Date.now(),
+      kind: repoPath ? "work" : "assistant",
+      extraDirs: [],
+      waitingReason: null,
+      waitingSince: null,
+      agent: req.agent,
+      ...(req.model?.trim() ? { model: req.model.trim() } : {}),
+      ...(req.effort?.trim() ? { effort: req.effort.trim() } : {}),
+      planned,
+    };
+    this.store.upsertSession(info);
+    this.emitChanged();
+    return info;
+  }
+
+  /**
+   * Start not-started step `id` under its id, so its wires keep their ends: create() with reuseId, the running session's
+   * record taking its place. Its folder is made now: the folder it shares (`planned.sharesWith`) as it stands; else a
+   * worktree of its own on a new branch named after `upstream`'s (unique among the repo's), at the commit `upstream`'s
+   * folder is on now, never origin's, when that's in its repo, otherwise cut from its base as any new worktree is, the
+   * pane saying why. Refused, nothing started and its record kept, when it isn't a not-started step of this Mac's, is
+   * being started already, or a teammate continues it.
+   */
+  async startPlanned(id: string, upstream?: string | null): Promise<SessionInfo> {
+    this.ownOnly(id, "start it");
+    this.refuseWhileQuitting();
+    this.notResuming(id);
+    if (this.live.has(id)) throw new Error("It's running already");
+    const rec = this.recordOf(id);
+    if (!rec) throw new Error("Its saved record is gone, so there's nothing to start");
+    const step = rec.planned;
+    if (!step) throw new Error("It has started already: reopen it instead");
+    this.mayRun(id);
+    const name = rec.ticketTitle ?? rec.title;
+    this.starting.add(id);
+    try {
+      const notes: string[] = [];
+      let where: Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "useWorktree" | "baseBranch" | "startAt">;
+      if (step.sharesWith) {
+        const other = this.live.get(step.sharesWith)?.info ?? this.recordOf(step.sharesWith);
+        if (!other) throw new Error(`“${name}” works in another session's folder, and that session was forgotten: forget this step and add it again`);
+        if (!fs.existsSync(other.cwd)) throw new Error(`“${name}” works in “${other.ticketTitle ?? other.title}”'s folder, ${other.cwd}, which isn't there any more`);
+        where = { repoPath: other.repoPath, cwd: other.cwd, branchName: other.branch ?? undefined, useWorktree: false };
+      } else if (step.worktree && rec.repoPath) {
+        const repo = expandHome(rec.repoPath);
+        const from = await this.upstreamCommit(repo, upstream ?? null, notes);
+        const { local, origin } = await branchesOf(repo);
+        const lead = from?.branch ?? null;
+        where = {
+          repoPath: rec.repoPath,
+          useWorktree: true,
+          branchName: uniqueBranch(lead ? `${lead}-${stepSlug(rec.title)}` : stepSlug(rec.title), [...local, ...origin]),
+          ...(from ? { startAt: from.sha } : step.base ? { baseBranch: step.base } : {}),
+        };
+      } else where = { repoPath: rec.repoPath, useWorktree: false };
+      return await this.create(
+        {
+          ...where,
+          ticketId: rec.ticketId ?? undefined,
+          ticketTitle: rec.ticketTitle ?? undefined,
+          taskGroup: rec.taskGroup ?? undefined,
+          extraDirs: rec.extraDirs,
+          title: rec.title,
+          agent: rec.agent ?? "claude",
+          model: rec.model ?? undefined,
+          effort: rec.effort ?? undefined,
+          ...(step.prompt ? { initialPrompt: step.prompt } : {}),
+          reuseId: id,
+        },
+        { notice: notes.join("\n") || undefined }
+      );
+    } finally {
+      this.starting.delete(id);
+    }
+  }
+
+  /**
+   * The commit a not-started step's new worktree in `repo` starts at: the one upstream session `upId`'s folder is on now
+   * (its branch's tip when its folder is gone), with that branch. Null when there's none to start at in `repo` (no
+   * upstream, one in another repository or none, its folder and branch gone), each said in `notes` for the pane. Throws
+   * when the commit can't be read.
+   */
+  private async upstreamCommit(repo: string, upId: string | null, notes: string[]): Promise<{ sha: string; branch: string | null } | null> {
+    if (!upId) return null;
+    const up = this.live.get(upId)?.info ?? this.recordOf(upId);
+    const upName = up ? `“${up.ticketTitle ?? up.title}”` : "the step before it";
+    const cut = (why: string) => {
+      notes.push(`${why}, so this started from its base as a new worktree does.`);
+      console.warn(`[sessions] a not-started step after ${upId} in ${repo}: ${why}`);
+      return null;
+    };
+    if (!up) return cut("The step before it was forgotten");
+    if (!up.repoPath || !samePath(expandHome(up.repoPath), repo)) return cut(`${upName} works ${up.repoPath ? "in another repository" : "outside any repository"}`);
+    try {
+      if (fs.existsSync(up.cwd)) {
+        const sha = await git(up.cwd, ["rev-parse", "--verify", "HEAD"]);
+        const dirty = (await git(up.cwd, ["status", "--porcelain"])).split("\n").filter(Boolean).length;
+        const left = dirty === 1 ? ": its uncommitted file isn't here" : dirty ? `: its ${dirty} uncommitted files aren't here` : "";
+        notes.push(`Started at ${upName}'s commit ${sha.slice(0, 7)}${left}.`);
+        return { sha, branch: await currentBranch(up.cwd) };
+      }
+      if (!up.branch) return cut(`${upName}'s folder is gone`);
+      const sha = await git(repo, ["rev-parse", "--verify", "-q", `refs/heads/${up.branch}`], { okCodes: [0, 1] });
+      if (!sha) return cut(`${upName}'s folder and its branch, ${up.branch}, are gone`);
+      notes.push(`Started at ${upName}'s branch ${up.branch} (${sha.slice(0, 7)}): its folder is gone.`);
+      return { sha, branch: up.branch };
+    } catch (err) {
+      throw new Error(`Couldn't read the commit ${upName} is on: ${err instanceof Error ? err.message : err}`, { cause: err });
+    }
   }
 
   /**
@@ -1603,6 +1796,7 @@ export class SessionManager {
     this.ownOnly(id, "close it");
     if (forget && this.resuming.has(id)) throw new Error(`${BEING_RESUMED}: forget it once it has opened`);
     if (forget && this.relaunching.has(id)) throw new Error(`${BEING_RELAUNCHED}: forget it once it has opened`);
+    if (forget && this.starting.has(id)) throw new Error(`${BEING_STARTED}: forget it once it has opened`);
     const s = this.live.get(id);
     if (s) {
       retireMcpLaunch(s.mcp); // now, not at its exit: the same id may run again before this pty has gone

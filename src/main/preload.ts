@@ -1,4 +1,4 @@
-import type { AgentTold, IpcResult, MissingFolder, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode } from "../shared/types";
+import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
@@ -13,6 +13,12 @@ const api = {
   missingFolders: (): Promise<IpcResult<MissingFolder[]>> => ipcRenderer.invoke("sessions:missingFolders"),
   createSession: (req: unknown) => ipcRenderer.invoke("sessions:create", req),
   relaunchSession: (id: string) => ipcRenderer.invoke("sessions:relaunch", id),
+  /** The steps not started yet (SessionManager.planned): drawn where their places are kept, never among the closed ones. */
+  plannedSessions: (): Promise<IpcResult<SessionInfo[]>> => ipcRenderer.invoke("sessions:planned"),
+  /** Add next step: a not-started step after `req.after`, joined to it by a handoff wire (WireService.addStep). */
+  planSession: (req: PlanRequest): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("sessions:plan", req),
+  /** Start not-started step `id` now, from the commit the step before it is on (Start now). */
+  startPlanned: (id: string): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("sessions:startPlanned", id),
   /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */
   resumeSession: (id: string): Promise<SessionInfo | { refused: string } | { error: string }> => ipcRenderer.invoke("sessions:resume", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),

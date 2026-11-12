@@ -249,7 +249,9 @@ export function WirePopover({ at, view, form, ticket, onSend, onMarkSent, onMore
         {why}
         {view.starts && view.face !== "limit" && (
           <div className="wg-why t-quiet">
-            “{form.toTitle}” {view.starts === "reopen" ? "is closed: sending reopens it" : "has exited: sending resumes it"}, which rereads its conversation.
+            {view.starts === "start"
+              ? `“${form.toTitle}” hasn't started: sending starts it.`
+              : `“${form.toTitle}” ${view.starts === "reopen" ? "is closed: sending reopens it" : "has exited: sending resumes it"}, which rereads its conversation.`}
           </div>
         )}
         {shown.note && <div className="wg-why t-ready">{shown.note}</div>}

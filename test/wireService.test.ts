@@ -6,7 +6,7 @@ import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { WireService } from "../src/main/wires";
 import { freeWorktree } from "../src/main/handlers";
-import type { NewSessionRequest, SessionInfo } from "../src/shared/types";
+import type { NewSessionRequest, PlanRequest, SessionInfo } from "../src/shared/types";
 import { MESSAGE_ROOM_LINE, newWire, ROOM_LINE, ROOMS_STARTING, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
 import { askAs, askRaw, startServer, testLaunch } from "./mcpClient";
 import { tempDir } from "./helpers";
@@ -29,11 +29,12 @@ function setup(opts: { rooms?: Record<string, string>; takenOver?: Record<string
   const store = new LandscapeStore({ file, emit: () => {}, emitWires: (c) => changes.push(c), log });
   const running = [session("a"), session("b"), session("c"), session("term", { shell: true, cwd: "/w/a" }), session("brief", { debrief: true }), session("helpdesk", { role: "tasks", repoPath: null, taskGroup: "Helpdesk" }), session("gone", { status: "dead" })];
   const closed = [session("old"), session("ghost")];
+  const planned: SessionInfo[] = [];
   const rooms = { ...opts.rooms };
   const takenOver = { ...opts.takenOver };
   const service = new WireService({
     store,
-    sessions: { list: () => running, resumable: () => closed },
+    sessions: { list: () => running, resumable: () => closed, planned: () => planned },
     roomOf: (id) => rooms[id] ?? null,
     takenOver: (id) => takenOver[id] ?? null,
     log,
@@ -41,7 +42,7 @@ function setup(opts: { rooms?: Record<string, string>; takenOver?: Record<string
   });
   store.update({ ghosts: { ghost: { title: "ghost", agent: "claude", cwd: "/w/ghost", repoPath: null, placement: { x: 0, y: 0, w: 8, h: 8 }, group: "5038", closedAt: "2026-11-01T00:00:00.000Z" } } });
   store.flush();
-  return { dir, file, store, service, running, closed, rooms, takenOver, changes, logged };
+  return { dir, file, store, service, running, closed, planned, rooms, takenOver, changes, logged };
 }
 const made = (r: WireReply): { state: WireState; id: string } => {
   if ("refused" in r) throw new Error(`refused: ${r.refused}`);
@@ -114,6 +115,56 @@ describe("making a wire", () => {
     expect(refusal(service.add("b", "a", "context"))).toMatch(/continues on Nick's laptop/);
     // across the line the room rule comes first, so nothing about the far end is said
     expect(refusal(service.add("a", "c", "context"))).toBe(ROOM_LINE);
+  });
+});
+
+describe("a next step (Add next step)", () => {
+  /** setup()'s, with `plan` making a not-started step as SessionManager.plan would and `forget` letting it go. */
+  function steps(opts: Parameters<typeof setup>[0] = {}) {
+    const t = setup(opts);
+    let n = 0;
+    const plan = vi.fn((req: PlanRequest) => {
+      const s = session(`p${++n}`, { title: req.title, taskGroup: req.taskGroup, planned: { worktree: req.worktree } });
+      t.planned.push(s);
+      return s;
+    });
+    const forget = vi.fn((id: string) => void t.planned.splice(t.planned.findIndex((s) => s.id === id), 1));
+    const req = (after: string): PlanRequest => ({ after, title: "Tester", agent: "claude", repoPath: null, worktree: true, taskGroup: "5038" });
+    return { ...t, plan, forget, req };
+  }
+
+  it("makes the step, then a handoff into it, saved", () => {
+    const t = steps();
+    const r = t.service.addStep(t.req("a"), t);
+    expect(r.info).toMatchObject({ id: "p1", title: "Tester" });
+    expect(onDisk(t.file).wires.links[r.wire]).toMatchObject({ from: "a", to: "p1", type: "handoff", gate: "ask" });
+    expect(t.forget).not.toHaveBeenCalled();
+  });
+
+  it("is refused before any step is made after a terminal, a debrief, the Helpdesk tasks workspace or one taken over", () => {
+    const t = steps({ takenOver: { c: "“c” continues on Nick's laptop" } });
+    expect(() => t.service.addStep(t.req("term"), t)).toThrow(/is a terminal/);
+    expect(() => t.service.addStep(t.req("brief"), t)).toThrow(/debrief/);
+    expect(() => t.service.addStep(t.req("helpdesk"), t)).toThrow(/Helpdesk tasks workspace/);
+    expect(() => t.service.addStep(t.req("c"), t)).toThrow(/continues on Nick's laptop/);
+    expect(() => t.service.addStep(t.req("nobody"), t)).toThrow(/no session "nobody"/);
+    expect(t.plan).not.toHaveBeenCalled();
+    expect(t.planned).toEqual([]);
+  });
+
+  it("lets the step go when its wire is refused once it's made, saying why", () => {
+    const t = steps();
+    // made in another room than the one it follows: the handoff can't cross
+    t.plan.mockImplementationOnce((req: PlanRequest) => {
+      const s = session("p9", { title: req.title, planned: { worktree: true } });
+      t.planned.push(s);
+      t.rooms.p9 = "R1";
+      return s;
+    });
+    expect(() => t.service.addStep(t.req("a"), t)).toThrow(/same team room/);
+    expect(t.forget).toHaveBeenCalledWith("p9");
+    expect(t.planned).toEqual([]);
+    expect(Object.keys(onDisk(t.file).wires?.links ?? {})).toEqual([]);
   });
 });
 

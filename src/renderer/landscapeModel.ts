@@ -626,6 +626,10 @@ const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(mem
  * else loose (where it sits decides, so one loose isn't carried off by its group's area forming). Ghosts move with their area and are
  * pushed aside like the places of sessions not shown (passive: one pushed goes on past what it reaches rather than
  * pushing it).
+ *
+ * A step not started yet (SessionInfo.planned, W8) is among `closed` and drawn as a ghost, but always has a place: one
+ * with none kept (just made by Add next step) is placed as a new workspace is, in its group's area while that has one
+ * (else loose; it makes no area either), where `hint` says when the hint is its, and that place is saved.
  */
 export function resolveLayout(
   l: Landscape,
@@ -666,7 +670,7 @@ export function resolveLayout(
       shownStack.closed.push(s);
       continue;
     }
-    if (!(stack && Object.hasOwn(l.stacks, stack)) && !own(l.workspaces, s.id)) continue;
+    if (!(stack && Object.hasOwn(l.stacks, stack)) && !own(l.workspaces, s.id) && !s.planned) continue;
     const key = stack ? `${GHOST_KEY}ws:${stack}` : `${GHOST_KEY}${s.id}`;
     const g = groups.get(key);
     if (g) g.members.push(s);
@@ -724,6 +728,8 @@ export function resolveLayout(
     const r = stored.get(key);
     const mine = areas.get(g.area);
     if (mine && r && within(r, mine)) continue;
+    // a not-started step with no place yet is placed in its group's area, as a new workspace is
+    if (mine && !r && g.members.every((s) => s.planned)) continue;
     g.area = r ? holdingArea(areas, r) : LOOSE_GROUP;
   }
 
@@ -774,8 +780,9 @@ export function resolveLayout(
     let rect = stored.get(key);
     if (!rect) {
       const size = presetSize(tileKind(g.members), "M", cell);
-      // the first of this Mac's sessions made since a right-click's New workspace, in the area clicked, goes where it was clicked
-      const here = !hinted && !!hint && !g.ghost && g.area === hint.area && g.members.some((s) => !s.room?.remote && s.createdAt >= hint.since);
+      // the first of this Mac's sessions made since a right-click's New workspace (or an Add next step's step), in the area
+      // clicked, goes where it was clicked
+      const here = !hinted && !!hint && (!g.ghost || g.members.every((s) => s.planned)) && g.area === hint.area && g.members.some((s) => !s.room?.remote && s.createdAt >= hint.since);
       if (here) hinted = fronts.get(key)!.id;
       const instead = here && hint!.replaces ? own(l.workspaces, hint!.replaces) : undefined;
       if (instead) {
@@ -1043,27 +1050,36 @@ export interface AreaCounts {
   workspaces: number;
   /** Closed sessions that can be reopened: its ghosts' and its stacks' closed tabs. */
   closed: number;
+  /** Steps not started yet (SessionInfo.planned), drawn as ghosts are but never counted closed. */
+  planned?: number;
 }
 
 export function areaCounts(tiles: readonly Tile[], key: string, ghosts: readonly GhostView[] = []): AreaCounts {
   const c: AreaCounts = { working: 0, waiting: 0, idle: 0, dead: 0, workspaces: 0, closed: 0 };
+  const closedOne = (s: SessionInfo) => (s.planned ? (c.planned = (c.planned ?? 0) + 1) : c.closed++);
   for (const t of tiles) {
     if (t.area !== key) continue;
     c.workspaces++;
-    c.closed += t.closed?.length ?? 0;
+    for (const s of t.closed ?? []) closedOne(s);
     for (const s of t.members) if (!s.room?.remote) c[s.status]++;
   }
-  for (const g of ghosts) if (g.area === key) c.closed += g.members.length;
+  for (const g of ghosts) if (g.area === key) for (const s of g.members) closedOne(s);
   return c;
 }
 
 /**
  * The closed sessions of area `key` (LOOSE_GROUP: in no area; null: every one) that the layout draws: its ghosts', then
- * its stacks' closed tabs.
+ * its stacks' closed tabs. Not-started steps aren't closed (plannedIn): Reopen all and Clear ghosts never take one.
  */
 export function closedIn(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: string | null): SessionInfo[] {
   const here = (t: { area: string }) => key === null || t.area === key;
-  return [...layout.ghosts.filter(here).flatMap((g) => g.members), ...layout.tiles.filter(here).flatMap((t) => t.closed ?? [])];
+  return [...layout.ghosts.filter(here).flatMap((g) => g.members), ...layout.tiles.filter(here).flatMap((t) => t.closed ?? [])].filter((s) => !s.planned);
+}
+
+/** The steps not started yet that the layout draws in area `key` (LOOSE_GROUP: in no area; null: every one). */
+export function plannedIn(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: string | null): SessionInfo[] {
+  const here = (t: { area: string }) => key === null || t.area === key;
+  return [...layout.ghosts.filter(here).flatMap((g) => g.members), ...layout.tiles.filter(here).flatMap((t) => t.closed ?? [])].filter((s) => !!s.planned);
 }
 
 /**
@@ -1108,6 +1124,7 @@ export function areaSummary(c: AreaCounts, o: { shared?: string | null; workspac
   const parts = [o.shared ?? null, c.waiting ? `${c.waiting} waiting` : null, c.working ? `${c.working} working` : null, c.dead ? `${c.dead} exited` : null];
   if (o.workspaces !== false) parts.push(`${c.workspaces} workspace${c.workspaces === 1 ? "" : "s"}`);
   if (c.closed) parts.push(`${c.closed} closed`);
+  if (c.planned) parts.push(`${c.planned} not started`);
   return parts.filter(Boolean).join(" · ");
 }
 

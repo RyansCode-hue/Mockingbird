@@ -61,8 +61,18 @@ type StartPoint = { existing: true } | { existing: false; track: boolean; from?:
  * none of that it throws, so the session isn't resumed on a branch holding none of its work: saying to try again when
  * it's origin that didn't answer, as the branch may well be there.
  */
-async function startPoint(repo: string, branch: string, base: string | undefined, mustExist: boolean, warn: Warn): Promise<StartPoint> {
-  if (await git(repo, ["branch", "--list", branch])) return { existing: true };
+async function startPoint(repo: string, branch: string, base: string | undefined, mustExist: boolean, warn: Warn, startAt?: string): Promise<StartPoint> {
+  if (await git(repo, ["branch", "--list", branch])) {
+    // a branch that's there already would hold none of the commit it was asked to start at
+    if (startAt) throw new Error(`${branch} is there already, so it can't be started at ${startAt.slice(0, 7)}`);
+    return { existing: true };
+  }
+  if (startAt) {
+    // the upstream step's commit as its folder had it, never origin's, which lacks what it hasn't pushed
+    const sha = await git(repo, ["rev-parse", "--verify", "-q", `${startAt}^{commit}`], { okCodes: [0, 1] });
+    if (!sha) throw new Error(`The commit it starts at, ${startAt.slice(0, 7)}, isn't in ${repo}`);
+    return { existing: false, track: false, from: sha };
+  }
   const there = await onOrigin(repo, branch, warn);
   if (there.has) {
     if (!mustExist) await ownFetch(repo, ["origin", branch]);
@@ -167,9 +177,10 @@ function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
  * the branch anew), at the usual place or, with `at`, at that folder (a relaunch's own, whatever it's called). Returns
  * its path. A folder that's there is reused only if it's a checkout of `branch`: a session never runs in a folder on
  * another branch. One folder's are made one at a time: the next finds it made and reuses it. `warn` hears what it
- * went by when origin couldn't be asked or fetched from.
+ * went by when origin couldn't be asked or fetched from. `startAt` (a not-started step, W8) makes `branch` anew at that
+ * commit, fetching nothing: refused when the branch or its folder is there already, or the commit isn't in the repo.
  */
-export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean; at?: string; warn?: Warn } = {}): Promise<string> {
+export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean; at?: string; warn?: Warn; startAt?: string } = {}): Promise<string> {
   const target = opts.at ?? path.join(worktreeRoot(repoPath), branch);
   return oneAtATime(target, async () => {
     // a branch can only be checked out once: if the old layout already holds it,
@@ -180,14 +191,15 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
     }
     if (folderThere(target)) {
       const out = await branchIn(target);
-      if (out === branch) return target; // reuse (multiple sessions per task)
+      // a new branch at a commit gets a folder of its own: one that's there holds what it holds, not that commit
+      if (out === branch && !opts.startAt) return target; // reuse (multiple sessions per task)
       throw new Error(`${target} is there, ${out ? `on ${out}` : "but isn't a checkout of a branch"}, so a session on ${branch} can't run in it: move it, or start fresh`);
     }
     await unregisterMissing(repoPath, target);
     // a room session's earlier worktree here was held to its own git folder: this one has another
     unpinGitDirs(target);
 
-    const sp = await startPoint(repoPath, branch, baseBranch, !!opts.mustExist, opts.warn ?? warnInConsole);
+    const sp = await startPoint(repoPath, branch, baseBranch, !!opts.mustExist, opts.warn ?? warnInConsole, opts.startAt);
     // worktree add makes the folders above it, so a refusal leaves nothing behind
     await git(
       repoPath,

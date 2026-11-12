@@ -5,6 +5,7 @@ import {
   SNAP_PX,
   WIRED_COLUMN_GAP,
   areaCounts,
+  areaSummary,
   carryPlan,
   closedIn,
   closedListOf,
@@ -837,6 +838,37 @@ describe("ghosts", () => {
     expect(drawn.ghosts.map((g) => g.key)).toEqual(["ghost:p2"]);
     expect(closedListOf(closed, drawn).map((s) => s.id)).toEqual(["p1", "p3"]);
     expect(closedListOf(closed, null).map((s) => s.id)).toEqual(["p1", "p2", "p3"]);
+  });
+
+  it("include steps not started yet, which always have a place: one with none is placed in its area, or at the hint, and saved; never counted closed or listed", () => {
+    const l = base();
+    const step = (id: string, over: Partial<SessionInfo> = {}) => session(id, { taskGroup: "A", createdAt: 10, planned: { worktree: true }, ...over });
+    const closed = [step("p1"), session("c1", { taskGroup: "A", status: "dead" })];
+    const r = resolveLayout(l, two, undefined, [], null, closed);
+    expect(r.ghosts.map((g) => [g.key, g.area])).toEqual([["ghost:p1", "A"]]);
+    const at = r.ghosts[0].rect;
+    expect(inside(at, applyPatch(l, r.patch!).areas.A)).toBe(true);
+    for (const t of r.tiles) expect(overlaps(at, t.rect, GAP - 1e-6)).toBe(false);
+    expect(r.patch?.workspaces?.p1).toEqual(at);
+    // once saved, it's drawn there with nothing more to save
+    const saved = applyPatch(l, r.patch!);
+    expect(resolveLayout(saved, two, undefined, [], null, closed).patch).toBeNull();
+    // not closed: no Reopen all or Clear ghosts takes it, the Closed sessions list never holds it, the area counts it apart
+    expect(closedIn(r, "A")).toEqual([]);
+    expect(closedListOf(closed.filter((s) => !s.planned), r).map((s) => s.id)).toEqual(["c1"]);
+    expect(areaCounts(r.tiles, "A", r.ghosts)).toMatchObject({ workspaces: 2, closed: 0, planned: 1 });
+    expect(areaSummary(areaCounts(r.tiles, "A", r.ghosts))).toBe("2 workspaces · 1 not started");
+    // made by Add next step with a point: there, the first of this Mac's made since the hint
+    const hint = { area: "A", at: { x: AREA_PAD, y: AREA_HEADER + M.h + 4 * GAP }, since: 5 };
+    const pointed = resolveLayout(l, two, undefined, [], hint, closed);
+    expect(pointed.hinted).toBe("p1");
+    expect(pointed.ghosts[0].rect).toMatchObject({ x: AREA_PAD });
+    expect(pointed.ghosts[0].rect.y).toBeGreaterThanOrEqual(AREA_HEADER + M.h + GAP);
+    // a group with no area: placed loose, making none
+    const loose = resolveLayout(l, two, undefined, [], null, [step("p2", { taskGroup: "Nowhere" })]);
+    expect(loose.ghosts.map((g) => g.area)).toEqual([LOOSE_GROUP]);
+    expect(loose.areas.map((a) => a.key)).toEqual(["A"]);
+    expect(loose.patch?.workspaces?.p2).toEqual(loose.ghosts[0].rect);
   });
 
   it("whose group has no area are drawn loose where they were, never making one", () => {

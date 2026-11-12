@@ -168,6 +168,6 @@ export interface StripSessions {
 export function stepEnds(s: StripSessions): (id: string) => StepEnd | null {
   const by = new Map<string, StepEnd>();
   for (const where of ["closed", "ghosts", "open"] as const)
-    for (const x of s[where]) by.set(x.id, { title: x.ticketTitle ?? x.title, agent: x.shell ? "terminal" : (x.agent ?? "claude"), status: x.status, where: where === "ghosts" ? "ghost" : where });
+    for (const x of s[where]) by.set(x.id, { title: x.ticketTitle ?? x.title, agent: x.shell ? "terminal" : (x.agent ?? "claude"), status: x.status, where: where === "ghosts" ? (x.planned ? "planned" : "ghost") : where });
   return (id) => by.get(id) ?? null;
 }

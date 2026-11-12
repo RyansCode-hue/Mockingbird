@@ -1772,8 +1772,11 @@ button.chip { border: none; cursor: pointer; }
 .modal .ns-sec input[type=text] + input[type=text], .modal .ns-sec .mb-select + input[type=text] { margin-top: 0; }
 .ns-sec .grow > input[type=text], .ns-gap > input[type=text] { margin-top: 6px; }
 .ns-line > input[type=text] { margin-top: 0; }
-.seg.ns-launch, .seg.ns-where { display: inline-flex; flex-shrink: 0; padding: 3px; }
-.seg.ns-launch button, .seg.ns-where button { padding: 5px 11px; font: 500 11px var(--ui); }
+.seg.ns-launch, .seg.ns-where, .seg.ns-works { display: inline-flex; flex-shrink: 0; padding: 3px; }
+.seg.ns-launch button, .seg.ns-where button, .seg.ns-works button { padding: 5px 11px; font: 500 11px var(--ui); }
+/* W8: Add next step's dialog (NewSession.tsx's nextStep): what it follows, beside its title, and what it's told */
+.ns-head .ns-after { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 11px var(--ui); color: var(--text-3); }
+.modal textarea.ns-tell { min-height: 64px; font: 400 12px/1.45 var(--ui); }
 .modal .mb-select.ns-model { flex: 1; min-width: 0; }
 .modal .mb-select.ns-effort { flex: 0 0 150px; }
 .ns-rooms { display: flex; flex-direction: column; margin-top: 8px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
@@ -3549,6 +3552,22 @@ pre.wg-body { margin: 0; resize: none; white-space: pre-wrap; overflow-wrap: any
   height: calc(var(--ls-gh, var(--gh)) - 2 * var(--ci)); padding: calc(7 * var(--u)) calc(9 * var(--u));
 }
 .ls-ghost.hidden { display: none; }
+/* W8: a step not started yet (Inbox.dc.html's Tester, Zoomed.dc.html's): a workspace's card, faded, its dot filled grey
+   rather than a closed one's ring, what starts it in plain type, no buttons */
+.ls-ghost.planned { border: calc(1 * var(--u)) solid var(--line-strong); background: var(--bg-pane); opacity: .8; }
+.ls-band-cards .ls-ghost.planned { border-color: transparent; }
+.ls-ghost.planned .lg-dot { border: none; background: var(--idle); width: calc(7 * var(--u)); height: calc(7 * var(--u)); }
+.ls-ghost.planned .lg-title { color: var(--text-1); }
+.ls-ghost.planned .lg-line { font: 400 calc(12 * var(--u))/1.4 var(--ui); color: var(--text-3); }
+.ls-ghost.planned .lg-status { font-weight: 400; }
+/* zoomed out its line is cut to two, so "Not started" fits under its title in a card's height */
+.ls-ghost.planned:not(.roomy) .lg-line { -webkit-line-clamp: 2; }
+/* in the live band (75% and up) its head is a band and its foot sits at the bottom over a rule, as a workspace's do (Inbox.dc.html) */
+.ls-ghost.planned.roomy { padding: 0; }
+.ls-ghost.planned.roomy .lg-rows { row-gap: 0; }
+.ls-ghost.planned.roomy .lg-head { height: calc(30 * var(--u)); padding: 0 calc(6 * var(--u)) 0 calc(10 * var(--u)); background: var(--bg-pane-header); }
+.ls-ghost.planned.roomy .lg-line { padding: calc(8 * var(--u)) calc(10 * var(--u)); }
+.ls-ghost.planned.roomy .lg-foot { margin-top: auto; height: calc(28 * var(--u)); padding: 0 calc(10 * var(--u)); border-top: calc(1 * var(--u)) solid var(--line-med); }
 /* its rows top to bottom, in the order a short ghost gives them up (GhostCard.tsx): a column that wraps, each row its full
    width, so a row that doesn't fit whole goes to a second column past the right edge, which is clipped */
 .ls-ghost .lg-rows {

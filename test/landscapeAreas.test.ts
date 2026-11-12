@@ -292,9 +292,9 @@ describe("areas' rectangles", () => {
     l.workspaces.other = { x: 24, y: 48, w: 800, h: 600 };
     const p = renameAreaPatch(l, "A", "B", [], [session("other", { taskGroup: "G", status: "dead" })])!;
     expect(p.workspaces?.other).toEqual({ x: 2124, y: 48, w: 800, h: 600 });
-    // and main asks with every closed session, of any group
+    // and main asks with every closed session, of any group, and every step not started yet
     const handler = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8").split('handle("sessions:renameGroup"')[1];
-    expect(handler).toMatch(/const closed = sessions\.resumable\(\)\.map\(/);
+    expect(handler).toMatch(/const closed = \[\.\.\.sessions\.resumable\(\), \.\.\.sessions\.planned\(\)\]\.map\(/);
   });
 
   it("folding into another area moves another group's closed stack lying inside the old one too, and lets go of one nobody's closed in", () => {

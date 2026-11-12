@@ -625,3 +625,61 @@ describe.skipIf(!local)("the send popover", () => {
     expect(o.note).toBe("Fixtures → Spike: streaming: What was waiting there has been replaced by something newer: send that instead.");
   }, 250_000);
 });
+
+// ---- W8: Add next step and not-started workspaces (?landscapeWiresAudit=step, with ?lsPlanned) ----
+type Card = { rows: string[]; buttons: number; line: string | null; status: string | null } | null;
+interface Step {
+  card: Card;
+  cardMenu: string[] | null;
+  burst: { opened: { dialog: boolean; head: string | null; name: string | null; focused: boolean; works: string[] }; early: { on: number; dialog: boolean }; writes: unknown[] };
+  added: { filled: { on: number; name: string | null; note: string | null }; plan: Call[]; dialog: boolean; made: string | null; card: Card; wires: string[][]; note: string | null };
+  dropped: { space: boolean; drop: Pt; dialog: boolean; head: string | null; picker: Shown; plan: Call[]; made: string | null; at: Pt | null; area: string | null; card: Card; wires: string[][] };
+  stepSend: { opened: { face: string; ends: string; whys: string[]; body: string; buttons: string[] } | null; sends: unknown[][]; cost: number; pop: boolean; ghost: boolean; node: boolean; delivery: string | null };
+  double: { dialog: boolean; under: string | null; closed: boolean };
+  terminal: { dialog: boolean; note: string | null; plan: Call[] };
+  started: { start: Call[]; ghost: boolean; node: boolean };
+}
+
+describe.skipIf(!local)("Add next step", () => {
+  it("a not-started step's card and menu; a step added from a handle clicked and one dragged into space, its dialog taking no burst's key nor an early click; refused after a terminal; Start now", async () => {
+    const s = (await audit("lsCamera=0,3040,1&lsPlanned&landscapeWiresAudit=step", "1600x1200", 150_000)) as unknown as Step;
+    // Tester, as Inbox.dc.html draws it: no buttons, what starts it in place of a last line, where it will work as its foot
+    expect(s.card).toEqual({ rows: ["head", "line", "foot"], buttons: 0, line: "Not started. Starts when Reviewer approves.", status: "backoffice · new worktree" });
+    expect(s.cardMenu).toContain("Start now");
+    expect(s.cardMenu).toContain("Forget it");
+    expect(s.cardMenu!.some((r) => /Reopen/.test(r))).toBe(false);
+    // Reviewer's handle clicked mid-burst: the dialog opens for a step after Reviewer, the burst's key and an early click untaken
+    expect(s.burst.opened).toMatchObject({ dialog: true, name: "", focused: true, works: ["Its own folder", "Reviewer's folder"] });
+    expect(s.burst.opened.head).toMatch(/^Next step.*after Reviewer/);
+    expect(s.burst.early).toEqual({ on: 0, dialog: true });
+    expect(s.burst.writes).toEqual(["wb-builder"]);
+    // settled: Reviewer's folder, named, added; a not-started card after Reviewer, joined by a handoff
+    expect(s.added.filled).toMatchObject({ on: 1, name: "qa" });
+    expect(s.added.plan).toEqual([[expect.objectContaining({ after: "wb-reviewer", title: "qa", sharesFolder: true, taskGroup: "5120" })]]);
+    expect(s.added.dialog).toBe(false);
+    expect(s.added.made).toBeTruthy();
+    // (Reviewer last finished with "changes", its feedback loop to Builder out: a handoff from it waits for its approve)
+    expect(s.added.card).toMatchObject({ buttons: 0, line: "Not started. Starts when Reviewer approves.", status: "in Reviewer's folder" });
+    expect(s.added.wires).toEqual([["wb-reviewer", "handoff"]]);
+    expect(s.added.note).toBe("Added qa after Reviewer: it starts when Reviewer's handoff is sent, or with Start now in its menu");
+    // dragged into the canvas under 5120: no picker, the dialog, and the step in no area, where it was let go
+    expect(s.dropped).toMatchObject({ space: true, dialog: true, picker: null, area: "ungrouped" });
+    expect(s.dropped.plan).toEqual([[expect.objectContaining({ after: "wb-shape", title: "docs", taskGroup: null })]]);
+    expect(s.dropped.wires).toEqual([["wb-shape", "handoff"]]);
+    expect(s.dropped.card).toMatchObject({ line: "Not started. Starts when Shape donor export hands off.", status: "backoffice · new worktree" });
+    near(s.dropped.at!.x, s.dropped.drop.x, 8);
+    near(s.dropped.at!.y, s.dropped.drop.y, 8);
+    // Shape finished: the handoff's popover says sending starts the step; Send starts it, asking no cost, and sends what it showed
+    expect(s.stepSend.opened).toMatchObject({ face: "ready", ends: "Shape donor export → docs", body: "The export streams now: test it against 40k donors.", buttons: ["Send", "Not yet"] });
+    expect(s.stepSend.opened!.whys).toContain("“docs” hasn't started: sending starts it.");
+    expect(s.stepSend.sends).toEqual([["The export streams now: test it against 40k donors.", null]]);
+    expect(s.stepSend).toMatchObject({ cost: 0, pop: false, ghost: false, node: true });
+    expect(["queued", "sent"]).toContain(s.stepSend.delivery);
+    // a double click on a handle: its second press, on the backdrop, doesn't close what its first opened
+    expect(s.double).toEqual({ dialog: true, under: "modal-back", closed: true });
+    // a terminal's handle: said, no dialog, nothing made
+    expect(s.terminal).toEqual({ dialog: false, note: "No step can follow Dev server: “Dev server” is a terminal: only a shared worktree wire can reach one.", plan: [] });
+    // Start now: started under its id, a workspace where its card was
+    expect(s.started).toEqual({ start: [["wb-tester"]], ghost: false, node: true });
+  }, 200_000);
+});

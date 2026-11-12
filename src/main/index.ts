@@ -34,7 +34,7 @@ import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
 import { WireService } from "./wires";
-import type { WireState } from "../shared/wires";
+import { wiresInOrder, type WireState } from "../shared/wires";
 import { WireDelivery } from "./wireDelivery";
 import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
@@ -64,7 +64,7 @@ import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
+import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
@@ -767,13 +767,13 @@ handle("sessions:list", () => sessions.list());
 handle("sessions:resumable", () => sessions.resumable());
 handle("sessions:closedOutput", (id) => sessions.closedOutput(String(id)));
 handle("sessions:missingFolders", () => sessions.missingFolders());
-handle("sessions:create", async (req) => {
-  const info = await sessions.create(req);
+/** Session `info` just opened by you, on ticket `ticketId` or none: its folder's overlaps are checked, and the ticket's coding has started. */
+function sessionOpened(info: SessionInfo, ticketId: unknown, ticketTitle: string | null | undefined): SessionInfo {
   if (info.repoPath) overlapsSoon(info.cwd);
-  // a session opened on a ticket means its coding has started
-  if (req?.ticketId && pipeline.startCoding(String(req.ticketId), req.ticketTitle ?? undefined, BY_YOU)) pipelineChanged();
+  if (ticketId && pipeline.startCoding(String(ticketId), ticketTitle ?? undefined, BY_YOU)) pipelineChanged();
   return info;
-});
+}
+handle("sessions:create", async (req) => sessionOpened(await sessions.create(req), req?.ticketId, req?.ticketTitle));
 /** Reopen closed session `id`, as the window's Reopen and a wire's Send to it do; null when it has no record. */
 async function reopenSession(id: string): Promise<SessionInfo | null> {
   const info = await sessions.relaunch(id);
@@ -787,6 +787,26 @@ async function reopenSession(id: string): Promise<SessionInfo | null> {
   return info;
 }
 handle("sessions:relaunch", (id) => reopenSession(id));
+// ---- not-started steps (W8): Add next step makes one, joined by a handoff; a Send along it, or Start now, starts it ----
+handle("sessions:planned", () => sessions.planned());
+handle("sessions:plan", (req: PlanRequest) => wires.addStep(req, { plan: (q) => sessions.plan(q), forget: (id) => sessions.kill(id, true) }).info);
+handle("sessions:startPlanned", (id) => startPlannedStep(String(id ?? "")));
+/**
+ * Start not-started step `id` (SessionManager.startPlanned) from upstream session `from`'s commit as it is now: the
+ * Send's source, or (Start now) the source of the earliest handoff into it. Placed in its own area as a reopened
+ * session is; a step on a ticket starts its coding, as a session opened on one does.
+ */
+async function startPlannedStep(id: string, from?: string): Promise<SessionInfo> {
+  const book = landscape.wires().book;
+  const up = from ?? (book ? wiresInOrder(book.links).find(([, w]) => w.to === id && w.type === "handoff")?.[1].from : undefined) ?? null;
+  const info = await sessions.startPlanned(id, up);
+  try {
+    landscape.sessionReopened(info);
+  } catch (err) {
+    logError(`landscape: placing started step ${info.id}`, err);
+  }
+  return sessionOpened(info, info.ticketId, info.ticketTitle);
+}
 handle("sessions:resume", (id) => sessions.resume(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {
@@ -1159,7 +1179,7 @@ handle("sessions:renameGroup", (oldKey, newKey) => {
   const members = sessions.list().filter((s) => areaKeyOf(s) === from).map((s) => s.id);
   // every group's: a ghost lying inside the area is in it, whatever its own group. Read before the rename, which changes
   // the records' groups in place
-  const closed = sessions.resumable().map((s) => ({ id: s.id, taskGroup: s.taskGroup }));
+  const closed = [...sessions.resumable(), ...sessions.planned()].map((s) => ({ id: s.id, taskGroup: s.taskGroup }));
   sessions.renameGroup(oldKey, newKey);
   team.groupRenamed(from, to); // a shared group stays its room
   // its area on the landscape follows; the rename itself is done, so a failure here is logged rather than refused
@@ -1470,6 +1490,7 @@ const delivery: WireDelivery = new WireDelivery({
   context: (book) => wires.context(book),
   sessions,
   reopen: reopenSession,
+  startPlanned: (id, from) => startPlannedStep(id, from),
   submits: submitsAgentMessages,
   // Mockingbird's label and fence around what's sent; a refusal fails the send, saying why
   frame: ({ wireId, body, automatic }) => {

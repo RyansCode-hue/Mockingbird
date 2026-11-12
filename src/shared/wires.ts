@@ -352,7 +352,7 @@ export function wireEndOf(s: SessionInfo, at: Pick<WireEnd, "room" | "takenOver"
     room: at.room,
     takenOver: at.takenOver,
     outsideSandbox: at.outsideSandbox,
-    where: !at.running ? "closed" : s.status === "dead" ? "dead" : "running",
+    where: s.planned && !at.running ? "planned" : !at.running ? "closed" : s.status === "dead" ? "dead" : "running",
     placed: at.placed,
     folder: at.folder,
     // a closed or exited session's record may still say so from its last run; its next launch starts afresh
@@ -376,7 +376,8 @@ export interface WireEnd {
   takenOver: string | null;
   /** It's in a team room but runs outside the room's sandbox (outsideRoomSandbox): no wires there until it restarts. */
   outsideSandbox?: boolean;
-  where: "running" | "dead" | "closed";
+  /** planned: a step not started yet (SessionInfo.planned), which a person's Send starts. */
+  where: "running" | "dead" | "closed" | "planned";
   /** Whether it's on the landscape: running, or closed with a ghost. Closed with no place, it's only in the Closed sessions list. */
   placed: boolean;
   /** Its folder as the filesystem knows it (symlinks resolved). */
@@ -472,12 +473,25 @@ export function wireRefusal(from: string, to: string, type: WireType, ctx: WireC
 
   if (type === "worktree") {
     if (a.kind !== "agent" || b.kind !== "terminal") return "A shared worktree wire runs from an agent to a terminal.";
+    if (a.where === "planned") return `“${a.title}” hasn't started, so it has no worktree yet.`;
     if (a.folder !== b.folder) return `“${b.title}” runs in another folder: a shared worktree wire needs the agent's own.`;
   } else {
     // a message typed into a terminal would run as a command, and a terminal has no conversation to read
     for (const e of [a, b]) if (e.kind === "terminal") return `“${e.title}” is a terminal: only a shared worktree wire can reach one.`;
   }
   return linkRefusal(from, to, type, ctx);
+}
+
+/**
+ * Why no next step can follow session `from` (Add next step, W8): the rules on a handoff from it to a not-started agent
+ * in its own room, so what's about `from` (a terminal, a debrief, the Helpdesk tasks workspace, a teammate's, one taken
+ * over) refuses before a step is made. Null when one can; making the wire asks again, with the step's own group.
+ */
+export function stepRefusal(from: string, ctx: WireContext): string | null {
+  const a = ctx.end(from);
+  const next = "\0step";
+  const step: WireEnd | null = a && { ...a, id: next, title: "the next step", kind: "agent", debrief: false, tasks: false, takenOver: null, outsideSandbox: false, where: "planned", placed: true, hooksSilent: false };
+  return wireRefusal(from, next, "handoff", { ...ctx, end: (id) => (id === next ? step : ctx.end(id)) });
 }
 
 /** Whether a wire of `type` carries its source's work to the other end (has What flows, When and a gate): a handoff or feedback wire. */

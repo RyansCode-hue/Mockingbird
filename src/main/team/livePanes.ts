@@ -396,7 +396,9 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     if (!this.started) return null;
     if (!this.ownRooms) {
       this.ownRooms = new Map();
-      for (const s of [...this.d.sessions.list(), ...this.d.sessions.resumable()]) if (!this.ownRooms.has(s.id)) this.ownRooms.set(s.id, this.roomOfInfo(s));
+      // a not-started step is in its area's room as a wire's end, so it's wired your own to your own there; it's never
+      // published (only list() and resumable() are), and starts under the room's launch rules
+      for (const s of [...this.d.sessions.list(), ...this.d.sessions.resumable(), ...this.d.sessions.planned()]) if (!this.ownRooms.has(s.id)) this.ownRooms.set(s.id, this.roomOfInfo(s));
     }
     return this.ownRooms.get(id) ?? null;
   }

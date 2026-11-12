@@ -25,6 +25,8 @@
  * - =pick and =settings: the picker, and Reviewer → Tester's settings, left open for a screenshot (synthetic events);
  * - =fresh (with ?lsSpikeGone): Start fresh from Spike's ghost, its handoff from Fixtures moved to the fresh session, or
  *   with `&freshAs=terminal` refused, gone with Spike and said.
+ * - =step (with ?lsPlanned, at 100%): W8's not-started Tester and Add next step, from a handle clicked and from one
+ *   dragged into empty space, the dialog's guards against a burst's key and an early click, and Start now (stepAudit).
  *
  * W4c's, the send popover (with ?lsGates for the gates `gateBoardBook` sets):
  * - =send, =gatekeys and =dbl (at 100%): Send and Not yet, and the clicks and keys they take or don't;
@@ -1026,6 +1028,139 @@ async function closeOtherAudit(env: WiresAuditEnv, out: Record<string, unknown>)
   out.closeother = { opened, after: popNow()?.ends ?? null, sends: since("wiresSend"), note: noteNow() };
 }
 
+/**
+ * Add next step (W8; with ?lsPlanned, at 100%): Tester's not-started card and its right-click's menu; Shape's handle
+ * dragged into the empty canvas under 5120 (a window tall enough to show some), the step placed where it was let go;
+ * Reviewer's handle clicked straight after a key typed into Builder's terminal, with a key straight after it opened (the
+ * same burst) and a click there at once, neither taken; the step named, set to work in Reviewer's folder and added; Dev
+ * server's handle clicked, refused and said; and Tester started from its menu.
+ */
+async function stepAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const since = (mark: number, fn: string) => env.calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
+  const ghostOf = (id: string) => document.querySelector<HTMLElement>(`.ls-world .ls-ghost[data-front="${CSS.escape(id)}"]`);
+  const steps = () => [...document.querySelectorAll<HTMLElement>(".ls-world .ls-ghost.planned")].map((g) => g.dataset.front!);
+  const dialog = () => document.querySelector<HTMLElement>(".modal.ns-step:not(.mb-ghost)");
+  const nameField = () => dialog()?.querySelector<HTMLInputElement>(".ns-sec input[type=text]") ?? null;
+  const works = () => [...(dialog()?.querySelectorAll<HTMLButtonElement>(".ns-works button") ?? [])];
+  const cardOf = (el: HTMLElement | null) =>
+    el && {
+      rows: [...el.querySelectorAll<HTMLElement>("[data-row]")].map((r) => r.dataset.row),
+      buttons: el.querySelectorAll(".lg-acts button").length,
+      line: el.querySelector(".lg-line")?.textContent ?? null,
+      status: el.querySelector(".lg-status")?.textContent ?? null,
+    };
+  const linkInto = async (id: string) => {
+    const r = await window.mb.wiresGet();
+    const links = "book" in r && r.book ? r.book.links : {};
+    return Object.values(links).filter((w) => w.to === id).map((w) => [w.from, w.type]);
+  };
+  // Tester, not started: its card, and its right-click's menu
+  const tester = ghostOf(W("tester"));
+  out.card = cardOf(tester);
+  await drive([{ mouse: { ...mid(tester?.querySelector(".lg-line")), clickCount: 1, button: "right" } }]);
+  await sleep(300);
+  out.cardMenu = menuNow();
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  // Shape's handle dragged into the empty canvas under 5120 (before a step placed in 5120 grows it): the step goes in no
+  // area, where it was let go
+  let mark = env.calls.length;
+  const area = document.querySelector<HTMLElement>(`.ls-world .ls-area[data-area="${WIRE_AREA}"]`)!.getBoundingClientRect();
+  const drop = { x: Math.round(node(W("dev"))!.getBoundingClientRect().left), y: Math.round(area.bottom + 64) };
+  const space = !document.elementFromPoint(drop.x, drop.y)?.closest(".ls-node, .ls-ghost, .ls-area, button");
+  await dragWire(mid(handleOf("shape")), drop);
+  await sleep(300);
+  const dropped = { dialog: !!dialog(), head: dialog()?.querySelector(".ns-head")?.textContent?.replace(/\s+/g, " ").trim() ?? null, picker: pickerNow() };
+  if (!dropped.dialog) return void (out.dropped = { space, drop, ...dropped, under: document.elementFromPoint(drop.x, drop.y)?.className.toString() ?? null, note: noteNow() });
+  await sleep(700);
+  const before2 = new Set(steps());
+  await drive([{ mouse: { ...mid(nameField()), clickCount: 1 } }, { key: "d" }, { key: "o" }, { key: "c" }, { key: "s" }]);
+  await drive([{ mouse: { ...mid(dialog()?.querySelector("button.primary.cta")), clickCount: 1 } }]);
+  await sleep(800);
+  const placed = steps().find((id) => !before2.has(id)) ?? null;
+  const at = placed ? ghostOf(placed)!.getBoundingClientRect() : null;
+  out.dropped = { space, drop, ...dropped, plan: since(mark, "planSession"), made: placed, at: at && { x: Math.round(at.left), y: Math.round(at.top) }, area: placed ? ghostOf(placed)!.dataset.area : null, card: cardOf(placed ? ghostOf(placed) : null), wires: placed ? await linkInto(placed) : [] };
+  // Shape finishes: its handoff into that step is ready, its popover (W4c) saying sending starts it, and Send starts it
+  // with no cost asked, then sends
+  if (placed) {
+    await sleep(600);
+    mark = env.calls.length;
+    const r = await window.mb.wiresGet();
+    const into = Object.entries("book" in r && r.book ? r.book.links : {}).find(([, w]) => w.to === placed)?.[0];
+    if (!into) return void (out.stepSend = { wire: null });
+    env.finish?.(into, "The export streams now: test it against 40k donors.");
+    await sleep(400);
+    await clickAt(dotMid(into));
+    const opened = popNow();
+    await sleep(700);
+    await clickAt(mid(popButton("Send")));
+    await sleep(2800);
+    const after = await window.mb.wiresGet();
+    const w = "book" in after && after.book ? after.book.links[into] : undefined;
+    out.stepSend = {
+      opened,
+      sends: since(mark, "wiresSend").map((a) => [a[2], a[3] ?? null]),
+      cost: since(mark, "resumeCost").length,
+      pop: !!popEl(),
+      ghost: !!ghostOf(placed),
+      node: !!node(placed),
+      delivery: w?.delivery?.state ?? null,
+    };
+  }
+  // Reviewer's handle clicked in a burst of keys typed into Builder's terminal: the key after it opened isn't taken, nor
+  // a click straight after
+  await sleep(600);
+  await drive([{ mouse: { ...mid(node(W("builder"))?.querySelector(".ls-term")), clickCount: 1 } }]);
+  await sleep(1100);
+  mark = env.calls.length;
+  await drive([{ key: "q" }, { mouse: { ...mid(handleOf("reviewer")), clickCount: 1 } }, { key: "x" }]);
+  const opened = {
+    dialog: !!dialog(),
+    head: dialog()?.querySelector(".ns-head")?.textContent?.replace(/\s+/g, " ").trim() ?? null,
+    name: nameField()?.value ?? null,
+    focused: !!nameField() && document.activeElement === nameField(),
+    works: works().map((b) => b.textContent),
+  };
+  await drive([{ mouse: { ...mid(works()[1]), clickCount: 1 } }]);
+  const early = { on: works().findIndex((b) => b.classList.contains("on")), dialog: !!dialog() };
+  out.burst = { opened, early, writes: since(mark, "sessionWrite").map((a) => a[0]) };
+  // once it has settled: Reviewer's folder, a name, and Add step
+  await sleep(700);
+  await drive([{ mouse: { ...mid(works()[1]), clickCount: 1 } }]);
+  await drive([{ mouse: { ...mid(nameField()), clickCount: 1 } }, { key: "q" }, { key: "a" }]);
+  const before = new Set(steps());
+  const filled = { on: works().findIndex((b) => b.classList.contains("on")), name: nameField()?.value ?? null, note: dialog()?.querySelector(".ns-works")?.closest(".ns-sec")?.querySelector(".ns-note")?.textContent ?? null };
+  await drive([{ mouse: { ...mid(dialog()?.querySelector("button.primary.cta")), clickCount: 1 } }]);
+  await sleep(800);
+  const made = steps().find((id) => !before.has(id)) ?? null;
+  out.added = { filled, plan: since(mark, "planSession"), dialog: !!dialog(), made, card: cardOf(made ? ghostOf(made) : null), wires: made ? await linkInto(made) : [], note: noteNow() };
+  // a double click on Reviewer's handle: the dialog its first click opened stays for its second, on the backdrop; a click
+  // there once it has settled closes it
+  await sleep(600);
+  const RH = mid(handleOf("reviewer"));
+  await drive([{ mouse: { ...RH, clickCount: 1 } }, { mouse: { ...RH, clickCount: 2 } }]);
+  await sleep(200);
+  const dbl = { dialog: !!dialog(), under: document.elementFromPoint(RH.x, RH.y)?.className.toString() ?? null };
+  await sleep(600);
+  await drive([{ mouse: { ...RH, clickCount: 1 } }]);
+  await sleep(300);
+  out.double = { ...dbl, closed: !dialog() };
+  // Dev server's handle: a terminal, which no step can follow
+  await sleep(600);
+  mark = env.calls.length;
+  await drive([{ mouse: { ...mid(handleOf("dev")), clickCount: 1 } }]);
+  await sleep(300);
+  out.terminal = { dialog: !!dialog(), note: noteNow(), plan: since(mark, "planSession") };
+  // Tester started from its menu: a workspace in its place, its card gone
+  await sleep(600);
+  mark = env.calls.length;
+  await drive([{ mouse: { ...mid(ghostOf(W("tester"))?.querySelector(".lg-line")), clickCount: 1, button: "right" } }]);
+  await sleep(300);
+  await drive([{ mouse: { ...mid(menuRow("Start now")), clickCount: 1 } }]);
+  await sleep(1200);
+  out.started = { start: since(mark, "startPlanned"), ghost: !!ghostOf(W("tester")), node: !!document.querySelector(`.ls-world .ls-node[data-front="${W("tester")}"]`) };
+}
+
 /** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */
 async function showAudit(part: string): Promise<void> {
   if (part === "pop") {
@@ -1078,6 +1213,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "double") await doubleAudit(env, out);
       else if (part === "guards") await guardsAudit(env, out);
       else if (part === "lost") await lostAudit(env, out);
+      else if (part === "step") await stepAudit(env, out);
       // which of 5120's workspaces carry a handle at this zoom: those big enough on screen for one
       else if (part === "handles") out.handles = ["shape", "builder", "reviewer", "dev", "tester", "fixtures"].filter((k) => !!handleOf(k));
       else if (part === "send") await sendAudit(env, out);

@@ -16,6 +16,8 @@ export function useClosedLine(s: SessionInfo): { line: string | null; error: str
   const [got, setGot] = useState<{ line: string | null; error: string | null }>({ line: null, error: null });
   const agent = s.shell ? null : (s.agent ?? "claude");
   useEffect(() => {
+    // a not-started step never ran: there's no output to read, and main refuses the read
+    if (s.planned) return;
     let alive = true;
     void runCheck(`${s.id}'s saved output for its ghost`, window.mb.closedOutput(s.id)).then((r) => {
       if (!alive) return;
@@ -36,6 +38,9 @@ export function useClosedLine(s: SessionInfo): { line: string | null; error: str
  * is under way (being reopened or forgotten) stays, off, saying so. Its rows are in the order a ghost too short for
  * them all gives them up from the end (styles.css leaves out whole rows that don't fit, never drawing past its place):
  * title, actions, last line, status.
+ *
+ * A step not started yet (W8, Inbox.dc.html's Tester) is drawn here too, as a faded card rather than an outline: its
+ * title, "Not started" and what starts it in place of a last line, where it will work as its foot, and no buttons.
  */
 export function GhostCard({
   ghost,
@@ -44,33 +49,38 @@ export function GhostCard({
   status,
   onMore,
   inv,
+  planned,
 }: {
   ghost: GhostView;
   band: Band;
   /** Its actions (ghostActions): its front session's, a stack's over all its closed tabs. */
   actions: ModelAction[];
-  /** Its status line (closedStatus): Closed, its folder gone, or taken over by a teammate. */
+  /** Its status line (closedStatus): Closed, its folder gone, or taken over by a teammate; a not-started step's, where it will work. */
   status: string;
   onMore: (from: HTMLElement) => void;
   /** 1 / the camera's zoom when it rendered (the landscape keeps --ls-inv current as it zooms). */
   inv: number;
+  /** A not-started step's line in place of what it did last: "Not started. Starts when Reviewer hands off." */
+  planned?: string;
 }) {
   const s = ghost.front;
   const { line, error } = useClosedLine(s);
   const r = ghost.rect;
+  const notYet = !!s.planned && planned !== undefined;
   const taken = takenOverWhy(s, "");
   const gone = !!actions.find((a) => a.key === "fresh");
   /** Action `k` as a button: while it can be picked, or while it's off only because it's under way. */
   const shown = (k: string) => usable(actions, k) ?? (actionOf(actions, k)?.title === CLOSED_BUSY_WHY ? actionOf(actions, k) : undefined);
-  const buttons = (["reopen", "fresh", "takeback"] as const).map(shown).filter((a): a is ModelAction => !!a);
-  const forget = shown("forget");
-  const where = [s.ticketId ? `#${ticketIdOf(s.ticketId)}` : null, s.branch && s.branch !== titleOf(s) ? s.branch : null].filter(Boolean).join(" · ");
+  // a not-started step's card has no buttons (Inbox.dc.html's Tester): Start now and Forget are its ⋯ and right-click's
+  const buttons = notYet ? [] : (["reopen", "fresh", "takeback"] as const).map(shown).filter((a): a is ModelAction => !!a);
+  const forget = notYet ? undefined : shown("forget");
+  const where = notYet ? "" : [s.ticketId ? `#${ticketIdOf(s.ticketId)}` : null, s.branch && s.branch !== titleOf(s) ? s.branch : null].filter(Boolean).join(" · ");
   const name = ghost.stack ? ghost.members.map(titleOf).join(" · ") : titleOf(s);
-  const lineText = error ? "Couldn't read what it did last" : (line ?? "It wrote nothing before it closed");
+  const lineText = notYet ? planned : error ? "Couldn't read what it did last" : (line ?? "It wrote nothing before it closed");
   const compact = band === "cards";
   return (
     <div
-      className={["ls-ghost", compact ? "compact" : "", taken ? "taken" : "", gone ? "gone" : "", ghost.hidden ? "hidden" : ""].filter(Boolean).join(" ")}
+      className={["ls-ghost", compact ? "compact" : "", notYet ? "planned" : "", notYet && band === "live" ? "roomy" : "", taken ? "taken" : "", gone ? "gone" : "", ghost.hidden ? "hidden" : ""].filter(Boolean).join(" ")}
       data-ghost={ghost.key}
       data-front={s.id}
       data-area={ghost.area}

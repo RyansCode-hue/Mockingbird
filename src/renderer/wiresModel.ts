@@ -403,6 +403,17 @@ export function noChoice(choices: readonly WireChoice[]): string | null {
   return common && (choices.find((c) => c.exists)?.refused ?? common);
 }
 
+/**
+ * A not-started step's line on its card (W8): what starts it, the source of the earliest handoff into it (`titleOf`
+ * names it, null when it isn't drawn), which approves first when that handoff waits for an approve (`needsApprove`,
+ * its gate's "needs approve"), or that nothing does yet.
+ */
+export function plannedLine(id: string, links: Readonly<Record<string, Wire>>, titleOf: (id: string) => string | null, needsApprove: (wire: string) => boolean = () => false): string {
+  const into = wiresInOrder(links).find(([, w]) => w.to === id && w.type === "handoff");
+  if (!into) return "Not started. Nothing hands off to it yet: wire a step to it, or start it now.";
+  return `Not started. Starts when ${titleOf(into[1].from) ?? "the step before it"} ${needsApprove(into[0]) ? "approves" : "hands off"}.`;
+}
+
 /** A session a wire can be made to from the landscape: a workspace's (each tab of a stack), or a ghost's. */
 export interface WireTarget {
   s: SessionInfo;
@@ -462,8 +473,11 @@ export interface GateView {
   why: string | null;
   /** What's waiting: what Send, Send again and Not yet act on. */
   pendingId: string | null;
-  /** Its other end isn't running: sending reopens it (closed, with its place) or resumes it (exited). */
-  starts: "reopen" | "resume" | null;
+  /**
+   * Its other end isn't running: sending reopens it (closed, with its place), resumes it (exited), or starts it (a step
+   * not started yet, W8: main starts it as it sends, with no cost to ask, as there's no conversation to reread).
+   */
+  starts: "reopen" | "resume" | "start" | null;
   /** Blocked by its pull requests, as the merge watch has them: Check now applies, and Mark merged… to each of `prs` (urls). */
   merge: { prs: readonly string[] } | null;
 }
@@ -472,7 +486,7 @@ export interface GateView {
 export function gateView(w: Wire, gate: Gate, to: WireEnd | null, merge: MergeView | null): GateView {
   const name = WIRE_TYPE_NAME[w.type].toLowerCase();
   const pendingId = gate.pendingId ?? null;
-  const starts: GateView["starts"] = to?.where === "closed" ? "reopen" : to?.where === "dead" ? "resume" : null;
+  const starts: GateView["starts"] = to?.where === "closed" ? "reopen" : to?.where === "dead" ? "resume" : to?.where === "planned" ? "start" : null;
   const base = { why: gate.why ?? null, pendingId, starts, merge: null };
   // a pending whose round was counted when it went (sent again after it failed) is that round, not the next
   const round = (r: NonNullable<Wire["rounds"]>, id: string) => Math.min(countedFor(w, id) ? r.used : r.used + 1, r.limit);

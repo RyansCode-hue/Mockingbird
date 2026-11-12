@@ -1150,6 +1150,32 @@ describe("room session launch", () => {
     expect(Object.values(wires.get().book!.links)).toEqual([expect.objectContaining({ from: s.id, to: t.id, type: "worktree" })]);
   });
 
+  it("keeps a step added after a room session to this Mac till it starts, then starts it in the room under the room's rules for an agent", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await reportIn(ryan, s.id);
+    await until(() => !!remoteOf(nick, s.id), "Nick to see Ryan's session");
+    const store = new LandscapeStore({ file: path.join(tempDir("step"), "landscape.json"), emit: () => {}, emitWires: () => {}, log: () => {} });
+    const wires = new WireService({ store, sessions: ryan.sessions, roomOf: (id) => ryan.live.roomOfSession(id), roomsKnown: () => true, takenOver: () => null, outsideSandbox: (id) => ryan.live.outsideSandbox(id), log: () => {} });
+    const { info } = wires.addStep(
+      { after: s.id, title: "Tester", agent: "claude", repoPath: null, worktree: false, taskGroup: "5110", sharesFolder: true },
+      { plan: (q) => ryan.sessions.plan(q), forget: (id) => ryan.sessions.kill(id, true) }
+    );
+    // in the room's area, wired from a room session, and never published while it waits
+    expect(ryan.live.roomOfSession(info.id)).toBe(ryan.live.roomOfSession(s.id));
+    expect(Object.values(wires.get().book!.links)).toEqual([expect.objectContaining({ from: s.id, to: info.id, type: "handoff" })]);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(remoteOf(nick, info.id)).toBeUndefined();
+    expect(ryan.live.state().own[info.id]).toBeUndefined();
+    // started: in the room, guarded as its agents are, and published
+    const started = await ryan.sessions.startPlanned(info.id, s.id);
+    expect(started).toMatchObject({ id: info.id, cwd: s.cwd, taskGroup: "5110" });
+    expect(ptyOf(info.id).args.join(" ")).toContain('"sandbox":{"enabled":true');
+    expect(ryan.sessions.guardsOf(info.id)).toMatchObject({ secrets: true, coauthors: true });
+    await reportIn(ryan, info.id);
+    await until(() => !!remoteOf(nick, info.id), "Nick to see the started step");
+  });
+
   it("runs a Claude conversation a terminal brings back under the room's settings, the terminal itself still unguarded", async () => {
     const { ryan } = await pair();
     const t = await ryan.start({ shell: true, agent: undefined, shellResume: { agent: "claude", id: "conv-1" } });

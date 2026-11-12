@@ -78,6 +78,48 @@ export interface SessionInfo {
   // team rooms: live panes
   /** Set in the window on a session in a shared group: its room, owner, and who's looking at it. */
   room?: RoomSessionTag;
+  /**
+   * Not started yet (PlannedStep): a record with no pty and no folder of its own. It's never resumed, relaunched,
+   * published to a room or listed as closed; startPlanned starts it under its id, so its wires keep their ends.
+   */
+  planned?: PlannedStep;
+}
+
+/**
+ * A step not started yet (docs/landscape-wires.md, W8): made by Add next step, joined by a handoff wire from the step
+ * before. Its folder is made as it starts: a worktree of its own from the upstream step's commit then (section 3), or
+ * another session's folder as it stands (`sharesWith`, decision 7). Its record's `cwd` is only where it would start
+ * with neither (its repo, else home).
+ */
+export interface PlannedStep {
+  /** A worktree of its own, on a new branch named after the upstream step's (its repo's; none outside one). */
+  worktree: boolean;
+  /** Its new branch is cut from origin's here when there's no upstream commit in its repo to start at. */
+  base?: string | null;
+  /** Starts in this session's folder, on its branch as it stands, as the reviewing step works in its builder's. */
+  sharesWith?: string;
+  /** What it's told as it starts, ahead of what its wire carries (the dialog's ticket kickoff, or its own words). */
+  prompt?: string;
+}
+
+/** Add next step's request (sessions:plan): a not-started step after session `after`, joined to it by a handoff wire. */
+export interface PlanRequest {
+  after: string;
+  title: string;
+  agent: AgentKind;
+  model?: string;
+  effort?: string;
+  repoPath: string | null;
+  /** Its own worktree in `repoPath`; else it runs in the repo's checkout as it is then (or home, with no repo). */
+  worktree: boolean;
+  base?: string | null;
+  /** A top-level group: a not-started step goes in an area, never a stack. */
+  taskGroup: string | null;
+  ticketId?: string;
+  ticketTitle?: string;
+  prompt?: string;
+  /** Start in `after`'s folder instead of a folder of its own (decision 7). */
+  sharesFolder?: boolean;
 }
 
 /** Every agent, in the order the app lists them. */
@@ -298,6 +340,8 @@ export interface NewSessionRequest {
   cwd?: string;
   debrief?: boolean; // marks WorkTracker debrief sessions
   baseBranch?: string; // new branch: fetch origin/<base> first and branch off it (dev/uat flow)
+  /** A new worktree's branch starts at this commit, nothing fetched: a not-started step's upstream's (startPlanned). */
+  startAt?: string;
   initialPrompt?: string; // sent to the claude session once it's up (e.g. the ADO ticket)
   shell?: boolean; // open a plain zsh terminal instead of launching claude
   agent?: AgentKind; // which CLI to launch (default claude)
@@ -1036,6 +1080,17 @@ export function slugBranch(ticketId: string, ticketTitle: string): string {
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return `${ticketIdOf(ticketId)}-${slug}`;
+}
+
+/** A not-started step's title as its branch name's last part (`<the step before's branch>-<this>`): "Run e2e tests" → "run-e2e-tests". */
+export function stepSlug(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+  return slug || "step";
 }
 
 // ---- ticket pipeline ----------------------------------------------------------

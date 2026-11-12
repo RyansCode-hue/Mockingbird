@@ -54,6 +54,20 @@ describe.skipIf(!local)("ghosts on the landscape (UI preview)", () => {
     expect(at(0.1).g1.rows.slice(0, 2)).toEqual(["head", "acts"]);
   }, 120_000);
 
+  it("include a step not started yet, drawn as a card with no buttons that keeps inside its place at any zoom", async () => {
+    // g1 hasn't started (?lsStep=g1): its card in 5102, among the closed sessions' ghosts
+    const a = await run<Audit>("landscapeGhostAudit&lsClosed=y1&lsStep=g1", "mb-landscape-ghost-audit");
+    expect(a.error).toBeUndefined();
+    expect(a.problems).toEqual([]);
+    for (const z of a.zooms) expect(z.ghosts.g1?.area, `at ${z.zoom}`).toBe("5102");
+    const at = (zoom: number) => a.zooms.find((z) => z.zoom === zoom)!.ghosts;
+    // no actions row: what starts it stands in for a last line, where it will work as its foot
+    expect(at(1).g1.rows).toEqual(["head", "line", "foot"]);
+    expect(at(0.45).g1.rows).toEqual(["head", "line", "foot"]);
+    expect(at(0.1).g1.rows[0]).toBe("head");
+    expect(at(1).p1.rows).toEqual(["head", "acts", "line", "foot"]);
+  }, 120_000);
+
   it("are left by closing, reopened where they were, started fresh, forgotten and cleared; Previous's actions all kept", async () => {
     type P = { x: number; y: number; h?: number | null };
     const a = await run<{

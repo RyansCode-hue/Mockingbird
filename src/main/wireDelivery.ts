@@ -76,6 +76,11 @@ export interface WireDeliveryOptions {
   sessions: Pick<SessionManager, "list" | "resumable" | "resume" | "deliverAgentMessage" | "promptCount" | "withdraw" | "holds">;
   /** Reopen closed session `id`, as the window's Reopen does (index.ts's reopenSession); null when it has no record. */
   reopen: (id: string) => Promise<SessionInfo | null>;
+  /**
+   * Start not-started step `id` from upstream session `from`'s commit as it is now (SessionManager.startPlanned, by
+   * index.ts's startPlannedStep); left out, a send to one is refused.
+   */
+  startPlanned?: (id: string, from: string) => Promise<SessionInfo>;
   /** Whether a message to this session is submitted or left in its prompt: its area's message mode. A person's Send always submits. */
   submits: (target: SessionInfo) => boolean;
   /** What the other end is sent (WireTools.messageFor, in index.ts); a throw fails the send with its message. */
@@ -516,6 +521,7 @@ export class WireDelivery {
     if (gate.state === "blocked") return `It came while this wire was blocked (${gate.why ?? "blocked"}), so it waits for you.`;
     if (gate.state !== "ready" || !a || !b) return "It isn't ready to send, so it waits for you.";
     if (w.pending!.flags.length) return `It was flagged (${w.pending!.flags.join("; ")}): an automatic gate sends only what isn't, so it waits for you.`;
+    if (b.where === "planned") return `“${b.title}” hasn't started: an automatic gate never starts a workspace, so this waits for you to send it.`;
     if (b.where !== "running") return `“${b.title}” isn't running: an automatic gate never reopens a workspace, so this waits for you to send it.`;
     if ((own(ctx.notes, w.from)?.hops ?? 0) >= AUTOMATIC_HOPS) return `${AUTOMATIC_HOPS} automatic sends in a row led to “${a.title}”: the next one waits for you.`;
     // counted where they arrive, so no source's prompts, real or not, keep one wire sending by itself
@@ -535,9 +541,10 @@ export class WireDelivery {
     if ("refused" in r) this.o.log(`wires: ${wireId}'s automatic gate didn't send ${pendingId} (${why}), and that couldn't be written down`, new Error(r.refused));
   }
 
-  /** How stopped session `id` would be started: an exited pane resumed in place, a closed one reopened. Null when it's running. */
-  private howToStart(id: string): "resume" | "reopen" | null {
+  /** How stopped session `id` would be started: an exited pane resumed in place, a closed one reopened, a not-started step started. Null when it's running. */
+  private howToStart(id: string, ctx: GateContext): "resume" | "reopen" | "start" | null {
     if (this.running(id)) return null;
+    if (ctx.end(id)?.where === "planned") return "start";
     return this.o.sessions.list().some((s) => s.id === id) ? "resume" : "reopen";
   }
 
@@ -565,14 +572,15 @@ export class WireDelivery {
     const ctx = this.o.context(state.book);
     const refused = sendRefusal(wireId, w, pendingId, ctx, !!how.again) ?? bodyRefusal(body);
     if (refused) return { refused };
-    const start = how.automatic ? null : this.howToStart(w.to);
-    if (start && !how.start) {
+    const start = how.automatic ? null : this.howToStart(w.to, ctx);
+    // a person's Send starts a not-started step without asking: it has no conversation to reread, so nothing to cost
+    if (start && start !== "start" && !how.start) {
       const b = ctx.end(w.to);
       return { refused: `${b ? `“${b.title}”` : "The other end"} isn't running: sending this ${start === "resume" ? "resumes" : "reopens"} it, which rereads its conversation.`, start };
     }
     const text = body as string;
     const id = how.again ? this.newId() : pendingId;
-    const go: Go = { wireId, id, attempt: this.newAttempt(), from: w.from, to: w.to, body: text, automatic: how.automatic, start: !!how.start };
+    const go: Go = { wireId, id, attempt: this.newAttempt(), from: w.from, to: w.to, body: text, automatic: how.automatic, start: !!how.start || start === "start" };
     const at = Date.now();
     this.flights.set(wireId, { id, attempt: go.attempt, to: w.to });
     const r = this.o.store.editWires((book) => {
@@ -650,7 +658,7 @@ export class WireDelivery {
         over = true;
         reject(new Error(`It didn't start within ${START_WAIT_MS / 1000} s, so nothing was sent: send it again once it's running.`));
       }, START_WAIT_MS);
-      this.startEnd(go.to).then(
+      this.startEnd(go.to, go.from).then(
         (s) => {
           if (over) return this.o.log("wires", `${go.to} started after ${go.wireId}'s send of ${go.id} gave up waiting for it`);
           clearTimeout(timer);
@@ -665,8 +673,19 @@ export class WireDelivery {
     });
   }
 
-  /** Start the other end, stopped: an exited pane is resumed in place, a closed one reopened, as the window does. */
-  private async startEnd(id: string): Promise<SessionInfo> {
+  /**
+   * Start the other end, stopped: an exited pane is resumed in place, a closed one reopened, as the window does, and a
+   * not-started step started from `from`'s commit as it is at this Send (decision 1).
+   */
+  private async startEnd(id: string, from: string): Promise<SessionInfo> {
+    const state = this.o.store.wires();
+    const end = state.book ? this.o.context(state.book).end(id) : null;
+    if (end?.where === "planned") {
+      if (!this.o.startPlanned) throw new Error(`Couldn't start “${end.title}”: not-started steps can't be started here.`);
+      return this.o.startPlanned(id, from).catch((err: Error) => {
+        throw new Error(`Couldn't start “${end.title}”: ${err.message}`);
+      });
+    }
     const pane = this.o.sessions.list().find((s) => s.id === id);
     if (pane) {
       const r = await this.o.sessions.resume(id).catch((err: Error) => {

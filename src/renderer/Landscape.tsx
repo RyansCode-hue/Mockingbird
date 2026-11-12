@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatTokens, isErr, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
-import { gateOf, settingsRefusal, type WireSettings } from "../shared/wires";
+import { gateOf, settingsRefusal, stepRefusal, type WireSettings } from "../shared/wires";
 import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, GAP, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
 import type { LandscapeSave, Migrating } from "./useLandscape";
 import {
@@ -115,7 +115,7 @@ import { isRemote } from "./team/RoomLive";
 import { typingAsksOf } from "./needsYouModel";
 import { cameraMoved } from "./answerGuard";
 import { WireLayer, rereadWires, useWires, type WireLayerHandle } from "./WireLayer";
-import { WIRE_TYPE_NAME, commonReason, gateContextOf, gateView, noChoice, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
+import { WIRE_TYPE_NAME, commonReason, gateContextOf, gateView, noChoice, plannedLine, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
 import { WireSettingsPopover, WireTypePicker, type WirePick, type WireSettingsProps } from "./WireMaking";
 import { WirePopover } from "./WirePopover";
 import { sendAlongWire } from "./wireSend";
@@ -338,6 +338,7 @@ export function Landscape({
   closed = NO_SESSIONS,
   resumeOk,
   wireShowRef,
+  nextStep,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -434,6 +435,11 @@ export function Landscape({
   resumeOk?: (s: SessionInfo) => Promise<boolean>;
   /** Filled with Show: wire `id`'s send popover, for what offers it outside the landscape (W5's Needs you item). */
   wireShowRef?: React.MutableRefObject<((id: string) => void) | null>;
+  /**
+   * Add next step (W8): a workspace's edge handle clicked, or its wire dropped on nothing. New Session's dialog for a
+   * not-started step after `from`, placed `at` (the drop, in landscape px, in the area under it) or, from a click, beside it.
+   */
+  nextStep?: (from: SessionInfo, at: { area: string | null; point: Point } | null) => void;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -1736,14 +1742,18 @@ export function Landscape({
       return;
     }
     if (g.kind === "wire") {
-      if (!g.on) return;
+      const from = l.tiles.find((x) => x.key === g.key);
+      // the handle clicked (pressed and let go where it was): Add next step, beside its workspace
+      if (!g.on) return void (from && offerNextStep(from.front, null));
       // the release's click lands on nothing: not a button on the workspace it was dropped on
       swallowClick();
-      const from = l.tiles.find((x) => x.key === g.key);
       const to = wireTargetAt(e);
-      // dropped on nothing, or back on its own workspace: the wire goes (Add next step, W8, makes one into space)
-      if (!from || !to || to.key === from.key) return;
-      return offerWire(from.front, to.s, { x: e.clientX, y: e.clientY });
+      if (!from || (to && to.key === from.key)) return;
+      if (to) return offerWire(from.front, to.s, { x: e.clientX, y: e.clientY });
+      // dropped into the landscape's space (not on a window, a card, a pill or what floats over it): Add next step, there
+      if (!spaceAt(e)) return;
+      const p = atPoint(e);
+      return offerNextStep(from.front, { area: areaAt(l.areas, p)?.key ?? null, point: p });
     }
     if (!g.on) {
       // a click on an area's bare header, or its name zoomed out, selects it; a drag moves it
@@ -2246,6 +2256,24 @@ export function Landscape({
     if ("no" in c) return say(c.no);
     setWirePick({ from: { id: from.id, title: titleOf(from) }, to: { id: to.id, title: titleOf(to) }, at, choices: c });
   };
+  /**
+   * Add next step (W8) from `from`: its dialog, or why no step can follow it, said with no dialog (a terminal, a debrief,
+   * the Helpdesk tasks workspace, a teammate's: the rules on a handoff out of it). Main asks again as the step is made.
+   */
+  const offerNextStep = (from: SessionInfo, at: { area: string | null; point: Point } | null) => {
+    if (!nextStep) return;
+    const ctx = wireCtx([from.id]);
+    if (!ctx) return say(wireBookNow.current?.refused ?? WIRES_UNREAD);
+    const no = stepRefusal(from.id, ctx);
+    if (no) return say(`No step can follow ${titleOf(from)}: ${no}`);
+    nextStep(from, at);
+  };
+  /** Whether a release at this point is in the landscape's own space: its canvas or an area's patch, not anything drawn or floating over it. */
+  const spaceAt = (e: { clientX: number; clientY: number }): boolean => {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || !viewport.current?.contains(el)) return false;
+    return !el.closest(".ls-node, .ls-ghost, .ls-window, .ls-acard, .ls-area-pill, .ls-hud, .ls-minimap, .ls-switcher, .ls-peek, .ls-selbar, .ls-banners, .ls-focus, .ls-note, .ls-empty, button, a, input");
+  };
   /** Main's word on a wire change (wires:*): why it wasn't made, or null. The wires are drawn again from its change notice, which has what the reply lacks. */
   const wireCall = async (what: string, call: () => Promise<unknown>): Promise<string | null> => {
     try {
@@ -2674,6 +2702,7 @@ export function Landscape({
               status={ghostStatus(g.front)}
               inv={1 / cam.current.zoom}
               onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front, g.members)))}
+              planned={g.front.planned ? plannedLine(g.front.id, wireBook?.book?.links ?? {}, (id) => (sessionOn(id) ? named(id) : null), (w) => wireList.some((v) => v.id === w && v.why === "needs approve")) : undefined}
             />
           ))}
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}

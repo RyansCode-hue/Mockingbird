@@ -2773,6 +2773,196 @@ Attached board does.
   `test/uiLandscapeGhosts.test.ts`.
 - Board: Inbox.dc.html's Tester; Zoomed.dc.html's.
 
+#### W8 as built
+
+**The record** (`src/shared/types.ts`).
+- `SessionInfo.planned: PlannedStep` (`worktree`, `base`, `sharesWith`, `prompt`).
+  A planned record has status idle, no branch, and its cwd is its repo (or home);
+  sharing a folder, it's the other session's.
+- `PlanRequest` is what Add next step sends; `NewSessionRequest.startAt` is the
+  commit a new worktree starts at; `stepSlug(title)` names a step's branch.
+
+**Main** (`src/main/sessions.ts`).
+- `resumable()` leaves planned records out; `planned()` lists them. So rooms never
+  publish one, `missingFolders` never reads one, and nothing reopens one.
+- `plan(req)` saves the record, emitting a change. It's refused, saving nothing,
+  for: an unknown or teammate's session to follow, an empty or over-long name, an
+  agent that isn't Claude or Codex, a stack's group, a worktree with no repo, and a
+  shared folder that isn't there.
+- `relaunch`, `resume` and `restart` refuse a planned one with `notStartedWhy`
+  ("“Tester” hasn't started yet: it starts when the handoff into it is sent, or with
+  Start now in its menu"). `closedOutput` refuses one too.
+- `startPlanned(id, upstream)` is `create` with `reuseId`, so its wires keep their
+  ends. It's guarded by `ownOnly`, quitting, `mayRun` and a `starting` set: a second
+  start, a resume, a relaunch or a forget meanwhile is refused ("It's being started
+  already"). Where it starts:
+  - sharing a folder (decision 7): the other session's folder and branch, as
+    `companionSession` does. Refused, keeping the record, when that session was
+    forgotten or its folder is gone.
+  - a worktree in the upstream's repo: `upstreamCommit` reads the upstream folder's
+    HEAD at this moment (its branch's tip when the folder is gone). The worktree
+    starts there (`createWorktree`'s `startAt`), on `<its branch>-<step>`, made
+    unique. The pane says "Started at “Builder”'s commit abc1234", and how many of
+    its uncommitted files aren't here.
+  - no upstream commit to use (forgotten, another repo, gone): the step's own base,
+    and the pane says why.
+- `createWorktree`'s `startAt`: an existing branch is refused rather than reset
+  ("feat-tester is there already, so it can't be started at abc1234"). A commit
+  the repo doesn't have is refused. A worktree folder is reused only without it.
+
+**Wires** (`src/shared/wires.ts`, `src/main/wires.ts`, `wireDelivery.ts`).
+- `WireEnd.where` gains `"planned"`. A shared worktree wire from a planned agent is
+  refused: it has no worktree yet.
+- `stepRefusal(from, ctx)` is the handoff rule from `from` to a provisional
+  not-started agent in its own room. A terminal, a debrief, the Helpdesk tasks
+  workspace, a teammate's session and a copy taken over all refuse before a step
+  is made.
+- `WireService.addStep(req, { plan, forget })`: `stepRefusal`, then `plan`, then
+  the handoff. If that wire is refused once the step exists, the step is forgotten
+  and the refusal is thrown.
+- `context()` puts planned records among the ends. `placed` now counts a kept
+  workspace or stack place, as the window does; it read only `l.ghosts`, the old
+  record.
+- Delivery: `howToStart` is `"start"` for a planned end. A person's Send starts it
+  through `startPlanned` from the wire's source, with no cost question, then
+  delivers once its prompt settles. A failure is `Couldn't start “Tester”: …`,
+  failed and sendable again. An automatic gate holds: "“Tester” hasn't started: an
+  automatic gate never starts a workspace, so this waits for you to send it."
+- `WireTools` and `LivePanes.roomOfSession` look in planned records too, so a
+  wire's end and a step's room are found.
+- index.ts: `sessions:planned`, `sessions:plan` (`addStep`) and
+  `sessions:startPlanned`. `startPlannedStep` takes the upstream from the Send, or
+  else from the earliest handoff into the step. It places the step as a reopened
+  session (`sessionReopened`). Then `sessionOpened`, which `sessions:create` now
+  shares, checks overlaps and starts a ticket's coding stage.
+
+**The window.**
+- `resolveLayout` draws a planned record as a ghost, and it always has a place.
+  One with none is placed as a new workspace is: in its group's area while that
+  exists, else loose, making no area. A `PlaceHint` aimed at it is honoured, and
+  the place is saved.
+- `closedIn` leaves planned records out, so Reopen all, Clear ghosts and the
+  Closed sessions list never take one. `plannedIn` lists them. `areaCounts`
+  counts them apart, and `areaSummary` says "1 not started".
+- `GhostCard` with `planned` draws Inbox.dc.html's Tester. It's a faded solid card
+  with a filled idle dot and no buttons. In place of a last line, `plannedLine`
+  says what starts it: "Not started. Starts when Reviewer hands off" (or
+  "approves" when that handoff waits for an approve; else "Nothing hands off to it
+  yet: …"). Its foot is `plannedWhere`: "#5101 · backoffice · new worktree", "in
+  Builder's folder". At 100% it has the header band; zoomed out, the line clamps
+  to two lines.
+- `plannedActions`: Start now (primary) and Forget, from ⋯ and right-click. Never
+  Reopen. Both are off while either is under way.
+- Add next step (`Landscape.offerNextStep`, `main.tsx`'s `addNextStep`):
+  - A click on a workspace's edge handle (pressed and let go in place) opens the
+    dialog, the step placed beside the workspace.
+  - A wire dropped on the landscape's own space (`spaceAt`: not on a workspace,
+    window, card, pill or anything floating) opens it too, the step placed where
+    it was let go. Dropped outside every area, it's loose.
+  - `stepRefusal` is asked first, so a terminal's or the tasks workspace's handle
+    says "No step can follow Dev server: …" with no dialog.
+- The New Session dialog in step mode ("Next step · after Builder"): Name
+  (focused), Agent, "Works in" (its own folder, or the upstream's), Repo with a
+  worktree by default, its base, ticket, model and effort, and "Tell it" (the
+  step's prompt). No Terminal, preset, import or new room. "Add step" calls
+  `planSession`. Its guards:
+  - a click within `ANSWER_SETTLE_MS` of opening, or a double click's second, is
+    swallowed (capture on the dialog box);
+  - the backdrop doesn't close it during that time;
+  - keys of a burst that spans its opening are swallowed until a pause (`keyArm`'s
+    `afterPause`) or a press in it;
+  - Add step is off while it settles.
+- The note: "Added Tester after Builder: it starts when Builder's handoff is sent,
+  or with Start now in its menu". Start now and Forget run through the closed
+  machinery's busy guard, and failures are said over the landscape.
+- The window reads `plannedSessions` with the closed sessions: either read failing
+  is the read failing. Planned records join `knownSessions`, so their places aren't
+  freed. An area with only a step isn't empty.
+
+**With W4c's send popover.**
+- A ready handoff into a step shows the ready face, with "“Tester” hasn't started:
+  sending starts it." where a stopped end's says it reopens or resumes it
+  (`gateView`'s `starts: "start"`).
+- Its Send is `sendAlongWire` as for any end. Main asks no cost for a step, as
+  there's no conversation to reread, so the first `wires:send` (without `start`)
+  starts it and sends. The cost question never comes up.
+- The popover's own guards (Send once, settle, early keys) are unchanged; nothing
+  here bypasses them.
+- The stub's `gateSend` starts a step as main does.
+
+**Preview.**
+- `?lsWires&lsPlanned` makes the wires board's Tester a step not started yet.
+- `?lsStep=<id>` turns a closed session into one.
+- The stub simulates `plannedSessions`, `planSession` (wired, rolled back when
+  refused), `startPlanned`, and refusals from `closedOutput` and
+  `relaunchSession`.
+- `?landscapeWiresAudit=step` works W8 with the real mouse and keys.
+- Screenshots `w8-100.png` and `w8-45.png` matched Inbox.dc.html's Tester at 100%
+  and its clamped two-line card at 45%.
+
+**Tests.**
+- `sessionLifecycle` (9):
+  - the record, not in `resumable()` or `list()`;
+  - `plan`'s refusals;
+  - relaunch, resume and restart refused;
+  - a start from A's commit, not origin's, on `feat-tester`;
+  - started once while a start is under way;
+  - uncommitted files said, and a unique branch;
+  - a start in A's folder;
+  - a gone or forgotten shared folder refused, keeping the record;
+  - another repo cut from base.
+- `wireDelivery` (3): a Send starts the step and then delivers; a start that fails
+  is failed with why, keeping the step; an automatic gate holds.
+- `wireService` (3): `addStep` makes and wires the step; it's refused before
+  making one; the step is forgotten when its wire is refused.
+- `teamLivePanes` (1): a step after a room session is in the room and unpublished
+  while planned, then starts under the room's agent rules and is published.
+- `landscapeArrange` (1): placed in its area or at the hint, and saved; loose with
+  no area; never closed or listed; counted "not started".
+- `wiresModel` (2): `stepRefusal`; a planned end, its gate and popover face, the worktree refusal
+  and `plannedLine`.
+- `workspaceActions` (2): `plannedActions` and `plannedWhere`.
+- `uiLandscapeGhosts` (1): the step's card keeps inside its place at every zoom,
+  with head, line and foot.
+- `uiLandscapeWires` (1), "Add next step":
+  - the card and its menu;
+  - a drop into space, placed at the drop;
+  - the source finishing, its handoff's popover saying sending starts the step,
+    and Send starting it with no cost question, then sending what it showed;
+  - a handle clicked mid-burst, the burst's key and an early click untaken;
+  - Reviewer's folder chosen, named and added;
+  - a double click's second press doesn't close the dialog;
+  - a terminal refused;
+  - Start now.
+- Mutation checks:
+  - caught: `resumable()`'s filter; relaunch's and resume's refusals; the
+    `starting` guard; the automatic gate's hold; the dialog's click, burst-key and
+    backdrop guards;
+  - survived: restart's own refusal, since relaunch refuses the same way under
+    it. It's kept so restart never kills on a planned record.
+
+**Deviations.**
+- `startPlanned(id, upstreamId)` reads the commit itself at the Send, rather than
+  taking a sha.
+- The handoff's body is delivered after the start, as for a resumed or reopened
+  end, so it keeps its receipts. The step's own prompt ("Tell it", plus a ticket's
+  kickoff) is its first prompt.
+- A person's Send starts a step without the cost question that a resume or reopen
+  asks.
+- "Start now" isn't in the spec. It stays beside W4c's Send: Send needs a handoff
+  waiting, and W4c has no Send now for an idle wire. Start now starts a step before
+  the step before it finishes, and one that nothing hands off to.
+- The dialog gains Name, Works in and Tell it, and refuses a new room for a step.
+- The area tree doesn't list steps, as it doesn't list ghosts.
+- The layout tests went in `landscapeArrange.test.ts`'s "ghosts", beside the rest
+  of the ghost rules, not `landscapeView.test.ts`.
+
+**Left for later.**
+- The window's planned list refreshes on its own reads. A step started by main
+  (a Send) drops out at the next refresh. Until then it's drawn as running,
+  because a shown id is never drawn as a ghost.
+- Steps aren't in the Closed sessions list or ⌘K. Their way in is the landscape.
+
 ### W9 · Templates. Size M (changed)
 - `settings.pipelineTemplates` beside `presets` (`types.ts:328`); **Save as
   template** from a chain. Pipeline from a ticket… turns on

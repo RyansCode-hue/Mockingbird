@@ -106,6 +106,7 @@ function setup(o: Setup = {}) {
   const made: PendingsMade[] = [];
   const opts = { submit: true };
   const reopened: string[] = [];
+  const stepsStarted: { id: string; from: string }[] = [];
   const d: WireDelivery = new WireDelivery({
     store,
     context: (book) => service.context(book),
@@ -113,6 +114,10 @@ function setup(o: Setup = {}) {
     reopen: async (id) => {
       reopened.push(id);
       return o.reopen ? o.reopen(id, m) : m.relaunch(id);
+    },
+    startPlanned: async (id, from) => {
+      stepsStarted.push({ id, from });
+      return m.startPlanned(id, from);
     },
     submits: () => opts.submit,
     frame:
@@ -183,7 +188,9 @@ function setup(o: Setup = {}) {
     store.update({ ghosts: { [id]: ghost(title) } });
     store.flush();
   };
-  return { dir, file, m, store, service, d, tools, finishing, made, rooms, takenOver, told, logged, opts, reopened, pane, ptyOf, idle, add, book, wireOf, gate, offer, onDisk, placeGhost };
+  /** A step not started yet that follows `after` (W8), by itself in its own folder. */
+  const planned = (after: string, title: string) => m.plan({ after, title, agent: "claude", repoPath: null, worktree: false, taskGroup: null });
+  return { dir, file, m, store, service, d, tools, finishing, made, rooms, takenOver, told, logged, opts, reopened, stepsStarted, pane, planned, ptyOf, idle, add, book, wireOf, gate, offer, onDisk, placeGhost };
 }
 
 const refusal = (r: WireReply | SendReply | { refused: string } | { offered: unknown }) => ("refused" in r ? r.refused : `not refused: ${JSON.stringify(r).slice(0, 200)}`);
@@ -333,6 +340,45 @@ describe("a person's Send, by where the other end is", () => {
     t.idle(t.b.id, { started: true });
     vi.advanceTimersByTime(1520);
     expect(t.ptyOf(t.b.id).writes).toEqual(["|[sent from Builder to Reviewer] the summary|"]);
+  });
+
+  it("not started yet: a Send starts it under its id, asking nothing, then sends once its prompt is drawn", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const b = t.planned(a.id, "Tester");
+    const w = t.add(a.id, b.id);
+    expect(t.gate(w).state).toBe("idle");
+    const p = await t.offer(w);
+    expect(t.gate(w)).toMatchObject({ state: "ready", pendingId: p });
+    const before = ptys.length;
+    // starting a step costs nothing to reread: there's no question first, unlike a resume or reopen
+    const r = await t.d.send(w, p, "the summary");
+    expect(r).not.toHaveProperty("refused");
+    expect(t.stepsStarted).toEqual([{ id: b.id, from: a.id }]);
+    expect(t.reopened).toEqual([]);
+    expect(ptys.length).toBe(before + 1);
+    expect(t.m.planned()).toEqual([]);
+    expect(t.m.list().find((s) => s.id === b.id)).toMatchObject({ title: "Tester" });
+    expect(t.m.list().find((s) => s.id === b.id)!.planned).toBeUndefined();
+    t.idle(b.id, { started: true });
+    vi.advanceTimersByTime(1520);
+    expect(t.ptyOf(b.id).writes).toEqual(["|[sent from Builder to Tester] the summary|"]);
+    vi.advanceTimersByTime(150);
+    expect(t.wireOf(w).delivery!.state).toBe("sent");
+  });
+
+  it("not started, and it can't be started: failed with why, the step kept to send again", async () => {
+    const t = setup();
+    const a = await t.pane("Builder");
+    const b = t.planned(a.id, "Tester");
+    const w = t.add(a.id, b.id);
+    const p = await t.offer(w);
+    t.m.relaunchGuard = (id) => (id === b.id ? "“Tester” continues on Nick's laptop" : null);
+    expect(refusal(await t.d.send(w, p, "the summary"))).toMatch(/Couldn't start “Tester”: “Tester” continues on Nick's laptop/);
+    expect(t.wireOf(w).delivery).toMatchObject({ id: p, state: "failed", why: expect.stringMatching(/continues on Nick's laptop/) });
+    expect(t.m.planned().map((s) => s.id)).toEqual([b.id]);
+    expect(ptys.filter((x) => x.session === b.id)).toEqual([]);
+    expect(t.told.at(-1)).toMatchObject({ title: "Not sent along a wire" });
   });
 
   it("closed, and it can't be reopened: failed with why, ready to send again", async () => {
@@ -747,6 +793,17 @@ describe("an automatic gate", () => {
     expect(t.wireOf(t.wires[1]).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/never reopens/) });
     expect(t.reopened).toEqual([]);
     expect(ptys.filter((p) => p.session === t.ids[1] || p.session === t.ids[2])).toHaveLength(2);
+  });
+
+  it("never starts a step not started yet: it waits for a person, saying why", async () => {
+    const t = await chain(1);
+    const b = t.planned(t.ids[0], "Tester");
+    const w = t.add(t.ids[0], b.id, "handoff", { gate: "automatic" });
+    await t.offer(w);
+    expect(t.wireOf(w).delivery).toMatchObject({ state: "held", why: "“Tester” hasn't started: an automatic gate never starts a workspace, so this waits for you to send it." });
+    expect(t.stepsStarted).toEqual([]);
+    expect(t.m.planned().map((s) => s.id)).toEqual([b.id]);
+    expect(ptys.filter((p) => p.session === b.id)).toEqual([]);
   });
 
   it("sends once per prompt its source took: a second finish without a new prompt waits; one after a new prompt goes", async () => {

@@ -11,8 +11,8 @@
  * the query can also pick the screen (see the end of this file).
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
-import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
-import { DEFAULT_SETTINGS, clearGateTicks, clearsGates, splitGroupKey, ticketOfSession } from "../shared/types";
+import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, PlanRequest, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
+import { DEFAULT_SETTINGS, clearGateTicks, clearsGates, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, followsBottom, measuredCell } from "../renderer/cachedTerm";
 import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
@@ -125,6 +125,14 @@ if (wireBoard) {
   sessions.push(...wireBoard.running);
   previous.push(...wireBoard.closed);
 }
+// steps not started yet (main's sessions:planned, W8). ?lsPlanned: the wires board's Tester hasn't started, as
+// Inbox.dc.html has it, its place and Reviewer's handoff to it kept
+let planned: SessionInfo[] = [];
+if (wireBoard && new URLSearchParams(location.search).has("lsPlanned")) {
+  const tester = sessions.find((s) => s.title === "Tester" && s.taskGroup === wireBoard.running[0].taskGroup)!;
+  sessions = sessions.filter((s) => s !== tester);
+  planned.push({ ...tester, branch: null, cwd: tester.repoPath ?? tester.cwd, status: "idle", planned: { worktree: true, prompt: "Run the e2e suite in docker against this branch." } });
+}
 /** The closed sessions whose folders are gone (main's sessions:missingFolders): g2's worktree and branch were removed. */
 const goneFolders = new Map([["g2", { reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" }]]);
 // ?lsSpikeGone: the wires board's ghost, Spike: streaming, can't run where it ran either, so it offers Start fresh
@@ -145,6 +153,16 @@ for (const id of lsClosedQ) {
   }
   sessions = sessions.filter((x) => x !== s);
   previous = [...previous, { ...s, status: "dead" }];
+}
+// ?lsStep=<id,…>: those closed sessions are steps not started yet instead (W8), their places kept
+for (const id of new URLSearchParams(location.search).get("lsStep")?.split(",").filter(Boolean) ?? []) {
+  const s = previous.find((x) => x.id === id);
+  if (!s) {
+    console.error(`[preview] ?lsStep found no closed session ${id}`);
+    continue;
+  }
+  previous = previous.filter((x) => x !== s);
+  planned.push({ ...s, status: "idle", branch: null, conversation: undefined, planned: { worktree: true } });
 }
 // ?closedAsLeft: the closed sessions as main keeps them, a pane's record staying as it was when it closed: g2 and o2 on a
 // prompt nobody answered, the others idle with their last turn's end on record
@@ -1068,7 +1086,7 @@ const landscapeFixture = (): Landscape => {
   l.migratedAt = new Date(now - 2 * 24 * 60 * min).toISOString();
   l.tourDone = true;
   const M = presetSize("agent");
-  const everyone = [...sessions, ...previous, ...live.remote];
+  const everyone = [...sessions, ...previous, ...planned, ...live.remote];
   /** An area two M workspaces wide at (x, y): `ids` in reading order (a stack once, its first member in front), closed ones' (ghosts') too. */
   const area = (key: string, x: number, y: number, ids: string[]): Area => {
     const inside: Rect[] = [];
@@ -1388,8 +1406,47 @@ const api: Record<string, (...a: any[]) => any> = {
     }
     return previous.filter((p) => !sessions.some((s) => s.id === p.id)).map((p) => ({ ...p }));
   },
-  // main's sessions:closedOutput: a closed session's saved output (its scrollback), "" when it has none
-  closedOutput: async (id: string) => closedOutput[id] ?? buffers[id] ?? "",
+  // main's sessions:planned: the steps not started yet, never among the closed ones
+  plannedSessions: async () => planned.filter((p) => !sessions.some((s) => s.id === p.id)).map((p) => ({ ...p })),
+  // main's sessions:plan (WireService.addStep): refused before it's made when no handoff could leave `after`; made, then
+  // wired, and forgotten again when the wire is refused
+  planSession: async (req: PlanRequest) => {
+    const title = String(req.title ?? "").trim();
+    if (!title) return err("Name the step");
+    if (req.taskGroup?.includes("/")) return err("A not-started step goes in an area, not a stack");
+    const up = byId(req.after) ?? previous.find((p) => p.id === req.after) ?? planned.find((p) => p.id === req.after);
+    if (!up) return err(`This Mac has no session "${req.after}" to add a step after`);
+    const id = `pl${Date.now().toString(36)}`;
+    const s: SessionInfo = {
+      ...session(id, { title, agent: req.agent, taskGroup: req.taskGroup ?? req.ticketId ?? null, status: "idle", createdAt: Date.now(), branch: null }),
+      repoPath: req.sharesFolder ? up.repoPath : req.repoPath,
+      cwd: req.sharesFolder ? up.cwd : (req.repoPath ?? "/Users/you"),
+      planned: { worktree: !req.sharesFolder && !!req.repoPath && req.worktree, ...(req.sharesFolder ? { sharesWith: up.id } : {}), ...(req.prompt?.trim() ? { prompt: req.prompt.trim() } : {}) },
+    };
+    planned = [...planned, s];
+    const r: WireReply = await api.wiresAdd(req.after, id, "handoff");
+    if ("refused" in r) {
+      planned = planned.filter((p) => p.id !== id);
+      return err(r.refused);
+    }
+    return s;
+  },
+  // main's sessions:startPlanned: started under its id, so its wires keep their ends; refused when it isn't one
+  startPlanned: async (id: string) => {
+    await startLag();
+    const p = planned.find((x) => x.id === id);
+    if (!p || byId(id)) return err("It has started already: reopen it instead");
+    const { planned: _step, ...rest } = p;
+    const next: SessionInfo = { ...rest, status: "working", createdAt: Date.now(), branch: p.planned?.sharesWith ? (byId(p.planned.sharesWith)?.branch ?? null) : stepSlug(p.title) };
+    planned = planned.filter((x) => x.id !== id);
+    sessions = [...sessions, next];
+    buffers[id] = `${C.dim}(UI preview: the step would start here)${C.reset}\r\n> `;
+    sessionsChanged();
+    return next;
+  },
+  // main's sessions:closedOutput: a closed session's saved output (its scrollback), "" when it has none; a not-started
+  // step has none, and main says so
+  closedOutput: async (id: string) => (planned.some((p) => p.id === id) ? err(`${id} hasn't started, so it has no output`) : (closedOutput[id] ?? buffers[id] ?? "")),
   // main's sessions:missingFolders: the closed sessions whose folders are gone, and whether each still reopens
   // ?lsGoneReadFails=<n>: the first n reads fail
   missingFolders: async () => {
@@ -1469,6 +1526,7 @@ const api: Record<string, (...a: any[]) => any> = {
     const s = byId(id);
     sessions = sessions.filter((x) => x.id !== id);
     previous = previous.filter((p) => p.id !== id);
+    if (forget) planned = planned.filter((p) => p.id !== id);
     if (!forget && s && !s.room?.remote) previous = [...previous, { ...s, status: "dead" }];
     sessionsChanged();
   },
@@ -1513,6 +1571,9 @@ const api: Record<string, (...a: any[]) => any> = {
     if (taken) return err(taken);
     const running = byId(id);
     if (running && running.status !== "dead") return err("It's running already");
+    // as main's relaunch: a not-started step has nothing to go back to
+    const notYet = !running && planned.find((p) => p.id === id);
+    if (notYet) return err(`“${notYet.title}” hasn't started yet: it starts when the handoff into it is sent, or with Start now in its menu`);
     const failed = relaunchFails.get(id);
     if (failed !== undefined && failed < 2) {
       relaunchFails.set(id, failed + 1);
@@ -8696,7 +8757,7 @@ const wireState = (): WireState => clone({ book: wireBook, refused: null, wiresR
 /** The rules' view of this file's sessions: running ones, and closed ones (previous) as main's resumable. */
 const wireEnds = (): Pick<WireContext, "end"> => ({
   end: (id) => {
-    const s = sessions.find((x) => x.id === id) ?? previous.find((x) => x.id === id);
+    const s = sessions.find((x) => x.id === id) ?? previous.find((x) => x.id === id) ?? planned.find((x) => x.id === id);
     if (!s) return null;
     const running = sessions.includes(s as SessionInfo);
     return {
@@ -8707,8 +8768,8 @@ const wireEnds = (): Pick<WireContext, "end"> => ({
       tasks: s.role === "tasks",
       room: s.room?.roomId ?? null,
       takenOver: null,
-      where: !running ? "closed" : s.status === "dead" ? "dead" : "running",
-      placed: running || Object.hasOwn(landscape.ghosts, id),
+      where: !running && s.planned ? "planned" : !running ? "closed" : s.status === "dead" ? "dead" : "running",
+      placed: running || Object.hasOwn(landscape.workspaces, id) || Object.hasOwn(landscape.ghosts, id),
       folder: s.cwd,
       hooksSilent: !!s.hooksSilent,
       ticket: ticketOfSession(s),
@@ -8826,9 +8887,14 @@ async function gateSend(id: string, pendingId: string, body: string, opts: { sta
   if (!again && unconfirmed) return { refused: `It may have reached ${to} already: send it again, or mark it sent.` };
   if (again && !unconfirmed) return { refused: "Send again is for what may have reached the other end already: this one can simply be sent." };
   if (!body.trim()) return { refused: "There's nothing to send." };
-  if (b && b.where !== "running" && !opts?.start) {
+  if (b && b.where !== "running" && b.where !== "planned" && !opts?.start) {
     const start = b.where === "dead" ? "resume" : "reopen";
     return { refused: `${to} isn't running: sending this ${start === "resume" ? "resumes" : "reopens"} it, which rereads its conversation.`, start };
+  }
+  // a step not started yet is started by the Send, with no cost to ask (main's startEnd)
+  if (b?.where === "planned") {
+    const started = await api.startPlanned(w.to);
+    if (started && typeof started === "object" && "error" in started) return { refused: `Couldn't start ${to}: ${started.error}` };
   }
   const sent = again ? `${pendingId}-sent` : pendingId;
   const counted = !again && w.delivery?.id === pendingId && w.delivery.state !== "held";

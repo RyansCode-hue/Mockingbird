@@ -1,4 +1,4 @@
-import { AGENT_NAME, otherAgent, type MessageMode, type MissingFolder, type SessionInfo } from "../shared/types";
+import { AGENT_NAME, otherAgent, ticketIdOf, type MessageMode, type MissingFolder, type SessionInfo } from "../shared/types";
 import { LOOSE_GROUP, SIZE_PRESETS, areaKeyOf, type SizePreset } from "../shared/landscape";
 import { menuHeading, tidyMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, NoteIcon, PanelRightIcon, PencilIcon, PlusIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
@@ -314,6 +314,42 @@ export function ghostActions(s: SessionInfo, env: GhostEnv): ModelAction[] {
     title: env.busy ? CLOSED_BUSY_WHY : several ? `Let this stack's ${env.tabs} closed tabs go for good: they can't be reopened after` : "Let it go for good: it can't be reopened after",
   });
   return out;
+}
+
+/** What a not-started step's actions need, and do (main.tsx's `plannedEnv` makes it): its card's ⋯ and right-click. */
+export interface PlannedEnv {
+  /** Being started or forgotten now: neither again till that's done. */
+  busy: boolean;
+  /** Start it now, from the commit the step before it is on (main's startPlanned), without waiting for its handoff. */
+  start: () => void;
+  /** Let it go: its place and its wires go with it. */
+  forget: () => void;
+}
+
+/** Why a not-started step isn't started or forgotten again while that's under way. */
+export const PLANNED_BUSY_WHY = "It's being started or forgotten already";
+
+/**
+ * A not-started step's actions (W8): Start now and Forget. Never Reopen: it has nothing to go back to, and main refuses
+ * a relaunch of one too.
+ */
+export function plannedActions(env: PlannedEnv): ModelAction[] {
+  const busy = env.busy ? { no: PLANNED_BUSY_WHY } : null;
+  return [
+    { section: "end", key: "start", label: "Start now", primary: true, title: "Start it now, from the commit the step before it is on, without waiting for its handoff", ...can(busy ?? env.start) },
+    { section: "end", key: "forget", label: "Forget", menuLabel: "Forget it", danger: true, icon: <CloseIcon />, title: env.busy ? PLANNED_BUSY_WHY : "Let it go, with its place and its wires", ...can(busy ?? env.forget) },
+  ];
+}
+
+/**
+ * Where a not-started step will work, as its card's foot says it: in another session's folder (`titleOf` names that
+ * one), a new worktree of its repo, its repo's checkout, or no repo; its ticket first.
+ */
+export function plannedWhere(s: SessionInfo, titleOf: (id: string) => string | null): string {
+  const p = s.planned;
+  const repo = s.repoPath ? s.repoPath.split("/").filter(Boolean).pop() : null;
+  const where = p?.sharesWith ? `in ${titleOf(p.sharesWith) ?? "another session"}'s folder` : repo ? `${repo} · ${p?.worktree ? "new worktree" : "its checkout"}` : "no repo";
+  return [s.ticketId ? `#${ticketIdOf(s.ticketId)}` : null, where].filter(Boolean).join(" · ");
 }
 
 /**

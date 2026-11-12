@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRepos } from "./RepoPick";
 import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { newPresetId } from "./Presets";
-import { isErr, AGENT_NAME, HELPDESK_PRESET, slugBranch, sanitizeSegment, groupKey, ticketIdOf, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
+import { isErr, AGENT_NAME, HELPDESK_PRESET, slugBranch, stepSlug, sanitizeSegment, groupKey, ticketIdOf, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
 import { agoShort } from "../shared/format";
 import { tildePath } from "../shared/paths";
 import { Modal } from "./Modal";
@@ -14,7 +14,9 @@ import { useAction } from "./useAction";
 import { initialsOf, InviteCode, ShareError } from "./Team";
 import { localTops, newRoomOf, newRoomPlan, repoChoices, repoOfFolder, seedWhere, workspacesOf, type NewRoom } from "./newSessionModel";
 import type { TeamRoomSummary } from "../shared/team/types";
-import { inputStamp } from "./keyArm";
+import { QUIET_KEYS, afterPause, inputStamp } from "./keyArm";
+import { ANSWER_SETTLE_MS, useHeldOff } from "./answerGuard";
+import { titleOf } from "./appModel";
 
 /** Starting sessions: New session (⌘N) and Import. */
 
@@ -43,6 +45,8 @@ export function NewSessionModal({
   onJoinRoom,
   onClose,
   onCreated,
+  nextStep,
+  onPlanned,
 }: {
   existingGroups: string[];
   /** Team rooms this Mac is in: a session started in one's group is a connected session. */
@@ -72,14 +76,28 @@ export function NewSessionModal({
    * it, which waited on main: typed past meanwhile, it leaves the keyboard where it is.
    */
   onCreated: (s: SessionInfo, since?: number) => void;
+  /**
+   * Add next step (W8): the dialog makes a step not started yet after `from`, joined to it by a handoff wire (main's
+   * sessions:plan), rather than starting a session. It's named here, runs Claude or Codex, and works in a folder of its
+   * own (a new worktree from `from`'s commit as it starts) or in `from`'s.
+   */
+  nextStep?: { from: SessionInfo };
+  /** The not-started step made (nextStep). */
+  onPlanned?: (s: SessionInfo) => void;
 }) {
-  const [launch, setLaunch] = useState<LaunchKind>(initialLaunch ?? "claude");
+  const planning = !!nextStep;
+  const [launch, setLaunch] = useState<LaunchKind>(initialLaunch === "shell" && planning ? "claude" : (initialLaunch ?? "claude"));
   const isAgent = launch !== "shell";
   // Import resumes a Claude or Codex conversation from this Mac (cmux, a
   // terminal, anywhere) in the folder it ran in, with its agent; where it goes
   // (a group, a room) is chosen here as for a new one
   const [mode, setMode] = useState<"new" | "import">(initialMode ?? "new");
-  const importing = mode === "import";
+  const importing = mode === "import" && !planning;
+  // Add next step's own fields: the step's name, what it's told as it starts, and whether it works in `from`'s folder
+  const [stepName, setStepName] = useState("");
+  const [stepPrompt, setStepPrompt] = useState("");
+  const [sharesFolder, setSharesFolder] = useState(false);
+  const after = nextStep?.from;
   const [iq, setIq] = useState("");
   const { rows: convRows, error: convError } = useConversations(iq, importing);
   const [conv, setConv] = useState<ImportRow | null>(null);
@@ -152,6 +170,8 @@ export function NewSessionModal({
   const [wsNew, setWsNew] = useState(() => (seed.sub && !workspacesOf(existingGroups, seed.top).includes(seed.sub) ? seed.sub : ""));
   const effSub = wsSel === "__new" ? sanitizeSegment(wsNew) : wsSel;
   const group = top ? groupKey(top, effSub) : "";
+  // why Add step can't make the step yet ("" when it can): a step goes in an area that's there, never a new room
+  const planBlock = !planning ? "" : whereBlock || (intoNewRoom ? "A step goes in an area that's there: pick a room you're in, or Local." : !stepName.trim() ? "Name the step." : "");
   const resetWorkspace = () => {
     setWsSel("");
     setWsNew("");
@@ -191,12 +211,46 @@ export function NewSessionModal({
   // <parent>/worktrees/<repo>/<branch>; unticked, the branch is checked out in
   // the repo itself. An explicit choice is remembered and wins.
   const wtPref = readPref<boolean | null>("mb.newWorktree", null);
-  const [useWorktree, setUseWorktreeRaw] = useState<boolean>(wtPref ?? false);
+  // a next step gets a worktree of its own unless told otherwise (decision 1), and its choice isn't remembered for others
+  const [useWorktree, setUseWorktreeRaw] = useState<boolean>(planning || (wtPref ?? false));
   const setUseWorktree = (v: boolean) => {
     setUseWorktreeRaw(v);
-    writePref("mb.newWorktree", v);
+    if (!planning) writePref("mb.newWorktree", v);
   };
   const { isBusy, busy, run, error, setError } = useAction();
+  // Add next step opens on a handle's click or a wire's drop, where a double click's second, or a click close behind,
+  // lands on whatever the dialog put there: for ANSWER_SETTLE_MS, and never a double click's second, a click in it is
+  // let go before it reaches a control, which shows off meanwhile. And keys of a burst typed as it opened were typed for
+  // what was there before: none reaches it until a pause, or a press in it.
+  const headEl = useRef<HTMLDivElement>(null);
+  const { holdOff, heldOff } = useHeldOff();
+  useLayoutEffect(() => {
+    const box = planning ? headEl.current?.closest<HTMLElement>(".modal") : null;
+    if (!box) return;
+    const opened = Date.now();
+    holdOff("settle", ANSWER_SETTLE_MS);
+    let fresh = true;
+    const aimed = (e: MouseEvent) => {
+      if (e.detail < 2 && (e.detail < 1 || Date.now() - opened >= ANSWER_SETTLE_MS)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const pressed = () => void (fresh = false);
+    const key = (e: KeyboardEvent) => {
+      if (!fresh || QUIET_KEYS.has(e.key)) return;
+      if (afterPause()) return void (fresh = false);
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    box.addEventListener("click", aimed, true);
+    box.addEventListener("pointerdown", pressed, true);
+    box.addEventListener("keydown", key, true);
+    return () => {
+      box.removeEventListener("click", aimed, true);
+      box.removeEventListener("pointerdown", pressed, true);
+      box.removeEventListener("keydown", key, true);
+    };
+  }, [planning, holdOff]);
   // ADO ticket picker — same flow as the dashboard's Start session. It keeps
   // everyone's tickets: it defaults to yours (identity comes from the PAT) but
   // you can pick up someone else's. Manual entry works without the board.
@@ -302,9 +356,37 @@ export function NewSessionModal({
     );
   };
 
+  // Add next step: the step is made, not started, and joined to `after` by a handoff (main refuses what can't be, saying
+  // why); one per click, as Start's
+  const makeStep = async () => {
+    if (!after || !onPlanned || isBusy()) return;
+    if (planBlock) return setError(planBlock);
+    const t = allTickets.find((x) => String(x.id) === ticketSel);
+    const kickoff = isAgent && t && sendTicket ? ticketKickoffPrompt(t.id, t.title, t.description) : "";
+    const told = [kickoff, stepPrompt.trim()].filter(Boolean).join("\n\n");
+    const r = await run("plan", () =>
+      window.mb.planSession({
+        after: after.id,
+        title: stepName.trim(),
+        agent: launch === "codex" ? "codex" : "claude",
+        ...(effModel ? { model: effModel } : {}),
+        ...(effEffort ? { effort: effEffort } : {}),
+        repoPath: sharesFolder ? after.repoPath : (sel?.path ?? null),
+        worktree: !sharesFolder && useWorktree && !!sel,
+        ...(!sharesFolder && sel && baseBranch ? { base: baseBranch } : {}),
+        taskGroup: top || null,
+        ...(ticketId ? { ticketId, ...(ticketTitle ? { ticketTitle } : {}) } : {}),
+        ...(told ? { prompt: told } : {}),
+        sharesFolder,
+      })
+    );
+    if (!isErr(r)) onPlanned(r);
+  };
+
   // one session per click: a second click while this one is being made would
   // create another session (and worktree)
   const create = async () => {
+    if (planning) return makeStep();
     if (isBusy()) return;
     if (importing) return resume();
     if (whereBlock) return setError(whereBlock);
@@ -348,7 +430,18 @@ export function NewSessionModal({
             ? `in ${ticketIdOf(ticketId)}`
             : "";
   const convFolder = conv ? (convRepo ? `${convRepo.repo.name}${convRepo.worktree ? ` · worktree ${convRepo.worktree}` : ""}` : tildePath(conv.cwd)) : "";
-  const summary = importing
+  // a step's own worktree starts at the commit the step before it is on then, when that's in the same repo
+  const fromItsCommit = !!after && !!sel && !!after.repoPath && after.repoPath === sel.path;
+  const stepFolder = !after
+    ? ""
+    : sharesFolder
+      ? `in ${titleOf(after)}'s folder`
+      : sel && useWorktree
+        ? `${sel.name} · new worktree${fromItsCommit ? ` from ${titleOf(after)}'s commit` : ""}`
+        : folder;
+  const summary = after
+    ? ["not started", stepFolder, place, `starts when ${titleOf(after)} hands off`].filter(Boolean).join(" · ")
+    : importing
     ? conv
       ? [`resumes “${conv.title.length > 40 ? `${conv.title.slice(0, 40)}…` : conv.title}”`, convFolder, conv.restore ? "back in its group" : place].filter(Boolean).join(" · ")
       : "pick a conversation to resume"
@@ -454,8 +547,10 @@ export function NewSessionModal({
 
   return (
     <Modal
-      className="modal ns"
+      className={planning ? "modal ns ns-step" : "modal ns"}
       onClose={onClose}
+      // opened by a click on the landscape: a double click's second, or a click just after, lands on the backdrop
+      closeOnBackdrop={!heldOff("settle")}
       onKeyDown={(e) => {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
@@ -463,7 +558,16 @@ export function NewSessionModal({
         }
       }}
     >
-      <div className="ns-head">
+      <div className="ns-head" ref={headEl}>
+        {after ? (
+          <>
+            <h3>Next step</h3>
+            <span className="ns-after" title={`A step after ${titleOf(after)}, joined to it by a handoff wire: it isn't started until that handoff is sent`}>
+              after {titleOf(after)} · not started till its handoff
+            </span>
+          </>
+        ) : (
+          <>
         <h3>New session</h3>
         <span className="seg ns-mode">
           <button className={!importing ? "on" : ""} onClick={() => setMode("new")}>
@@ -473,7 +577,9 @@ export function NewSessionModal({
             Import
           </button>
         </span>
-        {!importing && (
+          </>
+        )}
+        {!importing && !planning && (
           <div className="preset-chips">
             <span className="pl-dim">Presets</span>
             <button className="outline" data-tip="Claude in your Chrome, for helpdesk requests you paste in: shows the one you have, or starts it in ~/Helpdesk" onClick={() => onStartPreset(HELPDESK_PRESET)}>
@@ -489,6 +595,14 @@ export function NewSessionModal({
       </div>
 
       <div className="ns-body">
+        {after && (
+          <section className="ns-sec">
+            <div className="ns-k">Name</div>
+            <div>
+              <input type="text" autoFocus maxLength={120} placeholder="e.g. Tester" aria-label="The step's name" value={stepName} onChange={(e) => setStepName(e.target.value)} />
+            </div>
+          </section>
+        )}
         {importing && (
           <section className="ns-sec">
             <div className="ns-k">Find</div>
@@ -549,7 +663,8 @@ export function NewSessionModal({
                   <span className="seg ns-launch">
                     <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>{AGENT_NAME.claude}</button>
                     <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">{AGENT_NAME.codex}</button>
-                    <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
+                    {/* a handoff can't reach a terminal: what it carries would run as a command */}
+                    {!planning && <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>}
                   </span>
                 )}
                 {modelPick}
@@ -663,9 +778,10 @@ export function NewSessionModal({
                       </button>
                     </div>
                   )}
-                  <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} />
+                  {/* a not-started step goes in an area, never a stack */}
+                  {!planning && <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} />}
                   <div className="ns-note">
-                    Teammates in the room see this session live{importing ? ", its earlier conversation included as it shows on screen," : ""} and can type into it once you let them (never into your agent's permission prompts). Its agent can't read .env files, keys or logins, and can't push.
+                    {planning ? "Once it starts, teammates" : "Teammates"} in the room see this session live{importing ? ", its earlier conversation included as it shows on screen," : ""} and can type into it once you let them (never into your agent's permission prompts). Its agent can't read .env files, keys or logins, and can't push.
                   </div>
                 </>
               ) : (
@@ -689,11 +805,34 @@ export function NewSessionModal({
                     </Pick>
                     {grpSel === "__new" && <input type="text" autoFocus placeholder="group name" value={grpNew} onChange={(e) => setGrpNew(e.target.value)} />}
                   </div>
-                  <div className="grow">
-                    <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} disabled={!top} inline />
-                  </div>
+                  {!planning && (
+                    <div className="grow">
+                      <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} disabled={!top} inline />
+                    </div>
+                  )}
                 </div>
               )}
+            </div>
+          </section>
+        )}
+
+        {after && (
+          <section className="ns-sec">
+            <div className="ns-k">Works in</div>
+            <div>
+              <span className="seg ns-works">
+                <button className={!sharesFolder ? "on" : ""} onClick={() => setSharesFolder(false)} title="A folder of its own, as Repo below says: a new worktree starts at the commit the step before it is on then">
+                  Its own folder
+                </button>
+                <button className={sharesFolder ? "on" : ""} onClick={() => setSharesFolder(true)} title={`${titleOf(after)}'s folder, on its branch as it stands: a reviewing step works in its builder's`}>
+                  {titleOf(after)}'s folder
+                </button>
+              </span>
+              <div className="ns-note">
+                {sharesFolder
+                  ? `It starts in ${tildePath(after.cwd)}, as it is then, beside ${titleOf(after)}.`
+                  : `Its folder is made as it starts${fromItsCommit && useWorktree ? `: a new branch at ${titleOf(after)}'s commit then, not origin's, so it has what ${titleOf(after)} committed and hasn't pushed (not its uncommitted files)` : ""}.`}
+              </div>
             </div>
           </section>
         )}
@@ -716,7 +855,7 @@ export function NewSessionModal({
               </div>
             </section>
           )
-        ) : (
+        ) : after && sharesFolder ? null : (
           <section className="ns-sec">
             <div className="ns-k">Repo</div>
             <div>
@@ -732,7 +871,8 @@ export function NewSessionModal({
                 <>
                   <input
                     type="text"
-                    autoFocus
+                    // Add next step's name field has the keyboard as it opens
+                    autoFocus={!planning}
                     placeholder={launch === "shell" ? "search repos — or leave empty for your home folder" : `search repos — or leave empty for a plain ${agentLabel} chat`}
                     value={q}
                     onChange={(e) => setQ(e.target.value)}
@@ -763,7 +903,9 @@ export function NewSessionModal({
                       Isolated worktree
                       <span className="wi-note">
                         {" "}
-                        {useWorktree
+                        {useWorktree && after
+                          ? `worktrees/${sel.name}/${fromItsCommit && after.branch ? `${after.branch}-` : ""}${stepSlug(stepName)} — made as it starts${fromItsCommit ? `, at ${titleOf(after)}'s commit then` : ""}`
+                          : useWorktree
                           ? `worktrees/${sel.name}/${branch || "<branch>"} — its own folder, safe beside other sessions`
                           : branch
                             ? `off — switches the repo checkout to ${branch}`
@@ -771,7 +913,8 @@ export function NewSessionModal({
                       </span>
                     </label>
                   </div>
-                  {branch && branchInfo && branchInfo.branches.length > 0 && (
+                  {/* a step's own worktree is cut from a base only when there's no commit of the step before it to start at */}
+                  {(branch || (after && useWorktree && !fromItsCommit)) && branchInfo && branchInfo.branches.length > 0 && (
                     <Pick value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} style={{ marginTop: 8 }} title="The base is fetched fresh from origin before the new branch is cut">
                       <option value="">base: current HEAD</option>
                       {branchInfo.branches.map((b) => (
@@ -865,11 +1008,26 @@ export function NewSessionModal({
             </div>
           </section>
         )}
+        {after && (
+          <section className="ns-sec">
+            <div className="ns-k">Tell it</div>
+            <div>
+              <textarea
+                className="ns-tell"
+                rows={3}
+                placeholder="What it's told as it starts, before the handoff it's sent (optional)"
+                aria-label="What the step is told as it starts"
+                value={stepPrompt}
+                onChange={(e) => setStepPrompt(e.target.value)}
+              />
+            </div>
+          </section>
+        )}
         {error && (intoNewRoom ? <ShareError error={error} /> : <div className="err">{error}</div>)}
       </div>
 
       <div className="ns-foot">
-        {!importing && (
+        {!importing && !planning && (
           <button
             className="ns-ghost"
             data-tip="Keep this setup as a one-click preset (no ticket: presets are for recurring sessions)"
@@ -897,6 +1055,12 @@ export function NewSessionModal({
         <button className="outline" onClick={onClose}>
           Cancel
         </button>
+        {planning ? (
+          <button className="primary cta" disabled={!!busy || !!planBlock || heldOff("settle")} onClick={create} data-tip={busy ? undefined : planBlock || undefined}>
+            {busy ? "Adding…" : "Add step"}
+            {!busy && <span className="kbd"> ⌘↵</span>}
+          </button>
+        ) : (
         <button
           className="primary cta"
           disabled={!!busy || (importing && !conv) || (!!whereBlock && !restoring)}
@@ -906,6 +1070,7 @@ export function NewSessionModal({
           {busy === "share" ? "Creating the room…" : busy ? "Starting…" : importing ? (conv?.restore ? "Restore session" : `Resume ${conv ? AGENT_NAME[conv.agent] : ""}`.trim()) : launch === "shell" ? "Open terminal" : `Start ${agentLabel}`}
           {!busy && <span className="kbd"> ⌘↵</span>}
         </button>
+        )}
       </div>
     </Modal>
   );

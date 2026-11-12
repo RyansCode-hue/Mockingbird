@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
+import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { mergeViewOf } from "../src/main/prWatch";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
 import type { PipelinePr, SessionInfo, TicketPipeline } from "../src/shared/types";
-import { ROOM_LINE, gateOf, newWire, type GateContext, type Wire, type WireBook, type WireState } from "../src/shared/wires";
+import { ROOM_LINE, gateOf, newWire, stepRefusal, type GateContext, type Wire, type WireBook, type WireState } from "../src/shared/wires";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo => ({
   id,
@@ -319,6 +319,29 @@ describe("making a wire", () => {
     expect(wireTargets(layout, "docs").map((x) => x.s.id)).not.toContain("notes");
     expect(wireTargets(layoutOf(["b"]), "tester").map((x) => x.s.id)).not.toContain("pathways");
     expect(wireTargets(layoutOf(["b"]), "pathways")[0].area).toBe("a");
+  });
+
+  it("lets a next step follow an agent of this Mac's, refusing one from a terminal or a teammate's workspace as the wire would be", () => {
+    expect(stepRefusal("builder", ctxOf())).toBeNull();
+    expect(stepRefusal("spike", ctxOf())).toBeNull();
+    expect(stepRefusal("dev", ctxOf())).toBe("“dev” is a terminal: only a shared worktree wire can reach one.");
+    expect(stepRefusal("r~0f1e2d3c4b5a~n1", ctxOf())).toBe("That's a teammate's session: wires across Macs come later.");
+  });
+
+  it("to a step not started yet: a handoff waits for it, no shared worktree can be made from it, and its card says what starts it", () => {
+    const qa = session("qa", { planned: { worktree: true } });
+    const drawn = resolveLayout(stored(), running, undefined, [], null, [...closed, qa]);
+    const links = { h: wire("tester", "qa", "handoff", { pending: { id: "p1", body: "done", at: 1, flags: [] } }) };
+    const ctx = gateContextOf(drawn, stateOf(links), undefined, [], ["dev"])!;
+    expect(ctx.end("qa")).toMatchObject({ where: "planned", placed: true });
+    expect(gateOf("h", links.h, ctx)).toMatchObject({ state: "ready", pendingId: "p1" });
+    // the send popover's ready face: sending starts it (no cost to ask, unlike a reopen or resume)
+    expect(gateView(links.h, gateOf("h", links.h, ctx), ctx.end("qa"), null)).toMatchObject({ face: "ready", pendingId: "p1", starts: "start" });
+    expect(wireChoices({ id: "qa", title: "qa" }, { id: "dev", title: "dev" }, ctx).find((c) => c.type === "worktree")?.refused).toBe("“qa” hasn't started, so it has no worktree yet.");
+    const titleOf = (id: string) => ({ tester: "Tester", reviewer: "Reviewer" })[id] ?? null;
+    expect(plannedLine("qa", links, titleOf)).toBe("Not started. Starts when Tester hands off.");
+    expect(plannedLine("qa", links, titleOf, (w) => w === "h")).toBe("Not started. Starts when Tester approves.");
+    expect(plannedLine("qa", { c: wire("tester", "qa", "context") }, titleOf)).toBe("Not started. Nothing hands off to it yet: wire a step to it, or start it now.");
   });
 
   it("names its ends as a possessive reads", () => {
