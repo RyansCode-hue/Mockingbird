@@ -93,7 +93,7 @@ import { newAreaPatch } from "./landscapeModel";
 import { PlanPicker, SaveTemplateDialog, TemplatePicker } from "./TemplatePicker";
 import { usePlans } from "./usePlans";
 import { toldLine } from "./ticketPipelineModel";
-import type { Plan, PlanLaidOut, PlanView } from "../shared/plans";
+import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
@@ -2204,10 +2204,10 @@ function App() {
    * Lay out held plan `id` as its dialog shows it (W17): main reads and checks it all again, and makes it once. The steps
    * go in its Orchestrator's area, which is there already, so nothing there moves (W9's rule for an existing area).
    */
-  const layOutPlanNow = async (id: string, shown: Plan): Promise<string | null> => {
+  const layOutPlanNow = async (id: string, shown: Plan, at: PlanShownAt): Promise<string | null> => {
     let r: IpcResult<PlanLaidOut>;
     try {
-      r = await window.mb.plansLayOut(id, shown);
+      r = await window.mb.plansLayOut(id, shown, at);
     } catch (err) {
       r = { error: err instanceof Error ? err.message : String(err) };
     }
@@ -2326,7 +2326,7 @@ function App() {
   // ---- Needs you (S7): the tray, N / ⇧N, and the areas' waiting counts (NeedsYou.tsx, needsYouModel.ts) ----
   // W5: the wires' gates and the pull requests Mockingbird can't follow, with what their items do (NeedsWire.tsx)
   const wireNeeds = useWireNeeds({ sessions, layout: landscapeLayout, rooms: teamRooms, areaOf: (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), say: lsSay, toLandscape: () => setTab("sessions") });
-  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null, pipelinesRead, wireNeeds.wires, plansRead.plans);
+  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null, pipelinesRead, wireNeeds.wires, plansRead.plans, plansRead.error);
   const needsSel: NeedsSel = { session: selArea ? null : focused, area: selArea };
   // where N and Go there last went, so N moves on from it while the selection is still the one it left
   const needsLast = useRef<NeedsLast | null>(null);
@@ -3576,6 +3576,7 @@ function App() {
         <PlanPicker
           view={planFor.view}
           gone={!plansRead.plans.some((v) => v.id === planFor.view.id)}
+          newer={plansRead.plans.find((v) => v.id === planFor.view.id)?.newer ?? null}
           dismissing={planFor.dismissing}
           areaTitle={(k) => (landscapeLayout?.areas.some((a) => a.key === k) ? areaTitle(k) : null)}
           onLayOut={layOutPlanNow}

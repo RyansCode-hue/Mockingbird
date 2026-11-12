@@ -521,6 +521,8 @@ function createWindow(): void {
   });
   // a reload, a renderer that went, or the window closing: the room chats it said were on screen are no longer
   forgetViewsWith(win.webContents, () => teamRoom.chat.setViewing(null));
+  // and the plan dialog it said was open: a plan that waited for it is held in its place
+  forgetViewsWith(win.webContents, () => plans.setViewing(null));
   win.loadFile(path.join(__dirname, "index.html"));
   // the editor holds unsaved changes: the window says so (beforeunload), and
   // quitting asks first. A signal quits regardless: the question would hold
@@ -1654,8 +1656,9 @@ const plans: Plans = new Plans({
   log: logError,
 });
 handle("plans:list", () => plans.list());
-handle("plans:layOut", (id, shown) =>
-  plans.layOut(id, shown, {
+handle("plans:viewing", (id) => plans.setViewing(id));
+handle("plans:layOut", (id, shown, at) =>
+  plans.layOut(id, shown, at, {
     planStep: (q) => sessions.planStep(q),
     forget: (id) => {
       sessions.kill(id, true);

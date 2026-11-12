@@ -1,7 +1,7 @@
 import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
-import type { Plan, PlanLaidOut, PlanView } from "../shared/plans";
+import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
 import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -37,10 +37,15 @@ const api = {
   templatesLayOut: (req: LayOutRequest): Promise<IpcResult<LayOutReply>> => ipcRenderer.invoke("templates:layOut", req),
   /** The Orchestrators' held plans (W17), each checked again on the sessions now: nothing of them exists until Lay out. */
   plansList: (): Promise<IpcResult<PlanView[]>> => ipcRenderer.invoke("plans:list"),
-  /** Lay out held plan `id` as the dialog shows it (`shown`): main reads and checks it again, once per plan. */
-  plansLayOut: (id: string, shown: Plan): Promise<IpcResult<PlanLaidOut>> => ipcRenderer.invoke("plans:layOut", id, shown),
+  /**
+   * Lay out held plan `id` as the dialog shows it (`shown`, each gate as shown) in the area and room it showed (`at`):
+   * main reads and checks it again, once per plan, and refuses it when its area or room is no longer that.
+   */
+  plansLayOut: (id: string, shown: Plan, at: PlanShownAt): Promise<IpcResult<PlanLaidOut>> => ipcRenderer.invoke("plans:layOut", id, shown, at),
   /** Dismiss held plan `id`, its Orchestrator told, with the note. */
   plansDismiss: (id: string, note: string): Promise<IpcResult<{ told: AgentTold }>> => ipcRenderer.invoke("plans:dismiss", id, note),
+  /** The plan dialog opened on plan `id`, or closed (null): a plan proposed while it's open waits for it to close. */
+  plansViewing: (id: string | null): Promise<IpcResult<void>> => ipcRenderer.invoke("plans:viewing", id),
   /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */
   resumeSession: (id: string): Promise<SessionInfo | { refused: string } | { error: string }> => ipcRenderer.invoke("sessions:resume", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),

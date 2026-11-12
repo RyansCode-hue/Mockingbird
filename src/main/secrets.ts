@@ -86,10 +86,10 @@ export const HOME_RUNS_CODE = [
  * replies need it, and everything Mockingbird runs inherits it); the
  * artifacts this install's areas keep (areaArtifacts.ts), which aren't any
  * room's; every pane's saved output; and the landscape, whose wires hold what
- * private sessions finished with, their diffs and files included, with the
- * copies beside it (a write's `.<pid>.tmp`, an unreadable file's `.bad-<time>`),
- * the file by its own path and the copies by a glob. Denied to room agents
- * beside HOME_SECRETS.
+ * private sessions finished with, their diffs and files included, and the
+ * Orchestrators' held plans (plans.json), each with the copies beside it (a
+ * write's `.<pid>.tmp`, an unreadable file's `.bad-<time>`), the file by its own
+ * path and the copies by a glob. Denied to room agents beside HOME_SECRETS.
  */
 export const HOME_PRIVATE_DATA = [
   "~/Library/Messages/**",
@@ -98,6 +98,8 @@ export const HOME_PRIVATE_DATA = [
   "~/.mockingbird/scrollback/**",
   "~/.mockingbird/landscape.json",
   "~/.mockingbird/landscape.json.*",
+  "~/.mockingbird/plans.json",
+  "~/.mockingbird/plans.json.*",
 ];
 
 /** Credential stores in home: HOME_SECRETS, and the folder of the House's env files (each member's builder token). */

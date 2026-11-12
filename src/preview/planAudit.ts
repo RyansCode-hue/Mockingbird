@@ -18,7 +18,7 @@
  *   shown as the plan's starting shape, a ticket chosen and Lay out: what it sent, and the Orchestrator started;
  * - =shot and =builtinshot: the plan's dialog, or the built-in in the picker, left open for a screenshot.
  */
-import type { Plan } from "../shared/plans";
+import type { Plan, PlanShownAt } from "../shared/plans";
 import type { SessionInfo } from "../shared/types";
 import { drive } from "./needsYouAudit";
 
@@ -192,6 +192,7 @@ async function planAudit(env: PlanAuditEnv, out: Record<string, unknown>): Promi
     calls: sent.length,
     id: sent[0]?.[0] ?? null,
     sent: sent[0]?.[1] ?? null,
+    at: sent[0]?.[2] ?? null,
     open: !!dialog(),
     note: noteNow(),
     item: !!document.querySelector('.ny-item[data-item^="plan:"]'),
@@ -199,7 +200,7 @@ async function planAudit(env: PlanAuditEnv, out: Record<string, unknown>): Promi
     running: ((await window.mb.listSessions()) as SessionInfo[]).filter((s) => s.taskGroup === AREA).map((s) => s.title),
   };
   // and the same id again, as a second dialog would send it
-  out.again = await window.mb.plansLayOut("pl-5120", sent[0]?.[1] as Plan);
+  out.again = await window.mb.plansLayOut("pl-5120", sent[0]?.[1] as Plan, sent[0]?.[2] as PlanShownAt);
 }
 
 async function dismissAudit(env: PlanAuditEnv, out: Record<string, unknown>): Promise<void> {
@@ -274,7 +275,7 @@ export function runPlanAudit(env: PlanAuditEnv, part: string): void {
       else if (part === "dismiss") await dismissAudit(env, out);
       else if (part === "builtin" || part === "builtinshot") await builtinAudit(env, out, part === "builtinshot");
       else {
-        // shot, gone, room: the plan opened from the tray (synthetic events) and read
+        // shot, gone, room, roomgone, newer: the plan opened from the tray (synthetic events) and read
         const item = await trayItem(false);
         out.item = itemNow(item);
         actionOf(item, "open")?.click();
@@ -283,6 +284,20 @@ export function runPlanAudit(env: PlanAuditEnv, part: string): void {
         if (part === "gone") {
           await sleep(4200);
           out.after = planNow(dialog());
+        }
+        if (part === "newer") {
+          await sleep(2600);
+          out.after = planNow(dialog());
+        }
+        if (part === "room" || part === "roomgone") {
+          // Lay out as shown: in a room's area, its automatic gate sent asking, with the area and room it was shown in;
+          // with the room gone meanwhile, refused, saying so, the dialog left open
+          if (part === "roomgone") await sleep(4200);
+          const mark = env.calls.length;
+          await click(dialog()!.querySelector('button[data-act="layout"]'));
+          await sleep(2200);
+          const sent = env.calls.slice(mark).filter((c) => c.fn === "plansLayOut").map((c) => c.args);
+          out.laid = { calls: sent.length, gates: (sent[0]?.[1] as Plan | undefined)?.wires.map((w) => w.gate ?? null) ?? null, at: sent[0]?.[2] ?? null, open: !!dialog(), error: planNow(dialog())?.error ?? null, note: noteNow() };
         }
       }
     } catch (e) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   asShown,
+  hiddenTextProblems,
   kickoffAsTicket,
   layOutPlan,
   parseTemplateBody,
@@ -106,6 +107,19 @@ describe("laying one out (layOutPlan)", () => {
     expect(p.wires.map((w) => [w.wire.type, w.gate, w.afterStart, w.skipped])).toEqual([["handoff", "ask", false, false], ["feedback", "ask", false, false], ["handoff", "automatic", false, false], ["worktree", "ask", true, false]]);
   });
 
+  it("won't lay out text holding control or invisible characters, saying where: a terminal's command is typed into a shell", () => {
+    const b = chain();
+    const dev = b.steps.findIndex((s) => s.agent === "terminal");
+    b.steps[dev] = { ...b.steps[dev], prompt: "npm run dev\u0015rm -rf ." };
+    b.steps[0] = { ...b.steps[0], prompt: `${b.steps[0].prompt}\u202e` };
+    const p = layOutPlan(b, { room: false, ticket: true });
+    expect(p.problems).toEqual([
+      `“${b.steps[0].name}”'s prompt holds invisible characters, which can hide or reorder text where you read it: retype it.`,
+      `“${b.steps[dev].name}”'s command holds control characters, which a terminal or an agent acts on rather than shows: retype it.`,
+    ]);
+    expect(hiddenTextProblems(chain())).toEqual([]);
+  });
+
   it("makes every gate ask in a team room's area, counting what it forced", () => {
     const p = layOutPlan(chain(), { room: true, ticket: true });
     expect(p.wires.map((w) => [w.gate, w.forced])).toEqual([["ask", false], ["ask", false], ["ask", true], ["ask", false]]);
@@ -153,8 +167,8 @@ describe("laying one out (layOutPlan)", () => {
 describe("{ticket}", () => {
   it("is the ticket's line, or nothing with no ticket", () => {
     const line = ticketLine("5115", "Stream the donor export");
-    expect(line).toBe("#5115 — Stream the donor export");
-    expect(withTicket("Implement {ticket}. Then {ticket} again.", line)).toBe("Implement #5115 — Stream the donor export. Then #5115 — Stream the donor export again.");
+    expect(line).toBe(`#5115 (its title, the ticket's own words: "Stream the donor export")`);
+    expect(withTicket("Implement {ticket}. Then {ticket} again.", line)).toBe(`Implement ${line}. Then ${line} again.`);
     expect(ticketLine(null, "x")).toBe("");
     expect(withTicket("Fix {ticket}.", "")).toBe("Fix .");
   });

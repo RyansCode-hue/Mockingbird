@@ -51,6 +51,15 @@ describe("the secret file list", () => {
     expect(profile).toContain(`"~/.mockingbird/landscape.json.*"="deny"`);
   });
 
+  it("keeps room agents out of the Orchestrators' held plans, which hold what private sessions were told", () => {
+    const rules = roomSecretReads(tempDir("none")).rules;
+    expect(rules).toContain("Read(~/.mockingbird/plans.json)");
+    expect(rules).toContain("Read(~/.mockingbird/plans.json.*)");
+    const profile = codexRoomPermissions({ workTrackerPath: tempDir("none"), git: null, hooks: [] }).config.join("\n");
+    expect(profile).toContain(`"~/.mockingbird/plans.json"="deny"`);
+    expect(profile).toContain(`"~/.mockingbird/plans.json.*"="deny"`);
+  });
+
   it("says when the PAT file can't be worked out, and still denies everything else", () => {
     const wt = tempDir("worktracker");
     fs.writeFileSync(path.join(wt, "config.json"), "{ not json");

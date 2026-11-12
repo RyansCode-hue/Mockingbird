@@ -24,7 +24,7 @@ import {
   type TemplateStep,
   type TemplateWire,
 } from "../shared/pipelineTemplates";
-import { checkPlan, ME, PLAN_MAX, planFlags, provenanceOf, type Plan, type PlanLayOut, type PlanStep, type PlanView, type PlanWire } from "../shared/plans";
+import { checkPlan, ME, PLAN_MAX, planFlags, provenanceOf, type Plan, type PlanLayOut, type PlanShownAt, type PlanStep, type PlanView, type PlanWire } from "../shared/plans";
 import { agoShort } from "../shared/format";
 
 /**
@@ -896,12 +896,21 @@ const withPlanWire = (p: Plan, j: number, patch: Partial<PlanWire>): Plan => ({
   wires: p.wires.map((w, i) => {
     if (i !== j) return w;
     const next: PlanWire = { ...w, ...patch };
-    for (const k of ["when", "gate", "template", "rounds"] as const) if (next[k] === undefined) delete next[k];
+    for (const k of ["when", "gate", "template", "rounds", "toolOutput"] as const) if (next[k] === undefined) delete next[k];
     return next;
   }),
 });
+/** Plan `p` as the dialog shows it: each gate as shown, a team room's forced ask sent as ask, so main makes what was read. */
+const asShownPlan = (p: Plan, layout: PlanLayOut | null): Plan => ({ ...p, wires: p.wires.map((w, j) => (layout?.wires[j]?.forced ? { ...w, gate: "ask" as const } : w)) });
+
 /** Plan `p` without step `key` and the wires that reach it: what's left is checked as any plan is. */
 const withoutStep = (p: Plan, key: string): Plan => ({ ...p, steps: p.steps.filter((s) => s.key !== key), wires: p.wires.filter((w) => w.from !== key && w.to !== key) });
+
+/** How long ago `at` was, as the dialog says it: "6m ago", or "just now". */
+const ago = (at: number): string => {
+  const a = agoShort(at);
+  return a === "now" ? "just now" : `${a} ago`;
+};
 
 const WHEN_LABEL: Record<WireWhen, string> = { finished: "When it finishes", manual: "When you send it", "pr-merged": "When its PR merges" };
 
@@ -911,9 +920,14 @@ export interface PlanPickerProps {
   gone: boolean;
   /** Opened on the tray's Dismiss…: the note to its Orchestrator shown first. */
   dismissing?: boolean;
+  /** A newer plan its Orchestrator proposed while this one is open, waiting for the dialog to close; null when none. */
+  newer?: { at: number } | null;
   areaTitle: (key: string) => string | null;
-  /** Lay out: settles with why nothing was laid out, or null once it was (and the dialog closes). */
-  onLayOut: (id: string, shown: Plan) => Promise<string | null>;
+  /**
+   * Lay out: the plan as shown (each gate as shown, a team room's forced ask sent as ask) and the area and room it was
+   * shown in; settles with why nothing was laid out, or null once it was (and the dialog closes).
+   */
+  onLayOut: (id: string, shown: Plan, at: PlanShownAt) => Promise<string | null>;
   /** Dismiss, with the note: settles with why it wasn't, or null once it was. */
   onDismiss: (id: string, note: string) => Promise<string | null>;
   home: () => HTMLElement | null;
@@ -930,10 +944,20 @@ export interface PlanPickerProps {
  * it all again on what's sent, which is exactly what's shown. It takes Lay out as W9's picker does: no early click,
  * double click's second, burst's key or held ⌘↵, and the keyboard never handed to a terminal.
  */
-export function PlanPicker({ view, gone, dismissing, areaTitle, onLayOut, onDismiss, home, onClose }: PlanPickerProps) {
+export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut, onDismiss, home, onClose }: PlanPickerProps) {
   const head = useRef<HTMLDivElement>(null);
   const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
   const catalog = useCatalog();
+  // main holds a plan proposed while this one is open as waiting, so what the user is editing isn't replaced under them
+  useEffect(() => {
+    const say = (open: boolean) =>
+      void window.mb.plansViewing(open ? view.id : null).then(
+        (r) => isErr(r) && console.warn(`[mockingbird] the plan dialog ${open ? "opening on" : "closing on"} ${view.id}: ${r.error}`),
+        (err: unknown) => console.warn(`[mockingbird] the plan dialog ${open ? "opening on" : "closing on"} ${view.id}:`, err)
+      );
+    say(true);
+    return () => say(false);
+  }, [view.id]);
   const [body, setBody] = useState<Plan>(() => structuredClone(view.held.plan));
   const ctx = useMemo(() => ({ me: view.me, existing: view.existing, installed: view.installed, catalog, repos: view.repos, room: !!view.room, ticket: view.held.ticket }), [view, catalog]);
   const checked = useMemo((): { layout: PlanLayOut } | { problem: string } => {
@@ -959,7 +983,7 @@ export function PlanPicker({ view, gone, dismissing, areaTitle, onLayOut, onDism
     setError("");
     let why: string | null;
     try {
-      why = which === "layout" ? await onLayOut(view.id, body) : await onDismiss(view.id, note ?? "");
+      why = which === "layout" ? await onLayOut(view.id, asShownPlan(body, layout), { area: view.area, room: view.room }) : await onDismiss(view.id, note ?? "");
     } catch (err) {
       console.warn(`[mockingbird] ${which === "layout" ? "laying out" : "dismissing"} plan ${view.id}:`, err);
       why = `Couldn't ${which === "layout" ? "lay it out" : "dismiss it"}: ${err instanceof Error ? err.message : String(err)}`;
@@ -970,6 +994,8 @@ export function PlanPicker({ view, gone, dismissing, areaTitle, onLayOut, onDism
     if (why) setError(why);
   };
   const ticket = view.held.ticket ? `#${view.held.ticket}${view.ticketTitle ? ` · ${view.ticketTitle}` : ""}` : null;
+  // what main fills {ticket} in with (plans.ts' lay-out, as a template's)
+  const tLine = ticketLine(view.held.ticket, view.ticketTitle);
   const where = [`in ${areaTitle(view.area) ?? view.area}`, plural(body.steps.length, "step"), plural(body.wires.length, "wire"), ...(view.room ? ["team room: gates ask"] : [])].join(" · ");
   const held = heldOff("settle");
   return (
@@ -1004,7 +1030,15 @@ export function PlanPicker({ view, gone, dismissing, areaTitle, onLayOut, onDism
         </div>
       </div>
       <div className="tp-note dim" data-flag="age">
-        Proposed {agoShort(view.held.at)} ago{view.held.replaces ? ", replacing its earlier plan" : ""}. Nothing of it exists until you lay it out, and any of it can be changed first.
+        Proposed {ago(view.held.at)}{view.held.replaces ? ", replacing its earlier plan" : ""}. Nothing of it exists until you lay it out, and any of it can be changed first.
+      </div>
+      {newer && (
+        <div className="tp-note amber" data-flag="newer">
+          {view.me.title} proposed a newer plan {ago(newer.at)}. It waits while this one is open, so your edits stay: closing this replaces it with that one; laying this one out or dismissing it keeps that one for later.
+        </div>
+      )}
+      <div className="tp-note dim" data-flag="ticket">
+        {tLine ? `{ticket} in a prompt is “${tLine}”.` : "{ticket} in a prompt is empty: its Orchestrator is on no ticket."}
       </div>
       {view.room && (
         <div className="tp-note dim" data-flag="room">
@@ -1174,6 +1208,17 @@ export function PlanPicker({ view, gone, dismissing, areaTitle, onLayOut, onDism
                   {later ? `${later}asks` : "Asks"}: you send it from its gate.
                 </div>
               ) : null}
+              {w.type === "context" && (
+                <div className="tp-line dim" data-flag="context">
+                  <span className="grow">
+                    “{nameOf(w.to)}” can read “{nameOf(w.from)}”{w.toolOutput === false ? ", without its tool output" : ", its tool output included"}. Nothing is pushed.
+                  </span>
+                  <label className="tp-check">
+                    <input type="checkbox" checked={w.toolOutput !== false} onChange={(e) => setBody((b) => withPlanWire(b, j, { toolOutput: e.target.checked ? undefined : false }))} />
+                    Include tool output
+                  </label>
+                </div>
+              )}
             </div>
           );
         })}

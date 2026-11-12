@@ -28,6 +28,8 @@ export interface NeedsYouState {
   joinError: string | null;
   /** Why the ticket pipelines couldn't be read, or null: no pull request requests or tickets listed then isn't "none". */
   pipelineError: string | null;
+  /** Why the Orchestrators' held plans couldn't be read, or null: no plans listed then isn't "none". */
+  planError: string | null;
 }
 
 /** Where dismissals are kept between launches (a view preference, never landscape.json). */
@@ -46,7 +48,8 @@ export function useNeedsYou(
   joinError: string | null,
   pipelines: { all: Readonly<Record<string, TicketPipeline>>; error: string | null } = { all: {}, error: null },
   wires: NeedsWires | null = null,
-  plans: readonly PlanView[] = []
+  plans: readonly PlanView[] = [],
+  planError: string | null = null
 ): NeedsYouState {
   const [saved, setSaved] = usePersisted<unknown>(DISMISSED_PREF, []);
   const list = useMemo(() => dismissedFrom(saved), [saved]);
@@ -74,6 +77,7 @@ export function useNeedsYou(
     isDismissed: (item) => list.some((d) => d.sig === item.sig),
     joinError,
     pipelineError: pipelines.error,
+    planError,
   };
 }
 
@@ -237,7 +241,9 @@ export function NeedsYou({
               ? `Couldn't read the rooms' join requests: ${state.joinError}`
               : state.pipelineError
                 ? `Couldn't read the ticket pipelines: ${state.pipelineError}`
-                : "Nothing needs you right now"
+                : state.planError
+                  ? `Couldn't read the Orchestrators' plans: ${state.planError}`
+                  : "Nothing needs you right now"
         }
         onClick={() => setOpen((o) => !o)}
         onKeyDown={(e) => {
@@ -267,7 +273,12 @@ export function NeedsYou({
                 Couldn't read the ticket pipelines: {state.pipelineError}
               </div>
             )}
-            {!n && !state.joinError && !state.pipelineError && <div className="ny-none">Nothing needs you right now.</div>}
+            {state.planError && (
+              <div className="ny-err" title={state.planError} data-err="plans">
+                Couldn't read the Orchestrators' plans: {state.planError}
+              </div>
+            )}
+            {!n && !state.joinError && !state.pipelineError && !state.planError && <div className="ny-none">Nothing needs you right now.</div>}
             {rows.map(({ item, acts, settle }) => {
               return (
                 <div key={item.id} className={`ny-item k-${item.kind} ${current === item.id ? "on" : ""}`} data-item={item.id} data-settle={settle}>

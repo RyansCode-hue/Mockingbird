@@ -5812,6 +5812,75 @@ re-check, which the wire probe refuses the same way.
 **Left**: W18 (Council's Orchestrator). No real `claude` or `codex` ran: the
 Orchestrator's rules and kickoff are checked as text, not as a model's behaviour.
 
+#### W17 review fixes 1 as built
+On 829c70e, as new commits (W18 builds on that). The review's probes P1–P10 are
+tests now, in `test/plans.test.ts`, `test/uiTemplatePicker.test.ts`,
+`test/pipelineTemplates.test.ts`, `test/templates.test.ts` and
+`test/secrets.test.ts`.
+
+**Lay out happens where the dialog showed it (M1).** The window sends each gate
+as it showed it (a team room's forced ask as `ask`), and the area and room it showed
+(`PlanShownAt`) as `plans:layOut(id, shown, at)`'s third argument. Main reads that
+strictly and refuses, before anything is made, when its Orchestrator has moved to
+another area, or the area has become a team room's, stopped being one or is shared
+as another room. Each refusal says which and to reopen the plan; the windows read
+the plans again (plans:changed), so reopening shows them as they are.
+
+**The ticket's title (M2).** `{ticket}` is now `#4182 (its title, the ticket's own
+words: "Stream the donor export")`: the title quoted (`quoted`, so a `"` in it
+can't close the quote) and said to be the ticket's, with its invisible and control
+characters taken out (`visibleLine`, shared/hiddenText.ts). W9's template lay-out
+fills `{ticket}` in with the same `ticketLine`, so it changed too; Save as template
+still turns it back into `{ticket}`. In the fence, the title and description lose
+their invisible characters too. Titles shown or sent from plans (the dialog's
+ticket, each existing workspace's name, the started steps' ticket title, the
+Orchestrator's branch and its ticket's tracked title) go through `visibleLine`.
+
+**Text that doesn't show as what it is (LM1).** `shared/hiddenText.ts` holds the
+classes: `INVISIBLE_RE` (format characters, the Hangul fillers, U+034F and the
+variation selectors U+FE00–FE0F and U+E0100–E01EF) and `CONTROL_RE` (C0 but
+newline and tab, DEL, C1). `checkPlan` refuses either in a summary, name, prompt,
+command or What flows, so `propose_plan`, Lay out and the dialog's live check all
+do. At `propose_plan`, invisible characters are still taken out first, said, since
+an emoji's U+FE0F would otherwise refuse a plain plan; a control character is
+refused. `ticketTools`' `INVISIBLE_RE` is the shared one. W9's templates: a lay-out
+whose text holds either is refused (`hiddenTextProblems`, in `layOutPlan`'s
+problems, so the picker's Lay out is off saying why), a save is refused, and a
+draft takes them out, saying so.
+
+**Lows.**
+- L1: the pre-make probe sees the wire book and the plan's wires probed so far, so
+  a handoff cycle through an existing wire is refused before anything is made. The
+  doubled full stop is gone.
+- L2: `putBack` answers whether the plan is held again, a newer plan's held, or
+  plans.json couldn't be written, and the refusal says which.
+- L3: `set_stage` refuses every move from an Orchestrator (`orchestratorRefusal`),
+  and its rules say so.
+- L4: `plans:list` leaves out a plan whose Orchestrator is in no session list just
+  now, and keeps it held; only `sessionForgotten` lets it go.
+- L5: `~/.mockingbird/plans.json` and `plans.json.*` are in `HOME_PRIVATE_DATA`.
+- L6: Needs you says "Couldn't read the Orchestrators' plans: …" when they can't be
+  read, in its tray and its button's title.
+- L7: terminals are made after every wire, so a refused wire leaves no command run.
+- L8: the Orchestrator's handoff is counted sent as it's made, before its step
+  starts; one that can't be takes the lay-out back.
+- L9: a context link's row says which side reads which and whether its tool output
+  is included, with Include tool output; the dialog says what `{ticket}` becomes;
+  the provenance line wraps.
+- L10: a plan is held at most once every 30 s per Orchestrator
+  (`PROPOSE_EVERY_MS`), refused saying so. The window says which plan its dialog has
+  open (`plans:viewing`; cleared when the window reloads or goes). A plan proposed
+  meanwhile is held with `waitsFor`, not listed, and the open plan shows "a newer
+  plan … waits": closing the dialog replaces it, laying it out or dismissing it
+  keeps the newer one, held next. At start, a plan that waited replaces what it
+  waited for. A third proposal replaces the waiting one, never the open one.
+- P6 stays: a not-started or closed workspace in the area can be named.
+
+**Not changed.** Any agent but an Orchestrator can still move a ticket back to
+Coding from past Ryan's approval (PR to main, AI testing in staging/prod, Patch
+notes), with a note; `stageRefusal` allows it and tells the user. Whether it should
+is a question for Ryan.
+
 ### W18 · Council's session is the Orchestrator. Size S
 - `collab.implement` (`collab.ts:702`) starts it with `role: "orchestrator"`, its
   kickoff the approved plan fenced ("worked out in a Council discussion and approved

@@ -3,7 +3,6 @@ import type { LandscapeStore } from "./landscape";
 import { MCP_SERVER, type Reply } from "./messaging";
 import { readJsonOrSetAside, writeFileAtomic } from "./fileOps";
 import { holdsPrivateKey } from "./team/artifactStore";
-import { INVISIBLE_RE } from "./ticketTools";
 import { TICKET_TOOL } from "./ticketToolSchemas";
 import { REDACTED, redactSecrets } from "./wirePrompt";
 import { WIRE_TOOL } from "./wireToolSchemas";
@@ -24,12 +23,14 @@ import {
   type PlanEnd,
   type PlanLaidOut,
   type PlanLayOut,
+  type PlanShownAt,
   type PlanView,
   type PlanWire,
 } from "../shared/plans";
+import { INVISIBLE_RE, visibleLine } from "../shared/hiddenText";
 import { oneLine, plainLine } from "../shared/team/agentText";
 import { slugBranch, suggestTicketName, ticketIdOf, ticketOfSession, topOfKey, type AgentKind, type AgentTold, type ModelCatalog, type NewSessionRequest, type SessionInfo } from "../shared/types";
-import { carriesWork, ROOM_LINE, ROOMS_STARTING, settingsRefusal, wireRefusal, type GateContext, type WireEnd, type WireGate, type WireReply, type WireSettings } from "../shared/wires";
+import { carriesWork, ROOM_LINE, ROOMS_STARTING, settingsRefusal, wireRefusal, type GateContext, type Wire, type WireEnd, type WireGate, type WireReply, type WireSettings } from "../shared/wires";
 
 /**
  * The Orchestrator's plans (docs/landscape-wires.md, W17; section 4, "The Orchestrator and its plan"), in main: what
@@ -103,6 +104,8 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const SPENT_KEPT = 200;
 /** How long the user's note on a dismissal may be. */
 const NOTE_MAX = 2000;
+/** The least time between two plans one Orchestrator has held: a looping agent can't keep replacing what the user reads. */
+export const PROPOSE_EVERY_MS = 30_000;
 
 /** Each piece of a plan's text, and where it is, for redaction at propose_plan and the checks at Lay out. */
 function textsOf(p: Plan): { where: string; get: () => string; set: (t: string) => void; max: number; line?: true }[] {
@@ -118,8 +121,9 @@ function textsOf(p: Plan): { where: string; get: () => string; set: (t: string) 
 
 /**
  * Plan `p` as an agent sent it, made safe to show: invisible characters taken out (they reorder or hide text where the
- * user reads it), and secret-looking values replaced (redactSecrets). Refused whole when any text holds a private key,
- * when a name would change, or when a redacted text no longer fits. Answers what was done, for the dialog to say.
+ * user reads it; an emoji's variation selector among them, so taken out rather than refused), and secret-looking values
+ * replaced (redactSecrets). Refused whole when any text holds a private key, when a name would change, or when a
+ * redacted text no longer fits; control characters are checkPlan's to refuse. Answers what was done, for the dialog.
  */
 function cleaned(p: Plan): { plan: Plan; notes: string[] } {
   const plan = structuredClone(p);
@@ -129,7 +133,7 @@ function cleaned(p: Plan): { plan: Plan; notes: string[] } {
     const raw = t.get();
     if (holdsPrivateKey(raw)) throw new PlanError(`${t.where} holds a private key, so nothing was held: take it out and call again.`);
     const seen = raw.replace(INVISIBLE_RE, "");
-    invisible += raw.length - seen.length;
+    invisible += [...raw].length - [...seen].length;
     const r = redactSecrets(seen);
     if (t.line && r.count) throw new PlanError(`${t.where} holds a secret-looking value: name the step plainly.`);
     if (r.text.length > t.max) throw new PlanError(`${t.where} is ${nOf(r.text.length)} characters once its secret-looking values are replaced with ${REDACTED}; the limit is ${nOf(t.max)}: shorten it.`);
@@ -143,18 +147,24 @@ function cleaned(p: Plan): { plan: Plan; notes: string[] } {
   return { plan, notes };
 }
 
-/** Why the plan a dialog sent back can't be laid out as it is: what's laid out is what was shown, so nothing here is changed, only refused. */
+/**
+ * Why the plan a dialog sent back can't be laid out as it is: what's laid out is what was shown, so nothing here is
+ * changed, only refused (invisible and control characters are checkPlan's to refuse, as the dialog does on each edit).
+ */
 function shownRefusal(p: Plan): string | null {
   for (const t of textsOf(p)) {
     const raw = t.get();
     if (holdsPrivateKey(raw)) return `${t.where} holds a private key: take it out.`;
-    if (INVISIBLE_RE.test(raw)) {
-      INVISIBLE_RE.lastIndex = 0;
-      return `${t.where} holds invisible characters, which can hide text where you read it: retype it.`;
-    }
     if (redactSecrets(raw).count) return `${t.where} holds a secret-looking value: take it out, or the step would be told it.`;
   }
   return null;
+}
+
+/** Where the dialog showed the plan going, as plans:layOut was sent it, or why that isn't one. */
+function shownAt(v: unknown): PlanShownAt {
+  if (!isObj(v) || typeof v.area !== "string" || !(v.room === null || typeof v.room === "string") || Object.keys(v).some((k) => k !== "area" && k !== "room"))
+    throw new Error("The plan can't be laid out: the dialog didn't say where it showed the plan going. Reopen it.");
+  return { area: v.area, room: v.room };
 }
 
 /** A plan wire's settings as wires:add takes them, its gate `gate`. */
@@ -173,9 +183,15 @@ export class Plans {
   private spent = new Map<string, string>();
   /** A plan being laid out now: one at a time. */
   private layingOut = false;
+  /** The plan open in the window's dialog, as the window says (plans:viewing), or null. */
+  private viewingId: string | null = null;
+  /** When each Orchestrator last had a plan held (PROPOSE_EVERY_MS). */
+  private lastHeld = new Map<string, number>();
 
   constructor(private readonly o: PlansOptions) {
     this.data = this.load();
+    // no dialog is open as Mockingbird starts: a plan that waited for one replaces what it waited for
+    for (const [id, p] of Object.entries(this.data)) if (p.waitsFor) this.replaceWaitedFor(id, p.waitsFor, false);
   }
 
   private now(): number {
@@ -196,9 +212,18 @@ export class Plans {
       try {
         if (!isObj(v) || typeof v.from !== "string" || (v.ticket !== null && typeof v.ticket !== "string") || typeof v.at !== "number") throw new PlanError("its record isn't a held plan's");
         if (v.replaces !== undefined && typeof v.replaces !== "string") throw new PlanError("what it replaces isn't an id");
+        if (v.waitsFor !== undefined && typeof v.waitsFor !== "string") throw new PlanError("what it waits for isn't an id");
         const notes = v.notes === undefined ? [] : Array.isArray(v.notes) && v.notes.every((n) => typeof n === "string") ? (v.notes as string[]) : null;
         if (!notes) throw new PlanError("its notes aren't a list of text");
-        out[id] = { from: v.from, ticket: v.ticket as string | null, at: v.at, ...(v.replaces ? { replaces: v.replaces as string } : {}), plan: readShownPlan(v.plan), ...(notes.length ? { notes } : {}) };
+        out[id] = {
+          from: v.from,
+          ticket: v.ticket as string | null,
+          at: v.at,
+          ...(v.replaces ? { replaces: v.replaces as string } : {}),
+          plan: readShownPlan(v.plan),
+          ...(notes.length ? { notes } : {}),
+          ...(v.waitsFor ? { waitsFor: v.waitsFor as string } : {}),
+        };
       } catch (err) {
         if (!(err instanceof PlanError)) throw err;
         this.o.log(`plans: plans.json's plan ${JSON.stringify(id)} can't be read, and is let go`, err);
@@ -253,15 +278,66 @@ export class Plans {
     return held;
   }
 
-  /** Plan `id` put back after a lay-out made nothing of it, unless its Orchestrator has held a newer one since. */
-  private putBack(id: string, held: HeldPlan): void {
-    if (Object.values(this.data).some((p) => p.from === held.from)) return;
+  /**
+   * Plan `id` put back after a lay-out made nothing of it: "held" when it was, "newer" when its Orchestrator has held a
+   * newer one since (a plan waiting for this one's dialog doesn't count), "unsaved" when plans.json couldn't be written.
+   */
+  private putBack(id: string, held: HeldPlan): "held" | "newer" | "unsaved" {
+    if (Object.values(this.data).some((p) => p.from === held.from && p.waitsFor !== id)) return "newer";
     try {
       this.change(() => void (this.data[id] = held));
       this.spent.delete(id);
+      return "held";
     } catch (err) {
       this.o.log(`plans: plan ${id} wasn't laid out, and couldn't be held again`, err);
+      return "unsaved";
     }
+  }
+
+  /**
+   * Plan `waiting`, proposed while plan `waitedFor` was open in the dialog, held in its place: `waitedFor` replaced when
+   * it's still held (`replace`), else `waiting` simply held now (that one was laid out or dismissed).
+   */
+  private replaceWaitedFor(waiting: string, waitedFor: string, save = true): void {
+    const p = this.data[waiting];
+    if (!p) return;
+    const apply = () => {
+      const rest = { ...p };
+      delete rest.waitsFor;
+      if (Object.hasOwn(this.data, waitedFor) && this.data[waitedFor].from === p.from) {
+        delete this.data[waitedFor];
+        this.data[waiting] = { ...rest, replaces: waitedFor };
+      } else this.data[waiting] = rest;
+    };
+    const had = Object.hasOwn(this.data, waitedFor);
+    if (save) this.change(apply);
+    else apply();
+    if (had && !Object.hasOwn(this.data, waitedFor)) this.spend(waitedFor, `That plan was replaced by a newer one its Orchestrator proposed while it was open: open that one instead.`);
+  }
+
+  /** The plans that waited for plan `id`'s dialog held now in its place, or after it; said, and logged when they couldn't be. */
+  private releaseWaiting(id: string): void {
+    for (const [k, p] of Object.entries(this.data)) {
+      if (p.waitsFor !== id) continue;
+      try {
+        this.replaceWaitedFor(k, id);
+      } catch (err) {
+        this.o.log(`plans: plan ${k}, which waited for ${id}'s dialog, couldn't be held in its place`, err);
+      }
+    }
+  }
+
+  /**
+   * The window's dialog opened on plan `id`, or closed (null; also when the window reloads or goes): a plan proposed
+   * while it was open waits, and takes its place once it closes.
+   */
+  setViewing(idRaw: unknown): void {
+    const id = typeof idRaw === "string" && idRaw ? idRaw : null;
+    const was = this.viewingId;
+    this.viewingId = id;
+    if (!was || was === id || !Object.values(this.data).some((p) => p.waitsFor === was)) return;
+    this.releaseWaiting(was);
+    this.changed();
   }
 
   // ---- whose, and what it may name ------------------------------------------------------------
@@ -284,7 +360,7 @@ export class Plans {
     for (const s of [...this.o.sessions.planned(), ...this.o.sessions.resumable(), ...this.o.sessions.list()]) all.set(s.id, s);
     const endOf = (s: SessionInfo, refusal: string | null): PlanEnd => ({
       id: s.id,
-      title: plainLine(s.ticketTitle ?? s.title, 80),
+      title: visibleLine(s.ticketTitle ?? s.title, 80),
       kind: s.shell ? "terminal" : "agent",
       agent: s.shell ? null : (s.agent ?? "claude"),
       repo: s.repoPath,
@@ -318,19 +394,30 @@ export class Plans {
     if (me.role !== "orchestrator") return { error: `Only an Orchestrator workspace proposes a plan; this one isn't. Nothing was held.` };
     const taken = this.o.takenOver(me.id, "proposing a plan from this copy");
     if (taken) return { error: taken };
+    const last = this.lastHeld.get(me.id);
+    const since = last === undefined ? Infinity : this.now() - last;
+    if (since < PROPOSE_EVERY_MS)
+      return {
+        error: `Nothing was held: your last plan was held ${Math.max(1, Math.round(since / 1000))} s ago, and a plan is held at most once every ${PROPOSE_EVERY_MS / 1000} s, so the user isn't reading one that keeps changing. Propose again only when your plan has changed or the user asks.`,
+      };
     try {
       const { plan, notes } = cleaned(readPlanArgs(args));
       const { ctx } = await this.contextFor(me);
       const layout = checkPlan(plan, ctx);
       const ticket = ticketOfSession(me);
-      const old = Object.entries(this.data).filter(([, p]) => p.from === me.id);
+      const mine = Object.entries(this.data).filter(([, p]) => p.from === me.id);
+      // the user has its plan open: this one waits for the dialog to close, rather than changing what they're reading
+      const shown = mine.find(([k, p]) => k === this.viewingId && !p.waitsFor)?.[0] ?? null;
+      const old = shown ? mine.filter(([, p]) => p.waitsFor === shown) : mine;
       let id = "";
       this.change(() => {
         for (const [k] of old) delete this.data[k];
         do id = (this.o.newId ?? (() => randomUUID().slice(0, 8)))();
         while (Object.hasOwn(this.data, id) || this.spent.has(id));
-        this.data[id] = { from: me.id, ticket, at: this.now(), ...(old.length ? { replaces: old[0][0] } : {}), plan, ...(notes.length ? { notes } : {}) };
+        const replaces = shown ?? old.find(([, p]) => !p.waitsFor)?.[0] ?? old[0]?.[0];
+        this.data[id] = { from: me.id, ticket, at: this.now(), ...(replaces ? { replaces } : {}), plan, ...(notes.length ? { notes } : {}), ...(shown ? { waitsFor: shown } : {}) };
       });
+      this.lastHeld.set(me.id, this.now());
       for (const [k] of old) this.spend(k, `That plan was replaced by a newer one from “${plainLine(me.title, 80)}”: open that one instead.`);
       this.changed();
       const starts = layout.steps.filter((s) => s.starts).length;
@@ -339,7 +426,13 @@ export class Plans {
           `Held for the user: ${plural(plan.steps.length, "step")} and ${plural(plan.wires.length, "wire")}${ticket ? ` for #${ticket}` : ""}. Nothing exists until they lay it out from Mockingbird, ` +
           `and they may change any of it first. Laid out as it is, ${starts ? `${plural(starts, "step")} ${starts === 1 ? "starts" : "start"} with ${starts === 1 ? "its" : "their"} prompt` : "no step starts"}` +
           `${plan.steps.length - starts ? ` and ${plan.steps.length - starts} ${plan.steps.length - starts === 1 ? "waits" : "wait"} for ${plan.steps.length - starts === 1 ? "its" : "their"} handoff` : ""}. ` +
-          `You'll hear if they dismiss it.${old.length ? " It replaces your earlier plan." : ""}${notes.length ? ` ${notes.join(" ")}` : ""}`,
+          `You'll hear if they dismiss it.` +
+          (shown
+            ? " They have your earlier plan open, so this one waits: it replaces that one when they close it, and is held next if they lay that one out or dismiss it."
+            : old.length
+              ? " It replaces your earlier plan."
+              : "") +
+          `${notes.length ? ` ${notes.join(" ")}` : ""}`,
       };
     } catch (err) {
       if (err instanceof PlanError) return { error: `Nothing was held: ${err.message}` };
@@ -351,25 +444,30 @@ export class Plans {
 
   // ---- the window ----------------------------------------------------------------------------
 
-  /** Every held plan as the window shows it, each checked again on the sessions now. A plan whose Orchestrator is forgotten is let go. */
+  /**
+   * Every held plan as the window shows it, each checked again on the sessions now, with whether a newer one waits for
+   * its dialog (a waiting plan isn't listed on its own). A plan whose Orchestrator is in no session list just now isn't
+   * listed, and stays held: only its Orchestrator being forgotten (sessionForgotten) lets it go.
+   */
   async list(): Promise<PlanView[]> {
     const out: PlanView[] = [];
     for (const [id, held] of Object.entries(this.data)) {
+      if (held.waitsFor) continue;
       const me = this.sessionOf(held.from);
-      if (!me) {
-        this.sessionForgotten(held.from);
-        continue;
-      }
+      if (!me) continue;
+      const waiting = Object.values(this.data).find((p) => p.waitsFor === id);
+      const newer = waiting ? { at: waiting.at } : null;
+      const ticketTitle = held.ticket ? visibleLine(this.o.ticketTitleOf(held.ticket), 200) || null : null;
       let problem: string | null = null;
       let view: Omit<PlanView, "problem"> | null = null;
       try {
         const { ctx, area, room } = await this.contextFor(me);
-        view = { id, held, me: ctx.me, ticketTitle: held.ticket ? this.o.ticketTitleOf(held.ticket) : null, area, room, existing: { ...ctx.existing }, installed: [...ctx.installed], repos: [...ctx.repos] };
+        view = { id, held, me: ctx.me, ticketTitle, area, room, existing: { ...ctx.existing }, installed: [...ctx.installed], repos: [...ctx.repos], newer };
         checkPlan(held.plan, ctx);
       } catch (err) {
         if (!view) {
           // its area can't be worked out now (rooms starting): shown, and Lay out says why
-          view = { id, held, me: { id: me.id, title: plainLine(me.title, 80), kind: "agent", agent: me.agent ?? "claude", repo: me.repoPath, branch: me.branch, ticket: ticketOfSession(me), refusal: null }, ticketTitle: null, area: topOfKey(me.taskGroup ?? me.ticketId ?? ""), room: null, existing: {}, installed: [], repos: [] };
+          view = { id, held, me: { id: me.id, title: visibleLine(me.title, 80), kind: "agent", agent: me.agent ?? "claude", repo: me.repoPath, branch: me.branch, ticket: ticketOfSession(me), refusal: null }, ticketTitle, area: topOfKey(me.taskGroup ?? me.ticketId ?? ""), room: null, existing: {}, installed: [], repos: [], newer };
         }
         problem = errText(err);
       }
@@ -399,6 +497,7 @@ export class Plans {
     const note = typeof noteRaw === "string" ? noteRaw.trim() : "";
     if (note.length > NOTE_MAX) throw new Error(`The note is ${nOf(note.length)} characters; the limit is ${nOf(NOTE_MAX)}.`);
     const held = this.take(id, "That plan was dismissed.");
+    this.releaseWaiting(id);
     this.changed();
     const line =
       `[Mockingbird: the user dismissed your plan${held.ticket ? ` for #${held.ticket}` : ""}. Nothing was made. ` +
@@ -428,26 +527,46 @@ export class Plans {
    * refused rather than changed when its text holds what propose_plan would have taken out. Then, under the held plan's
    * id, once (taken out of plans.json before anything is made): each step a not-started record (W8) under the room's
    * rules, its wires, and the steps nothing but the Orchestrator hands off to started with their prompts, those
-   * handoffs counted sent. A refusal before all are made takes everything back and holds the plan again.
+   * handoffs counted sent as they're made. A refusal before all are made takes everything back and holds the plan again.
+   *
+   * `atRaw` is where the dialog showed it going (its area, and the team room that area was shared as): the dialog's
+   * gates and room notes were worked out from that, so a lay-out into an area or room that's since changed is refused,
+   * for the user to reopen it and see it as it is now.
    */
-  async layOut(idRaw: unknown, shownRaw: unknown, d: PlanLayOutDeps): Promise<PlanLaidOut> {
+  async layOut(idRaw: unknown, shownRaw: unknown, atRaw: unknown, d: PlanLayOutDeps): Promise<PlanLaidOut> {
     if (this.layingOut) throw new Error("A plan is being laid out already: wait for that to finish.");
     this.layingOut = true;
     try {
-      return await this.layOutNow(String(idRaw ?? ""), shownRaw, d);
+      return await this.layOutNow(String(idRaw ?? ""), shownRaw, atRaw, d);
     } finally {
       this.layingOut = false;
     }
   }
 
-  private async layOutNow(id: string, shownRaw: unknown, d: PlanLayOutDeps): Promise<PlanLaidOut> {
+  private async layOutNow(id: string, shownRaw: unknown, atRaw: unknown, d: PlanLayOutDeps): Promise<PlanLaidOut> {
     const held = this.heldOf(id);
     const me = this.sessionOf(held.from);
     if (!me) throw new Error("Its Orchestrator was forgotten, so its plan can't be laid out.");
     if (me.planned) throw new Error("Its Orchestrator hasn't started, so it has no folder for the plan's steps.");
     const taken = this.o.takenOver(me.id, "laying out its plan");
     if (taken) throw new Error(taken);
+    const at = shownAt(atRaw);
     const { ctx, area, room } = await this.contextFor(me);
+    const moved =
+      at.area !== area
+        ? "its Orchestrator has moved to another area since the plan was shown, so its steps would go there"
+        : at.room !== room
+          ? !at.room
+            ? "its area has become a team room's since the plan was shown: its steps would start as room sessions, and every gate would ask"
+            : !room
+              ? "its area isn't a team room's any more, as it was when the plan was shown: its steps wouldn't be room sessions, and its gates would be as the plan says"
+              : "its area is shared as another team room now than when the plan was shown"
+          : null;
+    if (moved) {
+      // the window reads the plans again, so reopening shows them as they are
+      this.changed();
+      throw new Error(`The plan can't be laid out as it was shown: ${moved}. Reopen it to see where it would go now.`);
+    }
     let plan: Plan;
     let layout: PlanLayOut;
     try {
@@ -473,16 +592,19 @@ export class Plans {
       const s = keyed.get(k)!;
       return { id: `\0${k}`, title: s.name, kind: s.agent === "terminal" ? "terminal" : "agent", debrief: false, tasks: false, room, takenOver: null, outsideSandbox: false, where: "planned", placed: true, folder: `\0${k}`, hooksSilent: false, ticket: ctx.ticket, branch: null };
     };
-    const probed: GateContext = { ...wctx, links: {}, kept: {}, end: (e) => (e.startsWith("\0") ? probe(e.slice(1)) : wctx.end(e)) };
+    // the wires in the book and the plan's wires probed so far: a cycle or a second wire through one already made is refused here
+    const links: Record<string, Wire> = { ...state.book.links };
+    const probed: GateContext = { ...wctx, links, end: (e) => (e.startsWith("\0") ? probe(e.slice(1)) : wctx.end(e)) };
     const probeId = (k: string) => (k === ME ? me.id : keyed.has(k) ? `\0${k}` : k);
-    for (const p of layout.wires) {
+    for (const [j, p] of layout.wires.entries()) {
       if (p.skipped || p.wire.type === "worktree") continue;
       const settings = settingsOf(p.wire, p.gate);
       // when its PR merges is set once its source has started, on a ticket's branch
       if (p.afterStart) delete settings.when;
       const [f, t] = [probeId(p.wire.from), probeId(p.wire.to)];
       const why = wireRefusal(f, t, p.wire.type, probed) ?? settingsRefusal({ from: f, to: t, type: p.wire.type }, settings, probed);
-      if (why) throw new Error(`The plan can't be laid out: ${label(p.wire)}: ${why}`);
+      if (why) throw new Error(`The plan can't be laid out: ${label(p.wire)}: ${why.replace(/\.$/, "")}.`);
+      links[`\0wire${j}`] = { from: f, to: t, type: p.wire.type, when: p.wire.when ?? (carriesWork(p.wire.type) ? "finished" : "manual"), gate: p.gate, createdAt: Number.MAX_SAFE_INTEGER - layout.wires.length + j } as Wire;
     }
 
     this.take(id, "That plan was laid out already.");
@@ -501,13 +623,19 @@ export class Plans {
           left.push(`“${m.title}”`);
         }
       }
-      this.putBack(id, held);
+      const back = this.putBack(id, held);
       this.changed();
       const said = [
         ...(left.length ? [`${left.join(", ")} couldn't be taken back: forget ${left.length === 1 ? "it" : "them"} from ${left.length === 1 ? "its" : "their"} menu.`] : []),
         ...(wiresLeft ? [`Its wires couldn't be taken back (${wiresLeft}): remove them from their right-click.`] : []),
       ];
-      throw new Error(`Couldn't lay out the plan: ${why}. ${said.length ? said.join(" ") : "Nothing was left, and the plan is held as it was."}`);
+      const plan =
+        back === "held"
+          ? "The plan is held as it was."
+          : back === "newer"
+            ? `${plainLine(me.title, 80)} has held a newer plan since, so this one isn't held again: open that one.`
+            : "The plan couldn't be held again (plans.json couldn't be written): ask its Orchestrator to propose it again.";
+      throw new Error(`Couldn't lay out the plan: ${why.replace(/\.$/, "")}. ${said.length ? said.join(" ") : "Nothing was left."} ${plan}`);
     };
     const line = ticketLine(ctx.ticket, ctx.ticket ? this.o.ticketTitleOf(ctx.ticket) : null);
     for (const p of layout.steps) {
@@ -536,25 +664,28 @@ export class Plans {
       idOf.set(s.key, info.id);
     }
     const wires: string[] = [];
-    const wireIdOf = new Map<number, string>();
-    for (const [j, p] of layout.wires.entries()) {
-      if (p.skipped || p.afterStart) continue;
-      if (p.wire.type === "worktree") {
-        // a terminal on the Orchestrator's tree, made now: the Orchestrator has a tree already
-        const to = keyed.get(p.wire.to)!;
-        try {
-          const t = await d.addTerminal(me, { title: to.name, command: to.prompt });
-          made.push({ key: to.key, id: t.id, title: to.name });
-          idOf.set(to.key, t.id);
-        } catch (err) {
-          return undo(`“${to.name}” wasn't made on ${me.title}'s tree: ${errText(err)}`);
-        }
-        continue;
-      }
+    for (const p of layout.wires) {
+      if (p.skipped || p.afterStart || p.wire.type === "worktree") continue;
       const r = this.o.wires.add(endId(p.wire.from), endId(p.wire.to), p.wire.type, settingsOf(p.wire, p.gate));
       if ("refused" in r) return undo(`${label(p.wire)} was refused: ${r.refused}`);
       wires.push(r.id!);
-      wireIdOf.set(j, r.id!);
+      if (!p.sentByLayOut) continue;
+      // counted sent as it's made: a finish before its step starts can't ready a send of what goes as the step's prompt
+      const sent = d.countSent(r.id!, `Lay out sent it: “${nameOf(p.wire.to)}” starts with its prompt from the plan.`);
+      if ("refused" in sent) return undo(`${label(p.wire)} couldn't be counted sent, so its gate could send it again: ${sent.refused}`);
+    }
+    // terminals last, once every wire is made: a command runs as its terminal is made, so nothing may be refused after
+    for (const p of layout.wires) {
+      if (p.skipped || p.afterStart || p.wire.type !== "worktree") continue;
+      // a terminal on the Orchestrator's tree, made now: the Orchestrator has a tree already
+      const to = keyed.get(p.wire.to)!;
+      try {
+        const t = await d.addTerminal(me, { title: to.name, command: to.prompt });
+        made.push({ key: to.key, id: t.id, title: to.name });
+        idOf.set(to.key, t.id);
+      } catch (err) {
+        return undo(`“${to.name}” wasn't made on ${me.title}'s tree: ${errText(err)}`);
+      }
     }
 
     // the steps that start, in the plan's order (a step sharing another's folder comes after it)
@@ -568,19 +699,14 @@ export class Plans {
       const sentIn = layout.wires.map((w, j) => ({ w, j })).filter((x) => x.w.sentByLayOut && x.w.wire.to === s.key);
       let info: SessionInfo;
       try {
-        info = await d.start(idOf.get(s.key)!, sentIn.length ? me.id : null, ctx.ticket ? this.o.ticketTitleOf(ctx.ticket) : null);
+        info = await d.start(idOf.get(s.key)!, sentIn.length ? me.id : null, ctx.ticket ? visibleLine(this.o.ticketTitleOf(ctx.ticket), 200) || null : null);
       } catch (err) {
-        notes.push(`“${s.name}” didn't start: ${errText(err)}. It's laid out and waits: start it with Start now in its menu.`);
+        notes.push(`“${s.name}” didn't start: ${errText(err).replace(/\.$/, "")}. It's laid out and waits: Start now in its menu starts it with its prompt.`);
         for (const w of layout.wires.filter((x) => x.afterStart && !x.skipped && x.wire.from === s.key))
           notes.push(w.wire.type === "worktree" ? `“${keyed.get(w.wire.to)!.name}” wasn't made, as it runs on “${s.name}”'s tree: once that has started, Add terminal on its tree makes one.` : `${label(w.wire)} wasn't made, as it needs “${s.name}” started on its branch: make it from “${s.name}” once it has.`);
         continue;
       }
       started.push(info.id);
-      for (const { j } of sentIn) {
-        const wid = wireIdOf.get(j);
-        const r = wid ? d.countSent(wid, `Lay out sent it: “${s.name}” started with its prompt from the plan.`) : null;
-        if (r && "refused" in r) notes.push(`${label(layout.wires[j].wire)} wasn't counted sent (${r.refused}): its gate may offer it again when ${me.title} finishes.`);
-      }
       for (const w of layout.wires.filter((x) => x.afterStart && !x.skipped && x.wire.from === s.key)) {
         if (w.wire.type === "worktree") {
           const to = keyed.get(w.wire.to)!;
@@ -606,6 +732,12 @@ export class Plans {
         `${waiting.length ? `; ${waiting.join(", ")} ${waiting.length === 1 ? "waits" : "wait"} for ${waiting.length === 1 ? "its" : "their"} handoff` : ""}. ` +
         `What you handed them went as their prompts, so don't call ${MCP_SERVER} ${WIRE_TOOL.finishStep} for it. Create nothing yourself; propose another plan only if the user asks.]`
     );
+    // a plan proposed while this one was open is held next
+    if (Object.values(this.data).some((p) => p.waitsFor === id)) {
+      this.releaseWaiting(id);
+      this.changed();
+      notes.push(`${plainLine(me.title, 80)} proposed a newer plan while this one was open: it's in Needs you.`);
+    }
     return { steps: made, wires, started: started[0] ?? null, notes, area };
   }
 
@@ -639,7 +771,7 @@ export class Plans {
     if (plan.problems.length || !ticketId) throw new Error(`“${name}” can't be laid out as it is: ${plan.problems.join(" ") || "choose a ticket."}`);
     const repoPath = text(req.repoPath);
     if (!repoPath) throw new Error(`“${first.name}” works in a worktree of the ticket's repo on its branch: choose a repo.`);
-    const ticketTitle = text(req.ticketTitle) ?? "";
+    const ticketTitle = visibleLine(req.ticketTitle, 500);
     const description = typeof req.ticketDescription === "string" ? req.ticketDescription : "";
     const base = text(req.base);
     const id = ticketIdOf(ticketId);

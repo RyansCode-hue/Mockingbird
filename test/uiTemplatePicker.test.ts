@@ -61,7 +61,7 @@ describe.skipIf(!local)("an Orchestrator's plan in the template picker", () => {
       item: Item;
       early: { layOuts: number; open: boolean };
       shown: Shown;
-      laid: { before: Shown; calls: number; id: string | null; sent: Plan | null; open: boolean; note: string | null; item: boolean; planned: string[]; running: string[] };
+      laid: { before: Shown; calls: number; id: string | null; sent: Plan | null; at: { area: string; room: string | null } | null; open: boolean; note: string | null; item: boolean; planned: string[]; running: string[] };
       again: { error?: string };
     }>("lsPlan&landscapePlanAudit=plan");
     // its Needs you item: Open, and Dismiss… asking for a note
@@ -81,6 +81,8 @@ describe.skipIf(!local)("an Orchestrator's plan in the template picker", () => {
     // how old it is and that it replaced one, what redaction took out, a link, and the workspaces there already
     expect(t.shown.notes).toEqual([
       "age: Proposed 6m ago, replacing its earlier plan. Nothing of it exists until you lay it out, and any of it can be changed first.",
+      // what {ticket} becomes: the title quoted as the ticket's own words
+      `ticket: {ticket} in a prompt is “#5120 (its title, the ticket's own words: "Stream the donor export")”.`,
       "plan: 1 secret-looking value was replaced with [redacted] as the plan was held. Redaction is a net, not a guarantee: read it before laying it out.",
       "plan: “Verifier”'s prompt has a link: https://dev.backoffice.example/health. Check where it goes before laying it out.",
       "plan: It wires to “Tester”, “Reviewer”, which are there already.",
@@ -105,14 +107,16 @@ describe.skipIf(!local)("an Orchestrator's plan in the template picker", () => {
       { ends: "Coder → Verifier", type: "handoff", flags: ["ask: Asks: you send it from its gate."] },
       { ends: "Verifier → Coder", type: "feedback", flags: ["ask: Asks: you send it from its gate."] },
       { ends: "Verifier → Tester (there already)", type: "handoff", flags: ["automatic: Sends without asking once Verifier finishes.Make it ask"] },
-      { ends: "Reviewer (there already) → Coder", type: "context", flags: [] },
+      // a context link says which side reads which, and whether tool output is included, with a way to leave it out
+      { ends: "Reviewer (there already) → Coder", type: "context", flags: ["context: “Coder” can read “Reviewer”, its tool output included. Nothing is pushed.Include tool output"] },
       { ends: "Orchestrator → Dev server", type: "worktree", flags: [] },
     ]);
     // the Coder's prompt typed into and Make it ask pressed, then Lay out: sent once, exactly as shown
     const before = t.laid.before;
     expect(before.steps[0].prompt.endsWith("with request_pr. Keep the diff small")).toBe(true);
     expect(before.wires[3].flags).toEqual(["ask: Asks: you send it from its gate."]);
-    expect(t.laid).toMatchObject({ calls: 1, id: "pl-5120", open: false, item: false });
+    // with the area and room it was shown in, which main checks are still so
+    expect(t.laid).toMatchObject({ calls: 1, id: "pl-5120", at: { area: "5120", room: null }, open: false, item: false });
     expect(t.laid.sent!.steps.map((s) => s.prompt)).toEqual(before.steps.map((s) => s.prompt));
     expect(t.laid.sent!.steps.map((s) => s.name)).toEqual(before.steps.map((s) => s.name));
     expect(t.laid.sent!.summary).toBe(before.summary);
@@ -146,15 +150,37 @@ describe.skipIf(!local)("an Orchestrator's plan in the template picker", () => {
     expect(t.after).toMatchObject({ act: { off: true, title: why }, blocked: why });
   }, 200_000);
 
-  it("in a team room's area: every gate asks, said in the dialog and its foot", async () => {
-    const t = await audit<{ shown: Shown }>("lsPlan=room&landscapePlanAudit=room");
+  it("in a team room's area: every gate asks, said in the dialog and its foot, and sent asking", async () => {
+    const t = await audit<{ shown: Shown; laid: Laid }>("lsPlan=room&landscapePlanAudit=room");
     expect(t.shown.notes).toContain("room: #5120 is a team room's area: its steps start as room sessions, under the room's guardrails, and your teammates will see them. Every gate asks.");
     expect(t.shown.notes).toContain("plan: In a team room's area every gate asks, so its automatic gate is laid out asking.");
     expect(t.shown.wires[3].flags).toEqual(["asks: It asks, not automatic. In a team room's area every gate asks."]);
     expect(t.shown.chips).toEqual(["↺ 3 rounds"]);
     expect(t.shown.foot).toBe("in #5120 · 3 steps · 6 wires · team room: gates ask");
+    // Lay out sends each gate as shown: the forced one as ask, with the room it was shown in
+    expect(t.laid).toMatchObject({ calls: 1, gates: [null, "ask", "ask", "ask", null, null], at: { area: "5120", room: "R5120ccccccccccccccccc" }, open: false, error: null });
+  }, 200_000);
+
+  it("its area stops being a team room's while the dialog is open: Lay out is refused, saying to reopen it", async () => {
+    const t = await audit<{ shown: Shown; laid: Laid }>("lsPlan=roomgone&landscapePlanAudit=roomgone");
+    expect(t.shown.foot).toBe("in #5120 · 3 steps · 6 wires · team room: gates ask");
+    expect(t.laid).toMatchObject({ calls: 1, gates: [null, "ask", "ask", "ask", null, null], at: { area: "5120", room: "R5120ccccccccccccccccc" }, open: true });
+    expect(t.laid.error).toBe(
+      "The plan can't be laid out as it was shown: its area isn't a team room's any more, as it was when the plan was shown: its steps wouldn't be room sessions, and its gates would be as the plan says. Reopen it to see where it would go now."
+    );
+  }, 200_000);
+
+  it("a newer plan proposed while it's open waits, and the dialog says so", async () => {
+    const t = await audit<{ shown: Shown; after: Shown }>("lsPlan=newer&landscapePlanAudit=newer");
+    expect(t.shown.notes.some((n) => n.startsWith("newer:"))).toBe(false);
+    expect(t.after.notes).toContain(
+      "newer: Orchestrator proposed a newer plan just now. It waits while this one is open, so your edits stay: closing this replaces it with that one; laying this one out or dismissing it keeps that one for later."
+    );
+    expect(t.after.act).toEqual({ off: false, title: null });
   }, 200_000);
 });
+
+type Laid = { calls: number; gates: (string | null)[] | null; at: { area: string; room: string | null } | null; open: boolean; error: string | null; note: string | null };
 
 describe.skipIf(!local)("the built-in Orchestrator → Coder → Verifier", () => {
   it("lays out only its Orchestrator, told the rest as its plan's starting shape", async () => {

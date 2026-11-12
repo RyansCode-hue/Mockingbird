@@ -1,6 +1,7 @@
 import { fence } from "./fence";
 import { isObj } from "./landscape";
-import { oneLine } from "./team/agentText";
+import { oneLine, quoted } from "./team/agentText";
+import { hiddenTextRefusal, INVISIBLE_RE, visibleLine } from "./hiddenText";
 import { AGENT_KINDS, ticketIdOf, type AgentKind } from "./types";
 import { carriesWork, linkRefusal, templateOf, WIRE_GATES, WIRE_TYPES, WIRE_WHENS, type Wire, type WireGate, type WireSettings, type WireType, type WireWhen } from "./wires";
 
@@ -321,9 +322,16 @@ function bodyRules(b: TemplateBody): void {
 
 // ---- laying one out ------------------------------------------------------------------------
 
-/** `{ticket}` in a step's prompt, as a wire's `{ticket}` is: "#4182 — Stream the donor export", or nothing with no ticket. */
-export const ticketLine = (id: string | null | undefined, title: string | null | undefined): string =>
-  id?.trim() ? oneLine(`#${ticketIdOf(id.trim())}${title?.trim() ? ` — ${title.trim()}` : ""}`) : "";
+/**
+ * `{ticket}` in a step's prompt: `#4182 (its title, the ticket's own words: "Stream the donor export")`, or nothing with
+ * no ticket. The title is others' words outside any fence, so it's quoted and said to be theirs, with its invisible and
+ * control characters taken out.
+ */
+export const ticketLine = (id: string | null | undefined, title: string | null | undefined): string => {
+  if (!id?.trim()) return "";
+  const t = visibleLine(title, 200);
+  return `#${oneLine(ticketIdOf(id.trim()), 40)}${t ? ` (its title, the ticket's own words: ${quoted(t, 200)})` : ""}`;
+};
 export const withTicket = (prompt: string, line: string): string => prompt.replace(/\{ticket\}/g, line);
 
 /**
@@ -339,7 +347,8 @@ export const TICKET_LABEL =
 
 /** A ticket's title and description fenced as data, under TICKET_LABEL: text others wrote, never Mockingbird's words or the user's. */
 export function fencedTicket(title: string, description: string, makeNonce?: () => string): string {
-  const body = `Title: ${oneLine(title, 500)}${description.trim() ? `\n\nDescription:\n${description.trim()}` : ""}`;
+  const d = description.replace(INVISIBLE_RE, "").trim();
+  const body = `Title: ${visibleLine(title, 500)}${d ? `\n\nDescription:\n${d}` : ""}`;
   return `${TICKET_LABEL}\n${fence("ticket", body, makeNonce)}`;
 }
 
@@ -408,9 +417,35 @@ export const roomAsked = (n: number) => `${ROOM_ASKS}, so ${n === 1 ? "its autom
  * - a wire that goes when its source's PR merges needs that source on a ticket's branch, so only the first step,
  *   starting as it's laid out on a ticket, can be its source;
  * - a terminal takes no handoff, so it can't wait as a step: it's made on its agent's tree (W7's terminal) as that
- *   agent starts at Lay out, and otherwise isn't laid out, saying how to add it once the agent has started.
+ *   agent starts at Lay out, and otherwise isn't laid out, saying how to add it once the agent has started;
+ * - text holding invisible or control characters (hiddenTextProblems) isn't laid out as it shows.
  */
 export function layOutPlan(b: TemplateBody, where: LayOutWhere): LayOutPlan {
+  const hidden = hiddenTextProblems(b);
+  const plan = layOutPlanOf(b, where);
+  return hidden.length ? { ...plan, problems: [...hidden, ...plan.problems] } : plan;
+}
+
+/**
+ * Why template `b`'s text can't be laid out as it shows: a name, prompt, command or What flows holding invisible or
+ * control characters (a terminal's command is typed into a shell, a prompt into an agent).
+ */
+export function hiddenTextProblems(b: TemplateBody): string[] {
+  const nameOf = (k: string) => b.steps.find((s) => s.key === k)?.name ?? k;
+  const texts = [
+    ...b.steps.flatMap((s) => [
+      { where: `Step ${s.key}'s name`, text: s.name },
+      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, text: s.prompt },
+    ]),
+    ...b.wires.flatMap((w) => (w.template === undefined ? [] : [{ where: `What ${nameOf(w.from)} → ${nameOf(w.to)} sends`, text: w.template }])),
+  ];
+  return texts.flatMap((t) => {
+    const why = hiddenTextRefusal(t.where, t.text);
+    return why ? [why] : [];
+  });
+}
+
+function layOutPlanOf(b: TemplateBody, where: LayOutWhere): LayOutPlan {
   const first = b.steps[0];
   if (startsAtOrchestrator(b)) {
     // only the Orchestrator is laid out: the rest is its plan's starting shape, and its wires are the plan's to propose

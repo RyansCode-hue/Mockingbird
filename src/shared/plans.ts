@@ -2,6 +2,7 @@ import { isObj } from "./landscape";
 import { fencedTicket, startsAtOrchestrator, TEMPLATE_AGENTS, type LayOutReply, type TemplateAgent, type TemplateBody } from "./pipelineTemplates";
 import { oneLine, quoted } from "./team/agentText";
 import { isRemotePaneId } from "./team/livePanes";
+import { hiddenTextRefusal } from "./hiddenText";
 import { AGENT_KINDS, AGENT_NAME, type AgentKind, type ModelCatalog } from "./types";
 import { carriesWork, DEFAULT_ROUNDS, linkRefusal, WIRE_GATES, WIRE_TYPES, WIRE_WHENS, type Wire, type WireGate, type WireType, type WireWhen } from "./wires";
 
@@ -219,6 +220,18 @@ export interface PlanLayOut {
 
 const agentStep = (s: PlanStep): s is PlanStep & { agent: AgentKind } => s.agent !== "terminal";
 
+/** Each piece of plan `p`'s text, and where it is, as the dialog and the agent are told of it. */
+export function planTexts(p: Plan): { where: string; text: string }[] {
+  return [
+    { where: "Its summary", text: p.summary },
+    ...p.steps.flatMap((s) => [
+      { where: `Step ${s.key}'s name`, text: s.name },
+      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, text: s.prompt },
+    ]),
+    ...p.wires.flatMap((w, j) => (w.template === undefined ? [] : [{ where: `Wire ${j + 1}'s template`, text: w.template }])),
+  ];
+}
+
 /**
  * Plan `p` held to the rules with its context `ctx`, and how it's laid out: throws PlanError saying the first thing
  * wrong. Every step is one of this Mac's agents, installed, with a model and effort its catalog offers; a new worktree
@@ -230,6 +243,11 @@ const agentStep = (s: PlanStep): s is PlanStep & { agent: AgentKind } => s.agent
  * automatic gate is laid out asking.
  */
 export function checkPlan(p: Plan, ctx: PlanContext): PlanLayOut {
+  // laid out as it shows: no text the user can't see, nor what a terminal or an agent acts on rather than shows
+  for (const t of planTexts(p)) {
+    const why = hiddenTextRefusal(t.where, t.text);
+    if (why) bad(why);
+  }
   if (!p.summary.trim()) bad("Its summary is empty: say what the plan does and why.");
   if (!p.steps.length) bad("It proposes no workspaces: a plan has at least one step.");
   if (p.steps.length > PLAN_MAX.steps) bad(`It proposes ${p.steps.length} workspaces: a plan has at most ${PLAN_MAX.steps}.`);
@@ -416,6 +434,17 @@ export interface HeldPlan {
   plan: Plan;
   /** What main said as it held it: secret-looking values it replaced. */
   notes?: string[];
+  /**
+   * Proposed while its Orchestrator's plan `waitsFor` was open in the dialog: it waits, so the user's edits aren't lost
+   * under them, and replaces that plan once the dialog closes (or follows it when it's laid out or dismissed).
+   */
+  waitsFor?: string;
+}
+
+/** Where the dialog showed a plan going: main refuses a Lay out when its area or room is no longer that. */
+export interface PlanShownAt {
+  area: string;
+  room: string | null;
 }
 
 /** A held plan as the window is told it (plans:list): what the dialog shows, and the context it checks edits against. */
@@ -435,6 +464,8 @@ export interface PlanView {
   repos: string[];
   /** Why it can't be laid out as it stands now (the rules checked again on the sessions now), or null. */
   problem: string | null;
+  /** A newer plan its Orchestrator proposed while this one was open, waiting for the dialog to close; null when none. */
+  newer: { at: number } | null;
 }
 
 /** What plans:layOut answers: the steps and wires made, its area, and what's said. */

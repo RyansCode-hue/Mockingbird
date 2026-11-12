@@ -125,6 +125,25 @@ describe("saving a template", () => {
   it("saves nothing over a list that isn't one", () => {
     expect(() => save("X", body(), { a: 1 })).toThrow(/aren't a list/);
   });
+
+  it("refuses text holding control or invisible characters: a terminal would act on them, and they hide what you read", () => {
+    const withPrompt = (prompt: string) => ({ ...body(), steps: [{ ...body().steps[0], prompt }, body().steps[1]] });
+    expect(() => save("X", withPrompt("npm test\u0010\u001b[A"), [])).toThrow("“Builder”'s prompt holds control characters, which a terminal or an agent acts on rather than shows: retype it.");
+    expect(() => save("X", withPrompt("Implement it.\ufe0f\u034f"), [])).toThrow("“Builder”'s prompt holds invisible characters, which can hide or reorder text where you read it: retype it.");
+    expect(() => save("X", withPrompt("Implement it.\n\tThen test."), [])).not.toThrow();
+  });
+});
+
+describe("a draft's invisible and control characters", () => {
+  it("are taken out, said, so what's saved is what was read", () => {
+    const all = {
+      a: session("a", { title: "Builder", planned: { worktree: true, prompt: "Implement it.\u200b\ufe0f\u0010" } }),
+      b: session("b", { title: "Reviewer", planned: { worktree: false, prompt: "Review it." } }),
+    };
+    const d = draftTemplate(["a", "b"], { sessionOf: (id) => all[id as "a" | "b"], book: () => ({ ...emptyWireBook(), links: { w1: wire("a", "b", "handoff", 1) } }) });
+    expect(d.body.steps[0].prompt).toBe("Implement it.");
+    expect(d.notes).toContain("3 invisible or control characters were taken out: they hide text where you read it, or act in a terminal rather than show.");
+  });
 });
 
 describe("removing a template", () => {
@@ -166,7 +185,7 @@ describe("a draft's names and tickets (review fixes 1)", () => {
   });
 
   it("turns the ticket a laid-out step's prompt was filled in with back into {ticket}, and says when its number is still there", () => {
-    const line = "#5115 — Stream the donor export";
+    const line = `#5115 (its title, the ticket's own words: "Stream the donor export")`;
     const all = {
       a: session("a", { title: "Builder", ticketId: "5115", planned: { worktree: true, prompt: `Implement ${line}.` } }),
       b: session("b", { title: "Reviewer", ticketId: "5115", planned: { worktree: false, prompt: `Review ${line}, then compare with #5115's notes.` } }),

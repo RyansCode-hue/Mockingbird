@@ -6,6 +6,7 @@ import { canonical, onDisk } from "./handlers";
 import { redactSecrets } from "./wirePrompt";
 import { tildePath } from "../shared/paths";
 import { oneLine } from "../shared/team/agentText";
+import { CONTROL_RE, hiddenTextRefusal, INVISIBLE_RE } from "../shared/hiddenText";
 import { isRemotePaneId } from "../shared/team/livePanes";
 import {
   kickoffAsTicket,
@@ -117,8 +118,12 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
   ].sort((a, b) => b.length - a.length);
   let redacted = 0;
   let pathsOut = 0;
+  let hidden = 0;
   const clean = (t: string): string => {
-    let out = t;
+    // what a template is laid out with is what's read: invisible and control characters go, said
+    const seen = t.replace(INVISIBLE_RE, "").replace(CONTROL_RE, "");
+    hidden += [...t].length - [...seen].length;
+    let out = seen;
     for (const f of folders) {
       const parts = out.split(f);
       pathsOut += parts.length - 1;
@@ -229,6 +234,7 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
   if (kickoffs) notes.push(`The ticket ${kickoffs === 1 ? "kickoff a step was told is" : "kickoffs its steps were told are"} {ticket} here: it's filled in with the ticket it's laid out for.`);
   if (redacted) notes.push(`${plural(redacted, "secret-looking value was", "secret-looking values were")} replaced with [redacted]: redaction is a net, so read what's below before saving it.`);
   if (pathsOut) notes.push(`${plural(pathsOut, "mention")} of the chain's folders became ${FOLDER_MARK}: a template is laid out in other folders.`);
+  if (hidden) notes.push(`${plural(hidden, "invisible or control character was", "invisible or control characters were")} taken out: they hide text where you read it, or act in a terminal rather than show.`);
   if (stillNamed.length) notes.push(`${stillNamed.join(", ")} still ${stillNamed.length === 1 ? "names its ticket" : "name their tickets"} by number: say {ticket} where it's the ticket a lay-out is for.`);
   if (outside) notes.push(`${plural(outside, "wire")} to workspaces outside the chain ${outside === 1 ? "isn't" : "aren't"} kept.`);
   if (unsaid.length) notes.push(`What ${unsaid.map((t) => `“${t}”`).join(", ")} ${unsaid.length === 1 ? "was" : "were"} told as ${unsaid.length === 1 ? "it" : "they"} started isn't kept once running: say it here${terminals.length ? `, and what ${terminals.length === 1 ? "its terminal runs" : "each terminal runs"}` : ""}.`);
@@ -316,6 +322,8 @@ export function savedTemplates(nameRaw: unknown, bodyRaw: unknown, stored: unkno
   }
   for (const { where, text } of textsOf(name, body)) {
     if (!text) continue;
+    const hiddenWhy = hiddenTextRefusal(where, text);
+    if (hiddenWhy) throw new Error(hiddenWhy);
     const r = redactSecrets(text);
     if (r.count) throw new Error(`${where} holds ${plural(r.count, "secret-looking value")}: take ${r.count === 1 ? "it" : "them"} out, as a template is kept in Mockingbird's settings and laid out for other tickets.`);
     if (namesHome(text, d.home)) throw new Error(`${where} names a folder in your home folder: a template is laid out in other folders, so it names none of this Mac's. Say “${FOLDER_MARK}”, or take it out.`);

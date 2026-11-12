@@ -847,8 +847,8 @@ describe("laying a template out (W9)", () => {
     const r = await t.service.layOut(request(), t.d);
     // each step planned in the area, on the ticket, its prompt's {ticket} filled in; the ticket's title in no step's name
     expect(t.asked).toEqual([
-      { title: "Builder", agent: "codex", model: "gpt-5.5", repoPath: "/code/backoffice", worktree: true, base: "dev", taskGroup: "5115", ticketId: "5115", prompt: "Implement #5115 — Stream the donor export." },
-      { title: "Reviewer", agent: "claude", repoPath: null, worktree: false, taskGroup: "5115", ticketId: "5115", prompt: "Review #5115 — Stream the donor export.", sharesWith: "p1" },
+      { title: "Builder", agent: "codex", model: "gpt-5.5", repoPath: "/code/backoffice", worktree: true, base: "dev", taskGroup: "5115", ticketId: "5115", prompt: "Implement #5115 (its title, the ticket's own words: \"Stream the donor export\")." },
+      { title: "Reviewer", agent: "claude", repoPath: null, worktree: false, taskGroup: "5115", ticketId: "5115", prompt: "Review #5115 (its title, the ticket's own words: \"Stream the donor export\").", sharesWith: "p1" },
       { title: "Tester", agent: "claude", repoPath: "/code/backoffice", worktree: true, base: "dev", taskGroup: "5115", ticketId: "5115" },
     ]);
     expect(r).toEqual({ steps: [{ key: "s1", id: "p1", title: "Builder" }, { key: "s2", id: "p2", title: "Reviewer" }, { key: "s3", id: "p3", title: "Tester" }, { key: "s4", id: "t1", title: "Dev server" }], wires: [expect.any(String), expect.any(String), expect.any(String)], started: "p1", notes: [] });

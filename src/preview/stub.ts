@@ -9349,6 +9349,7 @@ function planView(h: (typeof heldPlans)[number]): PlanView | null {
     existing,
     installed: ["claude", "codex"],
     repos: [...new Set([me.repoPath, ...Object.values(existing).map((e) => e.repo)].filter((r): r is string => !!r))],
+    newer: newerAt !== null && viewingPlan === h.id ? { at: newerAt } : null,
   };
   let problem: string | null = null;
   try {
@@ -9358,6 +9359,9 @@ function planView(h: (typeof heldPlans)[number]): PlanView | null {
   }
   return { ...view, id: h.id, problem };
 }
+/** The plan the dialog says is open (plans:viewing), and when a newer one was proposed while it was (?lsPlan=newer). */
+let viewingPlan: string | null = null;
+let newerAt: number | null = null;
 const planCtx = (v: Omit<PlanView, "problem">): PlanContext => ({ me: v.me, existing: v.existing, installed: v.installed, catalog: null, repos: v.repos, room: !!v.room, ticket: v.held.ticket });
 if (lsPlanQ === "gone" && planOrch)
   setTimeout(() => {
@@ -9365,19 +9369,46 @@ if (lsPlanQ === "gone" && planOrch)
     heldPlans = [];
     plansChanged();
   }, 4000);
+// ?lsPlan=roomgone: 5120 is a team room's area as the dialog opens, and stops being one a few seconds in (main doesn't
+// call that a plan change, so the dialog still shows it as a room's)
+if (lsPlanQ === "roomgone" && planOrch) {
+  const like = team.rooms.find((r) => r.admin === ME) ?? team.rooms[0];
+  if (like && !team.rooms.some((r) => r.groupKey === WIRE_AREA)) team.rooms.push({ ...clone(like), id: "R5120ccccccccccccccccc", name: "#5120 Donor export", groupKey: WIRE_AREA });
+  setTimeout(() => void (team.rooms = team.rooms.filter((r) => r.groupKey !== WIRE_AREA)), 4000);
+}
 Object.assign(api, {
   plansList: async () => heldPlans.flatMap((h) => {
     const v = planView(h);
     return v ? [v] : [];
   }),
+  // main's plans:viewing: a plan proposed while the dialog's open waits for it to close (?lsPlan=newer proposes one 2 s in)
+  plansViewing: async (id: string | null) => {
+    viewingPlan = id;
+    if (id && lsPlanQ === "newer" && newerAt === null)
+      setTimeout(() => {
+        if (viewingPlan !== id) return;
+        newerAt = Date.now();
+        plansChanged();
+      }, 2000);
+    if (!id && newerAt !== null) {
+      newerAt = null;
+      plansChanged();
+    }
+  },
   // main's plans:layOut: read and checked again, then made once: the steps not started, their wires, the steps only the
   // Orchestrator hands off to started with their prompts, its handoffs counted sent
-  plansLayOut: async (id: string, shownRaw: unknown): Promise<PlanLaidOut | { error: string }> => {
+  plansLayOut: async (id: string, shownRaw: unknown, at: { area?: unknown; room?: unknown } | undefined): Promise<PlanLaidOut | { error: string }> => {
     await startLag();
     const h = heldPlans.find((x) => x.id === id);
     if (!h) return err(spentPlans.get(id) ?? "That plan isn't held any more: it was laid out, dismissed or replaced.");
     const v = planView(h);
     if (!v) return err("Its Orchestrator was forgotten, so its plan can't be laid out.");
+    if (!at || at.area !== v.area || at.room !== v.room) {
+      plansChanged();
+      return err(
+        `The plan can't be laid out as it was shown: ${at?.area !== v.area ? "its Orchestrator has moved to another area since the plan was shown, so its steps would go there" : !v.room ? "its area isn't a team room's any more, as it was when the plan was shown: its steps wouldn't be room sessions, and its gates would be as the plan says" : "its area has become a team room's since the plan was shown: its steps would start as room sessions, and every gate would ask"}. Reopen it to see where it would go now.`
+      );
+    }
     let shown: Plan;
     let layout;
     try {

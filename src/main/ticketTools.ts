@@ -15,6 +15,7 @@ import { onlyArgs } from "./wireTools";
 import { oneLine, plainLine, quoted } from "../shared/team/agentText";
 import { BY_YOU, GATES, agentNamed, personTicks, stageLabel, ticketOfSession, type AgentTold, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
 import { ROOMS_STARTING } from "../shared/wires";
+import { INVISIBLE_RE } from "../shared/hiddenText";
 
 export interface TicketToolsOptions {
   pipeline: Pick<PipelineStore, "get" | "setStage" | "agentMove" | "holdRequest" | "dropRequest" | "agentPatchNotes">;
@@ -59,14 +60,13 @@ const isMap = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 
 export const ORCHESTRATOR_WRITES_NO_CODE = "an Orchestrator writes no code, so it has no pull request to ask for: the Coder of its plan asks for one.";
 
 /**
- * Why Orchestrator `me` can't move its ticket to `to`, or null for any other session: it reads, researches and plans,
- * so stakeholder testing, its approval and Done are never its to reach (the Verifier's, and the user's), whatever
- * stageRefusal would allow another agent.
+ * Why Orchestrator `me` can't move its ticket, or null for any other session: it reads, researches and plans while the
+ * ticket stays at BA. The Coder starting moves it to Coding, the steps move it on, and its approval and Done are the
+ * user's; an Orchestrator moving it, forward or back, would skip or undo theirs.
  */
-export function orchestratorRefusal(me: Pick<SessionInfo, "role">, to: unknown): string | null {
-  if (me.role !== "orchestrator") return null;
-  return to === "stakeholder" || to === "approved" || to === "done"
-    ? "An Orchestrator reads, researches and proposes the plan: stakeholder testing is the Verifier's to reach, and its approval and Done are the user's alone."
+export function orchestratorRefusal(me: Pick<SessionInfo, "role">): string | null {
+  return me.role === "orchestrator"
+    ? "An Orchestrator doesn't move its ticket: it stays at BA while you plan, the Coder starting moves it to Coding, the steps of your plan move it on, and its approval and Done are the user's."
     : null;
 }
 
@@ -75,13 +75,8 @@ export const agentBy = (me: Pick<SessionInfo, "title">): string => agentNamed(pl
 
 type Text = { text: string; count: number } | { refused: string };
 
-/**
- * Every format character (`\p{Cf}`, as plainLine strips): bidi controls and marks, zero-width characters, the soft
- * hyphen, tag characters and the like, which reorder or hide text where the user reads it and where it's posted. The
- * named range keeps U+2065, unassigned, out too; and the Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), letters by
- * Unicode's reckoning that draw as nothing.
- */
-export const INVISIBLE_RE = /[\p{Cf}\u2060-\u2069\u115f\u1160\u3164\uffa0]/gu;
+/** Every character that hides or reorders text where the user reads it and where it's posted (shared/hiddenText.ts). */
+export { INVISIBLE_RE };
 
 /**
  * An agent's text for the ticket's record, which others read once the user posts or opens it: invisible characters
@@ -194,7 +189,7 @@ export class TicketTools {
     if (extra) return { error: extra };
     const t = this.ticketOf(me, "moving this copy's ticket");
     if ("refused" in t) return { error: t.refused };
-    const own = orchestratorRefusal(me, args.stage);
+    const own = orchestratorRefusal(me);
     if (own) return { error: `#${t.id} wasn't moved: ${own}` };
     const note = args.note === undefined || args.note === null ? null : agentText("note", args.note, STAGE_NOTE_MAX);
     if (note && "refused" in note) return { error: note.refused };

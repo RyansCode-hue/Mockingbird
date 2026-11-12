@@ -4035,6 +4035,10 @@ button.ls-empty-link { pointer-events: auto; }
 .tp-foot button { padding: 5px 12px; font-size: 12px; white-space: nowrap; }
 /* ---- W17: an Orchestrator's plan in the picker (PlanPicker) ---- */
 .modal.tp-plan { width: 660px; }
+/* who wrote it is read whole: "written by others" is the point of the line */
+.tp-plan .tp-head { flex-wrap: wrap; row-gap: 2px; }
+.tp-plan .tp-prov { white-space: normal; overflow: visible; text-overflow: clip; }
+.modal .tp-check { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; margin: 0; font: 400 11.5px var(--ui); color: var(--text-2); text-transform: none; letter-spacing: normal; }
 .tp-plan .tp-sec { grid-template-columns: 64px minmax(0, 1fr); align-items: baseline; }
 .tp-summary { font: 400 12px/17px var(--ui); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 102px; overflow-y: auto; }
 .tp-note.amber { color: var(--amber); }
