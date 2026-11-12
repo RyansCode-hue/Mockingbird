@@ -79,6 +79,8 @@ export interface WorkspaceEnv {
   handoff: Can;
   brief: Can;
   secondOpinion: Can;
+  /** "Add terminal on its tree": a terminal in its folder, wired to it by a shared worktree wire. Absent where it isn't offered. */
+  addTerminal?: Can;
   close: () => void;
   resume: Can;
 }
@@ -180,6 +182,17 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
     },
     { section: "terminal", key: "undo", label: "Undo", menuLabel: "Undo the last turn…", icon: <UndoIcon />, ...can(tookIt(env.undo, "before undoing a turn here")) }
   );
+  // the Helpdesk tasks workspace takes no wires
+  if (env.addTerminal && s.role !== "tasks")
+    out.push({
+      section: "terminal",
+      key: "addTerminal",
+      label: "Add terminal",
+      menuLabel: "Add terminal on its tree",
+      icon: <PlusIcon />,
+      title: "A terminal in its folder, on its branch, wired to it: it closes when its worktree is cleaned up",
+      ...can(tookIt(env.addTerminal, "to add a terminal on its tree")),
+    });
   // the Helpdesk tasks workspace's conversation holds what its user saw on admin sites: nothing hands it on to another
   // session, so its menus, ⌘K, its selection bar and its context warning offer none of these
   if (s.role !== "tasks")

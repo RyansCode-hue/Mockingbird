@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "../src/main/handlers";
+import { binSettingsChanged, guarded, instructionFile, liveSessionsIn, rememberAnswer, samePath } from "../src/main/handlers";
 import type { SessionInfo } from "../src/shared/types";
 import { tempDir } from "./helpers";
 
@@ -33,15 +33,15 @@ describe("a worktree in use", () => {
     const link = path.join(tempDir("links"), "wt-link");
     fs.symlinkSync(wt, link);
     const list = [session("a", wt)];
-    expect(liveSessionIn(list, `${wt}/`)?.id).toBe("a");
-    expect(liveSessionIn(list, link)?.id).toBe("a");
-    expect(liveSessionIn(list, tempDir("other"))).toBeUndefined();
+    expect(liveSessionsIn(list, `${wt}/`).map((s) => s.id)).toEqual(["a"]);
+    expect(liveSessionsIn(list, link).map((s) => s.id)).toEqual(["a"]);
+    expect(liveSessionsIn(list, tempDir("other"))).toEqual([]);
   });
 
   it("doesn't count a session that has ended", () => {
     const wt = tempDir("wt");
-    expect(liveSessionIn([session("a", wt, "dead")], wt)).toBeUndefined();
-    expect(liveSessionIn([session("a", wt, "dead"), session("b", wt, "working")], wt)?.id).toBe("b");
+    expect(liveSessionsIn([session("a", wt, "dead")], wt)).toEqual([]);
+    expect(liveSessionsIn([session("a", wt, "dead"), session("b", wt, "working")], wt).map((s) => s.id)).toEqual(["b"]);
   });
 
   it("compares folders that are gone by their spelling", () => {

@@ -160,6 +160,21 @@ describe("a workspace's actions as a menu", () => {
     expect(actionOf(acts, "newTab")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back to add a tab beside it/) });
   });
 
+  it("offer Add terminal on its tree under Terminal, after Undo, where main.tsx gives it; off for a copy a teammate took over", () => {
+    const addTerminal = vi.fn<() => void>();
+    const acts = workspaceActions(sess(), env({ addTerminal }));
+    expect(rows(menuOf(acts)).slice(15, 21)).toEqual(["-", "# Terminal", "repaint", "diff", "undo", "addTerminal"]);
+    expect(actionOf(acts, "addTerminal")?.menuLabel).toBe("Add terminal on its tree");
+    usable(acts, "addTerminal")!.onPick();
+    expect(addTerminal).toHaveBeenCalledOnce();
+    const off = workspaceActions(sess({ shell: true }), env({ addTerminal: { no: "It's a terminal: add one from the agent whose tree it shares" } }));
+    expect(actionOf(off, "addTerminal")).toMatchObject({ disabled: true, title: "It's a terminal: add one from the agent whose tree it shares" });
+    const taken = workspaceActions(sess({ room: { takenOver: { byName: "Nick", at: 1 } } as never }), env({ addTerminal }));
+    expect(actionOf(taken, "addTerminal")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back to add a terminal on its tree/) });
+    // the Helpdesk tasks workspace takes no wires
+    expect(actionOf(workspaceActions(sess({ role: "tasks" }), env({ addTerminal })), "addTerminal")).toBeUndefined();
+  });
+
   it("keep an area's own rows in the section they're given, ready to join the model", () => {
     const area = inSection("area", [{ key: "rename", label: "Rename", onPick: vi.fn() }, "-", { key: "lock", label: "Lock", onPick: vi.fn() }]);
     expect(area.map((a) => [a.key, a.section])).toEqual([["rename", "area"], ["lock", "area"]]);

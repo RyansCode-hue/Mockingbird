@@ -300,6 +300,8 @@ const api = {
   wiresRemove: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:remove", id),
   wiresRestore: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:restore", id),
   wiresRekey: (old: string, next: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:rekey", old, next),
+  // "Add terminal on its tree": a terminal in the session's folder and group, wired to it by a shared worktree wire
+  wiresAddTerminal: (sessionId: string): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("wires:addTerminal", sessionId),
   // a person's Finish step: the summary as the popover shows it, from the session's latest message (wiresLastMessage)
   wiresFinish: (id: string, summary: string, verdict?: WireVerdict): Promise<IpcResult<FinishOutcome>> => ipcRenderer.invoke("wires:finish", id, summary, verdict),
   wiresLastMessage: (id: string): Promise<IpcResult<LatestMessage>> => ipcRenderer.invoke("wires:lastMessage", id),

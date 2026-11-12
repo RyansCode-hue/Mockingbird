@@ -24,6 +24,8 @@ import { git } from "../src/main/git";
 import { quote } from "../src/main/shell";
 import { probeRoomSandbox, type SandboxProbe, type SandboxVerdict } from "../src/main/claudeSandboxProbe";
 import { readVersionAt } from "../src/main/binPins";
+import { LandscapeStore } from "../src/main/landscape";
+import { WireService } from "../src/main/wires";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; emit(d: string): void; exit(code: number): void };
@@ -1118,6 +1120,34 @@ describe("room session launch", () => {
     expect(codex).toContain(`${JSON.stringify(folder)}="write"`);
     const term = ptyOf((await ryan.start({ shell: true, agent: undefined })).id);
     expect(term.args.join(" ")).not.toContain("/usr/bin/env");
+  });
+
+  it("starts the terminal added on a room session's tree in its room, under the room's rules for a terminal, and wires it there", async () => {
+    const { ryan } = await pair();
+    const s = await ryan.start();
+    await reportIn(ryan, s.id);
+    const store = new LandscapeStore({ file: path.join(tempDir("tree"), "landscape.json"), emit: () => {}, emitWires: () => {}, log: () => {} });
+    const wires = new WireService({
+      store,
+      sessions: ryan.sessions,
+      roomOf: (id) => ryan.live.roomOfSession(id),
+      roomsKnown: () => true,
+      takenOver: () => null,
+      outsideSandbox: (id) => ryan.live.outsideSandbox(id),
+      log: () => {},
+    });
+    const t = await wires.addTerminal(s, { create: (req) => ryan.sessions.create(req), forget: (id) => ryan.sessions.kill(id, true) });
+    expect(t).toMatchObject({ shell: true, cwd: s.cwd, taskGroup: "5110" });
+    expect(ryan.live.roomOfSession(t.id)).toBeTruthy();
+    expect(ryan.live.roomOfSession(t.id)).toBe(ryan.live.roomOfSession(s.id));
+    // a room's terminal: its hooks credit teammates and a claude started in it runs inline; no agent, so no agent's
+    // settings, tools or instructions, and never on the room's line
+    const p = ptyOf(t.id);
+    expect(p.env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
+    expect(p.env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBe("1");
+    expect(p.args).toEqual(["-il"]);
+    expect(ryan.sessions.guardsOf(t.id)).toEqual({ secrets: false, coauthors: true });
+    expect(Object.values(wires.get().book!.links)).toEqual([expect.objectContaining({ from: s.id, to: t.id, type: "worktree" })]);
   });
 
   it("runs a Claude conversation a terminal brings back under the room's settings, the terminal itself still unguarded", async () => {

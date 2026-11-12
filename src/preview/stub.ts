@@ -8741,6 +8741,24 @@ Object.assign(api, {
     const refused = rekeyRefusal(wireBook, moved, old, next, wireEnds());
     return refused ? { refused } : wireChanged(moved);
   },
+  // W7, as main's WireService.addTerminal: refused before it starts when the wire couldn't be made, else a terminal in
+  // the agent's folder and group, wired to it by a shared worktree wire
+  wiresAddTerminal: async (id: string) => {
+    const s = byId(id);
+    if (!s) return err("Session is no longer running");
+    const ends = wireEnds();
+    const agent = ends.end(id);
+    const next = "\0terminal";
+    const probe = agent && { ...agent, id: next, title: "its terminal", kind: "terminal" as const, debrief: false, tasks: false, where: "running" as const };
+    const refused = wireRefusal(id, next, "worktree", { links: wireBook.links, end: (x) => (x === next ? probe : ends.end(x)) });
+    if (refused) return err(refused);
+    const made: SessionInfo = await api.createSession({ repoPath: s.repoPath, useWorktree: false, shell: true, title: `${s.ticketTitle ?? s.title} · terminal`, taskGroup: s.taskGroup ?? undefined });
+    const t: SessionInfo = { ...made, cwd: s.cwd, repoPath: s.repoPath, branch: s.branch };
+    sessions = sessions.map((x) => (x.id === t.id ? t : x));
+    sessionsChanged();
+    const r = await api.wiresAdd(id, t.id, "worktree");
+    return "refused" in r ? err(r.refused) : t;
+  },
   // a gate's acts: nothing in the preview runs an agent to send to, and nothing waits at a gate here
   wiresSend: async (_id: string, _pendingId: string, _body: string, _opts?: { start?: boolean }): Promise<SendReply> => ({ refused: "The preview doesn't send along wires." }),
   wiresSendAgain: async (_id: string, _pendingId: string, _body: string, _opts?: { start?: boolean }): Promise<SendReply> => ({ refused: "The preview doesn't send along wires." }),

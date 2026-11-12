@@ -5,7 +5,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { WireService } from "../src/main/wires";
-import type { SessionInfo } from "../src/shared/types";
+import { freeWorktree } from "../src/main/handlers";
+import type { NewSessionRequest, SessionInfo } from "../src/shared/types";
 import { MESSAGE_ROOM_LINE, newWire, ROOM_LINE, ROOMS_STARTING, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
 import { askAs, askRaw, startServer, testLaunch } from "./mcpClient";
 import { tempDir } from "./helpers";
@@ -112,6 +113,144 @@ describe("making a wire", () => {
     expect(refusal(service.add("b", "a", "context"))).toMatch(/continues on Nick's laptop/);
     // across the line the room rule comes first, so nothing about the far end is said
     expect(refusal(service.add("a", "c", "context"))).toBe(ROOM_LINE);
+  });
+});
+
+describe("a terminal on its tree", () => {
+  /** setup()'s, with `create` making a terminal as main's would (running from then on) and `forget` taking it away. */
+  function tree(opts: Parameters<typeof setup>[0] = {}) {
+    const t = setup(opts);
+    const asked: NewSessionRequest[] = [];
+    const forgot: string[] = [];
+    let during = () => {};
+    const create = async (req: NewSessionRequest) => {
+      asked.push(req);
+      const made = session(`t${asked.length}`, { shell: true, agent: undefined, title: req.title!, cwd: req.cwd!, repoPath: req.repoPath, branch: req.branchName ?? null, taskGroup: req.taskGroup ?? null });
+      t.running.push(made);
+      during();
+      return made;
+    };
+    const forget = (id: string) => {
+      forgot.push(id);
+      t.running.splice(t.running.findIndex((x) => x.id === id), 1);
+    };
+    const agent = (id: string) => t.running.find((x) => x.id === id)!;
+    return { ...t, asked, forgot, agent, d: { create, forget }, meanwhile: (f: () => void) => (during = f) };
+  }
+
+  it("starts in the agent's folder and group, on its branch, and is wired to it there", async () => {
+    const { service, file, asked, agent, d } = tree();
+    agent("a").ticketTitle = "Donor export";
+    const t = await service.addTerminal(agent("a"), d);
+    expect(asked).toEqual([{ repoPath: "/code/a", cwd: "/w/a", branchName: "b", useWorktree: false, taskGroup: "5038", shell: true, title: "Donor export · terminal" }]);
+    expect(Object.values(onDisk(file).wires.links)).toEqual([expect.objectContaining({ from: "a", to: t.id, type: "worktree" })]);
+    expect(service.onTree(t.id)).toBe(true);
+    expect(service.onTree("a")).toBe(false);
+  });
+
+  it.each([
+    ["a terminal", "term", undefined, /from an agent to a terminal/],
+    ["a debrief", "brief", undefined, /debrief/],
+    ["the Helpdesk tasks workspace", "helpdesk", undefined, /Helpdesk tasks workspace/],
+    ["a copy a teammate took over", "a", { takenOver: { a: "it continues on Nick's laptop" } }, /continues on Nick's laptop/],
+  ])("is refused for %s before anything starts", async (_what, from, opts, why) => {
+    const { service, agent, asked, changes, d } = tree(opts);
+    await expect(service.addTerminal(agent(from), d)).rejects.toThrow(why);
+    expect(asked).toEqual([]);
+    expect(changes).toEqual([]);
+  });
+
+  it.skipIf(asRoot)("is refused before it starts while the book can't be written", async () => {
+    const { service, file, agent, asked, d } = tree();
+    fs.chmodSync(file, 0o444);
+    try {
+      await expect(service.addTerminal(agent("a"), d)).rejects.toThrow(/read-only/);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  it("is stopped and forgotten when its wire is refused once it has started, saying why", async () => {
+    const { service, agent, takenOver, forgot, running, d, meanwhile } = tree();
+    meanwhile(() => (takenOver.a = "it continues on Nick's laptop"));
+    await expect(service.addTerminal(agent("a"), d)).rejects.toThrow(/continues on Nick's laptop/);
+    expect(forgot).toEqual(["t1"]);
+    expect(running.some((x) => x.id === "t1")).toBe(false);
+    expect(service.get().book!.links).toEqual({});
+  });
+
+  it("wires an existing terminal only in its agent's own folder, as the filesystem resolves it", () => {
+    const { service, agent, dir } = tree();
+    const wt = path.join(dir, "wt");
+    const other = path.join(dir, "wt-other");
+    fs.mkdirSync(path.join(other, "src"), { recursive: true });
+    fs.mkdirSync(wt);
+    fs.symlinkSync(other, path.join(dir, "wt-link"));
+    agent("a").cwd = wt;
+    // a link that reads like a worktree's, to another one
+    agent("term").cwd = path.join(dir, "wt-link");
+    expect(refusal(service.add("a", "term", "worktree"))).toMatch(/runs in another folder/);
+    // a folder inside the agent's isn't the agent's
+    agent("a").cwd = path.join(dir, "wt-link");
+    agent("term").cwd = path.join(other, "src");
+    expect(refusal(service.add("a", "term", "worktree"))).toMatch(/runs in another folder/);
+    // the agent through the link and the terminal in the folder it names are one folder
+    agent("term").cwd = other;
+    expect(made(service.add("a", "term", "worktree")).id).toBeTruthy();
+  });
+});
+
+describe("a worktree's cleanup", () => {
+  /** setup()'s, with a worktree at `wt` its agent `a` was closed in, as the close dialog closes it before cleaning up. */
+  function worktree(opts: Parameters<typeof setup>[0] = {}) {
+    const t = setup(opts);
+    const wt = path.join(t.dir, "wt");
+    fs.mkdirSync(wt);
+    const at = (id: string, over: Partial<SessionInfo>) => Object.assign(t.running.find((x) => x.id === id)!, { cwd: wt, ...over });
+    at("a", {});
+    at("term", {});
+    const closed: string[] = [];
+    const free = (folder = wt) => freeWorktree(folder, { sessions: t.running, onTree: (id) => t.service.onTree(id), close: (id) => closed.push(id) });
+    return { ...t, wt, at, closed, free };
+  }
+
+  it("closes the terminals on its tree first, however its path is spelled; one that has exited is left as it is", () => {
+    const { service, running, at, closed, free, wt, dir } = worktree();
+    made(service.add("a", "term", "worktree"));
+    at("a", { status: "dead" });
+    running.push(session("old-term", { shell: true, cwd: wt, status: "dead" }));
+    fs.symlinkSync(wt, path.join(dir, "wt-link"));
+    free(path.join(dir, "wt-link"));
+    expect(closed).toEqual(["term"]);
+  });
+
+  it("is still refused by any other session there, closing nothing: the agent, a terminal not on its tree, a companion", () => {
+    const { service, running, at, closed, free, wt } = worktree();
+    const { id } = made(service.add("a", "term", "worktree"));
+    expect(() => free()).toThrow(`"a" is still running in that worktree — close it first`);
+    at("a", { status: "dead" });
+    running.push(session("dev", { shell: true, cwd: wt, title: "Dev server" }));
+    expect(() => free()).toThrow(`"Dev server" is still running in that worktree`);
+    running.pop();
+    running.push(session("review", { cwd: wt, ticketTitle: "Review · Donor export" }));
+    expect(() => free()).toThrow(`"Review · Donor export" is still running in that worktree`);
+    running.pop();
+    // its wire gone, it's a terminal there like any other
+    made(service.remove(id));
+    expect(() => free()).toThrow(`"term" is still running in that worktree`);
+    expect(closed).toEqual([]);
+  });
+
+  it("goes by the session as well as the book: an agent a book names as a worktree wire's terminal, or a terminal at the end of another kind, still holds it", () => {
+    const wires = { wv: 1, links: { odd: { from: "a", to: "b", type: "worktree", when: "manual", gate: "ask", createdAt: 1 }, other: { from: "a", to: "term", type: "context", when: "manual", gate: "ask", createdAt: 2 } }, notes: {} };
+    const { at, closed, free } = worktree({ wires });
+    at("a", { status: "dead" });
+    at("b", {});
+    expect(() => free()).toThrow(`"b" is still running in that worktree`);
+    at("b", { status: "dead" });
+    expect(() => free()).toThrow(`"term" is still running in that worktree`);
+    expect(closed).toEqual([]);
   });
 });
 

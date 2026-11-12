@@ -10,6 +10,7 @@ export const UNTAKEN_CALLS = {
   "turns:restore": "putting this copy's files back",
   "usage:briefStart": "starting a fresh session from this copy",
   "wires:finish": "finishing this copy's step",
+  "wires:addTerminal": "adding a terminal on this copy's tree",
 } as const;
 
 export type UntakenCall = keyof typeof UNTAKEN_CALLS;

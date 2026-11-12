@@ -1,9 +1,9 @@
 import { randomUUID } from "crypto";
 import type { LandscapeStore } from "./landscape";
 import type { Reply } from "./messaging";
-import { canonical } from "./handlers";
+import { canonical, companionRequest } from "./handlers";
 import { LandscapeShapeError, own, put } from "../shared/landscape";
-import type { SessionInfo } from "../shared/types";
+import type { NewSessionRequest, SessionInfo } from "../shared/types";
 import {
   createdAtAfter,
   gateOf,
@@ -228,6 +228,49 @@ export class WireService {
       const refused = rekeyRefusal(book, moved, old, next, this.context(moved, kept));
       return refused ? { refused } : { book: moved };
     });
+  }
+
+  /**
+   * "Add terminal on its tree": a terminal started (`create`) in agent `s`'s folder and group, as its companions are,
+   * and wired to it by a shared worktree wire. Refused before it starts when such a wire couldn't be made now. One
+   * started that the wire is still refused for (the book changed meanwhile) is stopped and forgotten (`forget`), and
+   * the refusal is thrown.
+   */
+  async addTerminal(s: SessionInfo, d: { create(req: NewSessionRequest): Promise<SessionInfo>; forget(id: string): void }): Promise<SessionInfo> {
+    const refused = this.terminalRefusal(s);
+    if (refused) throw new Error(refused);
+    const t = await d.create(companionRequest(s, { shell: true, title: `${s.ticketTitle ?? s.title} · terminal` }));
+    const r = this.add(s.id, t.id, "worktree");
+    if (!("refused" in r)) return t;
+    try {
+      d.forget(t.id);
+    } catch (err) {
+      this.o.log(`wires: terminal ${t.id} wasn't wired to ${s.id}, and couldn't be closed`, err);
+    }
+    throw new Error(r.refused);
+  }
+
+  /** Why a terminal on agent `s`'s tree couldn't be wired to it now, asked before one starts: wireRefusal with the terminal to be. */
+  private terminalRefusal(s: SessionInfo): string | null {
+    const unwritable = this.o.store.wiresWriteRefusal();
+    if (unwritable) return unwritable;
+    const state = this.o.store.wires();
+    if (!state.book) return state.refused ?? "Wires can't be read right now.";
+    const ctx = this.context(state.book);
+    const agent = ctx.end(s.id);
+    if (!agent) return `This Mac has no session "${s.id}".`;
+    const next = "\0terminal";
+    const terminal: WireEnd = { ...agent, id: next, title: "its terminal", kind: "terminal", debrief: false, tasks: false, takenOver: null, outsideSandbox: false, where: "running", placed: true, hooksSilent: false };
+    return wireRefusal(s.id, next, "worktree", { ...ctx, end: (id) => (id === next ? terminal : ctx.end(id)) });
+  }
+
+  /**
+   * Whether session `id` is the terminal of a shared worktree wire: on its agent's tree, so it closes with that worktree
+   * rather than holding it (freeWorktree). False while the book can't be read: then it holds it, as any session does.
+   */
+  onTree(id: string): boolean {
+    const book = this.o.store.wires().book;
+    return !!book && Object.values(book.links).some((w) => w.type === "worktree" && w.to === id);
   }
 
   /**

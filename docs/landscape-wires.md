@@ -2332,6 +2332,101 @@ follows. The words are wrong; nothing unsafe happens.
 - Tests: refusal on another folder; cleanup closes the terminal; a session that
   isn't wired still blocks. Board: Inbox.dc.html's stub, Focus's Attached.
 
+#### W7 as built
+
+**Add terminal on its tree** (`wires:addTerminal`, `WireService.addTerminal`).
+- The request is `companionRequest(s, { shell: true, title: "<title> · terminal" })`
+  (handlers.ts): the agent's folder, branch and group, no worktree. A handoff's,
+  brief's and review's sessions (`companionSession`) are built by it too.
+- In the agent's group, it launches as any terminal in a team room does
+  (`roomLaunch` with no agent): the room's git hooks and pins, inline running for a
+  claude started by hand in it, and no agent settings, tools or instructions. It's
+  unguarded and never on the room's line, as W20's M2 has terminals. It's in the
+  agent's room, so the wire doesn't cross the line.
+- It's refused before anything starts when the wire couldn't be made now:
+  `wireRefusal` with the terminal to be standing in for it (the agent's end, as a
+  terminal), after `wiresWriteRefusal`. So a terminal, a debrief, the Helpdesk tasks
+  workspace, a copy taken over, a room session outside its sandbox, rooms still
+  starting and a book that can't be written all refuse without a terminal appearing.
+- If the wire is still refused once the terminal has started (the book changed
+  meanwhile), the terminal is killed and forgotten, and the refusal is thrown.
+- It's in `UNTAKEN_CALLS` ("adding a terminal on this copy's tree"), so
+  `untakenHandler` refuses a copy a teammate took over before any of this.
+
+**Wiring an existing terminal** needs no new code: W1's rule already compares the
+two ends' `canonical` folders. W7 tests it with a link that names another folder, a
+folder inside the agent's, and the agent through a link with the terminal in the
+folder it names (allowed).
+
+**Cleanup** (`freeWorktree`, handlers.ts, behind `assertWorktreeFree`, so
+`worktree:cleanup`, `worktrees:remove` and `worktrees:migrate` alike):
+- The live sessions in the folder, by canonical path, are read once. If any isn't a
+  terminal that `WireService.onTree` names (the `to` of a shared worktree wire),
+  the first is refused as before and nothing is closed.
+- Otherwise each terminal is closed (`sessions.kill(id, false)`) before the worktree
+  is touched.
+- `onTree` is false while the book can't be read, so a terminal then holds the
+  worktree as any session does.
+- A closed terminal keeps its ghost as a closed session does. The close dialog
+  forgets its own session after cleaning up, and the terminal's wire goes with that
+  (`sessionForgotten`), but the terminal's ghost stays to Forget or reopen.
+- After a migrate, a closed terminal follows its worktree like any record there.
+
+**The window.**
+- `workspaceActions` gets an optional `addTerminal: Can` and its own row, pushed on
+  its own after the Terminal section's: "Add terminal on its tree" (chip label "Add
+  terminal", ＋). It's off, saying why, for a copy taken over (`tookIt`), and not
+  offered on the Helpdesk tasks workspace.
+- main.tsx's `wsEnv` turns it off for a terminal, a teammate's session, and one
+  outside git (nothing for it to share). Otherwise it calls `startFrom`, which
+  `startReview` now shares: a place hint, the call, the workspace revealed or the
+  refusal alerted.
+- `placeBesideOf(s, under)` aims the new workspace under the agent's tile, as Tidy
+  puts one (W10). Where that's taken it lands at the nearest free place in the area.
+- The preview stub's `wiresAddTerminal` applies the same pre-check, makes the
+  terminal in the agent's folder and wires it.
+
+**Checked in the preview** (port 5321, built-in browser, 1400 × 900): s1's ⋯ shows
+the row under Terminal after "Undo the last turn…". Picking it made "Org dropdowns
+remember the last org · terminal" in #5101 with the thick gray stub from s1. The
+column under s1 was full, so it went to the nearest free place, and the stub runs
+there. In focus, the strip's Attached shows it as a chip with its dot, as Focus's
+Attached board does.
+
+**Tests:**
+- `test/wireService.test.ts`, "a terminal on its tree": the request and the wire.
+  Refused before anything starts for a terminal, a debrief, the Helpdesk tasks
+  workspace, a copy taken over and a read-only file. Stopped and forgotten when the
+  wire is refused once started. Existing terminals in another folder are refused
+  through a link and in a subfolder, and allowed through a link to the same one.
+- `test/wireService.test.ts`, "a worktree's cleanup": the wired terminal is closed
+  through a symlinked path, an exited terminal and the closed agent left alone. The
+  running agent, an unwired terminal, a companion, and the terminal once its wire is
+  removed each still refuse, closing nothing. So do an agent a hand-written book
+  names as a worktree wire's terminal, and a terminal at the end of a context wire.
+- `test/teamLivePanes.test.ts`: a room session's added terminal is in its room, has
+  the room's hooks and inline env, runs a bare login shell, is guarded
+  `{ secrets: false, coauthors: true }`, and is wired.
+- `test/workspaceActions.test.ts`: the row's place, label and handler; off for a
+  terminal and a copy taken over; absent on the Helpdesk tasks workspace.
+  `uiLandscapeBar` and `uiLandscapeTools` gain the row in every workspace menu, off
+  on a terminal and a teammate's session, and refused with the take-back reason.
+- `takenOverGuard`/`teamTakeover` cover the new untaken call through their loop.
+- The mutation check undid each folder and cleanup guard in turn, 13 in all: the
+  folder rule, canonical folders, the request's folder and the pre-check's, the
+  shell and wire tests in `freeWorktree`, `onTree`'s type and end, exited sessions,
+  refusing before closing, closing at all, and the request's group (the room rules).
+  The tests caught every one.
+
+**Deviations:**
+- `liveSessionIn` became `liveSessionsIn` (all of them), since cleanup must see
+  every session in the folder.
+- The cleanup's guard covers remove and migrate as well as cleanup: it's the one
+  guard they share.
+- A cleaned-up terminal's ghost isn't forgotten with the worktree. Forgetting it
+  needs the window's ghost patch, which the close dialog does only for its own
+  session.
+
 ### W8 · Add next step and not-started workspaces. Size L
 - `SessionInfo.planned`: a record with no pty or worktree. It's kept out of
   `resumable()`, so rooms never publish it (`livePanes.ts:489`); a new `planned()`

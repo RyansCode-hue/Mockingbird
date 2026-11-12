@@ -87,7 +87,7 @@ interface Review {
 const WORKSPACE_MENU = [
   "# Session", "Rename…", "Mute notifications", "Move to area…", "Size S", "Size M", "Size L", "New tab…",
   "-", "# Tools", "Files [⇧⌘E]", "Changes [⌃⇧G]", "Search [⇧⌘F]", "Run & debug [⇧⌘D]", "Artifacts",
-  "-", "# Terminal", "Repaint", "Hide the agent's diff panel (off)", "Undo the last turn…",
+  "-", "# Terminal", "Repaint", "Hide the agent's diff panel (off)", "Undo the last turn…", "Add terminal on its tree",
   "-", "# Hand on", "Continue in Codex…", "Fresh session from a brief…", "Second opinion from Codex",
   "-", "Close…",
 ];
@@ -235,9 +235,9 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     // teammate's session have no agent to hand on
     expect(r.menus.y1).toEqual(expect.arrayContaining(["Take it back", "Resume (off)", "Close & clean up…"]));
     expect(r.menus.y1).not.toContain("Resume");
-    expect(r.menus.s4).toEqual(expect.arrayContaining(["Undo the last turn… (off)", "Continue in Codex… (off)", "Fresh session from a brief… (off)", "Second opinion from Codex (off)"]));
+    expect(r.menus.s4).toEqual(expect.arrayContaining(["Undo the last turn… (off)", "Add terminal on its tree (off)", "Continue in Codex… (off)", "Fresh session from a brief… (off)", "Second opinion from Codex (off)"]));
     expect(r.menus.teammate).toEqual(
-      expect.arrayContaining(["Files (off) [⇧⌘E]", "Changes (off) [⌃⇧G]", "Search (off) [⇧⌘F]", "Run & debug (off) [⇧⌘D]", "Undo the last turn… (off)", "Continue in Codex… (off)", "Close… (off)"])
+      expect.arrayContaining(["Files (off) [⇧⌘E]", "Changes (off) [⌃⇧G]", "Search (off) [⇧⌘F]", "Run & debug (off) [⇧⌘D]", "Undo the last turn… (off)", "Add terminal on its tree (off)", "Continue in Codex… (off)", "Close… (off)"])
     );
     // a docked Chat's ⧉ keeps the room rule
     expect(r.dockedChat).toEqual({ stillDocked: true, said: expect.stringMatching(/isn't a team room/) });

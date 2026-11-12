@@ -70,7 +70,7 @@ import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
 import { claudeRunner, freeForResume } from "./claudeBackground";
-import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
+import { binSettingsChanged, companionRequest, freeWorktree, guarded, instructionFile, rememberAnswer, samePath } from "./handlers";
 import { TeamService, type RoomCleanup } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
 // team rooms: the Radley House board (importing it registers the board's room events, before any room log loads)
@@ -818,10 +818,9 @@ ipcMain.on("session:audit", (_e, id, kind, data) =>
 );
 ipcMain.on("session:resize", (_e, id, cols, rows) => sessions.resize(id, cols, rows));
 
-/** A worktree is shared on purpose (a handoff's or review's session runs in the same folder): removing it from under one that's live breaks it. */
+/** A worktree is shared on purpose (a handoff's or review's session runs in the same folder): its terminals on the tree close, any other session there refuses. */
 function assertWorktreeFree(wtPath: string): void {
-  const s = liveSessionIn(sessions.list(), wtPath);
-  if (s) throw new Error(`"${s.ticketTitle ?? s.title}" is still running in that worktree — close it first`);
+  freeWorktree(wtPath, { sessions: sessions.list(), onTree: (id) => wires.onTree(id), close: (id) => sessions.kill(id, false) });
 }
 handle("repos:list", () => indexRepos(store.settings.repoRoots));
 handle("worktree:state", (wtPath) => worktreeState(wtPath));
@@ -1424,6 +1423,10 @@ handle("wires:set", (id, settings) => wires.set(id, settings));
 handle("wires:remove", (id) => wires.remove(id));
 handle("wires:restore", (id) => wires.restore(id));
 handle("wires:rekey", (old, next) => wires.rekey(old, next));
+handle(
+  "wires:addTerminal",
+  untakenHandler("wires:addTerminal", untaken, (s) => wires.addTerminal(s, { create: (req) => sessions.create(req), forget: (id) => sessions.kill(id, true) }))
+);
 // the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an
 // agent is told of its wires as it launches
 const wireTools: WireTools = new WireTools({
@@ -1612,16 +1615,7 @@ handle("pipeline:pr:create", (sessionId, ticketId, req) =>
 // ---- continue in the other agent: a handoff written from the session's conversation ----
 /** A session of `agent` in `s`'s folder and group, on its branch as it stands (no worktree of its own), started with `initialPrompt`. */
 function companionSession(s: SessionInfo, agent: AgentKind, title: string, initialPrompt: string): Promise<SessionInfo> {
-  return sessions.create({
-    repoPath: s.repoPath,
-    cwd: s.cwd,
-    branchName: s.branch ?? undefined,
-    useWorktree: false,
-    agent,
-    title,
-    taskGroup: s.taskGroup ?? undefined,
-    initialPrompt,
-  });
+  return sessions.create(companionRequest(s, { agent, title, initialPrompt }));
 }
 // the agent taking over writes the handoff: the one handing over may be out of usage
 handle("handoff:draft", async (id) => {

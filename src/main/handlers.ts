@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import type { SessionInfo, Settings } from "../shared/types";
+import type { NewSessionRequest, SessionInfo, Settings } from "../shared/types";
 import { expandHome } from "./store";
 
 /**
@@ -33,11 +33,36 @@ export function canonical(p: string): string {
 
 export const samePath = (a: string, b: string) => canonical(a) === canonical(b);
 
-/** A session still running in `folder`, if any — worktrees are shared by a handoff's or review's companion session. */
-export function liveSessionIn(sessions: SessionInfo[], folder: string): SessionInfo | undefined {
+/** The sessions still running in `folder` — worktrees are shared by a handoff's or review's companion session. */
+export function liveSessionsIn(sessions: SessionInfo[], folder: string): SessionInfo[] {
   const want = canonical(folder);
-  return sessions.find((s) => s.status !== "dead" && canonical(s.cwd) === want);
+  return sessions.filter((s) => s.status !== "dead" && canonical(s.cwd) === want);
 }
+
+/**
+ * Make worktree `folder` free to remove or move. A session still running there holds it, since removing it from under
+ * one breaks it, and is refused, closing nothing. A terminal on its agent's tree (`onTree`: a shared worktree wire's
+ * terminal) is the worktree's own, so it's closed (`close`) instead, keeping its ghost as a closed session does.
+ */
+export function freeWorktree(folder: string, d: { sessions: SessionInfo[]; onTree: (id: string) => boolean; close: (id: string) => void }): void {
+  const here = liveSessionsIn(d.sessions, folder);
+  const holds = here.find((s) => !(s.shell && d.onTree(s.id)));
+  if (holds) throw new Error(`"${holds.ticketTitle ?? holds.title}" is still running in that worktree — close it first`);
+  for (const s of here) d.close(s.id);
+}
+
+/**
+ * A session in `s`'s folder and group, on its branch as it stands (no worktree of its own): a handoff's, brief's or
+ * review's, or a terminal on its tree. In its group, it launches under its team room's rules as `s` did.
+ */
+export const companionRequest = (s: SessionInfo, rest: Omit<NewSessionRequest, "repoPath" | "useWorktree">): NewSessionRequest => ({
+  repoPath: s.repoPath,
+  cwd: s.cwd,
+  branchName: s.branch ?? undefined,
+  useWorktree: false,
+  taskGroup: s.taskGroup ?? undefined,
+  ...rest,
+});
 
 /** The instruction file the CLAUDE.md editor may read and write: an absolute path to a file named CLAUDE.md. */
 export function instructionFile(p: unknown): string {

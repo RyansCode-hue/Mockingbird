@@ -1507,22 +1507,21 @@ function App() {
     const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
     return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
   };
-  /**
-   * A second opinion: the other agent reviews `author`'s branch and messages its findings back. It opens beside it, in
-   * its area. Returns why it couldn't start.
-   */
-  const startReview = async (author: SessionInfo): Promise<string | null> => {
-    placeBesideOf(author);
-    const info = await window.mb.reviewStart(author.id);
+  /** A session main starts from `author` (`start`), placed beside or under its workspace in its area and shown. Returns why it couldn't start. */
+  const startFrom = async (author: SessionInfo, start: () => Promise<IpcResult<SessionInfo>>, what: string, under = false): Promise<string | null> => {
+    placeBesideOf(author, under);
+    const info = await start();
     if (isErr(info)) {
       setPlaceHint(null);
-      return `Couldn't start the review: ${info.error}`;
+      return `Couldn't ${what}: ${info.error}`;
     }
     await refresh();
     setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
     revealWorkspace(info.id);
     return null;
   };
+  /** A second opinion: the other agent reviews `author`'s branch and messages its findings back. It opens beside it. */
+  const startReview = (author: SessionInfo) => startFrom(author, () => window.mb.reviewStart(author.id), "start the review");
   /** Workspace `t` at size preset `p` (Size S/M/L), where it is when that's clear (planResizeTile); a refusal is said. */
   const resizeWorkspace = (key: string, p: SizePreset) => {
     const l = lsNow.current?.landscape;
@@ -1533,10 +1532,13 @@ function App() {
     if ("refused" in plan) return lsSay(plan.refused);
     void lsChange(plan.patch, `${titleOf(t.front)}'s size`);
   };
-  /** A session that goes on from `s` (or reviews it), made from now on: beside its workspace on the landscape, however long it takes to make (resolveLayout's PlaceHint). */
-  const placeBesideOf = (s: SessionInfo) => {
+  /**
+   * A session that goes on from `s` (or reviews it), made from now on: beside its workspace on the landscape, however
+   * long it takes to make (resolveLayout's PlaceHint); a terminal on its tree goes `under` it, as Tidy puts one.
+   */
+  const placeBesideOf = (s: SessionInfo, under = false) => {
     const t = tileOfSession(s.id);
-    setPlaceHint(t ? { area: t.area, at: { x: t.rect.x + t.rect.w + GAP, y: t.rect.y }, since: Date.now() } : null);
+    setPlaceHint(t ? { area: t.area, at: under ? { x: t.rect.x, y: t.rect.y + t.rect.h + GAP } : { x: t.rect.x + t.rect.w + GAP, y: t.rect.y }, since: Date.now() } : null);
   };
   /** Plan `plan` carried out (carryPlan), or its refusal said. Whether it was. */
   const carry = async (plan: AreaPlan, what: string): Promise<boolean> => {
@@ -1608,6 +1610,13 @@ function App() {
       handoff: noAgent ? { no: noAgent } : () => (placeBesideOf(s), setHandoffFor(s)),
       brief: noAgent ? { no: noAgent } : () => (placeBesideOf(s), setBriefFor(s)),
       secondOpinion: noAgent ? { no: noAgent } : !s.repoPath ? { no: "It isn't in a git repository: a second opinion reviews its branch" } : () => void startReview(s).then((e) => e && alert(e)),
+      addTerminal: s.shell
+        ? { no: "It's a terminal: add one from the agent whose tree it shares" }
+        : owner
+          ? { no: `${owner}'s session: only its owner adds a terminal on its tree` }
+          : !s.repoPath
+            ? { no: "It isn't in a git repository, so it has no tree to add a terminal on" }
+            : () => void startFrom(s, () => window.mb.wiresAddTerminal(s.id), "add a terminal on its tree", true).then((e) => e && alert(e)),
       close: () => requestClose(s),
       // a copy a teammate took over is taken back, not resumed or worked on: the model refuses those (workspaceActions)
       resume: () => resumeDead(s),

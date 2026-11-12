@@ -105,7 +105,7 @@ async function run<T>(part: string, query = "", size = "1400x900"): Promise<T> {
 const WORKSPACE_MENU = [
   "# Session", "Rename…", "Mute notifications", "Move to area…", "Size S", "Size M", "Size L", "New tab…",
   "-", "# Tools", "Files [⇧⌘E]", "Changes [⌃⇧G]", "Search [⇧⌘F]", "Run & debug [⇧⌘D]", "Artifacts",
-  "-", "# Terminal", "Repaint", "Hide the agent's diff panel (off)", "Undo the last turn…",
+  "-", "# Terminal", "Repaint", "Hide the agent's diff panel (off)", "Undo the last turn…", "Add terminal on its tree",
   "-", "# Hand on", "Continue in Codex…", "Fresh session from a brief…", "Second opinion from Codex",
   "-", "Close…",
 ];
@@ -184,8 +184,8 @@ describe.skipIf(!local)("the selection bar", () => {
 
     // taken over by a teammate: its turns and hand-on off in the bar's ⋯, saying why
     expect(b.takenOver.bar).toBe("Donor entity model");
-    expect(b.takenOver.rows).toEqual(expect.arrayContaining(["Undo the last turn… (off)", "Continue in Codex… (off)", "Resume (off)", "Take it back"]));
-    for (const row of ["Undo the last turn…", "Continue in Codex…", "Fresh session from a brief…", "Second opinion from Codex", "Resume"]) expect(b.takenOver.why[row], row).toMatch(TAKEN_BACK);
+    expect(b.takenOver.rows).toEqual(expect.arrayContaining(["Undo the last turn… (off)", "Add terminal on its tree (off)", "Continue in Codex… (off)", "Resume (off)", "Take it back"]));
+    for (const row of ["Undo the last turn…", "Add terminal on its tree", "Continue in Codex…", "Fresh session from a brief…", "Second opinion from Codex", "Resume"]) expect(b.takenOver.why[row], row).toMatch(TAKEN_BACK);
 
     // three Shift-clicked (one of them the api stack): their bar; its right-click and a picked card's the same menu;
     // Close… asks first, listing every tab of the stack that's this Mac's
