@@ -252,6 +252,8 @@ const lowerFirst = (s: string): string => (s.startsWith("“") ? s : s.charAt(0)
 const STATUS_WORD: Record<Exclude<SessionStatus, "dead">, string> = { working: "working", waiting: "waiting for you", idle: "idle" };
 /** Where a not-started step starts (SessionManager.stepPlace): create()'s say in it. */
 type StepWhere = Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "useWorktree" | "baseBranch" | "startAt">;
+/** A session a not-started step starts from (its folder, or its commit), and what of it: "in “Builder”'s folder". */
+type StepUse = { id: string; what: string };
 /** The commit a not-started step starts at, from the step before it (SessionManager.upstreamCommit), or why there's none. */
 type UpstreamCommit = { sha: string; branch: string | null; of: string; dirty: number; gone: boolean } | { why: string };
 
@@ -561,9 +563,10 @@ export class SessionManager {
   }
 
   /**
-   * Start a pane. `notice` is shown in it above the agent's output (see paneNotice).
+   * Start a pane. `notice` is shown in it above the agent's output (see paneNotice). `beforeSpawn` runs as the pty is
+   * about to start, after every await in preparing it: what it throws is the launch's failure, nothing having started.
    */
-  async create(req: NewSessionRequest, opts: { notice?: string } = {}): Promise<SessionInfo> {
+  async create(req: NewSessionRequest, opts: { notice?: string; beforeSpawn?: () => void } = {}): Promise<SessionInfo> {
     this.refuseWhileQuitting();
     const tasks = req.role === "tasks";
     if (tasks) await this.mayStartTasks(req);
@@ -655,6 +658,7 @@ export class SessionManager {
     this.refuseWhileQuitting(); // shutdown may have begun while this launch was being prepared
     // a teammate may have taken the session over meanwhile: stopping it then found nothing live to stop
     if (req.reuseId) this.mayRun(req.reuseId);
+    opts.beforeSpawn?.();
     // this launch's messaging tools and the token they're known by, which go with the launch if it fails from here on.
     // The Helpdesk tasks workspace has none: it can't message, read or be wired, and its hooks still report its status
     const mcp = req.shell || tasks ? undefined : mcpLaunch(id);
@@ -1367,13 +1371,16 @@ export class SessionManager {
    * Start not-started step `id` under its id, so its wires keep their ends: create() with reuseId, the running session's
    * record taking its place, where `stepPlace` says, the pane saying how it came to start there. A worktree made for it
    * is taken back when the start then fails, so starting it again gets the same branch. Refused, nothing started and
-   * its record kept, when it can't be started now (`startable`) or where it would start can't be used (`stepPlace`).
+   * its record kept, when it can't be started now (`startable`) or where it would start can't be used (`stepPlace`),
+   * asked again as its pty is about to start (`stillStartable`).
    */
   async startPlanned(id: string, upstream?: string | null): Promise<SessionInfo> {
     const rec = this.startable(id);
+    // the area its launch is prepared for: a move meanwhile changes the record in place
+    const group = rec.taskGroup ?? null;
     this.starting.add(id);
     try {
-      const { where, notes } = await this.stepPlace(rec, upstream ?? null);
+      const { where, notes, uses } = await this.stepPlace(rec, upstream ?? null);
       const repo = where.useWorktree && where.repoPath ? expandHome(where.repoPath) : null;
       const made = repo && where.branchName ? { repo, folder: path.join(worktreeRoot(repo), where.branchName), branch: where.branchName } : null;
       const fresh = !!made && !fs.existsSync(made.folder);
@@ -1383,7 +1390,7 @@ export class SessionManager {
             ...where,
             ticketId: rec.ticketId ?? undefined,
             ticketTitle: rec.ticketTitle ?? undefined,
-            taskGroup: rec.taskGroup ?? undefined,
+            taskGroup: group ?? undefined,
             extraDirs: rec.extraDirs,
             title: rec.title,
             agent: rec.agent ?? "claude",
@@ -1392,7 +1399,7 @@ export class SessionManager {
             ...(rec.planned!.prompt ? { initialPrompt: rec.planned!.prompt } : {}),
             reuseId: id,
           },
-          { notice: notes.join("\n") || undefined }
+          { notice: notes.join("\n") || undefined, beforeSpawn: () => this.stillStartable(rec, group, uses) }
         );
       } catch (err) {
         if (made && fresh) await this.takeBackStart(id, made, err);
@@ -1421,6 +1428,26 @@ export class SessionManager {
     return rec;
   }
 
+  /**
+   * What `stepPlace` checked of the sessions step `rec` starts from (`uses`), checked again as its pty is about to start:
+   * they, or the step, may have crossed a team room's line or been taken over while its git was read and its launch
+   * prepared. Also refused when the step moved to another area meanwhile, as its launch was prepared for `group`.
+   */
+  private stillStartable(rec: SessionInfo, group: string | null, uses: readonly StepUse[]): void {
+    for (const u of uses) {
+      const other = this.live.get(u.id)?.info ?? this.recordOf(u.id);
+      if (!other) throw new Error(`${titled(rec)} can't start ${u.what}: that session was forgotten as it started`);
+      this.stepMayUse(rec, other, u.what);
+    }
+    if ((this.recordOf(rec.id)?.taskGroup ?? null) !== group) throw new Error(`${titled(rec)} moved to another area as it started, so it wasn't started: start it again`);
+  }
+
+  /** Whether step `rec` may start `what` ("in “Builder”'s folder", "from “Builder”'s commit") of session `other`; thrown if not. */
+  private stepMayUse(rec: SessionInfo, other: SessionInfo, what: string): void {
+    const why = this.startGuard?.(rec.id, other.id) ?? this.relaunchGuard?.(other.id) ?? null;
+    if (why) throw new Error(`${titled(rec)} can't start ${what}: ${why}`);
+  }
+
   /** A failed start's worktree and branch, made for it, removed; one that can't be is said with the start's failure. */
   private async takeBackStart(id: string, made: { repo: string; folder: string; branch: string }, failed: unknown): Promise<void> {
     try {
@@ -1439,14 +1466,15 @@ export class SessionManager {
    *   HEAD with none, saying why;
    * - else its repo's checkout, or home with no repo.
    * Refused, nothing made, when what it starts from is across a team room's line from it or continued by a teammate
-   * (startGuard, relaunchGuard), not started itself, forgotten, or gone.
+   * (startGuard, relaunchGuard), not started itself, forgotten, or gone. `uses`: the sessions it starts from, checked so.
    */
-  private async stepPlace(rec: SessionInfo, upId: string | null): Promise<{ where: StepWhere; notes: string[]; says: string }> {
+  private async stepPlace(rec: SessionInfo, upId: string | null): Promise<{ where: StepWhere; notes: string[]; says: string; uses: StepUse[] }> {
     const step = rec.planned!;
     const name = titled(rec);
+    const uses: StepUse[] = [];
     const mayUse = (other: SessionInfo, what: string) => {
-      const why = this.startGuard?.(rec.id, other.id) ?? this.relaunchGuard?.(other.id) ?? null;
-      if (why) throw new Error(`${name} can't start ${what}: ${why}`);
+      this.stepMayUse(rec, other, what);
+      uses.push({ id: other.id, what });
     };
     if (step.sharesWith) {
       const other = this.live.get(step.sharesWith)?.info ?? this.recordOf(step.sharesWith);
@@ -1460,6 +1488,7 @@ export class SessionManager {
         where: { repoPath: other.repoPath, cwd: other.cwd, branchName: other.branch ?? undefined, useWorktree: false },
         notes: [],
         says: `It starts in ${titled(other)}'s folder, ${tildePath(other.cwd)}${other.branch ? `, on ${other.branch}` : ""}${beside}.`,
+        uses,
       };
     }
     if (!step.worktree || !rec.repoPath) {
@@ -1467,6 +1496,7 @@ export class SessionManager {
         where: { repoPath: rec.repoPath, useWorktree: false },
         notes: [],
         says: rec.repoPath ? `It starts in ${path.basename(expandHome(rec.repoPath))}'s checkout, on whatever's out there.` : "It starts in your home folder, with no repo.",
+        uses,
       };
     }
     const repo = expandHome(rec.repoPath);
@@ -1491,7 +1521,7 @@ export class SessionManager {
     }
     notes.push(`Started ${how}.`);
     const branch = await this.stepBranch(repo, rec, "sha" in from ? from.branch : null, notes);
-    return { where: { repoPath: rec.repoPath, useWorktree: true, branchName: branch, ...at }, notes, says: `It starts in a new worktree, ${branch}, ${how}.` };
+    return { where: { repoPath: rec.repoPath, useWorktree: true, branchName: branch, ...at }, notes, says: `It starts in a new worktree, ${branch}, ${how}.`, uses };
   }
 
   /**

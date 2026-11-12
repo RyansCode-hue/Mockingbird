@@ -2977,6 +2977,11 @@ Attached board does.
   - `relaunchGuard`: a session a teammate continues lends neither.
   - Either refuses: "“Tester” can't start in “Builder”'s folder: …" or "“QA”
     can't start from “Builder”'s commit: …". It never falls back to the base.
+  - Both are asked again as the pty is about to start (`create`'s `beforeSpawn`,
+    beside its `mayRun`), since the step or that session may move while git is read
+    and the launch is prepared. A step moved to another area meanwhile is refused
+    too, as its launch was prepared for the old one ("start it again"). What the
+    start made is taken back.
 - With no upstream commit to use, the pane and the confirm say why, truthfully:
   "Started at clone's HEAD, abc1234: nothing hands off to it", or "cut from dev,
   as a new worktree is: …" when the step has a base.

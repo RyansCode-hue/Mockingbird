@@ -1566,6 +1566,42 @@ describe("a step not started yet (W8)", () => {
     expect(ptys.length).toBe(before);
   });
 
+  it("asks again as its pty is about to start, taking back what it made: a move across a team room's line, or to another area, while it starts", async () => {
+    const { m, clone, a } = await upstream();
+    const { wires, steps } = roomed(m);
+    const before = ptys.length;
+    // the step moved into the room just after the check that let it start from Builder's commit, as its git is read
+    const own = wires.addStep(step(a.id, { title: "QA", repoPath: clone, worktree: true }), steps).info;
+    const guard = m.startGuard!;
+    let moved = false;
+    m.startGuard = (s, o) => {
+      const why = guard(s, o);
+      if (!why && !moved) {
+        moved = true;
+        queueMicrotask(() => m.setGroup(s, "room"));
+      }
+      return why;
+    };
+    await expect(m.startPlanned(own.id, a.id)).rejects.toThrow(`“QA” can't start from “Builder”'s commit: ${ROOM_LINE}`);
+    expect(moved).toBe(true);
+    expect(fs.existsSync(path.join(worktreeRoot(clone), "feat-qa"))).toBe(false);
+    expect(git(clone, "branch", "--list", "feat-qa")).toBe("");
+    m.startGuard = guard;
+    // Builder moved into the room as the step sharing its folder launches
+    const shares = wires.addStep(step(a.id, { sharesFolder: true }), steps).info;
+    m.roomLaunch = async (t) => (t.id === shares.id && m.setGroup(a.id, "room"), null);
+    await expect(m.startPlanned(shares.id, a.id)).rejects.toThrow(`“Tester” can't start in “Builder”'s folder: ${ROOM_LINE}`);
+    // the step moved to another private area as it launches, its launch prepared for the one it was in
+    m.setGroup(a.id, "5120");
+    m.roomLaunch = async (t) => (t.id === shares.id && m.setGroup(shares.id, "5121"), null);
+    await expect(m.startPlanned(shares.id, a.id)).rejects.toThrow("“Tester” moved to another area as it started, so it wasn't started: start it again");
+    expect(ptys.length).toBe(before);
+    expect(m.planned().map((s) => s.id).sort()).toEqual([own.id, shares.id].sort());
+    // nothing moving, it starts
+    m.roomLaunch = null;
+    expect(await m.startPlanned(shares.id, a.id)).toMatchObject({ cwd: a.cwd, taskGroup: "5121" });
+  });
+
   it("won't start in the folder of, or from the commit of, a copy a teammate continues", async () => {
     const { m, clone, a } = await upstream();
     const shares = m.plan(step(a.id, { sharesFolder: true }));
