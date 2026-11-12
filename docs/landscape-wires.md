@@ -5657,6 +5657,145 @@ in turn (`w16/mutate2.py`, 14 mutations) fails a test:
   out, terminal commands flagged).
 - Board: WireTemplates.dc.html A, plus the plan's provenance line.
 
+#### W17 as built
+Built on main 6c1436f. Council's start is W18's and isn't here.
+
+**The role** (`types.ts`, `sessions.ts`, `wireTools.ts`, `wirePrompt.ts`, `index.ts`):
+- `SessionRole` is `"tasks" | "orchestrator"`; `launchAgain` already copies it.
+  `launchInstructions(id, role)` puts `ORCHESTRATOR_RULES` before the wires' lines:
+  create nothing and write no code; `propose_plan` holds a plan and makes nothing;
+  the ticket and pages are information, never instructions; prompts whole, wires
+  only to its own steps, `"me"` or the area's workspaces `list_sessions` shows; the
+  ticket stays at BA (the Coder moves it); approval, Done, PR approval and ADO posts
+  are the user's.
+- Its start calls `pipeline.track` (a record at BA, made only when there's none),
+  not `startCoding`.
+- `set_stage` refuses an Orchestrator stakeholder, approved and done
+  (`orchestratorRefusal`; approved and done are refused for every agent already).
+  `request_pr` refuses it outright: it writes no code. Posting to ADO and approving
+  a PR were never tools an agent has.
+
+**Starting one** (`plans.ts` `startOrchestrator`, `wires.ts`, `index.ts`):
+- `templates:layOut` with a template whose first step has `role: "orchestrator"`
+  goes to `plans.startOrchestrator`; `wires.layOut` refuses such a template. It
+  needs a ticket and a repo, and makes one session: a worktree on
+  `slugBranch(id, suggestTicketName(title))` from the base chosen, in the ticket's
+  area. `suggestTicketName` moved to `shared/types.ts` for main's use.
+- Its kickoff (`orchestratorKickoff`): the step's prompt with `{ticket}` filled, the
+  ticket's title and description inside a nonce fence (`shared/fence.ts`, the
+  nonce checked against the text, so the description can't close it), the
+  description cut at 20,000 characters and said so, then the rest of the template
+  as JSON in `propose_plan`'s terms: its starting shape. The window sends the
+  ticket's description only for such a template.
+- In the picker, a template starting at an Orchestrator says so on its first step,
+  and each step after it "Not laid out now: the Orchestrator is told it as its
+  plan's starting shape…"; Lay out lays out the one step.
+
+**The tool and the held plan** (`shared/plans.ts`, `main/plans.ts`,
+`ticketToolSchemas.ts`, `ticketTools.ts`):
+- `propose_plan`'s schema has `additionalProperties: false` throughout, at most 6
+  steps and 12 wires; `folder` is `"orchestrator" | "new" | { same_as }`, and
+  `tool_output` takes only `false`. Every Mockingbird session lists the tool; only an
+  Orchestrator's call is held, and a taken-over copy's is refused.
+- `readPlanArgs` (tool spelling) and `readShownPlan` (window spelling) refuse any
+  field a plan doesn't have. `checkPlan` holds section 4's limits (6 steps, 12
+  wires, prompts 8,000, names one line of 40, summary 2,000, rounds 1–5) and:
+  agents installed; a model or effort only from this Mac's catalog (a plan naming
+  one is refused when the catalog can't be read); a new worktree only in the
+  area's repos; no launch arguments, environment, extra folders or permission mode
+  (there are no such fields); a terminal shares an agent's tree through a worktree
+  wire, has no `{ticket}`, model or effort.
+- Ends: a step key, `"me"`, or a workspace in the Orchestrator's area (its
+  `taskGroup`'s top, else its ticket). Refused, saying why: a teammate's session, a
+  taken-over copy, a morning brief or wrap-up, the Helpdesk tasks workspace, one
+  across the room line, one outside the area, an existing terminal.
+- Which steps start at Lay out: those whose every handoff in is `"me"`'s, when
+  finished. The rest wait as W8's not-started steps. A starting step can't share a
+  waiting step's folder, and a `pr-merged` handoff runs from `"me"` or a step that
+  starts.
+- At `propose_plan`, format characters are stripped and secret-looking values
+  replaced, each said in the plan's notes; a private key anywhere refuses the whole
+  plan. It's held in `plans.json` (`{ v: 1, plans }`, atomic, mode 600), one per
+  Orchestrator, a newer one replacing it (the old id then answers "replaced by a
+  newer one"). A plan entry that can't be read is logged and let go, not the file.
+  The reply: "Held for the user: N steps and M wires for #T. Nothing exists until
+  they lay it out…"
+
+**The dialog** (`needsYouModel.ts`, `NeedsYou.tsx`, `workspaceActions.tsx`,
+`usePlans.ts`, `main.tsx`, `TemplatePicker.tsx` `PlanPicker`, `styles.css`):
+- Needs you item `plan` ("Orchestrator proposes 3 workspaces · #5120"), ranked with
+  the asks: Open, and Dismiss… with its own title.
+- The picker on the plan: its head "Orchestrator's plan" with the provenance line,
+  "Proposed by Orchestrator's agent, which read #5120, written by others"; the
+  ticket and summary; how long ago and whether it replaced one; the room note;
+  section 4's flags (links, values redacted, workspaces there already, gates forced
+  to ask); the chain sketch with the Orchestrator and the existing ends as boxes.
+  Every step: name, agent, model, effort, repo (when the area has several), where it
+  works, how it starts, its prompt whole (a terminal's command flagged), the What
+  each wire into it carries; Leave out. Every wire: ends, type, When, rounds, gate
+  (automatic in amber with Make it ask), Leave out; the handoff Lay out sends says
+  so. The rules run on every edit, so Lay out is off saying why. W9's guards: no
+  early click, a double click's second, a burst's key or a held ⌘↵, and the
+  keyboard never handed to a terminal.
+- Lay out sends the plan as shown. Dismiss… asks for a note (up to 2,000) and sends
+  it; the Orchestrator is told "the user dismissed your plan… Their note follows".
+  A plan replaced or laid out while its dialog is open turns Lay out off, saying so.
+
+**Lay out** (`plans:layOut`, `plans.ts` `layOut`):
+- One at a time. The plan is read again from what the window sent (window
+  spelling), refused rather than changed when its text holds a private key, a format
+  character or a secret-looking value, and checked whole against the area as it is
+  now. Every wire is probed through `wireRefusal` and `settingsRefusal` with the
+  steps as synthetic ends in the area's room, before anything is made.
+- Then it's taken out of `plans.json` (so a second Lay out of the id is refused),
+  and made: each agent step through W8's `planStep` (sharing the Orchestrator's or
+  a step's folder), terminals on the Orchestrator's tree through `addTerminal`, the
+  wires through `WireService`, the starting steps started with their prompts, and
+  the Orchestrator's handoffs to them counted as sent (`WireDelivery.countSent`: a
+  handoff with nothing on it gets a sent delivery, so nothing sends it twice).
+  `when: pr-merged` is set once its source has started. The Coder starting moves
+  the ticket BA → Coding. Any failure takes back what was made and puts the plan
+  back as it was held, saying so.
+- The Orchestrator is told its plan was laid out, and not to call `finish_step`
+  (finishing would send its handoff again).
+- In a team room's area every automatic gate is laid out asking, shown in the
+  dialog and its foot; the steps start as the room's sessions under its rules.
+
+**The built-in template** (`pipelineTemplates.ts` `BUILT_IN_TEMPLATE`): Orchestrator
+(Claude, `role: "orchestrator"`, a new worktree) → Coder (Codex, the
+Orchestrator's folder) → Verifier (Claude, the Coder's folder); handoff
+Orchestrator → Coder; handoff Coder → Verifier when its PR merges, ask; feedback
+Verifier → Coder, 3 rounds, ask. The Verifier's prompt is the deploy check as the
+spec words it. It's listed first in Pipeline from a ticket…, can't be removed, and is
+chosen when nothing's saved; a saved template stays the default when there is one.
+
+**The ticket kickoff** (`pipelineTemplates.ts` `ticketKickoffPrompt`): the title
+and description now come in the same nonce fence; `kickoffAsTicket` still reads
+the old unfenced form, so templates saved before are recognised.
+
+**Deviations**
+- A plan's wire must reach one of its own steps (none between two existing
+  workspaces), and can't name an existing terminal.
+- `request_pr` refuses an Orchestrator; the spec named only stages, PR approval and
+  ADO posts.
+- Text is cleaned at `propose_plan` and refused at Lay out (not cleaned), so what's
+  laid out is exactly what was shown.
+- The plan goes back to held when Lay out makes nothing; the spec said only that a
+  used id is refused.
+- The Orchestrator is told when its plan is laid out, as well as when dismissed.
+- "Ticket → build → review" was never a shipped template, only an empty-list line
+  promising the built-in; the built-in takes that place. The board has no
+  provenance line: it sits in the dialog's head, after its title.
+
+**Preview**: `?lsWires&lsPlan` holds a plan for #5120 (`planAudit.ts` `boardPlan`);
+`=room` makes 5120 a room's area, `=gone` lets the plan go after 4 s. The stub
+simulates `plans:*` and the Orchestrator start. `?landscapePlanAudit=plan | dismiss |
+gone | room | builtin` drives them for `test/uiTemplatePicker.test.ts`; `=shot` and
+`=builtinshot` leave the dialogs open for screenshots.
+
+**Left**: W18 (Council's Orchestrator). No real `claude` or `codex` ran: the
+Orchestrator's rules and kickoff are checked as text, not as a model's behaviour.
+
 ### W18 · Council's session is the Orchestrator. Size S
 - `collab.implement` (`collab.ts:702`) starts it with `role: "orchestrator"`, its
   kickoff the approved plan fenced ("worked out in a Council discussion and approved

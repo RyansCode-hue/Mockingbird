@@ -379,6 +379,20 @@ export class WireDelivery {
     });
   }
 
+  /**
+   * A handoff that Lay out sent as its step's own prompt (an Orchestrator's plan, W17): counted sent, so it reads as
+   * sent and its source's next finish readies a new pending, never this one again. Only a wire with nothing on it yet.
+   */
+  countSent(wireRaw: unknown, why: string): WireReply {
+    const wireId = String(wireRaw ?? "");
+    return this.o.store.editWires((book) => {
+      const w = own(book.links, wireId);
+      if (!w) return { refused: `There's no wire ${JSON.stringify(wireId)}.` };
+      if (w.type !== "handoff" || w.pending || w.delivery) return { refused: "Only a handoff with nothing on it yet is counted sent as it's laid out." };
+      return { book: withWire(book, wireId, { ...w, delivery: { id: `laid-${randomBytes(4).toString("hex")}`, state: "sent", at: Date.now(), why } }) };
+    });
+  }
+
   /** Allow one more round, at the limit: a person's, from the window. No tool reaches it. */
   moreRounds(wireRaw: unknown): WireReply {
     return this.rounds(wireRaw, "wires:moreRounds", (r) => (r.used < r.limit ? "It has rounds left." : { limit: r.used + 1, used: r.used }));

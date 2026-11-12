@@ -1703,3 +1703,35 @@ describe("what an agent can reach", () => {
     }
   });
 });
+
+describe("a handoff Lay out sent as its step's prompt (W17)", () => {
+  it("is counted sent: its gate reads sent, it's counted once, and its source's next finish readies a new pending that asks", async () => {
+    const t = setup();
+    const a = await t.pane("Orchestrator");
+    const b = await t.pane("Coder");
+    t.idle(b.id);
+    const w = t.add(a.id, b.id);
+    expect(t.d.countSent(w, "Lay out sent it.")).not.toHaveProperty("refused");
+    expect(t.wireOf(w).delivery).toMatchObject({ state: "sent", why: "Lay out sent it." });
+    expect(t.onDisk().wires.links[w].delivery.state).toBe("sent");
+    expect(t.gate(w).state).toBe("sent");
+    expect(refusal(t.d.countSent(w, "again"))).toMatch(/Only a handoff with nothing on it yet/);
+    expect(refusal(t.d.countSent(t.add(b.id, a.id, "feedback"), "x"))).toMatch(/Only a handoff/);
+    expect(refusal(t.d.countSent("nope", "x"))).toMatch(/There's no wire "nope"/);
+    // nothing was pasted into the Coder by counting it
+    expect(t.ptyOf(b.id).writes).toEqual([]);
+    const p = await t.offer(w);
+    expect(t.gate(w)).toMatchObject({ state: "ready", pendingId: p, gate: "ask" });
+  });
+
+  it("an Orchestrator's launch is told its rules beside its wires; another's isn't", async () => {
+    const t = setup();
+    expect(t.tools.launchInstructions("x", "orchestrator")).toContain("You are an Orchestrator workspace in Mockingbird");
+    expect(t.tools.launchInstructions("x")).toBeNull();
+    const a = await t.pane("Orchestrator");
+    const b = await t.pane("Coder");
+    t.add(a.id, b.id);
+    const told = t.tools.launchInstructions(a.id, "orchestrator")!;
+    expect(told.indexOf("Create nothing and write no code")).toBeLessThan(told.indexOf("has wired it to other workspaces"));
+  });
+});

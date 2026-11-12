@@ -34,7 +34,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, HELPDESK_PRESET, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult } from "../shared/types";
+import { AGENT_NAME, HELPDESK_PRESET, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult, type AgentTold } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -90,7 +90,10 @@ import { wiresNow } from "./WireLayer";
 import { droppedNote, unmovedNote } from "./wiresModel";
 import { chainOf } from "./pipelineChain";
 import { newAreaPatch } from "./landscapeModel";
-import { SaveTemplateDialog, TemplatePicker } from "./TemplatePicker";
+import { PlanPicker, SaveTemplateDialog, TemplatePicker } from "./TemplatePicker";
+import { usePlans } from "./usePlans";
+import { toldLine } from "./ticketPipelineModel";
+import type { Plan, PlanLaidOut, PlanView } from "../shared/plans";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
@@ -191,6 +194,8 @@ function App() {
   // form filled from it); and an agent's PR request being dismissed from Needs you
   const pipelines = usePipelines();
   const pipelinesRead = usePipelinesRead();
+  // the Orchestrators' held plans (W17): each a Needs you item, opened in the template picker
+  const plansRead = usePlans();
   const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string; request?: string } | null>(null);
   const [dismissRequestFor, setDismissRequestFor] = useState<{ ticket: string; request: string } | null>(null);
   // "continue in the other agent" for this session
@@ -277,6 +282,8 @@ function App() {
   // pipeline templates (W9): the picker, opened in an area (or none), and Save as template's dialog
   const [templatePicker, setTemplatePicker] = useState<{ area: string | null } | null>(null);
   const [templateSave, setTemplateSave] = useState<{ draft: TemplateDraft; leftOut: string[] } | null>(null);
+  // a held plan open in the picker, as it was when it opened: one replaced meanwhile stays shown, saying it's gone
+  const [planFor, setPlanFor] = useState<{ view: PlanView; dismissing: boolean } | null>(null);
   // a lone pane's "+" promotes it to a workspace, but only once the new session
   // actually exists — cancelling the dialog must leave the pane exactly as it was
   const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
@@ -2193,6 +2200,45 @@ function App() {
     if (!plan.patch) return lsSay(p.said);
     void lsSaves.save(plan.patch, `tidying ${areaTitle(p.area)}`).then((s) => lsSay("error" in s ? `${p.said} Its area wasn't tidied: ${s.error}` : p.said));
   }, [laidTick, landscapeLayout]);
+  /**
+   * Lay out held plan `id` as its dialog shows it (W17): main reads and checks it all again, and makes it once. The steps
+   * go in its Orchestrator's area, which is there already, so nothing there moves (W9's rule for an existing area).
+   */
+  const layOutPlanNow = async (id: string, shown: Plan): Promise<string | null> => {
+    let r: IpcResult<PlanLaidOut>;
+    try {
+      r = await window.mb.plansLayOut(id, shown);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) {
+      console.warn(`[mockingbird] laying out plan ${id}: ${r.error}`);
+      return r.error;
+    }
+    setPlanFor(null);
+    await refresh();
+    const started = r.steps.filter((x) => x.id === r.started).map((x) => x.title);
+    const said = [`Laid out the plan in ${areaTitle(r.area)}: ${r.steps.length === 1 ? "1 step" : `${r.steps.length} steps`}${started.length ? `, ${started.join(", ")} started` : ""}.`, ...r.notes].join(" ");
+    laidOut.current = { area: r.area, ids: r.steps.map((x) => x.id), wires: r.wires, said, tidy: false, until: Date.now() + LAID_OUT_WAIT_MS };
+    setLaidTick((n) => n + 1);
+    return null;
+  };
+  /** Dismiss held plan `id`: nothing was made, and its Orchestrator is told, with the note. */
+  const dismissPlanNow = async (id: string, note: string): Promise<string | null> => {
+    let r: IpcResult<{ told: AgentTold }>;
+    try {
+      r = await window.mb.plansDismiss(id, note);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) {
+      console.warn(`[mockingbird] dismissing plan ${id}: ${r.error}`);
+      return r.error;
+    }
+    setPlanFor(null);
+    lsSay(`Plan dismissed: nothing was made. ${toldLine(r.told)}`);
+    return null;
+  };
   const saveTemplateNow = async (name: string, body: TemplateBody): Promise<string | null> => {
     let r: IpcResult<TemplateList>;
     try {
@@ -2280,7 +2326,7 @@ function App() {
   // ---- Needs you (S7): the tray, N / ⇧N, and the areas' waiting counts (NeedsYou.tsx, needsYouModel.ts) ----
   // W5: the wires' gates and the pull requests Mockingbird can't follow, with what their items do (NeedsWire.tsx)
   const wireNeeds = useWireNeeds({ sessions, layout: landscapeLayout, rooms: teamRooms, areaOf: (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), say: lsSay, toLandscape: () => setTab("sessions") });
-  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null, pipelinesRead, wireNeeds.wires);
+  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null, pipelinesRead, wireNeeds.wires, plansRead.plans);
   const needsSel: NeedsSel = { session: selArea ? null : focused, area: selArea };
   // where N and Go there last went, so N moves on from it while the selection is still the one it left
   const needsLast = useRef<NeedsLast | null>(null);
@@ -2361,6 +2407,17 @@ function App() {
     const target = targetOf(item, sessions);
     const ask = item.typing;
     const pl = item.pipeline;
+    // an Orchestrator's plan (W17): Open shows it in the template picker, Dismiss… there with a note to its agent
+    const plan = item.plan ? plansRead.plans.find((v) => v.id === item.plan!.id) : undefined;
+    if (plan)
+      return needsActions({
+        open: { can: () => setPlanFor({ view: plan, dismissing: false }), title: "Open the plan in the template picker, all of it editable: nothing is made until you lay it out" },
+        dismissRequest: () => setPlanFor({ view: plan, dismissing: true }),
+        dismissTitle: "Turn the plan down, with a note for its Orchestrator: nothing is made",
+        go: { no: "" },
+        goTitle: "",
+        dismiss: () => needs.dismiss(item),
+      });
     return needsActions({
       ...wireNeeds.envOf(item),
       open: pl
@@ -3513,6 +3570,18 @@ function App() {
           onLayOut={layOutTemplate}
           home={landscapeHome}
           onClose={() => setTemplatePicker(null)}
+        />
+      )}
+      {planFor && (
+        <PlanPicker
+          view={planFor.view}
+          gone={!plansRead.plans.some((v) => v.id === planFor.view.id)}
+          dismissing={planFor.dismissing}
+          areaTitle={(k) => (landscapeLayout?.areas.some((a) => a.key === k) ? areaTitle(k) : null)}
+          onLayOut={layOutPlanNow}
+          onDismiss={dismissPlanNow}
+          home={landscapeHome}
+          onClose={() => setPlanFor(null)}
         />
       )}
       {templateSave && (

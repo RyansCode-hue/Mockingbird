@@ -7,14 +7,11 @@ import { useEffect, useState } from "react";
 import { isErr, type AdoWorkItem, type RepoBranches } from "../shared/types";
 import { orderColumns } from "./boardView";
 
-// shared with Save as template, which reads a step's kickoff back as {ticket} (kickoffAsTicket)
+// shared with Save as template, which reads a step's kickoff back as {ticket} (kickoffAsTicket); the kickoff fences the
+// ticket's title and description as text others wrote
 export { ticketKickoffPrompt } from "../shared/pipelineTemplates";
-
-/** "Filter orgs by foundation" → "filterOrgsByFoundation" (branch-friendly). */
-export function suggestTicketName(title: string): string {
-  const words = title.replace(/[^a-zA-Z0-9 ]+/g, " ").trim().split(/\s+/).slice(0, 5);
-  return words.map((w, i) => (i === 0 ? w.toLowerCase() : w[0].toUpperCase() + w.slice(1).toLowerCase())).join("");
-}
+// shared with main, which names an Orchestrator's branch as From a ticket… does
+export { suggestTicketName } from "../shared/types";
 
 const STATE_ORDER = [
   "New", "Approved", "Committed", "To Do", "Open", "Active", "In Progress", "Doing",

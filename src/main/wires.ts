@@ -3,7 +3,7 @@ import type { LandscapeStore } from "./landscape";
 import type { Reply } from "./messaging";
 import { canonical, companionRequest } from "./handlers";
 import { LandscapeShapeError, isObj, own, put, stackKeyOf } from "../shared/landscape";
-import { agentOf, layOutPlan, parseTemplateBody, roomAsked, TemplateError, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type TemplateBody, type TemplateWire } from "../shared/pipelineTemplates";
+import { agentOf, layOutPlan, parseTemplateBody, roomAsked, startsAtOrchestrator, TemplateError, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type TemplateBody, type TemplateWire } from "../shared/pipelineTemplates";
 import { oneLine } from "../shared/team/agentText";
 import type { NewSessionRequest, PlanRequest, PrRepo, SessionInfo } from "../shared/types";
 import {
@@ -380,6 +380,8 @@ export class WireService {
       if (err instanceof TemplateError) throw new Error(`“${name}” can't be laid out: ${err.message}`, { cause: err });
       throw err;
     }
+    // its Orchestrator is all that's laid out of it, and proposes the rest (Plans.startOrchestrator)
+    if (startsAtOrchestrator(body)) throw new Error(`“${name}” starts at an Orchestrator, which is laid out alone: its plan makes the rest.`);
     const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
     const area = text(req.area);
     if (!area) throw new Error("Choose the area its steps go in.");

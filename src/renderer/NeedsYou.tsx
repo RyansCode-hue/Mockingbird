@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo, TicketPipeline } from "../shared/types";
+import type { PlanView } from "../shared/plans";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import { LOOSE_GROUP } from "../shared/landscape";
 import { agoShort, plural } from "../shared/format";
@@ -44,11 +45,12 @@ export function useNeedsYou(
   titleOf: (s: SessionInfo) => string,
   joinError: string | null,
   pipelines: { all: Readonly<Record<string, TicketPipeline>>; error: string | null } = { all: {}, error: null },
-  wires: NeedsWires | null = null
+  wires: NeedsWires | null = null,
+  plans: readonly PlanView[] = []
 ): NeedsYouState {
   const [saved, setSaved] = usePersisted<unknown>(DISMISSED_PREF, []);
   const list = useMemo(() => dismissedFrom(saved), [saved]);
-  const all = needsItems(sessions, asks, areaOf, titleOf, pipelines.all, wires);
+  const all = needsItems(sessions, asks, areaOf, titleOf, pipelines.all, wires, plans);
   const items = shownItems(all, list);
   // the same items in the same areas give the same counts, so what's memoized on them (the area tree) holds
   const shape = items.map((i) => `${i.sig}@${i.area}`).join("\n");
@@ -76,7 +78,7 @@ export function useNeedsYou(
 }
 
 /** The dot before an item's kind: amber while something waits on you, grey for what's only done. */
-const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", pr: "waiting", wire: "waiting", join: "waiting", ticket: "waiting", merge: "waiting", finished: "idle" };
+const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", pr: "waiting", wire: "waiting", plan: "waiting", join: "waiting", ticket: "waiting", merge: "waiting", finished: "idle" };
 
 /** The actions that answer for you from the tray (needsActions): a teammate's ask to type, and a wire's Send. */
 const ANSWERS = new Set(["allow", "deny", "send"]);

@@ -1,6 +1,7 @@
 import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
+import type { Plan, PlanLaidOut, PlanView } from "../shared/plans";
 import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -34,6 +35,12 @@ const api = {
   templatesSetAside: (): Promise<IpcResult<{ file: string; list: TemplateList }>> => ipcRenderer.invoke("templates:setAside"),
   /** Lay out: the template as the picker shows it, as not-started steps and their wires (WireService.layOut). */
   templatesLayOut: (req: LayOutRequest): Promise<IpcResult<LayOutReply>> => ipcRenderer.invoke("templates:layOut", req),
+  /** The Orchestrators' held plans (W17), each checked again on the sessions now: nothing of them exists until Lay out. */
+  plansList: (): Promise<IpcResult<PlanView[]>> => ipcRenderer.invoke("plans:list"),
+  /** Lay out held plan `id` as the dialog shows it (`shown`): main reads and checks it again, once per plan. */
+  plansLayOut: (id: string, shown: Plan): Promise<IpcResult<PlanLaidOut>> => ipcRenderer.invoke("plans:layOut", id, shown),
+  /** Dismiss held plan `id`, its Orchestrator told, with the note. */
+  plansDismiss: (id: string, note: string): Promise<IpcResult<{ told: AgentTold }>> => ipcRenderer.invoke("plans:dismiss", id, note),
   /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */
   resumeSession: (id: string): Promise<SessionInfo | { refused: string } | { error: string }> => ipcRenderer.invoke("sessions:resume", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),
@@ -342,6 +349,12 @@ const api = {
     const h = (_e: unknown, all: unknown) => cb(all);
     ipcRenderer.on("pipeline:changed", h);
     return () => ipcRenderer.removeListener("pipeline:changed", h);
+  },
+  /** A plan was held, replaced, laid out or dismissed: plansList says how they are now. */
+  onPlansChanged: (cb: () => void) => {
+    const h = () => cb();
+    ipcRenderer.on("plans:changed", h);
+    return () => ipcRenderer.removeListener("plans:changed", h);
   },
   openExternal: (url: string) => ipcRenderer.invoke("shell:open", url),
   revealFile: (file: string) => ipcRenderer.invoke("shell:reveal", file),

@@ -501,7 +501,7 @@ describe("nothing an agent calls pushes, opens a pull request or writes to Azure
     for (const spy of [scmPush, openPr, addComment, updateWorkItem]) expect(spy).not.toHaveBeenCalled();
     expect(net).not.toHaveBeenCalled();
     // and none of the ticket tools' code can reach them: it imports none of what pushes, opens or posts
-    for (const f of ["ticketTools.ts", "ticketToolSchemas.ts"]) {
+    for (const f of ["ticketTools.ts", "ticketToolSchemas.ts", "plans.ts"]) {
       const src = fs.readFileSync(path.join(__dirname, "../src/main", f), "utf8");
       expect(src.match(/from "\.\/(\w+)"/g) ?? [], f).not.toEqual(expect.arrayContaining([expect.stringMatching(/"\.\/(ado|scm|pullRequests|git|safeGit|shell|headless)"/)]));
       expect(src, f).not.toMatch(/\b(scmPush|openPr|addComment|updateWorkItem|fetch)\(/);
@@ -617,7 +617,7 @@ describe("the ticket tools through the real MCP server", () => {
     try {
       const listed: { name: string; inputSchema: unknown }[] = (await server.request("tools/list")).result.tools;
       const mine = listed.filter((x) => (Object.values(TICKET_TOOL) as string[]).includes(x.name));
-      expect(mine.map((x) => x.name)).toEqual(["set_stage", "request_pr", "write_patch_notes"]);
+      expect(mine.map((x) => x.name)).toEqual(["set_stage", "request_pr", "write_patch_notes", "propose_plan"]);
       expect(mine.map((x) => x.inputSchema)).toEqual(TICKET_TOOL_SCHEMAS.map((x) => JSON.parse(JSON.stringify(x.inputSchema))));
       for (const x of TICKET_TOOL_SCHEMAS) expect(x.inputSchema.additionalProperties, x.name).toBe(false);
       // another ticket can't be named, and the caller can't be: the token's session's ticket is the one moved

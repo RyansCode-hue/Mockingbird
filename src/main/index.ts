@@ -44,10 +44,12 @@ import { CLAUDE_PROJECTS, CODEX_SESSIONS, claudeTranscriptOf, codexRolloutOf } f
 import { conversationFiles, handoffKickoff, handoffPrompt, replyOfConversation, repoState, transcriptDigest, transcriptLines, type ConversationLookup } from "./handoff";
 import { WireTools } from "./wireTools";
 import { TicketTools } from "./ticketTools";
+import { Plans } from "./plans";
 import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
 import { draftTemplate, removedTemplate, savedTemplates, setAsideTemplates } from "./templates";
 import { readTemplates } from "../shared/pipelineTemplates";
+import { isObj } from "../shared/landscape";
 import { HELPDESK_KEEPS_ITS_CONVERSATION, helpdeskShareRefusal, inHelpdeskFolder } from "./helpdesk";
 import { reviewPrompt } from "./review";
 import { shouldNotify, toolsLostNotice } from "./notifications";
@@ -67,7 +69,7 @@ import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, UpdateOutcome, WorktreeCleanupSay } from "../shared/types";
-import { BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
+import { AGENT_KINDS, BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
@@ -766,10 +768,14 @@ handle("sessions:list", () => sessions.list());
 handle("sessions:resumable", () => sessions.resumable());
 handle("sessions:closedOutput", (id) => sessions.closedOutput(String(id)));
 handle("sessions:missingFolders", () => sessions.missingFolders());
-/** Session `info` just opened by you, on ticket `ticketId` or none: its folder's overlaps are checked, and the ticket's coding has started. */
+/**
+ * Session `info` just opened by you, on ticket `ticketId` or none: its folder's overlaps are checked, and the ticket's
+ * coding has started; an Orchestrator's ticket is tracked at BA instead, as it researches and plans (W17).
+ */
 function sessionOpened(info: SessionInfo, ticketId: unknown, ticketTitle: string | null | undefined): SessionInfo {
   if (info.repoPath) overlapsSoon(info.cwd);
-  if (ticketId && pipeline.startCoding(String(ticketId), ticketTitle ?? undefined, BY_YOU)) pipelineChanged();
+  const ticket = ticketId ? String(ticketId) : null;
+  if (ticket && (info.role === "orchestrator" ? pipeline.track(ticket, ticketTitle || undefined, BY_YOU) : pipeline.startCoding(ticket, ticketTitle ?? undefined, BY_YOU))) pipelineChanged();
   return info;
 }
 handle("sessions:create", async (req) => sessionOpened(await sessions.create(req), req?.ticketId, req?.ticketTitle));
@@ -825,6 +831,7 @@ handle("sessions:kill", (id, forget) => {
   }
   if (forget) void takeover?.sessionForgotten(String(id)); // team rooms: take-over — its room backup goes too (failures shown in the sidebar)
   if (forget) wires.sessionForgotten(String(id));
+  if (forget) plans.sessionForgotten(String(id));
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
@@ -1533,17 +1540,21 @@ handle("templates:setAside", () => {
   store.setSettings({ pipelineTemplates: [] });
   return { file, list: readTemplates([]) };
 });
+/** Whether a lay-out's template starts at an Orchestrator (as sent: each path reads it whole), laid out alone (W17). */
+const atOrchestrator = (req: unknown): boolean => isObj(req) && isObj(req.template) && Array.isArray(req.template.steps) && isObj(req.template.steps[0]) && req.template.steps[0].role === "orchestrator";
 handle("templates:layOut", (req) =>
-  wires.layOut(req, {
-    planStep: (q) => sessions.planStep(q),
-    forget: (id) => {
-      sessions.kill(id, true);
-      return wires.sessionForgotten(id);
-    },
-    start: (id, ticketTitle) => startPlannedStep(id, undefined, ticketTitle),
-    addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
-    roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
-  })
+  atOrchestrator(req)
+    ? plans.startOrchestrator(req, { create: (q) => sessions.create(q), opened: (info, title) => void sessionOpened(info, info.ticketId, title) })
+    : wires.layOut(req, {
+        planStep: (q) => sessions.planStep(q),
+        forget: (id) => {
+          sessions.kill(id, true);
+          return wires.sessionForgotten(id);
+        },
+        start: (id, ticketTitle) => startPlannedStep(id, undefined, ticketTitle),
+        addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
+        roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
+      })
 );
 // the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an
 // agent is told of its wires as it launches
@@ -1574,7 +1585,7 @@ const wireTools: WireTools = new WireTools({
   promptOf: (id) => delivery.promptOf(id),
   log: logError,
 });
-sessions.launchInstructions = (id) => wireTools.launchInstructions(id);
+sessions.launchInstructions = (id, role) => wireTools.launchInstructions(id, role);
 handle(
   "wires:finish",
   untakenHandler("wires:finish", untaken, (s, summary: unknown, verdict: unknown) => wireTools.finish(s, { summary, ...(verdict === undefined || verdict === null ? {} : { verdict }) }, "you"))
@@ -1618,7 +1629,45 @@ const pipelineDo = async <T,>(fn: () => T | Promise<T>): Promise<T> => {
     pipelineChanged();
   }
 };
-// the agents' set_stage, request_pr and write_patch_notes (routed by messaging), and the window's answers to them
+// ---- the Orchestrator's plans (W17): propose_plan holds one; only the window's Lay out makes anything of it ----
+const plans: Plans = new Plans({
+  file: path.join(MB_DIR, "plans.json"),
+  sessions,
+  wires,
+  store: landscape,
+  submitOnDelivery: submitsAgentMessages,
+  takenOver: (id, doing) => takeover?.takenOverRefusal(id, doing) ?? null,
+  roomOf: (id) => livePanes.roomOfSession(id),
+  roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
+  roomsKnown: () => roomsKnown,
+  installed: async () => (await Promise.all(AGENT_KINDS.map(async (k) => ((await installedBin(k)) ? k : null)))).filter((k): k is AgentKind => !!k),
+  catalog: async () => {
+    try {
+      return await modelCatalog();
+    } catch (err) {
+      logError("plans: the model catalog", err);
+      return null;
+    }
+  },
+  ticketTitleOf: (id) => pipeline.get(id)?.title ?? null,
+  onChanged: () => toWindow("plans:changed"),
+  log: logError,
+});
+handle("plans:list", () => plans.list());
+handle("plans:layOut", (id, shown) =>
+  plans.layOut(id, shown, {
+    planStep: (q) => sessions.planStep(q),
+    forget: (id) => {
+      sessions.kill(id, true);
+      return wires.sessionForgotten(id);
+    },
+    start: (id, from, ticketTitle) => startPlannedStep(id, from ?? undefined, ticketTitle),
+    addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
+    countSent: (wire, why) => delivery.countSent(wire, why),
+  })
+);
+handle("plans:dismiss", (id, note) => plans.dismiss(id, note));
+// the agents' set_stage, request_pr, write_patch_notes and propose_plan (routed by messaging), and the window's answers to them
 const ticketTools = new TicketTools({
   pipeline,
   sessions,
@@ -1636,6 +1685,7 @@ const ticketTools = new TicketTools({
     return true;
   },
   onChanged: pipelineChanged,
+  plans,
   log: logError,
 });
 // a held PR request a move or another session's PR dropped: its asker hears why, as a dismissal tells it

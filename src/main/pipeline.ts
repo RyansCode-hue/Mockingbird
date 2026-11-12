@@ -314,6 +314,19 @@ export class PipelineStore {
     return this.setStage(id, "coding", { title, by });
   }
 
+  /**
+   * A ticket tracked at BA when an Orchestrator starts on it (W17), in place of startCoding: it stays there while the
+   * Orchestrator researches and plans, and the Coder starting moves it on. Null, nothing changed, when it's tracked already.
+   */
+  track(id: string, title?: string, by?: string): TicketPipeline | null {
+    if (this.data[id]) return null;
+    return this.change(id, () => {
+      const p = this.record(id, title);
+      p.history.push({ at: Date.now(), stage: "ba", ...(by ? { by } : {}) });
+      return p;
+    });
+  }
+
   /** Stakeholder feedback sends the ticket back to Coding, quoted in the comment it drafts. */
   addFeedback(id: string, text: string, by?: string): TicketPipeline {
     const t = text.trim();

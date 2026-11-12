@@ -542,6 +542,8 @@ export interface NeedsEnv {
   merge?: { check: Can; mark: Can } | null;
   /** A finished session's item with a handoff or feedback wire out: Finish step…, its popover. */
   finish?: Can | null;
+  /** What Dismiss… says it does, when it isn't a pull request request's (an Orchestrator's plan, W17). */
+  dismissTitle?: string;
 }
 
 const answerOf = (a: Answer): Pick<ModelAction, "onPick" | "answer" | "disabled" | "title"> =>
@@ -573,7 +575,7 @@ export function needsActions(env: NeedsEnv): ModelAction[] {
     return [
       { section: "needs", key: "open", label: "Open", primary: true, title: env.open.title, ...can(env.open.can) },
       env.dismissRequest
-        ? { section: "needs", key: "dismissRequest", label: "Dismiss…", title: "Turn the request down, with a note for the agent: nothing is pushed or opened", ...can(env.dismissRequest) }
+        ? { section: "needs", key: "dismissRequest", label: "Dismiss…", title: env.dismissTitle ?? "Turn the request down, with a note for the agent: nothing is pushed or opened", ...can(env.dismissRequest) }
         : { section: "needs", key: "dismiss", label: "Dismiss", title: "Take it off the list until its state changes", onPick: env.dismiss },
     ];
   return [

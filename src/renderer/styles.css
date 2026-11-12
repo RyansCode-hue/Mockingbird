@@ -4033,3 +4033,18 @@ button.ls-empty-link { pointer-events: auto; }
 .tp-foot { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-top: 1px solid var(--line-med); background: var(--bg-chrome); flex-shrink: 0; }
 .tp-where { flex-grow: 1; min-width: 0; font: 400 10px var(--mono); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-foot button { padding: 5px 12px; font-size: 12px; white-space: nowrap; }
+/* ---- W17: an Orchestrator's plan in the picker (PlanPicker) ---- */
+.modal.tp-plan { width: 660px; }
+.tp-plan .tp-sec { grid-template-columns: 64px minmax(0, 1fr); align-items: baseline; }
+.tp-summary { font: 400 12px/17px var(--ui); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 102px; overflow-y: auto; }
+.tp-note.amber { color: var(--amber); }
+.tp-plan .tp-note + .tp-note { padding-top: 0; }
+.tp-plan .tp-steps.solo { gap: 12px; }
+.tp-plan .tp-step + .tp-step, .tp-plan .tp-k.pad { padding-top: 10px; border-top: 1px solid var(--line-med); }
+.tp-wire { display: flex; flex-direction: column; gap: 3px; }
+.tp-wire .tp-name { font-weight: 400; }
+button.link.tp-leave { margin-left: auto; flex-shrink: 0; padding: 0 2px; font: 400 11px var(--ui); color: var(--text-4); }
+button.link.tp-leave:hover { color: var(--text-2); }
+.modal.tp .mb-select.tp-when { width: 150px; flex: 0 0 150px; font-size: 11.5px; }
+.modal.tp .mb-select.tp-rounds { width: 96px; flex: 0 0 96px; font-size: 11.5px; }
+.tp-plan [data-dismiss] textarea.tp-prompt { width: 100%; box-sizing: border-box; overflow: auto; font-family: var(--ui); font-size: 12px; }

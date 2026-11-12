@@ -13,9 +13,10 @@ export type SessionStatus = "working" | "waiting" | "idle" | "dead";
 /**
  * A session with a standing job of its own. `tasks`: the Helpdesk tasks workspace, Claude in the user's own Chrome
  * (`claude --chrome`) for requests pasted in. It has no Mockingbird MCP server, takes no messages or wires, and never
- * runs in a team room's area.
+ * runs in a team room's area. `orchestrator` (W17): it reads its ticket, researches and proposes the workspaces and
+ * wires as a plan (propose_plan), creating nothing and writing no code; its start tracks the ticket at BA.
  */
-export type SessionRole = "tasks";
+export type SessionRole = "tasks" | "orchestrator";
 
 /**
  * A closed session whose folder is gone (sessions:missingFolders), and what that means for reopening it: a removed
@@ -1110,6 +1111,12 @@ export function slugBranch(ticketId: string, ticketTitle: string): string {
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return `${ticketIdOf(ticketId)}-${slug}`;
+}
+
+/** "Filter orgs by foundation" → "filterOrgsByFoundation" (branch-friendly): a ticket's short name, as its branch's. */
+export function suggestTicketName(title: string): string {
+  const words = title.replace(/[^a-zA-Z0-9 ]+/g, " ").trim().split(/\s+/).slice(0, 5);
+  return words.map((w, i) => (i === 0 ? w.toLowerCase() : w[0].toUpperCase() + w.slice(1).toLowerCase())).join("");
 }
 
 /** A not-started step's title as its branch name's last part (`<the step before's branch>-<this>`): "Run e2e tests" → "run-e2e-tests". */

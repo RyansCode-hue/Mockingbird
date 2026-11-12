@@ -1,5 +1,6 @@
 import { latestPr, prAskedState, prNeedsYou, ticketOfSession, type SessionInfo, type TicketPipeline } from "../shared/types";
 import { ROOMS_STARTING, carriesWork, gateOf, isSending, wiresInOrder, type GateContext, type Wire } from "../shared/wires";
+import type { PlanView } from "../shared/plans";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import type { TypingAsk } from "../shared/team/livePanes";
 import { permissionTool, shortReason } from "../shared/phoneAlerts";
@@ -20,7 +21,7 @@ import { gateView, pendingRound, shortWhy, type GateFace } from "./wiresModel";
  * book), so the tray, the badges and N agree.
  */
 
-export type NeedsKind = "permission" | "question" | "typing" | "pr" | "wire" | "join" | "ticket" | "merge" | "finished";
+export type NeedsKind = "permission" | "question" | "typing" | "pr" | "wire" | "plan" | "join" | "ticket" | "merge" | "finished";
 
 export interface NeedsItem {
   /**
@@ -53,6 +54,8 @@ export interface NeedsItem {
   merge?: { ticket: string; url: string } | null;
   /** The tray's label for its kind, where it says more than KIND_LABEL's: a wire's says where its gate stands. */
   label?: string;
+  /** An Orchestrator's plan's item (W17): the held plan, which Open shows in the template picker. Nothing of it exists yet. */
+  plan?: { id: string };
   /** What it says: "API: last org per user wants to use Bash". */
   text: string;
   /** The code-like part of `text` to set apart (the tool), or null. */
@@ -60,14 +63,14 @@ export interface NeedsItem {
 }
 
 /** Its kind as the tray's line says it, before the area. */
-export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", pr: "Pull request", wire: "Wire", join: "Join request", ticket: "Ticket", merge: "Merge", finished: "Finished" };
+export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", pr: "Pull request", wire: "Wire", plan: "Plan", join: "Join request", ticket: "Ticket", merge: "Merge", finished: "Finished" };
 
 /**
  * Which kinds come first: what holds an agent or a person up (a prompt, a question, a teammate waiting to type, an
  * agent waiting on its pull request, a wire's gate), then someone at the room's door, a ticket at your stage and a
  * pull request Mockingbird can't follow, before what's only done; newest first within a rank.
  */
-const RANK: Record<NeedsKind, number> = { permission: 0, question: 0, typing: 0, pr: 0, wire: 0, join: 1, ticket: 1, merge: 1, finished: 2 };
+const RANK: Record<NeedsKind, number> = { permission: 0, question: 0, typing: 0, pr: 0, wire: 0, plan: 0, join: 1, ticket: 1, merge: 1, finished: 2 };
 
 /** A join request's key, as the admin's prompt (main.tsx's joinKey) and Later name it. */
 export const joinKeyOf = (r: Pick<JoinRequestSummary, "roomId" | "id" | "at">): string => `${r.roomId}:${r.id}:${r.at}`;
@@ -328,12 +331,39 @@ export function namedSendRefusal(item: Pick<NeedsItem, "wire">, live: Wire | und
 }
 
 /**
+ * Each held plan's item (W17): an Orchestrator's plan waiting for you to lay it out or dismiss it, in its Orchestrator's
+ * area. What it says is Mockingbird's words and the Orchestrator's title: the plan's own text stays in the dialog that
+ * Open shows, marked as its agent's. A newer plan (a new id) is a new state.
+ */
+export function planItems(plans: readonly PlanView[], sessions: readonly SessionInfo[], areaOf: (s: SessionInfo) => string): NeedsItem[] {
+  return plans.map((v) => {
+    const s = sessions.find((x) => x.id === v.me.id && !notMine(x));
+    const steps = v.held.plan.steps.length;
+    return {
+      id: `plan:${v.me.id}`,
+      sig: `plan:${v.id}`,
+      kind: "plan",
+      at: v.held.at,
+      area: s ? areaOf(s) : v.area,
+      session: s?.id ?? null,
+      join: null,
+      typing: null,
+      pipeline: null,
+      plan: { id: v.id },
+      text: `${v.me.title} proposes ${steps} ${steps === 1 ? "workspace" : "workspaces"}${v.held.ticket ? ` · #${v.held.ticket}` : ""}`,
+      code: null,
+    };
+  });
+}
+
+/**
  * Everything that needs you, in the tray's order (and N's): sessions waiting on you, teammates asking to type, agents
- * asking for a pull request and wires waiting at their gates; then join requests, tickets at your stages and pull
- * requests Mockingbird can't follow; then finished sessions, newest first within each. `asks` are the requests this
- * install answers as a room's admin (JoinRequests.tsx's adminRequests: the admin's prompt and Members ▾ read the same
- * list); `areaOf` is the area a session's workspace is in on the landscape; `pipelines` are pipeline.json's tickets,
- * as the window reads them; `wires`, the wire book's gates as the landscape draws them.
+ * asking for a pull request, wires waiting at their gates and Orchestrators' plans; then join requests, tickets at
+ * your stages and pull requests Mockingbird can't follow; then finished sessions, newest first within each. `asks` are
+ * the requests this install answers as a room's admin (JoinRequests.tsx's adminRequests: the admin's prompt and
+ * Members ▾ read the same list); `areaOf` is the area a session's workspace is in on the landscape; `pipelines` are
+ * pipeline.json's tickets, as the window reads them; `wires`, the wire book's gates as the landscape draws them;
+ * `plans`, the plans held for you (plans:list).
  */
 export function needsItems(
   sessions: readonly SessionInfo[],
@@ -341,7 +371,8 @@ export function needsItems(
   areaOf: (s: SessionInfo) => string,
   titleOf: (s: SessionInfo) => string,
   pipelines: Readonly<Record<string, TicketPipeline>> = {},
-  wires: NeedsWires | null = null
+  wires: NeedsWires | null = null,
+  plans: readonly PlanView[] = []
 ): NeedsItem[] {
   const out: NeedsItem[] = [];
   for (const s of sessions) {
@@ -352,6 +383,7 @@ export function needsItems(
   for (const a of asks) if (a.request.role === "admin" && a.request.state === "waiting") out.push(joinItem(a.request, a.room));
   for (const p of Object.values(pipelines)) out.push(...pipelineItems(p, sessions, areaOf), ...mergeItems(p, sessions, areaOf));
   if (wires) out.push(...wireItems(wires));
+  out.push(...planItems(plans, sessions, areaOf));
   return out.sort((a, b) => RANK[a.kind] - RANK[b.kind] || b.at - a.at || a.id.localeCompare(b.id));
 }
 

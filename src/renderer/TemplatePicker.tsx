@@ -11,7 +11,9 @@ import {
   asShown,
   flowOf,
   automaticGates,
+  BUILT_IN_TEMPLATE,
   layOutPlan,
+  startsAtOrchestrator,
   ticketLine,
   ROOM_ASKS,
   type LayOutPlan,
@@ -22,6 +24,9 @@ import {
   type TemplateStep,
   type TemplateWire,
 } from "../shared/pipelineTemplates";
+import { checkPlan, ME, PLAN_MAX, planFlags, provenanceOf, type Plan, type PlanLayOut, type PlanStep, type PlanView, type PlanWire } from "../shared/plans";
+import { agoShort } from "../shared/format";
+import { WIRE_WHENS, type WireGate, type WireWhen } from "../shared/wires";
 
 /**
  * The template picker (docs/landscape-wires.md, W9; section 5's WireTemplates.dc.html A) and Save as template's dialog,
@@ -311,7 +316,12 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
                 A terminal runs this as a command. {p.terminal!.why}
               </div>
             )}
-            {i === 0 && (
+            {i === 0 && s.role === "orchestrator" && (
+              <div className="tp-line dim" data-flag="start">
+                An Orchestrator: it starts as it's laid out, in a worktree on the ticket's branch, reads the ticket and proposes the rest as its plan. It creates nothing and writes no code.
+              </div>
+            )}
+            {i === 0 && !s.role && (
               <div className="tp-line dim" data-flag="start">
                 <span className="grow">{body.startFirst ? "Starts as it's laid out." : "Waits: nothing starts until you send or Start now."}</span>
                 <button type="button" className="link" onClick={() => onStartFirst(!body.startFirst)}>
@@ -319,7 +329,12 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
                 </button>
               </div>
             )}
-            {into.map(({ w, p: pw, j }) =>
+            {p.shape && (
+              <div className="tp-line dim" data-flag="shape">
+                {p.shape}
+              </div>
+            )}
+            {!p.shape && into.map(({ w, p: pw, j }) =>
               pw.problem ? (
                 <div key={j} className="tp-line red" data-flag="problem">
                   <span className="grow">{pw.problem}</span>
@@ -421,7 +436,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const [body, setBody] = useState<TemplateBody | null>(offered?.body ?? null);
   const templates = list && !isErr(list) ? list.templates : [];
   const choose = (id: string) => {
-    const t = id === OFFERED ? offered : templates.find((x) => x.template.id === id)?.template;
+    const t = id === OFFERED ? offered : id === BUILT_IN_TEMPLATE.id ? BUILT_IN_TEMPLATE : templates.find((x) => x.template.id === id)?.template;
     if (!t) return;
     setChosen(id);
     setBody(structuredClone("body" in t ? t.body : { startFirst: t.startFirst, steps: t.steps, wires: t.wires }));
@@ -429,11 +444,11 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
     // what Lay out lays out just changed under the pointer
     shownHold.holdOff("layout", ANSWER_SETTLE_MS);
   };
-  // the first saved template, once they're read, when nothing's offered
+  // once the saved templates are read, when nothing's offered: the first of them, else the built-in
   useEffect(() => {
-    if (chosen === null && templates[0]) choose(templates[0].template.id);
+    if (chosen === null && list) choose(templates[0]?.template.id ?? BUILT_IN_TEMPLATE.id);
   }, [list]);
-  const name = chosen === OFFERED ? offered!.name : (templates.find((x) => x.template.id === chosen)?.template.name ?? "");
+  const name = chosen === OFFERED ? offered!.name : chosen === BUILT_IN_TEMPLATE.id ? BUILT_IN_TEMPLATE.name : (templates.find((x) => x.template.id === chosen)?.template.name ?? "");
 
   // the ticket, as New session picks one: yours first, then anyone's
   const ado = useAdoTickets();
@@ -479,7 +494,8 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
       why = await onLayOut({
         name: name || "The template",
         template: asShown(body),
-        ...(ticket ? { ticketId: String(ticket.id), ticketTitle: ticket.title } : {}),
+        // an Orchestrator is told the ticket's description, fenced as text others wrote (main builds its kickoff)
+        ...(ticket ? { ticketId: String(ticket.id), ticketTitle: ticket.title, ...(startsAtOrchestrator(body) ? { ticketDescription: ticket.description } : {}) } : {}),
         repoPath: repo || null,
         ...(repo && base ? { base } : {}),
         area,
@@ -613,6 +629,17 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
               <span className="s">{offered.provenance}</span>
             </button>
           )}
+          <button
+            type="button"
+            role="option"
+            aria-selected={chosen === BUILT_IN_TEMPLATE.id}
+            className={`tp-item${chosen === BUILT_IN_TEMPLATE.id ? " sel" : ""}`}
+            data-template={BUILT_IN_TEMPLATE.id}
+            onClick={() => choose(BUILT_IN_TEMPLATE.id)}
+          >
+            <span className="t">{BUILT_IN_TEMPLATE.name}</span>
+            <span className="s">Built in · {plural(BUILT_IN_TEMPLATE.steps.length, "step")}</span>
+          </button>
           {list === null && <div className="tp-empty">Reading the saved templates…</div>}
           {list && isErr(list) && (
             <div className="tp-empty red">
@@ -676,10 +703,10 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
             ))}
           {list && !isErr(list) && !templates.length && !offered && (
             <div className="tp-empty" data-empty="templates">
-              No templates yet. Save one from a chain: a wired workspace's ⋯, Save as template…. The built-in Orchestrator → Coder → Verifier comes in a later version.
+              No saved templates yet: Save as template… in a wired workspace's ⋯ saves its chain as one.
             </div>
           )}
-          {chosen && chosen !== OFFERED && (
+          {chosen && chosen !== OFFERED && chosen !== BUILT_IN_TEMPLATE.id && (
             <button type="button" className="link tp-remove" onClick={() => void removeIt(chosen, name)}>
               Remove this template…
             </button>
@@ -821,6 +848,375 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
           {busy ? "Saving…" : "Save template"}
           {!busy && <span className="kbd"> ⌘↵</span>}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ---- the Orchestrator's plan (W17) --------------------------------------------------------------
+
+/** A plan's sketch key for an end that isn't one of its steps: its Orchestrator, or a workspace there already. */
+const ME_KEY = "me";
+const existingKey = (i: number) => `x${i}`;
+
+/**
+ * Plan `p` as the chain sketch draws a template: its Orchestrator and the workspaces it wires to as boxes of their own
+ * beside its steps, each wire's gate as it's laid out (`layout`, or as written while the plan can't be checked).
+ */
+function planSketch(p: Plan, v: PlanView, layout: PlanLayOut | null): { body: TemplateBody; plan: LayOutPlan } {
+  const named = [...new Set(p.wires.flatMap((w) => [w.from, w.to]).filter((e) => Object.hasOwn(v.existing, e)))];
+  const keyOf = (e: string) => (e === ME ? ME_KEY : named.includes(e) ? existingKey(named.indexOf(e)) : e);
+  const steps: TemplateStep[] = [
+    { key: ME_KEY, name: v.me.title, agent: v.me.agent ?? "claude", folder: "new", prompt: "" },
+    ...named.map((e, i): TemplateStep => ({ key: existingKey(i), name: v.existing[e].title, agent: v.existing[e].agent ?? "claude", folder: "new", prompt: "" })),
+    ...p.steps.map((s): TemplateStep => ({ key: s.key, name: s.name, agent: s.agent, folder: s.folder === "orchestrator" ? { sameAs: ME_KEY } : s.folder, prompt: s.prompt })),
+  ];
+  const wires: TemplateWire[] = p.wires.map((w) => ({ ...w, from: keyOf(w.from), to: keyOf(w.to) }));
+  return {
+    body: { startFirst: true, steps, wires },
+    plan: {
+      steps: steps.map((s) => ({ step: s, starts: false, terminal: s.agent === "terminal" ? { laid: true, why: "" } : null })),
+      wires: p.wires.map((w, i) => ({ wire: wires[i], gate: layout?.wires[i]?.gate ?? w.gate ?? "ask", forced: !!layout?.wires[i]?.forced, afterStart: false, skipped: false, problem: null })),
+      forced: layout?.forced ?? 0,
+      problems: [],
+    },
+  };
+}
+
+const withPlanStep = (p: Plan, key: string, patch: Partial<PlanStep>): Plan => ({
+  ...p,
+  steps: p.steps.map((s) => {
+    if (s.key !== key) return s;
+    const next: PlanStep = { ...s, ...patch };
+    for (const k of ["model", "effort", "repo"] as const) if (next[k] === undefined) delete next[k];
+    return next;
+  }),
+});
+const withPlanWire = (p: Plan, j: number, patch: Partial<PlanWire>): Plan => ({
+  ...p,
+  wires: p.wires.map((w, i) => {
+    if (i !== j) return w;
+    const next: PlanWire = { ...w, ...patch };
+    for (const k of ["when", "gate", "template", "rounds"] as const) if (next[k] === undefined) delete next[k];
+    return next;
+  }),
+});
+/** Plan `p` without step `key` and the wires that reach it: what's left is checked as any plan is. */
+const withoutStep = (p: Plan, key: string): Plan => ({ ...p, steps: p.steps.filter((s) => s.key !== key), wires: p.wires.filter((w) => w.from !== key && w.to !== key) });
+
+const WHEN_LABEL: Record<WireWhen, string> = { finished: "When it finishes", manual: "When you send it", "pr-merged": "When its PR merges" };
+
+export interface PlanPickerProps {
+  view: PlanView;
+  /** The plan isn't held any more (replaced, laid out or dismissed): main would refuse its Lay out, and the dialog says so. */
+  gone: boolean;
+  /** Opened on the tray's Dismiss…: the note to its Orchestrator shown first. */
+  dismissing?: boolean;
+  areaTitle: (key: string) => string | null;
+  /** Lay out: settles with why nothing was laid out, or null once it was (and the dialog closes). */
+  onLayOut: (id: string, shown: Plan) => Promise<string | null>;
+  /** Dismiss, with the note: settles with why it wasn't, or null once it was. */
+  onDismiss: (id: string, note: string) => Promise<string | null>;
+  home: () => HTMLElement | null;
+  onClose: () => void;
+}
+
+/**
+ * An Orchestrator's plan in the template picker (W17; section 4, "What the dialog shows"): who wrote it (its provenance
+ * line: an agent that read a ticket others wrote), every step whole and editable (agent, model, effort, repo, where it
+ * works, how it starts, its prompt never cut; a terminal's command flagged as one), every wire with its ends, type,
+ * When, gate and rounds (an automatic gate in amber with Make it ask; a workspace there already marked so), what's
+ * flagged (links, secret-looking values replaced, a team room's gates asking), and how old it is and whether it
+ * replaced another. The same rules main holds it to run here on every edit, so Lay out is off saying why; main checks
+ * it all again on what's sent, which is exactly what's shown. It takes Lay out as W9's picker does: no early click,
+ * double click's second, burst's key or held ⌘↵, and the keyboard never handed to a terminal.
+ */
+export function PlanPicker({ view, gone, dismissing, areaTitle, onLayOut, onDismiss, home, onClose }: PlanPickerProps) {
+  const head = useRef<HTMLDivElement>(null);
+  const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
+  const catalog = useCatalog();
+  const [body, setBody] = useState<Plan>(() => structuredClone(view.held.plan));
+  const ctx = useMemo(() => ({ me: view.me, existing: view.existing, installed: view.installed, catalog, repos: view.repos, room: !!view.room, ticket: view.held.ticket }), [view, catalog]);
+  const checked = useMemo((): { layout: PlanLayOut } | { problem: string } => {
+    try {
+      return { layout: checkPlan(body, ctx) };
+    } catch (err) {
+      return { problem: err instanceof Error ? err.message : String(err) };
+    }
+  }, [body, ctx]);
+  const layout = "layout" in checked ? checked.layout : null;
+  const sketch = useMemo(() => planSketch(body, view, layout), [body, view, layout]);
+  const flags = layout ? planFlags(body, layout, ctx, view.held.notes) : (view.held.notes ?? []);
+  const nameOf = (e: string) => (e === ME ? view.me.title : (body.steps.find((s) => s.key === e)?.name ?? view.existing[e]?.title ?? e));
+  const [busy, setBusy] = useState<"layout" | "dismiss" | null>(null);
+  const busyNow = useRef(false);
+  const [error, setError] = useState("");
+  const [note, setNote] = useState<string | null>(dismissing ? "" : null);
+  const blocked = gone ? "This plan isn't held any more: it was replaced, laid out or dismissed." : "problem" in checked ? checked.problem : null;
+  const act = async (which: "layout" | "dismiss") => {
+    if (busyNow.current || heldOff("settle") || (which === "layout" && blocked)) return;
+    busyNow.current = true;
+    setBusy(which);
+    setError("");
+    let why: string | null;
+    try {
+      why = which === "layout" ? await onLayOut(view.id, body) : await onDismiss(view.id, note ?? "");
+    } catch (err) {
+      console.warn(`[mockingbird] ${which === "layout" ? "laying out" : "dismissing"} plan ${view.id}:`, err);
+      why = `Couldn't ${which === "layout" ? "lay it out" : "dismiss it"}: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      busyNow.current = false;
+      setBusy(null);
+    }
+    if (why) setError(why);
+  };
+  const ticket = view.held.ticket ? `#${view.held.ticket}${view.ticketTitle ? ` · ${view.ticketTitle}` : ""}` : null;
+  const where = [`in ${areaTitle(view.area) ?? view.area}`, plural(body.steps.length, "step"), plural(body.wires.length, "wire"), ...(view.room ? ["team room: gates ask"] : [])].join(" · ");
+  const held = heldOff("settle");
+  return (
+    <Modal
+      className="modal tp tp-plan"
+      onClose={onClose}
+      closeOnBackdrop={!held}
+      handsBack={notToTerminal(home)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          if (!e.repeat && note === null) void act("layout");
+        }
+      }}
+    >
+      <div className="tp-head" ref={head}>
+        <h3>{view.me.title}'s plan</h3>
+        <span className="tp-prov" data-provenance>
+          {provenanceOf(view)}
+        </span>
+      </div>
+      {ticket && (
+        <div className="tp-sec">
+          <div className="tp-k">Ticket</div>
+          <div className="tp-line2">{ticket}</div>
+        </div>
+      )}
+      <div className="tp-sec">
+        <div className="tp-k">Summary</div>
+        <div className="tp-summary" data-summary title="Its agent's words">
+          {body.summary}
+        </div>
+      </div>
+      <div className="tp-note dim" data-flag="age">
+        Proposed {agoShort(view.held.at)} ago{view.held.replaces ? ", replacing its earlier plan" : ""}. Nothing of it exists until you lay it out, and any of it can be changed first.
+      </div>
+      {view.room && (
+        <div className="tp-note dim" data-flag="room">
+          {areaTitle(view.area) ?? view.area} is a team room's area: its steps start as room sessions, under the room's guardrails, and your teammates will see them. Every gate asks.
+        </div>
+      )}
+      {flags.map((f) => (
+        <div key={f} className="tp-note amber" data-flag="plan">
+          {f}
+        </div>
+      ))}
+      <div className="tp-steps solo">
+        <ChainSketch body={sketch.body} plan={sketch.plan} width={560} />
+        {body.steps.map((s, i) => {
+          const p = layout?.steps[i] ?? null;
+          const terminal = s.agent === "terminal";
+          const into = body.wires.map((w, j) => ({ w, j })).filter((x) => x.w.to === s.key && carriesWork(x.w.type));
+          const agent = terminal ? null : (s.agent as "claude" | "codex");
+          const models = catalog && agent ? catalog[agent].models : [];
+          const efforts = catalog && agent ? catalog[agent].efforts : [];
+          return (
+            <div key={s.key} className="tp-step" data-step={s.key}>
+              <div className="tp-step-head">
+                <span className="tp-dot" />
+                <input type="text" className="tp-name tp-name-edit" aria-label={`Step ${i + 1}'s name`} value={s.name} maxLength={PLAN_MAX.name} onChange={(e) => setBody((b) => withPlanStep(b, s.key, { name: e.target.value }))} />
+                {terminal ? (
+                  <span className="tp-fixed" title="A terminal step stays a terminal">
+                    Terminal
+                  </span>
+                ) : (
+                  <>
+                    <Select
+                      className="tp-agent"
+                      value={s.agent}
+                      title={`${s.name}'s agent`}
+                      options={(["claude", "codex"] as const).map((a) => ({ value: a, label: `${AGENT_NAME[a]}${view.installed.includes(a) ? "" : " (not installed)"}` }))}
+                      onChange={(v) => setBody((b) => withPlanStep(b, s.key, { agent: v as "claude" | "codex", model: undefined, effort: undefined }))}
+                    />
+                    <Select
+                      className="tp-model"
+                      value={s.model ?? ""}
+                      placeholder="Default model"
+                      title={`${s.name}'s model`}
+                      options={[{ value: "", label: "Default model" }, ...(s.model && !models.some((m) => m.id === s.model) ? [{ value: s.model, label: `${s.model} (not offered)` }] : []), ...models.map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group }))]}
+                      onChange={(v) => setBody((b) => withPlanStep(b, s.key, { model: v || undefined }))}
+                    />
+                    <Select
+                      className="tp-effort"
+                      value={s.effort ?? ""}
+                      placeholder="Default effort"
+                      title={`${s.name}'s effort`}
+                      options={[{ value: "", label: "Default effort" }, ...(s.effort && !efforts.includes(s.effort) ? [{ value: s.effort, label: `${s.effort} (not offered)` }] : []), ...efforts.map((e) => ({ value: e, label: e }))]}
+                      onChange={(v) => setBody((b) => withPlanStep(b, s.key, { effort: v || undefined }))}
+                    />
+                  </>
+                )}
+                <button type="button" className="link tp-leave" title="Leave this step out, with its wires" onClick={() => setBody((b) => withoutStep(b, s.key))}>
+                  Leave out
+                </button>
+              </div>
+              <div className="tp-line dim" data-flag="where">
+                <span className="grow">{p?.where ?? (s.folder === "orchestrator" ? `In ${view.me.title}'s folder.` : s.folder === "new" ? "A new worktree." : `In ${nameOf(s.folder.sameAs)}'s folder.`)}</span>
+                {s.folder === "new" && view.repos.length > 1 && (
+                  <Select
+                    className="tp-repo"
+                    value={s.repo ?? view.me.repo ?? ""}
+                    title={`The repo of ${areaTitle(view.area) ?? view.area} that ${s.name}'s worktree is made in`}
+                    options={view.repos.map((r) => ({ value: r, label: baseName(r) }))}
+                    onChange={(v) => setBody((b) => withPlanStep(b, s.key, { repo: v === view.me.repo ? undefined : v }))}
+                  />
+                )}
+              </div>
+              {p && !terminal && (
+                <div className={`tp-line ${p.starts ? "" : "dim"}`} data-flag="start">
+                  {p.says}
+                </div>
+              )}
+              <WholeText
+                value={s.prompt}
+                mono
+                label={terminal ? `${s.name}'s command` : `${s.name}'s prompt`}
+                placeholder={terminal ? "The command it runs, e.g. npm run dev" : "What it's told as it starts"}
+                onChange={(v) => setBody((b) => withPlanStep(b, s.key, { prompt: v }))}
+              />
+              {terminal && (
+                <div className="tp-line amber" data-flag="terminal">
+                  Runs this as a command. {p?.terminal?.why ?? ""}
+                </div>
+              )}
+              {into.map(({ w, j }) => (
+                <div key={`flow-${j}`} className="tp-flow" data-wire={j}>
+                  <div className="tp-line dim">
+                    What {nameOf(w.from)} sends {w.type === "feedback" ? "back" : "it"} ({w.type}):
+                  </div>
+                  <WholeText
+                    value={templateOf({ template: w.template, when: w.when ?? "finished" })}
+                    mono
+                    label={`What ${nameOf(w.from)} → ${s.name} sends`}
+                    placeholder="{summary}"
+                    onChange={(v) => setBody((b) => withPlanWire(b, j, { template: v }))}
+                  />
+                </div>
+              ))}
+            </div>
+          );
+        })}
+        <div className="tp-k pad">Wires</div>
+        {body.wires.map((w, j) => {
+          const lw = layout?.wires[j] ?? null;
+          const gate: WireGate = lw?.gate ?? w.gate ?? "ask";
+          const ends = [w.from, w.to].map((e) => (Object.hasOwn(view.existing, e) ? `${nameOf(e)} (there already)` : nameOf(e)));
+          const carries = carriesWork(w.type);
+          // a handoff Lay out sends still has its gate for whatever its source sends later
+          const later = lw?.sentByLayOut ? "After that, it " : "";
+          return (
+            <div key={j} className="tp-wire" data-wire-row={j}>
+              <div className="tp-step-head">
+                <span className="tp-name">
+                  {ends[0]} → {ends[1]}
+                </span>
+                <span className="tp-fixed">{w.type}</span>
+                {carries && (
+                  <Select
+                    className="tp-when"
+                    value={w.when ?? "finished"}
+                    title="When it readies"
+                    options={WIRE_WHENS.map((x) => ({ value: x, label: WHEN_LABEL[x] }))}
+                    onChange={(v) => setBody((b) => withPlanWire(b, j, { when: v === "finished" ? undefined : (v as WireWhen) }))}
+                  />
+                )}
+                {w.type === "feedback" && (
+                  <Select
+                    className="tp-rounds"
+                    value={String(w.rounds ?? 3)}
+                    title="Its rounds: at the limit it stops and asks you"
+                    options={Array.from({ length: PLAN_MAX.rounds }, (_x, i) => ({ value: String(i + 1), label: `↺ ${i + 1} ${i ? "rounds" : "round"}` }))}
+                    onChange={(v) => setBody((b) => withPlanWire(b, j, { rounds: Number(v) }))}
+                  />
+                )}
+                <button type="button" className="link tp-leave" title="Leave this wire out" onClick={() => setBody((b) => ({ ...b, wires: b.wires.filter((_x, i) => i !== j) }))}>
+                  Leave out
+                </button>
+              </div>
+              {lw?.sentByLayOut && (
+                <div className="tp-line dim" data-flag="sent">
+                  Lay out sends it: “{nameOf(w.to)}” starts with its prompt above, and this handoff counts as sent.
+                </div>
+              )}
+              {carries && lw?.forced ? (
+                <div className="tp-line dim" data-flag="asks">
+                  {later ? `${later}asks` : "It asks"}, not automatic. {ROOM_ASKS}.
+                </div>
+              ) : carries && gate === "automatic" ? (
+                <div className="tp-line amber" data-flag="automatic">
+                  <span className="grow">{later ? `${later}sends` : "Sends"} without asking{w.when === "pr-merged" ? ` once ${nameOf(w.from)}'s pull request merges` : ` once ${nameOf(w.from)} finishes`}.</span>
+                  <button type="button" className="link" onClick={() => setBody((b) => withPlanWire(b, j, { gate: "ask" }))}>
+                    Make it ask
+                  </button>
+                </div>
+              ) : carries ? (
+                <div className="tp-line dim" data-flag="ask">
+                  {later ? `${later}asks` : "Asks"}: you send it from its gate.
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {blocked && (
+        <div className="tp-note red" data-flag="blocked">
+          {blocked}
+        </div>
+      )}
+      {error && (
+        <div className="tp-note red" role="alert">
+          {error}
+        </div>
+      )}
+      {note !== null && (
+        <div className="tp-sec" data-dismiss>
+          <div className="tp-k">Note to {view.me.title}</div>
+          <textarea className="tp-prompt" rows={3} aria-label={`Your note to ${view.me.title}`} placeholder="Why, or what to propose instead (optional)" value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} />
+        </div>
+      )}
+      <div className="tp-foot">
+        <span className="tp-where" title={where}>
+          {where}
+        </span>
+        {note === null ? (
+          <>
+            <button className="outline" data-act="dismiss-open" disabled={!!busy || gone} onClick={() => setNote("")}>
+              Dismiss…
+            </button>
+            <button className="outline" onClick={onClose}>
+              Cancel
+            </button>
+            <button className="primary" data-act="layout" disabled={!!busy || !!blocked || held} title={blocked ?? undefined} onClick={() => void act("layout")}>
+              {busy === "layout" ? "Laying out…" : "Lay out"}
+              {busy !== "layout" && <span className="kbd"> ⌘↵</span>}
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="outline" disabled={!!busy} onClick={() => setNote(null)}>
+              Back
+            </button>
+            <button className="primary" data-act="dismiss" disabled={!!busy || gone || held} title={gone ? (blocked ?? undefined) : `Nothing is made; ${view.me.title} is told, with your note`} onClick={() => void act("dismiss")}>
+              {busy === "dismiss" ? "Dismissing…" : "Dismiss plan"}
+            </button>
+          </>
+        )}
       </div>
     </Modal>
   );

@@ -19,6 +19,7 @@ import {
   wiredNotice,
   wireInstructions,
   wireMessage,
+  ORCHESTRATOR_RULES,
   type Expansion,
   type LabelledEnd,
   type PrMerge,
@@ -28,7 +29,7 @@ import { MAX_SUMMARY, WIRE_TOOL } from "./wireToolSchemas";
 import { own } from "../shared/landscape";
 import { oneLine, plainLine, quoted } from "../shared/team/agentText";
 import { terminalLines } from "../shared/terminalText";
-import { ticketIdOf, type AgentKind, type AgentMessage, type SessionInfo } from "../shared/types";
+import { ticketIdOf, type AgentKind, type AgentMessage, type SessionInfo, type SessionRole } from "../shared/types";
 import {
   carriesWork,
   finishPlan,
@@ -499,8 +500,16 @@ export class WireTools {
   /** Sessions that launched before team rooms started, when every wire was refused: told of their wires once rooms have. */
   private unheard = new Set<string>();
 
-  /** What session `id`'s agent is told about its wires as it launches (sessions.launchInstructions), or null. */
-  launchInstructions(id: string): string | null {
+  /**
+   * What session `id`'s agent is told as it launches (sessions.launchInstructions), or null: an Orchestrator's rules
+   * (`role`), whatever the wires say, then its wires.
+   */
+  launchInstructions(id: string, role?: SessionRole): string | null {
+    const wires = this.wiresAtLaunch(id);
+    return [role === "orchestrator" ? ORCHESTRATOR_RULES : null, wires].filter(Boolean).join("\n\n") || null;
+  }
+
+  private wiresAtLaunch(id: string): string | null {
     const state = this.o.store.wires();
     if (!state.book) {
       const why = state.refused ?? "the wires can't be read";

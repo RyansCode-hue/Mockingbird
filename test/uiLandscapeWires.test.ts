@@ -780,8 +780,10 @@ describe.skipIf(!local)("Pipeline templates", () => {
     expect(t.early).toMatchObject({ layOuts: 0, open: true, opened: { head: "Pipeline from a ticket", act: { off: true }, keyboard: true } });
     // and a click on Quick fix's row straight after it opened chose nothing
     expect(t.early.opened.items.filter((i) => i.sel).map((i) => i.t)).toEqual(["Build, review, test"]);
-    // the saved templates: one from a newer version offered (what it doesn't read kept), a malformed one refused saying why
+    // the built-in Orchestrator → Coder → Verifier first; the saved templates: one from a newer version offered (what it
+    // doesn't read kept), a malformed one refused saying why
     expect(t.shown.items).toEqual([
+      { t: "Orchestrator → Coder → Verifier", s: "Built in · 3 steps", sel: false, off: false, title: null },
       { t: "Build, review, test", s: "4 steps · 1 automatic", sel: true, off: false, title: null },
       { t: "Quick fix", s: "2 steps · another version's", sel: false, off: false, title: "Saved by another version of Mockingbird: this one doesn't read colour, steps[0].icon, which are kept as they are" },
       { t: "Donor export", s: "5 steps", sel: false, off: false, title: null },
@@ -865,6 +867,6 @@ describe.skipIf(!local)("Pipeline templates", () => {
     expect(t.broken.calls).toBe(1);
     expect(t.broken.after.broken).toBe(false);
     expect(t.broken.after.aside).toMatch(/^Set aside: a copy is kept in \/Users\/you\/\.mockingbird\/pipelineTemplates-set-aside-.*\.json, and the list starts empty\.$/);
-    expect(t.broken.after.empty).toMatch(/^No templates yet/);
+    expect(t.broken.after.empty).toMatch(/^No saved templates yet/);
   }, 120_000);
 });

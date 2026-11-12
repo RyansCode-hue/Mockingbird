@@ -47,7 +47,9 @@ import { runFirstRunAudit } from "./firstRunAudit";
 // the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
 import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
-import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
+import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
+import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
+import { boardPlan, runPlanAudit } from "./planAudit";
 import { WIRE_AREA, boardTemplates, gateBoardBook, gateMerges, gatePipeline, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { openFinishShot } from "./wireNeedsAudit";
@@ -3250,6 +3252,8 @@ if (params.has("landscapeNeedsAudit")) {
 }
 // W6: ?landscapeStripAudit (with ?wires=fanout) works the pipeline strip in focus (stripAudit.ts) for test/uiLandscapeStrip.test.ts
 if (params.has("landscapeStripAudit")) runStripAudit({ calls, waitFor });
+// W17: ?landscapePlanAudit=<part> (with ?lsWires&lsPlan) works an Orchestrator's plan and the built-in template (planAudit.ts) for test/uiTemplatePicker.test.ts
+if (params.has("landscapePlanAudit")) runPlanAudit({ calls, waitFor }, params.get("landscapePlanAudit") || "plan");
 // S8: ?landscapeSwitchAudit=stack|locked|palette|notes|place works what the grid offered on the landscape (switchAudit.ts) for test/uiLandscapeSwitch.test.ts
 if (params.has("landscapeSwitchAudit")) {
   const newSession = (over: Partial<SessionInfo>) => {
@@ -9230,6 +9234,25 @@ Object.assign(api, {
     const room = team.rooms.find((r) => r.groupKey === req.area)?.id ?? null;
     const plan = layOutPlan(body, { room: !!room, ticket: !!req.ticketId });
     if (plan.problems.length) return err(`“${req.name}” can't be laid out as it is: ${plan.problems.join(" ")}`);
+    if (startsAtOrchestrator(body)) {
+      if (!req.repoPath) return err(`“${body.steps[0].name}” works in a worktree of the ticket's repo on its branch: choose a repo.`);
+      const first = body.steps[0];
+      const id = `orch${Date.now().toString(36)}`;
+      const o: SessionInfo = {
+        ...session(id, { title: first.name, agent: first.agent as "claude" | "codex", role: "orchestrator", taskGroup: req.area, ticketId: req.ticketId ?? null, status: "working", createdAt: Date.now() }),
+        repoPath: req.repoPath,
+        cwd: WT(`${req.ticketId}-orchestrator`),
+        branch: `${req.ticketId}-orchestrator`,
+      };
+      sessions = [...sessions, o];
+      buffers[id] = `${C.dim}(UI preview: the Orchestrator would be told this)${C.reset}\r\n${orchestratorKickoff({ ticketId: String(req.ticketId), title: req.ticketTitle ?? "", description: req.ticketDescription ?? "", told: withTicket(first.prompt, ticketLine(req.ticketId, req.ticketTitle)), template: body }).replace(/\n/g, "\r\n")}\r\n> `;
+      if (req.ticketId && !pipelines[req.ticketId]) {
+        pipelineOf(req.ticketId).title = req.ticketTitle ?? undefined;
+        pipelinesChanged();
+      }
+      sessionsChanged();
+      return { steps: [{ key: first.key, id, title: first.name }], wires: [], started: id, notes: [`It reads #${req.ticketId} and proposes the rest as its plan, which comes to Needs you: nothing more is made until you lay it out.`] } satisfies LayOutReply;
+    }
     if (!req.repoPath && body.steps.some((x) => x.folder === "new")) return err("Its steps work in worktrees of their own, which need a repo: choose one.");
     const steps: LayOutReply["steps"] = [];
     const idOf = new Map<string, string>();
@@ -9288,6 +9311,156 @@ Object.assign(api, {
       else wires.push(r.id!);
     }
     return { steps, wires, started: started.id, notes } satisfies LayOutReply;
+  },
+});
+// ---- W17: the Orchestrators' plans, as main's plans:* calls (src/main/plans.ts) ----
+// ?lsPlan (with ?lsWires): the wires board's area has an Orchestrator with a plan held for #5120 (planAudit.ts'
+// boardPlan); =room shares that area as a team room's; =gone holds it and then lets it go, as a newer plan would.
+const lsPlanQ = params.get("lsPlan");
+const planOrch = wireBoard && lsPlanQ !== null ? boardPlan(session, WT, now) : null;
+if (planOrch) {
+  sessions.push(planOrch.orchestrator);
+  const like = team.rooms.find((r) => r.admin === ME) ?? team.rooms[0];
+  if (lsPlanQ === "room" && like && !team.rooms.some((r) => r.groupKey === WIRE_AREA)) team.rooms.push({ ...clone(like), id: "R5120ccccccccccccccccc", name: "#5120 Donor export", groupKey: WIRE_AREA });
+}
+let heldPlans: { id: string; from: string; at: number; replaces?: string; plan: Plan; notes?: string[] }[] = planOrch ? [planOrch.held] : [];
+/** Why a plan id is gone, as main says it to a dialog still open on one. */
+const spentPlans = new Map<string, string>();
+const plansChanged = () => emit("onPlansChanged");
+/** Main's view of a held plan: its Orchestrator, its area's other workspaces (each with why a plan can't name it), and whether it can be laid out now. */
+function planView(h: (typeof heldPlans)[number]): PlanView | null {
+  const me = byId(h.from);
+  if (!me) return null;
+  const area = (me.taskGroup ?? "").split("/")[0];
+  const room = team.rooms.find((r) => r.groupKey === area)?.id ?? null;
+  const endOf = (x: SessionInfo, refusal: string | null) => ({ id: x.id, title: x.ticketTitle ?? x.title, kind: x.shell ? ("terminal" as const) : ("agent" as const), agent: x.shell ? null : (x.agent ?? "claude"), repo: x.repoPath, branch: x.branch, ticket: x.ticketId ?? area, refusal });
+  const existing = Object.fromEntries(
+    [...sessions, ...previous, ...planned]
+      .filter((x) => x.id !== me.id && (x.taskGroup ?? "").split("/")[0] === area)
+      .map((x) => [x.id, endOf(x, x.debrief ? "it's a morning brief or wrap-up, which takes no wires." : x.role === "tasks" ? "it's the Helpdesk tasks workspace, which takes no wires." : null)])
+  );
+  const view: Omit<PlanView, "problem"> = {
+    id: h.id,
+    held: { from: h.from, ticket: area, at: h.at, ...(h.replaces ? { replaces: h.replaces } : {}), plan: clone(h.plan), ...(h.notes ? { notes: [...h.notes] } : {}) },
+    me: endOf(me, null),
+    ticketTitle: pipelines[area]?.title ?? "Stream the donor export",
+    area,
+    room,
+    existing,
+    installed: ["claude", "codex"],
+    repos: [...new Set([me.repoPath, ...Object.values(existing).map((e) => e.repo)].filter((r): r is string => !!r))],
+  };
+  let problem: string | null = null;
+  try {
+    checkPlan(h.plan, planCtx(view));
+  } catch (e) {
+    problem = tplWhy(e);
+  }
+  return { ...view, id: h.id, problem };
+}
+const planCtx = (v: Omit<PlanView, "problem">): PlanContext => ({ me: v.me, existing: v.existing, installed: v.installed, catalog: null, repos: v.repos, room: !!v.room, ticket: v.held.ticket });
+if (lsPlanQ === "gone" && planOrch)
+  setTimeout(() => {
+    spentPlans.set(planOrch.held.id, "That plan was replaced by a newer one from “Orchestrator”: open that one instead.");
+    heldPlans = [];
+    plansChanged();
+  }, 4000);
+Object.assign(api, {
+  plansList: async () => heldPlans.flatMap((h) => {
+    const v = planView(h);
+    return v ? [v] : [];
+  }),
+  // main's plans:layOut: read and checked again, then made once: the steps not started, their wires, the steps only the
+  // Orchestrator hands off to started with their prompts, its handoffs counted sent
+  plansLayOut: async (id: string, shownRaw: unknown): Promise<PlanLaidOut | { error: string }> => {
+    await startLag();
+    const h = heldPlans.find((x) => x.id === id);
+    if (!h) return err(spentPlans.get(id) ?? "That plan isn't held any more: it was laid out, dismissed or replaced.");
+    const v = planView(h);
+    if (!v) return err("Its Orchestrator was forgotten, so its plan can't be laid out.");
+    let shown: Plan;
+    let layout;
+    try {
+      shown = readShownPlan(shownRaw);
+      layout = checkPlan(shown, planCtx(v));
+    } catch (e) {
+      return err(`The plan can't be laid out: ${tplWhy(e)}`);
+    }
+    heldPlans = heldPlans.filter((x) => x.id !== id);
+    spentPlans.set(id, "That plan was laid out already.");
+    plansChanged();
+    const me = byId(h.from)!;
+    const steps: PlanLaidOut["steps"] = [];
+    const idOf = new Map<string, string>();
+    const endId = (k: string) => (k === PLAN_ME ? me.id : (idOf.get(k) ?? k));
+    const line = ticketLine(v.held.ticket, v.ticketTitle);
+    let n = 0;
+    for (const p of layout.steps) {
+      const st = p.step;
+      if (st.agent === "terminal") continue;
+      const sid = `pp${Date.now().toString(36)}${n++}`;
+      const shares = st.folder === "orchestrator" ? me : typeof st.folder === "object" ? planned.find((x) => x.id === idOf.get((st.folder as { sameAs: string }).sameAs)) : undefined;
+      planned = [
+        ...planned,
+        {
+          ...session(sid, { title: st.name, agent: st.agent as "claude" | "codex", taskGroup: v.area, status: "idle", createdAt: Date.now(), branch: null, ticketId: v.held.ticket }),
+          repoPath: shares ? shares.repoPath : (p.repo ?? me.repoPath),
+          cwd: shares ? shares.cwd : (p.repo ?? me.repoPath ?? "/Users/you"),
+          planned: { worktree: st.folder === "new", ...(shares ? { sharesWith: shares.id } : {}), prompt: withTicket(st.prompt, line) },
+        },
+      ];
+      steps.push({ key: st.key, id: sid, title: st.name });
+      idOf.set(st.key, sid);
+    }
+    const wires: string[] = [];
+    const wireAt = new Map<number, string>();
+    for (const [j, p] of layout.wires.entries()) {
+      if (p.skipped || p.afterStart) continue;
+      if (p.wire.type === "worktree") {
+        const to = shown.steps.find((x) => x.key === p.wire.to)!;
+        const t = await api.wiresAddTerminal(me.id, { title: to.name, command: to.prompt });
+        if (t && "error" in t) return err(`Couldn't lay out the plan: “${to.name}” wasn't made: ${t.error}`);
+        steps.push({ key: to.key, id: t.id, title: to.name });
+        continue;
+      }
+      const r: WireReply = await api.wiresAdd(endId(p.wire.from), endId(p.wire.to), p.wire.type, { ...(p.wire.template !== undefined ? { template: p.wire.template } : {}), ...(p.wire.when ? { when: p.wire.when } : {}), ...(p.wire.type === "handoff" || p.wire.type === "feedback" ? { gate: p.gate } : {}), ...(p.wire.rounds ? { limit: p.wire.rounds } : {}) });
+      if ("refused" in r) return err(`Couldn't lay out the plan: ${p.wire.from} → ${p.wire.to} was refused: ${r.refused}`);
+      wires.push(r.id!);
+      wireAt.set(j, r.id!);
+    }
+    sessionsChanged();
+    const notes = layout.forced ? [`In a team room's area every gate asks, so ${layout.forced === 1 ? "its automatic gate was" : `its ${layout.forced} automatic gates were`} laid out asking.`] : [];
+    let started: string | null = null;
+    for (const p of layout.steps) {
+      if (!p.starts) continue;
+      const sid = idOf.get(p.step.key)!;
+      const r = await api.startPlanned(sid);
+      if (r && typeof r === "object" && "error" in r) {
+        notes.push(`“${p.step.name}” didn't start: ${r.error}.`);
+        continue;
+      }
+      started ??= sid;
+      for (const [j, w] of layout.wires.entries()) {
+        const wid = wireAt.get(j);
+        if (w.sentByLayOut && w.wire.to === p.step.key && wid) wireChanged(withLink(wid, { ...wireBook.links[wid], delivery: { id: `laid-${wid}`, state: "sent", at: Date.now(), why: `Lay out sent it: “${p.step.name}” started with its prompt from the plan.` } }));
+        if (w.afterStart && !w.skipped && w.wire.from === p.step.key && w.wire.type !== "worktree") {
+          const r2: WireReply = await api.wiresAdd(sid, endId(w.wire.to), w.wire.type, { ...(w.wire.when ? { when: w.wire.when } : {}), gate: w.gate });
+          if ("refused" in r2) notes.push(`${p.step.name} → ${w.wire.to} wasn't made: ${r2.refused}`);
+          else wires.push(r2.id!);
+        }
+      }
+    }
+    return { steps, wires, started, notes, area: v.area } satisfies PlanLaidOut;
+  },
+  // main's plans:dismiss: it goes, and its Orchestrator is told, with the note
+  plansDismiss: async (id: string, note: string) => {
+    const h = heldPlans.find((x) => x.id === id);
+    if (!h) return err(spentPlans.get(id) ?? "That plan isn't held any more: it was laid out, dismissed or replaced.");
+    heldPlans = heldPlans.filter((x) => x.id !== id);
+    spentPlans.set(id, "That plan was dismissed.");
+    plansChanged();
+    const me = byId(h.from);
+    return { told: me ? { to: me.id, title: me.title, told: note.trim() ? "delivered, with your note" : "delivered" } : { to: h.from, title: null, notTold: "Its Orchestrator isn't running, so it wasn't told." } };
   },
 });
 /** How long main takes to finish a step and answer. */

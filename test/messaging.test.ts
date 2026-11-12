@@ -155,7 +155,8 @@ describe("MCP server script", () => {
     const byId = Object.fromEntries(out.trim().split("\n").map((l) => JSON.parse(l)).map((m) => [m.id, m]));
     expect(byId[1].result).toMatchObject({ protocolVersion: "2025-06-18", serverInfo: { name: "mockingbird" } });
     // pinned whole: a tool can't be added without this changing, and the wire tools write no wire, gate or counter; the
-    // ticket tools act on the caller's own ticket and push, open and post nothing (ticketTools.test.ts)
+    // ticket tools act on the caller's own ticket and push, open and post nothing (ticketTools.test.ts), and propose_plan
+    // only holds a plan (plans.test.ts)
     expect(byId[2].result.tools.map((t: any) => t.name)).toEqual([
       "list_sessions",
       "send_message",
@@ -166,6 +167,7 @@ describe("MCP server script", () => {
       "set_stage",
       "request_pr",
       "write_patch_notes",
+      "propose_plan",
       ...HOUSE_TOOL_NAMES,
       "list_room_artifacts",
       "read_room_artifact",

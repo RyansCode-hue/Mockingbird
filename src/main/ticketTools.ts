@@ -34,6 +34,8 @@ export interface TicketToolsOptions {
   onApprovalUndone?(e: ApprovalUndone): boolean;
   /** An agent changed a ticket's record: the windows hear of it. */
   onChanged(): void;
+  /** An Orchestrator's propose_plan (src/main/plans.ts' Plans.propose): it holds a plan and makes nothing. */
+  plans?: { propose(me: SessionInfo, args: Record<string, unknown>): Promise<Reply> };
   log: (context: string, err: unknown) => void;
 }
 
@@ -53,6 +55,21 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 const nOf = (n: number) => n.toLocaleString("en-US");
 const isMap = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 
+/** Why an Orchestrator asks for no pull request: it writes no code, and the steps of its plan do. */
+export const ORCHESTRATOR_WRITES_NO_CODE = "an Orchestrator writes no code, so it has no pull request to ask for: the Coder of its plan asks for one.";
+
+/**
+ * Why Orchestrator `me` can't move its ticket to `to`, or null for any other session: it reads, researches and plans,
+ * so stakeholder testing, its approval and Done are never its to reach (the Verifier's, and the user's), whatever
+ * stageRefusal would allow another agent.
+ */
+export function orchestratorRefusal(me: Pick<SessionInfo, "role">, to: unknown): string | null {
+  if (me.role !== "orchestrator") return null;
+  return to === "stakeholder" || to === "approved" || to === "done"
+    ? "An Orchestrator reads, researches and proposes the plan: stakeholder testing is the Verifier's to reach, and its approval and Done are the user's alone."
+    : null;
+}
+
 /** Who an agent's change is marked as: its workspace's title, as an agent's, so it never reads as the user's. */
 export const agentBy = (me: Pick<SessionInfo, "title">): string => agentNamed(plainLine(me.title, 80));
 
@@ -64,7 +81,7 @@ type Text = { text: string; count: number } | { refused: string };
  * named range keeps U+2065, unassigned, out too; and the Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), letters by
  * Unicode's reckoning that draw as nothing.
  */
-const INVISIBLE_RE = /[\p{Cf}\u2060-\u2069\u115f\u1160\u3164\uffa0]/gu;
+export const INVISIBLE_RE = /[\p{Cf}\u2060-\u2069\u115f\u1160\u3164\uffa0]/gu;
 
 /**
  * An agent's text for the ticket's record, which others read once the user posts or opens it: invisible characters
@@ -141,6 +158,7 @@ export class TicketTools {
       if (op === TICKET_TOOL.setStage) return this.setStage(me, args);
       if (op === TICKET_TOOL.requestPr) return this.requestPr(me, args);
       if (op === TICKET_TOOL.writePatchNotes) return this.writePatchNotes(me, args);
+      if (op === TICKET_TOOL.proposePlan) return this.o.plans ? await this.o.plans.propose(me, args) : { error: "Plans aren't ready yet — try again in a moment." };
     } catch (err) {
       this.o.log(`tickets: ${op} for ${me.id} failed`, err);
       return { error: `${op} failed: ${errorText(err)}` };
@@ -172,6 +190,8 @@ export class TicketTools {
     if (extra) return { error: extra };
     const t = this.ticketOf(me, "moving this copy's ticket");
     if ("refused" in t) return { error: t.refused };
+    const own = orchestratorRefusal(me, args.stage);
+    if (own) return { error: `#${t.id} wasn't moved: ${own}` };
     const note = args.note === undefined || args.note === null ? null : agentText("note", args.note, STAGE_NOTE_MAX);
     if (note && "refused" in note) return { error: note.refused };
     const why = stageRefusal(t.p.stage, args.stage, note?.text);
@@ -220,6 +240,7 @@ export class TicketTools {
     if (extra) return { error: extra };
     const t = this.ticketOf(me, "asking for a pull request from this copy");
     if ("refused" in t) return { error: t.refused };
+    if (me.role === "orchestrator") return { error: `Nothing was asked: ${ORCHESTRATOR_WRITES_NO_CODE}` };
     const why = requestRefusal(t.p.stage, args.target);
     if (why) return { error: `Nothing was asked: ${why}` };
     const target = args.target as PrTarget;

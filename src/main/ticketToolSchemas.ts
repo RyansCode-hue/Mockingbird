@@ -1,4 +1,6 @@
+import { ME, PLAN_MAX } from "../shared/plans";
 import { GATES } from "../shared/types";
+import { WIRE_GATES, WIRE_TYPES, WIRE_WHENS } from "../shared/wires";
 
 /**
  * The agents' ticket tools as the MCP server lists them (docs/landscape-wires.md, W14). Kept apart from ticketTools.ts,
@@ -6,14 +8,16 @@ import { GATES } from "../shared/types";
  * allows them, and neither may wait on what ticketTools.ts imports.
  *
  * Each acts on the caller's own ticket, which no argument names. set_stage writes the ticket's stage, within the
- * refusals in pipeline.ts' stageRefusal; request_pr and write_patch_notes hold records the user's click acts on. None
- * pushes, opens a pull request or posts to Azure DevOps.
+ * refusals in pipeline.ts' stageRefusal; request_pr and write_patch_notes hold records the user's click acts on;
+ * propose_plan (W17, an Orchestrator's only) holds a plan the user lays out (src/main/plans.ts). None pushes, opens a
+ * pull request, posts to Azure DevOps or makes a workspace or a wire.
  */
 
 export const TICKET_TOOL = {
   setStage: "set_stage",
   requestPr: "request_pr",
   writePatchNotes: "write_patch_notes",
+  proposePlan: "propose_plan",
 } as const;
 
 export type TicketTool = (typeof TICKET_TOOL)[keyof typeof TICKET_TOOL];
@@ -114,6 +118,70 @@ export const TICKET_TOOL_SCHEMAS = [
         text: { type: "string", description: `The patch notes: at most ${PATCH_NOTES_MAX} characters` },
       },
       required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: TICKET_TOOL.proposePlan,
+    description:
+      "An Orchestrator workspace's plan: the workspaces (steps) to do its ticket's work and the wires between them. Mockingbird holds it for the user and makes nothing: " +
+      "they read all of it, may change any of it, and lay it out with one click. It answers at once. Calling it again replaces a plan they haven't laid out. " +
+      `At most ${PLAN_MAX.steps} steps and ${PLAN_MAX.wires} wires; each prompt at most ${PLAN_MAX.prompt} characters, and whole, since its agent sees nothing else as it starts; ` +
+      `names one line of at most ${PLAN_MAX.name}. A wire's from and to are a step's key, "${ME}" (this Orchestrator) or the id of a workspace in this area (list_sessions). ` +
+      "A step whose only handoff in is from me starts as the plan is laid out, with its prompt, and that handoff counts as sent; a step another step hands off to waits, not started, until that handoff is sent. " +
+      "Secret-looking values are replaced with [redacted], and text holding a private key is refused. Only an Orchestrator workspace can call it.",
+    annotations: { readOnlyHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: `What the plan does and why, for the user: at most ${PLAN_MAX.summary} characters` },
+        steps: {
+          type: "array",
+          minItems: 1,
+          maxItems: PLAN_MAX.steps,
+          items: {
+            type: "object",
+            properties: {
+              key: { type: "string", pattern: "^[A-Za-z0-9_-]{1,24}$", description: "Its key among the plan's steps, which wires and same_as name" },
+              name: { type: "string", description: `Its name on the landscape: one line, at most ${PLAN_MAX.name} characters` },
+              agent: { type: "string", enum: ["claude", "codex", "terminal"], description: "What runs it: an agent, or a terminal running prompt as a command on an agent's tree" },
+              model: { type: "string", description: "A model this Mac's agent offers; left out, its default" },
+              effort: { type: "string", description: "An effort its agent takes; left out, its default" },
+              repo: { type: "string", description: 'With folder "new": the repo of this area its worktree is made in; left out, the Orchestrator\'s' },
+              folder: {
+                description: '"orchestrator": in this Orchestrator\'s folder, on its ticket\'s branch; "new": a worktree of its own; { same_as: key }: an earlier step\'s folder',
+                anyOf: [
+                  { type: "string", enum: ["orchestrator", "new"] },
+                  { type: "object", properties: { same_as: { type: "string" } }, required: ["same_as"], additionalProperties: false },
+                ],
+              },
+              prompt: { type: "string", description: `What it's told as it starts, whole: at most ${PLAN_MAX.prompt} characters. {ticket} names the ticket; a terminal's command takes no {ticket}` },
+            },
+            required: ["key", "name", "agent", "folder", "prompt"],
+            additionalProperties: false,
+          },
+        },
+        wires: {
+          type: "array",
+          maxItems: PLAN_MAX.wires,
+          items: {
+            type: "object",
+            properties: {
+              from: { type: "string", description: `A step's key, "${ME}", or an existing workspace's id in this area` },
+              to: { type: "string", description: `A step's key, "${ME}", or an existing workspace's id in this area` },
+              type: { type: "string", enum: WIRE_TYPES, description: "handoff: work passed on; feedback: a review sent back; context: from reads to's conversation; worktree: an agent's terminal" },
+              when: { type: "string", enum: WIRE_WHENS, description: "A handoff or feedback wire: when it readies (default finished); pr-merged: when its source's pull request merges" },
+              gate: { type: "string", enum: WIRE_GATES, description: "ask (the default): the user sends it; automatic: it sends itself, which the user sees called out" },
+              template: { type: "string", description: "What a handoff or feedback wire carries: {summary} (the default), {ticket}, {diff}, {pr} and your words" },
+              rounds: { type: "integer", minimum: 1, maximum: PLAN_MAX.rounds, description: "A feedback wire's round limit (default 3)" },
+              tool_output: { type: "boolean", enum: [false], description: "A context link only: false leaves tool output out of what's read" },
+            },
+            required: ["from", "to", "type"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["summary", "steps", "wires"],
       additionalProperties: false,
     },
   },
