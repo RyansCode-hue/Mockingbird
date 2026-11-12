@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { git, gitBytes, type GitOptions, withoutCredentials } from "./git";
+import type { RoomPush } from "../shared/types";
 
 /**
  * What every diff run through GuardedGit adds: no colour, no external diff, no text conversion, a submodule shown as
@@ -151,8 +152,8 @@ interface OwnNetwork {
   ssh: string | null;
   /** The core.sshCommand git would have run, set aside for `ssh`. */
   sshSetAside: SetAside | null;
-  /** With `prePush`: a pre-push in the hooks folder git would have run from, not run (its folder is the value). */
-  prePushSkipped: SetAside | null;
+  /** With `roomPush`: what the push runs, what it sets aside, and how its Git LFS files go up. */
+  room: RoomPush | null;
 }
 
 /**
@@ -175,49 +176,89 @@ async function ownSsh(cwd: string): Promise<{ command: string; setAside: SetAsid
   return { command: process.env.GIT_SSH ? shellWord(process.env.GIT_SSH) : "ssh", setAside };
 }
 
+/** `p` as a person reads it: from the working tree's top when it's in it, from ~ when it's in the home folder. */
+function shownPath(p: string, top: string): string {
+  const abs = realOr(p);
+  if (abs.startsWith(top + path.sep)) return path.relative(top, abs);
+  const home = realOr(os.homedir());
+  return abs.startsWith(home + path.sep) ? `~/${path.relative(home, abs)}` : abs;
+}
+
+/** Whether `folder` holds a pre-push hook git would find. */
+const holdsPrePush = (folder: string): boolean => fs.existsSync(path.join(folder, "pre-push"));
+
 /**
- * The hooks folder for a push whose pre-push is to run: the user's core.hooksPath (the last global or system value,
- * an includeIf for the folder among them), else the repository's own hooks folder (`<git-common-dir>/hooks`). Never a
- * folder the repository's own config names (Husky's `.husky/_`), nor one in a working tree, the user's own included:
- * hooks there can be written by the session's agent, and this push runs in main, outside any sandbox. When the folder
- * git would have run from is set aside and holds a pre-push, `skipped` says so.
+ * The hooks for a team room session's push (a take-over backup's, the PR form's, Source Control's), which main makes as
+ * the user, outside any sandbox, from a worktree the room's agent can write: the user's own core.hooksPath (the last
+ * global or system value, an includeIf for the folder among them) when it's outside every working tree of the
+ * repository, else none (`/dev/null`). Never the repository's own, its config's folder (Husky's `.husky/_`) nor its
+ * `.git/hooks`: git runs a hook from the working tree's top, so a hook manager there (pre-commit, lefthook, Husky v4),
+ * or any hook running `npm test`, `make` or a script, runs what the agent wrote. `runs` is the user's folder when it
+ * holds a pre-push; `skipped` the folder git would have run one from (the one the config names, else .git/hooks) when
+ * it holds one and isn't the user's; `repoHooks` that folder, where git-lfs's own pre-push is found.
  */
-async function ownHooks(cwd: string): Promise<{ folder: string; skipped: SetAside | null }> {
+async function ownHooks(cwd: string): Promise<{ folder: string; runs: string | null; skipped: SetAside | null; repoHooks: string }> {
   const values = await scopedValues(cwd, "core.hooksPath", { path: true });
-  let t: Trees | null = null;
+  const t = await treesOf(cwd);
   const users = values.filter(isUsers).at(-1);
-  const folder =
-    users && !treeHolding(users.value, (t ??= await treesOf(cwd)))
-      ? users.value
-      : path.join(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks");
+  const folder = users && !treeHolding(users.value, t) ? users.value : NO_HOOKS[1];
+  const runs = folder !== NO_HOOKS[1] && holdsPrePush(folder) ? shownPath(folder, t.top) : null;
   const wanted = values.at(-1);
-  if (!wanted) return { folder, skipped: null };
-  t ??= await treesOf(cwd);
-  const wantedAt = realOr(path.resolve(t.top, wanted.value));
-  if (wantedAt === realOr(folder) || !fs.existsSync(path.join(wantedAt, "pre-push"))) return { folder, skipped: null };
-  const why = treeHolding(wanted.value, t)
-    ? "hooks in the working tree can be changed by the session"
-    : "Mockingbird's own pushes run hooks only from your global git config or the repository's .git/hooks";
-  return { folder, skipped: { value: wanted.value, why } };
+  const repoHooks = wanted ? realOr(path.resolve(t.top, wanted.value)) : path.join(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks");
+  if ((folder !== NO_HOOKS[1] && repoHooks === realOr(folder)) || !holdsPrePush(repoHooks)) return { folder, runs, skipped: null, repoHooks };
+  const why =
+    wanted && treeHolding(wanted.value, t)
+      ? "hooks in the working tree can be changed by the session"
+      : "this repository's hooks can run files its agent writes (a hook manager's config, its scripts)";
+  return { folder, runs, skipped: { value: wanted ? wanted.value : shownPath(repoHooks, t.top), why }, repoHooks };
+}
+
+/**
+ * How a room session's push gets the repository's Git LFS files to the remote, with none of its hooks run (git-lfs's
+ * own pre-push among them): "none" when it keeps none (no git-lfs pre-push in `repoHooks`, no `filter=lfs` on a file
+ * in the index), "push" when main can upload them itself first (git lfs push), under W2's rules for running git-lfs:
+ * found on main's PATH through absolute folders only, and no lfs.extension.* or lfs.storage set. Otherwise why it
+ * can't: then nothing is pushed, rather than a branch whose LFS files never reached the remote.
+ */
+async function lfsPlan(cwd: string, repoHooks: string): Promise<RoomPush["lfs"]> {
+  let hook = "";
+  try {
+    hook = fs.readFileSync(path.join(repoHooks, "pre-push"), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT" && (err as NodeJS.ErrnoException).code !== "ENOTDIR") throw err;
+  }
+  const g = await guardedGit(cwd);
+  if (!/\bgit[- ]lfs\b/.test(hook) && !(await g.run(["ls-files", "-z", "--", ":(attr:filter=lfs)"], { trim: false }))) return "none";
+  const keeps = "this repository keeps files in Git LFS, and a room session's push runs none of its hooks, git-lfs's included";
+  if (!gitLfsOnPath()) return { refused: `${keeps}: git-lfs isn't on Mockingbird's PATH, so it can't upload them itself` };
+  if (lfsSettingsUnsafe(await guardedListing(cwd))) return { refused: `${keeps}: its git config sets lfs.extension or lfs.storage, which Mockingbird doesn't run git-lfs with` };
+  return "push";
 }
 
 /**
  * The environment for Mockingbird's own network gits in `cwd`: OWN_WRITE_ENV, with ssh as ownSsh says (GIT_SSH_COMMAND
- * in main's environment wins over any config already, and is left as it is). Hooks stay off, unless `prePush` is set,
- * for a push whose pre-push is to run (a backup's, which a secret scanner reads first): then from ownHooks' folder.
- * Credential helpers stay as they are: a remote may need them.
+ * in main's environment wins over any config already, and is left as it is). Hooks stay off, unless `roomPush` is set,
+ * for a room session's push, whose pre-push runs from the user's own folder only (ownHooks): a secret scanner there
+ * reads what's pushed first. Credential helpers stay as they are: a remote may need them.
  */
-async function ownNetwork(cwd: string, o: { prePush?: boolean } = {}): Promise<OwnNetwork> {
+async function ownNetwork(cwd: string, o: { roomPush?: boolean } = {}): Promise<OwnNetwork> {
   const ssh = process.env.GIT_SSH_COMMAND ? null : await ownSsh(cwd);
   const sshEnv: Record<string, string> = ssh ? { GIT_SSH_COMMAND: ssh.command } : {};
   const common = { ssh: ssh?.command ?? null, sshSetAside: ssh?.setAside ?? null };
-  if (!o.prePush) return { env: { ...OWN_WRITE_ENV, ...sshEnv }, ...common, prePushSkipped: null };
+  if (!o.roomPush) return { env: { ...OWN_WRITE_ENV, ...sshEnv }, ...common, room: null };
   const hooks = await ownHooks(cwd);
-  return { env: { ...configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", hooks.folder], NO_EXT]), ...sshEnv }, ...common, prePushSkipped: hooks.skipped };
+  const room: RoomPush = { runs: hooks.runs, skipped: hooks.skipped, lfs: await lfsPlan(cwd, hooks.repoHooks) };
+  return { env: { ...configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", hooks.folder], NO_EXT]), ...sshEnv }, ...common, room };
 }
 
 /** ownNetwork's environment, for a test to read. */
-export const ownNetworkEnv = async (cwd: string, o: { prePush?: boolean } = {}): Promise<Record<string, string>> => (await ownNetwork(cwd, o)).env;
+export const ownNetworkEnv = async (cwd: string, o: { roomPush?: boolean } = {}): Promise<Record<string, string>> => (await ownNetwork(cwd, o)).env;
+
+/** What a room session's push from `cwd` would run, set aside and do with Git LFS files (ownHooks, lfsPlan): what a form says before it. */
+export async function roomPushPlan(cwd: string): Promise<RoomPush> {
+  const hooks = await ownHooks(cwd);
+  return { runs: hooks.runs, skipped: hooks.skipped, lfs: await lfsPlan(cwd, hooks.repoHooks) };
+}
 
 type OwnGitLog = (context: string, err: unknown) => void;
 let ownGitLog: OwnGitLog = (context, err) => console.error(`[git] ${context}:`, err);
@@ -246,33 +287,48 @@ export const shownFailure = (err: unknown): string => withoutCredentials(err ins
 /** What a pre-push set aside says, on a backup's status and in the log; `pushes` names the pushes it wasn't run for. */
 export const prePushNote = (s: SetAside, pushes = "backups"): string => `pre-push in ${s.value} not run for ${pushes}: ${s.why}`;
 
-/**
- * The pre-push a push with ownNetworkGit's `prePush` would set aside in `cwd` (ownHooks), or null: what a form says
- * before the push is made.
- */
-export const prePushSetAside = async (cwd: string): Promise<SetAside | null> => (await ownHooks(cwd)).skipped;
+/** A team room session's push through ownNetworkGit: its hooks the user's own only (ownHooks), its LFS files sent first. */
+export interface RoomPushOpts {
+  /** Where its Git LFS files go before the push, when the repository keeps any: git lfs push `remote` `refs`. */
+  lfs: { remote: string; refs: readonly string[] };
+  /** Told what the push runs, sets aside and does with LFS files, at each run, before it's made. */
+  told?: (p: RoomPush) => void;
+  /** The pushes the log's note names ("backups" unless said). */
+  pushes?: string;
+}
 
 /**
  * One of Mockingbird's own network gits in `cwd`: `command` with its OWN_FLAGS before `args`, under ownNetwork. What
- * it set aside is logged once (logOwnGitFailuresTo), and a skipped pre-push told to `prePushSkipped` (null: none) at
- * each run; `prePushFor` names the pushes in the log's note ("backups" unless said). A failure is logged with the
- * folder and the whole command, then thrown in git's own words (OwnGitError);
- * when it looks like ssh's and a core.sshCommand was set aside, it says which and why.
+ * it set aside is logged once (logOwnGitFailuresTo). With `roomPush`, a room session's push: what it runs is told to
+ * `roomPush.told`, its Git LFS files are uploaded first (git lfs push, which a push with the repository's hooks off
+ * doesn't do), and when they can't be, nothing is pushed. A failure is logged with the folder and the whole command,
+ * then thrown in git's own words (OwnGitError); when it looks like ssh's and a core.sshCommand was set aside, it says
+ * which and why.
  */
 export async function ownNetworkGit(
   cwd: string,
   command: keyof typeof OWN_FLAGS,
   args: readonly string[],
-  opts: GitOptions & { trim?: boolean; prePush?: boolean; prePushSkipped?: (s: SetAside | null) => void; prePushFor?: string } = {}
+  opts: GitOptions & { trim?: boolean; roomPush?: RoomPushOpts } = {}
 ): Promise<string> {
-  const { prePush, prePushSkipped, prePushFor, ...gitOpts } = opts;
-  const all = [command, ...OWN_FLAGS[command], ...args];
+  const { roomPush, ...gitOpts } = opts;
+  let all = [command, ...OWN_FLAGS[command], ...args];
   let n: OwnNetwork | null = null;
   try {
-    n = await ownNetwork(cwd, { prePush });
+    n = await ownNetwork(cwd, { roomPush: !!roomPush });
     if (n.sshSetAside) tellOnce(cwd, `core.sshCommand ${n.sshSetAside.value} set aside for ${n.ssh}: ${n.sshSetAside.why}`);
-    if (n.prePushSkipped) tellOnce(cwd, prePushNote(n.prePushSkipped, prePushFor));
-    if (prePush) prePushSkipped?.(n.prePushSkipped);
+    if (roomPush && n.room) {
+      if (n.room.skipped) tellOnce(cwd, prePushNote(n.room.skipped, roomPush.pushes));
+      roomPush.told?.(n.room);
+      if (typeof n.room.lfs === "object") throw new Error(`Nothing was pushed: ${n.room.lfs.refused}.`);
+      if (n.room.lfs === "push") {
+        const lfs = ["lfs", "push", roomPush.lfs.remote, ...roomPush.lfs.refs];
+        await git(cwd, lfs, { ...gitOpts, env: { ...gitOpts.env, ...n.env } }).catch((err: unknown) => {
+          all = lfs;
+          throw new Error(`Nothing was pushed: its Git LFS files couldn't be uploaded first: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    }
     return await git(cwd, all, { ...gitOpts, env: { ...gitOpts.env, ...n.env } });
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
@@ -373,6 +429,12 @@ function gitLfsOnPath(): boolean {
  * git-lfs's clean runs on every file it reads) or `lfs.storage` (where that clean writes). Throws on a key it can't
  * take apart, so nothing runs with a driver it didn't see.
  */
+/** A setting git-lfs runs a command for (an extension) or writes where it names (its storage), in git's lower case. */
+const lfsUnsafeKey = (lower: string): boolean => lower.startsWith("lfs.extension.") || lower === "lfs.storage";
+
+/** Whether `listing` (guardedListing's) sets lfsUnsafeKey's settings: then Mockingbird runs no git-lfs. */
+const lfsSettingsUnsafe = (listing: string): boolean => listing.split("\0").some((entry) => lfsUnsafeKey(entry.split("\n", 1)[0].toLowerCase()));
+
 export function driversToTurnOff(listing: string, lfsOnPath: boolean): string[] {
   const drivers = new Map<string, [string, string | null][]>();
   let lfsRuns = lfsOnPath;
@@ -383,7 +445,7 @@ export function driversToTurnOff(listing: string, lfsOnPath: boolean): string[] 
     // git spells a section and a setting in lower case, a subsection as written: `[lfs "Extension.x"]` is one too
     const lower = key.toLowerCase();
     if (lower.startsWith("lfs.")) {
-      if (lower.startsWith("lfs.extension.") || lower === "lfs.storage") lfsRuns = false;
+      if (lfsUnsafeKey(lower)) lfsRuns = false;
       continue;
     }
     if (!key.startsWith("filter.")) throw new Error(`git config listed ${JSON.stringify(key)} among the filter and LFS settings`);

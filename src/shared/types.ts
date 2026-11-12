@@ -1403,10 +1403,38 @@ export interface PrPreflight {
   /** Why the branch can't be pushed into `base` (prBranchProblem), or null. */
   branchProblem?: string | null;
   /**
-   * A team room session's push runs its pre-push only from the user's own hooks (scmPush's `own`): the hooks folder the
-   * repository names that's set aside, and why, or null. Absent for a local session, whose push runs the user's hooks.
+   * The branch main recorded for the session when it was made (SessionInfo.branch), when the worktree is on another:
+   * pushing that one takes the user's say-so (PrCreate's `confirmBranch`). Absent while they're the same.
    */
-  prePushSetAside?: { value: string; why: string } | null;
+  recordedBranch?: string | null;
+  /** What a team room session's push would run (scmPush's `own`). Absent for a local session, whose push runs the user's hooks. */
+  roomPush?: RoomPush;
+}
+
+/**
+ * What a team room session's push runs (scmPush's `own`, a take-over backup's), said before it (the PR form) and after
+ * it (Source Control): the user's global hooks folder whose pre-push runs (null: none does), the repository's folder
+ * git would have run a pre-push from, set aside, and why (null: it holds none), and the repository's Git LFS files:
+ * "none" kept, "push" (main uploads them first, git lfs push), or why it can't, when nothing is pushed.
+ */
+export interface RoomPush {
+  runs: string | null;
+  skipped: { value: string; why: string } | null;
+  lfs: "none" | "push" | { refused: string };
+}
+
+/** RoomPush in the window's words, or null when there's nothing to say: no pre-push either way, and no LFS files. */
+export function roomPushLine(p: RoomPush): string | null {
+  const lfs = p.lfs === "push" ? " Its Git LFS files are uploaded first, with git lfs push." : "";
+  const hooks =
+    p.runs && p.skipped
+      ? `Your global pre-push in ${p.runs} runs; the one in ${p.skipped.value} doesn't, for a room session's push: ${p.skipped.why}.`
+      : p.runs
+        ? `Your global pre-push in ${p.runs} runs for a room session's push; this repository's hooks don't.`
+        : p.skipped
+          ? `No pre-push runs for a room session's push: the one in ${p.skipped.value} doesn't, as ${p.skipped.why}.`
+          : "";
+  return `${hooks}${lfs}`.trim() || null;
 }
 
 /** The usual names of the branches work merges into, by team convention, each in the order it's preferred. */
@@ -1424,6 +1452,16 @@ export function prBranchProblem(branch: string, base: string): string | null {
   const b = branch.toLowerCase();
   if (b !== base.toLowerCase() && ![...BASE_NAMES.dev, ...BASE_NAMES.main].includes(b)) return null;
   return `The worktree is on ${branch}, a base branch's name: pushing it would update origin's ${branch} directly. Move the work to a branch of its own first.`;
+}
+
+/**
+ * Why pushing `branch` for a pull request takes the user's say-so, or null: it isn't `recorded`, the branch main made
+ * the session on (SessionInfo.branch), or the session has none recorded. A `staging`, a `release/x` or a teammate's
+ * branch fetched into the worktree would be pushed straight to origin under its own name.
+ */
+export function unrecordedBranch(branch: string, recorded: string | null): string | null {
+  if (branch === recorded) return null;
+  return `The worktree is on ${branch}, ${recorded ? `not ${recorded}, the branch this session was made on` : "and this session has no branch of its own recorded"}: pushing it updates origin's ${branch}.`;
 }
 
 /** A branch's pull request as the pane rail shows it. */

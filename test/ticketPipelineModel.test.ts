@@ -187,8 +187,8 @@ describe("the pipeline dialog's clicks and the PR form's session (W15 review)", 
     const src = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "TicketPipeline.tsx"), "utf8");
     const dialogs = src.slice(src.indexOf("function StageRail("));
     const bare = (dialogs.match(/onClick=\{(?!guard\()[^\n]*/g) ?? []).map((c) => c.trim());
-    expect(bare).toEqual(["onClick={(e) => guard.aimed(e) || e.preventDefault()}>", "onClick={(e) => {"]);
-    expect(dialogs).toMatch(/aimedNow\.current = guard\.aimed\(e\);/);
+    expect(bare).toEqual(["onClick={(e) => guard.letGo(e) && e.preventDefault()}>", "onClick={(e) => {"]);
+    expect(dialogs).toMatch(/aimedNow\.current = !guard\.letGo\(e\);/);
     expect(dialogs).toMatch(/onChange=\{\(e\) => aimedNow\.current && run\("check"/);
   });
 

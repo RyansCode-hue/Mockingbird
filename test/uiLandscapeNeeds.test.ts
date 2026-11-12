@@ -196,14 +196,21 @@ interface PatchNotesAudit {
 }
 interface ArrivalAudit {
   keys: string;
-  runs: { item: string; action: string; how?: "double" | "quick" | "late"; on?: string | null; dialog?: boolean; under?: string | null; calls?: Made; missing?: boolean }[];
+  runs: { item: string; action: string; how?: "double" | "quick" | "soon" | "late"; on?: string | null; dialog?: boolean; under?: string | null; cue?: (string | null)[]; calls?: Made; missing?: boolean }[];
   aimed: { button: string | null; calls: Made };
+  error?: string;
+}
+interface OtherBranchAudit {
+  keys: string;
+  shown: { say: string | null; ticked: boolean | null; push: boolean | null };
+  ticked: { ticked: boolean | null; push: boolean | null };
+  pushed: { calls: Made };
   error?: string;
 }
 interface FormWarningsAudit {
   keys: string;
   opened: { from: string | null; options: string[]; notes: (string | null)[]; push: boolean; calls: Made };
-  picked: { form: PrFormSeen | null; hooks: string | null; lengths: [string, string][]; rows: number | null; long: string | null; calls: Made };
+  picked: { form: PrFormSeen | null; hooks: string | null; branchSay: string | null; lengths: [string, string][]; rows: number | null; long: string | null; calls: Made };
   short: { rows: number | null; long: boolean; lengths: [string, string][] };
   error?: string;
 }
@@ -705,7 +712,14 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
         expect(h.runs.filter((r) => r.missing), l.size).toEqual([]);
         // the clicks land where the dialog draws the button that makes something, and it's still there after them
         const landed = h.runs.filter((r) => r.item === l.item && r.action === l.action);
-        expect(landed.map((r) => [r.how, r.on, r.under]), l.size).toEqual(["double", "quick", "late"].map((how) => [how, l.on, l.on]));
+        expect(landed.map((r) => [r.how, r.on, r.under]), l.size).toEqual(["double", "quick", "soon", "late"].map((how) => [how, l.on, l.on]));
+        // a separate click let go shows on its button, as the strip's do (off until a click there would count); a double
+        // click's second, whose first counted, shows nothing. Two clicks back to back can land the second before the
+        // dialog is drawn, on what was there: then nothing in the dialog was clicked at all.
+        const cueOf = (how: string) => landed.find((r) => r.how === how)?.cue;
+        expect([cueOf("soon"), cueOf("late")], l.size).toEqual([["true"], [null]]);
+        expect([["true"], ["outside"]], `${l.size} quick`).toContainEqual(cueOf("quick"));
+        expect([[null], ["outside"]], `${l.size} double`).toContainEqual(cueOf("double"));
         // and nothing is made by any of them, at any of the tray's actions
         for (const r of h.runs) expect({ size: l.size, item: r.item, action: r.action, how: r.how, dialog: r.dialog, calls: r.calls }).toEqual({ size: l.size, item: r.item, action: r.action, how: r.how, dialog: true, calls: [] });
         // a click aimed at the ticket's button, past the guard, makes its call
@@ -734,7 +748,12 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     // a worktree on dev would push straight to origin's dev: Push is off, and the form says why
     expect(form.push).toEqual({ disabled: true });
     expect(form.warnings).toContain("The worktree is on dev, a base branch's name: pushing it would update origin's dev directly. Move the work to a branch of its own first.");
-    expect(q.picked.hooks).toBe("The pre-push hook in .husky/_ won't run for this push: hooks in the working tree can be changed by the session");
+    // what a room session's push runs, and what it doesn't
+    expect(q.picked.hooks).toBe(
+      "Your global pre-push in ~/.githooks runs; the one in .git/hooks doesn't, for a room session's push: this repository's hooks can run files its agent writes (a hook manager's config, its scripts). Its Git LFS files are uploaded first, with git lfs push."
+    );
+    // dev isn't the branch the session was made on either: the say-so asked
+    expect(q.picked.branchSay).toBe("The worktree is on dev, not 5101-orgDropdowns, the branch this session was made on: pushing it updates origin's dev. Push dev anyway");
     // the lengths, the box grown to the description, and ADO's limit said
     expect(q.picked.lengths).toEqual([
       ["title", "41 characters"],
@@ -743,6 +762,38 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(q.picked.rows).toBe(24);
     expect(q.picked.long).toBe('Azure DevOps keeps 4,000 characters of a description: this one is cut short, at about 3,980, and ends "(shortened)".');
     expect(q.short).toEqual({ rows: 6, long: false, lengths: [["title", "41 characters"], ["description", "2 lines · 17 characters"]] });
+  });
+
+  it("asks before pushing a branch the session wasn't made on, and carries the say-so for that branch to main", async () => {
+    const o = await run<OtherBranchAudit>("o", "prRequest=otherbranch&lsCamera=0,0,0.5");
+    expect(o.error).toBeUndefined();
+    expect(o.shown).toEqual({
+      say: "The worktree is on release/2.1, not 5101-orgDropdowns, the branch this session was made on: pushing it updates origin's release/2.1. Push release/2.1 anyway",
+      ticked: false,
+      push: true,
+    });
+    expect(o.ticked).toEqual({ ticked: true, push: false });
+    expect(o.pushed.calls).toEqual([{ fn: "pipelinePrCreate", args: ["s3", "5101", expect.objectContaining({ target: "dev", base: "dev", confirmBranch: "release/2.1" })] }]);
+  });
+
+  it("says under Source Control's bar what a room session's push ran: the user's global pre-push, not the repository's, its LFS files first", async () => {
+    // @ts-expect-error — a plain .mjs build script, no type declarations
+    const { pageResult } = await import("../scripts/ui-preview.mjs");
+    const read = `(() => {
+      window.__t0 ??= Date.now();
+      if (Date.now() - window.__t0 < 3000) return null;
+      if (!window.__reached) { window.__reached = 1; document.querySelector('.area-tree .lt-ws[data-sid="s1"]')?.click(); return null; }
+      const b = [...document.querySelectorAll(".sc-sync button")].find((x) => /Push|Publish/.test(x.textContent || ""));
+      if (!b) return Date.now() - window.__t0 > 20000 ? JSON.stringify({ error: "no Push button" }) : null;
+      if (!window.__pushed) { window.__pushed = 1; window.__before = document.querySelector("[data-push-hooks]")?.textContent ?? null; b.click(); return null; }
+      const l = document.querySelector("[data-push-hooks]");
+      return l ? JSON.stringify({ before: window.__before, line: l.textContent }) : null;
+    })()`;
+    const json: string | null = await pageResult({ size: "1400x900", query: "motion=off&view=scm&roomPushHooks", outDir: path.join(tempDir("needs-sc"), "out"), read });
+    expect(JSON.parse(json!)).toEqual({
+      before: null,
+      line: "Your global pre-push in ~/.githooks runs; the one in .git/hooks doesn't, for a room session's push: this repository's hooks can run files its agent writes (a hook manager's config, its scripts). Its Git LFS files are uploaded first, with git lfs push.",
+    });
   });
 
   it("keeps the user's unsaved patch notes edit when the agent's newer draft arrives, saving nothing over it until they pick", async () => {

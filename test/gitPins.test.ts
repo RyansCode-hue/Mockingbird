@@ -64,7 +64,7 @@ describe("git in a room session's folder", () => {
     try {
       await expect(ownFetch(t.wt, ["origin"])).rejects.toThrow(/won't run git/);
       await expect(ownNetworkGit(t.wt, "ls-remote", ["origin"])).rejects.toThrow(/won't run git/);
-      await expect(ownNetworkGit(t.wt, "push", ["origin", "HEAD"], { prePush: true })).rejects.toThrow(/won't run git/);
+      await expect(ownNetworkGit(t.wt, "push", ["origin", "HEAD"], { roomPush: { lfs: { remote: "origin", refs: ["HEAD"] } } })).rejects.toThrow(/won't run git/);
     } finally {
       logOwnGitFailuresTo(before);
     }

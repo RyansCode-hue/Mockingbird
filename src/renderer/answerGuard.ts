@@ -158,15 +158,31 @@ export const arrivalClick = (e: { detail: number }, since: number, now = Date.no
  * of the component appearing, or of `key` changing (the words under its buttons replaced), and none that's a double
  * click's second or later (`detail > 1`). A dialog opened from Needs you lands its buttons where the tray's were, so the
  * second click of a double click on Open would otherwise approve, post or move a ticket. A key's click (detail 0) after
- * that is a person's. `guard.aimed(e)` is the same test, for a control whose change isn't its click's (a checkbox).
+ * that is a person's.
+ *
+ * A click let go too soon shows, as useHeldOff's do on Needs you and the pipeline strip: its control looks off
+ * (aria-disabled, styled as `disabled`; React sets neither on these) for as long as a click there would be let go. A
+ * double click's second shows nothing: its first counted. `guard.letGo(e)` is the wrapper's test and cue, for a control
+ * whose change isn't its click's (a checkbox); `guard.aimed(e)` the test alone.
  */
 export interface ArrivalGuard {
-  <E extends { detail: number }>(handler: (e: E) => void): (e: E) => void;
+  <E extends { detail: number; currentTarget?: EventTarget | null }>(handler: (e: E) => void): (e: E) => void;
   aimed: (e: { detail: number }) => boolean;
+  letGo: (e: { detail: number; currentTarget?: EventTarget | null }) => boolean;
 }
 export function useArrivalGuard(key: unknown = null): ArrivalGuard {
   const at = useRef({ key, since: Date.now() });
   if (at.current.key !== key) at.current = { key, since: Date.now() };
   const aimed = (e: { detail: number }) => !arrivalClick(e, at.current.since);
-  return Object.assign(<E extends { detail: number }>(handler: (e: E) => void) => (e: E) => void (aimed(e) && handler(e)), { aimed });
+  const letGo = (e: { detail: number; currentTarget?: EventTarget | null }) => {
+    if (aimed(e)) return false;
+    const el = e.currentTarget;
+    const left = ANSWER_GUARD_MS - (Date.now() - at.current.since);
+    if (e.detail <= 1 && left > 0 && el instanceof HTMLElement) {
+      el.setAttribute("aria-disabled", "true");
+      setTimeout(() => el.removeAttribute("aria-disabled"), left);
+    }
+    return true;
+  };
+  return Object.assign(<E extends { detail: number; currentTarget?: EventTarget | null }>(handler: (e: E) => void) => (e: E) => void (letGo(e) || handler(e)), { aimed, letGo });
 }

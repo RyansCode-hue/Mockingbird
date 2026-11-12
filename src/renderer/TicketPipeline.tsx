@@ -13,6 +13,8 @@ import {
   isErr,
   isWorkItemId,
   prBranchProblem,
+  roomPushLine,
+  unrecordedBranch,
   type AgentTold,
   type CommentDraft,
   type PipelineRequest,
@@ -143,13 +145,13 @@ function Gate({ p, gate }: { p: TicketPipeline; gate: (typeof GATES)[number] }) 
         const agentTick = tick && tick.by !== BY_YOU ? tick.by : null;
         return (
           <Fragment key={key}>
-            <label className="check-line pl-check" data-tip={tick ? `Ticked by ${tick.by}, ${ago(tick.at)}` : undefined} onClick={(e) => guard.aimed(e) || e.preventDefault()}>
+            <label className="check-line pl-check" data-tip={tick ? `Ticked by ${tick.by}, ${ago(tick.at)}` : undefined} onClick={(e) => guard.letGo(e) && e.preventDefault()}>
               <input
                 type="checkbox"
                 checked={!!p.checks[key]}
                 onClick={(e) => {
                   e.stopPropagation();
-                  aimedNow.current = guard.aimed(e);
+                  aimedNow.current = !guard.letGo(e);
                 }}
                 onChange={(e) => aimedNow.current && run("check", () => window.mb.pipelineCheck(p.ticketId, key, e.target.checked))}
               />
@@ -228,6 +230,8 @@ function PrForm({
   const [dismissing, setDismissing] = useState(false);
   const { doing, run, error } = useAction();
   const [asked, setAsked] = useState("");
+  // the branch the user said to push though the session wasn't made on it: a say-so for that branch only
+  const [sayBranch, setSayBranch] = useState("");
   const guard = useArrivalGuard(pre);
   const by = req ? agentNamed(req.fromTitle) : null;
   /** Whose words a field holds: the agent's while they're as it wrote them. */
@@ -266,14 +270,19 @@ function PrForm({
         p.commits === 0 && base === p.base && `The branch has no commits that ${base} doesn't.`,
         p.existing && base === p.base && "A pull request is already open from this branch.",
         p.branch && base && prBranchProblem(p.branch, base),
+        p.roomPush && typeof p.roomPush.lfs === "object" && `Nothing would be pushed: ${p.roomPush.lfs.refused}.`,
       ].filter((x): x is string => !!x)
     : [];
+  // main says which branch the session was made on only when the worktree is on another (or it has none)
+  const branchSay = p?.branch && "recordedBranch" in p ? unrecordedBranch(p.branch, p.recordedBranch ?? null) : null;
+  const unsaid = !!branchSay && sayBranch !== p?.branch;
+  const hooksLine = p?.roomPush ? roomPushLine(p.roomPush) : null;
   const write = async () => {
     const r = await run("write", () => window.mb.pipelinePrDescribe(sid, ticketId, title, base));
     if (!isErr(r)) setDesc(r.description);
   };
   const create = async () => {
-    const r = await run("create", () => window.mb.pipelinePrCreate(sid, ticketId, { target, base, title: prTitle, description: desc, ticketTitle: title }));
+    const r = await run("create", () => window.mb.pipelinePrCreate(sid, ticketId, { target, base, title: prTitle, description: desc, ticketTitle: title, ...(branchSay ? { confirmBranch: sayBranch } : {}) }));
     if (!isErr(r)) onClose();
   };
   const descLines = desc ? desc.split("\n").length : 0;
@@ -348,9 +357,9 @@ function PrForm({
               </div>
             )}
             {p.lookupError && <div className="warn">Couldn't check for an open pull request: {p.lookupError}</div>}
-            {p.prePushSetAside && (
-              <div className="warn" data-hooks>
-                The pre-push hook in {p.prePushSetAside.value} won't run for this push: {p.prePushSetAside.why}
+            {hooksLine && (
+              <div className={p.roomPush?.skipped ? "warn" : undefined} data-hooks>
+                {hooksLine}
               </div>
             )}
             <button className="mini" onClick={guard(load)}>Recheck</button>
@@ -386,10 +395,16 @@ function PrForm({
           {blockers.map((b) => (
             <div key={b} className="fp-note warn">{b}</div>
           ))}
+          {branchSay && p.branch && (
+            <label className="check-line fp-note warn" data-branch-say>
+              <input type="checkbox" checked={sayBranch === p.branch} onChange={(e) => setSayBranch(e.target.checked ? p.branch! : "")} />
+              {branchSay} Push {p.branch} anyway
+            </label>
+          )}
           {error && <div className="fp-note err">{error}</div>}
           <div className="row">
             <span className="pl-dim">Pushes {p.branch ?? "the branch"} to origin, then opens the pull request{p.remote?.provider === "ado" ? ", linked to the work item" : ""}.</span>
-            <button className="primary" disabled={doing("create") || blockers.length > 0 || !prTitle.trim()} onClick={guard(create)}>
+            <button className="primary" disabled={doing("create") || blockers.length > 0 || unsaid || !prTitle.trim()} onClick={guard(create)}>
               {doing("create") ? "Opening…" : "Push and open PR"}
             </button>
           </div>

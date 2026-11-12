@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { isErr, AGENT_NAME, type GitChange, type GitChanges, type ScmEntry, type ScmStatus, type IpcResult, type AgentKind } from "../shared/types";
+import { isErr, AGENT_NAME, roomPushLine, type GitChange, type GitChanges, type RoomPush, type ScmEntry, type ScmStatus, type IpcResult, type AgentKind } from "../shared/types";
 import { useFolderRefresh } from "./folderWatch";
 import { SparkleIcon } from "./Icons";
 import { CommitGraph } from "./CommitGraph";
@@ -67,6 +67,8 @@ export function SourceControl({
 }) {
   const [status, setStatus] = useState<IpcResult<ScmStatus> | null>(null);
   const [message, setMessage] = useState("");
+  // what a team room session's last push ran (its hooks, its LFS files), as main answered: said under the bar
+  const [pushed, setPushed] = useState<string | null>(null);
   // git calls aren't queued in the main process, so nothing starts while one is in flight
   const { busy, isBusy, run, error, setError } = useAction();
   // what was being done when the error happened, to tell the agent
@@ -271,7 +273,14 @@ export function SourceControl({
             className="outline"
             disabled={!!busy || !status.branch || (status.published && status.ahead === 0)}
             title={status.published ? `Push to ${status.upstream}` : `Push this branch to origin/${status.branch} and track it there${status.upstream ? ` (it tracks ${status.upstream} until then — pushing never goes there)` : ""}`}
-            onClick={() => act("push", () => window.mb.scmPush(sessionId))}
+            onClick={() =>
+              act("push", async () => {
+                setPushed(null);
+                const r: IpcResult<{ upstream: string; roomPush?: RoomPush }> = await window.mb.scmPush(sessionId);
+                if (!isErr(r) && r.roomPush) setPushed(roomPushLine(r.roomPush));
+                return r;
+              })
+            }
           >
             {busy === "push" ? "Pushing…" : pushLabel}
           </button>
@@ -322,6 +331,11 @@ export function SourceControl({
         >
           {busy === "review" ? "Starting the review…" : `Second opinion: review with ${AGENT_NAME[review.agent]}`}
         </button>
+      )}
+      {pushed && (
+        <div className="fp-note sc-pushed" data-push-hooks>
+          {pushed}
+        </div>
       )}
       {error && (
         <div className="fp-note err sc-err">

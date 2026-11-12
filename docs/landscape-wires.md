@@ -3937,6 +3937,147 @@ does. `pipelineDraftEdit` is new in the stub (drops `by`, as main's).
   the asker whatever `askerProblem` says. An asker that's moved, taken over, closed
   or remote isn't among the form's `live` sessions anyway.
 
+#### W15 review fixes 2 as built
+
+The verification confirmed review fixes 1's residual as a High.
+- **The risk.** A room push still ran the repository's `.git/hooks/pre-push`. Git
+  runs a hook from the working tree's top, so a hook manager there runs files the
+  room's agent wrote, outside the sandbox, on Ryan's Push. That covers pre-commit
+  (`.pre-commit-config.yaml`), lefthook (its configs, its `node_modules` binary),
+  Husky v4, and any hook that runs `npm test`, `make` or a script.
+- **The fix.** A room push now runs none of the repository's hooks.
+
+- **Room pushes run only the user's global hooks (1).**
+  - `ownHooks` (`safeGit.ts`) picks the hooks folder for every room push: the PR
+    form's, Source Control's, and take-over's backups.
+    - It takes the user's global or system `core.hooksPath` only when it's outside
+      every working tree of the repository. Otherwise it uses `/dev/null`.
+    - It never takes the repository's own: neither its `.git/hooks` nor a folder its
+      config names.
+  - It says what runs and what's set aside:
+    - `runs`: the user's folder, when it holds a pre-push;
+    - `skipped`: the folder git would have run one from (the configured one, else
+      `.git/hooks`), when it holds one.
+  - `ownNetworkGit`'s `prePush` became `roomPush: { lfs, told, pushes }`.
+  - Local sessions push as before: a plain `git push`, Husky and git-lfs running.
+  - **Probe** (run under the test HOME, not committed). The setup:
+    - a clone whose `.git/hooks/pre-push` has pre-commit's shape (it runs the
+      config's `entry:` and `node_modules/.bin/lefthook`);
+    - a linked worktree where the agent wrote both files.
+
+    The results:
+    - The room push ran neither. It pushed, and said the clone's `.git/hooks` was
+      set aside.
+    - The local push ran both, which shows the probe is real.
+
+    `scm.test.ts` keeps the pre-commit case as a test.
+- **Say what runs (2).** `RoomPush { runs, skipped, lfs }` (`shared/types.ts`) and
+  `roomPushLine` give one wording. For example: "Your global pre-push in
+  ~/.githooks runs; the one in .git/hooks doesn't, for a room session's push: this
+  repository's hooks can run files its agent writes (a hook manager's config, its
+  scripts). Its Git LFS files are uploaded first, with git lfs push."
+  - The PR form shows it from the preflight's `roomPush`, which replaces
+    `prePushSetAside`.
+  - Source Control's Push shows it under the bar after a room push: `scmPush`
+    returns `roomPush`.
+  - The take-over view keeps its "pre-push in … not run" from `skipped`.
+- **Git LFS (3).** With the repository's hooks off, git-lfs's own pre-push doesn't
+  run.
+  - `lfsPlan` finds LFS by git-lfs's hook in the repository's hooks folder, or by
+    `filter=lfs` on an indexed file (a guarded `ls-files ':(attr:filter=lfs)'`).
+  - When git-lfs can run under W2's rules (found on PATH through absolute folders,
+    no `lfs.extension.*` or `lfs.storage`), main runs `git lfs push <remote> <refs>`
+    before the push, in the same environment.
+    - Before matters: git-lfs leaves out objects reachable from the remote's refs,
+      so after the push nothing would go.
+    - The refs are `HEAD` to the upstream's remote for Source Control and the PR
+      form, and the snapshot's sha for a backup, whose snapshot holds uncommitted
+      files too.
+  - When git-lfs can't run, nothing is pushed, and the form's blocker, Source
+    Control's error or the backup's status says why.
+  - `lfsUnsafeKey` and `lfsSettingsUnsafe` are shared with `driversToTurnOff`.
+  - Tested with real git-lfs against a local bare remote (skipped where git-lfs is
+    missing):
+    - the PR push and a backup's sha push both upload;
+    - `lfs.storage` refuses;
+    - git-lfs off PATH refuses, with a repository found by its attributes.
+- **The recorded branch (4).** A worktree on another branch than its session was
+  made on would push straight to origin: `staging`, `release/x`, or a teammate's
+  fetched branch.
+  - `unrecordedBranch(branch, SessionInfo.branch)` names the case, including a
+    session with no branch recorded.
+  - The preflight handler adds `recordedBranch` only in that case.
+  - The form asks for a tick, "Push release/2.1 anyway", with Push off until then.
+    It sends `confirmBranch`.
+  - `prCreateRefusal` refuses before the push unless `confirmBranch` names that same
+    branch.
+  - Source Control's Push is left as it is: the user's explicit push, its button
+    naming where it goes.
+- **Dropped clicks show (5).** `useArrivalGuard`'s wrapper, and `guard.letGo` for a
+  checklist item, mark a click let go too soon with `aria-disabled`.
+  - It lasts until a click there would count, as `useHeldOff` does on Needs you and
+    the pipeline strip.
+  - It's styled as `disabled` for buttons; links and labels in `.pl` dim the same.
+  - React sets neither attribute on these controls, so it never clobbers one.
+  - A double click's second shows nothing, as on the strip: its first counted.
+- **Hangul fillers (6).** `INVISIBLE_RE` adds U+115F, U+1160, U+3164 and U+FFA0.
+- **Residual (Low).**
+  - git-lfs reads `.lfsconfig`, which the agent can write. Its safe keys include
+    `lfs.url`, so a room push's LFS files could go to an endpoint the agent named.
+    They're the repository's own files, which the agent can already read.
+  - A global hook that reads repository files (gitleaks' `.gitleaks.toml`) is the
+    user's to weigh.
+- **Tests.**
+  - `scm.test.ts`:
+    - room pushes run no repository hooks, Husky's and the receive-pack included;
+    - the hook-manager case from a linked worktree, room and local;
+    - the user's global pre-push runs only outside the working trees;
+    - the LFS cases above;
+    - the backup's snapshot refs, read statically.
+  - `pipeline.test.ts`:
+    - the preflight's `roomPush` in each case;
+    - `roomPushLine`'s wordings;
+    - `unrecordedBranch` and `prCreateRefusal` with and without a say-so;
+    - the handler's wiring.
+  - `teamTakeover.test.ts`: the backup's secret scanner is the user's global
+    pre-push, and the repository's `.git/hooks` never runs.
+  - `ticketTools.test.ts`: the fillers.
+  - `uiLandscapeNeeds`:
+    - part `h` adds a "soon" second click and the cue on each landing;
+    - part `q` reads the new line and the branch tick;
+    - part `o` (`?prRequest=otherbranch`) is the tick and the say-so;
+    - a Source Control check (`?roomPushHooks`) reads the line after Push.
+  - In part `h`, two clicks sent back to back can land the second before the dialog
+    is drawn. The test then accepts that nothing in the dialog was clicked. The
+    "soon" click is the one held to the cue.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 196 files
+  pass and 35 skip; 3,264 tests pass and 316 skip.
+- `uiLandscapeNeeds` alone, without CI: 22 tests. The first run failed one, part
+  `h`'s "quick" cue (above); after the change it passes alone.
+- Each change undone in turn (`w15/mutate3.py`) fails a test, 17 mutations:
+  - 1:
+    - the room push falling back to `.git/hooks`;
+    - taking the user's folder inside a working tree;
+    - not saying `.git/hooks` is set aside.
+  - 3:
+    - LFS never sent;
+    - LFS sent after the push;
+    - an LFS repository pushed though git-lfs can't run;
+    - attributes not read;
+    - `lfs.storage` not refused;
+    - a backup's LFS files sent for HEAD.
+  - 4:
+    - main pushing an unrecorded branch;
+    - a say-so for any branch passing;
+    - `pr:create` checking against the worktree's own branch;
+    - the form not asking;
+    - the form sending no say-so.
+  - Source Control saying nothing.
+  - The cue removed.
+  - The Hangul fillers kept.
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn

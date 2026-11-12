@@ -5,7 +5,7 @@ import { PipelineStore, stageComment } from "../src/main/pipeline";
 import { parseRemote } from "../src/main/git";
 import { findOpenPr, prBaseProblem, prCreateRefusal, openPr, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
 import type { ShellRunner } from "../src/main/headless";
-import { BY_YOU, GATES, prBranchProblem, stageLabel, stageStep, tickOf, TICKET_STAGES, type PipelinePr, type TicketPipeline, type TicketStage } from "../src/shared/types";
+import { BY_YOU, GATES, prBranchProblem, roomPushLine, unrecordedBranch, stageLabel, stageStep, tickOf, TICKET_STAGES, type PipelinePr, type TicketPipeline, type TicketStage } from "../src/shared/types";
 import { nextSteps, railOf } from "../src/renderer/ticketPipelineModel";
 import { PipelineStore as PipelineStore160 } from "./fixtures/pipeline-1.6.0/pipeline";
 import { TICKET_STAGES as TICKET_STAGES_160, stageLabel as stageLabel160 } from "./fixtures/pipeline-1.6.0/types";
@@ -607,17 +607,42 @@ describe("pull request preflight", () => {
     expect(p.existing).toBeNull();
     expect(p.lookupError).toBeNull();
     expect(p.branchProblem).toBeNull();
-    // a local session's push runs the repository's hooks as git would: nothing to say set aside
-    expect(p.prePushSetAside).toBeUndefined();
+    // a local session's push runs the repository's hooks as git would: nothing to say about them
+    expect(p.roomPush).toBeUndefined();
   });
-  it("says when the worktree is on a base branch's name, and, for a room session, which pre-push its push won't run", async () => {
+  it("says when the worktree is on a base branch's name, and, for a room session, what its push runs and doesn't", async () => {
     const clone = setup();
     git(clone, "checkout", "-q", "-B", "dev");
     write(clone, { ".husky/_/pre-push": "#!/bin/sh\nexit 0\n" });
     git(clone, "config", "core.hooksPath", ".husky/_");
-    const p = await prPreflight(clone, "5101", "dev", { ado: async () => ({}), run: async () => ({ code: 0, out: "" }), env: {} }, { own: true });
+    const deps = { ado: async () => ({}), run: async () => ({ code: 0, out: "" }), env: {} };
+    const p = await prPreflight(clone, "5101", "dev", deps, { own: true });
     expect(p.branchProblem).toBe("The worktree is on dev, a base branch's name: pushing it would update origin's dev directly. Move the work to a branch of its own first.");
-    expect(p.prePushSetAside).toEqual({ value: ".husky/_", why: "hooks in the working tree can be changed by the session" });
+    expect(p.roomPush).toEqual({ runs: null, skipped: { value: ".husky/_", why: "hooks in the working tree can be changed by the session" }, lfs: "none" });
+    // with the user's own global pre-push, that runs, and Husky's is still set aside
+    const userHooks = tempDir("user-hooks");
+    write(userHooks, { "pre-push": "#!/bin/sh\nexit 0\n" });
+    const global = path.join(tempDir("global"), "gitconfig");
+    fs.writeFileSync(global, `[core]\n\thooksPath = ${userHooks}\n`);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    try {
+      const q = await prPreflight(clone, "5101", "dev", deps, { own: true });
+      const runs = `~/${path.basename(userHooks)}`;
+      expect(q.roomPush).toEqual({ runs, skipped: { value: ".husky/_", why: "hooks in the working tree can be changed by the session" }, lfs: "none" });
+      expect(roomPushLine(q.roomPush!)).toBe(`Your global pre-push in ${runs} runs; the one in .husky/_ doesn't, for a room session's push: hooks in the working tree can be changed by the session.`);
+      git(clone, "config", "--unset", "core.hooksPath");
+      const r = await prPreflight(clone, "5101", "dev", deps, { own: true });
+      expect(roomPushLine(r.roomPush!)).toBe(`Your global pre-push in ${runs} runs for a room session's push; this repository's hooks don't.`);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    // with none of the user's, the repository's .git/hooks is set aside: a hook manager there runs files the agent writes
+    write(clone, { ".git/hooks/pre-push": "#!/bin/sh\nexit 0\n" });
+    const n = await prPreflight(clone, "5101", "dev", deps, { own: true });
+    expect(n.roomPush).toEqual({ runs: null, skipped: { value: ".git/hooks", why: "this repository's hooks can run files its agent writes (a hook manager's config, its scripts)" }, lfs: "none" });
+    expect(roomPushLine(n.roomPush!)).toBe("No pre-push runs for a room session's push: the one in .git/hooks doesn't, as this repository's hooks can run files its agent writes (a hook manager's config, its scripts).");
+    expect(roomPushLine({ runs: null, skipped: null, lfs: "none" })).toBeNull();
+    expect(roomPushLine({ runs: null, skipped: null, lfs: "push" })).toBe("Its Git LFS files are uploaded first, with git lfs push.");
   });
   it("builds a description prompt from the branch's commits and diff", async () => {
     const clone = setup();
@@ -644,14 +669,32 @@ describe("a pull request's branch", () => {
   });
   it("is refused by main before anything is pushed, whatever base the form sent", () => {
     const pre = { branch: "main", base: "dev", bases: ["dev", "main"], dirtyFiles: 0, commits: 2, remote: null, docs: null, existing: null };
-    expect(prCreateRefusal(pre, "dev", "dev")).toBe("Nothing was pushed: The worktree is on main, a base branch's name: pushing it would update origin's main directly. Move the work to a branch of its own first.");
-    expect(prCreateRefusal({ ...pre, branch: "Dev" }, "dev", "dev")).toMatch(/^Nothing was pushed: The worktree is on Dev/);
-    expect(prCreateRefusal({ ...pre, branch: "5101-orgDropdowns" }, "dev", "dev")).toBeNull();
+    const made = { recorded: "5101-orgDropdowns" };
+    expect(prCreateRefusal(pre, "dev", "dev", made)).toBe("Nothing was pushed: The worktree is on main, a base branch's name: pushing it would update origin's main directly. Move the work to a branch of its own first.");
+    expect(prCreateRefusal({ ...pre, branch: "Dev" }, "dev", "dev", made)).toMatch(/^Nothing was pushed: The worktree is on Dev/);
+    expect(prCreateRefusal({ ...pre, branch: "5101-orgDropdowns" }, "dev", "dev", made)).toBeNull();
     // and the handler asks it before its push
     const main = fs.readFileSync(path.join(__dirname, "..", "src", "main", "index.ts"), "utf8");
     const create = main.slice(main.indexOf('"pipeline:pr:create",'), main.indexOf("// ---- continue in the other agent"));
     expect(create.indexOf("prCreateRefusal(")).toBeGreaterThan(0);
     expect(create.indexOf("prCreateRefusal(")).toBeLessThan(create.indexOf("scmPush("));
+  });
+  it("is the branch main made the session on, or one the user said to push: never a staging, release or teammate's branch unasked", () => {
+    const pre = { branch: "staging", base: "dev", bases: ["dev", "main"], dirtyFiles: 0, commits: 2, remote: null, docs: null, existing: null };
+    for (const branch of ["staging", "release/2.1", "nick/5098-donorExport"]) {
+      expect(prCreateRefusal({ ...pre, branch }, "dev", "dev", { recorded: "5101-orgDropdowns" })).toBe(
+        `Nothing was pushed: The worktree is on ${branch}, not 5101-orgDropdowns, the branch this session was made on: pushing it updates origin's ${branch}. Tick “Push ${branch} anyway” in the form to push it.`
+      );
+      // the say-so is for that branch only
+      expect(prCreateRefusal({ ...pre, branch }, "dev", "dev", { recorded: "5101-orgDropdowns", confirmed: branch })).toBeNull();
+      expect(prCreateRefusal({ ...pre, branch }, "dev", "dev", { recorded: "5101-orgDropdowns", confirmed: "5101-orgDropdowns" })).toMatch(/^Nothing was pushed/);
+    }
+    expect(unrecordedBranch("5101-x", null)).toBe("The worktree is on 5101-x, and this session has no branch of its own recorded: pushing it updates origin's 5101-x.");
+    expect(prCreateRefusal({ ...pre, branch: "5101-x" }, "dev", "dev", { recorded: null })).toMatch(/^Nothing was pushed: The worktree is on 5101-x, and this session has no branch/);
+    // main asks with the session's recorded branch and the form's say-so, and the preflight names it for the form
+    const main = fs.readFileSync(path.join(__dirname, "..", "src", "main", "index.ts"), "utf8");
+    expect(main).toMatch(/prCreateRefusal\(\{ \.\.\.pre, branch: pre\.branch \}, target, base, \{ recorded: s\.branch, confirmed: req\?\.confirmBranch \? String\(req\.confirmBranch\) : undefined \}\)/);
+    expect(main).toMatch(/return pre\.branch && pre\.branch !== s\.branch \? \{ \.\.\.pre, recordedBranch: s\.branch \} : pre;/);
   });
   it("pushes a room session's branch with only hooks its agent can't have written, a local one's as git would", () => {
     const main = fs.readFileSync(path.join(__dirname, "..", "src", "main", "index.ts"), "utf8");
@@ -662,7 +705,7 @@ describe("a pull request's branch", () => {
     expect(create).toMatch(/prPreflight\(s\.cwd, String\(ticketId\), target, prDeps\(s\.cwd\), \{ own \}\)/);
     expect(create).toMatch(/scmPush\(s\.cwd, \{ own \}\)/);
     // the preflight says what that push would set aside, and Source Control's Push is the same push
-    expect(main).toMatch(/prPreflight\(root, [^\n]*\{ own: pushesOwnHooks\(String\(sessionId\)\) \}\)/);
+    expect(main).toMatch(/prPreflight\(s\.cwd, [^\n]*\{ own: pushesOwnHooks\(s\.id\) \}\)/);
     expect(main).toMatch(/handle\("scm:push", \(id\) => scmPush\(sessionRoot\(id\), \{ own: pushesOwnHooks\(String\(id\)\) \}\)\);/);
   });
 });

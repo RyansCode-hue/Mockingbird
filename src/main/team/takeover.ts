@@ -66,7 +66,7 @@ import {
   type TakeoverResult,
   type TakeoverView,
 } from "../../shared/team/takeover";
-import type { AgentKind, NewSessionRequest, SessionInfo } from "../../shared/types";
+import type { AgentKind, NewSessionRequest, RoomPush, SessionInfo } from "../../shared/types";
 import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/types";
 
 /**
@@ -1212,19 +1212,25 @@ export class TakeoverService {
 
   /**
    * Set origin's backup ref, only if it still holds what this install last
-   * put there. A pre-push hook runs, as for any push: a secret scanner sees
-   * the snapshot first, and one that refuses it fails the push, which the
-   * session's backup shows. It's the user's own (their core.hooksPath from
-   * global or system config, an includeIf for the folder's among them) or the
-   * repository's in .git/hooks, never one in a folder the repository's config
-   * names (ownNetworkGit).
+   * put there. The user's own pre-push runs, as for any push: a secret scanner
+   * sees the snapshot first, and one that refuses it fails the push, which the
+   * session's backup shows. It's only theirs (their core.hooksPath from global
+   * or system config, an includeIf for the folder's among them, outside every
+   * working tree), never the repository's, in .git/hooks or a folder its config
+   * names: those run files the session's agent can write (ownNetworkGit's room
+   * push, which uploads the snapshot's Git LFS files first).
    */
   private async push(top: string, ref: string, rec: OwnRecord, sessionId: string): Promise<PushOutcome> {
-    const prePushSkipped = (skipped: SetAside | null) => {
+    const told = ({ skipped }: RoomPush) => {
       if (skipped) this.prePushSkipped.set(sessionId, skipped);
       else this.prePushSkipped.delete(sessionId);
     };
-    const lease = (expect: string) => ownNetworkGit(top, "push", ["--quiet", `--force-with-lease=${ref}:${expect}`, "origin", `${rec.sha}:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000, prePush: true, prePushSkipped });
+    // the snapshot's Git LFS files go up first: its push runs none of the repository's hooks, git-lfs's included
+    const lease = (expect: string) =>
+      ownNetworkGit(top, "push", ["--quiet", `--force-with-lease=${ref}:${expect}`, "origin", `${rec.sha}:${ref}`], {
+        timeoutMs: this.d.pushTimeoutMs ?? 60_000,
+        roomPush: { lfs: { remote: "origin", refs: [rec.sha] }, told },
+      });
     const onOrigin = async () => (await ownNetworkGit(top, "ls-remote", ["origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 })).split("\t")[0];
     try {
       try {

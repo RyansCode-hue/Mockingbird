@@ -1,11 +1,11 @@
 import { ADO_API } from "./ado";
 import { BASE_NAMES, branchesOf, currentBranch, git, originRemote, remoteName, type RemoteRepo } from "./git";
 import { dirtyFileCount } from "./scm";
-import { guardedGit, prePushSetAside } from "./safeGit";
+import { guardedGit, roomPushPlan } from "./safeGit";
 import { listAllFiles } from "./find";
 import { quote, type ShellResult } from "./shell";
 import type { ShellRunner } from "./headless";
-import { ADO_DESC_MAX, isWorkItemId, prBranchProblem, type PrPreflight, type PrTarget } from "../shared/types";
+import { ADO_DESC_MAX, isWorkItemId, prBranchProblem, unrecordedBranch, type PrPreflight, type PrTarget } from "../shared/types";
 
 /** The PR's base: the first usual name for the target that exists on origin. */
 export function pickBase(target: PrTarget, remoteBranches: string[]): string | null {
@@ -30,13 +30,16 @@ export function prBaseProblem(target: PrTarget, base: string, bases: string[]): 
 /**
  * Why main won't push a branch and open its pull request to `target` into `base`, from what its own preflight read
  * (never the form's word), or null: the base isn't the target's, the branch is a base's (the push would land on
- * it), uncommitted files would be left out, or one is open already.
+ * it), the branch isn't the one the session was made on (`recorded`) unless the user said to push it (`confirmed`
+ * names it), uncommitted files would be left out, or one is open already.
  */
-export function prCreateRefusal(pre: PrPreflight & { branch: string }, target: PrTarget, base: string): string | null {
+export function prCreateRefusal(pre: PrPreflight & { branch: string }, target: PrTarget, base: string, o: { recorded: string | null; confirmed?: string }): string | null {
   const wrongBase = prBaseProblem(target, base, pre.bases);
   if (wrongBase) return `Can't open this pull request: ${wrongBase}`;
   const wrongBranch = prBranchProblem(pre.branch, base);
   if (wrongBranch) return `Nothing was pushed: ${wrongBranch}`;
+  const unrecorded = unrecordedBranch(pre.branch, o.recorded);
+  if (unrecorded && o.confirmed !== pre.branch) return `Nothing was pushed: ${unrecorded} Tick “Push ${pre.branch} anyway” in the form to push it.`;
   if (pre.dirtyFiles) return `Commit or stash the ${pre.dirtyFiles} uncommitted file${pre.dirtyFiles === 1 ? "" : "s"} first — they wouldn't be in the pull request`;
   if (pre.existing && pre.base === base) return `A pull request is already open from ${pre.branch}: ${pre.existing.url}`;
   return null;
@@ -175,7 +178,7 @@ export async function prPreflight(
     existing,
     lookupError,
     branchProblem: branch && base ? prBranchProblem(branch, base) : null,
-    ...(o.own ? { prePushSetAside: await prePushSetAside(root) } : {}),
+    ...(o.own ? { roomPush: await roomPushPlan(root) } : {}),
   };
 }
 

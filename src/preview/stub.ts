@@ -294,8 +294,9 @@ if (lsGatesQ !== null) pipelines[WIRE_AREA] = gatePipeline(now);
 // drafted by the Verifier (s5); with "hostile", the agents' words hold markup and links (and a gate note a forged
 // "Ticked by you" line), and the request holds fields no form may read (a hand-edited file's). The preflight is clean,
 // and Push and open PR answers as main's addPr does. With "moved", the Coder is on #5098 now; "basebranch", the
-// worktree is on dev; "hooks", a room session's push sets a pre-push folder aside; "long", the description is over
-// what Azure DevOps keeps.
+// worktree is on dev; "otherbranch", on release/2.1, not the branch its session was made on; "hooks", a room session's
+// push runs the user's global pre-push, sets .git/hooks aside and sends LFS files first; "long", the description is
+// over what Azure DevOps keeps.
 const prRequestQ = new URLSearchParams(location.search).get("prRequest");
 const prRequest = prRequestQ === null ? null : new Set(prRequestQ.split(","));
 if (prRequest) {
@@ -1909,7 +1910,17 @@ const api: Record<string, (...a: any[]) => any> = {
   scmCommitMessage: async () => later({ message: "Remember the last org each user picked", scope: "all", agent: "claude" }, 800),
   scmFetch: async () => later(undefined, 400),
   scmPull: async () => later(err("This branch and origin/dev have both moved, so they can't be fast-forwarded."), 400),
-  scmPush: async () => later({ upstream: "origin/5101-orgDropdowns" }, 400),
+  // with ?roomPushHooks, as a team room session's push answers: what it ran and set aside, its LFS files sent first
+  scmPush: async () =>
+    later(
+      {
+        upstream: "origin/5101-orgDropdowns",
+        ...(new URLSearchParams(location.search).has("roomPushHooks")
+          ? { roomPush: { runs: "~/.githooks", skipped: { value: ".git/hooks", why: "this repository's hooks can run files its agent writes (a hook manager's config, its scripts)" }, lfs: "push" } }
+          : {}),
+      },
+      400
+    ),
   lspOpen: async () => ({ server: null, state: "none" }),
 
   // board and tickets
@@ -2062,21 +2073,27 @@ const api: Record<string, (...a: any[]) => any> = {
     pipelinesChanged();
     return p;
   },
-  pipelinePrPreflight: async (_sessionId: string, _ticketId: string, target: string) =>
-    prRequest
-      ? {
-          branch: prRequest.has("basebranch") ? "dev" : "5101-orgDropdowns",
-          base: target === "main" ? "main" : "dev",
-          bases: ["dev", "main"],
-          dirtyFiles: 0,
-          commits: 3,
-          remote: { provider: "ado", repo: "Backoffice/backoffice" },
-          docs: "doc/features/5101-orgDropdowns/5101-Description.md",
-          existing: null,
-          lookupError: null,
-          ...(prRequest.has("hooks") ? { prePushSetAside: { value: ".husky/_", why: "hooks in the working tree can be changed by the session" } } : {}),
-        }
-      : { branch: "5101-orgDropdowns", base: "dev", bases: ["dev", "main"], dirtyFiles: 2, commits: 1, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: null, existing: null, lookupError: null },
+  // as main's: the session's recorded branch when the worktree is on another, and with "hooks" what a room push runs
+  pipelinePrPreflight: async (sessionId: string, _ticketId: string, target: string) => {
+    if (!prRequest) return { branch: "5101-orgDropdowns", base: "dev", bases: ["dev", "main"], dirtyFiles: 2, commits: 1, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: null, existing: null, lookupError: null };
+    const branch = prRequest.has("basebranch") ? "dev" : prRequest.has("otherbranch") ? "release/2.1" : "5101-orgDropdowns";
+    const recorded = sessions.find((s) => s.id === sessionId)?.branch ?? null;
+    return {
+      branch,
+      base: target === "main" ? "main" : "dev",
+      bases: ["dev", "main"],
+      dirtyFiles: 0,
+      commits: 3,
+      remote: { provider: "ado", repo: "Backoffice/backoffice" },
+      docs: "doc/features/5101-orgDropdowns/5101-Description.md",
+      existing: null,
+      lookupError: null,
+      ...(branch !== recorded ? { recordedBranch: recorded } : {}),
+      ...(prRequest.has("hooks")
+        ? { roomPush: { runs: "~/.githooks", skipped: { value: ".git/hooks", why: "this repository's hooks can run files its agent writes (a hook manager's config, its scripts)" }, lfs: "push" } }
+        : {}),
+    };
+  },
   pipelinePrDescribe: async () => later({ description: "## Summary\nThe org dropdown remembers each user's last org.\n\n## Changes\n- Store and read the last org\n\n## Testing\nNot stated", agent: "claude" }, 800),
   // nothing is pushed or opened here; with ?prRequest it's recorded as main's addPr would, answering the asker's request
   pipelinePrCreate: async (sessionId: string, ticketId: string, req: { target?: string; base?: string } | undefined) => {
@@ -3147,7 +3164,7 @@ if (params.has("landscapeFirstRunAudit")) {
   };
   runFirstRunAudit({ sessions: () => sessions, calls, stored: () => landscape, patch: patchLandscape, setSession, waitFor }, params.get("landscapeFirstRunAudit") || "k");
 }
-// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r works Needs you and the cards' badges, and W15's ticket items (needsYouAudit.ts), for test/uiLandscapeNeeds.test.ts
+// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r|o works Needs you and the cards' badges, and W15's ticket items (needsYouAudit.ts), for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
   recordConsole();
   const setSession = (id: string, over: Partial<SessionInfo>) => {

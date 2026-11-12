@@ -1603,9 +1603,11 @@ handle("pipeline:draft:post", (id, draftId) =>
     return pipeline.dropDraft(tid, d.id);
   })
 );
-handle("pipeline:pr:preflight", (sessionId, ticketId, target) => {
-  const root = sessionOf(String(sessionId)).cwd;
-  return prPreflight(root, String(ticketId), target === "main" ? "main" : "dev", prDeps(root), { own: pushesOwnHooks(String(sessionId)) });
+handle("pipeline:pr:preflight", async (sessionId, ticketId, target) => {
+  const s = sessionOf(String(sessionId));
+  const pre = await prPreflight(s.cwd, String(ticketId), target === "main" ? "main" : "dev", prDeps(s.cwd), { own: pushesOwnHooks(s.id) });
+  // the branch the session was made on, when the worktree is on another: pushing that takes the user's say-so
+  return pre.branch && pre.branch !== s.branch ? { ...pre, recordedBranch: s.branch } : pre;
 });
 handle("pipeline:pr:describe", async (sessionId, ticketId, title, base) => {
   const s = sessionOf(String(sessionId));
@@ -1628,7 +1630,7 @@ handle(
       const pre = await prPreflight(s.cwd, String(ticketId), target, prDeps(s.cwd), { own });
       if (!pre.branch) throw new Error("The worktree isn't on a branch");
       // checked here, not trusted from the form: the PR is recorded under `target`, and pushed under the branch's name
-      const refused = prCreateRefusal({ ...pre, branch: pre.branch }, target, base);
+      const refused = prCreateRefusal({ ...pre, branch: pre.branch }, target, base, { recorded: s.branch, confirmed: req?.confirmBranch ? String(req.confirmBranch) : undefined });
       if (refused) throw new Error(refused);
       const url = await originUrl(s.cwd);
       const remote = url ? parseRemote(url) : null;

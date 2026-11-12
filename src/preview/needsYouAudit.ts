@@ -1,5 +1,5 @@
 /**
- * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r (with ?motion=off): S7's Needs you and card badges, worked as a person
+ * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r|o (with ?motion=off): S7's Needs you and card badges, worked as a person
  * would in the UI preview, into <script id="mb-landscape-needs-audit"> for test/uiLandscapeNeeds.test.ts. Keys and the
  * mouse are pressed for real where the test's Chrome driver is there to press them (scripts/ui-preview.mjs's pageResult
  * takes them from window.__mbKeys), so they go wherever the browser sends them; without it (a person's browser) they're
@@ -44,6 +44,7 @@
  * =q (with ?prRequest=moved,basebranch,hooks,long): the PR form's warnings: the asker on another ticket and no session
  * picked, then, on one picked, the base branch's blocker, the pre-push set aside, the lengths and the ADO limit.
  * =r (with ?prRequest=notes): the agent's patch notes rewritten under the user's unsaved edit.
+ * =o (with ?prRequest=otherbranch): the PR form on a branch its session wasn't made on: the say-so asked, then carried.
  */
 import type { SessionInfo, TicketPipeline } from "../shared/types";
 import { armFocus } from "../renderer/keyArm";
@@ -219,6 +220,7 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
       else if (part === "h") await arrivalPart(env, out);
       else if (part === "q") await formWarningsPart(env, out);
       else if (part === "r") await newerNotesPart(env, out);
+      else if (part === "o") await otherBranchPart(env, out);
       else await badgePart(env, out);
     } catch (err) {
       out.error = String((err as Error)?.stack ?? err);
@@ -1119,18 +1121,31 @@ async function arrivalPart(env: NeedsAuditEnv, out: Record<string, unknown>): Pr
       continue;
     }
     const { x, y } = at;
-    for (const how of ["double", "quick", "late"] as const) {
+    for (const how of ["double", "quick", "soon", "late"] as const) {
       await openTray();
       const mark = env.calls.length;
+      // how each click's control looked just after it was handled: "true" while it shows a click let go (aria-disabled)
+      const cues: (string | null)[] = [];
+      const cue = (e: MouseEvent) => {
+        const el = (e.target as Element | null)?.closest?.(CLICKABLE);
+        setTimeout(() => cues.push(el?.closest(".modal") ? el.getAttribute("aria-disabled") : "outside"), 0);
+      };
+      document.addEventListener("click", cue, true);
       if (how === "double") await drive([{ mouse: { x, y, clickCount: 1 } }, { mouse: { x, y, clickCount: 2 } }]);
       else if (how === "quick") await drive([{ mouse: { x, y, clickCount: 1 } }, { mouse: { x, y, clickCount: 1 } }]);
-      else {
+      else if (how === "soon") {
+        // a second, separate click a moment after the dialog came up under the pointer
+        await drive([{ mouse: { x, y, clickCount: 1 } }]);
+        await sleep(60);
+        await drive([{ mouse: { x, y, clickCount: 1 } }]);
+      } else {
         await drive([{ mouse: { x, y, clickCount: 1 } }]);
         await sleep(600);
         await drive([{ mouse: { x, y, clickCount: 2 } }]);
       }
       await sleep(500);
-      runs.push({ item, action, how, on: at.on, dialog: !!dialog(), under: buttonAt(x, y), calls: madeSince(env, mark).filter((c) => c.fn !== "pipelinePrPreflight") });
+      document.removeEventListener("click", cue, true);
+      runs.push({ item, action, how, on: at.on, dialog: !!dialog(), under: buttonAt(x, y), cue: cues.slice(1), calls: madeSince(env, mark).filter((c) => c.fn !== "pipelinePrPreflight") });
       await escapeDialog();
     }
   }
@@ -1174,6 +1189,7 @@ async function formWarningsPart(env: NeedsAuditEnv, out: Record<string, unknown>
   out.picked = {
     form: prForm(),
     hooks: f()?.querySelector("[data-hooks]")?.textContent ?? null,
+    branchSay: f()?.querySelector("[data-branch-say]")?.textContent ?? null,
     lengths: [...(f()?.querySelectorAll<HTMLElement>("[data-len]") ?? [])].map((l) => [l.dataset.len, l.textContent]),
     rows: area?.rows ?? null,
     long: f()?.querySelector("[data-long]")?.textContent ?? null,
@@ -1183,6 +1199,30 @@ async function formWarningsPart(env: NeedsAuditEnv, out: Record<string, unknown>
   fill(area!, "## Summary\nShort.");
   await sleep(200);
   out.short = { rows: area?.rows ?? null, long: !!f()?.querySelector("[data-long]"), lengths: [...(f()?.querySelectorAll<HTMLElement>("[data-len]") ?? [])].map((l) => [l.dataset.len, l.textContent]) };
+  await escapeDialog();
+}
+
+/**
+ * The PR form on a worktree that's on another branch than its session was made on (release/2.1): said, Push off until
+ * the user ticks "Push release/2.1 anyway", and then the push carries that say-so for main to check.
+ */
+async function otherBranchPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  armFocus(vp());
+  await openTray();
+  await clickOn(actBtn("pr:5101:dev", "open")!);
+  await until(() => document.querySelector(".pl-prform .pl-facts"));
+  await sleep(600);
+  const f = () => document.querySelector<HTMLElement>(".pl-prform");
+  const say = () => f()?.querySelector<HTMLElement>("[data-branch-say]") ?? null;
+  const push = () => buttonOf(f(), "Push and open PR");
+  out.shown = { say: say()?.textContent ?? null, ticked: say()?.querySelector("input")?.checked ?? null, push: push()?.disabled ?? null };
+  await clickInView(say()!.querySelector("input")!);
+  await sleep(200);
+  out.ticked = { ticked: say()?.querySelector("input")?.checked ?? null, push: push()?.disabled ?? null };
+  const mark = env.calls.length;
+  await clickInView(push()!);
+  await sleep(700);
+  out.pushed = { calls: madeSince(env, mark) };
   await escapeDialog();
 }
 

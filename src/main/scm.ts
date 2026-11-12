@@ -1,7 +1,7 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
-import { guardedGit, ownNetworkGit, SAFE_DIFF, WRITE_ENV, type SetAside } from "./safeGit";
-import type { GitChange, GraphCommit, GraphRef, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
+import { guardedGit, ownNetworkGit, SAFE_DIFF, WRITE_ENV } from "./safeGit";
+import type { GitChange, GraphCommit, GraphRef, RoomPush, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
 
 /**
  * Source control for a session's folder, like VS Code's view: what's staged,
@@ -103,12 +103,13 @@ export async function scmCommit(root: string, message: string): Promise<{ sha: s
  * it was made from (origin/dev), which a plain `git push` would aim at dev.
  *
  * `own`: a team room session's push. Main makes it, as the user, for a worktree the room's agent (sandboxed, or steered
- * by a teammate typing) can write, so it goes through ownNetworkGit: a pre-push only from the user's global
- * core.hooksPath or the repository's .git/hooks, never a folder in the worktree (Husky's `.husky/_`), git's own
- * receive-pack, no submodule's push and no ext:: transport. `prePushSkipped` then says what was set aside. A local
- * session's push stays a plain one, the user's own hooks (Husky's) running: its agent is trusted.
+ * by a teammate typing) can write, so it goes through ownNetworkGit's room push: a pre-push only from the user's global
+ * core.hooksPath outside every working tree, never the repository's (its `.git/hooks` or Husky's `.husky/_`), the
+ * repository's Git LFS files uploaded first (git lfs push, to the remote the push goes to), git's own receive-pack, no
+ * submodule's push and no ext:: transport. `roomPush` says what ran. A local session's push stays a plain one, the
+ * repository's hooks (Husky's, git-lfs's) running: its agent is trusted.
  */
-export async function scmPush(root: string, o: { own?: boolean } = {}): Promise<{ upstream: string; prePushSkipped?: SetAside | null }> {
+export async function scmPush(root: string, o: { own?: boolean } = {}): Promise<{ upstream: string; roomPush?: RoomPush }> {
   const st = await scmStatus(root);
   if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to push to");
   const args = st.published ? ["-q"] : ["-q", "-u", "origin", "HEAD"];
@@ -117,9 +118,11 @@ export async function scmPush(root: string, o: { own?: boolean } = {}): Promise<
     await git(root, ["push", ...args]);
     return { upstream };
   }
-  let prePushSkipped: SetAside | null = null;
-  await ownNetworkGit(root, "push", args, { prePush: true, prePushFor: "a room session's pushes", prePushSkipped: (s) => (prePushSkipped = s) });
-  return { upstream, prePushSkipped };
+  let roomPush: RoomPush | undefined;
+  // a plain `git push` goes to the upstream's remote (a branch's pushRemote aside, which this repository's config sets)
+  const remote = st.published ? upstream.slice(0, upstream.indexOf("/")) : "origin";
+  await ownNetworkGit(root, "push", args, { roomPush: { lfs: { remote, refs: ["HEAD"] }, pushes: "a room session's pushes", told: (p) => (roomPush = p) } });
+  return { upstream, roomPush };
 }
 
 /**

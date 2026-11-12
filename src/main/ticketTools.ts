@@ -61,9 +61,10 @@ type Text = { text: string; count: number } | { refused: string };
 /**
  * Every format character (`\p{Cf}`, as plainLine strips): bidi controls and marks, zero-width characters, the soft
  * hyphen, tag characters and the like, which reorder or hide text where the user reads it and where it's posted. The
- * named range keeps U+2065, unassigned, out too.
+ * named range keeps U+2065, unassigned, out too; and the Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), letters by
+ * Unicode's reckoning that draw as nothing.
  */
-const INVISIBLE_RE = /[\p{Cf}\u2060-\u2069]/gu;
+const INVISIBLE_RE = /[\p{Cf}\u2060-\u2069\u115f\u1160\u3164\uffa0]/gu;
 
 /**
  * An agent's text for the ticket's record, which others read once the user posts or opens it: invisible characters

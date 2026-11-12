@@ -178,13 +178,14 @@ button.primary:hover { background: var(--primary-hover); color: var(--on-primary
 button.danger:hover { color: var(--red); background: rgba(207, 106, 90, .08); }
 button.icon { padding: 3px 6px; font-size: 10.5px; color: var(--text-4); border: none; }
 button.icon:hover { color: var(--text-1); }
-button:disabled { opacity: .35; cursor: default; }
+button:disabled, button[aria-disabled="true"] { opacity: .35; cursor: default; }
 /* a disabled filled or outlined button: no accent and no fill of its own, only dim text, so it never reads as
    a warning or a muted live button; its tooltip says what it's waiting for */
-button.primary:disabled, button.primary:disabled:hover, button.lbtn.primary:disabled, button.lbtn.primary:disabled:hover {
+button.primary:disabled, button.primary:disabled:hover, button.lbtn.primary:disabled, button.lbtn.primary:disabled:hover,
+button.primary[aria-disabled="true"], button.primary[aria-disabled="true"]:hover {
   opacity: 1; background: var(--fill-subtle); color: var(--text-4); border-color: transparent;
 }
-button.outline:disabled, button.outline:disabled:hover { opacity: 1; background: transparent; border-color: var(--line-soft); color: var(--text-4); }
+button.outline:disabled, button.outline:disabled:hover, button.outline[aria-disabled="true"], button.outline[aria-disabled="true"]:hover { opacity: 1; background: transparent; border-color: var(--line-soft); color: var(--text-4); }
 .kbd { font: 400 9.5px var(--mono); color: var(--text-4); }
 button.primary .kbd { color: var(--on-primary); opacity: .65; }
 button.primary:disabled .kbd { color: var(--text-4); opacity: 1; }
@@ -1741,7 +1742,7 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .pl-facts .warn { color: var(--amber-text); }
 .pl-facts a, .pl-item a { color: var(--teal-text); cursor: pointer; text-decoration: underline; }
 .pl .mini { padding: 1px 6px; border: 1px solid var(--line-btn); border-radius: 4px; background: none; color: var(--text-3); font: 400 9.5px var(--mono); cursor: pointer; align-self: flex-start; }
-.pl .mini:hover:not(:disabled) { color: var(--text-1); border-color: var(--line-btn-hover); }
+.pl .mini:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--text-1); border-color: var(--line-btn-hover); }
 .pl .row { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 4px; }
 .pl .row .pl-dim { margin-right: auto; }
 .pl-draft { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
@@ -1750,6 +1751,8 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .pl-item .pl-warn { color: var(--amber-text); font: 400 10.5px var(--ui); }
 /* an agent's words (W15): who wrote them, said beside them; the words themselves only ever as text */
 .pl-by { font: italic 400 10px var(--ui); color: var(--text-3); text-transform: none; letter-spacing: 0; }
+/* a link or checklist item whose click was let go (useArrivalGuard) looks off, as a disabled button does */
+.pl a[aria-disabled="true"], .pl label[aria-disabled="true"] { opacity: .35; cursor: default; }
 .pl-gnote { margin: -3px 0 2px 21px; font: 400 10.5px/1.45 var(--ui); color: var(--text-3); overflow-wrap: anywhere; }
 .pl-asked { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pl-asked .pl-dim { margin-right: auto; }

@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { git, makeRepo, ownGitLog, tempDir, write } from "./helpers";
 import { watchRepo } from "./hostileRepo";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
@@ -1121,11 +1121,17 @@ describe("backups kept peer to peer (every room's default)", () => {
 });
 
 describe("backups to origin (the admin's opt-in)", () => {
-  it("runs the repository's pre-push hook on each push, and a hook that refuses one shows as a failed backup", async () => {
+  it("runs the user's own pre-push on each push, and a hook that refuses one shows as a failed backup", async () => {
     const t = await setup();
     const ran = path.join(tempDir("hook"), "ran");
-    const hook = path.join(t.ryanClone, ".git", "hooks", "pre-push");
+    // the user's secret scanner, in their global hooks folder: the repository's own never runs for a room's backup
+    const userHooks = tempDir("user-hooks");
+    const hook = path.join(userHooks, "pre-push");
     fs.writeFileSync(hook, `#!/bin/sh\ncat >> "${ran}"\necho 'secret scanner: an AWS key in src/a.ts' >&2\nexit 1\n`, { mode: 0o755 });
+    const global = path.join(tempDir("global"), "gitconfig");
+    fs.writeFileSync(global, `[core]\n\thooksPath = ${userHooks}\n`);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    onTestFinished(() => void vi.unstubAllEnvs());
     await t.ryan.svc.turnEnded("s1");
     await t.ryan.svc.settled();
     const ref = roomBackupRef(t.roomId, "s1");
@@ -1142,7 +1148,7 @@ describe("backups to origin (the admin's opt-in)", () => {
     expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
   });
 
-  it("runs pre-push from the user's global hooks folder, else the repository's own, never a folder its config names", async () => {
+  it("runs pre-push from the user's global hooks folder, else none: never the repository's own, its .git/hooks nor a folder its config names", async () => {
     const t = await setup();
     const w = watchRepo(t.ryanClone);
     w.plant("planted-pre-push", "cat >/dev/null", path.join(w.hooks, "pre-push"));
@@ -1154,8 +1160,8 @@ describe("backups to origin (the admin's opt-in)", () => {
     await t.ryan.svc.turnEnded("s1");
     await t.ryan.svc.settled();
     expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
-    expect(w.ran()).toContain("default-pre-push");
-    expect(w.ran().filter((n) => ["planted-pre-push", "receivepack", "uploadpack"].includes(n))).toEqual([]);
+    // a hook manager or a script there would run what the session's agent wrote
+    expect(w.ran().filter((n) => ["default-pre-push", "planted-pre-push", "receivepack", "uploadpack"].includes(n))).toEqual([]);
     w.clear();
     const userHooks = tempDir("user-hooks");
     w.plant("user-pre-push", "cat >/dev/null", path.join(userHooks, "pre-push"));
@@ -1209,7 +1215,7 @@ describe("backups to origin (the admin's opt-in)", () => {
     const note = "pre-push in .husky/_ not run for backups: hooks in the working tree can be changed by the session";
     await turn("one\n");
     await turn("two\n");
-    expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual(["default-pre-push"]);
+    expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual([]);
     expect(skipped()).toEqual({ folder: ".husky/_", note });
     expect(own.filter((l) => l.endsWith(note))).toEqual([`Mockingbird's own git in ${fs.realpathSync(t.wt)}: ${note}`]);
     // nor from one the user's own config names there
@@ -1220,7 +1226,7 @@ describe("backups to origin (the admin's opt-in)", () => {
     try {
       w.clear();
       await turn("three\n");
-      expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual(["default-pre-push"]);
+      expect(w.ran().filter((n) => n.endsWith("pre-push"))).toEqual([]);
       expect(skipped()).toEqual({ folder: ".husky/_", note });
     } finally {
       vi.unstubAllEnvs();

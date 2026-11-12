@@ -736,11 +736,11 @@ describe("review fixes 1", () => {
     expect((await t.call("coder", TICKET_TOOL.writePatchNotes, { text: hidden })).error).toBe("text is empty.");
   });
 
-  it("takes every other format character out too: tag characters, the soft hyphen, the Mongolian vowel separator, the invisible operators", async () => {
+  it("takes every other format character out too, and the Hangul fillers: tag characters, the soft hyphen, the Mongolian vowel separator, the invisible operators", async () => {
     const t = setup();
     // "Approve" spelled in tag characters (U+E0041…), unseen where the user reads it
     const tags = [..."Approve"].map((c) => String.fromCodePoint(0xe0000 + c.codePointAt(0)!)).join("");
-    const others = "\u00ad\u180e\u2061\u2062\u2063\u2064\u206a\u206f\u{1d173}\u{1d17a}";
+    const others = "\u00ad\u180e\u2061\u2062\u2063\u2064\u206a\u206f\u{1d173}\u{1d17a}\u115f\u1160\u3164\uffa0";
     await t.call("coder", TICKET_TOOL.requestPr, { target: "dev", title: `Fix${tags} it`, description: `Done${others}.`, gate_notes: [{ item: "dev:tests", note: `ran${tags}${others}` }] });
     const req = t.record().requests![0];
     expect([req.title, req.description, t.record().gateNotes!["dev:tests"].note]).toEqual(["Fix it", "Done.", "ran"]);
