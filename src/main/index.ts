@@ -54,7 +54,7 @@ import { fmtElapsed } from "../shared/format";
 import { MessageLog } from "./messageLog";
 import { overlapReport, rereadWorktrees, type WorktreeReads } from "./conflicts";
 import { logOwnGitFailuresTo } from "./safeGit";
-import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
+import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, snapshotTurn } from "./snapshots";
 import { prStateById, prStatusFor } from "./prStatus";
 import { PR_TTL_MS, PrWatch } from "./prWatch";
 import { LspManager } from "./lsp/manager";
@@ -702,10 +702,7 @@ app.whenReady().then(() => {
   }, (info, prompt) => {
     // the files before this turn, so it can be undone (agent panes in a repository only)
     if (info.shell || !info.repoPath) return;
-    takeSnapshot(info.cwd, info.id, prompt).then(
-      () => snapshotErrors.delete(info.id),
-      (err) => snapshotErrors.set(info.id, logError(`snapshot ${info.id}`, err))
-    );
+    void snapshotTurn(info.cwd, info.id, prompt, { room: pushesOwnHooks(info.id) }, snapshotErrors, logError);
   }, (e) => (e.kind === "room" ? teamChanges.roomCheck(e.notice) : teamHouse.claimEvent(e))); // team rooms: the room checks in the agents' hooks
   startScheduler(sessions, store);
   app.on("activate", () => {
@@ -2025,11 +2022,11 @@ handle("turns:list", async (id) => {
 });
 handle("turns:changes", (id, n) => {
   const s = sessionOf(String(id));
-  return changesSince(s.cwd, s.id, Number(n));
+  return changesSince(s.cwd, s.id, Number(n), { room: pushesOwnHooks(s.id) });
 });
 handle(
   "turns:restore",
-  untakenHandler("turns:restore", untaken, (s, n: unknown) => restoreSnapshot(s.cwd, s.id, Number(n)))
+  untakenHandler("turns:restore", untaken, (s, n: unknown) => restoreSnapshot(s.cwd, s.id, Number(n), { room: pushesOwnHooks(s.id) }))
 );
 
 // ---- cross-agent review: the other agent reviews this session's branch and reports back ----

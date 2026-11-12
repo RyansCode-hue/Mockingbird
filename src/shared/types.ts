@@ -1567,6 +1567,11 @@ export interface TurnSnapshot {
   prompt: string;
   /** Files over SNAPSHOT_MAX_FILE_BYTES that weren't recorded. */
   skipped: string[];
+  /**
+   * A team room session's changed files that weren't recorded because a filter Mockingbird doesn't run for a room
+   * session keeps them (their filter attribute names one): stored without it, they'd be stored unfiltered.
+   */
+  filtered: string[];
   /** Taken just before a restore, so the restore can be undone. */
   beforeUndo: boolean;
 }

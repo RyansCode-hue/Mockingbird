@@ -101,6 +101,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
             </>
           )}
           {pick.skipped.length > 0 && <div className="fp-note warn">Not recorded (over {SNAPSHOT_MAX_FILE_BYTES / (1024 * 1024)} MB), so left as they are: {pick.skipped.join(", ")}</div>}
+          {pick.filtered.length > 0 && <div className="fp-note warn">Not recorded (kept through a filter Mockingbird doesn't run for a team room session), so left as they are: {pick.filtered.join(", ")}</div>}
         </div>
       )}
       {error && <div className="err">{error}</div>}

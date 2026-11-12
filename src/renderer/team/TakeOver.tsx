@@ -310,6 +310,7 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
                   )
                 )}
                 {p.snapshot.skipped.length > 0 && <div className="tk-quiet">Too big to carry: {p.snapshot.skipped.join(", ")}</div>}
+                {p.snapshot.filtered.length > 0 && <div className="tk-quiet">Not carried (kept through a filter Mockingbird doesn't run for a team room session): {p.snapshot.filtered.join(", ")}</div>}
               </>
             ) : p.clone ? (
               p.toOrigin ? (

@@ -1,6 +1,6 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
-import { guardedGit, ownNetworkGit, roomPushPlan, roomWrite, roomWriteEnv, SAFE_DIFF, WRITE_ENV } from "./safeGit";
+import { guardedGit, keptByFilters, ownNetworkGit, roomPushPlan, roomWrite, roomWriteEnv, SAFE_DIFF, WRITE_ENV } from "./safeGit";
 import { prBranchProblem, unrecordedBranch, type GitChange, type GraphCommit, type GraphRef, type RoomPush, type ScmGraph, type ScmPushResult, type ScmStatus, type ScmStatusCode } from "../shared/types";
 
 /**
@@ -20,17 +20,6 @@ export interface Own {
 /** The environment a write in `root` runs with: roomWriteEnv's for a room session's folder, else WRITE_ENV. */
 const writeEnv = async (root: string, o: Own): Promise<Readonly<Record<string, string>>> => (o.own ? roomWriteEnv(root) : WRITE_ENV);
 
-/**
- * The first of `files` kept through a filter roomWrite turned off (one in `filtersOff` its `filter` attribute names),
- * with that filter, or null. The attributes are the working tree's, which the session's agent writes.
- */
-async function filteredBy(root: string, files: readonly string[], filtersOff: readonly string[]): Promise<{ file: string; filter: string } | null> {
-  if (!filtersOff.length || !files.length) return null;
-  const out = await (await guardedGit(root)).run(["check-attr", "-z", "--stdin", "filter"], { input: `${files.join("\0")}\0`, trim: false });
-  const parts = out.split("\0");
-  for (let i = 0; i + 2 < parts.length; i += 3) if (filtersOff.includes(parts[i + 2])) return { file: parts[i], filter: parts[i + 2] };
-  return null;
-}
 
 /**
  * Why a room session's write mustn't go ahead, as `done` ("staged") says it, or null: one of `files` is kept through a
@@ -39,7 +28,7 @@ async function filteredBy(root: string, files: readonly string[], filtersOff: re
  * tree the agent writes, and can load code from there (`python -m nbstripout`), so it isn't run for the agent's files.
  */
 export async function unfilteredRefusal(root: string, files: readonly string[], filtersOff: readonly string[], done: string, without: string): Promise<string | null> {
-  const hit = await filteredBy(root, files, filtersOff);
+  const [hit] = await keptByFilters(root, files, filtersOff);
   return hit
     ? `Nothing was ${done}: ${hit.file} is kept through the "${hit.filter}" filter, which Mockingbird doesn't run for a team room session's git, as a filter runs as you, from the working tree the session's agent writes, and can load code from there. Without it, ${hit.file} would be ${without}.`
     : null;

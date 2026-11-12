@@ -11,9 +11,9 @@ import type { RoomSessionSource } from "./roomSessions";
 import { PeerError, TeamError, type RequestContext, type Team, type Unsubscribe } from "./transport";
 import { transcriptRefusal } from "./roomLimits";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
-import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
+import { checkoutSnapshotFiles, leftOutIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
-import { guardedGit, loggedAlready, OWN_WRITE_ENV, ownFetch, ownNetworkGit, prePushNote, type SetAside, shownFailure } from "../safeGit";
+import { guardedGit, keptByFilters, loggedAlready, OWN_WRITE_ENV, ownFetch, ownNetworkGit, prePushNote, roomFilters, type SetAside, shownFailure, withFiltersOff } from "../safeGit";
 import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, realpathOr } from "../agentFiles";
@@ -798,7 +798,7 @@ export class TakeoverService {
       this.unbacked.delete(sessionId);
     } catch (err) {
       const problem = withoutCredentials(err instanceof Error ? err.message : String(err));
-      if (!loggedAlready(err)) this.d.log(`team: backing up session ${sessionId}`, problem);
+      if (!loggedAlready(err) && this.unbacked.get(sessionId)?.problem !== problem) this.d.log(`team: backing up session ${sessionId}`, problem);
       this.unbacked.set(sessionId, { roomId, title: s.ticketTitle ?? s.title, problem });
     }
     this.changed();
@@ -812,7 +812,7 @@ export class TakeoverService {
     const ref = roomBackupRef(roomId, s.id);
     const prev = this.local(roomId).own[s.id];
     const takenAt = this.now();
-    const snap = await snapshotCommit(top, `${snapshotSubject(s.id)}\n\ntaken-at: ${takenAt}`, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
+    const snap = await snapshotCommit(top, `${snapshotSubject(s.id)}\n\ntaken-at: ${takenAt}`, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []), room: true });
     if (!snap) throw new Error(`${s.cwd} isn't in a git repository`);
     // nothing changed since the last turn: keep that snapshot, with nothing new to send or push
     const same = !!prev && prev.tree === snap.tree && prev.parent === snap.parent && (await hasCommits(top, [prev.sha])).length === 1;
@@ -1684,7 +1684,7 @@ export class TakeoverService {
           const why = !rec.sent && rec.fetchFailed ? `: fetching it from origin failed: ${rec.fetchFailed}` : "";
           throw new Error(`the snapshot ${by} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told${why}`);
         }
-        const now = await worktreeTree(top, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []), base });
+        const now = await worktreeTree(top, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []), base, room: true });
         const files = await changedFiles(top, `${base}^{tree}`, now!.tree);
         this.unsent.set(sessionId, { files: files.map((f) => f.path), checkedAt: this.now() });
       } catch (err) {
@@ -1724,6 +1724,7 @@ export class TakeoverService {
       const me = this.nameOf(roomId, this.d.team.self.id);
       const commit = await worktreeCommitOn(top, base, `Mockingbird: ${me}'s changes to “${rec.title}” after ${name} continued it\n\nfrom-session: ${sessionId}`, {
         secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []),
+        room: true,
       });
       const files = await changedFiles(top, base, commit.sha);
       if (!files.length) throw new Error(`Nothing to send: ${name} has everything in this copy`);
@@ -1843,8 +1844,17 @@ export class TakeoverService {
     if (!top) throw new Error(`${s.cwd} isn't in a git repository`);
     const file = this.receivedFile(roomId, id);
     const patch = await fs.promises.readFile(file);
+    // git apply reads and writes the files through their filters, which run as the user from config the agent can write
+    const off = await roomFilters(top);
+    const [kept] = await keptByFilters(top, rec.files.map((f) => f.path), off);
+    if (kept) {
+      throw new Error(
+        `They weren't applied: ${kept.file} is kept through the "${kept.filter}" filter, which Mockingbird doesn't run for a team room session's git, so it would be written as it's stored. To apply them by hand: git apply ${file}`
+      );
+    }
+    const env = withFiltersOff(OWN_WRITE_ENV, off);
     try {
-      await git(top, ["apply", "--check", "--binary", "-"], { input: patch });
+      await git(top, ["apply", "--check", "--binary", "-"], { input: patch, env });
     } catch (err) {
       const msg = (err as Error).message;
       const inTheWay = [...new Set([...msg.matchAll(/^error: (.+?): (?:patch does not apply|already exists in working directory|does not exist in working directory|No such file or directory)/gm)].map((m) => m[1]))];
@@ -1852,9 +1862,9 @@ export class TakeoverService {
         `They don't apply cleanly to this worktree, so nothing was changed${inTheWay.length ? ` — changed here too: ${inTheWay.join(", ")}` : `: ${msg.replace(/\s+/g, " ").slice(0, 300)}`}. To merge them by hand: git apply --3way ${file}`
       );
     }
-    const before = await takeSnapshot(top, rec.sessionId, `(before applying ${this.nameOf(roomId, rec.from)}'s changes)`);
+    const before = await takeSnapshot(top, rec.sessionId, `(before applying ${this.nameOf(roomId, rec.from)}'s changes)`, { room: true });
     if (!before) throw new Error(`Couldn't record ${top}'s files before applying, so nothing was changed`);
-    await git(top, ["apply", "--binary", "-"], { input: patch });
+    await git(top, ["apply", "--binary", "-"], { input: patch, env });
     rec.applied = this.now();
     this.saveLocal(roomId);
     this.changed();
@@ -2072,7 +2082,7 @@ export class TakeoverService {
     return {
       ...base,
       clone,
-      snapshot: pick ? { ...pick, skipped: await skippedIn(clone, pick.sha) } : null,
+      snapshot: pick ? { ...pick, ...(await leftOutIn(clone, pick.sha)) } : null,
       other,
       originProblem,
       latestMissing: !pick || pick.takenAt < b.latest.takenAt,
@@ -2123,7 +2133,7 @@ export class TakeoverService {
       const base = (await git(clone, ["rev-parse", "--verify", "-q", `${snap.sha}^1`], { okCodes: [0, 1] })) || null;
       if (!base) throw new Error("The snapshot has no parent commit (the repository had no commits yet), so there's no branch to continue");
       const wt = await worktreeAt(clone, b.session.branch, base);
-      await checkoutSnapshotFiles(wt.path, snap.sha);
+      await checkoutSnapshotFiles(wt.path, snap.sha, { room: true });
       const carried = await this.startFrom(roomId, b, plan, wt, snap);
       const req: NewSessionRequest = {
         repoPath: clone,

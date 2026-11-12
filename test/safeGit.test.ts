@@ -12,7 +12,7 @@ import { prDescriptionPrompt } from "../src/main/pullRequests";
 import { ignoredCandidates } from "../src/main/runDraft";
 import { driversToTurnOff, guardedGit, ownFetch, ownNetworkEnv, programOnPath } from "../src/main/safeGit";
 import { scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
-import { dropSnapshots, skippedIn, snapshotCommit, takeSnapshot } from "../src/main/snapshots";
+import { dropSnapshots, leftOutIn, snapshotCommit, takeSnapshot } from "../src/main/snapshots";
 import { fetchOrigin } from "../src/main/team/branchFiles";
 import { excludeInRepo } from "../src/main/team/claims";
 import { makeTestCopy } from "../src/main/testCopy";
@@ -160,7 +160,7 @@ describe("main-process reads of a session's folder", { timeout: 300_000 }, () =>
       ["commitContext", () => commitContext(h.repo)],
       ["prDescriptionPrompt", () => prDescriptionPrompt(h.repo, "dev", { id: "1", title: "t" })],
       ["makeTestCopy", () => makeTestCopy(h.repo, path.join(tempDir("copy"), "c"))],
-      ["skippedIn", () => skippedIn(h.repo, "HEAD")],
+      ["leftOutIn", () => leftOutIn(h.repo, "HEAD")],
       ["listAllFiles", () => listAllFiles(h.repo)],
       ["ignoredCandidates", () => ignoredCandidates(h.repo)],
       ["excludeInRepo", () => excludeInRepo(h.repo, { dir: "mb-plan", line: "/mb-plan/", comment: "a test's", what: "a test's copy" })],

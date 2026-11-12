@@ -4357,6 +4357,128 @@ Mediums.
     WIP commit not refusing.
   - The LFS pin.
 
+#### W15 review fixes 5 as built
+
+Fixes 4's residual, a Medium: each turn's snapshot ran `add -A` on a room session's
+changed files with filters on, and with no config-origin check. It needs no click,
+so (a) and (b) above still ran on every turn.
+
+- **Room snapshots (`snapshots.ts`, `room` option).**
+  - Every snapshot function takes `{ room }`: `takeSnapshot`, `snapshotCommit`,
+    `worktreeTree`, `worktreeCommitOn`, `changesSince`, `restoreSnapshot`,
+    `checkoutSnapshotFiles`. For a room session, `filtersOffFor` calls
+    `roomFilters`, which is `roomConfig`'s refusal plus its `filtersOff`.
+  - Refused: no snapshot is taken, and nothing is written.
+  - Not refused: the snapshot's index runs with every driver but git-lfs's emptied
+    and not required (`withFiltersOff`).
+    - `treeOfWorktree` leaves out each changed file whose `filter` attribute names a
+      turned-off driver (`keptByFilters`, one guarded `check-attr`), as it leaves out
+      big files. The file stays as the index has it, which is what was stored
+      through the filter. It is never stored unfiltered.
+    - The file is named in `filtered`. It is recorded in the commit message (a
+      `filtered:` line, which `leftOutIn` reads, replacing `skippedIn`) and shown:
+      - in Undo turn: "Not recorded (kept through a filter…)";
+      - in the take-over plan: "Not carried…".
+  - Local sessions are unchanged. Their filters run and nothing is left out.
+- **Said on the pane, logged once.**
+  - `snapshotTurn` takes a turn's snapshot, keeps its failure in `snapshotErrors`
+    for Undo turn's "The last turn wasn't recorded: …", and clears it on the next
+    snapshot that works.
+  - It logs `snapshot <session id>` only when the cause differs from the one already
+    kept. A standing refusal is logged once, and logged again if it comes back
+    after a recorded turn.
+  - `index.ts` passes `{ room: pushesOwnHooks(id) }` for the turn's snapshot,
+    `turns:changes` and `turns:restore`. That's room sessions, plus every session
+    until rooms start.
+- **Undo's restore.**
+  - A room restore refuses, with nothing written, when a file it would put back is
+    kept through a turned-off filter by the working tree's attributes. Without the
+    filter, the file would be written as stored. The undo's own snapshot leaves the
+    file out too, so the current content couldn't be got back.
+  - The check runs before the undo's snapshot, so a refusal leaves no "(before an
+    undo)" entry, and again after it, for files changed in between.
+  - Its `checkout-index` runs with the filters off.
+- **The other automatic room gits.**
+  - Take-over: these pass `room: true`, so each refuses or leaves files out as above:
+    - the backup after each turn (`snapshotCommit`);
+    - the unsent count each minute (`worktreeTree`);
+    - Send to (`worktreeCommitOn`);
+    - the copy's checkout (`checkoutSnapshotFiles`);
+    - the snapshot before applying received changes.
+  - `applyReceived`'s two `git apply` calls run filters on the files they read and
+    write. They now run with `roomFilters`' refusal and filters off. A received file
+    kept through a turned-off filter is refused by name, with nothing applied.
+  - A backup failure is logged once per cause too. It already showed as unbacked.
+  - Checked, with nothing left uncovered:
+    - Guarded reads (`guardedGit`) turn off every filter but git-lfs's exact
+      commands, and pass `--no-textconv`, `--no-ext-diff`, no hooks, no fsmonitor
+      and no `log.showSignature`.
+    - The `{diff}` for W2's wire tools and W16's PR watch is `readWireDiff`, a
+      guarded read.
+    - The tree-to-tree diffs run no programs:
+      - snapshots' `diffTrees`;
+      - take-over's `changedFiles`;
+      - teammates' changes;
+      - `branchFiles`.
+    - Send to's patch is a tree-to-tree `--no-textconv --no-ext-diff` diff.
+- **Residual.**
+  - A take-over's copy (`worktreeAt` and `checkoutSnapshotFiles`) writes files a
+    turned-off smudge filter keeps as they're stored, as checkouts and pulls do
+    (fixes 4). The plan names the ones the snapshot left out.
+  - A room restore checks the working tree's attributes. A file that only the
+    snapshot's own attributes mark is written as stored. The undo's snapshot recorded
+    it, so this can be undone.
+  - `commit-tree` honours `commit.gpgSign` with the user's own `gpg.program` (Low,
+    as before).
+- **Tests.**
+  - `snapshots.test.ts`:
+    - With an included worktree config file, a room turn takes no snapshot. The pane
+      error says why, and two turns log once. The backup, unsent count, Send to,
+      changes and restore all refuse. A local turn records and clears the error, and
+      the refusal coming back is logged again.
+    - `filter=strip` files, edited and new, are left out and listed in `filtered`.
+      This holds in the list, the backup's message and `leftOutIn`. The tracked file
+      stays as stored, and the filter never runs.
+    - A restore over a kept file refuses, leaving no extra snapshot, while a local
+      one runs the filter. A room restore whose snapshot's attributes mark a file
+      writes it with the filter not run.
+    - LFS files snapshot as pointers in room mode (git-lfs present).
+    - A local snapshot runs its filter and includes the file.
+    - A static check that take-over's five snapshot calls pass `room: true`, its two
+      `git apply` calls pass `env`, and `index.ts`'s three pass
+      `room: pushesOwnHooks(`.
+  - `teamTakenOver.test.ts`: applying received changes refuses a file kept through
+    `strip`, and writes nothing.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 1:
+  - 195 files pass and 35 skip; 3,318 tests pass and 329 skip.
+  - The one failure is `leakGuard`'s real-run case. It starts
+    `<root>/node_modules/vitest`, which a worktree with no `node_modules` doesn't
+    have. Run alone with the main checkout's `node_modules` linked in, all 5 of its
+    tests pass. The link was removed afterwards.
+- Each change undone in turn (`w15/mutate6.mjs`) fails a test, 16 mutations:
+  - Refusal (5):
+    - the refusal swallowed;
+    - logged every turn;
+    - not kept for the pane;
+    - the pane's snapshot not a room one;
+    - Undo's restore not a room one.
+  - Filters off (5):
+    - the snapshot index with filters on;
+    - the turn snapshot's index not given them;
+    - the restore writing with them on;
+    - take-over's `git apply` with them on;
+    - take-over's backup not a room one.
+  - Left out and said (6):
+    - nothing found;
+    - found but stored anyway;
+    - left out but not in the message;
+    - `keptByFilters` finding none;
+    - the restore refusal;
+    - take-over's apply refusal.
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn

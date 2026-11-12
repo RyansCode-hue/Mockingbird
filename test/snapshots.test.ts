@@ -1,7 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
-import { changesSince, dropSnapshots, KEEP, listSnapshots, restoreSnapshot, takeSnapshot } from "../src/main/snapshots";
+import { describe, expect, it, vi } from "vitest";
+import { programOnPath } from "../src/main/safeGit";
+import { changesSince, dropSnapshots, KEEP, leftOutIn, listSnapshots, restoreSnapshot, snapshotCommit, snapshotTurn, takeSnapshot, worktreeCommitOn, worktreeTree } from "../src/main/snapshots";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 const read = (root: string, rel: string) => fs.readFileSync(path.join(root, rel), "utf8");
@@ -161,5 +162,160 @@ describe("restoring over a changed folder layout", () => {
     write(repo, { "a/b.txt": "b\n" });
     expect(await restoreSnapshot(repo, "s1", snap.n)).toMatchObject({ restored: 1, removed: 1 });
     expect(read(repo, "a")).toBe("a file\n");
+  });
+});
+
+const lfsHere = programOnPath("git-lfs", process.env.PATH);
+
+describe("a team room session's snapshots: nothing from config its agent can write, no filter but git-lfs's", () => {
+  /** A repository with the user's own filter "strip" (as `nbstripout --install` sets one), which notes each run. */
+  function stripRepo() {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const log = path.join(tempDir("filter"), "ran");
+    git(repo, "config", "filter.strip.clean", `sh -c 'echo clean >> "${log}"; cat'`);
+    git(repo, "config", "filter.strip.smudge", `sh -c 'echo smudge >> "${log}"; cat'`);
+    return { repo, log, ran: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : []) };
+  }
+
+  it("takes none when the repository's config includes a file in its working tree, and says why on the pane, logged once", async () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    fs.writeFileSync(path.join(repo, "team.gitconfig"), `[filter "strip"]\n\tclean = cat\n`);
+    git(repo, "config", "include.path", path.join(repo, "team.gitconfig"));
+    write(repo, { "a.txt": "edited\n" });
+    const refused = `Mockingbird runs none of a team room session's git with this repository's config: team.gitconfig, a file in ${fs.realpathSync(repo)}, which the room's sessions can change, sets filter.strip.clean, and a setting there can name a program git runs as you`;
+    const errors = new Map<string, string>();
+    const log = vi.fn();
+    await snapshotTurn(repo, "s1", "a turn", { room: true }, errors, log);
+    await snapshotTurn(repo, "s1", "the next turn", { room: true }, errors, log);
+    expect(await listSnapshots(repo, "s1")).toEqual([]);
+    expect(errors.get("s1")).toContain(refused);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith("snapshot s1", expect.objectContaining({ message: expect.stringContaining(refused) }));
+    // take-over's backups, its count of a copy's unsent files and what it sends refuse the same way
+    await expect(snapshotCommit(repo, "a backup", { room: true })).rejects.toThrow(refused);
+    await expect(worktreeTree(repo, { room: true })).rejects.toThrow(refused);
+    await expect(worktreeCommitOn(repo, git(repo, "rev-parse", "HEAD"), "sent", { room: true })).rejects.toThrow(refused);
+    // a local session's turn is recorded, and clears what the pane says; a room session's Undo of it refuses
+    await snapshotTurn(repo, "s1", "a local turn", {}, errors, log);
+    expect((await listSnapshots(repo, "s1")).map((s) => s.prompt)).toEqual(["a local turn"]);
+    expect(errors.has("s1")).toBe(false);
+    await expect(restoreSnapshot(repo, "s1", 1, { room: true })).rejects.toThrow(refused);
+    await expect(changesSince(repo, "s1", 1, { room: true })).rejects.toThrow(refused);
+    // the refusal coming back after a recorded turn is told again
+    await snapshotTurn(repo, "s1", "a room turn", { room: true }, errors, log);
+    expect(log).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves out a file a filter it turns off keeps, as it does a big file, and says which: none is stored unfiltered", async () => {
+    const t = stripRepo();
+    // a notebook stored through the filter by the user's own commit
+    write(t.repo, { ".gitattributes": "*.ipynb filter=strip\n", "old.ipynb": '{"v": 1}\n' });
+    git(t.repo, "add", "-A");
+    git(t.repo, "commit", "-q", "-m", "a notebook");
+    fs.rmSync(t.log);
+    // the agent's turn edits it and adds another
+    write(t.repo, { "old.ipynb": '{"v": 2}\n', "new.ipynb": "{}\n", "a.txt": "edited\n" });
+    const snap = (await takeSnapshot(t.repo, "s1", "a turn", { room: true }))!;
+    expect([...snap.filtered].sort()).toEqual(["new.ipynb", "old.ipynb"]);
+    expect(snap.skipped).toEqual([]);
+    expect(git(t.repo, "ls-tree", "-r", "--name-only", snap.sha).split("\n")).toEqual([".gitattributes", "a.txt", "old.ipynb"]);
+    expect(git(t.repo, "show", `${snap.sha}:old.ipynb`)).toBe('{"v": 1}'); // as it was stored
+    expect(git(t.repo, "show", `${snap.sha}:a.txt`)).toBe("edited");
+    expect([...(await listSnapshots(t.repo, "s1"))[0].filtered].sort()).toEqual(["new.ipynb", "old.ipynb"]);
+    expect(await changesSince(t.repo, "s1", snap.n, { room: true })).toEqual([]);
+    // take-over's backup leaves them out too, and its message says which, for the plan to show
+    const backup = (await snapshotCommit(t.repo, "a backup", { room: true }))!;
+    expect([...backup.filtered].sort()).toEqual(["new.ipynb", "old.ipynb"]);
+    expect((await leftOutIn(t.repo, backup.sha)).filtered.sort()).toEqual(["new.ipynb", "old.ipynb"]);
+    expect(git(t.repo, "show", `${backup.sha}:old.ipynb`)).toBe('{"v": 1}');
+    expect(t.ran()).toEqual([]);
+  });
+
+  it("restores nothing over a file a filter it turns off keeps: it would be written as it's stored", async () => {
+    const t = stripRepo();
+    write(t.repo, { "nb.ipynb": '{"v": 1}\n' });
+    const snap = (await takeSnapshot(t.repo, "s1", "a turn", { room: true }))!; // no attributes yet: recorded
+    expect(snap.filtered).toEqual([]);
+    write(t.repo, { ".gitattributes": "*.ipynb filter=strip\n", "nb.ipynb": '{"v": 2}\n' });
+    await expect(restoreSnapshot(t.repo, "s1", snap.n, { room: true })).rejects.toThrow(
+      `Nothing was restored: nb.ipynb is kept through the "strip" filter, which Mockingbird doesn't run for a team room session's git`
+    );
+    expect(read(t.repo, "nb.ipynb")).toBe('{"v": 2}\n');
+    expect(exists(t.repo, ".gitattributes")).toBe(true);
+    expect((await listSnapshots(t.repo, "s1")).length).toBe(1); // no "before an undo" left behind
+    expect(t.ran()).toEqual([]);
+    // a local session's runs it, as git would
+    await restoreSnapshot(t.repo, "s1", snap.n);
+    expect(read(t.repo, "nb.ipynb")).toBe('{"v": 1}\n');
+    expect(t.ran()).toContain("clean");
+  });
+
+  it("runs no filter but git-lfs's when it restores: a file the snapshot's own attributes mark is written as it's stored", async () => {
+    const t = stripRepo();
+    write(t.repo, { ".gitattributes": "*.ipynb filter=strip\n", "nb.ipynb": '{"v": 1}\n' });
+    git(t.repo, "add", "-A");
+    git(t.repo, "commit", "-q", "-m", "a notebook");
+    const snap = (await takeSnapshot(t.repo, "s1", "a turn", { room: true }))!;
+    // the agent drops the attributes, from the index too, and edits the notebook
+    git(t.repo, "rm", "-q", "--cached", ".gitattributes");
+    fs.rmSync(path.join(t.repo, ".gitattributes"));
+    write(t.repo, { "nb.ipynb": '{"v": 2}\n' });
+    fs.rmSync(t.log, { force: true }); // what the test's own gits ran
+    expect(await restoreSnapshot(t.repo, "s1", snap.n, { room: true })).toMatchObject({ restored: 2, removed: 0 });
+    expect(read(t.repo, "nb.ipynb")).toBe('{"v": 1}\n');
+    expect(read(t.repo, ".gitattributes")).toBe("*.ipynb filter=strip\n");
+    expect(t.ran()).toEqual([]);
+  });
+
+  it.skipIf(!lfsHere)("keeps git-lfs's own filter on: a room session's LFS files are recorded as pointers", async () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    git(repo, "lfs", "install", "--local");
+    git(repo, "lfs", "track", "*.bin");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "LFS");
+    fs.writeFileSync(path.join(repo, "big.bin"), "x".repeat(4000));
+    const snap = (await takeSnapshot(repo, "s1", "a turn", { room: true }))!;
+    expect(snap.filtered).toEqual([]);
+    expect(git(repo, "cat-file", "-p", `${snap.sha}:big.bin`)).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\n/);
+  });
+
+  it("leaves a local session's snapshot as it was: its filters run, and nothing is left out", async () => {
+    const t = stripRepo();
+    write(t.repo, { ".gitattributes": "*.ipynb filter=strip\n", "nb.ipynb": "{}\n" });
+    const snap = (await takeSnapshot(t.repo, "s1", "a turn"))!;
+    expect(snap.filtered).toEqual([]);
+    expect(git(t.repo, "ls-tree", "-r", "--name-only", snap.sha).split("\n")).toEqual([".gitattributes", "a.txt", "nb.ipynb"]);
+    expect(t.ran()).toContain("clean");
+  });
+});
+
+describe("which snapshots are a team room session's", () => {
+  /** Each call of one of `names` in `file`, as written, through its closing parenthesis. */
+  function callsIn(file: string, names: string[]): string[] {
+    const src = fs.readFileSync(path.join(__dirname, "..", file), "utf8");
+    const calls: string[] = [];
+    for (const m of src.matchAll(new RegExp(`\\b(?:${names.join("|")})\\(`, "g"))) {
+      let depth = 0;
+      let i = m.index! + m[0].length - 1;
+      for (; i < src.length; i++) {
+        if (src[i] === "(") depth++;
+        else if (src[i] === ")" && --depth === 0) break;
+      }
+      calls.push(src.slice(m.index!, i + 1));
+    }
+    return calls;
+  }
+
+  it("take-over's are all one's, and a pane's are when its session is in a room (or rooms haven't started)", () => {
+    const takeover = callsIn("src/main/team/takeover.ts", ["snapshotCommit", "worktreeTree", "worktreeCommitOn", "takeSnapshot", "checkoutSnapshotFiles"]);
+    expect(takeover).toHaveLength(5);
+    for (const call of takeover) expect(call).toContain("room: true");
+    // its git apply, which runs filters, with them off
+    const applies = callsIn("src/main/team/takeover.ts", ["git"]).filter((c) => c.includes('["apply"'));
+    expect(applies).toHaveLength(2);
+    for (const call of applies) expect(call).toMatch(/\{ input: patch, env \}\)$/);
+    const main = callsIn("src/main/index.ts", ["snapshotTurn", "changesSince", "restoreSnapshot"]);
+    expect(main).toHaveLength(3);
+    for (const call of main) expect(call).toContain("{ room: pushesOwnHooks(");
   });
 });

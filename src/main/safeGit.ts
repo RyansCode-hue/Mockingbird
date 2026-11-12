@@ -426,6 +426,29 @@ export async function roomWrite(cwd: string): Promise<{ env: Record<string, stri
 export const roomWriteEnv = async (cwd: string): Promise<Record<string, string>> => (await roomWrite(cwd)).env;
 
 /**
+ * The filter drivers the git Mockingbird runs on its own in a team room session's folder turns off (its turn
+ * snapshots, take-over's backups, copies and patches, an Undo's restore), once roomConfig hasn't refused its config.
+ */
+export async function roomFilters(cwd: string): Promise<string[]> {
+  return (await roomConfig(cwd, await treesOf(cwd))).filtersOff;
+}
+
+/** `env` with filter drivers `off` (roomFilters') emptied and made optional, so git reads and writes the files as they are. */
+export const withFiltersOff = (env: Record<string, string>, off: readonly string[]): Record<string, string> => withPairs(env, filtersOffPairs(off));
+
+/**
+ * The files among `files` kept through one of the filter drivers `off`, each with its driver: their `filter`
+ * attribute names one, as the working tree's attributes (the agent's to write) say. One guarded check-attr.
+ */
+export async function keptByFilters(cwd: string, files: readonly string[], off: readonly string[]): Promise<{ file: string; filter: string }[]> {
+  if (!off.length || !files.length) return [];
+  const parts = (await (await guardedGit(cwd)).run(["check-attr", "-z", "--stdin", "filter"], { input: `${files.join("\0")}\0`, trim: false })).split("\0");
+  const kept: { file: string; filter: string }[] = [];
+  for (let i = 0; i + 2 < parts.length; i += 3) if (off.includes(parts[i + 2])) kept.push({ file: parts[i], filter: parts[i + 2] });
+  return kept;
+}
+
+/**
  * The environment for Mockingbird's own network gits in `cwd`: OWN_WRITE_ENV, with ssh as ownSsh says (GIT_SSH_COMMAND
  * in main's environment wins over any config already, and is left as it is), and no credential manager's window (no one
  * is watching for it). Hooks stay off, unless `room` (a room session's pull or fetch) or `roomPush` (its push, to that

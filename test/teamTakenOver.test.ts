@@ -403,6 +403,13 @@ describe("the copy a take-over leaves behind", () => {
     expect(fs.existsSync(path.join(r.cwd, "src/offline.ts"))).toBe(false);
     // with his edit undone, they apply: Ryan's files in Nick's worktree, uncommitted, and an Undo-turn snapshot from before
     write(r.cwd, { "src/a.ts": "export const a = 42; // edited\n" });
+    // but not while one of them is kept through a filter a room's git turns off (git apply would write it unfiltered)
+    sh(r.cwd, "config", "filter.strip.clean", "cat");
+    write(r.cwd, { ".gitattributes": "src/offline.ts filter=strip\n" });
+    await expect(t.nickRun.tk.applyReceived(t.roomId, got[0].id)).rejects.toThrow(`They weren't applied: src/offline.ts is kept through the "strip" filter`);
+    expect(fs.existsSync(path.join(r.cwd, "src/offline.ts"))).toBe(false);
+    fs.rmSync(path.join(r.cwd, ".gitattributes"));
+    sh(r.cwd, "config", "--unset", "filter.strip.clean");
     await expect(t.nickRun.tk.applyReceived(t.roomId, got[0].id)).resolves.toEqual({ files: 3 });
     expect(fs.readFileSync(path.join(r.cwd, "src/a.ts"), "utf8")).toBe("export const a = 43; // offline\n");
     expect(fs.readFileSync(path.join(r.cwd, "src/offline.ts"), "utf8")).toBe("export const later = true;\n");

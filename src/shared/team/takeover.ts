@@ -500,7 +500,7 @@ export interface TakeoverPlan {
   /** This Mac's clone of the repository, or null when none was found (pick one). */
   clone: string | null;
   /** The snapshot the take-over would use: the newest available. */
-  snapshot: { sha: string; takenAt: number; source: SnapshotSource; skipped: string[] } | null;
+  snapshot: { sha: string; takenAt: number; source: SnapshotSource; skipped: string[]; filtered: string[] } | null;
   /** The other copy, when there is one, for comparison. */
   other: { sha: string; takenAt: number; source: SnapshotSource } | null;
   /** The room backs up to origin, so origin's backup was considered too; false: only what reached this Mac peer to peer. */
