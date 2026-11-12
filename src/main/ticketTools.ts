@@ -58,8 +58,12 @@ export const agentBy = (me: Pick<SessionInfo, "title">): string => agentNamed(pl
 
 type Text = { text: string; count: number } | { refused: string };
 
-/** Bidi controls and marks, and zero-width characters: they reorder or hide text where the user reads it and where it's posted. */
-const INVISIBLE_RE = /[\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
+/**
+ * Every format character (`\p{Cf}`, as plainLine strips): bidi controls and marks, zero-width characters, the soft
+ * hyphen, tag characters and the like, which reorder or hide text where the user reads it and where it's posted. The
+ * named range keeps U+2065, unassigned, out too.
+ */
+const INVISIBLE_RE = /[\p{Cf}\u2060-\u2069]/gu;
 
 /**
  * An agent's text for the ticket's record, which others read once the user posts or opens it: invisible characters
@@ -313,7 +317,7 @@ export class TicketTools {
       const name = title ? quoted(title) : `Workspace ${to}`;
       const now = found ? ticketOfSession(found) : ticket;
       if (now !== ticket) return { to, title, notTold: now ? `${name} is on #${now} now, so it wasn't told.` : `${name} isn't on a ticket now, so it wasn't told.` };
-      if (!s || s.status === "dead") return { to, title, notTold: `${name} isn't running, so it wasn't told: reopen it to tell it.`, ...(title ? { reopen: true as const } : {}) };
+      if (!s || s.status === "dead") return { to, title, notTold: `${name} isn't running, so it wasn't told, and nothing tells it later: once you reopen it, tell it yourself.`, ...(title ? { reopen: true as const } : {}) };
       const taken = this.o.takenOver(to, "telling this copy");
       if (taken) return { to, title: s.title, notTold: taken };
       return { to, title: s.title, told: this.o.sessions.deliverAgentMessage(to, text, this.o.submitOnDelivery(s)) };

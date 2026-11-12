@@ -76,12 +76,14 @@ export function roomCacheEnv(folder: string): Record<string, string> {
 
 /**
  * What a room session's commands may not write inside the folders they may write, because something outside the
- * sandbox would run it later: git's own folder or the pointer to it, the editors', Claude's and Codex's project settings,
- * a project's MCP servers, direnv's `.envrc`, and the shell and tool rc files a shell started there reads. Folders end
- * in "/": their rules cover the name too, so a linked worktree's `.git` file is one of them.
+ * sandbox would run it later: git's own folder or the pointer to it, Husky's hooks (a local push runs them, the user's
+ * own pre-push included), the editors', Claude's and Codex's project settings, a project's MCP servers, direnv's
+ * `.envrc`, and the shell and tool rc files a shell started there reads. Folders end in "/": their rules cover the name
+ * too, so a linked worktree's `.git` file is one of them.
  */
 export const IN_FOLDER_RUNS_CODE = [
   ".git/",
+  ".husky/",
   ".claude/",
   ".codex/",
   ".vscode/",

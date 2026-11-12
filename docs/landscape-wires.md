@@ -3777,6 +3777,166 @@ does. `pipelineDraftEdit` is new in the stub (drops `by`, as main's).
   - Open also jumping to the asker's terminal: the dialog opening cancels the jump's
     keyboard move (`revealStamp`, S8b).
 
+#### W15 review fixes 1 as built
+
+- **A dialog opened from the tray takes only clicks aimed at it (H1).**
+  - `useArrivalGuard(key)` in `answerGuard.ts` wraps a handler. It lets a click go
+    when it comes within `ANSWER_GUARD_MS` of the component appearing (or of `key`
+    changing), or when it's a double click's second or later (`detail > 1`), however
+    late. A key's click (`detail` 0) after that is a person's. `arrivalClick` is the
+    test, pure.
+  - Every click in the pipeline's dialogs goes through it:
+    - the stage rail;
+    - the next steps (Approve, Done, the stage moves, Create PR, Record feedback);
+    - the feedback form;
+    - the requests list;
+    - the PR list's links and Check now / Mark merged;
+    - the PR form's buttons, Push and open PR among them, keyed on the branch check's
+      answer;
+    - `RequestDismiss` (Dismiss the request, Cancel);
+    - `DraftRow` (Post to ADO, Discard, keyed on the draft);
+    - `PatchNotesWrite`, `CopyButton`, and the dialogs' Close.
+  - The panel is keyed on the stage, so a move replaces the buttons and waits again.
+  - `Modal`'s backdrop takes the same test, in every dialog. A double click's
+    second press landing on the backdrop of the dialog the first click opened no
+    longer closes it at once.
+  - A checklist tick changes on its click: the label's click is cancelled when it
+    wasn't aimed, and the box's own click says whether the change after it counts
+    (`guard.aimed`).
+  - A static test in `ticketPipelineModel.test.ts` keeps every `onClick` after
+    `StageRail` wrapped, the checklist's two excepted.
+- **A room session's push runs only hooks its agent can't have written (H2).**
+  - `scmPush(root, { own })` pushes through `ownNetworkGit`: `OWN_FLAGS`
+    (`--receive-pack=git-receive-pack --recurse-submodules=no`),
+    `protocol.ext.allow=never`, and `ownHooks`' folder. That folder is the user's
+    global `core.hooksPath`, else `<git-common-dir>/hooks`. It's never one the
+    repository's config names in a worktree, Husky's `.husky/_` among them.
+  - `prePushSkipped` says what was set aside. `prePushSetAside(cwd)` tells the
+    preflight first, and the PR form says it: "The pre-push hook in .husky/_ won't
+    run for this push: …". The log names it once, "for a room session's pushes"
+    (`prePushNote`'s `pushes`).
+  - `pushesOwnHooks(id)` in `index.ts` decides: a team room session's, and every
+    session's until rooms have started (`!roomsKnown`, fail-safe, as `WireService`
+    takes it).
+    - A local session keeps today's push: Ryan's Husky runs, and local agents are
+      trusted, as everywhere else on this Mac.
+    - `pipeline:pr:create` and its preflight use it.
+    - So does Source Control's Push (`scm:push`), the same push from the same
+      worktree. That goes past the review's letter.
+  - `.husky/` joins `IN_FOLDER_RUNS_CODE`: read-only at a room session folder's top,
+    denied below, in both the Claude and Codex sandboxes.
+  - **Residual risk:** the repository's own `.git/hooks/pre-push` still runs, as the
+    review asked. A hook manager installed there (pre-commit, lefthook, Husky v4) may
+    read config from the worktree.
+- **A branch named like a base is never pushed (M1).** `prBranchProblem(branch, base)`
+  (`shared/types.ts`, beside `BASE_NAMES`, which moved there from `git.ts` and is
+  re-exported) refuses when:
+  - the branch is the base, in any case; or
+  - the branch is any of either target's base names.
+
+  It's checked in three places:
+  - the preflight's `branchProblem`;
+  - the form's blocker, with Push off;
+  - main's `prCreateRefusal` (`pullRequests.ts`), which `pipeline:pr:create` asks
+    before its push, with the base and dirty-file checks it held inline.
+- **Every format character leaves an agent's text (M2).** `agentText`'s
+  `INVISIBLE_RE` is `[\p{Cf}⁠-⁩]`. That takes out tag characters, the soft
+  hyphen, U+180E, the invisible operators and the musical symbol formats, besides
+  W14's list.
+- **Lows.**
+  - L1: `tell`'s answer for a closed session says "nothing tells it later: once you
+    reopen it, tell it yourself". Nothing re-sends, so it no longer says "reopen it
+    to tell it".
+  - L2: a gate note is drawn on one line (`oneLine`, no `pre-wrap`), after
+    "Coder's agent:". A forged "Ticked by you" line in it can't stand alone.
+  - L3: the form shows:
+    - the title's length;
+    - the description's lines and characters;
+    - a description box that grows with it (6–24 rows);
+    - a warning past `ADO_DESC_MAX` (4,000, now shared with `openPr`'s cut) for an
+      Azure DevOps remote.
+  - L4: a copy a teammate took over is never in the form's sessions.
+    `pipeline:pr:create` is in `UNTAKEN_CALLS`, registered through `untakenHandler`.
+  - L5: `askerProblem` says why the session that asked can't be preselected. It
+    looks the session up across the window (`sessionNamed`), since one on another
+    ticket isn't among the ticket's. The reasons:
+    - not open here;
+    - a teammate's copy;
+    - taken over;
+    - "is on #5098 now", or on no ticket;
+    - not running.
+
+    With any of these, no session is picked: "pick a session", and "Pick the session
+    the pull request comes from." until the user does.
+  - L6: the Patch notes panel keeps one `DraftRow` (`key="notes"`) whichever draft
+    it's on.
+    - An unsaved edit records the draft it began on. When an agent's rewrite
+      replaces that draft, the edit stays, and leaving the box saves nothing.
+    - "A newer draft by Verifier's agent arrived…" offers Keep mine, which saves the
+      edit onto the newer draft, or Show the newer draft. Post and Discard wait on
+      the choice.
+- **Tests.**
+  - `uiLandscapeNeeds`, part `h`, runs at five window heights. Each puts one harmful
+    button under the tray's button that opens its dialog:
+    - Approve at 1440×660;
+    - the rail's Done at 1440×800;
+    - Dismiss the request at 1440×420;
+    - Post to ADO at 1440×520 (patch notes);
+    - Done at 1440×880 (patch notes).
+  - Each takes:
+    - a real double click;
+    - two quick single clicks;
+    - a late double click's second, at 600 ms.
+
+    All land on the button, which is still there, and none makes a call. A click
+    aimed past the guard approves, or posts.
+  - Part `q` covers the moved asker, the base branch, the set-aside pre-push and
+    the lengths. Part `r` covers the newer patch notes draft.
+  - Unit tests cover:
+    - `prBranchProblem`, `prCreateRefusal` and the preflight (`pipeline.test.ts`);
+    - the Husky and receive-pack pushes, room and local (`scm.test.ts`);
+    - the format characters (`ticketTools.test.ts`);
+    - `.husky` in both sandboxes;
+    - `arrivalClick` and `askerProblem`.
+  - Static tests pin the `own` wiring and the refusal before the push.
+  - The pixel sizes are the preview's window (`pageResult`'s `size`), not its
+    viewport. The review's 596 and 420 are another window's.
+  - Push and open PR sits under no tray button at any height: the form is taller
+    than the window. The static guard test and the form's `guard(create)` cover it.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 195 files
+  pass and 34 skip; 3,240 tests pass and 312 skip.
+- Run alone, without CI, one at a time: `uiLandscapeNeeds` (20), `uiLandscapeFirstRun`
+  (104) and `uiTyping` (33) pass.
+- Each fix undone in turn (`w15/mutate2.py`) fails a test, 20 mutations:
+  - H1:
+    - the double-click test dropped from `arrivalClick`, caught by the unit test and
+      by the late click at 1440×660;
+    - Approve unguarded, caught statically and at 1440×660;
+    - Dismiss the request unguarded, caught at 1440×420;
+    - a checklist tick taken from any click.
+  - H2:
+    - the room push made as a plain one;
+    - its pre-push off;
+    - `pushesOwnHooks` not fail-safe before rooms start;
+    - `pr:create` pushing plainly;
+    - `.husky/` out of the sandboxes.
+  - M1:
+    - `prBranchProblem` passing everything;
+    - `prCreateRefusal` without the branch check;
+    - `pr:create` without the refusal before its push;
+    - the form's blocker gone.
+  - M2: `INVISIBLE_RE` back to W14's list.
+  - L4: `pr:create` registered without `untakenHandler`.
+  - L5:
+    - `askerProblem` blind to the ticket;
+    - the form preselecting the first session again.
+  - L6: the Patch notes row keyed on the draft again.
+- One mutation no test catches, because the property holds through it: preselecting
+  the asker whatever `askerProblem` says. An asker that's moved, taken over, closed
+  or remote isn't among the form's `live` sessions anyway.
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn

@@ -11,6 +11,7 @@ export const UNTAKEN_CALLS = {
   "usage:briefStart": "starting a fresh session from this copy",
   "wires:finish": "finishing this copy's step",
   "wires:addTerminal": "adding a terminal on this copy's tree",
+  "pipeline:pr:create": "opening a pull request from this copy",
 } as const;
 
 export type UntakenCall = keyof typeof UNTAKEN_CALLS;

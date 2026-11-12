@@ -149,3 +149,24 @@ export function useAimedKeys(buttons = "button"): {
   };
   return { onKeyDown, keyAimed, stale };
 }
+
+/** Whether a click on what appeared (or changed) at `since` wasn't aimed at it: too soon after, or past a double click's first. */
+export const arrivalClick = (e: { detail: number }, since: number, now = Date.now()): boolean => e.detail > 1 || now - since < ANSWER_GUARD_MS;
+
+/**
+ * A component's buttons that only take a click aimed at them (`guard(handler)` wraps one): none within ANSWER_GUARD_MS
+ * of the component appearing, or of `key` changing (the words under its buttons replaced), and none that's a double
+ * click's second or later (`detail > 1`). A dialog opened from Needs you lands its buttons where the tray's were, so the
+ * second click of a double click on Open would otherwise approve, post or move a ticket. A key's click (detail 0) after
+ * that is a person's. `guard.aimed(e)` is the same test, for a control whose change isn't its click's (a checkbox).
+ */
+export interface ArrivalGuard {
+  <E extends { detail: number }>(handler: (e: E) => void): (e: E) => void;
+  aimed: (e: { detail: number }) => boolean;
+}
+export function useArrivalGuard(key: unknown = null): ArrivalGuard {
+  const at = useRef({ key, since: Date.now() });
+  if (at.current.key !== key) at.current = { key, since: Date.now() };
+  const aimed = (e: { detail: number }) => !arrivalClick(e, at.current.since);
+  return Object.assign(<E extends { detail: number }>(handler: (e: E) => void) => (e: E) => void (aimed(e) && handler(e)), { aimed });
+}

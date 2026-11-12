@@ -127,6 +127,48 @@ describe("source control actions", () => {
   });
 });
 
+/**
+ * A repo with a bare origin, a commit to push, and what runs code on a push: Husky's pre-push in `.husky/_` (core.hooksPath
+ * in the repository's own config), a pre-push in `.git/hooks`, and a receive-pack the config names. Each leaves its
+ * name in `ran` when it runs.
+ */
+function pushRunsCode() {
+  const repo = makeRepo({ "a.txt": "a\n" });
+  const dir = tempDir("remote");
+  const remote = path.join(dir, "r.git");
+  git(dir, "init", "-q", "--bare", remote);
+  git(repo, "remote", "add", "origin", remote);
+  git(repo, ...id, "commit", "-q", "--allow-empty", "-m", "to push");
+  const log = path.join(dir, "ran");
+  const script = (file: string, name: string, then = "") => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `#!/bin/sh\necho ${name} >> '${log}'\n${then}`, { mode: 0o755 });
+  };
+  script(path.join(repo, ".husky", "_", "pre-push"), "husky");
+  git(repo, "config", "core.hooksPath", ".husky/_");
+  script(path.join(repo, ".git", "hooks", "pre-push"), "git-hooks");
+  const receivePack = path.join(dir, "receive-pack.sh");
+  script(receivePack, "receive-pack", 'exec git-receive-pack "$@"\n');
+  git(repo, "config", "remote.origin.receivepack", receivePack);
+  return { repo, remote, ran: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : []) };
+}
+
+describe("a push's hooks: a room session's and a local one's", () => {
+  it("runs a room session's push with the repository's .git/hooks, never a hooks folder in the worktree its config names, nor the receive-pack it names, and says what it set aside", async () => {
+    const t = pushRunsCode();
+    expect(await scmPush(t.repo, { own: true })).toEqual({ upstream: "origin/main", prePushSkipped: { value: ".husky/_", why: "hooks in the working tree can be changed by the session" } });
+    expect(t.ran()).toEqual(["git-hooks"]);
+    expect(git(t.remote, "log", "-1", "--format=%s", "main")).toBe("to push");
+  });
+
+  it("runs a local session's push as git would: Husky's pre-push and the configured receive-pack included", async () => {
+    const t = pushRunsCode();
+    expect(await scmPush(t.repo)).toEqual({ upstream: "origin/main" });
+    expect(t.ran().sort()).toEqual(["husky", "receive-pack"]);
+    expect(git(t.remote, "log", "-1", "--format=%s", "main")).toBe("to push");
+  });
+});
+
 /** A repo with a bare origin whose dev branch has moved on, and a feature branch made from origin/dev the way Mockingbird makes worktrees. */
 function featureFromDev() {
   const remote = path.join(tempDir("origin"), "o.git");

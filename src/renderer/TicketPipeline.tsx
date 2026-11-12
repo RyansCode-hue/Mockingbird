@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { openLink } from "./uiUtil";
 import {
+  ADO_DESC_MAX,
   BY_YOU,
   GATES,
   agentNamed,
@@ -11,6 +12,7 @@ import {
   tickOf,
   isErr,
   isWorkItemId,
+  prBranchProblem,
   type AgentTold,
   type CommentDraft,
   type PipelineRequest,
@@ -22,13 +24,15 @@ import {
   type TicketStage,
   type IpcResult,
 } from "../shared/types";
-import { agentPatchNotes, gateOfPr, markMergedQuestion, nextSteps, notesStage, prMergeNote, railOf, toldLine } from "./ticketPipelineModel";
+import { agentPatchNotes, askerProblem, gateOfPr, markMergedQuestion, nextSteps, notesStage, prMergeNote, railOf, toldLine } from "./ticketPipelineModel";
 import { ago, plural } from "../shared/format";
 import { createIpcStore } from "./ipcStore";
 import { useAction } from "./useAction";
 import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";
 import { settled } from "./settled";
+import { useArrivalGuard } from "./answerGuard";
+import { oneLine } from "../shared/team/agentText";
 
 
 /** Every ticket's pipeline, and why the first read failed (null once a read or a change has come). */
@@ -81,10 +85,11 @@ export function StageChip({ p, onClick }: { p: TicketPipeline | undefined; onCli
 }
 
 /**
- * The lifecycle across the top: done steps ticked, the current one marked; click one to move there. `clearing`
- * says what a move to a stage would clear, for its tip.
+ * The lifecycle across the top: done steps ticked, the current one marked; click one to move there (only a click
+ * aimed at it: useArrivalGuard). `clearing` says what a move to a stage would clear, for its tip.
  */
 function StageRail({ stage, onSet, clearing }: { stage: StoredStage | null; onSet: (s: TicketStage) => void; clearing: (to: TicketStage) => string | null }) {
+  const guard = useArrivalGuard();
   return (
     <div className="pl-rail" role="list">
       {railOf(stage).map((s) => (
@@ -100,7 +105,7 @@ function StageRail({ stage, onSet, clearing }: { stage: StoredStage | null; onSe
           ]
             .filter(Boolean)
             .join(". ")}
-          onClick={() => s.moves && onSet(s.stage)}
+          onClick={guard(() => s.moves && onSet(s.stage))}
         >
           <span className="pl-dot">{s.state === "done" ? "✓" : ""}</span>
           <span className="pl-lbl">{s.label}</span>
@@ -113,10 +118,15 @@ function StageRail({ stage, onSet, clearing }: { stage: StoredStage | null; onSe
 
 /**
  * One promotion gate's checklist; ticks are kept per ticket. An agent's report on an item (gate_notes) shows under it
- * as plain text, marked as the agent's, and so does an agent's tick: the user can untick it.
+ * as plain text on one line, after whose it is, so no line of it can pass for the window's own ("Ticked by you"); an
+ * agent's tick is said the same way, and the user can untick it.
  */
 function Gate({ p, gate }: { p: TicketPipeline; gate: (typeof GATES)[number] }) {
   const { run, error } = useAction();
+  // a checkbox changes on its click, or on its label's: a label's click not aimed at it is cancelled before it reaches
+  // the box, and the box's own click says whether the change that follows it is the user's
+  const guard = useArrivalGuard();
+  const aimedNow = useRef(false);
   const done = gate.items.filter((it) => p.checks[`${gate.id}:${it.key}`]).length;
   return (
     <div className="pl-gate" data-gate={gate.id}>
@@ -133,14 +143,22 @@ function Gate({ p, gate }: { p: TicketPipeline; gate: (typeof GATES)[number] }) 
         const agentTick = tick && tick.by !== BY_YOU ? tick.by : null;
         return (
           <Fragment key={key}>
-            <label className="check-line pl-check" data-tip={tick ? `Ticked by ${tick.by}, ${ago(tick.at)}` : undefined}>
-              <input type="checkbox" checked={!!p.checks[key]} onChange={(e) => run("check", () => window.mb.pipelineCheck(p.ticketId, key, e.target.checked))} />
+            <label className="check-line pl-check" data-tip={tick ? `Ticked by ${tick.by}, ${ago(tick.at)}` : undefined} onClick={(e) => guard.aimed(e) || e.preventDefault()}>
+              <input
+                type="checkbox"
+                checked={!!p.checks[key]}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  aimedNow.current = guard.aimed(e);
+                }}
+                onChange={(e) => aimedNow.current && run("check", () => window.mb.pipelineCheck(p.ticketId, key, e.target.checked))}
+              />
               {it.label}
             </label>
             {(note || agentTick) && (
               <div className="pl-gnote" data-note={key}>
                 <span className="pl-by">{note ? `${note.by}${agentTick === note.by ? " ticked it" : ""}:` : `Ticked by ${agentTick}`}</span>
-                {note && ` ${note.note}`}
+                {note && ` ${oneLine(note.note, Infinity)}`}
               </div>
             )}
           </Fragment>
@@ -165,6 +183,8 @@ export interface PipelineProps {
   onPosted?: () => void;
   /** An agent's pull request request (Needs you's Open): the PR form opens on it, filled from it. */
   openRequest?: string;
+  /** Any session the window knows of, by id: where the one that asked for a PR is now, which may be off this ticket. */
+  sessionNamed?: (id: string) => SessionInfo | undefined;
 }
 
 /**
@@ -176,13 +196,17 @@ export interface PipelineProps {
  * its title and description are the agent's, as plain text marked as the agent's until changed. Nothing else comes
  * from it: the branch, the repository and what's merged into are read by main from the session's folder, and the push
  * and the pull request are main's, at Push and open PR, never the asking pane's. Opening, filling or dismissing it
- * pushes, opens and posts nothing.
+ * pushes, opens and posts nothing. When the one that asked can't be the PR's session now (askerProblem: gone, taken
+ * over, on another ticket), no session is picked for the user.
+ *
+ * Its buttons take only a click aimed at them (useArrivalGuard), from its opening and from each branch check's answer.
  */
 function PrForm({
   ticketId,
   title,
   target,
   sessions,
+  sessionNamed,
   pipeline,
   request,
   onAskSession,
@@ -190,11 +214,13 @@ function PrForm({
   onDismissed,
   onClose,
 }: Omit<PipelineProps, "details" | "onPosted" | "openRequest"> & { target: PrTarget; pipeline: TicketPipeline | undefined; request: PipelineRequest | undefined; onDismissed: (told: AgentTold) => void; onClose: () => void }) {
-  const live = sessions.filter((s) => s.status !== "dead");
+  // a copy a teammate took over continues on their laptop: nothing is pushed from it here (main refuses it too)
+  const live = sessions.filter((s) => s.status !== "dead" && !s.room?.takenOver);
   // the request it opened on stays, so a dismissal or the PR answering it doesn't empty the form under the user
   const [req] = useState(request);
-  const asker = req ? live.find((s) => s.id === req.from) : undefined;
-  const [sid, setSid] = useState(asker?.id ?? live[0]?.id ?? "");
+  const askerWhy = req ? askerProblem(req, ticketId, sessionNamed?.(req.from) ?? sessions.find((s) => s.id === req.from)) : null;
+  const asker = req && !askerWhy ? live.find((s) => s.id === req.from) : undefined;
+  const [sid, setSid] = useState(req ? (asker?.id ?? "") : (live[0]?.id ?? ""));
   const [pre, setPre] = useState<IpcResult<PrPreflight & { lookupError: string | null }> | null>(null);
   const [base, setBase] = useState("");
   const [prTitle, setPrTitle] = useState(req?.title ?? `#${ticketId} ${title}`.trim());
@@ -202,6 +228,7 @@ function PrForm({
   const [dismissing, setDismissing] = useState(false);
   const { doing, run, error } = useAction();
   const [asked, setAsked] = useState("");
+  const guard = useArrivalGuard(pre);
   const by = req ? agentNamed(req.fromTitle) : null;
   /** Whose words a field holds: the agent's while they're as it wrote them. */
   const mark = (now: string, was: string) => by && <span className="pl-by">{now === was ? `written by ${by}` : `changed since ${by} wrote it`}</span>;
@@ -238,6 +265,7 @@ function PrForm({
         p.dirtyFiles > 0 && `${plural(p.dirtyFiles, "uncommitted file")} wouldn't be in the pull request.`,
         p.commits === 0 && base === p.base && `The branch has no commits that ${base} doesn't.`,
         p.existing && base === p.base && "A pull request is already open from this branch.",
+        p.branch && base && prBranchProblem(p.branch, base),
       ].filter((x): x is string => !!x)
     : [];
   const write = async () => {
@@ -248,12 +276,13 @@ function PrForm({
     const r = await run("create", () => window.mb.pipelinePrCreate(sid, ticketId, { target, base, title: prTitle, description: desc, ticketTitle: title }));
     if (!isErr(r)) onClose();
   };
+  const descLines = desc ? desc.split("\n").length : 0;
   const docsPrompt = `Write the ticket documentation for #${ticketId} "${title}" following the team's PR workflow: a folder named ${ticketId}-<branch name> in this repo's documentation home (doc/features/ or wherever the repo keeps feature docs — ask me if it's unclear), holding ${ticketId}-Description.md and ${ticketId}-Security_Considerations.md. Don't commit yet.`;
   return (
     <div className="pl-form pl-prform">
       <div className="pl-h">
         Pull request to {target === "dev" ? "dev/UAT" : "main"}
-        <button className="icon" style={{ marginLeft: "auto" }} onClick={onClose} title="Close">✕</button>
+        <button className="icon" style={{ marginLeft: "auto" }} onClick={guard(onClose)} title="Close">✕</button>
       </div>
       {req && (
         <div className="pl-asked">
@@ -261,18 +290,19 @@ function PrForm({
             Asked for by {by}, {ago(req.at)}. Nothing is pushed or opened until you press Push and open PR.
           </span>
           {!dismissing && (
-            <button className="mini" onClick={() => setDismissing(true)}>
+            <button className="mini" onClick={guard(() => setDismissing(true))}>
               Dismiss the request…
             </button>
           )}
         </div>
       )}
       {req && dismissing && <RequestDismiss ticketId={ticketId} request={req} onDone={onDismissed} onCancel={() => setDismissing(false)} />}
-      {req && !asker && <div className="fp-note warn">{req.fromTitle || "The workspace that asked"} isn't open here: the pull request comes from the session picked below.</div>}
+      {askerWhy && <div className="fp-note warn" data-asker>{askerWhy}</div>}
       {(live.length > 1 || (req && !asker)) && (
         <label className="pl-field">
           From
           <select value={sid} onChange={(e) => setSid(e.target.value)}>
+            {!sid && <option value="">pick a session</option>}
             {live.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.ticketTitle ?? s.title} · {s.branch ?? baseName(s.cwd)}
@@ -281,7 +311,7 @@ function PrForm({
           </select>
         </label>
       )}
-      {pre === null && <div className="fp-note">Checking the branch…</div>}
+      {pre === null && <div className="fp-note">{sid ? "Checking the branch…" : "Pick the session the pull request comes from."}</div>}
       {isErr(pre) && <div className="fp-note err">{pre.error}</div>}
       {p && (
         <>
@@ -300,8 +330,8 @@ function PrForm({
             {p.dirtyFiles > 0 && (
               <div className="warn">
                 {plural(p.dirtyFiles, "uncommitted file")}
-                <button className="mini" onClick={() => onOpenScm(sid)}>Source Control</button>
-                {canAsk && <button className="mini" onClick={() => ask(`Commit the work for #${ticketId} with a clear message.`, "Asked to commit")}>Ask the session to commit</button>}
+                <button className="mini" onClick={guard(() => onOpenScm(sid))}>Source Control</button>
+                {canAsk && <button className="mini" onClick={guard(() => ask(`Commit the work for #${ticketId} with a clear message.`, "Asked to commit"))}>Ask the session to commit</button>}
               </div>
             )}
             {p.docs ? (
@@ -309,35 +339,49 @@ function PrForm({
             ) : (
               <div className="warn">
                 No {ticketId}-Description.md yet
-                {canAsk && <button className="mini" onClick={() => ask(docsPrompt, "Asked for the ticket docs")}>Ask the session to write them</button>}
+                {canAsk && <button className="mini" onClick={guard(() => ask(docsPrompt, "Asked for the ticket docs"))}>Ask the session to write them</button>}
               </div>
             )}
             {p.existing && base === p.base && (
               <div className="warn">
-                Already open: <a onClick={() => openLink(p.existing!.url)}>{p.existing.url}</a>
+                Already open: <a onClick={guard(() => openLink(p.existing!.url))}>{p.existing.url}</a>
               </div>
             )}
             {p.lookupError && <div className="warn">Couldn't check for an open pull request: {p.lookupError}</div>}
-            <button className="mini" onClick={load}>Recheck</button>
+            {p.prePushSetAside && (
+              <div className="warn" data-hooks>
+                The pre-push hook in {p.prePushSetAside.value} won't run for this push: {p.prePushSetAside.why}
+              </div>
+            )}
+            <button className="mini" onClick={guard(load)}>Recheck</button>
           </div>
           {asked && <div className="fp-note">{asked}</div>}
           <label className="pl-field">
             <span>
               Title
               {mark(prTitle, req?.title ?? "")}
+              <span className="pl-count" data-len="title">{plural(prTitle.length, "character")}</span>
             </span>
             <input type="text" value={prTitle} onChange={(e) => setPrTitle(e.target.value)} />
           </label>
           <label className="pl-field">
             <span>
               Description
-              <button className="mini" disabled={doing("write") || !base || !p.commits} onClick={write}>
+              <button className="mini" disabled={doing("write") || !base || !p.commits} onClick={guard(write)}>
                 {doing("write") ? "Writing…" : "Write it from the branch"}
               </button>
               {mark(desc, req?.description ?? "")}
+              <span className="pl-count" data-len="description">
+                {plural(descLines, "line")} · {plural(desc.length, "character")}
+              </span>
             </span>
-            <textarea value={desc} onChange={(e) => setDesc(e.target.value)} spellCheck={false} style={{ minHeight: 120 }} placeholder="## Summary…" />
+            <textarea value={desc} onChange={(e) => setDesc(e.target.value)} spellCheck={false} rows={Math.min(24, Math.max(6, descLines + 1))} placeholder="## Summary…" />
           </label>
+          {p.remote?.provider === "ado" && desc.length > ADO_DESC_MAX && (
+            <div className="fp-note warn" data-long>
+              Azure DevOps keeps {ADO_DESC_MAX.toLocaleString("en-US")} characters of a description: this one is cut short, at about {(ADO_DESC_MAX - 20).toLocaleString("en-US")}, and ends "(shortened)".
+            </div>
+          )}
           {pipeline && gate && <Gate p={pipeline} gate={gate} />}
           {blockers.map((b) => (
             <div key={b} className="fp-note warn">{b}</div>
@@ -345,7 +389,7 @@ function PrForm({
           {error && <div className="fp-note err">{error}</div>}
           <div className="row">
             <span className="pl-dim">Pushes {p.branch ?? "the branch"} to origin, then opens the pull request{p.remote?.provider === "ado" ? ", linked to the work item" : ""}.</span>
-            <button className="primary" disabled={doing("create") || blockers.length > 0 || !prTitle.trim()} onClick={create}>
+            <button className="primary" disabled={doing("create") || blockers.length > 0 || !prTitle.trim()} onClick={guard(create)}>
               {doing("create") ? "Opening…" : "Push and open PR"}
             </button>
           </div>
@@ -357,23 +401,38 @@ function PrForm({
 
 /**
  * One drafted comment: edited in place (an edit makes it the user's, main drops who drafted it), posted to the ticket's
- * discussion, or discarded. Nothing posts without a click. `children` adds buttons before Discard, given the text as
- * it stands; `meta` false leaves out its stage-and-age line, for where a heading says it.
+ * discussion, or discarded. Nothing posts without a click aimed at it (useArrivalGuard, from the row appearing and
+ * from each new draft in it). `children` adds buttons before Discard, given the text as it stands; `meta` false leaves
+ * out its stage-and-age line, for where a heading says it.
+ *
+ * Where a newer draft takes the row's place (an agent's rewrite in the Patch notes panel), an unsaved edit stays, not
+ * saved over it: the row says the newer one arrived, and the user keeps theirs (saved onto it) or shows it.
  */
 function DraftRow({ p, d, onPosted, meta = true, tall = false, children }: { p: TicketPipeline; d: CommentDraft; onPosted?: () => void; meta?: boolean; tall?: boolean; children?: (text: string) => ReactNode }) {
-  const [edit, setEdit] = useState<string | null>(null);
-  const cur = edit ?? d.text;
+  const [edit, setEdit] = useState<{ on: string; text: string } | null>(null);
+  const newer = !!edit && edit.on !== d.id;
+  const cur = edit?.text ?? d.text;
+  const guard = useArrivalGuard(d.id);
   const { doing, run, error } = useAction();
   const canPost = isWorkItemId(p.ticketId);
+  /** Once main has the edit, the row shows the draft as main holds it: what's typed after this goes on as a new edit. */
+  const saved = (text: string) => setEdit((e) => (e?.text === text ? null : e));
+  const save = async (text: string) => {
+    const r = await run("edit", () => window.mb.pipelineDraftEdit(p.ticketId, d.id, text));
+    if (!isErr(r)) saved(text);
+  };
   const post = async () => {
+    const text = cur;
     const r = await run("post", async () => {
-      if (cur !== d.text) {
-        const e = await window.mb.pipelineDraftEdit(p.ticketId, d.id, cur);
+      if (text !== d.text) {
+        const e = await window.mb.pipelineDraftEdit(p.ticketId, d.id, text);
         if (isErr(e)) return e;
       }
       return window.mb.pipelineDraftPost(p.ticketId, d.id);
     });
-    if (!isErr(r)) onPosted?.();
+    if (isErr(r)) return;
+    saved(text);
+    onPosted?.();
   };
   return (
     <div className="pl-draft" data-draft={d.id}>
@@ -387,14 +446,33 @@ function DraftRow({ p, d, onPosted, meta = true, tall = false, children }: { p: 
           )}
         </div>
       )}
-      <textarea value={cur} onChange={(e) => setEdit(e.target.value)} onBlur={() => cur !== d.text && run("edit", () => window.mb.pipelineDraftEdit(p.ticketId, d.id, cur))} style={{ minHeight: tall ? 90 : 56 }} />
+      <textarea
+        value={cur}
+        onChange={(e) => {
+          const text = e.target.value;
+          setEdit((was) => ({ on: was?.on ?? d.id, text }));
+        }}
+        onBlur={() => !newer && cur !== d.text && void save(cur)}
+        style={{ minHeight: tall ? 90 : 56 }}
+      />
+      {newer && (
+        <div className="fp-note warn" data-newer>
+          A newer draft{d.by ? ` by ${d.by}` : ""} arrived while you were editing. Your text is still here, not saved.
+          <button className="mini" disabled={doing("edit")} onClick={guard(() => void save(cur))}>
+            Keep mine
+          </button>
+          <button className="mini" onClick={guard(() => setEdit(null))}>
+            Show the newer draft
+          </button>
+        </div>
+      )}
       {error && <div className="fp-note err">{error}</div>}
       <div className="row">
         {children?.(cur)}
-        <button className="outline" disabled={doing("drop")} onClick={() => run("drop", () => window.mb.pipelineDraftDrop(p.ticketId, d.id))}>
+        <button className="outline" disabled={newer || doing("drop")} onClick={guard(() => void run("drop", () => window.mb.pipelineDraftDrop(p.ticketId, d.id)))}>
           Discard
         </button>
-        <button className="primary" disabled={!canPost || doing("post") || !cur.trim()} title={canPost ? "Post this comment to the ticket in Azure DevOps" : "Only Azure DevOps work items have a discussion"} onClick={post}>
+        <button className="primary" disabled={newer || !canPost || doing("post") || !cur.trim()} title={canPost ? "Post this comment to the ticket in Azure DevOps" : "Only Azure DevOps work items have a discussion"} onClick={guard(post)}>
           {doing("post") ? "Posting…" : "Post to ADO"}
         </button>
       </div>
@@ -420,6 +498,7 @@ function Drafts({ p, onPosted, exclude }: { p: TicketPipeline; onPosted?: () => 
 
 /** Copy `text` to the clipboard, saying so, or why it couldn't. */
 function CopyButton({ text }: { text: string }) {
+  const guard = useArrivalGuard();
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const copy = () =>
@@ -434,7 +513,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <>
       {error && <span className="fp-note err">{error}</span>}
-      <button className="outline" disabled={!text.trim()} onClick={copy}>
+      <button className="outline" disabled={!text.trim()} onClick={guard(copy)}>
         {copied ? "Copied" : "Copy"}
       </button>
     </>
@@ -455,7 +534,8 @@ function PatchNotes({ p, title, details, draft, onPosted }: { p: TicketPipeline;
         {draft.by && <span className="pl-by">drafted by {draft.by}</span>}
         <span className="pl-dim">· {ago(draft.at)}</span>
       </div>
-      <DraftRow key={draft.id} p={p} d={draft} onPosted={onPosted} meta={false} tall>
+      {/* one row whichever draft it's on, so the user's unsaved edit outlasts an agent's rewrite */}
+      <DraftRow key="notes" p={p} d={draft} onPosted={onPosted} meta={false} tall>
         {(text) => <CopyButton text={text} />}
       </DraftRow>
     </div>
@@ -465,6 +545,7 @@ function PatchNotes({ p, title, details, draft, onPosted }: { p: TicketPipeline;
 function PatchNotesWrite({ p, title, details }: { p: TicketPipeline; title: string; details?: string }) {
   const [text, setText] = useState("");
   const { doing, run, error } = useAction();
+  const guard = useArrivalGuard();
   const draft = async () => {
     const r = await run("draft", () => window.mb.pipelineComms(p.ticketId, title, details ?? ""));
     if (!isErr(r)) setText(r.text);
@@ -480,11 +561,11 @@ function PatchNotesWrite({ p, title, details }: { p: TicketPipeline; title: stri
       <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="What changed, who it affects, anything they need to do." style={{ minHeight: 90 }} />
       {error && <div className="fp-note err">{error}</div>}
       <div className="row">
-        <button className="outline" disabled={doing("draft")} onClick={draft}>
+        <button className="outline" disabled={doing("draft")} onClick={guard(draft)}>
           {doing("draft") ? "Writing…" : "Draft it from the ticket"}
         </button>
         <CopyButton text={text} />
-        <button className="outline" disabled={!text.trim() || doing("save")} onClick={save}>
+        <button className="outline" disabled={!text.trim() || doing("save")} onClick={guard(save)}>
           Save as a ticket comment draft
         </button>
       </div>
@@ -500,6 +581,7 @@ function RequestDismiss({ ticketId, request, onDone, onCancel }: { ticketId: str
   const [note, setNote] = useState("");
   const { doing, run, error } = useAction();
   const who = request.fromTitle || "the workspace that asked";
+  const guard = useArrivalGuard();
   const go = async () => {
     const r = await run("dismiss", () => window.mb.pipelineRequestDismiss(ticketId, request.id, note.trim()));
     if (!isErr(r)) onDone(r.told);
@@ -511,10 +593,10 @@ function RequestDismiss({ ticketId, request, onDone, onCancel }: { ticketId: str
       {error && <div className="fp-note err">{error}</div>}
       <div className="row">
         <span className="pl-dim">Nothing is pushed or opened. {who} is told, with your note.</span>
-        <button className="outline" onClick={onCancel}>
+        <button className="outline" onClick={guard(onCancel)}>
           Cancel
         </button>
-        <button className="primary" disabled={doing("dismiss")} onClick={go}>
+        <button className="primary" disabled={doing("dismiss")} onClick={guard(go)}>
           {doing("dismiss") ? "Dismissing…" : "Dismiss the request"}
         </button>
       </div>
@@ -529,6 +611,7 @@ export function RequestDismissDialog({ ticketId, requestId, onDone, onClose }: {
   const seen = useRef(now);
   seen.current = now ?? seen.current;
   const request = seen.current;
+  const guard = useArrivalGuard();
   return (
     <Modal className="modal pl-modal pl-dismiss-dlg" onClose={onClose}>
       <h3>#{ticketId}: a pull request asked for</h3>
@@ -549,7 +632,7 @@ export function RequestDismissDialog({ ticketId, requestId, onDone, onClose }: {
       </div>
       {!request && (
         <div className="row">
-          <button className="outline" onClick={onClose}>
+          <button className="outline" onClick={guard(onClose)}>
             Close
           </button>
         </div>
@@ -573,6 +656,8 @@ export function PipelinePanel(props: PipelineProps) {
   const [feedback, setFeedback] = useState<string | null>(null);
   const [sendFeedback, setSendFeedback] = useState(true);
   const { run, doing, error } = useAction();
+  // its buttons take only a click aimed at them, from its opening and from each stage the ticket moves to
+  const guard = useArrivalGuard(p?.stage);
   const go = (stage: TicketStage) => run("stage", () => window.mb.pipelineStage(ticketId, stage, title));
   const approve = async () => {
     const r = await run("approve", () => window.mb.pipelineApprove(ticketId));
@@ -610,15 +695,15 @@ export function PipelinePanel(props: PipelineProps) {
         )}
         {nextSteps(p?.stage ?? null).map((n) =>
           n.kind === "stage" ? (
-            <button key={n.label} className={n.primary ? "primary" : "outline"} data-tip={clearing(n.to) ?? undefined} onClick={() => go(n.to)}>{n.label}</button>
+            <button key={n.label} className={n.primary ? "primary" : "outline"} data-tip={clearing(n.to) ?? undefined} onClick={guard(() => void go(n.to))}>{n.label}</button>
           ) : n.kind === "pr" ? (
-            <button key={n.label} className="primary" onClick={() => setPrFor(n.target)}>{n.label}</button>
+            <button key={n.label} className="primary" onClick={guard(() => setPrFor(n.target))}>{n.label}</button>
           ) : n.kind === "approve" ? (
-            <button key={n.label} className="primary" data-tip="Approved in stakeholder testing: the agent that asked for the PR to dev is told to prepare the one to main" disabled={doing("approve")} onClick={approve}>
+            <button key={n.label} className="primary" data-tip="Approved in stakeholder testing: the agent that asked for the PR to dev is told to prepare the one to main" disabled={doing("approve")} onClick={guard(approve)}>
               {n.label}
             </button>
           ) : (
-            <button key={n.label} className="outline" onClick={() => setFeedback("")}>{n.label}</button>
+            <button key={n.label} className="outline" onClick={guard(() => setFeedback(""))}>{n.label}</button>
           )
         )}
       </div>
@@ -633,7 +718,7 @@ export function PipelinePanel(props: PipelineProps) {
               <span className="pl-dim">
                 to {r.target === "dev" ? "dev/UAT" : "main"} · {ago(r.at)}
               </span>
-              {prFor !== r.target && <a onClick={() => setPrFor(r.target)}>Open the form</a>}
+              {prFor !== r.target && <a onClick={guard(() => setPrFor(r.target))}>Open the form</a>}
             </div>
           ))}
         </div>
@@ -650,17 +735,17 @@ export function PipelinePanel(props: PipelineProps) {
           )}
           <div className="row">
             {clearing("coding") && <span className="pl-dim">{clearing("coding")}, taken before the changes</span>}
-            <button className="outline" onClick={() => setFeedback(null)}>Cancel</button>
+            <button className="outline" onClick={guard(() => setFeedback(null))}>Cancel</button>
             <button
               className="primary"
               disabled={!feedback.trim()}
-              onClick={async () => {
+              onClick={guard(async () => {
                 const text = feedback.trim();
                 const r = await run("feedback", () => window.mb.pipelineFeedback(ticketId, text));
                 if (isErr(r)) return;
                 if (sendFeedback && live[0]) onAskSession(live[0].id, `Stakeholder feedback on #${ticketId}: ${text}`);
                 setFeedback(null);
-              }}
+              })}
             >
               Save — back to coding
             </button>
@@ -690,23 +775,23 @@ export function PipelinePanel(props: PipelineProps) {
             const merge = prMergeNote(r);
             return (
               <div key={r.url} className="pl-item">
-                <a onClick={() => openLink(r.url)}>{r.provider === "ado" ? `PR ${r.id}` : `#${r.id}`}</a>
+                <a onClick={guard(() => openLink(r.url))}>{r.provider === "ado" ? `PR ${r.id}` : `#${r.id}`}</a>
                 <span className="pl-dim">
                   {r.branch} → {r.base} · {ago(r.at)}
                   {merge && !merge.problem && ` · ${merge.text}`}
                 </span>
                 {merge?.problem && <span className="pl-warn">{merge.text}</span>}
                 {!r.mergedAt && (
-                  <a data-tip="Ask its provider now whether it has merged" onClick={() => void run("check", () => window.mb.pipelinePrCheck(ticketId, r.url))}>
+                  <a data-tip="Ask its provider now whether it has merged" onClick={guard(() => void run("check", () => window.mb.pipelinePrCheck(ticketId, r.url)))}>
                     Check now
                   </a>
                 )}
                 {merge?.problem && (
                   <a
                     data-tip="Say it merged, when Mockingbird can't tell: the ticket and its wires go on as for a merge"
-                    onClick={() => {
+                    onClick={guard(() => {
                       if (window.confirm(markMergedQuestion(r))) void run("mark merged", () => window.mb.pipelinePrMarkMerged(ticketId, r.url));
-                    }}
+                    })}
                   >
                     Mark merged…
                   </a>
@@ -737,6 +822,7 @@ export function PipelinePanel(props: PipelineProps) {
 
 /** The pipeline on its own, for tickets reached from an area's header or ⌘K rather than the board. */
 export function PipelineDialog(props: PipelineProps & { onClose: () => void }) {
+  const guard = useArrivalGuard();
   return (
     <Modal className="modal pl-modal" onClose={props.onClose}>
       <h3>
@@ -744,7 +830,7 @@ export function PipelineDialog(props: PipelineProps & { onClose: () => void }) {
       </h3>
       <PipelinePanel {...props} />
       <div className="row">
-        <button className="outline" onClick={props.onClose}>Close</button>
+        <button className="outline" onClick={guard(props.onClose)}>Close</button>
       </div>
     </Modal>
   );

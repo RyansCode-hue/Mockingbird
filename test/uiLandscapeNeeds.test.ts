@@ -194,6 +194,27 @@ interface PatchNotesAudit {
   closed: { keyboard: string };
   error?: string;
 }
+interface ArrivalAudit {
+  keys: string;
+  runs: { item: string; action: string; how?: "double" | "quick" | "late"; on?: string | null; dialog?: boolean; under?: string | null; calls?: Made; missing?: boolean }[];
+  aimed: { button: string | null; calls: Made };
+  error?: string;
+}
+interface FormWarningsAudit {
+  keys: string;
+  opened: { from: string | null; options: string[]; notes: (string | null)[]; push: boolean; calls: Made };
+  picked: { form: PrFormSeen | null; hooks: string | null; lengths: [string, string][]; rows: number | null; long: string | null; calls: Made };
+  short: { rows: number | null; long: boolean; lengths: [string, string][] };
+  error?: string;
+}
+type NotesSeen = { text: string | null; newer: string | null; post: boolean | null; discard: boolean | null; by: string | null; calls: Made };
+interface NewerNotesAudit {
+  keys: string;
+  rewritten: NotesSeen;
+  shown: NotesSeen;
+  kept: NotesSeen;
+  error?: string;
+}
 interface BarAudit {
   width: number;
   buttons: ({ text: string; oneLine: boolean; cut: boolean } | null)[];
@@ -611,7 +632,8 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     // its checklist is dev's, the agent's notes beside each item as text, its tick said as its
     expect(form.gate).toBe("dev");
     expect(form.notes.map((n) => [n.item, n.text])).toEqual([
-      ["dev:tests", "Coder's agent: npm test: 212 pass, 0 fail"],
+      // a forged "Ticked by you" line in the note stays on its line, after whose words they are
+      ["dev:tests", "Coder's agent: npm test: 212 pass, 0 fail Ticked by you · verified"],
       ["dev:smoke", `Coder's agent ticked it: Clicked through the org picker as three users; each opened on their last org${MARKUP}`],
       ["dev:security-doc", "Coder's agent: Not written yet: doc/features has no 5101 folder"],
     ]);
@@ -662,6 +684,77 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(t.edited.calls.map((c) => [c.fn, c.args[0], c.args[1]])).toEqual([["pipelineDraftEdit", "5102", "d-notes"]]);
     expect(t.posted.calls).toEqual([{ fn: "pipelineDraftPost", args: ["5102", "d-notes"] }]);
     expect(t.closed).toEqual({ keyboard: "button" });
+  });
+
+  // W15 review: each size puts one of the dialog's buttons that make something under the tray's button that opened it
+  const LANDINGS = [
+    { query: "prRequest", size: "1440x660", item: "ticket:5102", action: "open", on: "Approve" },
+    { query: "prRequest", size: "1440x800", item: "ticket:5102", action: "open", on: "Done" },
+    { query: "prRequest", size: "1440x420", item: "pr:5101:dev", action: "dismissRequest", on: "Dismiss the request" },
+    { query: "prRequest=notes", size: "1440x520", item: "ticket:5102", action: "open", on: "Post to ADO" },
+    { query: "prRequest=notes", size: "1440x880", item: "ticket:5102", action: "open", on: "Done" },
+  ] as const;
+
+  it(
+    "takes no click a dialog opened from the tray wasn't aimed at: a double click's second, a quick second click or a late double click's, landing on Approve, Done, Post to ADO or Dismiss the request",
+    async () => {
+      for (const l of LANDINGS) {
+        const h = await run<ArrivalAudit>("h", `${l.query}&lsCamera=0,0,0.5`, l.size);
+        expect(h.error, l.size).toBeUndefined();
+        expect(h.keys).toBe("real");
+        expect(h.runs.filter((r) => r.missing), l.size).toEqual([]);
+        // the clicks land where the dialog draws the button that makes something, and it's still there after them
+        const landed = h.runs.filter((r) => r.item === l.item && r.action === l.action);
+        expect(landed.map((r) => [r.how, r.on, r.under]), l.size).toEqual(["double", "quick", "late"].map((how) => [how, l.on, l.on]));
+        // and nothing is made by any of them, at any of the tray's actions
+        for (const r of h.runs) expect({ size: l.size, item: r.item, action: r.action, how: r.how, dialog: r.dialog, calls: r.calls }).toEqual({ size: l.size, item: r.item, action: r.action, how: r.how, dialog: true, calls: [] });
+        // a click aimed at the ticket's button, past the guard, makes its call
+        expect(h.aimed, l.size).toEqual(
+          l.query === "prRequest" ? { button: "Approve", calls: [{ fn: "pipelineApprove", args: ["5102"] }] } : { button: "Post to ADO", calls: [{ fn: "pipelineDraftPost", args: ["5102", "d-notes"] }] }
+        );
+      }
+    },
+    LANDINGS.length * 90_000
+  );
+
+  it("picks no session when the one that asked has moved to another ticket, and blocks a base branch's push, saying what the push won't run and what ADO cuts", async () => {
+    const q = await run<FormWarningsAudit>("q", "prRequest=moved,basebranch,hooks,long&lsCamera=0,0,0.5");
+    expect(q.error).toBeUndefined();
+    // the Coder is on #5098 now: said so, no session picked for the user, no branch read until one is
+    expect(q.opened).toEqual({
+      from: "",
+      options: ["", "s1", "s2", "s4", "s8"],
+      notes: ["Coder is on #5098 now: pick the session the pull request comes from.", "Pick the session the pull request comes from."],
+      push: false,
+      calls: [],
+    });
+    expect(q.picked.calls).toEqual([{ fn: "pipelinePrPreflight", args: ["s1", "5101", "dev"] }]);
+    const form = q.picked.form!;
+    expect(form.from).toBe("s1");
+    // a worktree on dev would push straight to origin's dev: Push is off, and the form says why
+    expect(form.push).toEqual({ disabled: true });
+    expect(form.warnings).toContain("The worktree is on dev, a base branch's name: pushing it would update origin's dev directly. Move the work to a branch of its own first.");
+    expect(q.picked.hooks).toBe("The pre-push hook in .husky/_ won't run for this push: hooks in the working tree can be changed by the session");
+    // the lengths, the box grown to the description, and ADO's limit said
+    expect(q.picked.lengths).toEqual([
+      ["title", "41 characters"],
+      ["description", "332 lines · 4662 characters"],
+    ]);
+    expect(q.picked.rows).toBe(24);
+    expect(q.picked.long).toBe('Azure DevOps keeps 4,000 characters of a description: this one is cut short, at about 3,980, and ends "(shortened)".');
+    expect(q.short).toEqual({ rows: 6, long: false, lengths: [["title", "41 characters"], ["description", "2 lines · 17 characters"]] });
+  });
+
+  it("keeps the user's unsaved patch notes edit when the agent's newer draft arrives, saving nothing over it until they pick", async () => {
+    const r = await run<NewerNotesAudit>("r", "prRequest=notes&lsCamera=0,0,0.5");
+    expect(r.error).toBeUndefined();
+    // the edit stays and isn't saved over the newer draft, even on leaving the box; Post and Discard wait on the choice
+    expect(r.rewritten).toMatchObject({ text: "My own notes.", post: true, discard: true, by: "drafted by Verifier's agent", calls: [] });
+    expect(r.rewritten.newer).toMatch(/^A newer draft by Verifier's agent arrived while you were editing\. Your text is still here, not saved\./);
+    // Show the newer draft: the edit dropped, nothing saved
+    expect(r.shown).toEqual({ text: "The Verifier's second draft.", newer: null, post: false, discard: false, by: "drafted by Verifier's agent", calls: [] });
+    // Keep mine: the user's words saved onto the newest draft, which is theirs from then on
+    expect(r.kept).toEqual({ text: "Mine, kept.", newer: null, post: false, discard: false, by: null, calls: [{ fn: "pipelineDraftEdit", args: ["5102", "d-notes-3", "Mine, kept."] }] });
   });
 
   it("keeps the top bar's buttons on one line at 860 px, and the amber button readable in the light theme", async () => {

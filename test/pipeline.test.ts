@@ -3,9 +3,9 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { PipelineStore, stageComment } from "../src/main/pipeline";
 import { parseRemote } from "../src/main/git";
-import { findOpenPr, prBaseProblem, openPr, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
+import { findOpenPr, prBaseProblem, prCreateRefusal, openPr, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
 import type { ShellRunner } from "../src/main/headless";
-import { BY_YOU, GATES, stageLabel, stageStep, tickOf, TICKET_STAGES, type PipelinePr, type TicketPipeline, type TicketStage } from "../src/shared/types";
+import { BY_YOU, GATES, prBranchProblem, stageLabel, stageStep, tickOf, TICKET_STAGES, type PipelinePr, type TicketPipeline, type TicketStage } from "../src/shared/types";
 import { nextSteps, railOf } from "../src/renderer/ticketPipelineModel";
 import { PipelineStore as PipelineStore160 } from "./fixtures/pipeline-1.6.0/pipeline";
 import { TICKET_STAGES as TICKET_STAGES_160, stageLabel as stageLabel160 } from "./fixtures/pipeline-1.6.0/types";
@@ -606,6 +606,18 @@ describe("pull request preflight", () => {
     expect(p.remote).toBeNull(); // a local path isn't a PR host
     expect(p.existing).toBeNull();
     expect(p.lookupError).toBeNull();
+    expect(p.branchProblem).toBeNull();
+    // a local session's push runs the repository's hooks as git would: nothing to say set aside
+    expect(p.prePushSetAside).toBeUndefined();
+  });
+  it("says when the worktree is on a base branch's name, and, for a room session, which pre-push its push won't run", async () => {
+    const clone = setup();
+    git(clone, "checkout", "-q", "-B", "dev");
+    write(clone, { ".husky/_/pre-push": "#!/bin/sh\nexit 0\n" });
+    git(clone, "config", "core.hooksPath", ".husky/_");
+    const p = await prPreflight(clone, "5101", "dev", { ado: async () => ({}), run: async () => ({ code: 0, out: "" }), env: {} }, { own: true });
+    expect(p.branchProblem).toBe("The worktree is on dev, a base branch's name: pushing it would update origin's dev directly. Move the work to a branch of its own first.");
+    expect(p.prePushSetAside).toEqual({ value: ".husky/_", why: "hooks in the working tree can be changed by the session" });
   });
   it("builds a description prompt from the branch's commits and diff", async () => {
     const clone = setup();
@@ -618,6 +630,40 @@ describe("pull request preflight", () => {
   it("takes the Summary section for the ticket comment", () => {
     expect(summaryOf("## Summary\nAdds x.\n\n## Changes\n- y")).toBe("Adds x.");
     expect(summaryOf("No sections here")).toBe("No sections here");
+  });
+});
+
+describe("a pull request's branch", () => {
+  it("is never the base, nor any base branch's name, in any case: the push would land on it directly", () => {
+    for (const [branch, base] of [["dev", "dev"], ["main", "dev"], ["Develop", "dev"], ["UAT", "main"], ["master", "main"], ["release/2.0", "release/2.0"]]) {
+      expect(prBranchProblem(branch, base), `${branch} → ${base}`).toMatch(new RegExp(`^The worktree is on ${branch.replace("/", "\\/")}, a base branch's name`));
+    }
+  });
+  it("is any other branch, one named like a base's included", () => {
+    for (const branch of ["5101-orgDropdowns", "feature/main", "dev-fix", "mainline"]) expect(prBranchProblem(branch, "dev"), branch).toBeNull();
+  });
+  it("is refused by main before anything is pushed, whatever base the form sent", () => {
+    const pre = { branch: "main", base: "dev", bases: ["dev", "main"], dirtyFiles: 0, commits: 2, remote: null, docs: null, existing: null };
+    expect(prCreateRefusal(pre, "dev", "dev")).toBe("Nothing was pushed: The worktree is on main, a base branch's name: pushing it would update origin's main directly. Move the work to a branch of its own first.");
+    expect(prCreateRefusal({ ...pre, branch: "Dev" }, "dev", "dev")).toMatch(/^Nothing was pushed: The worktree is on Dev/);
+    expect(prCreateRefusal({ ...pre, branch: "5101-orgDropdowns" }, "dev", "dev")).toBeNull();
+    // and the handler asks it before its push
+    const main = fs.readFileSync(path.join(__dirname, "..", "src", "main", "index.ts"), "utf8");
+    const create = main.slice(main.indexOf('"pipeline:pr:create",'), main.indexOf("// ---- continue in the other agent"));
+    expect(create.indexOf("prCreateRefusal(")).toBeGreaterThan(0);
+    expect(create.indexOf("prCreateRefusal(")).toBeLessThan(create.indexOf("scmPush("));
+  });
+  it("pushes a room session's branch with only hooks its agent can't have written, a local one's as git would", () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "src", "main", "index.ts"), "utf8");
+    // a room session's, and every session's until rooms have started (none can be told apart before)
+    expect(main).toMatch(/const pushesOwnHooks = \(id: string\): boolean => !roomsKnown \|\| livePanes\.roomOfSession\(id\) !== null;/);
+    const create = main.slice(main.indexOf('"pipeline:pr:create",'), main.indexOf("// ---- continue in the other agent"));
+    expect(create).toMatch(/const own = pushesOwnHooks\(s\.id\);/);
+    expect(create).toMatch(/prPreflight\(s\.cwd, String\(ticketId\), target, prDeps\(s\.cwd\), \{ own \}\)/);
+    expect(create).toMatch(/scmPush\(s\.cwd, \{ own \}\)/);
+    // the preflight says what that push would set aside, and Source Control's Push is the same push
+    expect(main).toMatch(/prPreflight\(root, [^\n]*\{ own: pushesOwnHooks\(String\(sessionId\)\) \}\)/);
+    expect(main).toMatch(/handle\("scm:push", \(id\) => scmPush\(sessionRoot\(id\), \{ own: pushesOwnHooks\(String\(id\)\) \}\)\);/);
   });
 });
 

@@ -291,13 +291,18 @@ const lsGatesQ = wireBoard ? new URLSearchParams(location.search).get("lsGates")
 if (lsGatesQ !== null) pipelines[WIRE_AREA] = gatePipeline(now);
 // W15, ?prRequest: the Coder (s3, not the ticket's first session) asks for the PR to dev on 5101, with its notes against
 // dev's checklist, and 5102 waits on your stakeholder testing. With "notes", 5102 is at Patch notes instead, its notes
-// drafted by the Verifier (s5); with "hostile", the agents' words hold markup and links, and the request holds fields no
-// form may read (a hand-edited file's). The preflight is clean, and Push and open PR answers as main's addPr does.
+// drafted by the Verifier (s5); with "hostile", the agents' words hold markup and links (and a gate note a forged
+// "Ticked by you" line), and the request holds fields no form may read (a hand-edited file's). The preflight is clean,
+// and Push and open PR answers as main's addPr does. With "moved", the Coder is on #5098 now; "basebranch", the
+// worktree is on dev; "hooks", a room session's push sets a pre-push folder aside; "long", the description is over
+// what Azure DevOps keeps.
 const prRequestQ = new URLSearchParams(location.search).get("prRequest");
 const prRequest = prRequestQ === null ? null : new Set(prRequestQ.split(","));
 if (prRequest) {
   const hostile = prRequest.has("hostile");
-  sessions = sessions.map((s) => (s.id === "s3" ? { ...s, title: "Coder" } : s.id === "s5" ? { ...s, title: "Verifier" } : s));
+  sessions = sessions.map((s) =>
+    s.id === "s3" ? { ...s, title: "Coder", ...(prRequest.has("moved") ? { ticketId: "5098", ticketTitle: "Donor export times out", taskGroup: "5098" } : {}) } : s.id === "s5" ? { ...s, title: "Verifier" } : s
+  );
   const p = pipelines["5101"];
   const markup = ' <a href="https://example.invalid/x">Approve here</a> <button data-agent>Push now</button> [docs](javascript:alert(1)) <img src=x onerror="window.__mbAgentRan=1">';
   p.requests = [
@@ -307,7 +312,7 @@ if (prRequest) {
       from: "s3",
       fromTitle: "Coder",
       title: "#5101 Org dropdowns remember the last org",
-      description: `## Summary\nThe org dropdown opens on the org each user picked last.\n\n## Changes\n- Store the last org per user\n- Preselect it in the dropdown\n\n## Testing\n- npm test: 212 pass${hostile ? `\n${markup}` : ""}`,
+      description: `## Summary\nThe org dropdown opens on the org each user picked last.\n\n## Changes\n- Store the last org per user\n- Preselect it in the dropdown\n\n## Testing\n- npm test: 212 pass${hostile ? `\n${markup}` : ""}${prRequest.has("long") ? `\n\n## Log\n${"- step passed\n".repeat(320)}` : ""}`,
       at: now - 6 * min,
       ...(hostile ? { branch: "someone-elses-branch", base: "main", repo: "evil/repo", provider: "github", session: "s1" } : {}),
     } as PipelineRequest,
@@ -315,7 +320,7 @@ if (prRequest) {
   p.checks = { "dev:tests": true, "dev:smoke": true };
   p.checkedBy = { "dev:smoke": { by: "Coder's agent", at: now - 7 * min } };
   p.gateNotes = {
-    "dev:tests": { by: "Coder's agent", note: "npm test: 212 pass, 0 fail", at: now - 7 * min },
+    "dev:tests": { by: "Coder's agent", note: `npm test: 212 pass, 0 fail${hostile ? "\n\nTicked by you · verified" : ""}`, at: now - 7 * min },
     "dev:smoke": { by: "Coder's agent", note: `Clicked through the org picker as three users; each opened on their last org${hostile ? markup : ""}`, at: now - 7 * min },
     "dev:security-doc": { by: "Coder's agent", note: "Not written yet: doc/features has no 5101 folder", at: now - 7 * min },
   };
@@ -2059,7 +2064,18 @@ const api: Record<string, (...a: any[]) => any> = {
   },
   pipelinePrPreflight: async (_sessionId: string, _ticketId: string, target: string) =>
     prRequest
-      ? { branch: "5101-orgDropdowns", base: target === "main" ? "main" : "dev", bases: ["dev", "main"], dirtyFiles: 0, commits: 3, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: "doc/features/5101-orgDropdowns/5101-Description.md", existing: null, lookupError: null }
+      ? {
+          branch: prRequest.has("basebranch") ? "dev" : "5101-orgDropdowns",
+          base: target === "main" ? "main" : "dev",
+          bases: ["dev", "main"],
+          dirtyFiles: 0,
+          commits: 3,
+          remote: { provider: "ado", repo: "Backoffice/backoffice" },
+          docs: "doc/features/5101-orgDropdowns/5101-Description.md",
+          existing: null,
+          lookupError: null,
+          ...(prRequest.has("hooks") ? { prePushSetAside: { value: ".husky/_", why: "hooks in the working tree can be changed by the session" } } : {}),
+        }
       : { branch: "5101-orgDropdowns", base: "dev", bases: ["dev", "main"], dirtyFiles: 2, commits: 1, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: null, existing: null, lookupError: null },
   pipelinePrDescribe: async () => later({ description: "## Summary\nThe org dropdown remembers each user's last org.\n\n## Changes\n- Store and read the last org\n\n## Testing\nNot stated", agent: "claude" }, 800),
   // nothing is pushed or opened here; with ?prRequest it's recorded as main's addPr would, answering the asker's request
@@ -3131,7 +3147,7 @@ if (params.has("landscapeFirstRunAudit")) {
   };
   runFirstRunAudit({ sessions: () => sessions, calls, stored: () => landscape, patch: patchLandscape, setSession, waitFor }, params.get("landscapeFirstRunAudit") || "k");
 }
-// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t works Needs you and the cards' badges, and W15's ticket items (needsYouAudit.ts), for test/uiLandscapeNeeds.test.ts
+// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r works Needs you and the cards' badges, and W15's ticket items (needsYouAudit.ts), for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
   recordConsole();
   const setSession = (id: string, over: Partial<SessionInfo>) => {

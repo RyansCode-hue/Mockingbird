@@ -243,28 +243,35 @@ export const loggedAlready = (err: unknown): boolean => err instanceof OwnGitErr
 /** A failure as a user is shown it: on one line, with no credentials a URL in it carried. */
 export const shownFailure = (err: unknown): string => withoutCredentials(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim();
 
-/** What a pre-push set aside says, on a backup's status and in the log. */
-export const prePushNote = (s: SetAside): string => `pre-push in ${s.value} not run for backups: ${s.why}`;
+/** What a pre-push set aside says, on a backup's status and in the log; `pushes` names the pushes it wasn't run for. */
+export const prePushNote = (s: SetAside, pushes = "backups"): string => `pre-push in ${s.value} not run for ${pushes}: ${s.why}`;
+
+/**
+ * The pre-push a push with ownNetworkGit's `prePush` would set aside in `cwd` (ownHooks), or null: what a form says
+ * before the push is made.
+ */
+export const prePushSetAside = async (cwd: string): Promise<SetAside | null> => (await ownHooks(cwd)).skipped;
 
 /**
  * One of Mockingbird's own network gits in `cwd`: `command` with its OWN_FLAGS before `args`, under ownNetwork. What
  * it set aside is logged once (logOwnGitFailuresTo), and a skipped pre-push told to `prePushSkipped` (null: none) at
- * each run. A failure is logged with the folder and the whole command, then thrown in git's own words (OwnGitError);
+ * each run; `prePushFor` names the pushes in the log's note ("backups" unless said). A failure is logged with the
+ * folder and the whole command, then thrown in git's own words (OwnGitError);
  * when it looks like ssh's and a core.sshCommand was set aside, it says which and why.
  */
 export async function ownNetworkGit(
   cwd: string,
   command: keyof typeof OWN_FLAGS,
   args: readonly string[],
-  opts: GitOptions & { trim?: boolean; prePush?: boolean; prePushSkipped?: (s: SetAside | null) => void } = {}
+  opts: GitOptions & { trim?: boolean; prePush?: boolean; prePushSkipped?: (s: SetAside | null) => void; prePushFor?: string } = {}
 ): Promise<string> {
-  const { prePush, prePushSkipped, ...gitOpts } = opts;
+  const { prePush, prePushSkipped, prePushFor, ...gitOpts } = opts;
   const all = [command, ...OWN_FLAGS[command], ...args];
   let n: OwnNetwork | null = null;
   try {
     n = await ownNetwork(cwd, { prePush });
     if (n.sshSetAside) tellOnce(cwd, `core.sshCommand ${n.sshSetAside.value} set aside for ${n.ssh}: ${n.sshSetAside.why}`);
-    if (n.prePushSkipped) tellOnce(cwd, prePushNote(n.prePushSkipped));
+    if (n.prePushSkipped) tellOnce(cwd, prePushNote(n.prePushSkipped, prePushFor));
     if (prePush) prePushSkipped?.(n.prePushSkipped);
     return await git(cwd, all, { ...gitOpts, env: { ...gitOpts.env, ...n.env } });
   } catch (err) {

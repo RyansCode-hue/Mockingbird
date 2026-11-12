@@ -1,8 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { agentNamed, stageLabel, stageStep, TICKET_STAGES, type CommentDraft, type TicketStage } from "../src/shared/types";
-import { agentPatchNotes, gateOfPr, nextSteps, railOf, toldLine, type NextStep } from "../src/renderer/ticketPipelineModel";
+import { agentNamed, stageLabel, stageStep, TICKET_STAGES, type CommentDraft, type SessionInfo, type TicketStage } from "../src/shared/types";
+import { agentPatchNotes, askerProblem, gateOfPr, nextSteps, railOf, toldLine, type NextStep } from "../src/renderer/ticketPipelineModel";
+import { ANSWER_GUARD_MS, arrivalClick } from "../src/renderer/answerGuard";
 import { agentBy } from "../src/main/ticketTools";
 
 const said = (steps: NextStep[]) =>
@@ -133,7 +134,8 @@ describe("the panel's agents' words (W15)", () => {
 
   it("says whom the user's word told, as main answered, or why nobody", () => {
     expect(toldLine({ to: "s1", title: "Coder", told: "queued, with what was already waiting for it" })).toBe("Told Coder (queued, with what was already waiting for it).");
-    expect(toldLine({ to: "s1", title: "Coder", notTold: '"Coder" isn\'t running, so it wasn\'t told: reopen it to tell it.', reopen: true })).toBe('"Coder" isn\'t running, so it wasn\'t told: reopen it to tell it.');
+    const notRunning = `"Coder" isn't running, so it wasn't told, and nothing tells it later: once you reopen it, tell it yourself.`;
+    expect(toldLine({ to: "s1", title: "Coder", notTold: notRunning, reopen: true })).toBe(notRunning);
     expect(toldLine({ to: null, title: null, notTold: "" })).toBe("No agent was told.");
   });
 
@@ -159,11 +161,52 @@ describe("what the window makes of a pipeline, and from where (W15)", () => {
     const panel = src("TicketPipeline.tsx");
     // each inside the handler its button calls, never an effect: opening or filling a form makes nothing
     expect(panel).toMatch(/const create = async \(\) => \{\n\s+const r = await run\("create", \(\) => window\.mb\.pipelinePrCreate\(/);
-    expect(panel).toMatch(/onClick=\{create\}>\s*\{doing\("create"\) \? "Opening…" : "Push and open PR"\}/);
+    expect(panel).toMatch(/onClick=\{guard\(create\)\}>\s*\{doing\("create"\) \? "Opening…" : "Push and open PR"\}/);
     for (const effect of panel.match(/useEffect\(\(\) => \{[\s\S]*?\}, \[[^\]]*\]\);/g) ?? []) expect(effect).not.toMatch(/pipeline(PrCreate|RequestDismiss|Approve|DraftPost)/);
   });
 
   it("draws an agent's words as text: no HTML, Markdown or links made of them", () => {
     for (const f of ["TicketPipeline.tsx", "NeedsYou.tsx", "needsYouModel.ts", "ticketPipelineModel.ts"]) expect(src(f), f).not.toMatch(/dangerouslySetInnerHTML|\.innerHTML\s*=|marked\(|renderMarkdown|linkify/);
+  });
+});
+
+describe("the pipeline dialog's clicks and the PR form's session (W15 review)", () => {
+  it("takes a click only once the buttons have been where they are ANSWER_GUARD_MS, and never a double click's second", () => {
+    const opened = 10_000;
+    expect(arrivalClick({ detail: 1 }, opened, opened + 100)).toBe(true);
+    expect(arrivalClick({ detail: 1 }, opened, opened + ANSWER_GUARD_MS - 1)).toBe(true);
+    expect(arrivalClick({ detail: 1 }, opened, opened + ANSWER_GUARD_MS)).toBe(false);
+    // a double click's second (or third) is let go however late it comes
+    for (const detail of [2, 3]) expect(arrivalClick({ detail }, opened, opened + 5_000)).toBe(true);
+    // a key's click (Enter or Space on a focused button) is a person's, once the buttons have settled
+    expect(arrivalClick({ detail: 0 }, opened, opened + ANSWER_GUARD_MS)).toBe(false);
+    expect(arrivalClick({ detail: 0 }, opened, opened + 10)).toBe(true);
+  });
+
+  it("wraps every click in the pipeline's dialogs in the guard: a checklist item's through its own test", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "TicketPipeline.tsx"), "utf8");
+    const dialogs = src.slice(src.indexOf("function StageRail("));
+    const bare = (dialogs.match(/onClick=\{(?!guard\()[^\n]*/g) ?? []).map((c) => c.trim());
+    expect(bare).toEqual(["onClick={(e) => guard.aimed(e) || e.preventDefault()}>", "onClick={(e) => {"]);
+    expect(dialogs).toMatch(/aimedNow\.current = guard\.aimed\(e\);/);
+    expect(dialogs).toMatch(/onChange=\{\(e\) => aimedNow\.current && run\("check"/);
+  });
+
+  const session = (over: Partial<SessionInfo>) => ({ id: "s3", title: "Coder", ticketId: "5101", taskGroup: "5101", status: "idle", ...over }) as SessionInfo;
+  const req = { fromTitle: "Coder" };
+
+  it("picks the session that asked for a PR only while it's open here, its own, not taken over, and on the ticket", () => {
+    expect(askerProblem(req, "5101", session({}))).toBeNull();
+    const why = (s: SessionInfo | undefined) => askerProblem(req, "5101", s);
+    expect(why(undefined)).toBe("Coder isn't open here: pick the session the pull request comes from.");
+    expect(why(session({ status: "dead" }))).toBe("Coder isn't running: pick the session the pull request comes from.");
+    expect(why(session({ ticketId: "5098", taskGroup: "5098" }))).toBe("Coder is on #5098 now: pick the session the pull request comes from.");
+    expect(why(session({ ticketId: null, taskGroup: undefined }))).toBe("Coder isn't on a ticket now: pick the session the pull request comes from.");
+    expect(why(session({ room: { remote: true } as SessionInfo["room"] }))).toBe("Coder is a teammate's copy: pick the session the pull request comes from.");
+    expect(why(session({ room: { remote: false, takenOver: { by: "Nick" } } as unknown as SessionInfo["room"] }))).toBe(
+      "Coder was taken over by a teammate and continues on their laptop: pick the session the pull request comes from."
+    );
+    // the session's own name now, else the one the request recorded
+    expect(askerProblem({ fromTitle: "" }, "5101", undefined)).toBe("The workspace that asked isn't open here: pick the session the pull request comes from.");
   });
 });

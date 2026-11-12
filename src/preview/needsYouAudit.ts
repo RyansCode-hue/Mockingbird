@@ -1,5 +1,5 @@
 /**
- * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s (with ?motion=off): S7's Needs you and card badges, worked as a person
+ * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r (with ?motion=off): S7's Needs you and card badges, worked as a person
  * would in the UI preview, into <script id="mb-landscape-needs-audit"> for test/uiLandscapeNeeds.test.ts. Keys and the
  * mouse are pressed for real where the test's Chrome driver is there to press them (scripts/ui-preview.mjs's pageResult
  * takes them from window.__mbKeys), so they go wherever the browser sends them; without it (a person's browser) they're
@@ -38,6 +38,12 @@
  * is in the dialog, then back on the button, never in a terminal.
  * =t (with ?prRequest=notes,hostile): patch notes an agent drafted: Open on them, marked as the Verifier's, the user's
  * edit making them theirs with the panel staying on them, and Post to ADO the one call that posts.
+ * =h (with ?prRequest, or ?prRequest=notes; run at several heights): each tray action that opens a dialog, clicked
+ * with a real double click, two quick single clicks and a late double click's second, landing on what the dialog drew
+ * under the pointer; then one click aimed there, past the guard.
+ * =q (with ?prRequest=moved,basebranch,hooks,long): the PR form's warnings: the asker on another ticket and no session
+ * picked, then, on one picked, the base branch's blocker, the pre-push set aside, the lengths and the ADO limit.
+ * =r (with ?prRequest=notes): the agent's patch notes rewritten under the user's unsaved edit.
  */
 import type { SessionInfo, TicketPipeline } from "../shared/types";
 import { armFocus } from "../renderer/keyArm";
@@ -210,6 +216,9 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
       else if (part === "s") await stackCardPart(env, out);
       else if (part === "p") await prPart(env, out);
       else if (part === "t") await notesPart(env, out);
+      else if (part === "h") await arrivalPart(env, out);
+      else if (part === "q") await formWarningsPart(env, out);
+      else if (part === "r") await newerNotesPart(env, out);
       else await badgePart(env, out);
     } catch (err) {
       out.error = String((err as Error)?.stack ?? err);
@@ -937,7 +946,8 @@ async function prPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   mark = env.calls.length;
   await clickOn(actBtn("pr:5101:dev", "open")!);
   await until(() => document.querySelector(".pl-prform .pl-facts"));
-  await sleep(300);
+  // past the guard on the form's buttons (useArrivalGuard), from the branch check's answer
+  await sleep(600);
   out.opened = { tray: tray().open, dialog: dialog()?.querySelector("h3")?.textContent ?? null, keyboard: keysAt(), form: prForm(), safety: safety(dialog()), calls: madeSince(env, mark) };
   // the user's edit: the title isn't the agent's as written any more; still nothing made
   mark = env.calls.length;
@@ -983,7 +993,8 @@ async function prPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   mark = env.calls.length;
   await clickOn(actBtn("pr:5101:dev", "open")!);
   await until(() => document.querySelector(".pl-prform .pl-facts"));
-  await sleep(300);
+  // past the guard on the form's buttons (useArrivalGuard), from the branch check's answer
+  await sleep(600);
   const shown = prForm();
   out.beforePush = { form: shown, calls: madeSince(env, mark) };
   mark = env.calls.length;
@@ -1043,4 +1054,183 @@ async function notesPart(env: NeedsAuditEnv, out: Record<string, unknown>): Prom
   await press("Escape");
   await sleep(400);
   out.closed = { keyboard: keysAt() };
+}
+
+// ---- W15 review: clicks a dialog opened from the tray didn't aim, the form's warnings, a newer patch notes draft ----
+
+/** What a click lands on: a button, a link, a stage on the rail, or a checklist item, by its words. */
+const CLICKABLE = "button, a, label.pl-check";
+const buttonAt = (x: number, y: number) => {
+  const b = document.elementFromPoint(x, y)?.closest<HTMLElement>(CLICKABLE);
+  return b ? (b.textContent?.trim() ?? "") : null;
+};
+/** Close whatever dialog is open, as Esc does; a second Esc for a field's own use of the first. */
+async function escapeDialog() {
+  for (let i = 0; i < 2 && dialog(); i++) {
+    await press("Escape");
+    await sleep(400);
+  }
+}
+/** The buttons that make something, most harmful first: where the tray's button overlaps one, the clicks land there. */
+const HARMFUL = ["Approve", "Post to ADO", "Done", "Push and open PR", "Dismiss the request"];
+
+/**
+ * Where on the tray's button `item`'s `action` to click: the middle of its overlap with the dialog's most harmful
+ * button that it opens under it (a dry run opens it once, looks and closes it), else the middle of the tray's button.
+ */
+async function landingOf(item: string, action: string): Promise<{ x: number; y: number; on: string | null } | null> {
+  await openTray();
+  const b = actBtn(item, action);
+  if (!b) return null;
+  const r = b.getBoundingClientRect();
+  await clickOn(b);
+  await sleep(700);
+  // each of the dialog's controls the tray's button overlaps, at the middle of the overlap, where it's drawn on top there
+  const hits = [...(dialog()?.querySelectorAll<HTMLElement>(CLICKABLE) ?? [])].flatMap((el) => {
+    const o = el.getBoundingClientRect();
+    const [left, right, top, bottom] = [Math.max(r.left, o.left), Math.min(r.right, o.right), Math.max(r.top, o.top), Math.min(r.bottom, o.bottom)];
+    if (left >= right || top >= bottom) return [];
+    const [x, y] = [(left + right) / 2, (top + bottom) / 2];
+    return document.elementFromPoint(x, y)?.closest(CLICKABLE) === el ? [{ x, y, on: el.textContent?.trim() ?? "" }] : [];
+  });
+  const rank = (w: string) => (HARMFUL.includes(w) ? HARMFUL.indexOf(w) : HARMFUL.length);
+  const hit = hits.sort((a, z) => rank(a.on) - rank(z.on))[0];
+  await escapeDialog();
+  return hit ?? { x: r.left + r.width / 2, y: r.top + r.height / 2, on: null };
+}
+
+/**
+ * Each tray action that opens a dialog, at this window's height, clicked where the dialog puts its most harmful button
+ * under the pointer: a real double click, two quick single clicks, and a late double click's second (past the guard's
+ * time). None makes anything; then one click aimed at the ticket's Approve or Post to ADO, past the guard, makes its call.
+ */
+async function arrivalPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  armFocus(vp());
+  const runs: Record<string, unknown>[] = [];
+  const items = tray().items.map((i) => i.id);
+  for (const [item, action] of [
+    ["ticket:5102", "open"],
+    ["pr:5101:dev", "open"],
+    ["pr:5101:dev", "dismissRequest"],
+  ] as const) {
+    const at = await landingOf(item, action);
+    if (!at) {
+      runs.push({ item, action, missing: true, items });
+      continue;
+    }
+    const { x, y } = at;
+    for (const how of ["double", "quick", "late"] as const) {
+      await openTray();
+      const mark = env.calls.length;
+      if (how === "double") await drive([{ mouse: { x, y, clickCount: 1 } }, { mouse: { x, y, clickCount: 2 } }]);
+      else if (how === "quick") await drive([{ mouse: { x, y, clickCount: 1 } }, { mouse: { x, y, clickCount: 1 } }]);
+      else {
+        await drive([{ mouse: { x, y, clickCount: 1 } }]);
+        await sleep(600);
+        await drive([{ mouse: { x, y, clickCount: 2 } }]);
+      }
+      await sleep(500);
+      runs.push({ item, action, how, on: at.on, dialog: !!dialog(), under: buttonAt(x, y), calls: madeSince(env, mark).filter((c) => c.fn !== "pipelinePrPreflight") });
+      await escapeDialog();
+    }
+  }
+  out.runs = runs;
+  // the ticket's Open once, then, past the guard, one click aimed at its Approve (or its patch notes' Post to ADO)
+  await openTray();
+  await clickOn(actBtn("ticket:5102", "open")!);
+  await sleep(800);
+  const aim = buttonOf(document.querySelector(".pl-now"), "Approve") ?? buttonOf(document.querySelector(".pl-notes"), "Post to ADO");
+  const mark = env.calls.length;
+  if (aim) await clickInView(aim);
+  await sleep(600);
+  out.aimed = { button: aim?.textContent ?? null, calls: madeSince(env, mark) };
+  await escapeDialog();
+}
+
+/** The PR form as it warns: the asker moved, the branch a base's, a pre-push set aside, a description too long for ADO. */
+async function formWarningsPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  armFocus(vp());
+  await openTray();
+  let mark = env.calls.length;
+  await clickOn(actBtn("pr:5101:dev", "open")!);
+  await sleep(900);
+  const f = () => document.querySelector<HTMLElement>(".pl-prform");
+  const select = () => f()?.querySelector<HTMLSelectElement>("label.pl-field select") ?? null;
+  out.opened = {
+    from: select()?.value ?? null,
+    options: [...(select()?.options ?? [])].map((o) => o.value),
+    notes: [...(f()?.querySelectorAll(".fp-note") ?? [])].map((n) => n.textContent),
+    push: !!buttonOf(f(), "Push and open PR"),
+    calls: madeSince(env, mark),
+  };
+  // the user picks the session: the branch is read from it
+  mark = env.calls.length;
+  const s = select()!;
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "s1");
+  s.dispatchEvent(new Event("change", { bubbles: true }));
+  await until(() => f()?.querySelector(".pl-facts"));
+  await sleep(300);
+  const area = f()?.querySelector<HTMLTextAreaElement>("label.pl-field textarea");
+  out.picked = {
+    form: prForm(),
+    hooks: f()?.querySelector("[data-hooks]")?.textContent ?? null,
+    lengths: [...(f()?.querySelectorAll<HTMLElement>("[data-len]") ?? [])].map((l) => [l.dataset.len, l.textContent]),
+    rows: area?.rows ?? null,
+    long: f()?.querySelector("[data-long]")?.textContent ?? null,
+    calls: madeSince(env, mark),
+  };
+  // a short description: the box shrinks to it, and the warning goes
+  fill(area!, "## Summary\nShort.");
+  await sleep(200);
+  out.short = { rows: area?.rows ?? null, long: !!f()?.querySelector("[data-long]"), lengths: [...(f()?.querySelectorAll<HTMLElement>("[data-len]") ?? [])].map((l) => [l.dataset.len, l.textContent]) };
+  await escapeDialog();
+}
+
+/**
+ * The agent's patch notes rewritten while the user's edit is unsaved: the edit stays, the newer draft said; Show the
+ * newer draft drops the edit, unsaved; Keep mine saves it onto the newer one.
+ */
+async function newerNotesPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise<void> {
+  armFocus(vp());
+  await openTray();
+  await clickOn(actBtn("ticket:5102", "open")!);
+  await sleep(700);
+  const notes = () => document.querySelector<HTMLElement>(".pl-notes");
+  const seen = () => ({
+    text: notes()?.querySelector("textarea")?.value ?? null,
+    newer: notes()?.querySelector("[data-newer]")?.textContent ?? null,
+    post: buttonOf(notes(), "Post to ADO")?.disabled ?? null,
+    discard: buttonOf(notes(), "Discard")?.disabled ?? null,
+    by: notes()?.querySelector(".pl-h .pl-by")?.textContent ?? null,
+  });
+  const rewrite = (id: string, text: string) => {
+    const p = env.pipelines()["5102"];
+    p.drafts = [...p.drafts.filter((d) => !(d.stage === "comms" && d.by)), { id, stage: "comms", text, at: Date.now(), by: "Verifier's agent", from: "s5" }];
+    env.pipelinesChanged();
+  };
+  // typing, then the agent's rewrite: the edit stays; leaving the box saves nothing over the newer draft
+  let mark = env.calls.length;
+  const area = () => notes()!.querySelector("textarea")!;
+  area().focus();
+  fill(area(), "My own notes.");
+  rewrite("d-notes-2", "The Verifier's second draft.");
+  await sleep(300);
+  dialog()!.focus();
+  await sleep(300);
+  out.rewritten = { ...seen(), calls: madeSince(env, mark) };
+  // Show the newer draft: the edit dropped, unsaved
+  mark = env.calls.length;
+  await clickInView(buttonOf(notes(), "Show the newer draft")!);
+  await sleep(300);
+  out.shown = { ...seen(), calls: madeSince(env, mark) };
+  // again, and Keep mine: the user's words saved onto the newer draft, made theirs
+  area().focus();
+  fill(area(), "Mine, kept.");
+  rewrite("d-notes-3", "The Verifier's third draft.");
+  await sleep(700);
+  mark = env.calls.length;
+  await clickInView(buttonOf(notes(), "Keep mine")!);
+  await sleep(400);
+  out.kept = { ...seen(), calls: madeSince(env, mark) };
+  await escapeDialog();
 }

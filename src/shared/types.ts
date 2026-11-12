@@ -1400,6 +1400,30 @@ export interface PrPreflight {
   docs: string | null;
   /** A pull request already open from this branch to the base. */
   existing: { id: number; url: string } | null;
+  /** Why the branch can't be pushed into `base` (prBranchProblem), or null. */
+  branchProblem?: string | null;
+  /**
+   * A team room session's push runs its pre-push only from the user's own hooks (scmPush's `own`): the hooks folder the
+   * repository names that's set aside, and why, or null. Absent for a local session, whose push runs the user's hooks.
+   */
+  prePushSetAside?: { value: string; why: string } | null;
+}
+
+/** The usual names of the branches work merges into, by team convention, each in the order it's preferred. */
+export const BASE_NAMES: Record<PrTarget, string[]> = { dev: ["dev", "develop", "development", "uat"], main: ["main", "master"] };
+
+/** Azure DevOps keeps this many characters of a pull request's description: openPr shortens a longer one to fit. */
+export const ADO_DESC_MAX = 4000;
+
+/**
+ * Why `branch` can't be pushed for a pull request into `base`, or null: it's the base, or it has a base's name
+ * (BASE_NAMES, either target's, in any case: Azure DevOps reads branch names so). The push goes to origin under the
+ * branch's own name, so it would land on that base directly. The worktree's agent picks the branch it's on.
+ */
+export function prBranchProblem(branch: string, base: string): string | null {
+  const b = branch.toLowerCase();
+  if (b !== base.toLowerCase() && ![...BASE_NAMES.dev, ...BASE_NAMES.main].includes(b)) return null;
+  return `The worktree is on ${branch}, a base branch's name: pushing it would update origin's ${branch} directly. Move the work to a branch of its own first.`;
 }
 
 /** A branch's pull request as the pane rail shows it. */

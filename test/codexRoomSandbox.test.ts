@@ -113,7 +113,7 @@ describe("a Codex room session's permission profile", () => {
     const profile = profileOf(codexRoomPermissions(places()).config);
     const roots = /":workspace_roots"=\{([^}]*)\}/.exec(profile)![1];
     for (const f of [".envrc", ".mcp.json", ".zshrc", ".gitmodules"]) expect(roots).toContain(`"${f}"="read", "*/**/${f}"="deny"`);
-    for (const d of [".codex", ".claude", ".vscode", ".idea"]) expect(roots).toContain(`"${d}"="read", "*/**/${d}"="deny", "*/**/${d}/**"="deny"`);
+    for (const d of [".codex", ".claude", ".vscode", ".idea", ".husky"]) expect(roots).toContain(`"${d}"="read", "*/**/${d}"="deny", "*/**/${d}/**"="deny"`);
     expect(roots).not.toContain(`.git"=`);
   });
 

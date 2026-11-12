@@ -4,6 +4,7 @@ import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { useLiftOut } from "./lift";
 import { DIALOG_OPENED, armFocus, isArmed, isNowhere, keyboardNowhere, userLeft } from "./keyArm";
+import { useArrivalGuard } from "./answerGuard";
 
 /**
  * Said on `document` as a dialog opens, so what floats over the app can get out of its way (and a keyboard move waiting
@@ -125,7 +126,9 @@ export function useDialogFocus(opts: { rearms?: boolean; handsBack?: (to: HTMLEl
 /**
  * A dialog over the app. A click on the backdrop, or Esc, closes it; without
  * `onClose` neither does (an update installing), and `closeOnBackdrop={false}`
- * keeps a stray click from losing a multi-step dialog. It takes focus when
+ * keeps a stray click from losing a multi-step dialog. A backdrop press that
+ * wasn't aimed at it (useArrivalGuard: the second of the double click that
+ * opened it, or one just after it opened) leaves it open. It takes focus when
  * nothing in it asked for focus, so keys reach it rather than a terminal
  * behind it, and gives focus back to what had it when it closes. It eases in;
  * closing is immediate, with the exit played on a static copy (motion.ts).
@@ -150,6 +153,7 @@ export function Modal({
   const box = useRef<HTMLDivElement>(null);
   const presence = usePresence<HTMLDivElement>("dialog");
   const lift = useLiftOut();
+  const guard = useArrivalGuard();
   useEscape(() => onClose?.());
   useDialogFocus();
   useEffect(() => {
@@ -174,7 +178,7 @@ export function Modal({
       className="modal-back"
       onMouseDown={(e) => {
         e.preventDefault();
-        if (closeOnBackdrop) onClose?.();
+        if (closeOnBackdrop && guard.aimed(e)) onClose?.();
       }}
     >
       <div

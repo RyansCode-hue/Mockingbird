@@ -1,6 +1,6 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
-import { guardedGit, SAFE_DIFF, WRITE_ENV } from "./safeGit";
+import { guardedGit, ownNetworkGit, SAFE_DIFF, WRITE_ENV, type SetAside } from "./safeGit";
 import type { GitChange, GraphCommit, GraphRef, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
 
 /**
@@ -101,12 +101,25 @@ export async function scmCommit(root: string, message: string): Promise<{ sha: s
  * Push the branch to its own name on origin. The first push publishes it and
  * makes that its upstream — including a branch that so far tracked the branch
  * it was made from (origin/dev), which a plain `git push` would aim at dev.
+ *
+ * `own`: a team room session's push. Main makes it, as the user, for a worktree the room's agent (sandboxed, or steered
+ * by a teammate typing) can write, so it goes through ownNetworkGit: a pre-push only from the user's global
+ * core.hooksPath or the repository's .git/hooks, never a folder in the worktree (Husky's `.husky/_`), git's own
+ * receive-pack, no submodule's push and no ext:: transport. `prePushSkipped` then says what was set aside. A local
+ * session's push stays a plain one, the user's own hooks (Husky's) running: its agent is trusted.
  */
-export async function scmPush(root: string): Promise<{ upstream: string }> {
+export async function scmPush(root: string, o: { own?: boolean } = {}): Promise<{ upstream: string; prePushSkipped?: SetAside | null }> {
   const st = await scmStatus(root);
   if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to push to");
-  await git(root, st.published ? ["push", "-q"] : ["push", "-q", "-u", "origin", "HEAD"]);
-  return { upstream: st.published ? st.upstream! : `origin/${st.branch}` };
+  const args = st.published ? ["-q"] : ["-q", "-u", "origin", "HEAD"];
+  const upstream = st.published ? st.upstream! : `origin/${st.branch}`;
+  if (!o.own) {
+    await git(root, ["push", ...args]);
+    return { upstream };
+  }
+  let prePushSkipped: SetAside | null = null;
+  await ownNetworkGit(root, "push", args, { prePush: true, prePushFor: "a room session's pushes", prePushSkipped: (s) => (prePushSkipped = s) });
+  return { upstream, prePushSkipped };
 }
 
 /**

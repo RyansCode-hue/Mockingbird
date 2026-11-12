@@ -37,7 +37,7 @@ import { WireService } from "./wires";
 import { wiresInOrder, type WireState } from "../shared/wires";
 import { WireDelivery } from "./wireDelivery";
 import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
-import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
+import { openPr, prCreateRefusal, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, claudeTranscriptOf, codexRolloutOf } from "./agentFiles";
@@ -972,7 +972,14 @@ handle("scm:stage", (id, paths) => scmStage(sessionRoot(id), paths));
 handle("scm:unstage", (id, paths) => scmUnstage(sessionRoot(id), paths));
 handle("scm:discard", (id, entries) => scmDiscard(sessionRoot(id), entries, (abs) => shell.trashItem(abs)));
 handle("scm:commit", (id, message) => scmCommit(sessionRoot(id), String(message ?? "")));
-handle("scm:push", (id) => scmPush(sessionRoot(id)));
+/**
+ * Whether a push main makes from session `id`'s worktree runs only hooks its agent can't have written (scmPush's
+ * `own`): a team room session's, which a sandboxed agent or a teammate typing can change, and every session's until
+ * rooms have started, when none can be told apart yet. A local session's push runs the user's own hooks (Husky's): its
+ * agent is trusted, as everywhere else on this Mac.
+ */
+const pushesOwnHooks = (id: string): boolean => !roomsKnown || livePanes.roomOfSession(id) !== null;
+handle("scm:push", (id) => scmPush(sessionRoot(id), { own: pushesOwnHooks(String(id)) }));
 handle("scm:pull", (id) => scmPull(sessionRoot(id)));
 handle("scm:fetch", (id) => scmFetch(sessionRoot(id)));
 handle("scm:graph", (id, limit) => scmGraph(sessionRoot(id), Math.min(2000, Math.max(20, Number(limit) || 150))));
@@ -1598,7 +1605,7 @@ handle("pipeline:draft:post", (id, draftId) =>
 );
 handle("pipeline:pr:preflight", (sessionId, ticketId, target) => {
   const root = sessionOf(String(sessionId)).cwd;
-  return prPreflight(root, String(ticketId), target === "main" ? "main" : "dev", prDeps(root));
+  return prPreflight(root, String(ticketId), target === "main" ? "main" : "dev", prDeps(root), { own: pushesOwnHooks(String(sessionId)) });
 });
 handle("pipeline:pr:describe", async (sessionId, ticketId, title, base) => {
   const s = sessionOf(String(sessionId));
@@ -1607,40 +1614,41 @@ handle("pipeline:pr:describe", async (sessionId, ticketId, title, base) => {
   const description = await askFor(prompt, { agent, bin }, { tag: "pr-description", label: /^(description)\s*:\s*/i, timeoutMs: 180_000, what: "description" });
   return { description, agent };
 });
-// pushes the branch and opens the pull request — run only from the PR form's button
-handle("pipeline:pr:create", (sessionId, ticketId, req) =>
-  pipelineDo(async () => {
-    const s = sessionOf(String(sessionId));
-    const target = req?.target === "main" ? "main" : "dev";
-    const base = String(req?.base ?? "");
-    const title = String(req?.title ?? "").trim();
-    if (!base) throw new Error("Pick the branch to merge into");
-    if (!title) throw new Error("The pull request needs a title");
-    const pre = await prPreflight(s.cwd, String(ticketId), target, prDeps(s.cwd));
-    if (!pre.branch) throw new Error("The worktree isn't on a branch");
-    // checked here, not trusted from the form: the PR is recorded under `target`
-    const wrongBase = prBaseProblem(target, base, pre.bases);
-    if (wrongBase) throw new Error(`Can't open this pull request: ${wrongBase}`);
-    if (pre.dirtyFiles) throw new Error(`Commit or stash the ${pre.dirtyFiles} uncommitted file${pre.dirtyFiles === 1 ? "" : "s"} first — they wouldn't be in the pull request`);
-    if (pre.existing && pre.base === base) throw new Error(`A pull request is already open from ${pre.branch}: ${pre.existing.url}`);
-    const url = await originUrl(s.cwd);
-    const remote = url ? parseRemote(url) : null;
-    if (!remote) throw new Error(url ? `origin (${url}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
-    await scmPush(s.cwd);
-    let made: { id: number; url: string };
-    try {
-      made = await openPr(remote, { branch: pre.branch, base, title, description: String(req?.description ?? ""), workItemId: String(ticketId) }, prDeps(s.cwd));
-    } catch (err) {
-      throw new Error(`The branch was pushed, but the pull request wasn't opened: ${prError(err)}`);
-    }
-    const description = String(req?.description ?? "");
-    return pipeline.addPr(
-      String(ticketId),
-      { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined, by: s.id, root: s.cwd },
-      req?.ticketTitle ? String(req.ticketTitle) : undefined,
-      BY_YOU
-    );
-  })
+// pushes the branch and opens the pull request — run only from the PR form's button, never from a copy a teammate took over
+handle(
+  "pipeline:pr:create",
+  untakenHandler("pipeline:pr:create", untaken, (s, ticketId: unknown, req: any) =>
+    pipelineDo(async () => {
+      const target = req?.target === "main" ? "main" : "dev";
+      const base = String(req?.base ?? "");
+      const title = String(req?.title ?? "").trim();
+      if (!base) throw new Error("Pick the branch to merge into");
+      if (!title) throw new Error("The pull request needs a title");
+      const own = pushesOwnHooks(s.id);
+      const pre = await prPreflight(s.cwd, String(ticketId), target, prDeps(s.cwd), { own });
+      if (!pre.branch) throw new Error("The worktree isn't on a branch");
+      // checked here, not trusted from the form: the PR is recorded under `target`, and pushed under the branch's name
+      const refused = prCreateRefusal({ ...pre, branch: pre.branch }, target, base);
+      if (refused) throw new Error(refused);
+      const url = await originUrl(s.cwd);
+      const remote = url ? parseRemote(url) : null;
+      if (!remote) throw new Error(url ? `origin (${url}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
+      await scmPush(s.cwd, { own });
+      let made: { id: number; url: string };
+      try {
+        made = await openPr(remote, { branch: pre.branch, base, title, description: String(req?.description ?? ""), workItemId: String(ticketId) }, prDeps(s.cwd));
+      } catch (err) {
+        throw new Error(`The branch was pushed, but the pull request wasn't opened: ${prError(err)}`);
+      }
+      const description = String(req?.description ?? "");
+      return pipeline.addPr(
+        String(ticketId),
+        { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined, by: s.id, root: s.cwd },
+        req?.ticketTitle ? String(req.ticketTitle) : undefined,
+        BY_YOU
+      );
+    })
+  )
 );
 // ---- continue in the other agent: a handoff written from the session's conversation ----
 /** A session of `agent` in `s`'s folder and group, on its branch as it stands (no worktree of its own), started with `initialPrompt`. */

@@ -1,4 +1,4 @@
-import { isTicketStage, stageStep, TICKET_STAGES, type AgentTold, type CommentDraft, type PipelinePr, type PrTarget, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
+import { isTicketStage, stageStep, ticketOfSession, TICKET_STAGES, type AgentTold, type CommentDraft, type PipelinePr, type PipelineRequest, type PrTarget, type SessionInfo, type StoredStage, type TicketPipeline, type TicketStage } from "../shared/types";
 import { ago, plural } from "../shared/format";
 
 /**
@@ -106,3 +106,26 @@ export const agentPatchNotes = (p: Pick<TicketPipeline, "drafts" | "stage">): Co
 
 /** Who heard the user's word (pipeline:approve, pipeline:request:dismiss), as main answered it: told, or why nobody was. */
 export const toldLine = (t: AgentTold): string => ("told" in t ? `Told ${t.title} (${t.told}).` : t.notTold || "No agent was told.");
+
+/**
+ * Why the session that asked for a pull request (`s`, looked up among all the window's, null when it's gone) can't be
+ * the one the PR form picks for the user, or null when it can: closed, a teammate's copy, taken over by a teammate,
+ * or moved off the ticket (main's own reading, ticketOfSession). The user then picks the session to push from.
+ */
+export function askerProblem(req: Pick<PipelineRequest, "fromTitle">, ticketId: string, s: SessionInfo | null | undefined): string | null {
+  const name = s?.title || req.fromTitle || "The workspace that asked";
+  const why = !s
+    ? "isn't open here"
+    : s.room?.remote
+      ? "is a teammate's copy"
+      : s.room?.takenOver
+        ? "was taken over by a teammate and continues on their laptop"
+        : ticketOfSession(s) !== ticketId
+          ? ticketOfSession(s)
+            ? `is on #${ticketOfSession(s)} now`
+            : "isn't on a ticket now"
+          : s.status === "dead"
+            ? "isn't running"
+            : null;
+  return why && `${name} ${why}: pick the session the pull request comes from.`;
+}

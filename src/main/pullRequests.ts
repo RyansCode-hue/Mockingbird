@@ -1,11 +1,11 @@
 import { ADO_API } from "./ado";
 import { BASE_NAMES, branchesOf, currentBranch, git, originRemote, remoteName, type RemoteRepo } from "./git";
 import { dirtyFileCount } from "./scm";
-import { guardedGit } from "./safeGit";
+import { guardedGit, prePushSetAside } from "./safeGit";
 import { listAllFiles } from "./find";
 import { quote, type ShellResult } from "./shell";
 import type { ShellRunner } from "./headless";
-import { isWorkItemId, type PrPreflight, type PrTarget } from "../shared/types";
+import { ADO_DESC_MAX, isWorkItemId, prBranchProblem, type PrPreflight, type PrTarget } from "../shared/types";
 
 /** The PR's base: the first usual name for the target that exists on origin. */
 export function pickBase(target: PrTarget, remoteBranches: string[]): string | null {
@@ -24,6 +24,21 @@ export function prBaseProblem(target: PrTarget, base: string, bases: string[]): 
   if (BASE_NAMES[other].includes(base)) {
     return `${base} is ${other === "main" ? "a main" : "a dev/UAT"} branch, and this pull request is to ${target === "main" ? "main" : "dev/UAT"}`;
   }
+  return null;
+}
+
+/**
+ * Why main won't push a branch and open its pull request to `target` into `base`, from what its own preflight read
+ * (never the form's word), or null: the base isn't the target's, the branch is a base's (the push would land on
+ * it), uncommitted files would be left out, or one is open already.
+ */
+export function prCreateRefusal(pre: PrPreflight & { branch: string }, target: PrTarget, base: string): string | null {
+  const wrongBase = prBaseProblem(target, base, pre.bases);
+  if (wrongBase) return `Can't open this pull request: ${wrongBase}`;
+  const wrongBranch = prBranchProblem(pre.branch, base);
+  if (wrongBranch) return `Nothing was pushed: ${wrongBranch}`;
+  if (pre.dirtyFiles) return `Commit or stash the ${pre.dirtyFiles} uncommitted file${pre.dirtyFiles === 1 ? "" : "s"} first — they wouldn't be in the pull request`;
+  if (pre.existing && pre.base === base) return `A pull request is already open from ${pre.branch}: ${pre.existing.url}`;
   return null;
 }
 
@@ -76,9 +91,6 @@ export async function findOpenPr(
   return list[0] ? { id: list[0].number, url: list[0].url } : null;
 }
 
-/** ADO caps a pull request description at 4000 characters. */
-const ADO_DESC_MAX = 4000;
-
 /**
  * Open a pull request. On Azure DevOps the ticket's work item is linked to it;
  * on GitHub it goes through the user's `gh`, so its sign-in applies.
@@ -124,13 +136,16 @@ export function prError(err: unknown): string {
  * Everything the PR form shows before anything is pushed: the branch and its
  * base, uncommitted files, commits to merge, where origin lives, the ticket's
  * docs, and any pull request already open. Lookups that need the network
- * report their failure rather than hide it.
+ * report their failure rather than hide it. A branch with a base's name is
+ * said (`branchProblem`); with `own` (a team room session's push, scmPush's),
+ * so is the hooks folder that push sets aside.
  */
 export async function prPreflight(
   root: string,
   ticketId: string,
   target: PrTarget,
-  deps: Omit<PrDeps, "cwd">
+  deps: Omit<PrDeps, "cwd">,
+  o: { own?: boolean } = {}
 ): Promise<PrPreflight & { lookupError: string | null }> {
   const branch = await currentBranch(root);
   const remoteBranches = (await branchesOf(root)).origin;
@@ -159,6 +174,8 @@ export async function prPreflight(
     docs,
     existing,
     lookupError,
+    branchProblem: branch && base ? prBranchProblem(branch, base) : null,
+    ...(o.own ? { prePushSetAside: await prePushSetAside(root) } : {}),
   };
 }
 

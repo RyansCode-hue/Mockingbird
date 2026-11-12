@@ -3440,6 +3440,7 @@ function App() {
           openRequest={pipelineFor.request}
           // a session counts toward its ticket as main's ticket tools count it (ticketOfSession), so the one that asked is here
           sessions={workSessions.filter((s) => (topOf(s) === pipelineFor.id || ticketOfSession(s) === pipelineFor.id) && !isRemote(s))}
+          sessionNamed={(id) => sessions.find((s) => s.id === id)}
           onAskSession={(id, text) => {
             setPipelineFor(null);
             typeInto(id, text);

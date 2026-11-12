@@ -1,5 +1,5 @@
 import { execFile } from "child_process";
-import type { PrTarget } from "../shared/types";
+import { BASE_NAMES } from "../shared/types";
 import { gitPinRefusal } from "./gitPins";
 
 const LOCAL_TIMEOUT_MS = 30_000;
@@ -107,8 +107,7 @@ export async function branchesOf(repo: string): Promise<{ local: string[]; origi
   return { local: under("refs/heads/"), origin: under("refs/remotes/origin/").filter((b) => b !== "HEAD") };
 }
 
-/** The usual names of the branches work merges into, by team convention, each in the order it's preferred. */
-export const BASE_NAMES: Record<PrTarget, string[]> = { dev: ["dev", "develop", "development", "uat"], main: ["main", "master"] };
+export { BASE_NAMES };
 
 /** The base branches among `branches`, as they're named there (UAT for uat), in the usual order: dev-like ones before main. */
 export function baseCandidates(branches: string[]): string[] {
