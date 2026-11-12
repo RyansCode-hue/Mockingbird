@@ -34,6 +34,7 @@ import {
   finishPlan,
   gateOf,
   MERGE_TEMPLATE,
+  mergePlan,
   verdictDue,
   verdictRefusal,
   WIRE_VERDICTS,
@@ -87,6 +88,8 @@ export interface MergeFill {
   /** The PR, by its page: what `fired` keeps. */
   merge: { pr: string };
   fills: FinishFill["fills"];
+  /** Wires the rules refuse now (a take-over, a room's line), left unfilled and why: the merge watch offers it again later. */
+  skipped: { wire: string; why: string }[];
 }
 
 
@@ -248,8 +251,9 @@ export class WireTools {
   }
 
   /**
-   * A merge's fill, which writes nothing (prWatch.ts): each of session `me`'s pr-merged wires named in `wires` filled in
-   * now, {pr} naming the merge and {summary} its last finish's summary (kept, redacted, on its note), in one pass.
+   * A merge's fill, which writes nothing (prWatch.ts): each of session `me`'s pr-merged wires named in `wires` that the
+   * merge readies now (mergePlan) filled in, {pr} naming the merge and {summary} its last finish's summary (kept,
+   * redacted, on its note), in one pass. One the rules refuse now is skipped, saying why, and nothing of it is read.
    */
   async planMerge(me: SessionInfo, merge: PrMerge, wires: readonly string[]): Promise<MergeFill | { refused: string }> {
     const state = this.o.store.wires();
@@ -258,11 +262,18 @@ export class WireTools {
     const summary = own(state.book.notes, me.id)?.summary?.text ?? `(“${plainLine(title, 80)}” hasn't finished a step with a summary yet.)`;
     const ticket = oneLine(`#${merge.ticket}${me.ticketTitle ? ` — ${me.ticketTitle}` : ""}`);
     const pr = prText(merge);
+    const plan = new Map(mergePlan(me.id, merge.pr.url, this.o.rules.context(state.book)).map((s) => [s.wire, s]));
     let diff: Promise<Expansion> | null = null;
     const fills: MergeFill["fills"] = [];
+    const skipped: MergeFill["skipped"] = [];
     for (const id of wires) {
       const w = own(state.book.links, id);
-      if (!w || w.from !== me.id || w.when !== "pr-merged") continue;
+      const step = plan.get(id);
+      if (!w || !step) continue;
+      if (step.does !== "readies") {
+        skipped.push({ wire: id, why: step.why ?? "The rules refuse it now." });
+        continue;
+      }
       const body = await expandTemplate(w.template ?? MERGE_TEMPLATE, {
         summary,
         ticket,
@@ -274,7 +285,7 @@ export class WireTools {
       if (merge.pr.mergedBy) body.flags.push("You marked its pull request merged, rather than its provider saying so: its merge commit isn't known.");
       fills.push({ wire: id, from: filledFrom(w), body });
     }
-    return { merge: { pr: merge.pr.url }, fills };
+    return { merge: { pr: merge.pr.url }, fills, skipped };
   }
 
   /**

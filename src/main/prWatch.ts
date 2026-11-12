@@ -18,7 +18,8 @@ import { carriesWork, wiresInOrder, type FinishOutcome, type MergeView, type Wir
  * PR (`watch`), drawn on the wire as blocked and shown on the PR's row, backs off to PR_BACKOFF_MAX_MS, and after
  * PR_WATCH_NEEDS_YOU in a row needs the user (prNeedsYou, a notice), who can Check now or Mark merged… on that row. A
  * closed one is still read, every PR_BACKOFF_MAX_MS, in case it's reopened. Mark merged… is a window call only: no tool
- * reaches it.
+ * reaches it. A wire's source's repository is read from its origin once, as it begins waiting, and kept on the wire
+ * (`sourceRepo`): an agent changing its origin later can't point its wire at another repository's pull requests.
  */
 
 /** How often a pull request something waits on is read: the pane's lookup's two minutes. */
@@ -39,7 +40,7 @@ export const prName = (pr: Pick<PipelinePr, "provider" | "id" | "target">): stri
 const tries = (n: number) => `${n} ${n === 1 ? "try" : "tries"}`;
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-/** A pr-merged wire's source's repository, as the merge watch last read its origin: unread yet, or why it couldn't be. */
+/** A pr-merged wire's source's repository: as recorded on the wire, unread yet, or why it couldn't be read or recorded. */
 export type SourceRepo = PrRepo | { error: string } | undefined;
 
 /**
@@ -53,7 +54,7 @@ export function mergeViewOf(w: Wire, source: Pick<WireEnd, "title" | "ticket" | 
   if (!source.ticket || !source.branch) return { blocked: `“${source.title}” isn't on a ticket and a branch, so there's no pull request of its to wait for.` };
   if (p?.stage === "done") return { waits: `#${source.ticket} is Done, so its pull requests aren't watched.` };
   if (!repo) return { waits: `Its pull requests are first checked within ${PR_TTL_MS / 60_000} minutes.` };
-  if ("error" in repo) return { blocked: `Which pull requests are “${source.title}”'s can't be told: its origin couldn't be read (${repo.error}).` };
+  if ("error" in repo) return { blocked: `Which pull requests are “${source.title}”'s can't be told: ${repo.error}.` };
   const place = { ...repo, branch: source.branch };
   const prs = Array.isArray(p?.prs) ? p!.prs : [];
   const blocked: string[] = [];
@@ -79,6 +80,11 @@ export interface PrWatchOptions {
   wires: () => WireState;
   /** A merge's fill (WireTools.planMerge), and the one writer of pendings (WireDelivery.offer). */
   fill: (me: SessionInfo, merge: PrMerge, wires: readonly string[]) => Promise<MergeFill | { refused: string }>;
+  /**
+   * Record `repo` as wire `wire`'s source's repository for the wait that began at `since` (WireService.pinSourceRepo):
+   * null when it's written or the wire has moved on, why not when the book refused the write.
+   */
+  pinRepo: (wire: string, since: number | undefined, repo: PrRepo) => string | null;
   offer: (me: SessionInfo, f: MergeFill, how: OfferHow) => FinishOutcome;
   /** Tell the user, under the notification settings; a click shows session `session`'s pane. */
   notify: (session: string | null, title: string, body: string) => void;
@@ -114,8 +120,10 @@ export class PrWatch {
   private fresh = new Set<string>();
   /** Each PR's title from its last read, for {pr}. */
   private titles = new Map<string, string>();
-  /** Each pr-merged wire's source's repository, by session, as of the last check. */
-  private sourceRepos = new Map<string, SourceRepo>();
+  /** Why a source's repository couldn't be read or recorded for its wires that have none yet, by session, as of the last check. */
+  private sourceFailures = new Map<string, { error: string }>();
+  /** The pr-merged handoffs as the wire book last gave them: while it can't be read, what they wait on is still read. */
+  private lastWaiting: Waiting[] | null = null;
   /** Folders' origins read this check, so each is read once per check. */
   private origins = new Map<string, Promise<PrRepo | Error>>();
   /** What last stopped a wire taking a merge ("<wire> <url>"), or a PR being read, so it's logged once while it lasts. */
@@ -145,17 +153,26 @@ export class PrWatch {
     return this.serial(async () => {
       const at = this.now();
       await this.readSources();
-      const watched = this.watched();
+      const wires = this.waiting();
+      const watched = this.watched(wires ?? this.lastWaiting ?? []);
       for (const { id, pr } of watched) {
         const every = pr.closedAt ? PR_BACKOFF_MAX_MS : PR_TTL_MS;
         const due = pr.watch ? pr.watch.at + backoffMs(pr.watch.failures) : (this.lastRead.get(pr.url) ?? -Infinity) + every;
         if (at + TICK_SLACK_MS >= due) await this.check(id, pr, at);
       }
-      // a pull request nothing waits on any more keeps no failures, so it needs nobody
-      const live = new Set(watched.map((x) => x.pr.url));
-      for (const [id, p] of this.tickets()) for (const pr of p.prs) if (pr.watch && !live.has(pr.url)) this.save(id, pr, "its watch's failures cleared", () => this.o.pipeline.prWatched(id, pr.url, null));
+      // a pull request nothing waits on any more keeps no failures, so it needs nobody; while the wire book can't be
+      // read, what its wires wait on isn't known, which isn't "nothing", so what they kept stays
+      if (wires) {
+        const live = new Set(watched.map((x) => x.pr.url));
+        for (const [id, p] of this.tickets()) for (const pr of p.prs) if (pr.watch && !live.has(pr.url)) this.save(id, pr, "its watch's failures cleared", () => this.o.pipeline.prWatched(id, pr.url, null));
+      }
       await this.fire();
     });
+  }
+
+  /** Each pr-merged wire with no source repository recorded yet gets one now, as one is made or set so. */
+  recordSources(): Promise<void> {
+    return this.serial(() => this.readSources());
   }
 
   /**
@@ -168,10 +185,13 @@ export class PrWatch {
       const p = this.o.pipeline.get(ticket);
       if (!p || !Array.isArray(p.prs)) throw new Error(`#${ticket} isn't tracked in the ticket pipeline`);
       await this.readSources();
-      const prs = url === undefined ? this.watched().flatMap((x) => (x.id === ticket ? [x.pr] : [])) : p.prs.filter((x) => x.url === url && !x.mergedAt);
+      const prs = url === undefined ? this.watched(this.waiting() ?? this.lastWaiting ?? []).flatMap((x) => (x.id === ticket ? [x.pr] : [])) : p.prs.filter((x) => x.url === url && !x.mergedAt);
       if (url !== undefined && !prs.length) throw new Error(p.prs.some((x) => x.url === url) ? "That pull request is merged already: there's nothing to check." : `#${ticket} has no pull request ${url}`);
-      for (const pr of prs) await this.check(ticket, pr, at);
+      const nowhere: PipelinePr[] = [];
+      for (const pr of prs) if ((await this.check(ticket, pr, at)) === "nowhere") nowhere.push(pr);
       await this.fire(ticket);
+      // asked for, a pull request with nowhere to read it from is said, where a check passes over it
+      if (nowhere.length) throw new Error(nowhere.map((pr) => `${prName(pr)} can't be read: there's no folder or session on ${pr.branch} to read it from (it's from before Mockingbird kept a pull request's folder). A session on ${pr.branch} in ${pr.repo} lets it be read.`).join(" "));
       return this.o.pipeline.get(ticket)!;
     });
   }
@@ -196,7 +216,12 @@ export class PrWatch {
 
   /** What pr-merged wire `w`, from `source`, shows while nothing waits at its gate (mergeViewOf). */
   view(w: Wire, source: WireEnd | null): MergeView | null {
-    return mergeViewOf(w, source, source?.ticket ? this.o.pipeline.get(source.ticket) : null, source ? this.sourceRepos.get(source.id) : undefined);
+    return mergeViewOf(w, source, source?.ticket ? this.o.pipeline.get(source.ticket) : null, this.repoOf(w));
+  }
+
+  /** Wire `w`'s source's repository: the one recorded on it, else why it couldn't be read or recorded, else unread yet. */
+  private repoOf(w: Wire): SourceRepo {
+    return w.sourceRepo ?? this.sourceFailures.get(w.from);
   }
 
   // ---- what's watched -----------------------------------------------------------------------------
@@ -243,33 +268,58 @@ export class PrWatch {
     return o;
   }
 
-  /** Each pr-merged wire's source's repository, from its folder (or its repository's, once that's gone): the PRs it waits on are that repository's. */
+  /**
+   * Each pr-merged wire with no source repository recorded gets its source's: read from its folder's origin (or its
+   * repository's, once that folder's gone) and recorded on the wire for this wait, so the PRs it waits on are that
+   * repository's from then on. One recorded already isn't read again. Why one couldn't be read or recorded is kept for
+   * its gate, by source, and logged once while it lasts.
+   */
   private async readSources(): Promise<void> {
     const book = this.o.wires().book;
     if (!book) return;
-    const ids = new Set(Object.values(book.links).flatMap((w) => (w.when === "pr-merged" && carriesWork(w.type) ? [w.from] : [])));
-    for (const id of ids) {
+    const bySource = new Map<string, [string, Wire][]>();
+    for (const [id, w] of wiresInOrder(book.links)) if (w.when === "pr-merged" && carriesWork(w.type) && !w.sourceRepo) bySource.set(w.from, [...(bySource.get(w.from) ?? []), [id, w]]);
+    for (const id of [...this.sourceFailures.keys()]) if (!bySource.has(id)) this.sourceFailures.delete(id);
+    for (const [id, wires] of bySource) {
       const s = this.session(id);
       const folder = s && [s.cwd, s.repoPath].find((f): f is string => !!f && this.exists(f));
       const got = !s ? undefined : !folder ? new Error(`its folder, ${s.cwd}, isn't there any more`) : await this.originAt(folder);
-      const repo: SourceRepo = got instanceof Error ? { error: plainLine(shownFailure(got), 200) } : got;
-      if (repo && "error" in repo && this.stopped.get(`origin ${id}`) !== repo.error) this.o.log(`merge watch: session ${id}'s origin couldn't be read, so which pull requests its pr-merged wires wait on can't be told`, got);
-      if (repo && "error" in repo) this.stopped.set(`origin ${id}`, repo.error);
-      else this.stopped.delete(`origin ${id}`);
-      this.sourceRepos.set(id, repo);
+      let failure: { error: string; what: string; err: unknown } | null = null;
+      if (got instanceof Error) failure = { error: `its origin couldn't be read (${plainLine(shownFailure(got), 200)})`, what: `merge watch: session ${id}'s origin couldn't be read, so which pull requests its pr-merged wires wait on can't be told`, err: got };
+      else if (got)
+        for (const [wire, w] of wires) {
+          const refused = this.o.pinRepo(wire, w.since, got);
+          if (refused) failure = { error: `its repository couldn't be recorded on the wire (${plainLine(refused, 200)})`, what: `merge watch: session ${id}'s repository couldn't be recorded on its wire ${wire}, so which pull requests it waits on can't be told`, err: new Error(refused) };
+        }
+      if (!failure) {
+        this.stopped.delete(`origin ${id}`);
+        this.sourceFailures.delete(id);
+        continue;
+      }
+      if (this.stopped.get(`origin ${id}`) !== failure.error) this.o.log(failure.what, failure.err);
+      this.stopped.set(`origin ${id}`, failure.error);
+      this.sourceFailures.set(id, { error: failure.error });
     }
   }
 
-  /** The pr-merged handoffs, each with its source's ticket, branch and repository. */
-  private waiting(): Waiting[] {
-    const book = this.o.wires().book;
-    if (!book) return [];
-    return wiresInOrder(book.links).flatMap(([wire, w]) => {
+  /**
+   * The pr-merged handoffs, each with its source's ticket, branch and repository; null when the wire book can't be read,
+   * which isn't "none" (logged once while it lasts).
+   */
+  private waiting(): Waiting[] | null {
+    const state = this.o.wires();
+    if (!state.book) {
+      this.once("book", state.refused ?? "it can't be read", "merge watch: the wire book can't be read, so what its pr-merged wires wait on isn't known: their pull requests are read as before, their failures kept, and merges offered once it can be read");
+      return null;
+    }
+    this.stopped.delete("book");
+    this.lastWaiting = wiresInOrder(state.book.links).flatMap(([wire, w]) => {
       if (w.when !== "pr-merged" || !carriesWork(w.type)) return [];
       const s = this.session(w.from);
       const ticket = s && ticketOfSession(s);
-      return ticket && s.branch ? [{ wire, from: w.from, ticket, branch: s.branch, repo: this.sourceRepos.get(w.from), since: w.since ?? w.createdAt, fired: w.fired ?? [] }] : [];
+      return ticket && s.branch ? [{ wire, from: w.from, ticket, branch: s.branch, repo: this.repoOf(w), since: w.since ?? w.createdAt, fired: w.fired ?? [] }] : [];
     });
+    return this.lastWaiting;
   }
 
   /** `w`'s source's place (repository and branch), once its origin has been read. */
@@ -282,8 +332,7 @@ export class PrWatch {
    * that PR's stage, and the latest to each target from a pr-merged wire's source's repository and branch that it
    * hasn't fired for. An older one is behind its replacement.
    */
-  private watched(): { id: string; pr: PipelinePr }[] {
-    const wires = this.waiting();
+  private watched(wires: readonly Waiting[]): { id: string; pr: PipelinePr }[] {
     const out = new Map<string, { id: string; pr: PipelinePr }>();
     for (const [id, p] of this.tickets()) {
       for (const target of ["dev", "main"] as const) {
@@ -321,12 +370,18 @@ export class PrWatch {
 
   // ---- reading ----------------------------------------------------------------------------------
 
-  /** Read pull request `pr` of ticket `id`, in the check that began at `at`, and save what it says. */
-  private async check(id: string, pr: PipelinePr, at: number): Promise<void> {
+  /**
+   * Read pull request `pr` of ticket `id`, in the check that began at `at`, and save what it says. "nowhere" for one from
+   * before folders were kept with no session on its branch: not read, and not counted as failing.
+   */
+  private async check(id: string, pr: PipelinePr, at: number): Promise<"nowhere" | void> {
     let st: PrState;
     try {
       const root = await this.rootOf(id, pr);
-      if (root === null) return this.once(`skip ${pr.url}`, "no folder", `merge watch: #${id}'s ${prName(pr)} (${pr.url}) isn't read: it's from before Mockingbird kept a PR's folder, and no session is on ${pr.branch}`);
+      if (root === null) {
+        this.once(`skip ${pr.url}`, "no folder", `merge watch: #${id}'s ${prName(pr)} (${pr.url}) isn't read: it's from before Mockingbird kept a PR's folder, and no session is on ${pr.branch}`);
+        return "nowhere";
+      }
       st = await this.o.read(pr, root);
     } catch (err) {
       return this.failed(id, pr, err, at);
@@ -374,9 +429,14 @@ export class PrWatch {
 
   // ---- offering a merge to its wires -------------------------------------------------------------
 
-  /** Whether merged pull request `pr` came after `since`: an unknown time is old, unless this run saw it open since then. */
+  /**
+   * Whether merged pull request `pr` came after `since`: this run saw it open since then, or its provider's time says
+   * so; an unknown time only the first way. Seen open counts whatever time the provider gives, as its clock and this
+   * Mac's can differ: a merge found after a read that found it open came after that read.
+   */
   private after(pr: PipelinePr, since: number): boolean {
-    return pr.mergedAtUnknown ? (this.seenOpenAt.get(pr.url) ?? -Infinity) >= since : (pr.mergedAt ?? -Infinity) >= since;
+    if ((this.seenOpenAt.get(pr.url) ?? -Infinity) >= since) return true;
+    return !pr.mergedAtUnknown && (pr.mergedAt ?? -Infinity) >= since;
   }
 
   /**
@@ -385,18 +445,20 @@ export class PrWatch {
    * in, is left for the next check.
    */
   private async fire(only?: string): Promise<void> {
-    if (!this.o.wires().book) return; // its gates say the wires can't be read; merges are offered once they can
+    // while the book can't be read its gates say so, and merges are offered once it can
     const wires = this.waiting();
     for (const [id, p] of this.tickets()) {
       if (only !== undefined && id !== only) continue;
       for (const pr of p.prs) {
         if (!pr.mergedAt) continue;
         const bySource = new Map<string, string[]>();
-        for (const w of wires) {
+        for (const w of wires ?? []) {
           const place = w.ticket === id ? this.placeOf(w) : null;
           if (place && samePrPlace(pr, place) && !w.fired.includes(pr.url) && this.after(pr, w.since)) bySource.set(w.from, [...(bySource.get(w.from) ?? []), w.wire]);
         }
         for (const [from, ids] of bySource) await this.offerTo(this.session(from)!, id, pr, ids);
+        // a merge seen happening goes by an automatic gate only from the check that saw it: offered later (its wires
+        // couldn't be read, or couldn't take it, then) it asks
         this.fresh.delete(pr.url);
       }
     }
@@ -408,17 +470,24 @@ export class PrWatch {
       ? `You marked ${prName(pr)} merged, so its gate asks rather than sending by itself.`
       : this.fresh.has(pr.url)
         ? undefined
-        : `${prName(pr)} merged before Mockingbird saw it happen (while it wasn't running, before its first check since starting, or while this wire couldn't take it), so its gate asks rather than sending by itself.`;
+        : `${prName(pr)} merged before Mockingbird saw it happen (while it wasn't running, before its first check since starting, or while this wire couldn't be read or couldn't take it), so its gate asks rather than sending by itself.`;
+    const refusedStep = (wire: string, why: string) => this.once(`${wire} ${pr.url}`, why, `merge watch: ${me.id}'s wire ${wire} didn't take #${ticket}'s ${prName(pr)} merging; it's offered again at the next check`);
     let out: FinishOutcome;
     try {
       const fill = await this.o.fill(me, { ticket, pr, ...(this.titles.has(pr.url) ? { title: this.titles.get(pr.url) } : {}) }, wires);
-      out = "refused" in fill ? fill : this.o.offer(me, fill, { origin: "merge", ...(hold ? { hold } : {}) });
+      if ("refused" in fill) out = fill;
+      else {
+        // a wire the rules refuse now isn't filled in, {diff} and {files} unread, until they don't
+        for (const s of fill.skipped) refusedStep(s.wire, s.why);
+        if (!fill.fills.length) return;
+        out = this.o.offer(me, fill, { origin: "merge", ...(hold ? { hold } : {}) });
+      }
     } catch (err) {
       return this.once(`${wires.join(" ")} ${pr.url}`, message(err), what, err);
     }
     if ("refused" in out) return this.once(`${wires.join(" ")} ${pr.url}`, out.refused, what);
     for (const step of out.steps) {
-      if (step.does === "refused") this.once(`${step.wire} ${pr.url}`, step.why ?? "refused", `merge watch: ${me.id}'s wire ${step.wire} didn't take #${ticket}'s ${prName(pr)} merging; it's offered again at the next check`);
+      if (step.does === "refused") refusedStep(step.wire, step.why ?? "refused");
       else this.stopped.delete(`${step.wire} ${pr.url}`);
     }
     const waiting = out.steps.filter((s) => s.pending && s.went?.state !== "sent" && s.went?.state !== "sending");

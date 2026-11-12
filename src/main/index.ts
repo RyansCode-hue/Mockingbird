@@ -1401,6 +1401,8 @@ const wires = new WireService({
   onAdded: (id, w) => wireTools.wired(id, w),
   delivery: { withdraw: (id, w) => delivery.withdraw(id, w), restoring: (w) => delivery.restoring(w), restored: (id) => delivery.restored(id) },
   merges: { view: (w, source) => prWatch.view(w, source) },
+  // its source's repository is recorded as it begins waiting, not at its first check
+  onWaiting: () => void prWatch.recordSources().catch((err) => logError("merge watch: recording a waiting wire's source repository failed", err)),
 });
 /** What the window last had of the wires' merge views and worktree folders, so a change in either alone is sent once. */
 let wiresDrawn = "";
@@ -1529,6 +1531,7 @@ const prWatch: PrWatch = new PrWatch({
   sessions,
   wires: () => landscape.wires(),
   fill: (me, merge, ids) => wireTools.planMerge(me, merge, ids),
+  pinRepo: (id, since, repo) => wires.pinSourceRepo(id, since, repo),
   offer: (me, f, how) => delivery.offer(me, f, how, null),
   onChecked: () => wiresDrawnMoved(),
   notify: (sessionId, title, body) => {

@@ -3,7 +3,7 @@ import type { LandscapeStore } from "./landscape";
 import type { Reply } from "./messaging";
 import { canonical, companionRequest } from "./handlers";
 import { LandscapeShapeError, own, put } from "../shared/landscape";
-import type { NewSessionRequest, SessionInfo } from "../shared/types";
+import type { NewSessionRequest, PrRepo, SessionInfo } from "../shared/types";
 import {
   createdAtAfter,
   gateOf,
@@ -75,6 +75,8 @@ export interface WireServiceOptions {
   onAdded?: (id: string, wire: Wire) => void;
   /** The merge watch (prWatch.ts): what a pr-merged wire's pull requests say. */
   merges?: { view(w: Wire, source: WireEnd | null): MergeView | null };
+  /** Wire `id` began waiting for its source's pull request to merge (made so, or set so): the merge watch records its source's repository. */
+  onWaiting?: (id: string) => void;
 }
 
 /**
@@ -140,6 +142,7 @@ export class WireService {
     } catch (err) {
       this.o.log(`wires: wire ${id} was made, and telling its ends failed`, err);
     }
+    if (made!.when === "pr-merged") this.waiting(id);
     return { ...reply, id };
   }
 
@@ -148,17 +151,46 @@ export class WireService {
     const id = String(idRaw ?? "");
     const settings = this.settingsFrom(settingsRaw);
     if ("refused" in settings) return settings;
-    return this.o.store.editWires((book) => {
+    let began = false;
+    const reply = this.o.store.editWires((book) => {
       const w = own(book.links, id);
       if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
       const refused = settingsRefusal(w, settings.settings, this.context(book));
       if (refused) return { refused };
       const next = withSettings(w, settings.settings, Date.now());
       if (sameWire(next, w)) return { book };
+      began = next.when === "pr-merged" && next.since !== w.since;
       const links = { ...book.links };
       put(links, id, next);
       return { book: { ...book, links } };
     });
+    if (began && !("refused" in reply)) this.waiting(id);
+    return reply;
+  }
+
+  private waiting(id: string): void {
+    try {
+      this.o.onWaiting?.(id);
+    } catch (err) {
+      this.o.log(`wires: wire ${id} began waiting for its pull request, and the merge watch couldn't be told`, err);
+    }
+  }
+
+  /**
+   * The merge watch's record of pr-merged wire `id`'s source's repository (`sourceRepo`), read from its origin once it
+   * began waiting at `since`. Nothing changes for a wire that's gone, waits from another time or not at all, or has one
+   * already: the repository is the one read for this wait, never a later one. Null when it's written or there was
+   * nothing to write; why not when the book refused the write.
+   */
+  pinSourceRepo(id: string, since: number | undefined, repo: PrRepo): string | null {
+    const reply = this.o.store.editWires((book) => {
+      const w = own(book.links, id);
+      if (!w || w.when !== "pr-merged" || w.since !== since || w.sourceRepo) return { book };
+      const links = { ...book.links };
+      put(links, id, { ...w, sourceRepo: { provider: repo.provider, repo: repo.repo } });
+      return { book: { ...book, links } };
+    });
+    return "refused" in reply ? reply.refused : null;
   }
 
   /** Remove a wire, whatever state it's in. It can be restored for a while (restore). */

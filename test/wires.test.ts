@@ -255,6 +255,7 @@ describe("reading a stored book", () => {
       {
         h: { ...good, template: "{summary}", files: ["x"], pending: { id: "p", body: "b", at: 2, verdict: "approve", flags: ["f"] }, delivery: { id: "p", state: "failed", at: 3, why: "w" } },
         f: { ...good, type: "feedback", rounds: { limit: 3, used: 1 } },
+        m: { ...good, when: "pr-merged", since: 5, fired: ["https://github.com/o/r/pull/1"], sourceRepo: { provider: "github", repo: "o/r" } },
       },
       { a: { hops: 1, verdict: "changes", stage: "coding", summary: { text: "t", at: 4, conversation: "c" } } }
     );
@@ -274,6 +275,9 @@ describe("reading a stored book", () => {
     ["a bad pending", { ...good, pending: { id: "p" } }],
     ["a bad delivery state", { ...good, delivery: { id: "p", state: "lost", at: 1 } }],
     ["negative rounds", { ...good, type: "feedback", rounds: { limit: 3, used: -1 } }],
+    ["a source repository that's a word", { ...good, when: "pr-merged", sourceRepo: "o/r" }],
+    ["a source repository on another provider", { ...good, when: "pr-merged", sourceRepo: { provider: "gitlab", repo: "o/r" } }],
+    ["a source repository with no name", { ...good, when: "pr-merged", sourceRepo: { provider: "ado", repo: "" } }],
     ["no object at all", "wire"],
     ["null", null],
   ])("keeps a wire with %s verbatim and inert, and the rest works", (_what, bad) => {
@@ -334,12 +338,13 @@ describe("reading a stored book", () => {
  * The book's stored format, version by version. A field added or made required changes what an older Mockingbird can
  * read: it needs WIRE_VERSION raised and the new format pinned here, or to be an entry an older build keeps verbatim.
  * A context link's toolOutput is the second kind: a build before it keeps such a link as an entry it can't parse, and
- * no release has read version 1. So are a pr-merged wire's `when`, `fired` and `since` (W16).
+ * no release has read version 1. So are a pr-merged wire's `when`, `fired`, `since` and `sourceRepo` (W16).
  */
 const FORMATS: Record<number, typeof WIRE_FORMAT> = {
   1: {
     book: { fields: ["links", "notes", "wv"], required: ["links", "notes", "wv"] },
-    wire: { fields: ["createdAt", "delivery", "files", "fired", "from", "gate", "pending", "rounds", "since", "template", "to", "toolOutput", "type", "when"], required: ["createdAt", "from", "gate", "to", "type", "when"] },
+    wire: { fields: ["createdAt", "delivery", "files", "fired", "from", "gate", "pending", "rounds", "since", "sourceRepo", "template", "to", "toolOutput", "type", "when"], required: ["createdAt", "from", "gate", "to", "type", "when"] },
+    sourceRepo: { fields: ["provider", "repo"], required: ["provider", "repo"] },
     rounds: { fields: ["limit", "used"], required: ["limit", "used"] },
     pending: { fields: ["at", "body", "flags", "id", "verdict"], required: ["at", "body", "flags", "id"] },
     // attempt and automatic came before any release wrote a wire book; a W1-only dev build keeps such a wire verbatim

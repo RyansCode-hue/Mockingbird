@@ -1,6 +1,6 @@
 import { LandscapeShapeError, fail, fields, isObj, list, name, num, own, put, str, type Check, type Part } from "./landscape";
 import { isRemotePaneId, parseRemoteId } from "./team/livePanes";
-import { TICKET_STAGES, ticketOfSession, type SessionInfo, type TicketStage } from "./types";
+import { TICKET_STAGES, ticketOfSession, type PrRepo, type SessionInfo, type TicketStage } from "./types";
 
 /**
  * Typed links between workspaces (docs/landscape.md, Connections; docs/landscape-wires.md). The wire book is stored in
@@ -81,6 +81,11 @@ export interface Wire {
   fired?: string[];
   /** when: pr-merged. When it began waiting for a merge: one from before then isn't one it waited for. */
   since?: number;
+  /**
+   * when: pr-merged. Its source's repository, read from the source's origin once it began waiting and kept from then on:
+   * only this repository's pull requests ready it, whatever the source's origin says later (prWatch.ts).
+   */
+  sourceRepo?: PrRepo;
   gate: WireGate;
   /** A context link set to leave tool output out of what its reader gets (read_context); absent, it's included. */
   toolOutput?: false;
@@ -120,6 +125,7 @@ const whole =
     return Number.isInteger(n) && n >= min ? n : fail(where, `is not a whole number of at least ${min}`);
   };
 
+const SOURCE_REPO: Part = { checks: { provider: oneOf(["ado", "github"] as const), repo: name } satisfies Record<keyof PrRepo, Check<unknown>>, required: ["provider", "repo"] };
 const ROUNDS: Part = { checks: { limit: whole(1), used: whole(0) } satisfies Record<keyof WireRounds, Check<unknown>>, required: ["limit", "used"] };
 const PENDING: Part = {
   checks: { id: name, body: str, at: num, verdict: oneOf(WIRE_VERDICTS), flags: list(str) } satisfies Record<keyof WirePending, Check<unknown>>,
@@ -140,6 +146,7 @@ const WIRE: Part = {
     when: oneOf(WIRE_WHENS),
     fired: list(name),
     since: num,
+    sourceRepo: (v, where) => fields(v, where, SOURCE_REPO),
     gate: oneOf(WIRE_GATES),
     toolOutput: (v, where) => (v === false ? false : fail(where, "is only ever false")),
     rounds: (v, where) => fields(v, where, ROUNDS),
@@ -170,7 +177,7 @@ const BOOK: Part = { checks: { wv: whole(1), links: (v) => v, notes: (v) => v } 
  * the version being raised, or the change being one an older build keeps as an entry it can't parse.
  */
 export const WIRE_FORMAT: Record<string, { fields: string[]; required: string[] }> = Object.fromEntries(
-  Object.entries({ book: BOOK, wire: WIRE, rounds: ROUNDS, pending: PENDING, delivery: DELIVERY, note: NOTE, summary: SUMMARY }).map(([k, p]) => [
+  Object.entries({ book: BOOK, wire: WIRE, sourceRepo: SOURCE_REPO, rounds: ROUNDS, pending: PENDING, delivery: DELIVERY, note: NOTE, summary: SUMMARY }).map(([k, p]) => [
     k,
     { fields: Object.keys(p.checks).sort(), required: [...p.required].sort() },
   ])
@@ -676,9 +683,15 @@ export const sameWire = (a: Wire, b: Wire): boolean => JSON.stringify(a) === JSO
 /** `w` with settings on it: the limit moves, what's been counted stays. */
 export function withSettings(w: Wire, s: WireSettings, now = Date.now()): Wire {
   const next: Wire = { ...w };
-  // when it begins waiting for a merge: one from before then isn't one it waited for
-  if (s.when === "pr-merged" && w.when !== "pr-merged") next.since = now;
-  else if (s.when !== undefined && s.when !== "pr-merged") delete next.since;
+  // when it begins waiting for a merge: one from before then isn't one it waited for, and its source's repository is
+  // read afresh for that wait
+  if (s.when === "pr-merged" && w.when !== "pr-merged") {
+    next.since = now;
+    delete next.sourceRepo;
+  } else if (s.when !== undefined && s.when !== "pr-merged") {
+    delete next.since;
+    delete next.sourceRepo;
+  }
   if (s.template !== undefined) {
     if (s.template === null) delete next.template;
     else next.template = s.template;
