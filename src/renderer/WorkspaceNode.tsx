@@ -58,6 +58,7 @@ export function WorkspaceNode({
   size,
   selected,
   picked = false,
+  handleShown = false,
   meters,
   snapshot,
   inv,
@@ -81,6 +82,8 @@ export function WorkspaceNode({
   selected: boolean;
   /** In the marquee's selection, which Make area… takes. */
   picked?: boolean;
+  /** Its edge handle shown as a selected workspace's is (the tour's wires step points at it). */
+  handleShown?: boolean;
   meters?: Record<string, SessionMeter>;
   /** In `snapshot`: the screen's rows as text when its terminal was lent. */
   snapshot?: string | null;
@@ -143,7 +146,7 @@ export function WorkspaceNode({
   );
   return (
     <div
-      className={["ls-node", mode, tile.stack ? "stack" : "", selected ? "selected" : "", picked ? "picked" : "", tile.hidden && mode !== "focus" ? "hidden" : "", waiting ? "st-waiting" : "", s.status === "dead" ? "st-dead" : "", isRemote(s) ? "remote" : ""].filter(Boolean).join(" ")}
+      className={["ls-node", mode, tile.stack ? "stack" : "", selected ? "selected" : "", picked ? "picked" : "", handleShown ? "show-handle" : "", tile.hidden && mode !== "focus" ? "hidden" : "", waiting ? "st-waiting" : "", s.status === "dead" ? "st-dead" : "", isRemote(s) ? "remote" : ""].filter(Boolean).join(" ")}
       style={card ? { ...style, ["--ls-inv" as string]: inv } : { ...style, gridTemplateRows: `${WORKSPACE_HEAD}px minmax(0, 1fr) ${WORKSPACE_FOOT}px` }}
       data-ws={tile.key}
       data-front={s.id}

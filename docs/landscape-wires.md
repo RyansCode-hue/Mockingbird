@@ -3424,6 +3424,93 @@ columns under it.
 - Files: S8a's tour, sheet and empty landscape, once they're on main.
 - Tests: S8a's, each with its new entry. Board: Tour.dc.html, Empty.dc.html.
 
+#### W11 as built
+Built on main 6c1436f, rebased onto f58a16f. No main-process change; no new `window.mb` call.
+
+**The tour's third step** (`landscapeFirstRun.ts`, `LandscapeTour.tsx`, `Landscape.tsx`, `WorkspaceNode.tsx`):
+- "Wire workspaces into a pipeline" takes the place of S8a's stand-in, "Your sidebar's tools are windows now", so the
+  "Next:" line is the board's: "zooming and focus · wires · what needs you". Still four steps, on S8a's frame: its card,
+  ring, camera, keyboard hold and hand-back are unchanged, and keyArm.ts isn't touched.
+- What it spotlights (`tourWiresTarget`), worked out from what's drawn:
+  - wires drawn: the first wire (in the order made) between two places, its two ends together, as a `place`;
+  - no wires yet: a workspace's edge handle, a new `handle` target. `tourHandleOf` takes the selected workspace, else
+    an agent in step 1's area, else any agent, else any workspace; always this Mac's (a teammate's has no handle) and
+    outside a collapsed area. An agent comes first since wires are made from one (a terminal's only wire is a shared
+    worktree; a debrief and the Helpdesk tasks workspace take none);
+  - neither (only ghosts): no ring, the card in the window's middle (`none`).
+- The handle is shown for that step alone (`handleShown`, `.show-handle`, as a selected one's is), and nothing is
+  selected for it. The camera goes by the handle's workspace (S8a's `tourCamera`: moved only when it isn't wholly in
+  view or is under 160 px wide), since a handle is drawn only on a workspace at least 96 × 64 on screen; it goes back at
+  the end as before. The ring stands as close as a button's (chrome's pad and radius).
+
+**The sheet** (`landscapeShortcuts.ts`), 29 rows, each driven in `?landscapeFirstRunAudit=k`:
+- Build: Connect, "drag from the edge dot" (s1's dot dragged onto s8, the picker's ↵ after a pause makes the handoff),
+  and Add next step, "drag a wire into space" (s1's dot dropped on bare landscape opens the step dialog).
+- Work: "Along the pipeline (in focus)", "⌘⌥← / ⌘⌥→" (in focus on s1, ⌘⌥→ goes to s8 and ⌘⌥← back, along the wire
+  Connect made).
+- Rows are 4 px apart (were 5), so all 29 still fit 1024 × 768 unscrolled (621 of 621 px).
+
+**The empty landscape** (`EMPTY_TILES`, `styles.css`): five tiles, in the board's order with W19's last: Start from a
+ticket, Pipeline template (`new:pipeline`, W9's picker; with none saved it says so, as from the menu), New workspace,
+Resume a conversation (`new:import`: now called what its menu row is) and Helpdesk tasks (`new:helpdesk`, W19's
+`openHelpdesk`: the one there is shown, its ghost reopened, or the preset started, which main refuses in a team room's
+area, saying why). Three to a row, the short last row centred; two, then one, as the view narrows (a container query).
+A tile is pressed only by a click or an armed key: S8a's `keepKeyboard` and the disarmed landscape's swallowing are
+unchanged, and a disarmed Tab after a pause goes past the tiles (`tabPast` skips what's inside the landscape). The
+Helpdesk tile is W19's flow whole, so, as from the menu, the workspace it starts or shows gets the keyboard unless a key
+or press came meanwhile (`jumpToSession`'s stamp); nothing else here gives a terminal the keyboard.
+
+**Preview** (`stub.ts`, `firstRunAudit.ts`):
+- `presetStart` starts the built-in Helpdesk preset as main does (its tasks session in the Helpdesk area), refusing it,
+  in main's words, when that area is a room's; `?lsHelpdeskRoom` puts 5110's room there. Other presets still answer
+  that the preview doesn't start them.
+- `=k` drives the three rows, and keeps `rowNow` and `why` first in what it's found, so a run that stalls names its row.
+- `=u&case=handle`: a terminal (s4) selected, zoomed out past any handle, then the tour. `=e&tile=helpdesk` presses the
+  Helpdesk tile last. `=e` also checks keys on a disarmed landscape press no tile, and each tile's dialog or picker.
+
+**Tests:**
+- `test/landscapeFirstRun.test.ts` (+8): the tiles (the board's four and Helpdesk, in order; Resume and Helpdesk called
+  what their rows are), the wires step and its board line, `tourHandleOf` (selected first; agents, the tour's area
+  first; never a teammate's or a collapsed one), `tourWiresTarget`, and the sheet's wires rows.
+- `test/uiLandscapeFirstRun.test.ts`: every row driven (the three new); the tour's wires step on s1's dot, shown for
+  that step alone and nothing selected; a selected terminal's dot brought into view, the camera back and nothing
+  written; the first wire's two ends with `?lsWires`; no ring with only ghosts; the tiles' rows and order, the template
+  picker saying there are none, keys on a disarmed landscape pressing no tile; the Helpdesk tile starting the preset,
+  and refused in a room's area with main's reason said. The sheet's driven test gets three minutes (it took 86 s at
+  load 17; the new rows wait out the picker's and the step dialog's pause).
+
+**Copy for Ryan's OK** (new or changed; the board's words where it gives them):
+- Tour step 3 title: "Wire workspaces into a pipeline". Body: "Select a workspace, then drag the dot on its right edge
+  onto another to wire them: with a handoff, one's result becomes the next one's prompt. Drag it into empty space to add
+  the next step." Its "Next:" name: "wires" (the board's line). Gone: S8a's "Your sidebar's tools are windows now" step.
+- Sheet: Connect "drag from the edge dot"; Add next step "drag a wire into space"; "Along the pipeline (in focus)"
+  "⌘⌥← / ⌘⌥→".
+- Tiles: "Pipeline template / Ticket → build → review"; "Resume a conversation / From anywhere on this Mac" (was
+  "Import a conversation"); "Helpdesk tasks / Claude in your Chrome".
+
+**Deviations from the boards:**
+- Connect's keys say "drag from the edge dot", not "drag from an edge": the handle is a dot inside the right edge
+  (W4b), and a drag from the edge itself resizes.
+- Along the pipeline prints ⌘⌥← / ⌘⌥→, not ⌥← ⌥→: a plain ⌥ arrow in focus is its terminal's (a word left or right)
+  unless the frame was pressed first (W6); ⌘⌥ works wherever the keyboard is in focus.
+- "New workspace here" stays "right-click" (no double-click, S8a's), and New workspace's tile leaves out "collab" (still
+  coming); "Start from a ticket" keeps "From your ADO board" (S8a's).
+- Five tiles, three to a row with the last two centred, where the board has four in two columns: two columns would
+  leave a hole with W19's fifth.
+- The board's sheet has no ⌘N, Select several, Undo a Tidy, Clear, the windows' keys, ⌘P or ⌘J (S8a's additions, kept).
+- With nothing selected, step 3 rings an agent's handle in step 1's area (shown for the step, not selected); the spec
+  names only the selected workspace's. With wires drawn it rings the first wire's two ends.
+
+**Checked:** `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 198 files pass and 35 skip;
+3,506 tests pass and 347 skip (vitest linked into the worktree for `leakGuard`, the link removed after). Alone without
+CI: `uiLandscapeFirstRun`, 108 tests pass (the tour, the sheet's driven rows and its 1024 × 768 fit, the empty
+landscape). Screenshots, dark and
+light, beside Tour.dc.html and Empty.dc.html, in the session's scratchpad (`w11/shots/`). No mutation checks: no
+key-safety guard was changed.
+
+**Found, not fixed:** under heavy load (load average 40–57 from parallel builders), the driven sheet test twice stalled
+on Chrome not answering an input event within the driver's 20 s; at load 17 it passed in 86 s.
+
 ### W12 · Whole run. Size S
 - An e2e with fake `claude` and `codex` scripts through Settings' binaries: A
   finishes, the gate opens, Send, B starts from A's sha, B's queue flushes, quit

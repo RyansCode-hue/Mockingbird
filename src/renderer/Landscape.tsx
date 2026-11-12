@@ -109,7 +109,7 @@ import { keyboardClaimed, useKeyboardHome } from "./Modal";
 import { HOLDS_KEYS, KEYS_SWALLOWED, QUIET_KEYS, TYPING_MS, afterPause, armFocus, armOnPress, holdNowhere, inputStamp, isArmed, isNowhere, keyboardNowhere, keyboardSpell, sinceKey, swallowedNote, tabPast, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
 import { LandscapeEmpty } from "./LandscapeEmpty";
 import { LandscapeTour } from "./LandscapeTour";
-import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourSteps, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
+import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourHandleOf, tourSteps, tourWiresTarget, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
 import { typingAsksOf } from "./needsYouModel";
@@ -1437,21 +1437,38 @@ export function Landscape({
     const t = setInterval(() => ready() && clearInterval(t), TOUR_WAIT_MS);
     return () => clearInterval(t);
   }, [tourWanted]);
+  const wireBook = useWires().state;
+  const wireList = useMemo(() => wireViews(wireBook, layout, rooms), [wireBook, layout, rooms]);
   const tourArea = useRef<string | null>(null);
   if (tourUp && !layout.areas.some((a) => a.key === tourArea.current)) tourArea.current = tourAreaOf(layout, cam.current, vpNow.current);
-  const tourList = tourUp ? tourSteps(layout, tourArea.current) : null;
+  const tourWires = (): TourTarget => {
+    const placed = wireList.filter((v) => v.from.kind !== "pill" && v.to.kind !== "pill").map((v) => [v.from.rect, v.to.rect] as const);
+    return tourWiresTarget(placed, tourHandleOf(layout.tiles, sel?.key ?? null, tourArea.current, (s) => !isRemote(s)));
+  };
+  const tourList = tourUp ? tourSteps(layout, tourArea.current, tourWires()) : null;
   const tourStep = tourList ? Math.min(tourAt, tourList.length - 1) : 0;
   /** What a step on the landscape spotlights, as the camera has it now, in the view's px with what's drawn above it. */
-  const tourPlace = (t: Exclude<TourTarget, { kind: "chrome" }>): { rect: Rect; box: Box } | null => {
-    if (t.kind === "place") return { rect: t.rect, box: barAnchor(t.rect, cam.current, "none") };
+  const tourPlace = (t: Exclude<TourTarget, { kind: "chrome" | "none" }>): { rect: Rect; box: Box } | null => {
+    // a handle's workspace is what the camera brings into view: the handle is drawn only on one big enough on screen
+    if (t.kind === "place" || t.kind === "handle") return { rect: t.rect, box: barAnchor(t.rect, cam.current, "none") };
     const a = layoutNow.current.areas.find((x) => x.key === t.key);
     if (!a) return null;
     return { rect: areaShown(a), box: barAnchor(areaShown(a), cam.current, a.rect.collapsed ? "pill" : bandNow.current === "cards" ? "areaName" : "areaHeader") };
   };
   const tourTarget = tourList?.[tourStep].target;
-  const tourTargetKey = tourTarget && (tourTarget.kind === "chrome" ? null : tourTarget.kind === "area" ? `area:${tourTarget.key}` : `at:${tourTarget.rect.x},${tourTarget.rect.y}`);
+  const tourTargetKey =
+    tourTarget &&
+    (tourTarget.kind === "chrome" || tourTarget.kind === "none"
+      ? null
+      : tourTarget.kind === "area"
+        ? `area:${tourTarget.key}`
+        : tourTarget.kind === "handle"
+          ? `handle:${tourTarget.key}`
+          : `at:${tourTarget.rect.x},${tourTarget.rect.y}`);
+  /** The workspace whose edge handle the tour shows now: shown as a selected one's is, whether or not it's selected. */
+  const tourHandle = tourTarget?.kind === "handle" ? tourTarget.key : null;
   useEffect(() => {
-    if (!tourTarget || tourTarget.kind === "chrome" || !vpNow.current.w) return;
+    if (!tourTarget || tourTarget.kind === "chrome" || tourTarget.kind === "none" || !vpNow.current.w) return;
     const at = tourPlace(tourTarget);
     const to = at && tourCamera(at.rect, at.box, vpNow.current, topNow.current);
     if (!to) return;
@@ -2213,8 +2230,6 @@ export function Landscape({
   const areaViews = layout.areas.map((a) => ({ a, accent: accents.get(a.key) ?? accentOf(a.key), counts: areaCounts(layout.tiles, a.key, layout.ghosts), title: areaTitle(a.key), info: areaHooks.info(a.key) }));
   const loose = useMemo(() => (switcher ? looseStop(layout.tiles) : null), [switcher, layout]);
   const stops = useMemo(() => (loose ? [...layout.areas, loose] : layout.areas), [loose, layout]);
-  const wireBook = useWires().state;
-  const wireList = useMemo(() => wireViews(wireBook, layout, rooms), [wireBook, layout, rooms]);
   const wireBookNow = useRef(wireBook);
   wireBookNow.current = wireBook;
   const roomsNow = useRef(rooms);
@@ -2634,6 +2649,7 @@ export function Landscape({
       size={size}
       selected={sel?.key === t.key}
       picked={mode !== "focus" && pickedSet.has(t.key)}
+      handleShown={tourHandle === t.key}
       meters={meters}
       snapshot={mode === "snapshot" ? peek?.snap : null}
       inv={1 / cam.current.zoom}
@@ -2875,6 +2891,11 @@ export function Landscape({
           listeners={listeners.current}
           worldBox={(t) => {
             const v = viewport.current?.getBoundingClientRect();
+            if (t.kind === "handle") {
+              // none while its workspace is too small on screen to carry one (WorkspaceNode), or not drawn
+              const h = world.current?.querySelector(`.ls-node[data-ws="${CSS.escape(t.key)}"] > .ls-wh`)?.getBoundingClientRect();
+              return v && h?.width ? { box: { x: h.left, y: h.top, w: h.width, h: h.height }, within: { x: v.left, y: v.top, w: v.width, h: v.height } } : null;
+            }
             const pill = t.kind === "area" ? world.current?.querySelector(`.ls-area-pill[data-area="${CSS.escape(t.key)}"]`)?.getBoundingClientRect() : null;
             const at = tourPlace(t);
             if (!v || !at) return null;

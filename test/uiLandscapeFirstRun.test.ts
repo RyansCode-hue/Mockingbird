@@ -48,9 +48,9 @@ const hintSelected = (title: string) => `Click the landscape to use its keys; �
 
 describe.skipIf(!local)("the shortcuts sheet", () => {
   it("lists only what a real key press was seen to do, every row driven", async () => {
-    // needsMany: three or more in Needs you, so ⇧N going back can't pass for N going on. Every row driven takes most
-    // of a minute: Chrome gets two
-    const k = await run("k", "lsCamera=0,0,0.5&needsMany", "1440x900", 120_000);
+    // needsMany: three or more in Needs you, so ⇧N going back can't pass for N going on. Every row driven takes a
+    // minute or more, the wires' rows waiting out the picker's and the step dialog's pause: Chrome gets three
+    const k = await run("k", "lsCamera=0,0,0.5&needsMany", "1440x900", 180_000);
     expect(k.why).toEqual({});
     const ids = shortcutIds();
     expect(Object.keys(k.driven).sort()).toEqual([...ids].sort());
@@ -79,14 +79,17 @@ describe.skipIf(!local)("the shortcuts sheet", () => {
     expect(k.questionInTerminal.keyboard).toBe("terminal");
     expect(k.questionInTerminal.sheet).toBe(false);
     expect(k.questionInTerminal.typed).toBeGreaterThan(0);
-  }, 180_000);
+    // the wires' rows: a handoff from s1 to s8 picked with ↵, and the step dialog for what follows s1
+    expect(k.connected.ends).toMatch(/→ Release notes for #5101$/);
+    expect(k.nextStep.head).toMatch(/^Next step\s*after /);
+  }, 240_000);
 });
 
 describe.skipIf(!local)("the migration tour", () => {
   it("walks four steps on the real thing, then is done for good", async () => {
     const t = await run("t", "lsTour&do=done");
     expect(t.first).toMatchObject({ step: "areas", title: "Your groups are now areas", count: "1 of 4", buttons: ["Next", "Skip the tour"], keyboard: "tour", cardInWindow: true, cardOverRing: false });
-    expect(t.first.next).toBe("Next: zooming and focus · tool windows · what needs you");
+    expect(t.first.next).toBe("Next: zooming and focus · wires · what needs you");
     expect(t.ringAroundAnArea).toBe(true);
     expect(t.ringInView).toBe(true);
     // everything's in view at the fit, so the camera stays
@@ -96,7 +99,7 @@ describe.skipIf(!local)("the migration tour", () => {
     expect(t.afterPressAndTabs).toEqual({ tabbed: Array(5).fill("tour"), selection: true, tour: true });
     expect(t.focusSentAway).toBe("tour");
 
-    expect(t.steps.map((s: Out) => s.step)).toEqual(["areas", "zoom", "tools", "needs"]);
+    expect(t.steps.map((s: Out) => s.step)).toEqual(["areas", "zoom", "wires", "needs"]);
     expect(t.steps.map((s: Out) => s.count)).toEqual(["1 of 4", "2 of 4", "3 of 4", "4 of 4"]);
     for (const s of t.steps.slice(1)) {
       expect([s.step, s.ringHolds]).toEqual([s.step, true]);
@@ -104,10 +107,29 @@ describe.skipIf(!local)("the migration tour", () => {
       expect([s.step, s.cardOverRing]).toEqual([s.step, false]);
       expect([s.step, s.keyboard]).toEqual([s.step, "tour"]);
     }
+    // with no wires yet, the wires step rings an agent's edge dot in the first step's area, shown for it alone, and
+    // selects nothing
+    expect(t.steps[2]).toMatchObject({ title: "Wire workspaces into a pipeline", handleOn: "s1", selected: null });
+    expect(t.steps.filter((s: Out) => s.handleOn).map((s: Out) => s.step)).toEqual(["wires"]);
     // the last says Done, with nothing to skip
     expect(t.steps[3]).toMatchObject({ title: "What needs you is in one place", next: null, buttons: ["Done"] });
 
     expect(t.after).toEqual({ tour: false, scrim: false, tourDone: true, keyboard: "landscape", cameraBack: true });
+    expect(t.handleAfter).toBe(null);
+  }, 120_000);
+
+  it("rings the selected workspace's edge dot on the wires step, bringing it into view, and changes nothing", async () => {
+    // a terminal selected as the tour comes up, zoomed out past where a workspace carries a dot
+    const u = await run("u", "case=handle&lsCamera=0,0,0.08");
+    expect(u.dotBefore).toBe(false);
+    expect(u.wires).toMatchObject({ step: "wires", handleOn: "s4", selected: "s4", ringHolds: true, cardInWindow: true, cardOverRing: false, keyboard: "tour" });
+    expect(u.movedForIt).toBe(true);
+    expect(u.after).toEqual({ tour: false, selected: "s4", handle: null, cameraBack: true, keyboard: "landscape", writes: 0 });
+  }, 120_000);
+
+  it("rings the first wire drawn, both its ends, once there are wires", async () => {
+    const t = await run("t", "lsTour&do=done&lsWires");
+    expect(t.steps[2]).toMatchObject({ step: "wires", handleOn: null, ringHolds: true, cardInWindow: true, cardOverRing: false });
   }, 120_000);
 
   it("stays gone after a restart, however it ended", async () => {
@@ -141,7 +163,7 @@ describe.skipIf(!local)("the migration tour", () => {
     expect(t.ringAroundAnArea).toBe(true);
     expect(t.after.cameraBack).toBe(true);
     expect(t.cardEnd).toEqual({ opacity: "1", transform: "none" });
-    expect(t.steps.map((s: Out) => s.step)).toEqual(["areas", "zoom", "tools", "needs"]);
+    expect(t.steps.map((s: Out) => s.step)).toEqual(["areas", "zoom", "wires", "needs"]);
     expect(t.after.tourDone).toBe(true);
   }, 120_000);
 
@@ -163,7 +185,9 @@ describe.skipIf(!local)("the migration tour", () => {
     const t = await run("t", "lsTour&lsOnly=ghosts&do=done");
     expect(t.first.title).toBe("Your sessions are now workspaces");
     expect(t.ringInView).toBe(true);
-    expect(t.steps.map((s: Out) => s.step)).toEqual(["areas", "zoom", "tools", "needs"]);
+    expect(t.steps.map((s: Out) => s.step)).toEqual(["areas", "zoom", "wires", "needs"]);
+    // only ghosts: no workspace carries an edge dot, so the wires step points at nothing, its card whole in the window
+    expect(t.steps[2]).toMatchObject({ handleOn: null, ring: null, cardInWindow: true });
   }, 120_000);
 
   it("doesn't start, or settle that there's nothing to tour, until everything has been read", async () => {
@@ -645,7 +669,10 @@ describe.skipIf(!local)("the empty landscape", () => {
     const e = await run("e", "lsOnly=nothing");
     expect(e.state).toMatchObject({ kind: "empty", title: "An empty landscape", hud: false, closed: null });
     expect(e.state.tiles).toEqual(EMPTY_TILES.map((t) => `${t.title} / ${t.sub}`));
-    expect(e.state.tiles.join()).not.toMatch(/pipeline|collab|house/i);
+    expect(e.state.tiles.join()).not.toMatch(/collab|house/i);
+    // three to a row, the last two centred under them
+    expect(e.tileRows).toEqual([3, 2]);
+    expect(e.tileRowsCentred).toBe(true);
     expect(e.state.foot).toContain("Join a room…");
     expect(e.state.foot).not.toMatch(/team tab/i);
     expect(e.keyboardAtStart).toBe("landscape");
@@ -655,11 +682,30 @@ describe.skipIf(!local)("the empty landscape", () => {
     expect(Object.keys(e.menus)).toHaveLength(7);
     expect(e.keyboardAfterMenus).toBe("landscape");
     expect(e.marqueeFromWords).toBe(true);
+    // keys with the landscape given the keyboard by code press no tile: a burst is swallowed, and Tab after a pause
+    // leaves the landscape past its tiles
+    expect(e.tilesDisarmedAt).toBe("landscape");
+    expect(e.tilesDisarmed).toEqual({ opened: false, keyboard: "landscape" });
+    expect(e.tabPastTiles).toEqual({ onTile: false, offLandscape: true });
     expect(e.tilesOpen["new:ticket"]).toMatchObject({ launch: "Claude", mode: "New", ticket: true });
     expect(e.tilesOpen["new:claude"]).toMatchObject({ launch: "Claude", mode: "New" });
     expect(e.tilesOpen["new:import"]).toMatchObject({ mode: "Import" });
+    // the template picker, saying there are none, as it does from the menu
+    expect(e.tilesOpen["new:pipeline"]).toMatchObject({ picker: true });
+    expect(e.tilesOpen["new:pipeline"].none).toMatch(/^No templates yet/);
     expect(e.keyboardAfterDialog).toBe("landscape");
     expect(e.joinDialog).toMatch(/join/i);
+  }, 120_000);
+
+  it("starts the Helpdesk tasks workspace from its tile, as New workspace → Helpdesk tasks… does", async () => {
+    const e = await run("e", "lsOnly=nothing&tile=helpdesk");
+    expect(e.helpdesk).toMatchObject({ started: ["builtin:helpdesk"], created: ["Helpdesk"], empty: false, workspace: "tasks", said: [] });
+  }, 120_000);
+
+  it("refuses the Helpdesk tasks workspace where its area is a team room's, saying why", async () => {
+    const e = await run("e", "lsOnly=nothing&tile=helpdesk&lsHelpdeskRoom");
+    expect(e.helpdesk).toMatchObject({ started: ["builtin:helpdesk"], created: [], empty: true });
+    expect(e.helpdesk.said).toEqual([expect.stringMatching(/^Couldn't start the Helpdesk tasks workspace: .*never runs in a team room's area/)]);
   }, 120_000);
 
   it("isn't shown over ghosts, a placed tool window or an area, each brought into view", async () => {

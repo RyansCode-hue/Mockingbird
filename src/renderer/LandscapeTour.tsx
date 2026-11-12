@@ -14,6 +14,9 @@ const RING_INSET = 2;
 
 const inset = (b: Box, by: number): Box => ({ x: b.x + by, y: b.y + by, w: b.w - 2 * by, h: b.h - 2 * by });
 
+/** A target the size of a button (one in the chrome, or a workspace's edge handle): its ring stands close, rounded as a button's. */
+const buttonSized = (t: TourTarget) => t.kind === "chrome" || t.kind === "handle";
+
 /** A terminal on the landscape (not a peek's, nor the bottom panel's). */
 const LANDSCAPE_TERM = ".ls-world .xterm";
 
@@ -55,8 +58,8 @@ export function LandscapeTour({
   steps: readonly TourStep[];
   /** The step shown. */
   at: number;
-  /** An area's or a workspace's box in the window as the camera has it now, and the view's, which it's kept inside. */
-  worldBox: (t: Exclude<TourTarget, { kind: "chrome" }>) => { box: Box; within: Box } | null;
+  /** An area's, a workspace's or an edge handle's box in the window as the camera has it now, and the view's, which it's kept inside. */
+  worldBox: (t: Exclude<TourTarget, { kind: "chrome" | "none" }>) => { box: Box; within: Box } | null;
   listeners: Set<(cam: Camera) => void>;
   onNext: () => void;
   onSkip: () => void;
@@ -90,8 +93,8 @@ export function LandscapeTour({
     const { target, worldBox: world } = now.current;
     const view = { w: window.innerWidth, h: window.innerHeight };
     const whole: Box = { x: 0, y: 0, ...view };
-    const found = target.kind === "chrome" ? ((b) => b && { box: b, within: whole })(chromeBox(target.selector)) : world(target);
-    const box = found && ringAround(found.box, target.kind === "chrome" ? RING_PAD.chrome : RING_PAD.world, inset(found.within, RING_INSET));
+    const found = target.kind === "chrome" ? ((b) => b && { box: b, within: whole })(chromeBox(target.selector)) : target.kind === "none" ? null : world(target);
+    const box = found && ringAround(found.box, buttonSized(target) ? RING_PAD.chrome : RING_PAD.world, inset(found.within, RING_INSET));
     r.hidden = !box;
     if (box) Object.assign(r.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
     const under = (document.querySelector(".topbar")?.getBoundingClientRect().bottom ?? 0) + 8;
@@ -153,7 +156,7 @@ export function LandscapeTour({
       onMouseDown={(e) => e.target === e.currentTarget && e.preventDefault()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div ref={ring} className={`ls-tour-ring ${step.target.kind === "chrome" ? "chrome" : ""}`} aria-hidden="true" />
+      <div ref={ring} className={`ls-tour-ring ${buttonSized(step.target) ? "chrome" : ""}`} aria-hidden="true" />
       <div
         ref={presence}
         className="ls-tour-card"

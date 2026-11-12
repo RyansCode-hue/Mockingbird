@@ -7,11 +7,12 @@
  * =k: every row of the shortcuts sheet driven (`driven`, by the row's id), and `?` refused in a terminal and a text field.
  * =t (with ?lsTour): the tour's steps (`steps`: the ring, the target and the card at each), its keyboard, and how it ends:
  * &do=skip|esc|next|done. Reloads with ?lsPersist to say whether it comes back.
- * =u: the tour against what else is going on, by &case=terminal|typing|dropped|keys|field|ring|undo|dialog|palette|focus|tray.
+ * =u: the tour against what else is going on, by &case=terminal|typing|dropped|keys|field|ring|handle|undo|dialog|palette|focus|tray.
  * =c: the camera the tour moves, by &case=esc|skip|tab|restart|goto (cameraPart).
  * =a: typed keys against the landscape's arming (keyArm.ts), by &case=tour|peekLog|peekGone|jumpInTour|jumpKeys|press|zoomOut|cap|frame|
  * walk|pressNothing|mount|hud|hint|button|frameButton|lag|join|tabWalk|escape.
- * =e (with ?lsOnly=…): what's in the empty landscape's place, right-clicks all over it, its tiles and its links.
+ * =e (with ?lsOnly=…): what's in the empty landscape's place, right-clicks all over it, its tiles and its links;
+ * &tile=helpdesk presses the Helpdesk tasks tile last (with ?lsHelpdeskRoom, where main refuses it).
  * =b: the top bar's boxes at this window's width, + New's menu and its »; &case=tab for + New on another tab, &case=fold
  * for what folds, &case=sheet for the sheet at this size and beside the tray and the palette.
  */
@@ -21,6 +22,8 @@ import { SHORTCUTS } from "../renderer/landscapeShortcuts";
 import { consoleSaid, drive, type Asked } from "./needsYouAudit";
 import { armFocus } from "../renderer/keyArm";
 import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
+import { wiresNow } from "../renderer/WireLayer";
+import { wiresInOrder } from "../shared/wires";
 
 export interface FirstRunEnv {
   sessions: () => SessionInfo[];
@@ -110,6 +113,8 @@ const fit = async () => {
   await sleep(300);
 };
 const card = (front: string) => q(`.ls-world .ls-node[data-front="${front}"]`);
+/** A workspace's edge dot, drawn only while it's big enough on screen for one. */
+const dotOf = (front: string) => card(front)?.querySelector<HTMLElement>(":scope > .ls-wh") ?? null;
 
 /** A row's printed keys one by one ("⌘0 / ⌘1": ⌘0 and ⌘1), every one of which its step has to drive. */
 const tokensOf = (id: string): string[] =>
@@ -117,7 +122,7 @@ const tokensOf = (id: string): string[] =>
     .split(/\s*(?:·|\/|, then)\s*/)
     .filter(Boolean);
 const MODS: Record<string, "meta" | "shift" | "alt" | "ctrl"> = { "⌘": "meta", "⇧": "shift", "⌥": "alt", "⌃": "ctrl" };
-const NAMED: Record<string, string> = { Esc: "Escape", Enter: "Enter", "⇥": "Tab" };
+const NAMED: Record<string, string> = { Esc: "Escape", Enter: "Enter", "⇥": "Tab", "←": "ArrowLeft", "→": "ArrowRight" };
 /** The key press a printed key means: "⇧⌘F" is F with Shift and Command; null when it isn't one key. */
 function keyOf(token: string): { key: string; meta?: boolean; shift?: boolean; alt?: boolean; ctrl?: boolean } | null {
   const o: { meta?: boolean; shift?: boolean; alt?: boolean; ctrl?: boolean } = {};
@@ -134,6 +139,9 @@ function keyOf(token: string): { key: string; meta?: boolean; shift?: boolean; a
 async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<void> {
   const driven: Record<string, boolean> = {};
   const why: Record<string, string> = {};
+  // first, so the driver's "so far" (its first 600 characters) says which row a run that stalls was on
+  out.rowNow = null;
+  out.why = why;
   const used: Record<string, Set<string>> = {};
   const mark = (id: string, token: string) => {
     if (!tokensOf(id).includes(token)) throw new Error(`the sheet's ${id} row doesn't print ${token} (it prints ${tokensOf(id).join(", ")})`);
@@ -149,6 +157,7 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   /** A gesture row `id` prints as `token` ("right-click"), which the step does with the mouse. */
   const doing = (id: string, token: string) => mark(id, token);
   const row = async (id: string, prove: () => Promise<boolean | string>) => {
+    out.rowNow = id;
     try {
       const r = await prove();
       const missed = tokensOf(id).filter((t) => !used[id]?.has(t));
@@ -418,6 +427,65 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
     await afterEsc();
     return open === "New session" ? true : `dialog ${open}`;
   });
+  // wires (W4b, W8, W6): s1 (an agent) wired to s8, a step added after s1, and focus walked along the wire
+  const wiresMade = () => env.calls.filter((c) => c.fn === "wiresAdd").length;
+  await row("connect", async () => {
+    await fit();
+    await press("Escape");
+    await sleep(120);
+    const from = dotOf("s1");
+    if (!from) return "s1 has no edge dot at this zoom";
+    const a = middle(from);
+    const b = middle(card("s8")!);
+    const was = wiresMade();
+    doing("connect", "drag from the edge dot");
+    await act([{ move: a }, { drag: { x0: a.x, y0: a.y, x1: b.x, y1: b.y } }]);
+    await sleep(250);
+    const picker = q(".wp-pick:not(.mb-ghost)");
+    const ends = picker?.querySelector(".wp-ends")?.textContent?.replace(/\s+/g, " ").trim() ?? null;
+    // the picker takes no key of a burst: ↵ once keys have paused
+    await sleep(1100);
+    await press("Enter");
+    await sleep(400);
+    const made = env.calls.filter((c) => c.fn === "wiresAdd").slice(was);
+    out.connected = { ends, made: made.map((c) => c.args) };
+    const ok = !!picker && made.length === 1 && JSON.stringify(made[0].args).includes('"s1"') && JSON.stringify(made[0].args).includes('"s8"');
+    return ok ? true : `picker ${!!picker} (${ends}), made ${JSON.stringify(made.map((c) => c.args))}`;
+  });
+  await row("along", async () => {
+    // s1 is wired to s8 (connect, above): in focus, along the wire and back
+    await selectFirst();
+    await press("Enter");
+    await sleep(300);
+    const inFocus = () => q(".ls-focus .ls-node")?.dataset.front ?? null;
+    const at = inFocus();
+    await pressAs("along", "⌘⌥→");
+    await sleep(300);
+    const on = inFocus();
+    await pressAs("along", "⌘⌥←");
+    await sleep(300);
+    const back = inFocus();
+    await press("e", { meta: true });
+    await sleep(250);
+    return at === "s1" && on === "s8" && back === "s1" ? true : `focus ${at} → ${on} → ${back}`;
+  });
+  await row("nextStep", async () => {
+    await fit();
+    await press("Escape");
+    await sleep(120);
+    const from = dotOf("s1");
+    if (!from) return "s1 has no edge dot at this zoom";
+    const a = middle(from);
+    const b = barePoint();
+    doing("nextStep", "drag a wire into space");
+    await act([{ move: a }, { drag: { x0: a.x, y0: a.y, x1: b.x, y1: b.y } }]);
+    await sleep(350);
+    const step = q(".modal.ns-step:not(.mb-ghost)");
+    out.nextStep = { dialog: !!step, head: step?.querySelector(".ns-head")?.textContent?.replace(/\s+/g, " ").trim() ?? null };
+    await sleep(1100);
+    await afterEsc();
+    return !!step && !q(".modal.ns-step:not(.mb-ghost)") ? true : `the step's dialog ${!!step}, still open ${!!q(".modal.ns-step:not(.mb-ghost)")}`;
+  });
   await row("several", async () => {
     await fit();
     await press("Escape");
@@ -547,6 +615,20 @@ async function keysPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   out.why = why;
 }
 
+/** What the wires step points at: the edge dot shown, or else the first wire's two ends together. */
+const wiresTarget = (): Box | null => {
+  const dot = q(".ls-world .ls-node.show-handle > .ls-wh");
+  if (dot) return box(dot);
+  const links = wiresNow().state?.book?.links ?? {};
+  const first = wiresInOrder(links)[0]?.[1];
+  const ends = first ? [first.from, first.to].map((id) => box(q(`.ls-world .ls-node[data-front="${CSS.escape(id)}"]`))) : [];
+  if (ends.length !== 2 || !ends[0] || !ends[1]) return null;
+  const [a, b] = ends as Box[];
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+};
+
 /** The tour's card, ring and what's under them at this step. */
 const tourNow = () => {
   const ring = q(".ls-tour-ring");
@@ -554,8 +636,7 @@ const tourNow = () => {
   const target = c?.dataset.step;
   const rb = ring && !ring.hidden ? box(ring) : null;
   const cb = box(c);
-  const t =
-    target === "zoom" ? box(q(".ls-hud")) : target === "needs" ? box(q(".ny-btn")) : target === "tools" ? box(q(".activitybar .ab-btn")) : null;
+  const t = target === "zoom" ? box(q(".ls-hud")) : target === "needs" ? box(q(".ny-btn")) : target === "wires" ? wiresTarget() : null;
   return {
     step: target ?? null,
     title: q(".ls-tour-title")?.textContent ?? null,
@@ -570,6 +651,9 @@ const tourNow = () => {
     cardInWindow: within(cb, win()),
     cardOverRing: overlap(cb, rb),
     keyboard: keyboard(),
+    // the workspace whose edge dot is shown for the step, and what's selected
+    handleOn: q(".ls-world .ls-node.show-handle")?.dataset.ws ?? null,
+    selected: selected(),
   };
 };
 const tourNext = async () => {
@@ -654,6 +738,7 @@ async function tourPart(env: FirstRunEnv, out: Record<string, unknown>): Promise
   await finishAll();
   await sleep(100);
   out.after = { tour: !!q(".ls-tour-card"), scrim: !!q(".ls-tour-back"), tourDone: env.stored().tourDone === true, keyboard: keyboard(), cameraBack: !moved(camAtStart, camera()) };
+  out.handleAfter = q(".ls-world .ls-node.show-handle")?.dataset.ws ?? null;
   out.note = q(".ls-note")?.textContent ?? null;
   out.banners = qs(".ls-banner .m").map((b) => b.textContent);
   if (params.has("lookAgain")) {
@@ -793,6 +878,30 @@ async function tourAgainstPart(env: FirstRunEnv, out: Record<string, unknown>): 
     window.dispatchEvent(new Event("resize"));
     await sleep(200);
     out.targetGone = { ring: !q<HTMLElement>(".ls-tour-ring")!.hidden, cardInWindow: within(box(q(".ls-tour-card")), win()) };
+  } else if (which === "handle") {
+    // s4 (a terminal) selected as the tour comes up, zoomed out (?lsCamera) past where it carries an edge dot: the wires
+    // step is about its dot all the same, brought into view, and the tour ends with it as it was
+    await clickOn(card("s4")!);
+    await sleep(200);
+    await giveLandscape();
+    out.dotBefore = !!dotOf("s4");
+    const cam = camera();
+    // saving that the tour was seen is the one write it makes
+    const writes = () => env.calls.filter((c) => ["sessionWrite", "setGroup", "wiresAdd", "planSession"].includes(c.fn)).length;
+    const was = writes();
+    await startTour();
+    await sleep(300);
+    for (let i = 0; i < 2; i++) {
+      await clickOn(q('.ls-tour-card [data-act="next"]')!);
+      await sleep(400);
+    }
+    out.wires = tourNow();
+    out.movedForIt = moved(cam, camera());
+    for (let i = 0; i < 2; i++) {
+      await clickOn(q('.ls-tour-card [data-act="next"]')!);
+      await sleep(400);
+    }
+    out.after = { tour: !!q(".ls-tour-card"), selected: selected(), handle: q(".ls-world .ls-node.show-handle")?.dataset.ws ?? null, cameraBack: !moved(cam, camera()), keyboard: keyboard(), writes: writes() - was };
   } else if (which === "undo") {
     // a Tidy's Undo outlives saving that the tour was seen, which changes nothing it could undo
     await fit();
@@ -1004,6 +1113,15 @@ async function emptyPart(env: FirstRunEnv, out: Record<string, unknown>): Promis
     saysEmpty: /an empty landscape/i.test(q(".ls-wrap")?.textContent ?? ""),
   });
   out.state = state();
+  // the tiles' rows, by where they sit, and whether each row is centred under the first
+  const tileBoxes = qs(".ls-empty-tile").map((t) => box(t)!);
+  const rowTops = [...new Set(tileBoxes.map((b) => Math.round(b.y)))].sort((a, b) => a - b);
+  const centre = (y: number) => {
+    const r = tileBoxes.filter((b) => Math.round(b.y) === y);
+    return (Math.min(...r.map((b) => b.x)) + Math.max(...r.map((b) => b.x + b.w))) / 2;
+  };
+  out.tileRows = rowTops.map((y) => tileBoxes.filter((b) => Math.round(b.y) === y).length);
+  out.tileRowsCentred = rowTops.every((y) => Math.abs(centre(y) - centre(rowTops[0])) < 1.5);
   out.tourDone = env.stored().tourDone === true;
   out.tour = !!q(".ls-tour-card");
   out.banners = qs(".ls-banner .t").map((b) => b.textContent);
@@ -1091,16 +1209,36 @@ async function emptyPart(env: FirstRunEnv, out: Record<string, unknown>): Promis
   await act([{ drag: { x0: words.x, y0: words.y, x1: words.x + 140, y1: words.y + 90, hold: "up" } }]);
   await sleep(120);
 
-  // each tile runs the create menu's row: the New session dialog as that row opens it
+  // keys with the landscape given the keyboard by code (disarmed, keyArm.ts) press no tile: a burst's Tab, Enter and
+  // Space are swallowed, and a Tab after a pause leaves the landscape for the top bar, past the tiles
+  vp().focus({ preventScroll: true });
+  vp().blur();
+  vp().focus({ preventScroll: true });
+  await sleep(60);
+  out.tilesDisarmedAt = keyboard();
+  const opened = () => !!q(".modal:not(.mb-ghost)") || env.calls.some((c) => c.fn === "presetStart");
+  await act([{ key: "x" }, { key: "Tab" }, { key: "Enter" }, { key: "Tab" }, { key: " " }]);
+  await sleep(250);
+  out.tilesDisarmed = { opened: opened(), keyboard: keyboard() };
+  await sleep(1100);
+  await press("Tab");
+  await sleep(100);
+  out.tabPastTiles = { onTile: !!document.activeElement?.closest(".ls-empty-tile"), offLandscape: !vp().contains(document.activeElement) };
+  await giveLandscape();
+
+  // each tile runs the create menu's row: the New session dialog, or the template picker, as that row opens them. The
+  // Helpdesk tile starts a workspace, so it's pressed last (&helpdesk)
   const dialogNow = () => {
     const d = q(".modal.ns");
-    return d ? { launch: d.querySelector(".ns-launch button.on")?.textContent ?? null, mode: d.querySelector(".ns-mode button.on")?.textContent ?? null, ticket: !!qs(".modal.ns *").find((e) => /ticket/i.test(e.className?.toString() ?? "") && e.tagName !== "BUTTON") } : null;
+    if (d) return { launch: d.querySelector(".ns-launch button.on")?.textContent ?? null, mode: d.querySelector(".ns-mode button.on")?.textContent ?? null, ticket: !!qs(".modal.ns *").find((e) => /ticket/i.test(e.className?.toString() ?? "") && e.tagName !== "BUTTON") };
+    const p = q(".modal.tp:not(.mb-ghost)");
+    return p ? { picker: true, none: q(".modal.tp [data-empty=templates]")?.textContent?.trim() ?? null } : null;
   };
   const tiles: Record<string, unknown> = {};
-  for (const t of qs(".ls-empty-tile")) {
+  for (const t of qs(".ls-empty-tile").filter((x) => x.dataset.tile !== "new:helpdesk")) {
     const key = t.dataset.tile!;
     await clickOn(t);
-    await sleep(300);
+    await sleep(400);
     tiles[key] = dialogNow();
     await afterEsc();
     await sleep(120);
@@ -1141,6 +1279,25 @@ async function emptyPart(env: FirstRunEnv, out: Record<string, unknown>): Promis
     }
     const n = q(".ls-world .ls-node");
     out.made = { empty: !!q(".ls-empty"), workspace: !!n, inView: overlap(box(n), box(vp())), tour: !!q(".ls-tour-card"), tourDone: env.stored().tourDone === true };
+  }
+
+  // &tile=helpdesk: the Helpdesk tile is New workspace → Helpdesk tasks…: the built-in preset started (main refuses it
+  // in a team room's area, ?lsHelpdeskRoom, and says why)
+  if (params.get("tile") === "helpdesk") {
+    const said: string[] = [];
+    window.alert = (m?: unknown) => void said.push(String(m));
+    const mark = env.calls.length;
+    await clickOn(q('.ls-empty-tile[data-tile="new:helpdesk"]')!);
+    await sleep(1200);
+    const n = q(".ls-world .ls-node");
+    out.helpdesk = {
+      started: env.calls.slice(mark).filter((c) => c.fn === "presetStart").map((c) => c.args[0]),
+      created: env.sessions().filter((s) => s.role === "tasks").map((s) => s.taskGroup),
+      empty: !!q(".ls-empty"),
+      workspace: n?.dataset.front ? env.sessions().find((s) => s.id === n.dataset.front)?.role ?? null : null,
+      said,
+      keyboard: keyboard(),
+    };
   }
 }
 

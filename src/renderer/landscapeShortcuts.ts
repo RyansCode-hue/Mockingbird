@@ -35,6 +35,8 @@ export const SHORTCUTS: readonly ShortcutSection[] = [
     rows: [
       { id: "focus", what: "Focus the selected workspace", keys: "Enter · ⌘E" },
       { id: "back", what: "Back to the landscape", keys: "⌘E · ⌘Esc" },
+      // ⌘⌥, which work wherever the keyboard is in focus: a plain ⌥← ⌥→ in its terminal moves by a word there
+      { id: "along", what: "Along the pipeline (in focus)", keys: "⌘⌥← / ⌘⌥→" },
       { id: "needs", what: "Next / previous that needs you", keys: "N / ⇧N" },
       { id: "waiting", what: "Next session waiting on you", keys: "⌥⇥" },
       { id: "peek", what: "Peek at a card", keys: "hover · Space holds" },
@@ -51,6 +53,9 @@ export const SHORTCUTS: readonly ShortcutSection[] = [
     rows: [
       { id: "newHere", what: "New workspace here", keys: "right-click" },
       { id: "newDialog", what: "New session", keys: "⌘N" },
+      // the handle is a dot just inside the right edge: the edge itself resizes
+      { id: "connect", what: "Connect", keys: "drag from the edge dot" },
+      { id: "nextStep", what: "Add next step", keys: "drag a wire into space" },
       { id: "several", what: "Select several", keys: "⇧-click · marquee" },
       { id: "makeArea", what: "Make area from selection", keys: "marquee, then M" },
       { id: "tidy", what: "Tidy the area", keys: "T" },

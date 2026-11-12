@@ -14,10 +14,14 @@ import {
   tourCamera,
   tourCameraFrom,
   tourCardAt,
+  tourHandleOf,
   tourNext,
   tourSteps,
+  tourWiresTarget,
   type ListRead,
+  type TourTarget,
 } from "../src/renderer/landscapeFirstRun";
+import type { SessionInfo } from "../src/shared/types";
 import { fitRects, flagOnly, type ResolvedLayout } from "../src/renderer/landscapeModel";
 import { SHEET_FOOT, SHORTCUTS, shortcutIds } from "../src/renderer/landscapeShortcuts";
 import { actionOf, createActions } from "../src/renderer/workspaceActions";
@@ -98,7 +102,14 @@ describe("the empty landscape's tiles", () => {
   });
   it("promise nothing the create menu has as coming", () => {
     for (const a of rows.filter((x) => x.disabled)) expect(EMPTY_TILES.map((t) => t.row)).not.toContain(a.key);
-    expect(EMPTY_TILES.map((t) => `${t.title} ${t.sub}`).join(" ")).not.toMatch(/collab|pipeline|house/i);
+    expect(EMPTY_TILES.map((t) => `${t.title} ${t.sub}`).join(" ")).not.toMatch(/collab|house/i);
+  });
+  it("are the board's four and the Helpdesk tasks workspace, in its order", () => {
+    expect(EMPTY_TILES.map((t) => t.row)).toEqual(["new:ticket", "new:pipeline", "new:claude", "new:import", "new:helpdesk"]);
+    expect(EMPTY_TILES.map((t) => t.title)).toEqual(["Start from a ticket", "Pipeline template", "New workspace", "Resume a conversation", "Helpdesk tasks"]);
+  });
+  it("are called what their row is, where the row is the tile's one flow", () => {
+    for (const key of ["new:import", "new:helpdesk"]) expect([key, EMPTY_TILES.find((t) => t.row === key)?.title]).toEqual([key, actionOf(rows, key)?.label]);
   });
 });
 
@@ -108,8 +119,16 @@ describe("the tour's steps", () => {
     expect(steps.map((s) => s.id)).toEqual(["areas", ...TOUR_LATER.map((s) => s.id)]);
     expect(steps).toHaveLength(4);
     expect(steps[0]).toMatchObject({ title: "Your groups are now areas", target: { kind: "area", key: "5101" } });
-    expect(steps.map((s) => s.title)).toContain("Your sidebar's tools are windows now");
+    expect(steps.map((s) => s.id)).toEqual(["areas", "zoom", "wires", "needs"]);
+    expect(steps[2]).toMatchObject({ title: "Wire workspaces into a pipeline", target: { kind: "none" } });
     expect(new Set(steps.map((s) => s.id)).size).toBe(4);
+  });
+
+  it("put the wires step on what it's given, and nothing else on it", () => {
+    const at: TourTarget = { kind: "handle", key: "s1", rect: R(1, 2) };
+    const steps = tourSteps({ tiles: [], ghosts: [] }, "5101", at)!;
+    expect(steps[2].target).toEqual(at);
+    expect(steps.filter((s) => s.target === at)).toHaveLength(1);
   });
 
   it("speak of workspaces, on the first one drawn, when no area is", () => {
@@ -127,9 +146,52 @@ describe("the tour's steps", () => {
 
   it("say what comes next, and nothing on the last", () => {
     const steps = tourSteps({ tiles: [], ghosts: [] }, "a")!;
-    expect(tourNext(steps, 0)).toBe("Next: zooming and focus · tool windows · what needs you");
+    // the board's line
+    expect(tourNext(steps, 0)).toBe("Next: zooming and focus · wires · what needs you");
     expect(tourNext(steps, 2)).toBe("Next: what needs you");
     expect(tourNext(steps, 3)).toBeNull();
+  });
+
+  it("name only gestures the sheet lists in the wires step", () => {
+    const wires = TOUR_LATER.find((s) => s.id === "wires")!;
+    const sheet = SHORTCUTS.flatMap((s) => s.rows);
+    expect(sheet.find((r) => r.id === "connect")?.keys).toMatch(/edge dot/);
+    expect(sheet.find((r) => r.id === "nextStep")?.keys).toMatch(/into space/);
+    expect(wires.body).toMatch(/dot on its right edge onto another/);
+    expect(wires.body).toMatch(/into empty space to add the next step/);
+  });
+});
+
+describe("what the wires step points at", () => {
+  const own = (s: SessionInfo) => !s.room;
+  const ws = (key: string, a: string, front: Partial<SessionInfo> = {}, rect = R(), hidden = false) => ({ key, area: a, rect, hidden, front: { id: key, ...front } as SessionInfo });
+  const theirs = { room: { remote: true } } as unknown as Partial<SessionInfo>;
+
+  it("is the selected workspace's edge dot, whatever it is", () => {
+    const tiles = [ws("a", "5101"), ws("t", "5101", { shell: true }, R(7, 8))];
+    expect(tourHandleOf(tiles, "t", "5101", own)).toEqual({ key: "t", rect: R(7, 8) });
+  });
+
+  it("with nothing selected, is an agent's: in the tour's area first, then anywhere", () => {
+    const tiles = [ws("term", "5101", { shell: true }), ws("help", "Helpdesk", { role: "tasks" }), ws("brief", "x", { debrief: true }), ws("far", "5102"), ws("near", "5101")];
+    expect(tourHandleOf(tiles, null, "5101", own)?.key).toBe("near");
+    expect(tourHandleOf(tiles, null, "9999", own)?.key).toBe("far");
+    // with no agent, a terminal's is still a handle
+    expect(tourHandleOf([ws("term", "5101", { shell: true })], null, "5101", own)?.key).toBe("term");
+  });
+
+  it("is never a teammate's workspace, nor one in a collapsed area, even selected", () => {
+    const tiles = [ws("nick", "5110", theirs), ws("hid", "5101", {}, R(), true)];
+    expect(tourHandleOf(tiles, "nick", "5110", own)).toBeNull();
+    expect(tourHandleOf(tiles, "hid", "5101", own)).toBeNull();
+    expect(tourHandleOf([...tiles, ws("mine", "5101")], "nick", "5110", own)?.key).toBe("mine");
+  });
+
+  it("is the first wire drawn, its two ends together, ahead of any handle", () => {
+    const handle = { key: "a", rect: R() };
+    expect(tourWiresTarget([[R(0, 0, 100, 50), R(300, 200, 100, 100)], [R(900, 900), R(1200, 900)]], handle)).toEqual({ kind: "place", rect: R(0, 0, 400, 300) });
+    expect(tourWiresTarget([], handle)).toEqual({ kind: "handle", key: "a", rect: R() });
+    expect(tourWiresTarget([], null)).toEqual({ kind: "none" });
   });
 });
 
@@ -245,8 +307,16 @@ describe("the shortcuts sheet's rows", () => {
   });
   it("name nothing this build doesn't have", () => {
     const words = SHORTCUTS.flatMap((s) => s.rows.map((r) => `${r.what} ${r.keys}`)).join("\n");
-    expect(words).not.toMatch(/connect|wire|pipeline|next step|double-click|collab|⌥←|⌥→/i);
+    expect(words).not.toMatch(/double-click|collab/i);
     expect(SHEET_FOOT).not.toMatch(/any time/i);
+  });
+  it("have the wires' rows: Connect and Add next step under Build, along the pipeline under Work", () => {
+    const rows = (title: string) => SHORTCUTS.find((s) => s.title === title)!.rows;
+    expect(rows("Build").map((r) => r.what)).toEqual(expect.arrayContaining(["Connect", "Add next step"]));
+    const along = rows("Work").find((r) => r.id === "along")!;
+    expect(along.what).toBe("Along the pipeline (in focus)");
+    // ⌘⌥, which work anywhere in focus: a bare ⌥← or ⌥→ typed in its terminal is the terminal's
+    expect(along.keys.split(/\s*\/\s*/)).toEqual(["⌘⌥←", "⌘⌥→"]);
   });
   it("include what the design lacks: ⇧N, ⌘= and ⌘-, and the windows' keys", () => {
     const keys = SHORTCUTS.flatMap((s) => s.rows.map((r) => r.keys)).join("\n");

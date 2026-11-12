@@ -1,5 +1,6 @@
 import type { Camera, LandscapeProblem, Rect, Size } from "../shared/landscape";
-import { areaShown, cameraFrom, fitBelow, type ResolvedLayout } from "./landscapeModel";
+import type { SessionInfo } from "../shared/types";
+import { areaShown, cameraFrom, fitBelow, type ResolvedLayout, type Tile } from "./landscapeModel";
 
 /**
  * First run on the landscape (docs/landscape.md, First run and empty landscape), the rules apart from the drawing:
@@ -88,14 +89,26 @@ export interface EmptyTile {
 /** The tiles, in order, one entry each: a tile joins when its flow is a row of the create menu that isn't "coming". */
 export const EMPTY_TILES: readonly EmptyTile[] = [
   { row: "new:ticket", title: "Start from a ticket", sub: "From your ADO board" },
+  { row: "new:pipeline", title: "Pipeline template", sub: "Ticket → build → review" },
   { row: "new:claude", title: "New workspace", sub: "Claude, Codex, terminal" },
-  { row: "new:import", title: "Import a conversation", sub: "From anywhere on this Mac" },
+  // called what its row is (Resume a conversation…), so the tile and the menu name one flow
+  { row: "new:import", title: "Resume a conversation", sub: "From anywhere on this Mac" },
+  { row: "new:helpdesk", title: "Helpdesk tasks", sub: "Claude in your Chrome" },
 ];
 
 // ---- the tour ----------------------------------------------------------------------------------
 
-/** What a step spotlights: an area, a loose workspace or ghost (by its rectangle), or something in the window's chrome. */
-export type TourTarget = { kind: "area"; key: string } | { kind: "place"; rect: Rect } | { kind: "chrome"; selector: string };
+/**
+ * What a step spotlights: an area, a loose workspace or ghost (by its rectangle), a workspace's edge handle (`key`, its
+ * tile's; the camera goes by the workspace's `rect`), something in the window's chrome, or nothing, its card then in the
+ * window's middle.
+ */
+export type TourTarget =
+  | { kind: "area"; key: string }
+  | { kind: "place"; rect: Rect }
+  | { kind: "handle"; key: string; rect: Rect }
+  | { kind: "chrome"; selector: string }
+  | { kind: "none" };
 
 export interface TourStep {
   id: string;
@@ -107,8 +120,9 @@ export interface TourStep {
 }
 
 /**
- * The steps after the first, in order, one entry each. They spotlight chrome that's always there, so none depends on
- * what's on the landscape. Each says only what this build does: its keys are the ones the sheet lists.
+ * The steps after the first, in order, one entry each. Each says only what this build does: its keys and gestures are
+ * the ones the sheet lists. The wires step's target is what's on the landscape (tourSteps' `wires`); the others
+ * spotlight chrome that's always there.
  */
 export const TOUR_LATER: readonly TourStep[] = [
   {
@@ -119,11 +133,11 @@ export const TOUR_LATER: readonly TourStep[] = [
     target: { kind: "chrome", selector: ".ls-hud" },
   },
   {
-    id: "tools",
-    title: "Your sidebar's tools are windows now",
-    body: "Files, Changes, Search and Run & debug open as windows on the landscape, beside the workspace they work on. Their buttons are on this rail, and in a workspace's ⋯ menu and its selection bar.",
-    next: "tool windows",
-    target: { kind: "chrome", selector: ".activitybar .ab-btn" },
+    id: "wires",
+    title: "Wire workspaces into a pipeline",
+    body: "Select a workspace, then drag the dot on its right edge onto another to wire them: with a handoff, one's result becomes the next one's prompt. Drag it into empty space to add the next step.",
+    next: "wires",
+    target: { kind: "none" },
   },
   {
     id: "needs",
@@ -133,6 +147,41 @@ export const TOUR_LATER: readonly TourStep[] = [
     target: { kind: "chrome", selector: ".ny-btn" },
   },
 ];
+
+/** A box round all of `rects`. */
+const around = (rects: readonly Rect[]): Rect => {
+  const x = Math.min(...rects.map((r) => r.x));
+  const y = Math.min(...rects.map((r) => r.y));
+  return { x, y, w: Math.max(...rects.map((r) => r.x + r.w)) - x, h: Math.max(...rects.map((r) => r.y + r.h)) - y };
+};
+
+/**
+ * The workspace whose edge handle the wires step shows: the selected one, else an agent in the tour's area, else any
+ * agent, else any workspace, all of this Mac's (`own`: a teammate's workspace has no handle) and outside a collapsed
+ * area. An agent comes first, since wires are made from one: a terminal's only wire is a shared worktree to an agent,
+ * and a debrief or the Helpdesk tasks workspace takes none.
+ */
+export function tourHandleOf(
+  tiles: readonly Pick<Tile, "key" | "area" | "rect" | "hidden" | "front">[],
+  selected: string | null,
+  areaKey: string | null,
+  own: (s: SessionInfo) => boolean
+): { key: string; rect: Rect } | null {
+  const mine = tiles.filter((t) => !t.hidden && own(t.front));
+  const agent = (t: (typeof mine)[number]) => !t.front.shell && !t.front.debrief && t.front.role !== "tasks";
+  const pick = mine.find((t) => t.key === selected) ?? mine.find((t) => t.area === areaKey && agent(t)) ?? mine.find(agent) ?? mine[0];
+  return pick ? { key: pick.key, rect: pick.rect } : null;
+}
+
+/**
+ * What the wires step spotlights: the first wire drawn (`wireEnds`, its two ends' places, in the order made), the pair
+ * together; with none yet, a workspace's edge handle (tourHandleOf); with neither, nothing.
+ */
+export function tourWiresTarget(wireEnds: readonly (readonly [Rect, Rect])[], handle: { key: string; rect: Rect } | null): TourTarget {
+  const wire = wireEnds[0];
+  if (wire) return { kind: "place", rect: around(wire) };
+  return handle ? { kind: "handle", ...handle } : { kind: "none" };
+}
 
 /** The card's "Next:" line after step `i`; null on the last. */
 export const tourNext = (steps: readonly TourStep[], i: number): string | null =>
@@ -165,9 +214,10 @@ export function tourAreaOf(l: Pick<ResolvedLayout, "areas" | "tiles" | "ghosts">
 
 /**
  * The tour on this landscape: its first step, about an area (`areaKey`) or, with none drawn, the first loose workspace
- * or ghost, then TOUR_LATER. Null when there's neither (nothingToTour).
+ * or ghost, then TOUR_LATER, the wires step spotlighting `wires` (tourWiresTarget). Null when there's neither
+ * (nothingToTour).
  */
-export function tourSteps(l: Pick<ResolvedLayout, "tiles" | "ghosts">, areaKey: string | null): TourStep[] | null {
+export function tourSteps(l: Pick<ResolvedLayout, "tiles" | "ghosts">, areaKey: string | null, wires: TourTarget = { kind: "none" }): TourStep[] | null {
   const loose = l.tiles.find((t) => !t.hidden) ?? l.ghosts.find((t) => !t.hidden);
   if (!areaKey && !loose) return null;
   const first: TourStep = areaKey
@@ -185,7 +235,7 @@ export function tourSteps(l: Pick<ResolvedLayout, "tiles" | "ghosts">, areaKey: 
         next: "workspaces",
         target: { kind: "place", rect: loose!.rect },
       };
-  return [first, ...TOUR_LATER];
+  return [first, ...TOUR_LATER.map((s) => (s.id === "wires" ? { ...s, target: wires } : s))];
 }
 
 /** A box in the window, in px. */
