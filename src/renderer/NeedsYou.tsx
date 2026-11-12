@@ -122,16 +122,12 @@ export function NeedsYou({
   const [last, setLast] = useState<NeedsItem | null>(null);
   const guardUntil = useRef(0);
   const guarded = () => Date.now() < guardUntil.current;
-  // the items answered and waiting on main, by their state (sig): a new ask from the same teammate is a new state
+  // the rows answered and waiting on main, by what they show (`settle`: the item, its state and its buttons): a new
+  // ask from the same teammate, or the same wire's pending blocked again, is a new row whose buttons are on
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
-  const free = (sig: string) => setBusy((b) => new Set([...b].filter((x) => x !== sig)));
-  const shownSigs = state.items.map((i) => i.sig).join("\n");
-  // an answered item's state goes once main has it: let go of those no longer listed
-  useEffect(() => {
-    const shown = new Set(shownSigs.split("\n"));
-    setBusy((b) => ([...b].every((s) => shown.has(s)) ? b : new Set([...b].filter((s) => shown.has(s)))));
-  }, [shownSigs]);
-  // a row that arrived, moved or changed what it's about (its state) is under a pointer aimed at what was there
+  const free = (settle: string) => setBusy((b) => new Set([...b].filter((x) => x !== settle)));
+  // a row that arrived, moved, changed what it's about (its state) or what its buttons are is under a pointer aimed at
+  // what was there
   const rowWait = useSettledRows(list, ".ny-item[data-settle]", (el) => el.dataset.settle);
   const { holdOff, heldOff } = useHeldOff();
   const close = (how?: "escape" | "outside" | "away") => {
@@ -139,6 +135,16 @@ export function NeedsYou({
     // Escape gives the keyboard back to the button that opened it; Go there gives it to the landscape
     if (how === "escape") btn.current?.focus({ preventScroll: true });
   };
+  const rows = state.items.map((item) => {
+    const acts = actionsFor(item, close);
+    return { item, acts, settle: `${item.id}|${item.sig}|${acts.map((a) => a.key).join(",")}` };
+  });
+  const shownRows = rows.map((r) => r.settle).join("\n");
+  // an answered row goes, or changes, once main has it: let go of those no longer shown as they were
+  useEffect(() => {
+    const shown = new Set(shownRows.split("\n"));
+    setBusy((b) => ([...b].every((s) => shown.has(s)) ? b : new Set([...b].filter((s) => shown.has(s)))));
+  }, [shownRows]);
   useEffect(() => {
     if (!open) return;
     // the tray floats over the dialogs' backdrop; the keyboard comes back to the button, as the tray won't be there
@@ -182,27 +188,27 @@ export function NeedsYou({
     a.onPick();
     setLast(item);
   };
-  const onAnswer = (item: NeedsItem, a: ModelAction, e: React.MouseEvent) => {
-    if (!a.answer || busy.has(item.sig)) return;
+  const onAnswer = (item: NeedsItem, a: ModelAction, settle: string, e: React.MouseEvent) => {
+    if (!a.answer || busy.has(settle)) return;
     // a key's click gives only Deny, the safe answer; a pointer's, one aimed at a row that has settled (answerGuard.ts)
     if (keyClick(e)) {
       if (a.key !== "deny") return;
     } else {
-      const wait = Math.max(guardUntil.current - Date.now(), rowWait(`${item.id}|${item.sig}`), cameraWait());
+      const wait = Math.max(guardUntil.current - Date.now(), rowWait(settle), cameraWait());
       if (wait > 0) {
         // let go, its button off until a click there would count: the keyboard stays with the tray as it goes off
         (e.currentTarget as HTMLElement).closest<HTMLElement>(".ny-tray")?.focus({ preventScroll: true });
-        return holdOff(`${item.sig}:${a.key}`, wait);
+        return holdOff(`${settle}:${a.key}`, wait);
       }
     }
     hold(e);
-    setBusy((b) => new Set(b).add(item.sig));
+    setBusy((b) => new Set(b).add(settle));
     // answered, the row stays off until main's word takes it away; refused (said by the answer), it's back on
     a.answer().then(
-      (error) => error && free(item.sig),
+      (error) => error && free(settle),
       (err: unknown) => {
         console.error(`[mockingbird] answering ${item.id} from Needs you failed:`, err);
-        free(item.sig);
+        free(settle);
       }
     );
   };
@@ -260,51 +266,53 @@ export function NeedsYou({
               </div>
             )}
             {!n && !state.joinError && !state.pipelineError && <div className="ny-none">Nothing needs you right now.</div>}
-            {state.items.map((item) => (
-              <div key={item.id} className={`ny-item k-${item.kind} ${current === item.id ? "on" : ""}`} data-item={item.id} data-settle={`${item.id}|${item.sig}`}>
-                <div className="ny-meta">
-                  <span className={`dot sm ${DOT[item.kind]}`} />
-                  <span className="ny-kind" title={item.area === LOOSE_GROUP ? "In no area" : areaTitle(item.area)}>
-                    {item.label ?? KIND_LABEL[item.kind]} · {item.area === LOOSE_GROUP ? "no area" : shortAreaName(item.area, areaTitle(item.area))}
-                  </span>
-                  <span className="ny-age" title={new Date(item.at).toLocaleString()}>
-                    {agoShort(item.at)}
-                  </span>
+            {rows.map(({ item, acts, settle }) => {
+              return (
+                <div key={item.id} className={`ny-item k-${item.kind} ${current === item.id ? "on" : ""}`} data-item={item.id} data-settle={settle}>
+                  <div className="ny-meta">
+                    <span className={`dot sm ${DOT[item.kind]}`} />
+                    <span className="ny-kind" title={item.area === LOOSE_GROUP ? "In no area" : areaTitle(item.area)}>
+                      {item.label ?? KIND_LABEL[item.kind]} · {item.area === LOOSE_GROUP ? "no area" : shortAreaName(item.area, areaTitle(item.area))}
+                    </span>
+                    <span className="ny-age" title={new Date(item.at).toLocaleString()}>
+                      {agoShort(item.at)}
+                    </span>
+                  </div>
+                  <div className="ny-text">
+                    {item.code ? (
+                      <>
+                        {item.text.slice(0, item.text.length - item.code.length)}
+                        <code>{item.code}</code>
+                      </>
+                    ) : (
+                      item.text
+                    )}
+                  </div>
+                  <div className="ny-acts">
+                    {acts.map((a) => {
+                      const answer = ANSWERS.has(a.key);
+                      return (
+                        <button
+                          key={a.key}
+                          type="button"
+                          // the main action is filled only where something waits on you to answer it, as design D does;
+                          // an answer, and another act (Show, Mark merged…), is outlined beside it, never filled
+                          className={a.primary ? `ny-go ${DOT[item.kind] === "waiting" ? "fill" : ""}` : answer ? "ny-go ny-answer" : a.key.startsWith("dismiss") ? "ny-dismiss" : "ny-go"}
+                          data-action={a.key}
+                          disabled={a.disabled || busy.has(settle) || heldOff(`${settle}:${a.key}`)}
+                          tabIndex={answer && a.key !== "deny" ? -1 : undefined}
+                          aria-label={answer ? `${a.label}: ${item.text}` : undefined}
+                          title={a.title}
+                          onClick={(e) => (answer ? onAnswer(item, a, settle, e) : a.key === "dismiss" ? onDismiss(item, a, e) : !guarded() && a.onPick())}
+                        >
+                          {a.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="ny-text">
-                  {item.code ? (
-                    <>
-                      {item.text.slice(0, item.text.length - item.code.length)}
-                      <code>{item.code}</code>
-                    </>
-                  ) : (
-                    item.text
-                  )}
-                </div>
-                <div className="ny-acts">
-                  {actionsFor(item, close).map((a) => {
-                    const answer = ANSWERS.has(a.key);
-                    return (
-                      <button
-                        key={a.key}
-                        type="button"
-                        // the main action is filled only where something waits on you to answer it, as design D does;
-                        // an answer, and another act (Show, Mark merged…), is outlined beside it, never filled
-                        className={a.primary ? `ny-go ${DOT[item.kind] === "waiting" ? "fill" : ""}` : answer ? "ny-go ny-answer" : a.key.startsWith("dismiss") ? "ny-dismiss" : "ny-go"}
-                        data-action={a.key}
-                        disabled={a.disabled || busy.has(item.sig) || heldOff(`${item.sig}:${a.key}`)}
-                        tabIndex={answer && a.key !== "deny" ? -1 : undefined}
-                        aria-label={answer ? `${a.label}: ${item.text}` : undefined}
-                        title={a.title}
-                        onClick={(e) => (answer ? onAnswer(item, a, e) : a.key === "dismiss" ? onDismiss(item, a, e) : !guarded() && a.onPick())}
-                      >
-                        {a.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           {state.dismissed > 0 && (
             <div className="ny-foot" title="A dismissed item comes back when its state changes: a new prompt, another turn ending, another request">

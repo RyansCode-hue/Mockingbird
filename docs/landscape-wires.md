@@ -2501,7 +2501,8 @@ W15's ticket items (a ticket's item is about its stage, this about one PR), and 
   - one finish at a time, its result to `onLost` once closed;
   - the keyboard never back to a terminal.
 
-**The terminal rule for every dialog (W4c L10)** (`Modal.tsx`' `useDialogFocus`, `keyArm.ts`' `userEscaped`):
+**The terminal rule for every dialog (W4c L10)** (`Modal.tsx`' `useDialogFocus`, `keyArm.ts`' `userEscaped`; narrowed back
+in review fixes 1, below):
 - A landscape terminal gets the keyboard back from a dialog, the palette or a sheet only when the user's own Esc (or ?
   for the sheet) closes it.
 - Closed any other way (its button pressed, its act done, it going on its own), the landscape gets it, disarmed.
@@ -2532,8 +2533,9 @@ W15's ticket items (a ticket's item is about its stage, this about one PR), and 
 - **Wording:** "Reviewer → Builder: ready to send (round 2 of 3)", not the board's "send 2 changes": Mockingbird
   doesn't count what a message holds. The kind label and placement are the board's ("Wire ready · <area>").
 - **The PR item's kind is `merge`**, not `pr`: `pr` was already the agent's PR request.
-- **The terminal rule reaches the palette too:** a row picked with Enter, or any dialog closed by its button, now gives
-  the landscape the keyboard rather than the terminal it was opened from. Only Esc (S8a's) hands a terminal back.
+- **The terminal rule reaches the palette too** (undone in review fixes 1, M4): a row picked with Enter, or any dialog
+  closed by its button, now gives the landscape the keyboard rather than the terminal it was opened from. Only Esc
+  (S8a's) hands a terminal back.
 - **Menus are unchanged:** ContextMenu isn't a dialog, and its own guards stand.
 - **Rooms:** an item shows only what W4c's popover would show:
   - none while an end is taken over (`takenOver`: it waits on the teammate);
@@ -2573,6 +2575,91 @@ opened.
   click gives the landscape the keyboard, Finish step's own `handsBack` refuses terminals, and the tray opens from its
   button. The audit's CostDialog step, with its popover gone before Esc, checks the outcome, which holds with or without
   the clause. It's kept as the rule for whatever opens there next.
+
+#### W5 review fixes 1 as built
+
+Rebased onto f58a16f (W9 and its follow-up). The workspace menu's Wires rows are Connect…, Finish step…, Save as
+template…: the step's own act before the chain's. The review of 3057c0c found one High and four Mediums. Its probe
+(main's Mark merged racing a Check now) is `test/prWatch.test.ts` now.
+
+- **H1: a wire item's face is part of its state.**
+  - Its `sig` is `wire:<id>|<pending>|<face>`, so the same pending going blocked → ready (hooks reporting again, a ghost
+    placed back) is a new row: Send coming where Show was is held, and a Dismiss of the block doesn't hide the ready one.
+  - The tray's settle key is the row's id, state and button keys (`data-settle`), so any button appearing under the
+    pointer resettles the row, whatever the item.
+  - `busy` is keyed the same way: a row that changes after an answer (sent, then blocked with the same pending) has its
+    buttons back.
+  - Tested: Builder's hooks go silent (loop blocked, Show), then report again; a click at Show's spot as soon as Send is
+    there sends nothing.
+- **M1: main marks only what you were asked about.**
+  - `pipeline:pr:markMerged` takes the state the question asked about (`prAskedState`: `unread` or `closed:<when>`).
+  - Inside the merge watch's queue, `PrWatch.markMerged` refuses, saying why, unless the PR still `prNeedsYou` and is in
+    that state. A Check now queued ahead that finds it readable (or closed since) refuses the mark.
+  - Every caller sends it: Needs you's dialog, the pipeline panel's row, the send popover's confirm. The stub does the
+    same.
+  - Needs you's Mark merged… is off while that PR is being checked ("Checking it now: Mark merged… once that's
+    answered").
+- **M2: Finish step reads each new turn's message.**
+  - The latest message is read again whenever the session's `finishedAt` changes; only the last read asked for counts.
+  - The agent's text follows it. Your changes stay, with "It has a newer message since you changed this." and **Use it**.
+  - What Finish step does (`does`, its settle key) now holds the turn (`finishedAt`), whether it's on or off, and what
+    the summary is (the agent's, yours, kept). A turn ending holds the button again; typing on in your own changes
+    doesn't.
+  - Tested: a turn ends with the popover open, and a click 12 ms later finishes nothing; the new text is read in.
+- **M3: Finish step says what finishing again does.**
+  - A Finished item offers Finish step… only while the session has no summary since its last prompt.
+    `SessionInfo.promptAt` (live, from main's prompt count: a user's or a wire's prompt, not Mockingbird's notices) is
+    when that prompt came. A summary since (finish_step, or a person's Finish step) means it finished.
+  - Everywhere it's offered, each wire's line says what finishing does to what's there (`FinishLine.over`, shown under
+    the line in amber):
+    - "replaces what waits" (readies over an unsent pending);
+    - "takes back what waits" / "takes back what's on its way" (holds or passes, a queued delivery taken back as main
+      does);
+    - "what's being pasted can't be taken back";
+    - "already sent at 14:32: this sends again";
+    - "what was sent may have arrived: this sends again".
+  - Readied while something's on its way, the line says "waits behind what's on its way".
+- **M4: the terminal rule is narrowed back.**
+  - Only what was opened from the send popover, Finish step or Needs you (`OFF_TERMINALS`) gives the landscape the
+    keyboard rather than a terminal, Esc included.
+  - Everything else hands back as before W5: ⌘K → a command, or a dialog closed by its button, gives the terminal it
+    came from its keyboard again. ⌘K → a session still claims it.
+  - keyArm's `userEscaped` is gone.
+  - Tested: ⌘K → Toggle the log panel, each way, and typing reaches the terminal; New session from ⌘K, closed by
+    Cancel, goes back to the terminal.
+- **Lows:**
+  - L1: a readied line is the gate it will have with the new pending and the note as the finish leaves it:
+    - "waits, blocked: hooks not reporting" or "…: closed";
+    - "its gate opens: after 3 automatic sends in a row, it asks" (`AUTOMATIC_HOPS`, moved to shared/wires.ts);
+    - a "changes" verdict from before no longer reads as "needs approve".
+  - L2: a person's finish is refused mid-turn, working or waiting at a prompt, by main (`WireTools.finish`, with a
+    test), the stub, and the window (`finishOf`, the popover's `blocked`). The agent's finish_step isn't.
+  - L3: Needs you's refusals are logged as well as said (`run`); Show on a wire that's gone says "That wire is gone".
+  - L4: changes to a step's summary are kept per session (`drafts` in FinishStep.tsx) until it's finished or they're
+    set aside (**Use its latest message**). Whatever closes the popover (an outside press, a wheel, Cancel, its last
+    wire out removed), they come back with "Your changes, kept from before." Tested through a press outside.
+  - L5:
+    - A merge item is labelled by its state ("Merge unknown" / "PR closed", kind label "Merge"), not "Pull request",
+      which is an agent's request.
+    - Its text names the ticket only when its area isn't the ticket's.
+    - `workspaceActions.tsx`' `can =(c` is formatted.
+  - L6 (OFF_TERMINALS not reached by a test) stands, as noted above.
+
+**Checks** (on 04256b5, W11 merged):
+- `npm run typecheck` clean; `npm run build` ok.
+- `CI=true npm test`: 3533 passed, 350 skipped, plus one teamTakeover test that timed out under the full run's load and
+  passes alone (74/74).
+- UI files, one at a time:
+  - uiLandscapeNeeds 25/25;
+  - uiLandscapeWires 31/31 (the send popover's Mark merged sends what its confirm asked about);
+  - uiLandscapeFirstRun 110/110;
+  - uiTyping 33/33.
+- Mutations, each fix undone in turn, all caught:
+  - H1: the face out of the sig (needsYou); the settle key by id alone (the blocked → ready click).
+  - M1: main's needs-you check dropped; its asked-state check dropped (prWatch, the queued race); Mark merged… on while
+    its PR is checked.
+  - M2: the message read once.
+  - M4: the landscape rule for every chain (⌘K → a command).
 
 ### W6 · The pipeline strip. Size M
 - `PipelineStrip.tsx` and `chainOf` (pure, `pipelineChain.ts`): upstream, this one,

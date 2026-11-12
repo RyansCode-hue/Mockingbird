@@ -12,7 +12,7 @@
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, PipelineRequest, PlanRequest, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
-import { DEFAULT_SETTINGS, HELPDESK_GROUP, HELPDESK_PRESET, HELPDESK_STARTING, HELPDESK_START_IN_ROOM, clearGateTicks, clearsGates, helpdeskOpenAlready, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
+import { DEFAULT_SETTINGS, HELPDESK_GROUP, HELPDESK_PRESET, HELPDESK_STARTING, HELPDESK_START_IN_ROOM, clearGateTicks, clearsGates, helpdeskOpenAlready, prAskedState, prNeedsYou, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
 import { tildePath } from "../shared/paths";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, followsBottom, measuredCell } from "../renderer/cachedTerm";
@@ -1474,6 +1474,8 @@ let renameLag = 0;
 /** ?createMs=<ms>: main takes this long to start a session (createSession, relaunchSession), as a slow Mac's does. */
 const startLag = () => new Promise<void>((r) => setTimeout(r, Number(new URLSearchParams(location.search).get("createMs")) || 0));
 
+/** How long a Check now takes to answer (none, but in ?landscapeNeedsAudit=w, which slows it to watch Mark merged… wait). */
+const checkTakes = { ms: 0 };
 const api: Record<string, (...a: any[]) => any> = {
   // sessions
   listSessions: async () => {
@@ -2075,12 +2077,18 @@ const api: Record<string, (...a: any[]) => any> = {
     return { pipeline: p, told: { to: request.from, title: request.fromTitle, notTold: "UI preview: no agent is told" } };
   },
   // the merge watch: nothing is read from a provider here; Mark merged… moves a ticket on from its PR stage, as main's does
-  pipelinePrCheck: async () => err("UI preview: no pull request is read"),
-  pipelinePrMarkMerged: async (id: string, url: string) => {
+  pipelinePrCheck: async () => {
+    if (checkTakes.ms) await later(null, checkTakes.ms);
+    return err("UI preview: no pull request is read");
+  },
+  pipelinePrMarkMerged: async (id: string, url: string, asked: string) => {
     const p = pipelines[id];
     const pr = p?.prs.find((x) => x.url === url);
     if (!p || !pr) return err(`#${id} has no pull request ${url}`);
     if (pr.mergedAt) return err(`#${id}'s pull request ${pr.id} is merged already`);
+    // as main's: only while it still needs you, in the state the user was asked about
+    if (!prNeedsYou(p, pr)) return err(`PR ${pr.id} to ${pr.target} doesn't need you any more: nothing was marked.`);
+    if (prAskedState(pr) !== asked) return err(`PR ${pr.id} to ${pr.target} has changed since you were asked: nothing was marked. Ask again.`);
     Object.assign(pr, { mergedAt: Date.now(), mergedBy: "you" });
     delete pr.watch;
     delete pr.closedAt;
@@ -3234,6 +3242,8 @@ if (params.has("landscapeNeedsAudit")) {
       wire: (id) => (Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined),
       setWire: (id, w) => void wireChanged(withLink(id, w)),
       costly: (id, on) => void (on ? bigResume.add(id) : bigResume.delete(id)),
+      latest: (id, text) => void (LATEST_MESSAGES[id] = text),
+      checkTakes: (ms) => void (checkTakes.ms = ms),
     },
     params.get("landscapeNeedsAudit") || "a"
   );
@@ -9083,6 +9093,10 @@ Object.assign(api, {
   // gates ask: nothing here sends by itself
   wiresFinish: async (id: string, summary: string, verdict?: WireVerdict): Promise<FinishOutcome> => {
     await later(null, FINISH_ANSWER_MS);
+    // as main's: a person finishes a step between turns
+    const s = byId(id);
+    if (s?.status === "working") return { refused: `“${s.title}” is working: finish its step once its turn ends.` };
+    if (s?.status === "waiting") return { refused: `“${s.title}” is waiting on you mid-turn: answer it, then finish its step once its turn ends.` };
     const text = String(summary ?? "").trim();
     if (!text) return { refused: "summary is empty: say what this step did." };
     if (!Object.values(wireBook.links).some((w) => w.from === id && carriesWork(w.type)))
@@ -9333,8 +9347,8 @@ function gateRounds(id: string, change: (r: NonNullable<Wire["rounds"]>) => NonN
 }
 // Mark merged… readies the wires waiting on that pull request, flagged and held, as main's merge watch does once the user marks it
 const markMergedBeforeWires = api.pipelinePrMarkMerged;
-api.pipelinePrMarkMerged = async (ticket: string, url: string) => {
-  const r = await markMergedBeforeWires(ticket, url);
+api.pipelinePrMarkMerged = async (ticket: string, url: string, asked: string) => {
+  const r = await markMergedBeforeWires(ticket, url, asked);
   if (r && typeof r === "object" && "error" in r) return r;
   const pr = pipelines[ticket]?.prs.find((x) => x.url === url);
   for (const [id, w] of Object.entries(wireBook.links)) {

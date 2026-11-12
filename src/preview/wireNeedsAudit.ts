@@ -8,15 +8,20 @@
  *   before Esc: the keyboard on the landscape, nothing sent;
  * - the tray: the wires waiting on you (Fixtures → Spike ready, its other end closed; Reviewer → Builder's changes ready,
  *   round 2 of 3; Builder → Reviewer may have arrived) and 5120's pull request that can't be read, with their acts;
- * - Reviewer finished and idle, its Finished item's Finish step…: the popover from its latest message, keys of a burst
- *   begun before it opened pressing nothing, Finish step off till a verdict is picked, held as the verdict changes what
- *   it does, then the one wires:finish with the words and verdict shown;
+ * - Reviewer finished and idle, no summary since its last prompt, its Finished item's Finish step…: the popover from
+ *   its latest message, keys of a burst begun before it opened pressing nothing, Finish step off till a verdict is
+ *   picked, held as the verdict changes what it does (Builder's waiting changes replaced, said); a turn ending as it's
+ *   open read in again, a click 12 ms after taking nothing; changes typed, kept through a press outside and back as it
+ *   opens again; another turn ending, the newer message offered beside them; then the one wires:finish with the words
+ *   and verdict shown, and the Finished item offering Finish step… no more;
+ * - the same pending blocked (Builder's hooks silent), then ready: a click where Show was as Send comes there let go;
  * - Send on Reviewer → Builder's changes: Enter on it pressing nothing, a click as a newer finish lands under it let
  *   go, one in the same task as a newer finish (before the tray draws it) sending nothing and showing the gate, then the
  *   one wires:send of the pending shown; a double click's Send on Fixtures → Spike sending once, its closed end's cost
  *   asked;
  * - Show on what may have arrived: its send popover, the tray away, Esc giving the keyboard back to the Needs you button;
- * - the pull request: Check now's one call and its error said; Mark merged…'s question naming it, its button taking no
+ * - the pull request: Check now's one call and its error said, Mark merged… off while it reads; Mark merged…'s
+ *   question naming it, its button taking no
  *   early click, nor a burst's keys, nor one in the same task as a re-read (said), nor one just after it changes the
  *   question, then the one call;
  * - in focus, Reviewer's header's Finish step and its right-click menu's Finish step….
@@ -39,7 +44,15 @@ export interface WireNeedsEnv {
   setWire: (id: string, w: Wire) => void;
   /** Resuming session `id` costs a lot (as ?lsBigResume has it), so a send that reopens it asks first. */
   costly: (id: string, on: boolean) => void;
+  /** Session `id`'s latest message, as wires:lastMessage reads it from now on (a new turn's). */
+  latest: (id: string, text: string) => void;
+  /** How long a Check now takes to answer, from now on. */
+  checkTakes: (ms: number) => void;
 }
+
+/** Reviewer's messages from the turns that end as its Finish step is open. */
+const NEWER = "One change left:\n1. The email column needs the DonorPII grant.";
+const NEWEST = "Both changes are in; the export streams and checks the grant.";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const q = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T & HTMLElement>(sel);
@@ -93,10 +106,16 @@ const finishPop = () => {
   const btn = p.querySelector<HTMLButtonElement>('button[data-act="finish"]');
   return {
     title: p.querySelector(".fs-title")?.textContent ?? null,
-    mark: p.querySelector(".fs-mark")?.textContent ?? null,
+    // its words, without the button beside them
+    mark: p.querySelector(".fs-mark")?.firstChild?.textContent ?? null,
     body: p.querySelector<HTMLTextAreaElement>(".fs-body")?.value ?? null,
     verdicts: [...p.querySelectorAll<HTMLButtonElement>("[data-verdict]")].map((b) => `${b.textContent}${b.getAttribute("aria-pressed") === "true" ? "*" : ""}`),
-    lines: [...p.querySelectorAll<HTMLElement>(".fs-line")].map((l) => [l.querySelector(".fs-to")?.textContent ?? "", l.querySelector(".fs-does")?.textContent ?? "", [...(l.querySelector(".fs-dot")?.classList ?? [])].find((c) => c.startsWith("t-")) ?? ""]),
+    // where it goes, what finishing does, its dot, and what that does to what's there now when it does something
+    lines: [...p.querySelectorAll<HTMLElement>(".fs-line")].map((l) => {
+      const over = l.querySelector(".fs-over")?.textContent;
+      return [l.querySelector(".fs-to")?.textContent ?? "", l.querySelector(".fs-what")?.textContent ?? "", [...(l.querySelector(".fs-dot")?.classList ?? [])].find((c) => c.startsWith("t-")) ?? "", ...(over ? [over] : [])];
+    }),
+    use: p.querySelector(".fs-use")?.textContent ?? null,
     finish: btn ? { disabled: btn.disabled, title: btn.title } : null,
     hint: !!p.querySelector(".wg-hint"),
     err: p.querySelector(".wr-err")?.textContent ?? null,
@@ -135,8 +154,8 @@ export async function wireNeedsPart(env: WireNeedsEnv, out: Record<string, unkno
   await openTray();
   out.tray = tray();
 
-  // ---- Finish step from Reviewer's Finished item ----
-  env.setSession("wb-reviewer", { status: "idle", finishedAt: Date.now() - 60_000 });
+  // ---- Finish step from Reviewer's Finished item: it went idle with no summary since its last prompt ----
+  env.setSession("wb-reviewer", { status: "idle", finishedAt: Date.now() - 60_000, promptAt: Date.now() - 1 });
   await sleep(400);
   out.finishedItem = tray().find((i) => i.id === "s:wb-reviewer") ?? null;
   // a key typed in the tray, then Finish step… clicked and Tab Tab Enter straight after: a burst begun before it opened
@@ -153,11 +172,68 @@ export async function wireNeedsPart(env: WireNeedsEnv, out: Record<string, unkno
   await sleep(80);
   await act([click(finishBtn())]);
   out.finishEarly = { pop: finishPop(), calls: callsOf(env, WRITES, mark) };
+  // a new turn ends as it's open: its latest message read again into the agent's text, and Finish step held again, a
+  // click 12 ms after taking nothing
+  await sleep(700);
+  env.latest("wb-reviewer", NEWER);
+  env.setSession("wb-reviewer", { finishedAt: Date.now() });
+  await sleep(12);
+  await act([click(finishBtn())]);
+  await until(() => finishPop()?.body === NEWER);
+  out.turnLanded = { pop: finishPop(), calls: callsOf(env, WRITES, mark) };
+  // changed by you, then a press outside (the Needs you button): your changes are kept, and come back with it
+  await sleep(700);
+  await act([click(q(".fs-pop .fs-body")!)]);
+  // the caret at its end, so what's typed is added there (the keys after a pause, as a person's are)
+  const area = q<HTMLTextAreaElement>(".fs-pop .fs-body")!;
+  area.setSelectionRange(area.value.length, area.value.length);
+  await sleep(700);
+  await act([{ key: "x" }, { key: "y" }]);
+  await sleep(150);
+  const edited = finishPop()?.body ?? null;
+  out.changed = { body: edited, mark: finishPop()?.mark ?? null };
+  await act([click(q(".ny-btn")!)]);
+  await until(() => !q(".fs-pop"));
+  await openTray();
+  await sleep(600);
+  await act([click(actBtn("s:wb-reviewer", "finish")!)]);
+  // its latest message read in beside the changes kept: the latest a click away
+  await until(() => !!finishPop()?.use);
+  out.kept = { pop: finishPop(), same: finishPop()?.body === edited, calls: callsOf(env, WRITES, mark) };
+  // another turn ends: your changes stay, the newer message offered beside them
+  await sleep(700);
+  env.latest("wb-reviewer", NEWEST);
+  env.setSession("wb-reviewer", { finishedAt: Date.now() });
+  await until(() => !!finishPop()?.mark?.includes("newer message"));
+  out.newerSince = { pop: finishPop(), same: finishPop()?.body === edited };
+  // Changes picked again, then the one finish: your words, as shown
+  await sleep(700);
+  await act([click(q('.fs-pop [data-verdict="changes"]')!)]);
   await sleep(700);
   await act([click(finishBtn())]);
   await until(() => !q(".fs-pop"));
   await sleep(200);
-  out.finished = { open: !!q(".fs-pop"), keyboard: keyboard(), note: note(), calls: callsOf(env, WRITES, mark), loop: env.wire("wb-loop")?.pending?.body ?? null, held: env.wire("wb-held")?.pending ?? null };
+  out.finished = { open: !!q(".fs-pop"), keyboard: keyboard(), note: note(), edited, calls: callsOf(env, WRITES, mark), loop: env.wire("wb-loop")?.pending?.body ?? null, held: env.wire("wb-held")?.pending ?? null };
+  // its step finished since its last prompt: its Finished item no longer offers Finish step…
+  await openTray();
+  out.finishedAfter = tray().find((i) => i.id === "s:wb-reviewer")?.acts.map((a) => a.key) ?? null;
+
+  // ---- the same pending blocked (Builder's hooks silent), then ready: Send comes where Show was ----
+  // a click there as soon as it does is let go: the row is new, though what waits isn't
+  await openTray();
+  env.setSession("wb-builder", { hooksSilent: true });
+  await until(() => !actBtn("wire:wb-loop", "send") && !!actBtn("wire:wb-loop", "show"));
+  await sleep(900);
+  const blockedRow = tray().find((i) => i.id === "wire:wb-loop") ?? null;
+  const showAt = middle(actBtn("wire:wb-loop", "show")!);
+  mark = env.calls.length;
+  env.setSession("wb-builder", { hooksSilent: false });
+  await until(() => !!actBtn("wire:wb-loop", "send"), 1000);
+  const under = document.elementFromPoint(showAt.x, showAt.y)?.closest<HTMLElement>("button")?.dataset.action ?? null;
+  await act([{ mouse: { ...showAt, clickCount: 1 } }]);
+  await sleep(100);
+  out.faceFlip = { blocked: blockedRow, under, calls: callsOf(env, WRITES, mark), pop: !!q(".wg-pop") };
+  await sleep(700);
 
   // ---- Send on Reviewer → Builder's changes ----
   await openTray();
@@ -221,9 +297,16 @@ export async function wireNeedsPart(env: WireNeedsEnv, out: Record<string, unkno
   const pr = `merge:5120:${GATE_PR}`;
   await openTray();
   mark = env.calls.length;
+  // its read taking a moment, as a provider's does: Mark merged… waits for its answer
+  env.checkTakes(600);
   await act([click(actBtn(pr, "check")!)]);
+  await sleep(150);
+  const markWhile = actBtn(pr, "markMerged");
+  const checking = { off: !!markWhile?.disabled, title: markWhile?.title ?? null };
   await until(() => /Couldn't check/.test(note() ?? ""));
-  out.checked = { calls: callsOf(env, WRITES, mark), note: note() };
+  env.checkTakes(0);
+  await sleep(100);
+  out.checked = { calls: callsOf(env, WRITES, mark), note: note(), checking, after: !actBtn(pr, "markMerged")?.disabled };
   // Mark merged…: its question, the tray away; an early click and a burst's keys press nothing
   await sleep(500);
   mark = env.calls.length;

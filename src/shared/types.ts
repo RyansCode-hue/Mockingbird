@@ -75,6 +75,11 @@ export interface SessionInfo {
    * Needs you tray lists it as finished.
    */
   finishedAt?: number | null;
+  /**
+   * When its agent last took a prompt this launch, Mockingbird's own notices left out (main's promptCount): a summary
+   * written since (finish_step, or a person's Finish step) finished the step that prompt began. Live only.
+   */
+  promptAt?: number | null;
   // team rooms: live panes
   /** Set in the window on a session in a shared group: its room, owner, and who's looking at it. */
   room?: RoomSessionTag;
@@ -1230,6 +1235,17 @@ export function prNeedsYou(p: TicketPipeline, pr: PipelinePr): boolean {
   if (p.stage === "done" || pr.mergedAt) return false;
   if ((pr.watch?.failures ?? 0) >= PR_WATCH_NEEDS_YOU) return true;
   return !!pr.closedAt && latestPr(p.prs, pr.target, (x) => samePrPlace(x, pr)) === pr;
+}
+
+/**
+ * What Mark merged… asks about pull request `pr` (markMergedQuestion): `closed:<when>` once its provider said it was
+ * closed without merging, else `unread` while the watch can't read it, else null. The window sends what it asked, and
+ * main marks only while it's still that: a read in between (a Check now queued ahead) refuses the mark.
+ */
+export function prAskedState(pr: Pick<PipelinePr, "mergedAt" | "closedAt" | "watch">): string | null {
+  if (pr.mergedAt) return null;
+  if (pr.closedAt) return `closed:${pr.closedAt}`;
+  return pr.watch ? "unread" : null;
 }
 
 /** An agent's request for a pull request (request_pr), held until the user opens it or dismisses it. One per target. */

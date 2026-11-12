@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { isErr, prNeedsYou, type SessionInfo } from "../shared/types";
+import { isErr, prAskedState, prNeedsYou, type SessionInfo } from "../shared/types";
 import { carriesWork } from "../shared/wires";
 import { Modal } from "./Modal";
 import { EARLY_KEYS_HINT, useAimedKeys, useArrivalGuard } from "./answerGuard";
@@ -86,11 +86,14 @@ export function useWireNeeds(o: {
     for (const w of waiting.current.splice(0)) w.run(a);
   });
   useEffect(() => () => waiting.current.forEach((w) => clearTimeout(w.timer)), []);
-  /** An act, whose refusal (why nothing was done) is said, and whose failure is said and logged; settles with either, or null. */
+  /** An act, whose refusal (why nothing was done) is said and logged, as its failure is; settles with either, or null. */
   const run = (what: string, fn: (a: WireActs) => string | null | void | Promise<string | null>): Promise<string | null> =>
     withActs(what, fn).then(
       (why) => {
-        if (why) o.say(why);
+        if (why) {
+          console.warn(`[mockingbird] Needs you didn't ${what}: ${why}`);
+          o.say(why);
+        }
         return why || null;
       },
       (err: unknown) => {
@@ -124,8 +127,16 @@ export function useWireNeeds(o: {
     }
   };
 
-  /** Session `id` has a handoff or feedback wire out: its Finished item offers Finish step…. */
-  const wiredOut = (id: string) => Object.values(state?.book?.links ?? {}).some((w) => w.from === id && carriesWork(w.type));
+  /**
+   * Session `id` went idle with its step unfinished, a handoff or feedback wire out: its Finished item offers Finish
+   * step…. A summary since its last prompt (its agent's finish_step, or a person's Finish step) finished it already.
+   */
+  const unfinished = (id: string) => {
+    if (!Object.values(state?.book?.links ?? {}).some((w) => w.from === id && carriesWork(w.type))) return false;
+    const note = state?.book && Object.hasOwn(state.book.notes, id) ? state.book.notes[id] : null;
+    const promptAt = o.sessions.find((s) => s.id === id)?.promptAt ?? null;
+    return !(note?.summary && promptAt !== null && note.summary.at >= promptAt);
+  };
   const envOf = (item: NeedsItem): Pick<NeedsEnv, "wire" | "merge" | "finish"> => {
     if (item.wire) {
       const { id, pending, face } = item.wire;
@@ -138,9 +149,11 @@ export function useWireNeeds(o: {
     }
     if (item.merge) {
       const { ticket, url } = item.merge;
-      return { merge: { check: checking.has(url) ? { no: "Checking it now" } : () => void check(ticket, url), mark: () => setMarking({ ticket, url }) } };
+      // while it's read, what it is may change: Mark merged… waits for the answer
+      const busy = checking.has(url) ? { no: "Checking it now: Mark merged… once that's answered" } : null;
+      return { merge: { check: busy ?? (() => void check(ticket, url)), mark: busy ?? (() => setMarking({ ticket, url })) } };
     }
-    if (item.kind === "finished" && item.session && wiredOut(item.session)) {
+    if (item.kind === "finished" && item.session && unfinished(item.session)) {
       const id = item.session;
       return { finish: () => void run("finish its step", (a) => a.finish(id)) };
     }
@@ -182,7 +195,8 @@ function MarkMergedDialog({ ticket, url, onDone, onClose }: { ticket: string; ur
     }
     setDoing(true);
     setErr(null);
-    window.mb.pipelinePrMarkMerged(ticket, url).then(
+    // what it asked about goes with it: main marks only while the PR is still that, after any check queued ahead
+    window.mb.pipelinePrMarkMerged(ticket, url, prAskedState(pr) ?? "").then(
       (r) => {
         setDoing(false);
         if (isErr(r)) {

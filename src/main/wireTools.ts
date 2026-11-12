@@ -194,6 +194,10 @@ export class WireTools {
    * Answers once it's saved, never waiting on a gate. With no wire out, it's refused and the summary is kept.
    */
   async finish(me: SessionInfo, raw: Record<string, unknown>, by: PendingsMade["by"]): Promise<FinishOutcome> {
+    // a person finishes a step between turns: mid-turn, working or at a prompt waiting on them, its latest message
+    // isn't what the step comes to
+    if (by === "you" && me.status === "working") return { refused: `“${me.title}” is working: finish its step once its turn ends.` };
+    if (by === "you" && me.status === "waiting") return { refused: `“${me.title}” is waiting on you mid-turn: answer it, then finish its step once its turn ends.` };
     // the prompt this finish answers, read before anything is awaited: one that comes in meanwhile isn't this finish's
     const prompt = this.o.promptOf(me.id);
     const fill = await this.planFinish(me, raw);

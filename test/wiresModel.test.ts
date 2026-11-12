@@ -515,6 +515,47 @@ describe("Finish step's lines (W5)", () => {
     ]);
   });
 
+  it("says what a readied gate will do: blocked where the other end's hooks are silent, asking after too many automatic sends in a row", () => {
+    const auto = links({ on: { gate: "automatic" } });
+    const silent = running.map((s) => (s.id === "tester" ? { ...s, hooksSilent: true } : s));
+    const ctx = gateContextOf(resolveLayout(stored(), silent, undefined, [], null, closed), stateOf(auto))!;
+    expect(finishLines("reviewer", "approve", ctx)[1]).toMatchObject({ to: "tester", tone: "held", text: "waits, blocked: hooks not reporting" });
+    // three automatic sends in a row reached tester, or led to reviewer: its gate asks, as main's holds
+    expect(lines("approve", auto, { tester: { hops: 3 } })[1]).toEqual(["tester", "its gate opens: after 3 automatic sends in a row, it asks", "ready"]);
+    expect(lines("approve", auto, { reviewer: { hops: 3 } })[1]).toEqual(["tester", "its gate opens: after 3 automatic sends in a row, it asks", "ready"]);
+    // the verdict the finish leaves on its note, not the one before: "changes" before, approve now, the handoff goes
+    expect(lines("approve", auto, { reviewer: { hops: 0, verdict: "changes" } })[1]).toEqual(["tester", "sends itself", "ready"]);
+    // a closed end not on the landscape blocks it
+    const base = gateContextOf(layoutOf(), stateOf(links()))!;
+    const ctxGone = { ...base, end: (id: string) => (id === "tester" ? { ...base.end(id)!, where: "closed" as const, placed: false } : base.end(id)) };
+    const toTester = finishLines("reviewer", "approve", ctxGone).find((l) => l.wire === "on");
+    expect(toTester).toMatchObject({ tone: "held", text: "waits, blocked: closed" });
+  });
+
+  it("says what finishing does to what's already there: replaces what waits, takes back what's on its way, sends again what was sent", () => {
+    const p = { id: "p1", body: "earlier", at: 1, flags: [] };
+    const over = (verdict: "changes" | "approve", l: ReturnType<typeof links>) => finishLines("reviewer", verdict, gateContextOf(layoutOf(), stateOf(l))!).map((x) => [x.to, x.over]);
+    // something waiting: replaced where it readies, taken back where it's held or passes
+    expect(over("changes", links({ loop: { pending: p }, on: { pending: p } }))).toEqual([
+      ["builder", "replaces what waits"],
+      ["tester", "takes back what waits"],
+      ["spike", null],
+    ]);
+    expect(over("approve", links({ loop: { pending: p } }))[0]).toEqual(["builder", "takes back what waits"]);
+    // something queued at the other end: taken back where it's held; one being pasted can't be
+    const queued = { pending: p, delivery: { id: "p1", state: "queued" as const, at: 1 } };
+    expect(over("changes", links({ on: queued }))[1]).toEqual(["tester", "takes back what's on its way"]);
+    expect(over("changes", links({ on: { ...queued, delivery: { ...queued.delivery, state: "pasting" as const } } }))[1]).toEqual(["tester", "what's being pasted can't be taken back"]);
+    // readied while something's on its way: it waits behind it
+    expect(finishLines("reviewer", "approve", gateContextOf(layoutOf(), stateOf(links({ on: queued })))!)[1]).toMatchObject({ text: "waits behind what's on its way", over: null, tone: "held" });
+    // sent already: this sends again, said with when
+    const at = new Date(2026, 10, 12, 14, 32).getTime();
+    const sent = over("approve", links({ on: { delivery: { id: "p0", state: "sent", at } } }))[1];
+    expect(sent[0]).toBe("tester");
+    expect(sent[1]).toBe("already sent at 14:32: this sends again");
+    expect(over("approve", links({ on: { delivery: { id: "p0", state: "unconfirmed", at } } }))[1]).toEqual(["tester", "what was sent may have arrived: this sends again"]);
+  });
+
   it("says a wire that doesn't light, and why one is refused", () => {
     const quiet = links({ on: { when: "manual" }, ghost: { when: "pr-merged", since: 1 } });
     expect(lines("approve", quiet).slice(1)).toEqual([

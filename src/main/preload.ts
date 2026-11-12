@@ -301,7 +301,7 @@ const api = {
   // the merge watch (W16): read a ticket's pull request now (each it has that hasn't merged or closed, without `url`), or
   // mark one merged, the user's act its wires' gates then name
   pipelinePrCheck: (id: string, url?: string): Promise<IpcResult<TicketPipeline>> => ipcRenderer.invoke("pipeline:pr:check", id, url),
-  pipelinePrMarkMerged: (id: string, url: string): Promise<IpcResult<TicketPipeline>> => ipcRenderer.invoke("pipeline:pr:markMerged", id, url),
+  pipelinePrMarkMerged: (id: string, url: string, asked: string): Promise<IpcResult<TicketPipeline>> => ipcRenderer.invoke("pipeline:pr:markMerged", id, url, asked),
   pipelinePrPreflight: (sessionId: string, ticketId: string, target: string) => ipcRenderer.invoke("pipeline:pr:preflight", sessionId, ticketId, target),
   pipelinePrDescribe: (sessionId: string, ticketId: string, title: string, base: string) => ipcRenderer.invoke("pipeline:pr:describe", sessionId, ticketId, title, base),
   pipelinePrCreate: (sessionId: string, ticketId: string, req: unknown) => ipcRenderer.invoke("pipeline:pr:create", sessionId, ticketId, req),

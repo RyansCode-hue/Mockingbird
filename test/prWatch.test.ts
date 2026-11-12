@@ -12,7 +12,7 @@ import { emptyLandscape } from "../src/shared/landscape";
 import { resolveLayout } from "../src/renderer/landscapeModel";
 import { wireViews } from "../src/renderer/wiresModel";
 import { markMergedQuestion, prMergeNote } from "../src/renderer/ticketPipelineModel";
-import { BY_YOU, prNeedsYou, type PipelinePr, type PrRepo, type PrState, type SessionInfo } from "../src/shared/types";
+import { BY_YOU, prAskedState, prNeedsYou, type PipelinePr, type PrRepo, type PrState, type SessionInfo } from "../src/shared/types";
 import { gateOf } from "../src/shared/wires";
 import { tempDir } from "./helpers";
 
@@ -103,6 +103,8 @@ async function setup() {
   const repos = new Map<string, PrRepo | Error>();
   /** A read in progress takes this long on the watch's clock, as a real one does on Date.now. */
   const readTakes = { ms: 0 };
+  /** Set, a read waits for it before answering: a check in flight. */
+  const hold = { p: null as Promise<void> | null };
   let changed = 0;
   let checked = 0;
   /** Set, the wire book reads as unreadable, saying this. */
@@ -117,6 +119,7 @@ async function setup() {
       read: async (pr, root) => {
         reads.push({ url: pr.url, root });
         clock.t += readTakes.ms;
+        if (hold.p) await hold.p;
         const a = answers.get(pr.url) ?? {};
         if (a instanceof Error) throw a;
         return { id: pr.id, url: pr.url, title: "Org dropdowns remember the last org", base: pr.base, state: "open", conflicts: false, reviews: [], ...a };
@@ -166,7 +169,7 @@ async function setup() {
   const record = () => pipeline.get(TICKET)!;
   const prOf = (id: number) => record().prs.find((x) => x.id === id)!;
   return {
-    m, store, pipeline, service, d, tools, dir, folder, clock, answers, reads, notices, logged, coder, verifier, repos, readTakes, taken, began, unreadable, pinRefused, fills,
+    m, store, pipeline, service, d, tools, dir, folder, clock, answers, reads, notices, logged, coder, verifier, repos, readTakes, hold, taken, began, unreadable, pinRefused, fills,
     add, opened, answer, merged, tick, book, wireOf, gate, record, prOf, newWatch,
     get watch() {
       return watch;
@@ -427,7 +430,7 @@ describe("a pull request merging as a wire's When", () => {
     t.answer(11, new Error("gh: HTTP 502"));
     for (let i = 0; i < 3; i++) await t.tick(backoffMs(i));
     expect(t.prOf(11).watch!.failures).toBe(3);
-    await t.watch.markMerged(TICKET, urlOf(11));
+    await t.watch.markMerged(TICKET, urlOf(11), "unread");
     expect(t.prOf(11)).toMatchObject({ mergedAt: t.clock.t, mergedBy: "you" });
     expect(t.prOf(11).watch).toBeUndefined();
     expect(t.prOf(11).mergeCommit).toBeUndefined();
@@ -438,8 +441,8 @@ describe("a pull request merging as a wire's When", () => {
     expect(p.body).toContain("The user marked it merged, rather than Azure DevOps saying so.");
     expect(p.flags).toEqual(["You marked its pull request merged, rather than its provider saying so: its merge commit isn't known."]);
     expect(t.wireOf(w).delivery).toMatchObject({ id: p.id, state: "held", why: "You marked PR 11 to dev merged, so its gate asks rather than sending by itself." });
-    await expect(t.watch.markMerged(TICKET, urlOf(11))).rejects.toThrow(/merged already/);
-    await expect(t.watch.markMerged(TICKET, urlOf(99))).rejects.toThrow(/has no pull request/);
+    await expect(t.watch.markMerged(TICKET, urlOf(11), "unread")).rejects.toThrow(/merged already/);
+    await expect(t.watch.markMerged(TICKET, urlOf(99), "unread")).rejects.toThrow(/has no pull request/);
 
     // Mark merged is a window call: no tool, schema or the MCP router names it, and index.ts calls it from its handler alone
     for (const f of ["ticketTools.ts", "ticketToolSchemas.ts", "wireTools.ts", "wireToolSchemas.ts", "messaging.ts", "agents.ts"]) {
@@ -449,7 +452,57 @@ describe("a pull request merging as a wire's When", () => {
     }
     const index = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8");
     expect(index.match(/prWatch\.markMerged\(/g)).toHaveLength(1);
-    expect(index).toMatch(/handle\("pipeline:pr:markMerged", \(id, url\) => pipelineDo\(\(\) => prWatch\.markMerged\(/);
+    expect(index).toMatch(/handle\("pipeline:pr:markMerged", \(id, url, asked\) => pipelineDo\(\(\) => prWatch\.markMerged\(/);
+  });
+
+  it("marks only a pull request that still needs you, in the state the user was asked about", async () => {
+    const t = await setup();
+    t.opened("dev", 11);
+    t.add({ when: "pr-merged" });
+    // open and read: nothing to mark, whatever the window says it asked
+    t.answer(11, { state: "open" });
+    await t.tick();
+    const stage = t.record().stage;
+    await expect(t.watch.markMerged(TICKET, urlOf(11), "unread")).rejects.toThrow("PR 11 to dev doesn't need you any more (Mockingbird reads it again): nothing was marked.");
+    expect([t.prOf(11).mergedAt, t.record().stage]).toEqual([undefined, stage]);
+    // unreadable, asked about as closed: refused; closed since being asked about as unreadable: refused; as asked: marked
+    t.answer(11, new Error("gh: HTTP 502"));
+    for (let i = 0; i < 3; i++) await t.tick(backoffMs(i));
+    expect(prAskedState(t.prOf(11))).toBe("unread");
+    await expect(t.watch.markMerged(TICKET, urlOf(11), "closed:1")).rejects.toThrow("PR 11 to dev has changed since you were asked (Mockingbird still can't read it): nothing was marked. Ask again.");
+    t.answer(11, { state: "closed", closedAt: t.clock.t });
+    await t.watch.checkNow(TICKET, urlOf(11));
+    const closed = prAskedState(t.prOf(11))!;
+    expect(closed).toMatch(/^closed:\d+$/);
+    await expect(t.watch.markMerged(TICKET, urlOf(11), "unread")).rejects.toThrow("PR 11 to dev has changed since you were asked (its provider says it was closed without merging): nothing was marked. Ask again.");
+    expect(t.prOf(11).mergedAt).toBeUndefined();
+    await t.watch.markMerged(TICKET, urlOf(11), closed);
+    expect(t.prOf(11)).toMatchObject({ mergedBy: "you" });
+    expect(t.record().stage).toBe("dev-test");
+  });
+
+  it("refuses a Mark merged queued behind a Check now that finds the pull request readable", async () => {
+    const t = await setup();
+    t.opened("dev", 11);
+    t.add({ when: "pr-merged" });
+    t.answer(11, new Error("gh: HTTP 502"));
+    for (let i = 0; i < 3; i++) await t.tick(backoffMs(i));
+    expect(prNeedsYou(t.record(), t.prOf(11))).toBe(true);
+    const stage = t.record().stage;
+    // Check now in flight; the provider answers, open and readable, only once let go
+    t.answer(11, { state: "open" });
+    let release!: () => void;
+    t.hold.p = new Promise<void>((r) => (release = r));
+    const checking = t.watch.checkNow(TICKET, urlOf(11));
+    await new Promise((r) => setTimeout(r, 20));
+    // the window still sees it unreadable, so it asks main to mark it, as it asked
+    expect(prNeedsYou(t.record(), t.prOf(11))).toBe(true);
+    const marking = t.watch.markMerged(TICKET, urlOf(11), "unread");
+    t.hold.p = null;
+    release();
+    await checking;
+    await expect(marking).rejects.toThrow("PR 11 to dev doesn't need you any more (Mockingbird reads it again): nothing was marked.");
+    expect([t.prOf(11).mergedAt, t.prOf(11).mergedBy, t.prOf(11).watch, t.record().stage]).toEqual([undefined, undefined, undefined, stage]);
   });
 
   it("doesn't ready a wire for a merge from before it waited: one made after, or set to wait after", async () => {

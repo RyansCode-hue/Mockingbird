@@ -1,4 +1,4 @@
-import { latestPr, prNeedsYou, ticketOfSession, type SessionInfo, type TicketPipeline } from "../shared/types";
+import { latestPr, prAskedState, prNeedsYou, ticketOfSession, type SessionInfo, type TicketPipeline } from "../shared/types";
 import { ROOMS_STARTING, carriesWork, gateOf, isSending, wiresInOrder, type GateContext, type Wire } from "../shared/wires";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import type { TypingAsk } from "../shared/team/livePanes";
@@ -60,7 +60,7 @@ export interface NeedsItem {
 }
 
 /** Its kind as the tray's line says it, before the area. */
-export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", pr: "Pull request", wire: "Wire", join: "Join request", ticket: "Ticket", merge: "Pull request", finished: "Finished" };
+export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", pr: "Pull request", wire: "Wire", join: "Join request", ticket: "Ticket", merge: "Merge", finished: "Finished" };
 
 /**
  * Which kinds come first: what holds an agent or a person up (a prompt, a question, a teammate waiting to type, an
@@ -219,19 +219,26 @@ export function mergeItems(p: TicketPipeline, sessions: readonly SessionInfo[], 
   const id = p.ticketId;
   return (p.prs ?? [])
     .filter((pr) => prNeedsYou(p, pr))
-    .map((pr) => ({
-      id: `merge:${id}:${pr.url}`,
-      sig: `merge:${id}:${pr.url}|${pr.closedAt ? `closed:${pr.closedAt}` : "unread"}`,
-      kind: "merge",
-      at: pr.closedAt ?? pr.watch?.at ?? pr.at,
-      ...ticketPlace(id, pr.by, sessions, areaOf),
-      join: null,
-      typing: null,
-      pipeline: null,
-      merge: { ticket: id, url: pr.url },
-      text: pr.closedAt ? `${prLabel(pr)} was closed without merging · #${id}` : `Can't tell whether ${prLabel(pr)} merged · #${id}`,
-      code: null,
-    }));
+    .map((pr): NeedsItem => {
+      const place = ticketPlace(id, pr.by, sessions, areaOf);
+      // the ticket is said beside its label when it's the area; in another area, it's said here
+      const of = place.area === id ? "" : ` · #${id}`;
+      return {
+        id: `merge:${id}:${pr.url}`,
+        sig: `merge:${id}:${pr.url}|${prAskedState(pr)}`,
+        kind: "merge",
+        at: pr.closedAt ?? pr.watch?.at ?? pr.at,
+        ...place,
+        join: null,
+        typing: null,
+        pipeline: null,
+        merge: { ticket: id, url: pr.url },
+        // its own label, not "Pull request", which is an agent's request to open one
+        label: pr.closedAt ? "PR closed" : "Merge unknown",
+        text: pr.closedAt ? `${prLabel(pr)} was closed without merging${of}` : `Can't tell whether ${prLabel(pr)} merged${of}`,
+        code: null,
+      };
+    });
 }
 
 /** What the tray needs of the wires: the rules' view of what's drawn, as the landscape draws their gates, and where each end is. */
@@ -270,7 +277,9 @@ export function wireItem(id: string, w: Wire, { ctx, place }: NeedsWires): Needs
   const ends = `${a.title} → ${b.title}`;
   const make = (face: NonNullable<NeedsItem["wire"]>["face"], pending: string, since: number, text: string): NeedsItem => ({
     id: `wire:${id}`,
-    sig: `wire:${id}|${pending}`,
+    // its face too: the same pending blocked, then ready, is a new state (Send where Show was), and a Dismiss of one
+    // doesn't hide the other
+    sig: `wire:${id}|${pending}|${face}`,
     kind: "wire",
     at: since,
     area: at.area,

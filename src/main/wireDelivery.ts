@@ -8,6 +8,7 @@ import { isObj, own, put } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
 import {
+  AUTOMATIC_HOPS,
   carriesWork,
   countedFor,
   finishPlan,
@@ -47,8 +48,8 @@ import {
  * pasting may have, and a person settles it. Nothing is sent as a run starts.
  */
 
-/** Automatic sends in a row along a chain, or reaching one session, before the next waits for a person (decision 4). */
-export const AUTOMATIC_HOPS = 3;
+// shared, so the Finish step popover says when an automatic gate will ask
+export { AUTOMATIC_HOPS };
 
 /** How long a Send waits for its stopped other end to start before it gives up, sending nothing. */
 export const START_WAIT_MS = 60_000;

@@ -225,15 +225,21 @@ interface NewerNotesAudit {
 type WireAct = { key: string | null; label: string | null; filled: boolean; tab: number };
 type WireTrayItem = { id: string | null; kind: string | null; meta: string | null; text: string | null; acts: WireAct[] };
 type Called = { fn: string; args: unknown[] }[];
-type FinishSeen = { title: string | null; mark: string | null; body: string | null; verdicts: string[]; lines: string[][]; finish: { disabled: boolean; title: string } | null; hint: boolean; err: string | null } | null;
+type FinishSeen = { title: string | null; mark: string | null; body: string | null; verdicts: string[]; lines: string[][]; use: string | null; finish: { disabled: boolean; title: string } | null; hint: boolean; err: string | null } | null;
 interface WireNeedsAudit {
   keys: string;
   tray: WireTrayItem[];
   finishedItem: WireTrayItem | null;
   finishOpened: { tray: boolean; keyboard: string; pop: FinishSeen; calls: Called };
   finishEarly: { pop: FinishSeen; calls: Called };
-  finished: { open: boolean; keyboard: string; note: string | null; calls: Called; loop: string | null; held: unknown };
+  turnLanded: { pop: FinishSeen; calls: Called };
+  changed: { body: string | null; mark: string | null };
+  kept: { pop: FinishSeen; same: boolean; calls: Called };
+  newerSince: { pop: FinishSeen; same: boolean };
+  finished: { open: boolean; keyboard: string; note: string | null; edited: string | null; calls: Called; loop: string | null; held: unknown };
+  finishedAfter: string[] | null;
   costEsc: { typedIn: string; asked: boolean; popGone: boolean; dialog: boolean; keyboard: string; calls: Called };
+  faceFlip: { blocked: WireTrayItem | null; under: string | null; calls: Called; pop: boolean };
   keySend: { tab: number | null; calls: Called };
   changedUnder: { off: boolean; text: string | null; calls: Called };
   raced: { calls: Called; pop: boolean; ends: string | null; note: string | null };
@@ -242,7 +248,7 @@ interface WireNeedsAudit {
   sentGhost: { calls: Called; item: boolean };
   shown: { tray: boolean; face: string | null; ends: string | null; keyboard: string; calls: Called };
   shownClosed: { open: boolean; keyboard: string; calls: Called };
-  checked: { calls: Called; note: string | null };
+  checked: { calls: Called; note: string | null; checking: { off: boolean; title: string | null }; after: boolean };
   markAsked: { tray: boolean; question: string | null; keyboard: string; hint: boolean; calls: Called };
   markReread: { question: string | null; open: boolean; err: string | null; calls: Called };
   marked: { open: boolean; keyboard: string; note: string | null; calls: Called };
@@ -949,7 +955,7 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
       ["wire:wb-ghost", "Wire ready · #5120", "Fixtures → Spike: streaming: ready to send (sending reopens it)"],
       ["wire:wb-loop", "Wire ready · #5120", "Reviewer → Builder: ready to send (round 2 of 3)"],
       ["wire:wb-sending", "Wire may have arrived · #5120", "Builder → Reviewer: it may have arrived"],
-      [`merge:5120:${pr}`, "Pull request · #5120", "Can't tell whether PR 11 to dev merged · #5120"],
+      [`merge:5120:${pr}`, "Merge unknown · #5120", "Can't tell whether PR 11 to dev merged"],
     ]);
     const byId = Object.fromEntries(w.tray.map((i) => [i.id, i.acts]));
     expect(byId["wire:wb-loop"]).toEqual(acts(["send", true, -1], ["show", false, 0], ["dismiss", false, 0]));
@@ -972,16 +978,30 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
       finish: { disabled: true, title: "Pick a verdict first" },
       hint: true,
     });
-    // Changes picked: where each wire goes and what it does; Finish step clicked straight after takes nothing
+    // Changes picked: where each wire goes, what it does, and what that does to what waits there (Reviewer's earlier
+    // changes, replaced); Finish step clicked straight after takes nothing
     expect(w.finishEarly.pop?.verdicts).toEqual(["Changes*", "Approve"]);
     expect(w.finishEarly.pop?.lines).toEqual([
-      ["Builder", "its gate opens · round 2 of 3", "t-ready"],
+      ["Builder", "its gate opens · round 2 of 3", "t-ready", "replaces what waits"],
       ["Tester", "blocked till approve, then its gate opens", "t-held"],
     ]);
     expect(w.finishEarly.calls).toEqual([]);
-    // then the one finish, with the words and the verdict shown; the keyboard back on the Needs you button
-    expect(w.finished.calls).toEqual([{ fn: "wiresFinish", args: ["wb-reviewer", w.finishOpened.pop!.body, "changes"] }]);
+    // a turn ends as it's open: its latest message read in again, and a click 12 ms after finishes nothing
+    const NEWER = "One change left:\n1. The email column needs the DonorPII grant.";
+    expect(w.turnLanded.pop).toMatchObject({ body: NEWER, mark: "From its latest message. Its agent wrote this, not you.", verdicts: ["Changes*", "Approve"] });
+    expect(w.turnLanded.calls).toEqual([]);
+    // changed by you, then put away by a press outside: kept, and back as it opens again, the latest a click away
+    expect(w.changed).toEqual({ body: `${NEWER}xy`, mark: "From its latest message, changed by you." });
+    expect(w.kept).toMatchObject({ same: true, calls: [] });
+    expect(w.kept.pop).toMatchObject({ mark: "Your changes, kept from before.", use: "Use its latest message" });
+    // another turn ends: your changes stay, the newer message offered
+    expect(w.newerSince).toMatchObject({ same: true });
+    expect(w.newerSince.pop).toMatchObject({ mark: "It has a newer message since you changed this.", use: "Use it" });
+    // then the one finish, with your words and the verdict shown; the keyboard back on the Needs you button
+    expect(w.finished.calls).toEqual([{ fn: "wiresFinish", args: ["wb-reviewer", `${NEWER}xy`, "changes"] }]);
     expect(w.finished).toMatchObject({ open: false, keyboard: "button", note: "Finished Reviewer's step: Builder: waits at its gate; Tester: blocked till approve.", held: null });
+    // finished since its last prompt: its Finished item offers Finish step… no more
+    expect(w.finishedAfter).toEqual(["go", "dismiss"]);
 
     const ghost = ["wb-ghost", "pd-fixtures", "The streaming fixtures are in fixtures/stream: 40k donors, one with no email."];
     // the cost question asked from a send popover opened as Builder's terminal was typed in: with the popover gone, Esc
@@ -989,6 +1009,11 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(w.costEsc).toEqual({ typedIn: "terminal", asked: true, popGone: true, dialog: false, keyboard: "landscape", calls: [{ fn: "wiresSend", args: [...ghost, null] }, { fn: "resumeCost", args: ["wb-spike"] }] });
     // Send: Enter on it presses nothing; a click as a newer finish lands under it is let go; then the one send of what's
     // shown now, under its pending
+    // the same pending blocked (Builder's hooks silent), then ready: Send comes where Show was, and a click there as soon
+    // as it does sends nothing
+    expect(w.faceFlip.blocked).toMatchObject({ meta: "Wire blocked · #5120", text: "Reviewer → Builder: hooks not reporting" });
+    expect(w.faceFlip.blocked?.acts.map((a) => a.key)).toEqual(["show", "dismiss"]);
+    expect(w.faceFlip).toMatchObject({ under: "send", calls: [], pop: false });
     expect(w.keySend).toEqual({ tab: -1, calls: [] });
     expect(w.changedUnder.calls).toEqual([]);
     // one landing in the same task as the click, before the tray has drawn it: nothing sent, the gate shown with it
@@ -1008,15 +1033,15 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(w.shown).toEqual({ tray: false, face: "f-unconfirmed", ends: "Builder → Reviewer", keyboard: "popover", calls: [] });
     expect(w.shownClosed).toEqual({ open: false, keyboard: "button", calls: [] });
 
-    // the pull request: Check now's one call, its error said
-    expect(w.checked).toEqual({ calls: [{ fn: "pipelinePrCheck", args: ["5120", pr] }], note: "Couldn't check PR 11 to dev: UI preview: no pull request is read" });
+    // the pull request: Check now's one call, its error said, Mark merged… off while it reads
+    expect(w.checked).toEqual({ calls: [{ fn: "pipelinePrCheck", args: ["5120", pr] }], note: "Couldn't check PR 11 to dev: UI preview: no pull request is read", checking: { off: true, title: "Checking it now: Mark merged… once that's answered" }, after: true });
     // Mark merged… asks, naming it; a burst's keys press nothing; a click as a re-read changes the question is let go
     expect(w.markAsked).toMatchObject({ tray: false, keyboard: "dialog", hint: true, calls: [] });
     expect(w.markAsked.question).toMatch(/^Mark PR 11 to dev in backoffice merged\? Mockingbird can't read whether it merged\./);
     expect(w.markReread.question).toMatch(/^Mark PR 11 to dev in backoffice merged\? Its provider says it was closed without merging\./);
     // a click as the re-read lands, before it's drawn, marks nothing and says so; one just after it's drawn is let go
     expect(w.markReread).toMatchObject({ open: true, err: "It changed as you clicked: nothing was marked. Read what it says now.", calls: [] });
-    expect(w.marked).toEqual({ open: false, keyboard: "button", note: "Marked PR 11 to dev merged: #5120 and its wires go on as for a merge, their gates asking first.", calls: [{ fn: "pipelinePrMarkMerged", args: ["5120", pr] }] });
+    expect(w.marked).toEqual({ open: false, keyboard: "button", note: "Marked PR 11 to dev merged: #5120 and its wires go on as for a merge, their gates asking first.", calls: [{ fn: "pipelinePrMarkMerged", args: ["5120", pr, expect.stringMatching(/^closed:\d+$/)] }] });
 
     // in focus: the header's Finish step, its popover under it, nothing finished by opening or Esc; the menu has it too
     expect(w.header).toEqual({ focus: true, button: { label: "Finish step", disabled: false } });

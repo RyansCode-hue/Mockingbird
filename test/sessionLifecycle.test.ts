@@ -352,11 +352,17 @@ describe("a queued message's receipt", () => {
     const s = await m.create({ ...agentPane, title: "Builder" });
     const first = m.promptCount(s.id)!;
     expect(first.seq).toBe(0);
+    const promptAt = () => m.list().find((x) => x.id === s.id)!.promptAt;
+    expect(promptAt()).toBeNull();
+    const before = Date.now();
     m.statusFromHook({ paneId: s.id, status: "working", prompted: true });
     m.statusFromHook({ paneId: s.id, status: "working" }); // a tool use is no prompt
     expect(m.promptCount(s.id)).toEqual({ epoch: first.epoch, seq: 1 });
+    // when it came, for a summary since it (the Finished item's Finish step…)
+    expect(promptAt()).toBeGreaterThanOrEqual(before);
     await m.restart(s.id);
     expect(m.promptCount(s.id)!.seq).toBe(0);
+    expect(promptAt()).toBeNull();
     expect(m.promptCount(s.id)!.epoch).not.toBe(first.epoch);
     ptys.at(-1)!.exit(0);
     expect(m.promptCount(s.id)).toBeNull();

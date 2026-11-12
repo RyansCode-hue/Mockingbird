@@ -242,13 +242,6 @@ export function armFocus(el: HTMLElement | null | undefined): void {
  */
 export const userLeft = (): boolean => acting && (lastKey === null || lastKey === "Escape" || lastKey === "?");
 
-/**
- * What's closing now was left by the user's own key for leaving (Esc, or ? for the shortcuts sheet), being handled now:
- * the one way back to a terminal a hand-back takes (Modal.tsx's useDialogFocus). A press, Enter, or closing on its own
- * isn't.
- */
-export const userEscaped = (): boolean => acting && (lastKey === "Escape" || lastKey === "?");
-
 /** The key being handled came after keys had paused (`TYPING_MS`), so it's no part of a burst. */
 export const afterPause = (): boolean => keyPaused;
 

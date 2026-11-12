@@ -6,7 +6,7 @@ import type { OfferHow } from "./wireDelivery";
 import type { PrMerge } from "./wirePrompt";
 import type { MergeFill } from "./wireTools";
 import { plainLine } from "../shared/team/agentText";
-import { BY_MERGE, BY_YOU, PR_WATCH_NEEDS_YOU, latestPr, samePrPlace, ticketOfSession, type PipelinePr, type PrRepo, type PrState, type SessionInfo, type TicketPipeline } from "../shared/types";
+import { BY_MERGE, BY_YOU, PR_WATCH_NEEDS_YOU, latestPr, prAskedState, prNeedsYou, samePrPlace, ticketOfSession, type PipelinePr, type PrRepo, type PrState, type SessionInfo, type TicketPipeline } from "../shared/types";
 import { carriesWork, wiresInOrder, type FinishOutcome, type MergeView, type Wire, type WireEnd, type WireState } from "../shared/wires";
 
 /**
@@ -200,11 +200,22 @@ export class PrWatch {
    * The user's Mark merged…, for a pull request the watch can't read (or that its provider says was closed): merged now,
    * by them, which moves the ticket as a merge does, and readies its wires with {pr} saying they marked it. Their gates
    * ask. A window call only.
+   *
+   * It marks only what the user was asked about: a pull request that still needs them (prNeedsYou), in the state
+   * `asked` names (prAskedState). Checked in the queue, so a Check now ahead of it that reads the PR again, open and
+   * readable or closed since, refuses it.
    */
-  markMerged(ticket: string, url: string): Promise<TicketPipeline> {
+  markMerged(ticket: string, url: string, asked: string): Promise<TicketPipeline> {
     return this.serial(async () => {
-      const prs = this.o.pipeline.get(ticket)?.prs;
+      const p = this.o.pipeline.get(ticket);
+      const prs = p?.prs;
       const pr = Array.isArray(prs) ? prs.find((x) => x.url === url) : undefined;
+      // a merged or missing one is prMerged's to refuse, as before
+      if (p && pr && !pr.mergedAt) {
+        const now = pr.closedAt ? `its provider says it was closed without merging` : pr.watch ? `Mockingbird still can't read it` : `Mockingbird reads it again`;
+        if (!prNeedsYou(p, pr)) throw new Error(`${prName(pr)} doesn't need you any more (${now}): nothing was marked.`);
+        if (prAskedState(pr) !== asked) throw new Error(`${prName(pr)} has changed since you were asked (${now}): nothing was marked. Ask again.`);
+      }
       const why = pr?.watch ? `: Mockingbird couldn't read it (${pr.watch.why})` : pr?.closedAt ? `: ${pr.provider === "ado" ? "Azure DevOps" : "GitHub"} said it was closed without merging` : "";
       const r = this.o.pipeline.prMerged(ticket, url, { at: this.now(), by: BY_YOU, note: `You marked ${pr ? prName(pr) : url} merged${why}.` });
       this.changed = true;

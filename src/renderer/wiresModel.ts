@@ -3,7 +3,7 @@
  * (the tile holding the session, a ghost's card, or a collapsed area's pill), what state it shows, and its curve
  * (Main.dc.html's). WireLayer.tsx draws them and keeps them on their ends as workspaces move.
  */
-import { DEFAULT_ROUNDS, ROOM_LINE, countedFor, finishPlan, gateInForce, gateOf, isSending, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type FinishedStep, type GateContext, type MergeView, type Wire, type WireContext, type WireEnd, type WireState, type WireType, type WireVerdict } from "../shared/wires";
+import { AUTOMATIC_HOPS, DEFAULT_ROUNDS, ROOM_LINE, countedFor, finishPlan, gateInForce, gateOf, isSending, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type FinishedStep, type GateContext, type MergeView, type Wire, type WireContext, type WireEnd, type WireState, type WireType, type WireVerdict } from "../shared/wires";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
 import { topOfKey, type PipelinePr, type SessionInfo, type TicketPipeline } from "../shared/types";
 import { LOOSE_GROUP, type Rect } from "../shared/landscape";
@@ -533,28 +533,73 @@ export interface FinishLine {
   /** Its dot: amber where something will wait at the gate or go, dashed red where it's held, grey where nothing moves, red where it's refused. */
   tone: "ready" | "held" | "quiet" | "refused";
   text: string;
+  /**
+   * What finishing does to what's already there along it, when it does something: "replaces what waits", "takes back
+   * what's on its way", "already sent at 14:32: this sends again". Null when there's nothing there it changes.
+   */
+  over: string | null;
+}
+
+/** A time of day as the popover says it: 14:32. */
+const timeOfDay = (at: number) => {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
+/**
+ * What finishing does to what wire `w` already has, by the plan's step for it (main's offer): an unsent pending is
+ * replaced (readies) or taken back (holds, passes); one still queued at the other end is taken back on holds and passes,
+ * one being pasted is past that; one already sent goes again.
+ */
+function overOf(does: FinishedStep["does"], w: Wire): string | null {
+  const going = isSending(w) ? w.delivery! : null;
+  const waits = !!w.pending && !(going && going.id === w.pending.id);
+  if (does === "holds" || does === "passes") {
+    if (going && going.id === w.pending?.id) return going.state === "queued" ? "takes back what's on its way" : "what's being pasted can't be taken back";
+    if (waits) return "takes back what waits";
+    return null;
+  }
+  if (does !== "readies") return null;
+  if (waits) return "replaces what waits";
+  const d = w.delivery;
+  if (going || w.pending || !d) return null;
+  if (d.state === "sent" || d.state === "placed") return `already sent at ${timeOfDay(d.at)}: this sends again`;
+  if (d.state === "unconfirmed") return "what was sent may have arrived: this sends again";
+  return null;
 }
 
 /**
  * What finishing session `id`'s step with `verdict` does along each of its handoff and feedback wires out, as the Finish
  * step popover says it before the click (WireFinishStep.dc.html A): "its gate opens · round 2 of 3", "sends itself",
- * "blocked till approve, then sends itself". It's finishPlan, which main works out again as it finishes, by the rules as
- * the window has them; an automatic gate that holds for what only main knows (a flag, its hops) asks instead.
+ * "blocked till approve, then sends itself", and what that does to what's there now (`over`). It's finishPlan, which
+ * main works out again as it finishes, by the rules as the window has them. What a readied wire's gate does is its gate
+ * with the new pending in place and the source's note as the finish leaves it: blocked (the other end's hooks silent,
+ * a closed end not on the landscape), behind what's on its way, or, automatic, asking where main's would hold (an end
+ * not running, AUTOMATIC_HOPS in a row). A flag only main can find (a secret redacted) can still make it ask.
  */
 export function finishLines(id: string, verdict: WireVerdict | undefined, ctx: GateContext): FinishLine[] {
+  const was = Object.hasOwn(ctx.notes, id) ? ctx.notes[id] : { hops: 0 };
+  const { verdict: _was, ...kept } = was;
+  const notes = { ...ctx.notes, [id]: verdict ? { ...kept, verdict } : kept };
+  const hopsOf = (s: string) => (Object.hasOwn(notes, s) ? notes[s].hops : 0);
   return finishPlan(id, verdict, ctx).map((step): FinishLine => {
     const w = ctx.links[step.wire];
     const b = ctx.end(step.to);
     const to = b?.title ?? step.to;
     const auto = gateInForce(w, ctx) === "automatic";
-    const line = (tone: FinishLine["tone"], text: string): FinishLine => ({ wire: step.wire, to, tone, text });
+    const line = (tone: FinishLine["tone"], text: string): FinishLine => ({ wire: step.wire, to, tone, text, over: overOf(step.does, w) });
     switch (step.does) {
       case "readies": {
         const r = w.rounds;
         if (r && r.used >= r.limit) return line("held", `waits at its limit · ${r.used} of ${r.limit} rounds`);
         const round = r ? ` · round ${r.used + 1} of ${r.limit}` : "";
+        const next: Wire = { ...w, pending: { id: "finish-step", body: "", at: 0, flags: [] } };
+        const gate = gateOf(step.wire, next, { ...ctx, notes, links: { ...ctx.links, [step.wire]: next } });
+        if (gate.state === "sending") return line("held", `waits behind what's on its way${round}`);
+        if (gate.state === "blocked") return line("held", `waits, blocked: ${shortWhy(gate, w)}${round}`);
         if (!auto) return line("ready", `its gate opens${round}`);
         if (b && b.where !== "running") return line("ready", `its gate opens${round}: an automatic gate never ${b.where === "planned" ? "starts" : "reopens"} it`);
+        if (hopsOf(w.from) >= AUTOMATIC_HOPS || hopsOf(w.to) >= AUTOMATIC_HOPS) return line("ready", `its gate opens${round}: after ${AUTOMATIC_HOPS} automatic sends in a row, it asks`);
         return line("ready", `sends itself${round}`);
       }
       case "holds":

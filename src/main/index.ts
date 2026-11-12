@@ -1674,7 +1674,7 @@ handle("pipeline:approve", (id) => pipelineDo(() => ticketTools.approve(String(i
 handle("pipeline:request:dismiss", (id, requestId, note) => pipelineDo(() => ticketTools.dismissRequest(String(id), String(requestId), typeof note === "string" ? note : "")));
 // the merge watch's Check now, and Mark merged…: the user's alone, as no tool reaches either
 handle("pipeline:pr:check", (id, url) => pipelineDo(() => prWatch.checkNow(String(id), typeof url === "string" ? url : undefined)));
-handle("pipeline:pr:markMerged", (id, url) => pipelineDo(() => prWatch.markMerged(String(id), String(url ?? ""))));
+handle("pipeline:pr:markMerged", (id, url, asked) => pipelineDo(() => prWatch.markMerged(String(id), String(url ?? ""), String(asked ?? ""))));
 // posting is the one step that writes to ADO, and only for the draft the user picked
 handle("pipeline:draft:post", (id, draftId) =>
   pipelineDo(async () => {

@@ -573,6 +573,9 @@ export const WIRE_BODY_MAX = 40_000;
  * Whether finishing session `id`'s step needs a verdict: it has a feedback wire out. The one answer finish_step, the
  * launch instructions, a new wire's notice and what a wire sends all go by, so none asks for what another refuses.
  */
+/** Automatic sends in a row along a chain, or reaching one session, before the next waits for a person (decision 4). */
+export const AUTOMATIC_HOPS = 3;
+
 export const verdictDue = (id: string, links: Readonly<Record<string, Wire>>): boolean => Object.values(links).some((w) => w.from === id && w.type === "feedback");
 
 /**

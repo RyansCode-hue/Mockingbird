@@ -428,6 +428,15 @@ describe("a person's Finish step", () => {
     expect(book(t).links[ab].pending!.body).toBe("edited in the popover");
     expect(t.made[0].by).toBe("you");
   });
+  it("is refused mid-turn, working or waiting at a prompt, and nothing is readied; its agent's own finish_step isn't", async () => {
+    const t = setup();
+    const ab = wire(t.service.add("a", "b", "handoff"));
+    expect(await t.tools.finish({ ...t.a, status: "working" }, { summary: "x" }, "you")).toEqual({ refused: `“${t.a.title}” is working: finish its step once its turn ends.` });
+    expect(await t.tools.finish({ ...t.a, status: "waiting" }, { summary: "x" }, "you")).toEqual({ refused: `“${t.a.title}” is waiting on you mid-turn: answer it, then finish its step once its turn ends.` });
+    expect(book(t).links[ab].pending).toBeUndefined();
+    done(await t.tools.finish({ ...t.a, status: "working" }, { summary: "from finish_step" }, "agent"));
+    expect(book(t).links[ab].pending!.body).toBe("from finish_step");
+  });
   it("starts from the latest message whole, cut to what a summary holds", async () => {
     const t = setup();
     expect(await t.tools.latestMessage(t.a)).toEqual({ text: "The filter is in; tests pass.", at: Date.parse("2026-11-09T10:00:00Z") });

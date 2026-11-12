@@ -3544,6 +3544,11 @@ pre.wg-body { margin: 0; resize: none; white-space: pre-wrap; overflow-wrap: any
 .fs-line { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-size: 12px; color: var(--text-2); }
 .fs-to { flex-shrink: 0; font-weight: 500; color: var(--text-1); white-space: nowrap; }
 .fs-does { min-width: 0; color: var(--text-3); overflow-wrap: anywhere; }
+/* what finishing does to what's already there: under what it does, in the gate's amber */
+.fs-over { display: block; margin-top: 1px; font-size: 11.5px; color: var(--amber); }
+.fs-mark.t-newer { color: var(--amber); }
+.mb-menu.fs-pop button.fs-use { padding: 0; border: 0; background: none; font: inherit; color: var(--text-1); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.mb-menu.fs-pop button.fs-use:disabled { opacity: .5; cursor: default; }
 .fs-dot { flex-shrink: 0; align-self: center; box-sizing: border-box; width: 7px; height: 7px; border-radius: 4px; }
 .fs-dot.t-ready { background: var(--amber); }
 .fs-dot.t-held { border: 1.5px dashed var(--red); }

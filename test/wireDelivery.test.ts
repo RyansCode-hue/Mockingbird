@@ -935,8 +935,9 @@ describe("an automatic gate", () => {
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.wires[0]).delivery!.state).toBe("sent");
     expect(t.ptyOf(t.ids[1]).writes.filter((x) => x !== "\r")).toEqual(["|[automatic from Step 0 to Step 1] first|", "|[automatic from Step 0 to Step 1] after a new prompt|"]);
-    // a person's Finish step is theirs, not the agent's: no prompt to go by
+    // a person's Finish step is theirs, not the agent's: no prompt to go by (between its turns, as a person's always is)
     t.idle(t.ids[1]);
+    t.idle(t.ids[0]);
     await t.offer(t.wires[0], "a person finished it", { origin: "person" });
     vi.advanceTimersByTime(150);
     expect(t.wireOf(t.wires[0]).delivery!.state).toBe("sent");

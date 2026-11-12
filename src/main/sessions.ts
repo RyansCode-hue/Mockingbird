@@ -236,6 +236,7 @@ interface LiveSession {
   compactSentAt: number | null; // when Compact (usage warnings) last sent /compact here
   prompts: number; // prompts its agent has taken this launch (UserPromptSubmit), Mockingbird's own notices not counted
   ownPrompts: number; // notices submitted whose UserPromptSubmit hasn't come yet: those prompts aren't counted
+  promptAt: number | null; // when the latest of those prompts came (SessionInfo.promptAt)
 }
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
@@ -505,7 +506,7 @@ export class SessionManager {
   }
 
   list(): SessionInfo[] {
-    return [...this.live.values()].map((s) => ({ ...s.info, queuedCount: s.queued.length }));
+    return [...this.live.values()].map((s) => ({ ...s.info, queuedCount: s.queued.length, promptAt: s.promptAt }));
   }
 
   /**
@@ -836,6 +837,7 @@ export class SessionManager {
       compactSentAt: null,
       prompts: 0,
       ownPrompts: 0,
+      promptAt: null,
       mcp,
     };
     sess.total = sess.buffer.length;
@@ -2312,7 +2314,10 @@ export class SessionManager {
     if (s.folderNotice && ev.paneId === s.info.id) s.folderNotice.hookEvent();
     if (ev.prompted) {
       if (s.ownPrompts > 0) s.ownPrompts--;
-      else s.prompts++;
+      else {
+        s.prompts++;
+        s.promptAt = Date.now();
+      }
     }
     if (s.info.hooksSilent) {
       s.info.hooksSilent = false;

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { useLiftOut } from "./lift";
-import { DIALOG_OPENED, armFocus, isArmed, isNowhere, keyboardNowhere, userEscaped, userLeft } from "./keyArm";
+import { DIALOG_OPENED, armFocus, isArmed, isNowhere, keyboardNowhere, userLeft } from "./keyArm";
 import { useArrivalGuard } from "./answerGuard";
 
 /**
@@ -97,10 +97,10 @@ const OFF_TERMINALS = ".wg-pop, .fs-pop, .ny-tray";
  * on its own. `handsBack` can keep it from giving the keyboard to a place its owner hands back to itself. Returns where
  * the keyboard goes back to now, for passing on.
  *
- * A terminal on the landscape gets it back only by the user's own Esc (userEscaped), and never past what was opened
- * from the send popover, Finish step or Needs you: closed any other way (its button pressed, its act done, it going on
- * its own) the landscape gets it, disarmed. An agent's prompt answers to a single key (Codex approves on y), so a key
- * aimed at what closed mustn't land there.
+ * What was opened from the send popover, Finish step or Needs you never gives a terminal on the landscape the keyboard,
+ * Esc included: the landscape gets it, disarmed. Their acts land in sessions the user wasn't typing in, and an agent's
+ * prompt answers to a single key (Codex approves on y). Anything else gives it back as it had it, a terminal included
+ * (⌘K, then a command, and typing goes on where it was).
  */
 export function useDialogFocus(opts: { rearms?: boolean; handsBack?: (to: HTMLElement) => boolean } = {}): () => HTMLElement | null {
   // read as it renders: the palette or menu it was opened from is still there
@@ -124,6 +124,7 @@ export function useDialogFocus(opts: { rearms?: boolean; handsBack?: (to: HTMLEl
           handBack: (to) => {
             chain.current = [to, ...chain.current!];
             entry.chain = chain.current;
+            if (to.closest(OFF_TERMINALS)) offTerminals.current = true;
           },
         },
       })
@@ -133,7 +134,7 @@ export function useDialogFocus(opts: { rearms?: boolean; handsBack?: (to: HTMLEl
       if (!keyboardNowhere() || keyboardClaimed()) return;
       const to = placeFor(chain.current!);
       if (!to || handsBack.current?.(to) === false) return;
-      if (to.closest(LANDSCAPE_TERM) && (offTerminals.current || !userEscaped())) {
+      if (offTerminals.current && to.closest(LANDSCAPE_TERM)) {
         const surface = home?.();
         if (surface && !surface.closest(LANDSCAPE_TERM)) surface.focus({ preventScroll: true });
         return;

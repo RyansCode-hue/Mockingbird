@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { isErr, type IpcResult, type TicketPipeline } from "../shared/types";
+import { isErr, prAskedState, type IpcResult, type TicketPipeline } from "../shared/types";
 import { AnchoredPopover } from "./Popover";
 import { useDialogFocus } from "./Modal";
 import { keyboardNowhere } from "./keyArm";
@@ -210,7 +210,7 @@ export function WirePopover({ at, view, form, ticket, onSend, onMarkSent, onMore
           <div className="wg-confirm">
             <div className="wg-q">{markMergedQuestion(asking)}</div>
             <div className="wg-acts">
-              {btn("mark", "Mark merged", "Marking…", act("mark", () => pipeCall("mark it merged", () => window.mb.pipelinePrMarkMerged(ticket, asking.url))), { main: true })}
+              {btn("mark", "Mark merged", "Marking…", act("mark", () => pipeCall("mark it merged", () => window.mb.pipelinePrMarkMerged(ticket, asking.url, prAskedState(asking) ?? ""))), { main: true })}
               <button type="button" className="wr-btn" onClick={() => setConfirming(null)}>
                 Cancel
               </button>

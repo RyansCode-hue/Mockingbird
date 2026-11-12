@@ -555,7 +555,8 @@ describe.skipIf(!local)("the send popover", () => {
     // its confirm, clicked as it came up, is let go; once settled, it marks it, and the wire waits at its gate, flagged
     expect(g.merge.early.marked).toBe(0);
     expect(g.merge.early.pop.buttons).toContain("off Mark merged");
-    expect(g.merge.marked).toEqual([["5120", PR_URL]]);
+    // with what its confirm asked about, which main marks only while the PR is still that
+    expect(g.merge.marked).toEqual([["5120", PR_URL, "unread"]]);
     expect(g.merge.calls).toEqual(["pipelinePrCheck", "pipelinePrMarkMerged"]);
     expect(g.merge.after).toMatchObject({ face: "ready", flags: ["You marked PR 11 to dev merged: Mockingbird couldn't read it."], buttons: ["Send", "Not yet"] });
     expect(g.merge.look).toBe("ready");

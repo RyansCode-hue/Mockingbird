@@ -5,6 +5,7 @@ import { LOOSE_GROUP, areaKeyOf } from "../src/shared/landscape";
 import { ROOMS_STARTING, newWire, type GateContext, type Wire, type WireEnd } from "../src/shared/wires";
 import {
   DISMISS_KEEP_MS,
+  KIND_LABEL,
   DISMISS_MAX,
   currentIndex,
   dismiss,
@@ -501,17 +502,17 @@ describe("a wire's item (W5)", () => {
     const got = wireItems(wiresOf(links, { spike: { where: "closed" } }));
     // in the order the wires were made (the same here: then by id), as needsItems sorts them by rank and time after
     expect(got.map((i) => [i.id, i.sig, i.label, i.text, i.wire?.face, i.session, i.area, i.at])).toEqual([
-      ["wire:ghost", "wire:ghost|p-ghost", "Wire ready", "Builder → Spike: ready to send (sending reopens it)", "ready", "builder", "5120", NOW - 5 * MIN],
-      ["wire:limit", "wire:limit|p-limit", "Wire at its limit", "Builder → Tester: at its limit, 3 of 3 rounds", "limit", "builder", "5120", NOW - 7 * MIN],
-      ["wire:loop", "wire:loop|p-loop", "Wire ready", "Reviewer → Builder: ready to send (round 2 of 3)", "ready", "reviewer", "5120", NOW - 2 * MIN],
-      ["wire:unsure", "wire:unsure|p-unsure", "Wire may have arrived", "Reviewer → Spike: it may have arrived", "unconfirmed", "reviewer", "5120", NOW - 9 * MIN],
+      ["wire:ghost", "wire:ghost|p-ghost|ready", "Wire ready", "Builder → Spike: ready to send (sending reopens it)", "ready", "builder", "5120", NOW - 5 * MIN],
+      ["wire:limit", "wire:limit|p-limit|limit", "Wire at its limit", "Builder → Tester: at its limit, 3 of 3 rounds", "limit", "builder", "5120", NOW - 7 * MIN],
+      ["wire:loop", "wire:loop|p-loop|ready", "Wire ready", "Reviewer → Builder: ready to send (round 2 of 3)", "ready", "reviewer", "5120", NOW - 2 * MIN],
+      ["wire:unsure", "wire:unsure|p-unsure|unconfirmed", "Wire may have arrived", "Reviewer → Spike: it may have arrived", "unconfirmed", "reviewer", "5120", NOW - 9 * MIN],
     ]);
     // blocked with something waiting: its other end's hooks silent; and something on its way to one whose hooks are silent
     const silent = { builder: { hooksSilent: true } };
     const held = wireItems(wiresOf({ h: link("reviewer", "builder", "handoff", { pending: pending("p-h") }) }, silent));
     expect(held.map((i) => [i.id, i.label, i.text, i.wire?.face])).toEqual([["wire:h", "Wire blocked", "Reviewer → Builder: hooks not reporting", "blocked"]]);
     const stuck = wireItems(wiresOf({ q: link("reviewer", "builder", "handoff", { pending: pending("p-q"), delivery: { id: "p-q", state: "queued", at: NOW } }) }, silent));
-    expect(stuck.map((i) => [i.id, i.sig, i.wire?.face])).toEqual([["wire:q", "wire:q|p-q", "blocked"]]);
+    expect(stuck.map((i) => [i.id, i.sig, i.wire?.face])).toEqual([["wire:q", "wire:q|p-q|blocked", "blocked"]]);
   });
 
   it("isn't there while nothing of its waits on you: idle, on its way, sent, held for approve, waiting on its pull request, or carrying no work", () => {
@@ -533,6 +534,15 @@ describe("a wire's item (W5)", () => {
     expect(at("p1").id).toBe(at("p2").id);
     expect(at("p1").sig).not.toBe(at("p2").sig);
     expect(shownItems([at("p2")], dismiss([], at("p1"), NOW))).toHaveLength(1);
+  });
+
+  it("is a new state when the same pending goes from blocked to ready, so Send there is a new row and a Dismiss of the block lets it through", () => {
+    const loop = { loop: link("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, pending: pending("p") }) };
+    const blocked = wireItems(wiresOf(loop, { builder: { hooksSilent: true } }))[0];
+    const ready = wireItems(wiresOf(loop))[0];
+    expect([blocked.wire?.face, ready.wire?.face, blocked.wire?.pending, ready.wire?.pending]).toEqual(["blocked", "ready", "p", "p"]);
+    expect(blocked.sig).not.toBe(ready.sig);
+    expect(shownItems([ready], dismiss([], blocked, NOW))).toEqual([ready]);
   });
 
   it("leaves out a wire an end of which a teammate took over, and one blocked only for what's everyone's: the book unsaved, rooms starting", () => {
@@ -614,14 +624,19 @@ describe("a pull request's item (W16 in Needs you)", () => {
         typing: null,
         pipeline: null,
         merge: { ticket: "5101", url: URL11 },
-        text: "Can't tell whether PR 11 to dev merged · #5101",
+        label: "Merge unknown",
+        text: "Can't tell whether PR 11 to dev merged",
         code: null,
       },
     ]);
     const closed = of([pr({ closedAt: NOW - 8 * MIN })]);
-    expect(closed.map((i) => [i.text, i.sig, i.at])).toEqual([["PR 11 to dev was closed without merging · #5101", `merge:5101:${URL11}|closed:${NOW - 8 * MIN}`, NOW - 8 * MIN]]);
+    expect(closed.map((i) => [i.label, i.text, i.sig, i.at])).toEqual([["PR closed", "PR 11 to dev was closed without merging", `merge:5101:${URL11}|closed:${NOW - 8 * MIN}`, NOW - 8 * MIN]]);
     // seen closed is a new state: a Dismiss of it unreadable lets it through
     expect(closed[0].sig).not.toBe(unread[0].sig);
+    // a label of its own, not an agent's request's; the ticket said in its text only where the area isn't the ticket's
+    expect(KIND_LABEL.merge).not.toBe(KIND_LABEL.pr);
+    const elsewhere = withTickets([pipe({ stage: "pr-dev", prs: [pr({ closedAt: NOW })] })], [{ ...coder(), taskGroup: "Backoffice" }]).find((i) => i.kind === "merge")!;
+    expect([elsewhere.area, elsewhere.text]).toEqual(["Backoffice", "PR 11 to dev was closed without merging · #5101"]);
   });
 
   it("isn't there for two failed reads, a merge, a closed one replaced by a newer, or a ticket that's done", () => {

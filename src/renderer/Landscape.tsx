@@ -2449,12 +2449,13 @@ export function Landscape({
   };
   /**
    * Finish step for session `s`, or why it can't be now; undefined where it isn't offered: a workspace with no handoff
-   * or feedback wire out (a teammate's never has one), or while the wire book can't be read. Mid-turn its latest
-   * message isn't what the step comes to, so it waits for the turn's end.
+   * or feedback wire out (a teammate's never has one), or while the wire book can't be read. Mid-turn (working, or
+   * waiting at a prompt) its latest message isn't what the step comes to, so it waits for the turn's end, as main does.
    */
   const finishOf = (s: SessionInfo): Can | undefined => {
     if (isRemote(s) || s.shell || !wiredOut(s.id)) return undefined;
     if (s.status === "working") return { no: "It's still working: finish its step once its turn ends" };
+    if (s.status === "waiting") return { no: "It's waiting on you mid-turn: answer it, then finish its step once its turn ends" };
     return () => openFinish(s.id);
   };
   const finishing = finishFor ? (sessionOn(finishFor.id) ?? null) : null;
@@ -2500,7 +2501,11 @@ export function Landscape({
   };
   if (wireActsRef)
     wireActsRef.current = {
-      show: (id) => openGate(id),
+      show: (id) => {
+        if (!wiresNow().state?.book?.links[id]) return "That wire is gone";
+        openGate(id);
+        return null;
+      },
       send: sendNamed,
       finish: (id) => {
         const s = sessionOn(id);
@@ -2991,7 +2996,8 @@ export function Landscape({
           id={finishFor.id}
           title={titleOf(finishing)}
           verdictDue={verdictDue(finishFor.id, wireBook?.book?.links ?? {})}
-          blocked={finishing.status === "working" ? "It's working again: finish its step once its turn ends." : null}
+          finishedAt={finishing.finishedAt ?? null}
+          blocked={finishing.status === "working" ? "It's working again: finish its step once its turn ends." : finishing.status === "waiting" ? "It's waiting on you mid-turn: answer it, then finish its step once its turn ends." : null}
           lines={(v) => {
             const ctx = wireCtx([finishFor.id]);
             return ctx ? finishLines(finishFor.id, v, ctx) : null;

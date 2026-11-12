@@ -75,6 +75,8 @@ export interface NeedsAuditEnv {
   wire?: (id: string) => Wire | undefined;
   setWire?: (id: string, w: Wire) => void;
   costly?: (id: string, on: boolean) => void;
+  latest?: (id: string, text: string) => void;
+  checkTakes?: (ms: number) => void;
 }
 
 type Box = { x: number; y: number; w: number; h: number };
@@ -230,8 +232,8 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
       else if (part === "r") await newerNotesPart(env, out);
       else if (part === "o") await otherBranchPart(env, out);
       else if (part === "w") {
-        if (!env.wire || !env.setWire || !env.costly) throw new Error("part w needs the stub's wires");
-        await wireNeedsPart({ ...env, wire: env.wire, setWire: env.setWire, costly: env.costly }, out);
+        if (!env.wire || !env.setWire || !env.costly || !env.latest || !env.checkTakes) throw new Error("part w needs the stub's wires");
+        await wireNeedsPart({ ...env, wire: env.wire, setWire: env.setWire, costly: env.costly, latest: env.latest, checkTakes: env.checkTakes }, out);
       }
       else await badgePart(env, out);
     } catch (err) {

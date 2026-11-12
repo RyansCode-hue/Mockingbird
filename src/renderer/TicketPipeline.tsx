@@ -12,6 +12,7 @@ import {
   tickOf,
   isErr,
   isWorkItemId,
+  prAskedState,
   prBranchProblem,
   roomPushLine,
   unrecordedBranch,
@@ -807,7 +808,9 @@ export function PipelinePanel(props: PipelineProps) {
                   <a
                     data-tip="Say it merged, when Mockingbird can't tell: the ticket and its wires go on as for a merge"
                     onClick={guard(() => {
-                      if (window.confirm(markMergedQuestion(r))) void run("mark merged", () => window.mb.pipelinePrMarkMerged(ticketId, r.url));
+                      // what the question asked about goes with it: main marks only while the PR is still that
+                      const asked = prAskedState(r) ?? "";
+                      if (window.confirm(markMergedQuestion(r))) void run("mark merged", () => window.mb.pipelinePrMarkMerged(ticketId, r.url, asked));
                     })}
                   >
                     Mark merged…
