@@ -32,11 +32,11 @@ const PROBE_TIMEOUT_MS = 15_000;
  * out, not made anew. When origin can't be reached the last fetch has to do
  * (logged), and `unreachable` says so.
  */
-async function onOrigin(repo: string, branch: string, warn: Warn): Promise<{ has: boolean; unreachable: boolean }> {
+async function onOrigin(repo: string, branch: string, warn: Warn, own: boolean): Promise<{ has: boolean; unreachable: boolean }> {
   if (!(await originUrl(repo))) return { has: false, unreachable: false };
   try {
     // exit 2: origin has no such branch
-    return { has: !!(await ownNetworkGit(repo, "ls-remote", ["--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS })), unreachable: false };
+    return { has: !!(await ownNetworkGit(repo, "ls-remote", ["--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS, roomRepo: own })), unreachable: false };
   } catch (err) {
     warn(`Origin couldn't be asked whether it has ${branch}, so this went by what was last fetched: ${why(err)}`);
     return { has: !!(await git(repo, ["branch", "-r", "--list", "--", `origin/${branch}`])), unreachable: true };
@@ -61,7 +61,9 @@ type StartPoint = { existing: true } | { existing: false; track: boolean; from?:
  * none of that it throws, so the session isn't resumed on a branch holding none of its work: saying to try again when
  * it's origin that didn't answer, as the branch may well be there.
  */
-async function startPoint(repo: string, branch: string, base: string | undefined, mustExist: boolean, warn: Warn, startAt?: string): Promise<StartPoint> {
+async function startPoint(repo: string, branch: string, base: string | undefined, mustExist: boolean, warn: Warn, startAt?: string, own = false): Promise<StartPoint> {
+  // a team room session's (`own`): its fetches and origin's ls-remote run as Mockingbird's own in a room's repository
+  const roomRepo = own;
   if (await git(repo, ["branch", "--list", "--", branch])) {
     // a branch that's there already would hold none of the commit it was asked to start at
     if (startAt) throw new Error(`${branch} is there already, so it can't be started at ${startAt.slice(0, 7)}`);
@@ -73,13 +75,13 @@ async function startPoint(repo: string, branch: string, base: string | undefined
     if (!sha) throw new Error(`The commit it starts at, ${startAt.slice(0, 7)}, isn't in ${repo}`);
     return { existing: false, track: false, from: sha };
   }
-  const there = await onOrigin(repo, branch, warn);
+  const there = await onOrigin(repo, branch, warn, own);
   if (there.has) {
-    if (!mustExist) await ownFetch(repo, ["origin", branch]);
+    if (!mustExist) await ownFetch(repo, ["origin", branch], { roomRepo });
     // origin just didn't answer: a fetch would only wait out its timeout to fail, and the last fetch's ref is there
     else if (!there.unreachable) {
       try {
-        await ownFetch(repo, ["origin", branch]);
+        await ownFetch(repo, ["origin", branch], { roomRepo });
       } catch (err) {
         if (!(await lastFetched(repo, branch))) throw err;
         warn(`${branch} couldn't be fetched from origin, so it's as it was last fetched: ${why(err)}`);
@@ -95,7 +97,7 @@ async function startPoint(repo: string, branch: string, base: string | undefined
   }
   if (!base) return { existing: false, track: false };
   try {
-    await ownFetch(repo, ["origin", base]); // freshest dev/uat
+    await ownFetch(repo, ["origin", base], { roomRepo }); // freshest dev/uat
     return { existing: false, track: false, from: `origin/${base}` };
   } catch (err) {
     // offline or no origin — fall back to the local base branch, loudly
@@ -201,14 +203,16 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
     // a room session's earlier worktree here was held to its own git folder: this one has another
     unpinGitDirs(target);
 
-    const sp = await startPoint(repoPath, branch, baseBranch, !!opts.mustExist, opts.warn ?? warnInConsole, opts.startAt);
+    // a room's refusal (roomWriteEnv's) comes before startPoint's fetch, which reads the same config
+    const env = opts.own ? await roomWriteEnv(repoPath) : WRITE_ENV;
+    const sp = await startPoint(repoPath, branch, baseBranch, !!opts.mustExist, opts.warn ?? warnInConsole, opts.startAt, !!opts.own);
     // worktree add makes the folders above it, so a refusal leaves nothing behind
     await git(
       repoPath,
       sp.existing
         ? ["worktree", "add", target, branch]
         : ["worktree", "add", ...(sp.track ? ["--track"] : []), "-b", branch, target, ...(sp.from ? [sp.from] : [])],
-      { env: opts.own ? await roomWriteEnv(repoPath) : WRITE_ENV }
+      { env }
     );
     return target;
   });
@@ -448,20 +452,22 @@ export async function isBranchName(repo: string, name: string): Promise<boolean>
 
 /**
  * Take back what a start that failed made: worktree `folder` and its new `branch`, which holds nothing of its own yet.
- * Each that can't be removed is logged and thrown, so it's never left behind unsaid.
+ * Each that can't be removed is logged and thrown, so it's never left behind unsaid. `own`: a team room step's, as
+ * createWorktree's: its removal and branch deletion (which fires reference-transaction) fire only the user's own hooks.
  */
-export async function dropNewWorktree(repo: string, folder: string, branch: string): Promise<void> {
+export async function dropNewWorktree(repo: string, folder: string, branch: string, o: Own = {}): Promise<void> {
+  const env = o.own ? await roomWriteEnv(repo) : WRITE_ENV;
   const problems: string[] = [];
   if (fs.existsSync(folder)) {
     try {
-      await removeWorktree(repo, folder);
+      await removeWorktree(repo, folder, env);
     } catch (err) {
       problems.push(`its worktree ${folder} couldn't be removed: ${why(err)}`);
     }
   }
   if (await git(repo, ["branch", "--list", "--", branch])) {
     try {
-      await git(repo, ["branch", "-D", branch]);
+      await git(repo, ["branch", "-D", branch], { env });
     } catch (err) {
       problems.push(`its branch ${branch} couldn't be deleted: ${why(err)}`);
     }
@@ -469,9 +475,9 @@ export async function dropNewWorktree(repo: string, folder: string, branch: stri
   if (problems.length) throw new Error(problems.join("; "));
 }
 
-/** Remove a worktree folder (the branch is kept). */
-export async function removeWorktree(repoPath: string, wtPath: string): Promise<void> {
-  await git(repoPath, ["worktree", "remove", "--force", wtPath]);
+/** Remove a worktree folder (the branch is kept), with `env` when given (a room step's, dropNewWorktree's). */
+export async function removeWorktree(repoPath: string, wtPath: string, env?: Readonly<Record<string, string>>): Promise<void> {
+  await git(repoPath, ["worktree", "remove", "--force", wtPath], env ? { env: { ...env } } : {});
   stateCache.delete(wtPath);
 }
 
@@ -499,10 +505,9 @@ export async function checkoutBranch(repoPath: string, branch: string, baseBranc
         `Commit or stash before switching to ${branch}, or tick "isolated worktree".`
     );
   }
-  const sp = await startPoint(repoPath, branch, baseBranch, false, warn);
-  await git(repoPath, sp.existing ? ["switch", branch] : ["switch", ...(sp.track ? ["--track"] : []), "-c", branch, ...(sp.from ? [sp.from] : [])], {
-    env: o.own ? await roomWriteEnv(repoPath) : WRITE_ENV,
-  });
+  const env = o.own ? await roomWriteEnv(repoPath) : WRITE_ENV;
+  const sp = await startPoint(repoPath, branch, baseBranch, false, warn, undefined, !!o.own);
+  await git(repoPath, sp.existing ? ["switch", branch] : ["switch", ...(sp.track ? ["--track"] : []), "-c", branch, ...(sp.from ? [sp.from] : [])], { env });
 }
 
 /** Move an old-layout worktree into `worktrees/<repo>/`; returns its new path. */

@@ -1484,6 +1484,19 @@ describe("a step not started yet (W8)", () => {
     expect(m.buffer(b.id)).toContain(`Started at “Builder”'s commit ${work.slice(0, 7)}: its uncommitted file isn't carried.`);
   });
 
+  it("counts the step before's uncommitted files with a guarded status: nothing its folder's config names runs", async () => {
+    const { m, clone, a } = await upstream();
+    const at = tempDir("fsmonitor");
+    const ran = path.join(at, "ran");
+    fs.writeFileSync(path.join(at, "fsm.sh"), `#!/bin/sh\necho ran >> "${ran}"\nexit 1\n`, { mode: 0o755 });
+    git(a.cwd, "config", "core.fsmonitor", path.join(at, "fsm.sh"));
+    fs.writeFileSync(path.join(a.cwd, "draft.txt"), "not committed");
+    const b = m.plan(step(a.id, { repoPath: clone, worktree: true }));
+    await m.startPlanned(b.id, a.id);
+    expect(m.buffer(b.id)).toContain("its uncommitted file isn't carried.");
+    expect(fs.existsSync(ran)).toBe(false);
+  });
+
   it("starts in the folder of the session it shares one with, on its branch as it stands (decision 7)", async () => {
     const { m, a } = await upstream();
     const b = m.plan(step(a.id, { sharesFolder: true, repoPath: "/elsewhere", worktree: true }));

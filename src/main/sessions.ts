@@ -7,6 +7,7 @@ import { WebContents } from "electron";
 import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, stepSlug, ticketIdOf, AgentKind, AGENT_KINDS, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
+import { dirtyFileCount } from "./scm";
 import { BASE_NAMES, branchesOf, currentBranch, git } from "./git";
 import { uniqueBranch } from "./presets";
 import { samePath } from "./handlers";
@@ -1388,7 +1389,9 @@ export class SessionManager {
     try {
       const { where, notes, uses } = await this.stepPlace(rec, upstream ?? null);
       const repo = where.useWorktree && where.repoPath ? expandHome(where.repoPath) : null;
-      const made = repo && where.branchName ? { repo, folder: path.join(worktreeRoot(repo), where.branchName), branch: where.branchName } : null;
+      // a room step's worktree is made, and taken back, as a team room session's (create's own)
+      const own = !!this.ownHooksFor?.(group ?? rec.ticketId ?? null);
+      const made = repo && where.branchName ? { repo, folder: path.join(worktreeRoot(repo), where.branchName), branch: where.branchName, own } : null;
       const fresh = !!made && !fs.existsSync(made.folder);
       try {
         return await this.create(
@@ -1455,9 +1458,9 @@ export class SessionManager {
   }
 
   /** A failed start's worktree and branch, made for it, removed; one that can't be is said with the start's failure. */
-  private async takeBackStart(id: string, made: { repo: string; folder: string; branch: string }, failed: unknown): Promise<void> {
+  private async takeBackStart(id: string, made: { repo: string; folder: string; branch: string; own: boolean }, failed: unknown): Promise<void> {
     try {
-      await dropNewWorktree(made.repo, made.folder, made.branch);
+      await dropNewWorktree(made.repo, made.folder, made.branch, { own: made.own });
     } catch (err) {
       console.error(`[sessions] ${id}'s start failed, and what it made couldn't all be taken back:`, err);
       throw new Error(`${failed instanceof Error ? failed.message : String(failed)}. What it made is still there: ${err instanceof Error ? err.message : err}`, { cause: failed });
@@ -1566,7 +1569,8 @@ export class SessionManager {
     try {
       if (fs.existsSync(up.cwd)) {
         const sha = await git(up.cwd, ["rev-parse", "--verify", "HEAD"]);
-        const dirty = (await git(up.cwd, ["status", "--porcelain"])).split("\n").filter(Boolean).length;
+        // a guarded status: the upstream's folder may be a team room session's, whose config could name what a status runs
+        const dirty = await dirtyFileCount(up.cwd);
         return { sha, branch: await currentBranch(up.cwd), of, dirty, gone: false };
       }
       if (!up.branch) return { why: `${of}'s folder is gone` };

@@ -4721,6 +4721,54 @@ It found L-1 and L-2 closed. One Medium and one Low were left.
   The three on its value were run again after the grafts path changed.
 - Diff: 7 source and test files, 226 lines added and 20 removed, before these notes.
 
+#### W15 after W8 (rebased onto main 3b91605) as built
+
+- **The rebase's merges, checked.**
+  - `createWorktree` takes W8's `startAt` and `own`. The `startAt` path goes through
+    the same `worktree add`, under `roomWriteEnv` when `own` is set.
+  - `sessions.ts` `create` passes `{ warn, own, startAt }`.
+  - The import merges in `stub.ts`, `index.ts` and `preload.ts` typecheck.
+- **W8's git under the room rules.**
+  - `dropNewWorktree`, which takes back a failed step start, takes `own`.
+    - For a room step, its `worktree remove` and `branch -D` run under
+      `roomWriteEnv`: the room refusal, the user's own hooks only, and filters off.
+      `branch -D` fires reference-transaction.
+    - `startPlanned` passes `own` as `create` works it out (`ownHooksFor` by the
+      step's area). `removeWorktree` takes an optional environment.
+  - `upstreamCommit` counts the step before's uncommitted files with
+    `dirtyFileCount`, a guarded status, instead of a plain `git status`. That
+    upstream folder can be a room session's.
+  - `createWorktree` and `checkoutBranch` work out `roomWriteEnv` before
+    `startPoint`. For a room session, the refusal then comes before `startPoint`'s
+    fetch, which reads the same config.
+    - `startPoint`'s `ls-remote` and fetches pass `roomRepo` for `own`.
+    - Before this, a refused room start's fetch had already run any credential
+      helper the config names. This predates W8.
+  - Filter-free, left as they are:
+    - `startPoint`'s `branch --list`, `rev-parse --verify` and `branch -r --list`;
+    - `isBranchName`'s `check-ref-format --branch`;
+    - `stepPlace`'s `rev-parse HEAD`;
+    - `upstreamCommit`'s `rev-parse`s and `currentBranch`;
+    - `stepBranch`'s `branchesOf`.
+
+    These read refs only: no index, no working tree, no hook.
+- **Tests.**
+  - `scm.test.ts`: a room step's take-back fires neither hook, and a local one's
+    fires reference-transaction.
+  - `scm.test.ts`: a room session's new worktree is refused with an included
+    worktree file naming a credential helper and origin a 127.0.0.1 listener
+    answering 401. The helper never runs and no branch is made.
+  - `sessionLifecycle.test.ts`: a step started from a session whose folder has
+    `core.fsmonitor` says its uncommitted file, and the fsmonitor never ran.
+  - Each change undone in turn (`w15/mutate9.mjs`) fails a test: 3 of 3.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0, with the main checkout's `node_modules` linked in for
+  `leakGuard`'s nested run (the link was removed afterwards): 196 files pass and 35
+  skip; 3,399 tests pass and 341 skip.
+- `uiLandscapeNeeds` alone, without CI: 24 pass.
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn

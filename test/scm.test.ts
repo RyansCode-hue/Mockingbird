@@ -5,7 +5,7 @@ import * as path from "path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { parseRefs, scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmPull, scmPush, scmRoomPush, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
 import { ownFetch, ownNetworkGit, programOnPath, roomFilters, roomWriteEnv, urlHost } from "../src/main/safeGit";
-import { checkoutBranch, cleanupWorktree, createWorktree, worktreeAt } from "../src/main/worktrees";
+import { checkoutBranch, cleanupWorktree, createWorktree, dropNewWorktree, worktreeAt } from "../src/main/worktrees";
 import { prBranchProblem, unrecordedBranch } from "../src/shared/types";
 import { git, makeRepo, tempDir } from "./helpers";
 
@@ -559,6 +559,39 @@ describe("a room session's folder made, checked out and cleaned up: none of the 
     const l = firedHooks(["reference-transaction"]);
     await cleanupWorktree(l.repo, l.wt, "discard");
     expect(l.ran()).toContain("reference-transaction");
+  });
+
+  it("takes back a room step's failed start, its worktree and branch, firing none of them, and a local one's as git would", async () => {
+    const t = firedHooks(["reference-transaction", "post-checkout"]);
+    const made = path.join(tempDir("worktrees"), "5101-x-qa");
+    git(t.repo, "worktree", "add", "-q", "-b", "5101-x-qa", made);
+    t.clear();
+    await dropNewWorktree(t.repo, made, "5101-x-qa", { own: true });
+    expect(fs.existsSync(made)).toBe(false);
+    expect(git(t.repo, "branch", "--list", "5101-x-qa")).toBe("");
+    expect(t.ran()).toEqual([]);
+    const local = path.join(tempDir("worktrees"), "5101-x-local");
+    git(t.repo, "worktree", "add", "-q", "-b", "5101-x-local", local);
+    t.clear();
+    await dropNewWorktree(t.repo, local, "5101-x-local");
+    expect(t.ran()).toContain("reference-transaction");
+  });
+
+  it("refuses a room session's new worktree before its fetch reads the repository's config: a credential helper an included worktree file names never runs", async () => {
+    const t = firedHooks([]);
+    const server = http.createServer((_req, res) => {
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="t"' });
+      res.end();
+    });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", () => ok()));
+    onTestFinished(() => void server.close());
+    git(t.repo, "remote", "set-url", "origin", `http://127.0.0.1:${(server.address() as { port: number }).port}/r.git`);
+    const helper = path.join(t.dir, "helper");
+    fs.writeFileSync(path.join(t.wt, "team.gitconfig"), `[credential]\n\thelper = "!f() { echo helper >> '${helper}'; }; f"\n`);
+    git(t.repo, "config", "include.path", path.join(t.wt, "team.gitconfig"));
+    await expect(createWorktree(t.repo, "5101-new", "main", { own: true })).rejects.toThrow(/this repository's config: .*team\.gitconfig, a file in .*, which the room's sessions can change, sets credential\.helper/);
+    expect(fs.existsSync(helper)).toBe(false);
+    expect(git(t.repo, "branch", "--list", "5101-new")).toBe("");
   });
 
   it("makes a room session's worktree again, a take-over's, and checks a branch out for one, firing no post-checkout on what its agent wrote", async () => {
