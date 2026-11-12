@@ -45,9 +45,13 @@
  * picked, then, on one picked, the base branch's blocker, the pre-push set aside, the lengths and the ADO limit.
  * =r (with ?prRequest=notes): the agent's patch notes rewritten under the user's unsaved edit.
  * =o (with ?prRequest=otherbranch): the PR form on a branch its session wasn't made on: the say-so asked, then carried.
+ * =w (with ?lsWires&lsGates, W5): the wires waiting at their gates, a pull request that can't be read, and Finish step
+ *   (wireNeedsAudit.ts).
  */
 import type { SessionInfo, TicketPipeline } from "../shared/types";
+import type { Wire } from "../shared/wires";
 import { armFocus } from "../renderer/keyArm";
+import { wireNeedsPart } from "./wireNeedsAudit";
 
 export interface NeedsAuditEnv {
   sessions: () => SessionInfo[];
@@ -67,6 +71,10 @@ export interface NeedsAuditEnv {
   /** The ticket pipelines as main would hold them (stub.ts's), changeable, and telling the window of a change. */
   pipelines: () => Record<string, TicketPipeline>;
   pipelinesChanged: () => void;
+  /** W5's part (wireNeedsAudit.ts): wire `id` as main has it, and changed, telling the window. */
+  wire?: (id: string) => Wire | undefined;
+  setWire?: (id: string, w: Wire) => void;
+  costly?: (id: string, on: boolean) => void;
 }
 
 type Box = { x: number; y: number; w: number; h: number };
@@ -221,6 +229,10 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
       else if (part === "q") await formWarningsPart(env, out);
       else if (part === "r") await newerNotesPart(env, out);
       else if (part === "o") await otherBranchPart(env, out);
+      else if (part === "w") {
+        if (!env.wire || !env.setWire || !env.costly) throw new Error("part w needs the stub's wires");
+        await wireNeedsPart({ ...env, wire: env.wire, setWire: env.setWire, costly: env.costly }, out);
+      }
       else await badgePart(env, out);
     } catch (err) {
       out.error = String((err as Error)?.stack ?? err);

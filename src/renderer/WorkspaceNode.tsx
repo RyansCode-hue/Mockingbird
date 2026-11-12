@@ -9,7 +9,7 @@ import { BackIcon, ExpandIcon, MoreIcon } from "./Icons";
 import { WorkspaceCard, kindLabel } from "./WorkspaceCard";
 import { PaneChips, PaneRail, holdSize, usePaneGit, usePanePr, type PaneChipProps, type PaneRailProps } from "./TerminalPane";
 import { isRemote } from "./team/RoomLive";
-import { usable, type ModelAction } from "./workspaceActions";
+import { actionOf, usable, type ModelAction } from "./workspaceActions";
 import { DiffCell, askBadge } from "./cardBadges";
 
 /** `el` is part of the workspace whose terminal has the keyboard: it's being typed in. */
@@ -69,6 +69,7 @@ export function WorkspaceNode({
   onTab,
   onMore,
   onClosedTab,
+  onFinish,
   body,
 }: {
   tile: Tile;
@@ -106,6 +107,8 @@ export function WorkspaceNode({
   onMore: (tile: Tile, from: HTMLElement) => void;
   /** A stack's closed tab pressed: its ghost's menu, under it. */
   onClosedTab?: (s: SessionInfo, from: HTMLElement) => void;
+  /** Finish step pressed in its focus header (W5): the popover, under the button. */
+  onFinish?: (tile: Tile, from: HTMLElement) => void;
   /** The terminal of the session in front, at this size. */
   body: (s: SessionInfo, size: Size) => React.ReactNode;
 }) {
@@ -118,6 +121,7 @@ export function WorkspaceNode({
   const { git, gitErr, gitRoot } = usePaneGit(s, drawn);
   const { pr, readPr } = usePanePr(drawn ? gitRoot : null, git?.branch);
   const pick = (key: string) => usable(actions, key)?.onPick;
+  const finish = actionOf(actions, "finish");
   const style: React.CSSProperties =
     mode === "focus"
       ? { width: size.w, height: size.h }
@@ -246,6 +250,21 @@ export function WorkspaceNode({
               </span>
             )}
             <span className="ls-spacer" />
+            {mode === "focus" && finish && (
+              // its step finished by you (W5, WireFinishStep.dc.html A): offered while it has a handoff or feedback wire out
+              <button
+                type="button"
+                className="ls-finish"
+                disabled={finish.disabled}
+                data-tip={finish.title}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFinish?.(tile, e.currentTarget);
+                }}
+              >
+                {finish.label}
+              </button>
+            )}
             {mode !== "focus" && mode !== "placeholder" && (
               <button className="ls-focus-btn" data-tip="Focus — fill the window (Enter or ⌘E)" aria-label="Focus" onClick={() => onFocus(tile)}>
                 <ExpandIcon />

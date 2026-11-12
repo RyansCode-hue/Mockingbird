@@ -1372,6 +1372,15 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
     out.dialogFromPalette = q(".modal h3")?.textContent ?? null;
     await afterEsc();
     out.afterDialogFromPalette = await keyboardAndTyping();
+    // the same dialog closed by its own button rather than Esc: the keyboard goes back to no terminal, the landscape
+    // getting it, disarmed (W5): a key aimed at what closed mustn't land in an agent's prompt
+    await toTerminal();
+    await typeInPalette("New session");
+    const cancel = qs(".modal button").find((b) => b.textContent?.trim() === "Cancel");
+    out.dialogPressed = cancel ? q(".modal h3")?.textContent ?? null : null;
+    if (cancel) await clickOn(cancel);
+    await sleep(200);
+    out.afterDialogPressed = await keyboardAndTyping();
     // a dialog from a menu row: the landscape had the keyboard as the menu opened
     await giveLandscape();
     const p = barePoint();

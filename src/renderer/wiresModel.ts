@@ -3,7 +3,7 @@
  * (the tile holding the session, a ghost's card, or a collapsed area's pill), what state it shows, and its curve
  * (Main.dc.html's). WireLayer.tsx draws them and keeps them on their ends as workspaces move.
  */
-import { DEFAULT_ROUNDS, ROOM_LINE, countedFor, gateOf, isSending, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type GateContext, type MergeView, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
+import { DEFAULT_ROUNDS, ROOM_LINE, countedFor, finishPlan, gateInForce, gateOf, isSending, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type FinishedStep, type GateContext, type MergeView, type Wire, type WireContext, type WireEnd, type WireState, type WireType, type WireVerdict } from "../shared/wires";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
 import { topOfKey, type PipelinePr, type SessionInfo, type TicketPipeline } from "../shared/types";
 import { LOOSE_GROUP, type Rect } from "../shared/landscape";
@@ -491,15 +491,20 @@ export interface GateView {
   merge: { prs: readonly string[] } | null;
 }
 
+/**
+ * The round pending `id` on feedback wire `w` is: one counted when it went (sent again after it failed) is that round,
+ * not the next. Null on a wire that counts no rounds.
+ */
+export const pendingRound = (w: Pick<Wire, "rounds" | "delivery">, id: string): number | null =>
+  w.rounds ? Math.min(countedFor(w, id) ? w.rounds.used : w.rounds.used + 1, w.rounds.limit) : null;
+
 /** The face wire `w` shows in the send popover, from its gate (gateOf), its other end, and main's merge view of it. */
 export function gateView(w: Wire, gate: Gate, to: WireEnd | null, merge: MergeView | null): GateView {
   const name = WIRE_TYPE_NAME[w.type].toLowerCase();
   const pendingId = gate.pendingId ?? null;
   const starts: GateView["starts"] = to?.where === "closed" ? "reopen" : to?.where === "dead" ? "resume" : to?.where === "planned" ? "start" : null;
   const base = { why: gate.why ?? null, pendingId, starts, merge: null };
-  // a pending whose round was counted when it went (sent again after it failed) is that round, not the next
-  const round = (r: NonNullable<Wire["rounds"]>, id: string) => Math.min(countedFor(w, id) ? r.used : r.used + 1, r.limit);
-  if (gate.state === "ready" && pendingId) return { ...base, face: "ready", kind: `${name} · ${w.rounds ? `round ${round(w.rounds, pendingId)} of ${w.rounds.limit}` : "ready"}` };
+  if (gate.state === "ready" && pendingId) return { ...base, face: "ready", kind: `${name} · ${w.rounds ? `round ${pendingRound(w, pendingId)} of ${w.rounds.limit}` : "ready"}` };
   // blocked by the limit itself, as gateOf blocks it: a pending at the limit not yet counted, nothing in flight and
   // nothing unconfirmed. A wire at the limit blocked for another reason (an end's silent hooks) says that reason, with
   // no One more round, which wouldn't clear it.
@@ -517,3 +522,67 @@ export function gateView(w: Wire, gate: Gate, to: WireEnd | null, merge: MergeVi
  */
 export const mergePrsOf = (p: TicketPipeline | undefined, urls: readonly string[]): PipelinePr[] =>
   urls.flatMap((url) => p?.prs.find((x) => x.url === url) ?? []);
+
+// ---- Finish step (W5) ----
+
+/** One row of the Finish step popover: a wire out of the step, where it goes, and what finishing does along it. */
+export interface FinishLine {
+  wire: string;
+  /** The other end's title. */
+  to: string;
+  /** Its dot: amber where something will wait at the gate or go, dashed red where it's held, grey where nothing moves, red where it's refused. */
+  tone: "ready" | "held" | "quiet" | "refused";
+  text: string;
+}
+
+/**
+ * What finishing session `id`'s step with `verdict` does along each of its handoff and feedback wires out, as the Finish
+ * step popover says it before the click (WireFinishStep.dc.html A): "its gate opens · round 2 of 3", "sends itself",
+ * "blocked till approve, then sends itself". It's finishPlan, which main works out again as it finishes, by the rules as
+ * the window has them; an automatic gate that holds for what only main knows (a flag, its hops) asks instead.
+ */
+export function finishLines(id: string, verdict: WireVerdict | undefined, ctx: GateContext): FinishLine[] {
+  return finishPlan(id, verdict, ctx).map((step): FinishLine => {
+    const w = ctx.links[step.wire];
+    const b = ctx.end(step.to);
+    const to = b?.title ?? step.to;
+    const auto = gateInForce(w, ctx) === "automatic";
+    const line = (tone: FinishLine["tone"], text: string): FinishLine => ({ wire: step.wire, to, tone, text });
+    switch (step.does) {
+      case "readies": {
+        const r = w.rounds;
+        if (r && r.used >= r.limit) return line("held", `waits at its limit · ${r.used} of ${r.limit} rounds`);
+        const round = r ? ` · round ${r.used + 1} of ${r.limit}` : "";
+        if (!auto) return line("ready", `its gate opens${round}`);
+        if (b && b.where !== "running") return line("ready", `its gate opens${round}: an automatic gate never ${b.where === "planned" ? "starts" : "reopens"} it`);
+        return line("ready", `sends itself${round}`);
+      }
+      case "holds":
+        return line("held", auto ? "blocked till approve, then sends itself" : "blocked till approve, then its gate opens");
+      case "passes":
+        return line("quiet", "nothing goes back on approve");
+      case "keeps":
+        return line("quiet", step.why ? `doesn't light: ${step.why}` : "doesn't light: a manual wire goes only when a person sends it");
+      default:
+        return line("refused", step.why ?? "The rules refuse this wire now.");
+    }
+  });
+}
+
+/** What a finish did along each wire, as the note says it once the popover has closed (main's answer, FinishedStep's `went`). */
+export function finishedLine(fromTitle: string, steps: readonly FinishedStep[]): string {
+  const each = steps.map((s) => {
+    if (s.does === "readies") {
+      const went = s.went;
+      if (went?.state === "sent") return `${s.toTitle}: ${went.placed ? "in its prompt" : "sent"}`;
+      if (went?.state === "sending") return `${s.toTitle}: on its way`;
+      if (went?.state === "blocked") return `${s.toTitle}: blocked (${went.why ?? "blocked"})`;
+      return `${s.toTitle}: waits at its gate${went?.why ? ` (${went.why})` : ""}`;
+    }
+    if (s.does === "holds") return `${s.toTitle}: blocked till approve`;
+    if (s.does === "passes") return `${s.toTitle}: nothing goes back`;
+    if (s.does === "keeps") return `${s.toTitle}: doesn't light`;
+    return `${s.toTitle}: refused (${s.why ?? "refused"})`;
+  });
+  return `Finished ${whose(fromTitle)} step${each.length ? `: ${each.join("; ")}` : ""}.`;
+}

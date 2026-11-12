@@ -95,6 +95,7 @@ import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateL
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
+import { useWireNeeds } from "./NeedsWire";
 import { currentIndex, goCan, selectionAfter, stepItem, targetOf, typingAsksOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
 import { decideTyping } from "./team/Typing";
 import { BadgeContext } from "./cardBadges";
@@ -2277,7 +2278,9 @@ function App() {
   const [areaNameAsk, setAreaNameAsk] = useState<{ count: number; answer: (name: string | null) => void } | null>(null);
   const askAreaName = (count: number) => new Promise<string | null>((answer) => setAreaNameAsk({ count, answer }));
   // ---- Needs you (S7): the tray, N / ⇧N, and the areas' waiting counts (NeedsYou.tsx, needsYouModel.ts) ----
-  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null, pipelinesRead);
+  // W5: the wires' gates and the pull requests Mockingbird can't follow, with what their items do (NeedsWire.tsx)
+  const wireNeeds = useWireNeeds({ sessions, layout: landscapeLayout, rooms: teamRooms, areaOf: (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), say: lsSay, toLandscape: () => setTab("sessions") });
+  const needs = useNeedsYou(sessions, joinAsks, (s) => tileOfSession(s.id)?.area ?? areaKeyOf(s), titleOf, teamStatus && isErr(teamStatus) ? teamStatus.error : null, pipelinesRead, wireNeeds.wires);
   const needsSel: NeedsSel = { session: selArea ? null : focused, area: selArea };
   // where N and Go there last went, so N moves on from it while the selection is still the one it left
   const needsLast = useRef<NeedsLast | null>(null);
@@ -2359,6 +2362,7 @@ function App() {
     const ask = item.typing;
     const pl = item.pipeline;
     return needsActions({
+      ...wireNeeds.envOf(item),
       open: pl
         ? {
             can: () => openTicketItem(pl),
@@ -2486,6 +2490,7 @@ function App() {
         <BadgeContext.Provider value={badgeEnv}>
         <Landscape
           connectRef={connectRef}
+          wireActsRef={wireNeeds.actsRef}
           resumeOk={costGate.resume}
           rooms={teamRooms}
           layout={landscapeLayout}
@@ -3613,6 +3618,7 @@ function App() {
           onClose={() => setPipelineFor(null)}
         />
       )}
+      {wireNeeds.dialog}
       {dismissRequestFor && (
         <RequestDismissDialog ticketId={dismissRequestFor.ticket} requestId={dismissRequestFor.request} onDone={lsSay} onClose={() => setDismissRequestFor(null)} />
       )}

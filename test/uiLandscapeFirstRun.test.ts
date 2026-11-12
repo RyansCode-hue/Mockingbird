@@ -834,6 +834,9 @@ describe.skipIf(!local)("the top bar", () => {
     expect(b.afterSheetFromPalette).toEqual({ keyboard: "terminal", typed: 1 });
     expect(b.dialogFromPalette).toBe("New session");
     expect(b.afterDialogFromPalette).toEqual({ keyboard: "terminal", typed: 1 });
+    // closed by its own button, not the user's Esc, it gives a terminal nothing: the landscape gets it, disarmed
+    expect(b.dialogPressed).toBe("New session");
+    expect(b.afterDialogPressed).toEqual({ keyboard: "landscape", typed: 0 });
     expect(b.dialogFromMenu).toEqual({ dialog: "New session", keyboard: "dialog" });
     expect(b.afterDialogFromMenu).toBe("landscape");
     expect(b.focusStart).toBe("terminal");

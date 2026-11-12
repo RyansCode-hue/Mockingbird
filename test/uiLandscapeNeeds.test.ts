@@ -222,6 +222,36 @@ interface NewerNotesAudit {
   kept: NotesSeen;
   error?: string;
 }
+type WireAct = { key: string | null; label: string | null; filled: boolean; tab: number };
+type WireTrayItem = { id: string | null; kind: string | null; meta: string | null; text: string | null; acts: WireAct[] };
+type Called = { fn: string; args: unknown[] }[];
+type FinishSeen = { title: string | null; mark: string | null; body: string | null; verdicts: string[]; lines: string[][]; finish: { disabled: boolean; title: string } | null; hint: boolean; err: string | null } | null;
+interface WireNeedsAudit {
+  keys: string;
+  tray: WireTrayItem[];
+  finishedItem: WireTrayItem | null;
+  finishOpened: { tray: boolean; keyboard: string; pop: FinishSeen; calls: Called };
+  finishEarly: { pop: FinishSeen; calls: Called };
+  finished: { open: boolean; keyboard: string; note: string | null; calls: Called; loop: string | null; held: unknown };
+  costEsc: { typedIn: string; asked: boolean; popGone: boolean; dialog: boolean; keyboard: string; calls: Called };
+  keySend: { tab: number | null; calls: Called };
+  changedUnder: { off: boolean; text: string | null; calls: Called };
+  raced: { calls: Called; pop: boolean; ends: string | null; note: string | null };
+  sentLoop: { calls: Called; item: boolean; delivery: string | null };
+  movedUnder: { off: boolean; calls: Called };
+  sentGhost: { calls: Called; item: boolean };
+  shown: { tray: boolean; face: string | null; ends: string | null; keyboard: string; calls: Called };
+  shownClosed: { open: boolean; keyboard: string; calls: Called };
+  checked: { calls: Called; note: string | null };
+  markAsked: { tray: boolean; question: string | null; keyboard: string; hint: boolean; calls: Called };
+  markReread: { question: string | null; open: boolean; err: string | null; calls: Called };
+  marked: { open: boolean; keyboard: string; note: string | null; calls: Called };
+  header: { focus: boolean; button: { label: string | null; disabled: boolean } | null };
+  headerPop: { open: boolean; under: boolean; keyboard: string; calls: Called };
+  headerClosed: { open: boolean; keyboard: string };
+  menu: string[];
+  error?: string;
+}
 interface BarAudit {
   width: number;
   buttons: ({ text: string; oneLine: boolean; cut: boolean } | null)[];
@@ -905,4 +935,94 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     const dark = await run<BarAudit>("d", "joinRequest=later", "1440x900");
     expect(dark.contrast).toBeGreaterThanOrEqual(4.5);
   });
+
+  // W5: ?lsWires&lsGates's gates: Fixtures → Spike (closed) and Reviewer → Builder's changes ready, Builder → Reviewer
+  // may have arrived, and 5120's PR 11 to dev unreadable three times
+  it("lists the wires waiting on you and a pull request it can't read, sends only what an item named, and finishes a step only from Finish step", async () => {
+    const w = await run<WireNeedsAudit>("w", "lsWires&lsGates&lsCamera=0,3040,1", "1600x1000");
+    expect(w.error).toBeUndefined();
+    expect(w.keys).toBe("real");
+    const pr = "https://dev.azure.com/acme/Backoffice/_git/backoffice/pullrequest/11";
+    const acts = (...a: [string, boolean, number][]) => a.map(([key, filled, tab]) => ({ key, label: expect.any(String), filled, tab }));
+    // the wires and the pull request, in Mockingbird's words: Send only from a pointer (no Tab stop), Show and Check now
+    expect(w.tray.filter((i) => i.kind === "wire" || i.kind === "merge").map((i) => [i.id, i.meta, i.text])).toEqual([
+      ["wire:wb-ghost", "Wire ready · #5120", "Fixtures → Spike: streaming: ready to send (sending reopens it)"],
+      ["wire:wb-loop", "Wire ready · #5120", "Reviewer → Builder: ready to send (round 2 of 3)"],
+      ["wire:wb-sending", "Wire may have arrived · #5120", "Builder → Reviewer: it may have arrived"],
+      [`merge:5120:${pr}`, "Pull request · #5120", "Can't tell whether PR 11 to dev merged · #5120"],
+    ]);
+    const byId = Object.fromEntries(w.tray.map((i) => [i.id, i.acts]));
+    expect(byId["wire:wb-loop"]).toEqual(acts(["send", true, -1], ["show", false, 0], ["dismiss", false, 0]));
+    expect(byId["wire:wb-sending"]).toEqual(acts(["show", true, 0], ["dismiss", false, 0]));
+    expect(byId[`merge:5120:${pr}`]).toEqual(acts(["check", true, 0], ["markMerged", false, 0], ["dismiss", false, 0]));
+    // the pull-request-merged wire waiting on that PR, and the handoff held for approve, wait on nothing of yours at their gates
+    expect(w.tray.map((i) => i.id)).not.toContain("wire:wb-sent");
+    expect(w.tray.map((i) => i.id)).not.toContain("wire:wb-held");
+
+    // Finish step… on Reviewer's Finished item: its latest message, the agent's; a burst begun before it opened presses
+    // nothing; Finish step off till a verdict is picked
+    expect(w.finishedItem?.acts.map((a) => a.key)).toEqual(["go", "finish", "dismiss"]);
+    expect(w.finishOpened).toMatchObject({ tray: false, keyboard: "finish", calls: [{ fn: "wiresLastMessage", args: ["wb-reviewer"] }] });
+    expect(w.finishOpened.pop).toMatchObject({
+      title: "Finish Reviewer's step",
+      mark: "From its latest message. Its agent wrote this, not you.",
+      body: "Two changes before merge:\n1. The stream is disposed before the response ends.\n2. The email column needs the DonorPII grant.",
+      verdicts: ["Changes", "Approve"],
+      lines: [],
+      finish: { disabled: true, title: "Pick a verdict first" },
+      hint: true,
+    });
+    // Changes picked: where each wire goes and what it does; Finish step clicked straight after takes nothing
+    expect(w.finishEarly.pop?.verdicts).toEqual(["Changes*", "Approve"]);
+    expect(w.finishEarly.pop?.lines).toEqual([
+      ["Builder", "its gate opens · round 2 of 3", "t-ready"],
+      ["Tester", "blocked till approve, then its gate opens", "t-held"],
+    ]);
+    expect(w.finishEarly.calls).toEqual([]);
+    // then the one finish, with the words and the verdict shown; the keyboard back on the Needs you button
+    expect(w.finished.calls).toEqual([{ fn: "wiresFinish", args: ["wb-reviewer", w.finishOpened.pop!.body, "changes"] }]);
+    expect(w.finished).toMatchObject({ open: false, keyboard: "button", note: "Finished Reviewer's step: Builder: waits at its gate; Tester: blocked till approve.", held: null });
+
+    const ghost = ["wb-ghost", "pd-fixtures", "The streaming fixtures are in fixtures/stream: 40k donors, one with no email."];
+    // the cost question asked from a send popover opened as Builder's terminal was typed in: with the popover gone, Esc
+    // gives the keyboard to the landscape, not the terminal, and sends nothing
+    expect(w.costEsc).toEqual({ typedIn: "terminal", asked: true, popGone: true, dialog: false, keyboard: "landscape", calls: [{ fn: "wiresSend", args: [...ghost, null] }, { fn: "resumeCost", args: ["wb-spike"] }] });
+    // Send: Enter on it presses nothing; a click as a newer finish lands under it is let go; then the one send of what's
+    // shown now, under its pending
+    expect(w.keySend).toEqual({ tab: -1, calls: [] });
+    expect(w.changedUnder.calls).toEqual([]);
+    // one landing in the same task as the click, before the tray has drawn it: nothing sent, the gate shown with it
+    expect(w.raced).toMatchObject({ calls: [], pop: true, note: "What waits there now is newer than what you were shown: nothing was sent." });
+    expect(w.sentLoop.calls).toEqual([{ fn: "wiresSend", args: ["wb-loop", "pd-finish-1-newer-raced", "1. Dispose the stream after the response.\n2. Gate the email column on DonorPII.", null] }]);
+    expect(w.sentLoop.item).toBe(false);
+    // a click on a row that moved up a moment ago takes nothing; a double click once it's still sends once, its closed
+    // end's cost asked between main's refusal and the send that reopens it
+    expect(w.movedUnder.calls).toEqual([]);
+    expect(w.sentGhost.calls).toEqual([
+      { fn: "wiresSend", args: [...ghost, null] },
+      { fn: "resumeCost", args: ["wb-spike"] },
+      { fn: "wiresSend", args: [...ghost, { start: true }] },
+    ]);
+
+    // Show: the send popover on what may have arrived, the tray away; Esc gives the keyboard back to the button
+    expect(w.shown).toEqual({ tray: false, face: "f-unconfirmed", ends: "Builder → Reviewer", keyboard: "popover", calls: [] });
+    expect(w.shownClosed).toEqual({ open: false, keyboard: "button", calls: [] });
+
+    // the pull request: Check now's one call, its error said
+    expect(w.checked).toEqual({ calls: [{ fn: "pipelinePrCheck", args: ["5120", pr] }], note: "Couldn't check PR 11 to dev: UI preview: no pull request is read" });
+    // Mark merged… asks, naming it; a burst's keys press nothing; a click as a re-read changes the question is let go
+    expect(w.markAsked).toMatchObject({ tray: false, keyboard: "dialog", hint: true, calls: [] });
+    expect(w.markAsked.question).toMatch(/^Mark PR 11 to dev in backoffice merged\? Mockingbird can't read whether it merged\./);
+    expect(w.markReread.question).toMatch(/^Mark PR 11 to dev in backoffice merged\? Its provider says it was closed without merging\./);
+    // a click as the re-read lands, before it's drawn, marks nothing and says so; one just after it's drawn is let go
+    expect(w.markReread).toMatchObject({ open: true, err: "It changed as you clicked: nothing was marked. Read what it says now.", calls: [] });
+    expect(w.marked).toEqual({ open: false, keyboard: "button", note: "Marked PR 11 to dev merged: #5120 and its wires go on as for a merge, their gates asking first.", calls: [{ fn: "pipelinePrMarkMerged", args: ["5120", pr] }] });
+
+    // in focus: the header's Finish step, its popover under it, nothing finished by opening or Esc; the menu has it too
+    expect(w.header).toEqual({ focus: true, button: { label: "Finish step", disabled: false } });
+    expect(w.headerPop).toEqual({ open: true, under: true, keyboard: "finish", calls: [{ fn: "wiresLastMessage", args: ["wb-reviewer"] }] });
+    expect(w.headerClosed.open).toBe(false);
+    expect(w.headerClosed.keyboard).not.toBe("terminal");
+    expect(w.menu).toEqual(["Connect…", "Finish step…"]);
+  }, 150_000);
 });

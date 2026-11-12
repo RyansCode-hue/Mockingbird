@@ -50,6 +50,7 @@ import { runSwitchAudit } from "./switchAudit";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { WIRE_AREA, boardTemplates, gateBoardBook, gateMerges, gatePipeline, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
+import { openFinishShot } from "./wireNeedsAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
@@ -3216,7 +3217,26 @@ if (params.has("landscapeNeedsAudit")) {
     live.remote = live.remote.map((s) => (s.id === id ? { ...s, ...over } : s));
     emit("onTeamLive", clone(live));
   };
-  runNeedsAudit({ sessions: () => sessions, setSession, setOwnTag, remote: () => live.remote, setRemote, calls, emit, badgeFails, waitFor, pipelines: () => pipelines, pipelinesChanged }, params.get("landscapeNeedsAudit") || "a");
+  runNeedsAudit(
+    {
+      sessions: () => sessions,
+      setSession,
+      setOwnTag,
+      remote: () => live.remote,
+      setRemote,
+      calls,
+      emit,
+      badgeFails,
+      waitFor,
+      pipelines: () => pipelines,
+      pipelinesChanged,
+      // W5's part: the wire book below, changed as main changes it
+      wire: (id) => (Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined),
+      setWire: (id, w) => void wireChanged(withLink(id, w)),
+      costly: (id, on) => void (on ? bigResume.add(id) : bigResume.delete(id)),
+    },
+    params.get("landscapeNeedsAudit") || "a"
+  );
 }
 // W6: ?landscapeStripAudit (with ?wires=fanout) works the pipeline strip in focus (stripAudit.ts) for test/uiLandscapeStrip.test.ts
 if (params.has("landscapeStripAudit")) runStripAudit({ calls, waitFor });
@@ -3419,7 +3439,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu") || params.has("stripMore") || ["pick", "settings", "pop"].includes(params.get("landscapeWiresAudit") ?? ""))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu") || params.has("stripMore") || params.has("lsFinish") || ["pick", "settings", "pop"].includes(params.get("landscapeWiresAudit") ?? ""))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {
@@ -8878,11 +8898,19 @@ w.__mbPrefsAtLoad = Object.fromEntries([...Object.values(LEGACY_PREF_KEYS), "mb.
 
 // ---- wires: an empty book, changed by main's own rules (shared/wires.ts), on this file's sessions. Nothing here reaches a pane ----
 import {
+  carriesWork,
   createdAtAfter,
   emptyWireBook,
+  finishPlan,
   isSending,
   newWire,
   parseWireSettings,
+  templateOf,
+  verdictRefusal,
+  type FinishedStep,
+  type FinishOutcome,
+  type LatestMessage,
+  type WireVerdict,
   rekeyedBook,
   rekeyRefusal,
   restoredWire,
@@ -9049,6 +9077,42 @@ Object.assign(api, {
   },
   wiresMoreRounds: async (id: string): Promise<WireReply> => gateRounds(id, (r) => (r.used < r.limit ? "It has rounds left." : { limit: r.used + 1, used: r.used })),
   wiresResetRounds: async (id: string): Promise<WireReply> => gateRounds(id, (r) => ({ limit: r.limit, used: 0 })),
+  // W5: a person's Finish step, as main's wires:finish has it (WireTools.finish, WireDelivery.offer): the verdict's rules,
+  // the plan (finishPlan), what the verdict takes back taken, each wire that readies given its template with {summary}
+  // filled in (the rest of a template stays as written: nothing here reads a diff or files), and the note written. Its
+  // gates ask: nothing here sends by itself
+  wiresFinish: async (id: string, summary: string, verdict?: WireVerdict): Promise<FinishOutcome> => {
+    await later(null, FINISH_ANSWER_MS);
+    const text = String(summary ?? "").trim();
+    if (!text) return { refused: "summary is empty: say what this step did." };
+    if (!Object.values(wireBook.links).some((w) => w.from === id && carriesWork(w.type)))
+      return { refused: "This workspace has no handoff or feedback wire out, so finishing its step readies nothing. Its summary is kept for any workspace that reads its context.", kept: true };
+    const why = verdictRefusal(id, verdict, wireBook.links);
+    if (why) return { refused: why };
+    const ends = wireEnds();
+    const links = { ...wireBook.links };
+    const steps = finishPlan(id, verdict, { ...ends, links: wireBook.links }).map((step): FinishedStep => {
+      const done: FinishedStep = { ...step, toTitle: ends.end(step.to)?.title ?? step.to };
+      if (step.withdraws) {
+        const { pending: _taken, ...rest } = links[step.wire];
+        links[step.wire] = rest;
+      }
+      if (step.does !== "readies") return done;
+      const pending = { id: `pd-finish-${++finishes}`, body: templateOf(links[step.wire]).split("{summary}").join(text), at: Date.now(), ...(verdict ? { verdict } : {}), flags: [] };
+      links[step.wire] = { ...links[step.wire], pending };
+      return { ...done, pending: { id: pending.id, flags: [] }, gate: "ask", went: { state: "ready" } };
+    });
+    const { verdict: _was, ...note } = Object.hasOwn(wireBook.notes, id) ? wireBook.notes[id] : { hops: 0 };
+    wireChanged({ ...wireBook, links, notes: { ...wireBook.notes, [id]: { ...note, summary: { text, at: Date.now() }, ...(verdict ? { verdict } : {}) } } });
+    return { steps, redacted: 0 };
+  },
+  // a session's latest message, whole, as main's wires:lastMessage reads it from its conversation: the board's Reviewer
+  // has its review, the others none here
+  wiresLastMessage: async (id: string): Promise<LatestMessage> => {
+    await later(null, 200);
+    if (Object.hasOwn(LATEST_MESSAGES, id)) return { text: LATEST_MESSAGES[id], at: Date.now() - 60_000 };
+    return { text: null, at: null, why: "Mockingbird hasn't seen a conversation in it yet" };
+  },
 });
 // ---- W9: pipeline templates, as main's templates:* calls (src/main/templates.ts, WireService.layOut) ----
 /** settings.pipelineTemplates: ?lsTemplates' (boardTemplates; =broken: not a list), else none saved. */
@@ -9212,6 +9276,14 @@ Object.assign(api, {
     return { steps, wires, started: started.id, notes } satisfies LayOutReply;
   },
 });
+/** How long main takes to finish a step and answer. */
+const FINISH_ANSWER_MS = 600;
+let finishes = 0;
+/** What the preview's sessions said last (wires:lastMessage). */
+const LATEST_MESSAGES: Record<string, string> = {
+  "wb-reviewer": "Two changes before merge:\n1. The stream is disposed before the response ends.\n2. The email column needs the DonorPII grant.",
+  "wb-builder": "Streams the export instead of loading 40k rows; tests pass.",
+};
 /** How long main takes to write a send ahead and answer, and then for the other end's queue to take it. */
 const GATE_ANSWER_MS = 1600;
 const GATE_SENT_MS = 900;
@@ -9289,6 +9361,8 @@ api.killSession = async (id: string, forget?: boolean) => {
   }
   return r;
 };
+// W5: ?lsFinish=<session> (with ?lsWires; &lsVerdict=changes|approve) opens its Finish step from its right-click menu, for a screenshot
+if (params.has("lsFinish")) openFinishShot(params.get("lsFinish")!, params.get("lsVerdict"), waitFor);
 // W6, with ?wires=chain|fanout: &stripFolded starts with the pipeline strip folded away, as the pref has it after a fold;
 // &stripMore opens its +n chip's list, for a screenshot
 if (stripBoard && params.has("stripFolded")) localStorage.setItem("mb.pipelineStrip.folded", "true");

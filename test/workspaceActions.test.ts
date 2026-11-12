@@ -203,6 +203,25 @@ describe("a workspace's actions as a menu", () => {
     expect(actionOf(workspaceActions(sess({ role: "tasks" }), env({ saveTemplate })), "saveTemplate")).toBeUndefined();
   });
 
+  it("offer Finish step… under Wires after Connect…, where it's given; off saying why, and while a teammate has it", () => {
+    const finish = vi.fn<() => void>();
+    const acts = workspaceActions(sess(), env({ connect: vi.fn<() => void>(), finish }));
+    expect(rows(menuOf(acts)).slice(-6)).toEqual(["-", "# Wires", "connect", "finish", "-", "close"]);
+    expect(actionOf(acts, "finish")).toMatchObject({ section: "wires", label: "Finish step", menuLabel: "Finish step…" });
+    usable(acts, "finish")!.onPick();
+    expect(finish).toHaveBeenCalledOnce();
+    expect(actionOf(workspaceActions(sess(), env({ finish: { no: "It's still working: finish its step once its turn ends" } })), "finish")).toMatchObject({ disabled: true, title: "It's still working: finish its step once its turn ends" });
+    const taken = workspaceActions(sess({ room: { takenOver: { byName: "Nick", at: 1 } } as never }), env({ finish }));
+    expect(actionOf(taken, "finish")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back to finish its step here/) });
+    // no wire out, or where wires aren't drawn: no row
+    expect(actionOf(workspaceActions(sess(), env()), "finish")).toBeUndefined();
+  });
+
+  it("order the Wires rows Connect…, Finish step…, Save as template…", () => {
+    const acts = workspaceActions(sess(), env({ connect: vi.fn<() => void>(), finish: vi.fn<() => void>(), saveTemplate: vi.fn<() => void>() }));
+    expect(rows(menuOf(acts)).slice(-6)).toEqual(["# Wires", "connect", "finish", "saveTemplate", "-", "close"]);
+  });
+
   it("keep an area's own rows in the section they're given, ready to join the model", () => {
     const area = inSection("area", [{ key: "rename", label: "Rename", onPick: vi.fn() }, "-", { key: "lock", label: "Lock", onPick: vi.fn() }]);
     expect(area.map((a) => [a.key, a.section])).toEqual([["rename", "area"], ["lock", "area"]]);

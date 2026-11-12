@@ -55,6 +55,8 @@ const pipelines = createIpcStore<PipelinesRead>({ all: {}, error: null }, ({ get
   window.mb.onPipelineChanged((r: Record<string, TicketPipeline>) => set({ all: r ?? {}, error: null }));
 });
 const allPipelines = () => pipelines.get().all;
+/** Every ticket's pipeline as the store has it now, for an act checking what it was shown against what's there. */
+export const pipelinesNow = (): Record<string, TicketPipeline> => allPipelines();
 
 /** Every ticket's pipeline, kept current. */
 export function usePipelines(): Record<string, TicketPipeline> {

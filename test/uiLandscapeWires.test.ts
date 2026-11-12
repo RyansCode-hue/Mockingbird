@@ -336,7 +336,8 @@ describe.skipIf(!local)("making wires", () => {
 
   it("Connect… lists where a wire can go, saying why not; a wire's right-click opens its settings, saved as changed, and Remove has Undo", async () => {
     const m = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=menus", "1600x1000", 120_000)) as unknown as Menus;
-    expect(m.wsMenu.slice(-6)).toEqual(["-", "# Wires", "Connect…", "Save as template…", "-", "Close…"]);
+    // Shape has a handoff out: Finish step… (W5) sits between Connect… and Save as template… (W9)
+    expect(m.wsMenu.slice(-7)).toEqual(["-", "# Wires", "Connect…", "Finish step…", "Save as template…", "-", "Close…"]);
     // its own area first, each workspace a wire can't reach off with the reason
     expect(m.connect.slice(0, 9)).toEqual(["# Connect “Shape donor export” to", "# #5120", "Builder", "Reviewer", "Dev server", "Tester", "Fixtures", "Docs", "Spike: streaming (closed)"]);
     expect(m.connect).toContain(`off Donor export: CSV writer — ${TEAMMATE}`);

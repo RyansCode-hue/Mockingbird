@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
+import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, finishLines, finishedLine, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { mergeViewOf } from "../src/main/prWatch";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
@@ -476,5 +476,65 @@ describe("the send popover's face", () => {
     // read fine: waits, nothing to mark
     expect(blockedOn([pr(11)])).toEqual({ waits: "Waits for PR 11 to dev to merge." });
     expect(mergePrsOf(undefined, ["u/11"])).toEqual([]);
+  });
+});
+
+describe("Finish step's lines (W5)", () => {
+  // reviewer: a feedback loop back to builder (round 2 of 3 next), a handoff on to tester, and spike closed with its place
+  const links = (over: { loop?: Partial<Wire>; on?: Partial<Wire>; ghost?: Partial<Wire> } = {}) => ({
+    loop: wire("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, ...over.loop }),
+    on: wire("reviewer", "tester", "handoff", over.on),
+    ghost: wire("reviewer", "spike", "handoff", over.ghost),
+    read: wire("reviewer", "pathways", "context"),
+  });
+  const lines = (verdict: "changes" | "approve" | undefined, l = links(), notes: WireBook["notes"] = {}) => finishLines("reviewer", verdict, gateContextOf(layoutOf(), stateOf(l, notes))!).map((x) => [x.to, x.text, x.tone]);
+
+  it("says where each wire out goes and what finishing does along it, by the verdict, before anything moves", () => {
+    expect(lines("changes")).toEqual([
+      ["builder", "its gate opens · round 2 of 3", "ready"],
+      ["tester", "blocked till approve, then its gate opens", "held"],
+      ["spike", "blocked till approve, then its gate opens", "held"],
+    ]);
+    expect(lines("approve")).toEqual([
+      ["builder", "nothing goes back on approve", "quiet"],
+      ["tester", "its gate opens", "ready"],
+      ["spike", "its gate opens", "ready"],
+    ]);
+  });
+
+  it("says an automatic gate sends itself, but never to an end it would have to start, and what waits at a loop's limit", () => {
+    const auto = links({ on: { gate: "automatic" }, ghost: { gate: "automatic" }, loop: { gate: "automatic", rounds: { limit: 3, used: 3 } } });
+    expect(lines("approve", auto).slice(1)).toEqual([
+      ["tester", "sends itself", "ready"],
+      ["spike", "its gate opens: an automatic gate never reopens it", "ready"],
+    ]);
+    expect(lines("changes", auto)).toEqual([
+      ["builder", "waits at its limit · 3 of 3 rounds", "held"],
+      ["tester", "blocked till approve, then sends itself", "held"],
+      ["spike", "blocked till approve, then sends itself", "held"],
+    ]);
+  });
+
+  it("says a wire that doesn't light, and why one is refused", () => {
+    const quiet = links({ on: { when: "manual" }, ghost: { when: "pr-merged", since: 1 } });
+    expect(lines("approve", quiet).slice(1)).toEqual([
+      ["tester", "doesn't light: a manual wire goes only when a person sends it", "quiet"],
+      ["spike", "doesn't light: it goes when its pull request merges", "quiet"],
+    ]);
+    // tester taken over by a teammate: the take-over's words
+    const taken = running.map((s) => (s.id === "tester" ? { ...s, room: { takenOver: { by: "n", byName: "Nick", at: 1 } } as SessionInfo["room"] } : s));
+    const ctx = gateContextOf(resolveLayout(stored(), taken, undefined, [], null, closed), stateOf(links()))!;
+    expect(finishLines("reviewer", "approve", ctx)[1]).toMatchObject({ to: "tester", tone: "refused", text: "Nick continues “tester” on their laptop." });
+  });
+
+  it("says once it's done what each wire did, in main's words", () => {
+    expect(
+      finishedLine("Reviewer", [
+        { wire: "loop", to: "builder", type: "feedback", does: "readies", toTitle: "Builder", pending: { id: "p", flags: [] }, went: { state: "ready" } },
+        { wire: "on", to: "tester", type: "handoff", does: "holds", toTitle: "Tester" },
+        { wire: "go", to: "docs", type: "handoff", does: "readies", toTitle: "Docs", went: { state: "sending" } },
+        { wire: "x", to: "spike", type: "handoff", does: "refused", why: "It was changed while this step was being finished: finish again to ready it.", toTitle: "Spike" },
+      ])
+    ).toBe("Finished Reviewer's step: Builder: waits at its gate; Tester: blocked till approve; Docs: on its way; Spike: refused (It was changed while this step was being finished: finish again to ready it.).");
   });
 });

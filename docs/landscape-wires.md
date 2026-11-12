@@ -2428,6 +2428,152 @@ The review of 3595801 found one High and five Mediums, each confirmed by a probe
 - Tests: `test/needsYou.test.ts`; `?landscapeNeedsAudit` gains a part.
 - Boards: Inbox.dc.html's tray; WireFinishStep.dc.html A.
 
+#### W5 as built
+
+**A wire's item** (`needsYouModel.ts`' `wireItem`, `NeedsKind` `wire`, rank 0 with the prompts). One per handoff or
+feedback wire whose gate waits on you, by the send popover's faces (`gateView`):
+- **ready**: "Reviewer → Builder: ready to send (round 2 of 3)", "Fixtures → Spike: streaming: ready to send (sending
+  reopens it)"; labelled "Wire ready" (the board's).
+- **at its limit**: "Builder → Tester: at its limit, 3 of 3 rounds".
+- **may have arrived**: "Builder → Reviewer: it may have arrived".
+- **blocked with something waiting or on its way**: "Reviewer → Builder: hooks not reporting" (`shortWhy`).
+- None for a wire idle, on its way, sent, held "needs approve" (nothing waits: the feedback wire is the item), or
+  waiting on its pull request (that's the pull request's item once `prNeedsYou` holds). None while an end is taken over
+  (it waits on the teammate, as `notMine` has it), nor for what's everyone's and clears itself (the book unsaved,
+  `ROOMS_STARTING`): the banners say those.
+- `id` `wire:<id>`, `sig` `wire:<id>|<pending id>` (the delivery's id for something stuck on its way), so a newer
+  finish is a new state a Dismiss lets through. It goes to its source's workspace, else the other end's, else wherever
+  either is drawn with no session (a ghost); with neither end drawn there's none. `targetOf` says when there's nowhere to
+  go. The gates are the landscape's own (`gateContextOf` over main.tsx's layout and rooms, `NeedsWire.tsx`' `wires`),
+  so the tray and the dots agree.
+
+**Its actions** (`needsActions`' `wire`): **Send** (filled, only on a ready one) and **Show**, then Dismiss; Show alone
+otherwise (the board has Send and Show; Dismiss is the tray's, kept).
+- **Send** is an answer (`ANSWERS` gains `send`), so it takes only a pointer's click on a settled row, as Allow does: no
+  Tab stop, no Enter or Space, none within a double click of another answer, and the row off until main answers.
+- The tray's settle is now keyed by an item's id and state (`data-settle`): a row whose state changed in place (a newer
+  finish on the same wire, a new ask from the same teammate) is a row that just arrived, so a click as it changes is
+  let go.
+- **It sends exactly what it named** (`namedSendRefusal`, `WireActs.send`): the pending the item was drawn with, read
+  against the wire book as the store has it now (`wiresNow`, not a render's copy), and its stored body, through the
+  landscape's `sendWire` (main first; a closed or exited end's cost asked, then main again with `start`). A newer
+  pending, one sent or taken back, one on its way or the wire gone sends nothing: it's said, logged, and the send popover
+  opens on the wire to show what's there now. Main refuses a replaced pending as well.
+- **Show** opens W4c's popover (`openGate`): its `wireShowRef` became `wireActsRef` (`FinishStep.tsx`' `WireActs`:
+  `show`, `send`, `finish`), filled by the landscape and emptied when it unmounts. An act asked while the landscape
+  isn't up (another tab) brings it up and waits for it, giving up after 5 s, said (`withActs`).
+
+**A pull request's item** (`mergeItems`, kind `merge`, rank 1 with tickets): each PR in pipeline.json where
+`prNeedsYou` holds, "Can't tell whether PR 11 to dev merged · #5120" or "PR 11 to dev was closed without merging ·
+#5120", placed by `ticketPlace` from the PR's `by`. `sig` is its page and `unread` or `closed:<time>`. It sits beside
+W15's ticket items (a ticket's item is about its stage, this about one PR), and W16's notice still fires.
+- **Check now** (filled): `pipelinePrCheck(ticket, url)`, off while it runs, its answer said ("PR 11 to dev: closed
+  without merging", or why it couldn't). A PR gone from the record isn't checked.
+- **Mark merged…**: a dialog (`MarkMergedDialog`, `NeedsWire.tsx`) with `markMergedQuestion` naming the PR and its
+  repository, then `pipelinePrMarkMerged(ticket, url)`. It marks only while that PR still needs you: merged or replaced
+  since, it says there's nothing to mark. A re-read that changes the question (unreadable → closed) shows the new one
+  and holds the button again (`useArrivalGuard` keyed by the question); keys of a burst begun before it opened, or held,
+  press nothing (`useAimedKeys`, its hint shown).
+- The click is checked against the pipelines as the store has them (`TicketPipeline.tsx`' new `pipelinesNow`), not the
+  render's: a re-read landing in the same task as the click, before it's drawn, marks nothing, and it says so ("It
+  changed as you clicked: nothing was marked."). A check against the render's copy could never fail while the button
+  was drawn.
+
+**Finish step** (`FinishStep.tsx`, WireFinishStep.dc.html A):
+- **Where:** the workspace model (`WorkspaceEnv.finish`, a `wires` row after Connect…, "Finish step…", off with the
+  take-over's words), so the right-click, ⋯ and the selection bar's menu have it; the focus header's button
+  (`WorkspaceNode`'s `onFinish`, beside ⋯, the popover hanging from it); and a Finished item's **Finish step…** in Needs
+  you. Landscape's `finishOf` offers it for a workspace of this install's with a handoff or feedback wire out, off while
+  it's working ("finish its step once its turn ends").
+- **The popover:** "Finish Reviewer's step"; the latest message whole (`wires:lastMessage`), editable, marked "From its
+  latest message. Its agent wrote this, not you." until changed, or saying why there's none to start from; Verdict
+  (Changes, Approve) when one's due, none picked to start; where each wire out goes and what finishing does
+  (`finishLines`, from `finishPlan`): "its gate opens · round 2 of 3", "sends itself", "blocked till approve, then its
+  gate opens / sends itself", "waits at its limit", "doesn't light: …", or the rules' refusal; Finish step and Cancel.
+- **Finish step** is `wires:finish(id, summary, verdict)` with what's shown, once. It's off until there's a summary, a
+  verdict where one's due and the wires can be read, and while the session works again. Main's refusal stays in the
+  popover; what each wire did is said once it closes (`finishedLine`, from main's `went`).
+- **Its guards are W4c's:**
+  - no click within `ANSWER_SETTLE_MS` of opening;
+  - Finish step none until it has stayed put that long after what it does changed (the verdict, the lines, the message
+    read in: `useSettledRows` keyed by that);
+  - `useAimedKeys` for a burst's keys and a key's click;
+  - one finish at a time, its result to `onLost` once closed;
+  - the keyboard never back to a terminal.
+
+**The terminal rule for every dialog (W4c L10)** (`Modal.tsx`' `useDialogFocus`, `keyArm.ts`' `userEscaped`):
+- A landscape terminal gets the keyboard back from a dialog, the palette or a sheet only when the user's own Esc (or ?
+  for the sheet) closes it.
+- Closed any other way (its button pressed, its act done, it going on its own), the landscape gets it, disarmed.
+- Anything opened from the send popover, Finish step or Needs you (`OFF_TERMINALS`) never gives a terminal the keyboard,
+  Esc included. CostDialog asked from a Send is one.
+- `handsBack` is asked first, so the tour's own hand-back is as it was. Menus (ContextMenu's) aren't dialogs and are
+  unchanged.
+
+**Preview:**
+- `stub.ts` answers `wiresFinish` (main's plan and verdict rules, `{summary}` filled in, the note written, gates asking)
+  and `wiresLastMessage` (Reviewer's review, Builder's line).
+- `?lsFinish=<session>` (`&lsVerdict=`) opens a Finish step from the right-click menu for a screenshot.
+- `?landscapeNeedsAudit=w` (`src/preview/wireNeedsAudit.ts`, with `?lsWires&lsGates`) drives it all with the real mouse
+  and keys. Its env changes a wire as a finish would, and makes a resume costly, so a Send asks first.
+- Two steps race a change against a click in the same task, before React draws it: a newer pending under the tray's
+  Send, and a re-read under Mark merged. They're what show the live-store checks work: the row and arrival guards can't
+  see a change that hasn't been drawn.
+- `firstRunAudit`'s handback case gains a dialog closed by its own button.
+
+**Deviations:**
+- **Send now on an idle wire's ready face isn't built.** An idle wire has nothing pending, so Send now would have to
+  make one: a one-wire offer of the source's latest message, which main hasn't got (wireDelivery offers on a finish, to
+  every wire out at once). Nor does the spec say whose verdict a feedback wire would carry. Finish step covers the need
+  (it offers along every wire out, verdict asked), and a manual wire's line says it goes only when a person sends it.
+  Left for a later slice.
+- **Dismiss stays on wire items** (the board shows Send and Show only): every tray item has it, and a wire stuck at its
+  limit or unsure would otherwise stay till acted on.
+- **Wording:** "Reviewer → Builder: ready to send (round 2 of 3)", not the board's "send 2 changes": Mockingbird
+  doesn't count what a message holds. The kind label and placement are the board's ("Wire ready · <area>").
+- **The PR item's kind is `merge`**, not `pr`: `pr` was already the agent's PR request.
+- **The terminal rule reaches the palette too:** a row picked with Enter, or any dialog closed by its button, now gives
+  the landscape the keyboard rather than the terminal it was opened from. Only Esc (S8a's) hands a terminal back.
+- **Menus are unchanged:** ContextMenu isn't a dialog, and its own guards stand.
+- **Rooms:** an item shows only what W4c's popover would show:
+  - none while an end is taken over (`takenOver`: it waits on the teammate);
+  - an end that isn't this install's own (`notMine`) is no place to go to, so the item goes to the other end, else to
+    where the end is drawn;
+  - a PR item follows `prNeedsYou` over this install's pipeline.json.
+  Main's `wires:send` and `pipeline:prMarkMerged` refusals are unchanged.
+
+**Boards:** the tray as Inbox.dc.html has it: "Wire ready · Backoffice" with the filled Send and Show. The Finish step
+popover is WireFinishStep.dc.html A: title, the agent's words marked, the Changes / Approve segment, the lines with
+their dots, and Finish step / Cancel. It hangs from the header's button (right-aligned), or from where the menu was
+opened.
+
+**Files:** `needsYouModel.ts`, `NeedsYou.tsx`, `NeedsWire.tsx` (new), `FinishStep.tsx` (new), `workspaceActions.tsx`,
+`wiresModel.ts`, `Landscape.tsx`, `WorkspaceNode.tsx`, `Modal.tsx`, `keyArm.ts`, `TicketPipeline.tsx` (`pipelinesNow`),
+`main.tsx`, `styles.css`; `src/preview/stub.ts`, `needsYouAudit.ts`, `wireNeedsAudit.ts` (new), `firstRunAudit.ts`; tests
+`needsYou`, `wiresModel`, `workspaceActions`, `uiLandscapeNeeds`, `uiLandscapeFirstRun`.
+
+**Checks:**
+- `npm run typecheck` clean; `npm run build` ok.
+- `CI=true npm test`: 3416 passed, 342 skipped (196 files, 35 skipped).
+- UI files, one at a time:
+  - uiLandscapeNeeds 25/25;
+  - uiLandscapeWires 29/29 (its workspace menu now ends with Finish step…);
+  - uiLandscapeFirstRun 104/104;
+  - uiTyping 33/33.
+- Unit: needsYou, wiresModel and workspaceActions, 118.
+- Mutations: each guard undone in turn, all caught.
+  - The tray: `send` out of `ANSWERS`; the settle keyed by id alone.
+  - `namedSendRefusal` ignoring the pending; `sendNamed` unchecked.
+  - Finish step: unsettled; the burst's keys let through.
+  - Mark merged…: its guard unkeyed; the burst's keys let through; its live check dropped.
+  - The terminal rule off.
+  - A taken-over end's item allowed.
+- Not reached by any test: `OFF_TERMINALS`, the clause that keeps the keyboard off a terminal past what was opened from
+  the popover, Finish step or Needs you, even on Esc. No current path puts a terminal in such a dialog's chain: a dot's
+  click gives the landscape the keyboard, Finish step's own `handsBack` refuses terminals, and the tray opens from its
+  button. The audit's CostDialog step, with its popover gone before Esc, checks the outcome, which holds with or without
+  the clause. It's kept as the rule for whatever opens there next.
+
 ### W6 · The pipeline strip. Size M
 - `PipelineStrip.tsx` and `chainOf` (pure, `pipelineChain.ts`): upstream, this one,
   downstream by handoff and feedback, the first branch with a `+n` chip (section

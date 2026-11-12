@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PipelineRequest, SessionInfo, TicketPipeline } from "../src/shared/types";
+import type { PipelinePr, PipelineRequest, SessionInfo, TicketPipeline } from "../src/shared/types";
 import type { JoinRequestSummary, TeamRoomSummary } from "../src/shared/team/types";
 import { LOOSE_GROUP, areaKeyOf } from "../src/shared/landscape";
+import { ROOMS_STARTING, newWire, type GateContext, type Wire, type WireEnd } from "../src/shared/wires";
 import {
   DISMISS_KEEP_MS,
   DISMISS_MAX,
@@ -9,6 +10,7 @@ import {
   dismiss,
   dismissedFrom,
   goCan,
+  namedSendRefusal,
   needsByArea,
   needsItems,
   needsLabel,
@@ -17,9 +19,11 @@ import {
   stepItem,
   targetOf,
   undismiss,
+  wireItems,
   type NeedsItem,
   type NeedsLast,
   type NeedsSel,
+  type NeedsWires,
 } from "../src/renderer/needsYouModel";
 import { needsActions, TAKEN_BACK_WHY } from "../src/renderer/workspaceActions";
 
@@ -469,5 +473,193 @@ describe("a ticket's items (W15)", () => {
       ["dismiss", "Dismiss", false],
     ]);
     expect(ticket[0].title).toBe("The pipelines couldn't be read");
+  });
+});
+
+// ---- W5: a wire's gate and a pull request Mockingbird can't follow, in Needs you ----
+
+/** One end of a wire as the rules see it: running, of this Mac's, unless `over` says otherwise. */
+const end = (id: string, over: Partial<WireEnd> = {}): WireEnd => ({ id, title: id[0].toUpperCase() + id.slice(1), kind: "agent", debrief: false, room: null, takenOver: null, where: "running", placed: true, folder: `/wt/${id}`, hooksSilent: false, ...over });
+const gateCtx = (links: Record<string, Wire>, ends: Record<string, Partial<WireEnd>> = {}, more: Partial<GateContext> = {}): GateContext => {
+  const all: Record<string, WireEnd> = Object.fromEntries(["reviewer", "builder", "tester", "spike"].map((id) => [id, end(id, ends[id])]));
+  return { end: (id) => all[id] ?? null, links, notes: {}, fileRefusal: null, ...more };
+};
+const pending = (id: string, at = NOW - 2 * MIN) => ({ id, body: "1. The stream disposes early.", at, flags: [] });
+const link = (from: string, to: string, type: Wire["type"], over: Partial<Wire> = {}): Wire => ({ ...newWire(from, to, type, NOW - 60 * MIN), ...over });
+/** Every end on the landscape, as a running workspace of this install's in area 5120, but spike's (a ghost) and tester's (closed, no place). */
+const placeAll = (id: string) => (id === "spike" ? { session: null, area: "5120" } : id === "tester" ? null : { session: id, area: "5120" });
+const wiresOf = (links: Record<string, Wire>, ends: Record<string, Partial<WireEnd>> = {}, more: Partial<GateContext> = {}): NeedsWires => ({ ctx: gateCtx(links, ends, more), place: placeAll });
+
+describe("a wire's item (W5)", () => {
+  it("is there while its gate waits on you: ready, at its limit, may have arrived, or blocked with something waiting", () => {
+    const links: Record<string, Wire> = {
+      loop: link("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, pending: pending("p-loop") }),
+      ghost: link("builder", "spike", "handoff", { pending: pending("p-ghost", NOW - 5 * MIN) }),
+      limit: link("builder", "tester", "feedback", { rounds: { limit: 3, used: 3 }, pending: pending("p-limit", NOW - 7 * MIN) }),
+      unsure: link("reviewer", "spike", "handoff", { pending: pending("p-unsure"), delivery: { id: "p-unsure", state: "unconfirmed", at: NOW - 9 * MIN, why: "It may have reached “Spike”." } }),
+    };
+    const got = wireItems(wiresOf(links, { spike: { where: "closed" } }));
+    // in the order the wires were made (the same here: then by id), as needsItems sorts them by rank and time after
+    expect(got.map((i) => [i.id, i.sig, i.label, i.text, i.wire?.face, i.session, i.area, i.at])).toEqual([
+      ["wire:ghost", "wire:ghost|p-ghost", "Wire ready", "Builder → Spike: ready to send (sending reopens it)", "ready", "builder", "5120", NOW - 5 * MIN],
+      ["wire:limit", "wire:limit|p-limit", "Wire at its limit", "Builder → Tester: at its limit, 3 of 3 rounds", "limit", "builder", "5120", NOW - 7 * MIN],
+      ["wire:loop", "wire:loop|p-loop", "Wire ready", "Reviewer → Builder: ready to send (round 2 of 3)", "ready", "reviewer", "5120", NOW - 2 * MIN],
+      ["wire:unsure", "wire:unsure|p-unsure", "Wire may have arrived", "Reviewer → Spike: it may have arrived", "unconfirmed", "reviewer", "5120", NOW - 9 * MIN],
+    ]);
+    // blocked with something waiting: its other end's hooks silent; and something on its way to one whose hooks are silent
+    const silent = { builder: { hooksSilent: true } };
+    const held = wireItems(wiresOf({ h: link("reviewer", "builder", "handoff", { pending: pending("p-h") }) }, silent));
+    expect(held.map((i) => [i.id, i.label, i.text, i.wire?.face])).toEqual([["wire:h", "Wire blocked", "Reviewer → Builder: hooks not reporting", "blocked"]]);
+    const stuck = wireItems(wiresOf({ q: link("reviewer", "builder", "handoff", { pending: pending("p-q"), delivery: { id: "p-q", state: "queued", at: NOW } }) }, silent));
+    expect(stuck.map((i) => [i.id, i.sig, i.wire?.face])).toEqual([["wire:q", "wire:q|p-q", "blocked"]]);
+  });
+
+  it("isn't there while nothing of its waits on you: idle, on its way, sent, held for approve, waiting on its pull request, or carrying no work", () => {
+    const links: Record<string, Wire> = {
+      idle: link("reviewer", "spike", "handoff"),
+      going: link("builder", "spike", "handoff", { pending: pending("p-go"), delivery: { id: "p-go", state: "queued", at: NOW } }),
+      sent: link("tester", "spike", "handoff", { delivery: { id: "p-s", state: "sent", at: NOW } }),
+      approve: link("reviewer", "tester", "handoff"),
+      fb: link("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 0 } }),
+      merge: link("builder", "tester", "handoff", { when: "pr-merged", since: NOW - 60 * MIN }),
+      context: link("builder", "reviewer", "context"),
+    };
+    const ctx = gateCtx(links, {}, { notes: { reviewer: { hops: 0, verdict: "changes" } }, mergeView: (w) => (w === links.merge ? { blocked: "Can't tell whether PR 11 to dev merged (3 tries): 503." } : null) });
+    expect(wireItems({ ctx, place: (id) => ({ session: id, area: "5120" }) })).toEqual([]);
+  });
+
+  it("is a new state for each pending, so a Dismiss lets a newer finish through", () => {
+    const at = (id: string) => wireItems(wiresOf({ loop: link("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, pending: pending(id) }) }))[0];
+    expect(at("p1").id).toBe(at("p2").id);
+    expect(at("p1").sig).not.toBe(at("p2").sig);
+    expect(shownItems([at("p2")], dismiss([], at("p1"), NOW))).toHaveLength(1);
+  });
+
+  it("leaves out a wire an end of which a teammate took over, and one blocked only for what's everyone's: the book unsaved, rooms starting", () => {
+    const loop = { loop: link("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, pending: pending("p") }) };
+    expect(wireItems(wiresOf(loop, { builder: { takenOver: "Nick continues “Builder” on their laptop." } }))).toEqual([]);
+    expect(wireItems(wiresOf(loop, {}, { fileRefusal: "landscape.json can't be written: disk full." }))).toEqual([]);
+    expect(wireItems(wiresOf(loop, {}, { roomsUnknown: ROOMS_STARTING }))).toEqual([]);
+  });
+
+  it("goes to its source, else its other end, else where it's drawn; a wire with neither end on the landscape has none", () => {
+    const from = (to: string, place: NeedsWires["place"]) => wireItems({ ctx: gateCtx({ w: link("spike", to, "handoff", { pending: pending("p") }) }), place })[0] ?? null;
+    // spike is a ghost: Builder, the other end, is where Go there and N go
+    expect([from("builder", placeAll)?.session, from("builder", placeAll)?.area]).toEqual(["builder", "5120"]);
+    // both ends drawn but neither a running workspace of this install's: counted in the source's area, nowhere to go
+    const ghostly = from("builder", (id) => ({ session: null, area: id === "spike" ? "5120" : "5101" }));
+    expect([ghostly?.session, ghostly?.area]).toEqual([null, "5120"]);
+    expect(targetOf(ghostly!, [])).toEqual({ no: "Neither end of that wire is a running workspace here: Show has its gate" });
+    expect(from("builder", () => null)).toBeNull();
+  });
+
+  it("ranks with the prompts, and lists beside a ticket's items without taking their place", () => {
+    const wires = wiresOf({ loop: link("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, pending: pending("p", NOW - 30 * MIN) }) });
+    const got = needsItems([...fixture(), coder()], [], areaKeyOf, (s) => s.title, { "5101": pipe({ requests: [asked()] }) }, wires);
+    expect(got.map((i) => i.kind)).toEqual(["question", "permission", "pr", "wire", "finished", "finished"]);
+  });
+});
+
+describe("a wire item's Send (W5)", () => {
+  const item = { wire: { id: "loop", pending: "p1", face: "ready" as const } };
+  const w = (over: Partial<Wire> = {}) => link("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, pending: pending("p1"), ...over });
+
+  it("sends only the pending the item named, while it still waits", () => {
+    expect(namedSendRefusal(item, w())).toBeNull();
+    // a newer finish replaced it: what's there now wasn't what was shown
+    expect(namedSendRefusal(item, w({ pending: pending("p2") }))).toBe("What waits there now is newer than what you were shown: nothing was sent.");
+    expect(namedSendRefusal(item, w({ pending: undefined, delivery: { id: "p1", state: "sent", at: NOW } }))).toBe("What waited there has gone: it was sent, or taken back.");
+    expect(namedSendRefusal(item, w({ delivery: { id: "p1", state: "queued", at: NOW } }))).toBe("It's on its way already.");
+    expect(namedSendRefusal(item, undefined)).toBe("That wire has gone.");
+    expect(namedSendRefusal({ wire: null }, w())).toBe("It isn't a wire's item.");
+  });
+
+  it("is Send and Show while it's ready, Send an answer the tray takes only from a pointer; Show alone otherwise", async () => {
+    const send = vi.fn(async () => null);
+    const show = vi.fn();
+    const dismissIt = vi.fn();
+    const ready = needsActions({ go: vi.fn<() => void>(), goTitle: "", dismiss: dismissIt, wire: { send, show } });
+    expect(ready.map((r) => [r.key, r.label, !!r.primary, !!r.answer])).toEqual([
+      ["send", "Send", true, true],
+      ["show", "Show", false, false],
+      ["dismiss", "Dismiss", false, false],
+    ]);
+    await ready[0].answer!();
+    ready[1].onPick();
+    expect([send.mock.calls.length, show.mock.calls.length, dismissIt.mock.calls.length]).toEqual([1, 1, 0]);
+    const other = needsActions({ go: vi.fn<() => void>(), goTitle: "", dismiss: dismissIt, wire: { send: null, show } });
+    expect(other.map((r) => [r.key, !!r.primary])).toEqual([
+      ["show", true],
+      ["dismiss", false],
+    ]);
+  });
+});
+
+describe("a pull request's item (W16 in Needs you)", () => {
+  const URL11 = "https://dev.azure.com/a/p/_git/backoffice/pullrequest/11";
+  const pr = (over: Partial<PipelinePr> = {}): PipelinePr => ({ target: "dev", provider: "ado", id: 11, url: URL11, repo: "backoffice", branch: "5101-x", base: "dev", at: NOW - 90 * MIN, by: "coder", ...over });
+  const of = (prs: PipelinePr[], over: Partial<TicketPipeline> = {}) => withTickets([pipe({ stage: "pr-dev", prs, ...over })]).filter((i) => i.kind === "merge");
+
+  it("is there once the merge watch can't read it three times, or saw it closed and nothing replaced it", () => {
+    const unread = of([pr({ watch: { failures: 3, why: "503", at: NOW - 4 * MIN } })]);
+    expect(unread).toEqual([
+      {
+        id: `merge:5101:${URL11}`,
+        sig: `merge:5101:${URL11}|unread`,
+        kind: "merge",
+        at: NOW - 4 * MIN,
+        area: "5101",
+        session: "coder",
+        join: null,
+        typing: null,
+        pipeline: null,
+        merge: { ticket: "5101", url: URL11 },
+        text: "Can't tell whether PR 11 to dev merged · #5101",
+        code: null,
+      },
+    ]);
+    const closed = of([pr({ closedAt: NOW - 8 * MIN })]);
+    expect(closed.map((i) => [i.text, i.sig, i.at])).toEqual([["PR 11 to dev was closed without merging · #5101", `merge:5101:${URL11}|closed:${NOW - 8 * MIN}`, NOW - 8 * MIN]]);
+    // seen closed is a new state: a Dismiss of it unreadable lets it through
+    expect(closed[0].sig).not.toBe(unread[0].sig);
+  });
+
+  it("isn't there for two failed reads, a merge, a closed one replaced by a newer, or a ticket that's done", () => {
+    expect(of([pr({ watch: { failures: 2, why: "503", at: NOW } })])).toEqual([]);
+    expect(of([pr({ mergedAt: NOW, watch: { failures: 3, why: "503", at: NOW } })])).toEqual([]);
+    expect(of([pr({ closedAt: NOW - 8 * MIN }), pr({ id: 12, url: URL11.replace(/11$/, "12"), at: NOW - 5 * MIN })])).toEqual([]);
+    expect(of([pr({ closedAt: NOW })], { stage: "done" })).toEqual([]);
+  });
+
+  it("is Check now and Mark merged…, each only what it's given; with no workspace on its ticket, there's nowhere to go", () => {
+    const check = vi.fn();
+    const mark = vi.fn();
+    const rows = needsActions({ go: vi.fn<() => void>(), goTitle: "", dismiss: vi.fn(), merge: { check, mark } });
+    expect(rows.map((r) => [r.key, r.label, !!r.primary, !!r.answer])).toEqual([
+      ["check", "Check now", true, false],
+      ["markMerged", "Mark merged…", false, false],
+      ["dismiss", "Dismiss", false, false],
+    ]);
+    rows[1].onPick();
+    expect([check.mock.calls.length, mark.mock.calls.length]).toEqual([0, 1]);
+    const nowhere = withTickets([pipe({ stage: "pr-dev", prs: [pr({ closedAt: NOW })] })], []).find((i) => i.kind === "merge")!;
+    expect(targetOf(nowhere, [])).toEqual({ no: "No workspace on #5101 is open here: Check now and Mark merged… are in Needs you" });
+  });
+});
+
+describe("Finish step… on a finished step's item (W5)", () => {
+  it("comes after Go there, only where it's given, off saying why when it can't open", () => {
+    const finish = vi.fn();
+    const rows = needsActions({ go: vi.fn<() => void>(), goTitle: "", dismiss: vi.fn(), finish });
+    expect(rows.map((r) => [r.key, r.label])).toEqual([
+      ["go", "Go there"],
+      ["finish", "Finish step…"],
+      ["dismiss", "Dismiss"],
+    ]);
+    rows[1].onPick();
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(needsActions({ go: vi.fn<() => void>(), goTitle: "", dismiss: vi.fn() }).map((r) => r.key)).toEqual(["go", "dismiss"]);
+    const off = needsActions({ go: vi.fn<() => void>(), goTitle: "", dismiss: vi.fn(), finish: { no: "It's still working" } })[1];
+    expect([off.disabled, off.title]).toEqual([true, "It's still working"]);
   });
 });

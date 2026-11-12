@@ -1,27 +1,32 @@
-import { latestPr, ticketOfSession, type SessionInfo, type TicketPipeline } from "../shared/types";
+import { latestPr, prNeedsYou, ticketOfSession, type SessionInfo, type TicketPipeline } from "../shared/types";
+import { ROOMS_STARTING, carriesWork, gateOf, isSending, wiresInOrder, type GateContext, type Wire } from "../shared/wires";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
 import type { TypingAsk } from "../shared/team/livePanes";
 import { permissionTool, shortReason } from "../shared/phoneAlerts";
 import { takenOverWhy, type Can } from "./workspaceActions";
 import { firstName } from "./team/connectedModel";
-import { agentPatchNotes } from "./ticketPipelineModel";
+import { agentPatchNotes, prLabel } from "./ticketPipelineModel";
+import { gateView, pendingRound, shortWhy, type GateFace } from "./wiresModel";
 
 /**
  * The Needs you tray (docs/landscape.md, Finding what needs you): what's waiting on you, as items. Phase 1 has four
  * kinds: a session waiting on you (amber: a permission prompt, or a question it asked), a teammate asking to type
  * into one of this install's room sessions, a room's join request this install answers as the admin, and a session
  * whose turn ended and that has been idle since. W15 adds two from the ticket pipelines: an agent asking for a pull
- * request (request_pr), and a ticket at a stage that's yours (stakeholder testing, patch notes an agent drafted).
- * Everything here is worked out from what the window already has (sessions, the team status, the pipelines), so the
- * tray, the badges and N agree.
+ * request (request_pr), and a ticket at a stage that's yours (stakeholder testing, patch notes an agent drafted). W5
+ * adds a wire whose gate waits on you (ready to send, at its limit, may have arrived, or blocked with something
+ * waiting), and a pull request the merge watch can't read or saw closed (W16's prNeedsYou).
+ * Everything here is worked out from what the window already has (sessions, the team status, the pipelines, the wire
+ * book), so the tray, the badges and N agree.
  */
 
-export type NeedsKind = "permission" | "question" | "typing" | "pr" | "join" | "ticket" | "finished";
+export type NeedsKind = "permission" | "question" | "typing" | "pr" | "wire" | "join" | "ticket" | "merge" | "finished";
 
 export interface NeedsItem {
   /**
    * The same while it's the same thing waiting: "s:<session id>", "type:<session id>:<member>",
-   * "join:<room>:<member>:<asked at>", "pr:<ticket>:<target>" or "ticket:<ticket>".
+   * "join:<room>:<member>:<asked at>", "pr:<ticket>:<target>", "ticket:<ticket>", "wire:<wire id>" or
+   * "merge:<ticket>:<pull request's page>".
    */
   id: string;
   /** Its state: a Dismiss holds until this changes. */
@@ -39,6 +44,15 @@ export interface NeedsItem {
   typing: { member: string; name: string } | null;
   /** A ticket's item: the ticket, and the agent's pull request request it is (a `pr` item's), whose words stay out of the tray. */
   pipeline: { ticket: string; request: string | null } | null;
+  /**
+   * A wire's item: the wire, the pending at its gate it's about (what its Send sends, and only while that's still what
+   * waits there), and the send popover's face it showed.
+   */
+  wire?: { id: string; pending: string; face: GateFace | "blocked" } | null;
+  /** A pull request's item: its ticket, and its page as pipeline.json keeps it (what Check now and Mark merged… name). */
+  merge?: { ticket: string; url: string } | null;
+  /** The tray's label for its kind, where it says more than KIND_LABEL's: a wire's says where its gate stands. */
+  label?: string;
   /** What it says: "API: last org per user wants to use Bash". */
   text: string;
   /** The code-like part of `text` to set apart (the tool), or null. */
@@ -46,14 +60,14 @@ export interface NeedsItem {
 }
 
 /** Its kind as the tray's line says it, before the area. */
-export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", pr: "Pull request", join: "Join request", ticket: "Ticket", finished: "Finished" };
+export const KIND_LABEL: Record<NeedsKind, string> = { permission: "Permission", question: "Waiting", typing: "Wants to type", pr: "Pull request", wire: "Wire", join: "Join request", ticket: "Ticket", merge: "Pull request", finished: "Finished" };
 
 /**
  * Which kinds come first: what holds an agent or a person up (a prompt, a question, a teammate waiting to type, an
- * agent waiting on its pull request), then someone at the room's door and a ticket at your stage, before what's only
- * done; newest first within a rank.
+ * agent waiting on its pull request, a wire's gate), then someone at the room's door, a ticket at your stage and a
+ * pull request Mockingbird can't follow, before what's only done; newest first within a rank.
  */
-const RANK: Record<NeedsKind, number> = { permission: 0, question: 0, typing: 0, pr: 0, join: 1, ticket: 1, finished: 2 };
+const RANK: Record<NeedsKind, number> = { permission: 0, question: 0, typing: 0, pr: 0, wire: 0, join: 1, ticket: 1, merge: 1, finished: 2 };
 
 /** A join request's key, as the admin's prompt (main.tsx's joinKey) and Later name it. */
 export const joinKeyOf = (r: Pick<JoinRequestSummary, "roomId" | "id" | "at">): string => `${r.roomId}:${r.id}:${r.at}`;
@@ -196,18 +210,129 @@ export function pipelineItems(p: TicketPipeline, sessions: readonly SessionInfo[
 }
 
 /**
- * Everything that needs you, in the tray's order (and N's): sessions waiting on you, teammates asking to type and
- * agents asking for a pull request; then join requests and tickets at your stages; then finished sessions, newest
- * first within each. `asks` are the requests this install answers as a room's admin (JoinRequests.tsx's
- * adminRequests: the admin's prompt and Members ▾ read the same list); `areaOf` is the area a session's workspace is
- * in on the landscape; `pipelines` are pipeline.json's tickets, as the window reads them.
+ * Ticket `p`'s pull requests that need you (W16's prNeedsYou): the merge watch failed to read one PR_WATCH_NEEDS_YOU
+ * times in a row, or saw it closed without merging and nothing has replaced it. One item each, by its page; it goes
+ * where the session that opened it is (ticketPlace). A closing is a state of its own: a dismissed unreadable one comes
+ * back once it's seen closed.
+ */
+export function mergeItems(p: TicketPipeline, sessions: readonly SessionInfo[], areaOf: (s: SessionInfo) => string): NeedsItem[] {
+  const id = p.ticketId;
+  return (p.prs ?? [])
+    .filter((pr) => prNeedsYou(p, pr))
+    .map((pr) => ({
+      id: `merge:${id}:${pr.url}`,
+      sig: `merge:${id}:${pr.url}|${pr.closedAt ? `closed:${pr.closedAt}` : "unread"}`,
+      kind: "merge",
+      at: pr.closedAt ?? pr.watch?.at ?? pr.at,
+      ...ticketPlace(id, pr.by, sessions, areaOf),
+      join: null,
+      typing: null,
+      pipeline: null,
+      merge: { ticket: id, url: pr.url },
+      text: pr.closedAt ? `${prLabel(pr)} was closed without merging · #${id}` : `Can't tell whether ${prLabel(pr)} merged · #${id}`,
+      code: null,
+    }));
+}
+
+/** What the tray needs of the wires: the rules' view of what's drawn, as the landscape draws their gates, and where each end is. */
+export interface NeedsWires {
+  ctx: GateContext;
+  /**
+   * Where wire end `id` counts: its session, when it's a running workspace of this install's that Go there and N can
+   * reach (null otherwise), and its area; null when it isn't on the landscape.
+   */
+  place: (id: string) => { session: string | null; area: string } | null;
+}
+
+const WIRE_LABEL: Record<NonNullable<NeedsItem["wire"]>["face"], string> = { ready: "Wire ready", limit: "Wire at its limit", unconfirmed: "Wire may have arrived", settings: "Wire", blocked: "Wire blocked" };
+
+/**
+ * Wire `id`'s item, or null when its gate doesn't wait on you. It does when what waits is ready to send, when a feedback
+ * loop is at its limit with something waiting, when what was sent may have arrived, and when something waits (or is on
+ * its way) but is blocked: the send popover's faces (gateView), Show opening it. A wire waiting on a pull request with
+ * nothing at its gate is the pull request's item, once that needs you. A wire an end of which a teammate took over waits
+ * on them, as that copy's prompts do; one blocked only because the book can't be saved or team rooms are starting is
+ * everyone's, said by the landscape's banners, and clears by itself. The item names the pending it's about: its Send
+ * sends that one or nothing (namedSendRefusal).
+ */
+export function wireItem(id: string, w: Wire, { ctx, place }: NeedsWires): NeedsItem | null {
+  if (!carriesWork(w.type)) return null;
+  const a = ctx.end(w.from);
+  const b = ctx.end(w.to);
+  if (!a || !b || a.takenOver || b.takenOver) return null;
+  const from = place(w.from);
+  const to = place(w.to);
+  // the step whose finish made what waits, else the other end, else wherever either is drawn
+  const at = from?.session ? from : to?.session ? to : (from ?? to);
+  if (!at) return null;
+  const gate = gateOf(id, w, ctx);
+  const view = gateView(w, gate, b, ctx.mergeView?.(w) ?? null);
+  const ends = `${a.title} → ${b.title}`;
+  const make = (face: NonNullable<NeedsItem["wire"]>["face"], pending: string, since: number, text: string): NeedsItem => ({
+    id: `wire:${id}`,
+    sig: `wire:${id}|${pending}`,
+    kind: "wire",
+    at: since,
+    area: at.area,
+    session: at.session,
+    join: null,
+    typing: null,
+    pipeline: null,
+    wire: { id, pending, face },
+    label: WIRE_LABEL[face],
+    text,
+    code: null,
+  });
+  if (view.face === "ready" && view.pendingId && w.pending) {
+    const round = pendingRound(w, view.pendingId);
+    const starts = view.starts ? `sending ${view.starts === "start" ? "starts" : view.starts === "reopen" ? "reopens" : "resumes"} it` : null;
+    const more = [round !== null && w.rounds ? `round ${round} of ${w.rounds.limit}` : null, starts].filter(Boolean).join("; ");
+    return make("ready", view.pendingId, w.pending.at, `${ends}: ready to send${more ? ` (${more})` : ""}`);
+  }
+  if (view.face === "limit" && view.pendingId && w.pending && w.rounds) return make("limit", view.pendingId, w.pending.at, `${ends}: at its limit, ${w.rounds.used} of ${w.rounds.limit} rounds`);
+  if (view.face === "unconfirmed" && view.pendingId) return make("unconfirmed", view.pendingId, w.delivery?.at ?? w.pending?.at ?? w.createdAt, `${ends}: it may have arrived`);
+  const waiting = w.pending ?? (isSending(w) ? w.delivery : undefined);
+  if (gate.state !== "blocked" || !waiting || gate.why === ctx.fileRefusal || gate.why === ROOMS_STARTING) return null;
+  return make("blocked", waiting.id, waiting.at, `${ends}: ${shortWhy(gate, w)}`);
+}
+
+/** Each wire's item, in the order they were made (wireItem). */
+export const wireItems = (wires: NeedsWires): NeedsItem[] =>
+  wiresInOrder(wires.ctx.links).flatMap(([id, w]) => {
+    const item = wireItem(id, w, wires);
+    return item ? [item] : [];
+  });
+
+/**
+ * Why a wire item's Send mustn't go, or null: `live`, the wire as main last said it, still waits with the pending the
+ * item named, and not on its way. What waits being newer (a finish since), sent, taken back or the wire gone means the
+ * item was drawn about something that's no longer there, so its Send sends nothing; what's there now is for the send
+ * popover to show.
+ */
+export function namedSendRefusal(item: Pick<NeedsItem, "wire">, live: Wire | undefined): string | null {
+  if (!item.wire) return "It isn't a wire's item.";
+  if (!live) return "That wire has gone.";
+  if (!live.pending) return "What waited there has gone: it was sent, or taken back.";
+  if (live.pending.id !== item.wire.pending) return "What waits there now is newer than what you were shown: nothing was sent.";
+  if (isSending(live)) return "It's on its way already.";
+  return null;
+}
+
+/**
+ * Everything that needs you, in the tray's order (and N's): sessions waiting on you, teammates asking to type, agents
+ * asking for a pull request and wires waiting at their gates; then join requests, tickets at your stages and pull
+ * requests Mockingbird can't follow; then finished sessions, newest first within each. `asks` are the requests this
+ * install answers as a room's admin (JoinRequests.tsx's adminRequests: the admin's prompt and Members ▾ read the same
+ * list); `areaOf` is the area a session's workspace is in on the landscape; `pipelines` are pipeline.json's tickets,
+ * as the window reads them; `wires`, the wire book's gates as the landscape draws them.
  */
 export function needsItems(
   sessions: readonly SessionInfo[],
   asks: readonly { request: JoinRequestSummary; room: TeamRoomSummary }[],
   areaOf: (s: SessionInfo) => string,
   titleOf: (s: SessionInfo) => string,
-  pipelines: Readonly<Record<string, TicketPipeline>> = {}
+  pipelines: Readonly<Record<string, TicketPipeline>> = {},
+  wires: NeedsWires | null = null
 ): NeedsItem[] {
   const out: NeedsItem[] = [];
   for (const s of sessions) {
@@ -216,7 +341,8 @@ export function needsItems(
     out.push(...typingItems(s, areaOf(s), titleOf(s)));
   }
   for (const a of asks) if (a.request.role === "admin" && a.request.state === "waiting") out.push(joinItem(a.request, a.room));
-  for (const p of Object.values(pipelines)) out.push(...pipelineItems(p, sessions, areaOf));
+  for (const p of Object.values(pipelines)) out.push(...pipelineItems(p, sessions, areaOf), ...mergeItems(p, sessions, areaOf));
+  if (wires) out.push(...wireItems(wires));
   return out.sort((a, b) => RANK[a.kind] - RANK[b.kind] || b.at - a.at || a.id.localeCompare(b.id));
 }
 
@@ -324,6 +450,8 @@ export type NeedsTarget = { session: SessionInfo } | { area: string; roomId: str
 export function targetOf(item: NeedsItem, sessions: readonly SessionInfo[]): NeedsTarget {
   if (item.join) return { area: item.area, roomId: item.join.roomId, requestKey: item.join.key };
   if (item.pipeline && !item.session) return { no: `No workspace on #${item.pipeline.ticket} is open here: Open shows its pipeline` };
+  if (item.merge && !item.session) return { no: `No workspace on #${item.merge.ticket} is open here: Check now and Mark merged… are in Needs you` };
+  if (item.wire && !item.session) return { no: "Neither end of that wire is a running workspace here: Show has its gate" };
   const s = sessions.find((x) => x.id === item.session);
   if (!s) return { no: "That session isn't running any more" };
   const why = notMine(s);

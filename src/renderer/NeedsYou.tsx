@@ -8,7 +8,7 @@ import { AnchoredPopover } from "./Popover";
 import { ANSWER_GUARD_MS, cameraWait, keyClick, useHeldOff, useSettledRows } from "./answerGuard";
 import { usePersisted } from "./prefs";
 import { shortAreaName } from "./landscapeModel";
-import { KIND_LABEL, dismiss, dismissedFrom, needsByArea, needsItems, needsLabel, shownItems, undismiss, type NeedsItem } from "./needsYouModel";
+import { KIND_LABEL, dismiss, dismissedFrom, needsByArea, needsItems, needsLabel, shownItems, undismiss, type NeedsItem, type NeedsWires } from "./needsYouModel";
 import type { ModelAction } from "./workspaceActions";
 
 /** What the window knows of what needs you: the items shown (not dismissed), how many are dismissed, and each area's count. */
@@ -43,11 +43,12 @@ export function useNeedsYou(
   areaOf: (s: SessionInfo) => string,
   titleOf: (s: SessionInfo) => string,
   joinError: string | null,
-  pipelines: { all: Readonly<Record<string, TicketPipeline>>; error: string | null } = { all: {}, error: null }
+  pipelines: { all: Readonly<Record<string, TicketPipeline>>; error: string | null } = { all: {}, error: null },
+  wires: NeedsWires | null = null
 ): NeedsYouState {
   const [saved, setSaved] = usePersisted<unknown>(DISMISSED_PREF, []);
   const list = useMemo(() => dismissedFrom(saved), [saved]);
-  const all = needsItems(sessions, asks, areaOf, titleOf, pipelines.all);
+  const all = needsItems(sessions, asks, areaOf, titleOf, pipelines.all, wires);
   const items = shownItems(all, list);
   // the same items in the same areas give the same counts, so what's memoized on them (the area tree) holds
   const shape = items.map((i) => `${i.sig}@${i.area}`).join("\n");
@@ -75,10 +76,10 @@ export function useNeedsYou(
 }
 
 /** The dot before an item's kind: amber while something waits on you, grey for what's only done. */
-const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", pr: "waiting", join: "waiting", ticket: "waiting", finished: "idle" };
+const DOT: Record<NeedsItem["kind"], string> = { permission: "waiting", question: "waiting", typing: "waiting", pr: "waiting", wire: "waiting", join: "waiting", ticket: "waiting", merge: "waiting", finished: "idle" };
 
-/** The actions that answer a teammate's ask to type (needsActions). */
-const ANSWERS = new Set(["allow", "deny"]);
+/** The actions that answer for you from the tray (needsActions): a teammate's ask to type, and a wire's Send. */
+const ANSWERS = new Set(["allow", "deny", "send"]);
 
 /** N (1) and ⇧N (-1), or null for any other key. */
 const stepOf = (e: React.KeyboardEvent): 1 | -1 | null => (e.metaKey || e.ctrlKey || e.altKey || e.key.toLowerCase() !== "n" ? null : e.shiftKey ? -1 : 1);
@@ -91,9 +92,10 @@ const stepOf = (e: React.KeyboardEvent): 1 | -1 | null => (e.metaKey || e.ctrlKe
  * on the button too, which has the keyboard after Esc. The last Dismiss can be undone from its foot. A dialog opening
  * puts the tray away.
  *
- * Allow and Deny let someone type in a session, so they take only a pointer's click, as the strip's do: never a Tab
- * stop, Enter or Space; never on a row that has just arrived or moved, or within a double click of another answer or
- * Dismiss; and the row's buttons are off from the click until main has answered (and its row gone, once it has).
+ * Allow and Deny let someone type in a session, and a wire's Send sends what waits at its gate, so they take only a
+ * pointer's click, as the strip's do: never a Tab stop, Enter or Space (but Deny's); never on a row that has just
+ * arrived, moved or changed what it's about, or within a double click of another answer or Dismiss; and the row's
+ * buttons are off from the click until main has answered (and its row gone, once it has).
  * A ticket's Open and a request's Dismiss… only open a dialog, which changes nothing until its own button: they take
  * Go there's guard (none within a double click of an answer or Dismiss), and the dialog opening puts the tray away,
  * the keyboard coming back to the button when it closes.
@@ -129,8 +131,8 @@ export function NeedsYou({
     const shown = new Set(shownSigs.split("\n"));
     setBusy((b) => ([...b].every((s) => shown.has(s)) ? b : new Set([...b].filter((s) => shown.has(s)))));
   }, [shownSigs]);
-  // a row that arrived or moved is under a pointer aimed at another
-  const rowWait = useSettledRows(list, ".ny-item[data-item]", (el) => el.dataset.item);
+  // a row that arrived, moved or changed what it's about (its state) is under a pointer aimed at what was there
+  const rowWait = useSettledRows(list, ".ny-item[data-settle]", (el) => el.dataset.settle);
   const { holdOff, heldOff } = useHeldOff();
   const close = (how?: "escape" | "outside" | "away") => {
     setOpen(false);
@@ -186,7 +188,7 @@ export function NeedsYou({
     if (keyClick(e)) {
       if (a.key !== "deny") return;
     } else {
-      const wait = Math.max(guardUntil.current - Date.now(), rowWait(item.id), cameraWait());
+      const wait = Math.max(guardUntil.current - Date.now(), rowWait(`${item.id}|${item.sig}`), cameraWait());
       if (wait > 0) {
         // let go, its button off until a click there would count: the keyboard stays with the tray as it goes off
         (e.currentTarget as HTMLElement).closest<HTMLElement>(".ny-tray")?.focus({ preventScroll: true });
@@ -222,7 +224,7 @@ export function NeedsYou({
         aria-expanded={open}
         title={
           n
-            ? `${needsLabel(n)}: permission prompts, questions, teammates asking to type, agents asking for pull requests, join requests, tickets at your stages and finished sessions (N goes to the next on the landscape)`
+            ? `${needsLabel(n)}: permission prompts, questions, teammates asking to type, agents asking for pull requests, wires waiting at their gates, join requests, tickets at your stages, pull requests Mockingbird can't follow and finished sessions (N goes to the next on the landscape)`
             : state.joinError
               ? `Couldn't read the rooms' join requests: ${state.joinError}`
               : state.pipelineError
@@ -259,11 +261,11 @@ export function NeedsYou({
             )}
             {!n && !state.joinError && !state.pipelineError && <div className="ny-none">Nothing needs you right now.</div>}
             {state.items.map((item) => (
-              <div key={item.id} className={`ny-item k-${item.kind} ${current === item.id ? "on" : ""}`} data-item={item.id}>
+              <div key={item.id} className={`ny-item k-${item.kind} ${current === item.id ? "on" : ""}`} data-item={item.id} data-settle={`${item.id}|${item.sig}`}>
                 <div className="ny-meta">
                   <span className={`dot sm ${DOT[item.kind]}`} />
                   <span className="ny-kind" title={item.area === LOOSE_GROUP ? "In no area" : areaTitle(item.area)}>
-                    {KIND_LABEL[item.kind]} · {item.area === LOOSE_GROUP ? "no area" : shortAreaName(item.area, areaTitle(item.area))}
+                    {item.label ?? KIND_LABEL[item.kind]} · {item.area === LOOSE_GROUP ? "no area" : shortAreaName(item.area, areaTitle(item.area))}
                   </span>
                   <span className="ny-age" title={new Date(item.at).toLocaleString()}>
                     {agoShort(item.at)}
@@ -287,8 +289,8 @@ export function NeedsYou({
                         key={a.key}
                         type="button"
                         // the main action is filled only where something waits on you to answer it, as design D does;
-                        // an answer is outlined beside it, never filled
-                        className={a.primary ? `ny-go ${DOT[item.kind] === "waiting" ? "fill" : ""}` : answer ? "ny-go ny-answer" : "ny-dismiss"}
+                        // an answer, and another act (Show, Mark merged…), is outlined beside it, never filled
+                        className={a.primary ? `ny-go ${DOT[item.kind] === "waiting" ? "fill" : ""}` : answer ? "ny-go ny-answer" : a.key.startsWith("dismiss") ? "ny-dismiss" : "ny-go"}
                         data-action={a.key}
                         disabled={a.disabled || busy.has(item.sig) || heldOff(`${item.sig}:${a.key}`)}
                         tabIndex={answer && a.key !== "deny" ? -1 : undefined}

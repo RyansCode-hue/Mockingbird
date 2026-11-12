@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatTokens, isErr, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
-import { gateOf, settingsRefusal, stepRefusal, type WireSettings } from "../shared/wires";
+import { carriesWork, gateOf, settingsRefusal, stepRefusal, verdictDue, type WireSettings, type WireVerdict } from "../shared/wires";
 import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, GAP, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
 import type { LandscapeSave, Migrating } from "./useLandscape";
 import {
@@ -113,12 +113,13 @@ import { LandscapeTour } from "./LandscapeTour";
 import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourHandleOf, tourSteps, tourWiresTarget, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
-import { typingAsksOf } from "./needsYouModel";
+import { namedSendRefusal, typingAsksOf } from "./needsYouModel";
 import { cameraMoved } from "./answerGuard";
-import { WireLayer, rereadWires, useWires, type WireLayerHandle } from "./WireLayer";
-import { WIRE_TYPE_NAME, commonReason, gateContextOf, gateView, noChoice, plannedLine, plannedShort, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
+import { WireLayer, rereadWires, useWires, wiresNow, type WireLayerHandle } from "./WireLayer";
+import { WIRE_TYPE_NAME, commonReason, finishLines, finishedLine, gateContextOf, gateView, noChoice, plannedLine, plannedShort, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
 import { WireSettingsPopover, WireTypePicker, type WirePick, type WireSettingsProps } from "./WireMaking";
 import { WirePopover } from "./WirePopover";
+import { FinishStepPopover, type WireActs } from "./FinishStep";
 import { sendAlongWire } from "./wireSend";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
@@ -338,7 +339,7 @@ export function Landscape({
   rooms,
   closed = NO_SESSIONS,
   resumeOk,
-  wireShowRef,
+  wireActsRef,
   nextStep,
 }: {
   layout: ResolvedLayout;
@@ -387,7 +388,7 @@ export function Landscape({
    * A workspace's actions: its front session's, or `s`'s, one of its stack's tabs (a right-click on that tab). `extra` is
    * what only the landscape has: Connect… in its ⋯ and right-click.
    */
-  actionsFor: (t: Tile, s?: SessionInfo, extra?: Pick<WorkspaceEnv, "connect">) => ModelAction[];
+  actionsFor: (t: Tile, s?: SessionInfo, extra?: Pick<WorkspaceEnv, "connect" | "finish">) => ModelAction[];
   /** Filled with the landscape's Connect…, for the workspace menus offered outside it (the side bar's rows). */
   connectRef?: React.MutableRefObject<((s: SessionInfo) => Can) | null>;
   /** Something to say over the landscape, as a gesture's refusal is said (a resize or a tool window refused); a new `n` says it again. */
@@ -434,8 +435,11 @@ export function Landscape({
   closed?: readonly SessionInfo[];
   /** Whether starting session `s` is worth its cost (useCostGate's resume, which may ask): a Send along a wire to a stopped one. */
   resumeOk?: (s: SessionInfo) => Promise<boolean>;
-  /** Filled with Show: wire `id`'s send popover, for what offers it outside the landscape (W5's Needs you item). */
-  wireShowRef?: React.MutableRefObject<((id: string) => void) | null>;
+  /**
+   * Filled with what offers the wires' popovers outside the landscape (W5's Needs you items): Show, a wire's send popover,
+   * and a session's Finish step; emptied while the landscape isn't up.
+   */
+  wireActsRef?: React.MutableRefObject<WireActs | null>;
   /**
    * Add next step (W8): a workspace's edge handle clicked, or its wire dropped on nothing. New Session's dialog for a
    * not-started step after `from`, placed `at` (the drop, in landscape px, in the area under it) or, from a click, beside it.
@@ -2354,8 +2358,8 @@ export function Landscape({
       );
     };
   };
-  /** A workspace's actions as its ⋯ and right-click offer them: Connect… with the rest. */
-  const menuActions = (t: Tile, s: SessionInfo = t.front): ModelAction[] => actionsFor(t, s, { connect: connectOf(s) });
+  /** A workspace's actions as its ⋯ and right-click offer them: Connect… and Finish step… with the rest. */
+  const menuActions = (t: Tile, s: SessionInfo = t.front): ModelAction[] => actionsFor(t, s, { connect: connectOf(s), finish: finishOf(s) });
   if (connectRef) connectRef.current = connectOf;
   /** A right-click on wire `id`: its settings, or removing it. */
   const wireMenuAt = (id: string, at: { x: number; y: number }) => {
@@ -2408,7 +2412,6 @@ export function Landscape({
     const place = wiresRef.current?.dotOnScreen(id) ?? at ?? (r ? { x: r.left + r.width / 2 - 180, y: r.top + r.height / 3 } : { x: 0, y: 0 });
     setWireGate((g) => ({ id, at: place, n: (g?.n ?? 0) + 1 }));
   };
-  if (wireShowRef) wireShowRef.current = openGate;
   const gating = wireGate ? liveWire(wireGate.id) : null;
   useEffect(() => {
     if (wireGate && !gating) setWireGate(null);
@@ -2427,6 +2430,94 @@ export function Landscape({
     });
     return declined ? `Nothing was sent: “${b ? titleOf(b) : named(to)}” stays as it is.` : no;
   };
+
+  // ---- Finish step (W5): a workspace's step finished by you, from its menu, its focus header or Needs you ----
+  const [finishFor, setFinishFor] = useState<{ id: string; at: { x: number; y: number }; n: number } | null>(null);
+  /** Session `id` has a handoff or feedback wire out, as the book is now: what Finish step is offered for. */
+  const wiredOut = (id: string) => Object.values(wireBookNow.current?.book?.links ?? {}).some((w) => w.from === id && carriesWork(w.type));
+  /**
+   * Session `id`'s Finish step popover: under what it was picked from (`at`; a menu's row, still there as its row runs),
+   * else under its workspace's header while that's on screen, else at the view's middle.
+   */
+  const openFinish = (id: string, at?: { x: number; y: number }) => {
+    const menu = document.activeElement?.closest?.(".mb-ctx")?.getBoundingClientRect();
+    const v = viewport.current?.getBoundingClientRect();
+    const head = document.querySelector(`.ls-focus [data-front="${CSS.escape(id)}"] .ls-head, .ls-world [data-front="${CSS.escape(id)}"] .ls-head`)?.getBoundingClientRect();
+    const onScreen = head && v && head.bottom > v.top && head.top < v.bottom && head.right > v.left && head.left < v.right;
+    const place = at ?? (menu ? { x: menu.left, y: menu.top } : onScreen ? { x: Math.max(head.left, v.left + 8), y: head.bottom } : v ? { x: v.left + v.width / 2 - 170, y: v.top + v.height / 3 } : { x: 0, y: 0 });
+    setFinishFor((f) => ({ id, at: place, n: (f?.n ?? 0) + 1 }));
+  };
+  /**
+   * Finish step for session `s`, or why it can't be now; undefined where it isn't offered: a workspace with no handoff
+   * or feedback wire out (a teammate's never has one), or while the wire book can't be read. Mid-turn its latest
+   * message isn't what the step comes to, so it waits for the turn's end.
+   */
+  const finishOf = (s: SessionInfo): Can | undefined => {
+    if (isRemote(s) || s.shell || !wiredOut(s.id)) return undefined;
+    if (s.status === "working") return { no: "It's still working: finish its step once its turn ends" };
+    return () => openFinish(s.id);
+  };
+  const finishing = finishFor ? (sessionOn(finishFor.id) ?? null) : null;
+  // its session gone from the landscape, or its last wire out removed: there's nothing left to finish here
+  const finishGone = !!finishFor && (!finishing || !wiredOut(finishFor.id));
+  useEffect(() => {
+    if (finishGone) setFinishFor(null);
+  }, [finishGone]);
+  /** Only popover `n` closes: a finish of an earlier one, ending after another opened, leaves that one be. */
+  const closeFinish = (n: number) => setFinishFor((f) => (f?.n === n ? null : f));
+  /** A person's Finish step (main's wires:finish): what each wire did is said once it has; why nothing was, in the popover. */
+  const finishStep = async (id: string, summary: string, verdict: WireVerdict | undefined): Promise<string | null> => {
+    const what = `finish ${named(id)}'s step`;
+    try {
+      const r = await window.mb.wiresFinish(id, summary, verdict);
+      if (isErr(r) || "refused" in r) {
+        const why = isErr(r) ? `Couldn't ${what}: ${r.error}` : r.refused;
+        console.warn(`[mockingbird] ${what}: ${why}`);
+        return why;
+      }
+      say(finishedLine(named(id), r.steps));
+      return null;
+    } catch (err) {
+      console.error(`[mockingbird] ${what}:`, err);
+      return `Couldn't ${what}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
+  /**
+   * A wire item's Send from Needs you: what waits there sent as it is, only while it's still the pending the item named.
+   * Anything else there now (a newer finish, it sent or taken back) sends nothing, and the send popover shows what's
+   * there instead: the item was drawn about what has gone.
+   */
+  const sendNamed = async (id: string, pendingId: string): Promise<string | null> => {
+    // the store's book, not this render's: a finish that has arrived but not been drawn yet is what's there now
+    const w = wiresNow().state?.book?.links[id];
+    const no = namedSendRefusal({ wire: { id, pending: pendingId, face: "ready" } }, w);
+    if (no || !w?.pending) {
+      console.warn(`[mockingbird] Needs you's Send on wire ${id} (${pendingId}) sent nothing: ${no}`);
+      if (w) openGate(id);
+      return no;
+    }
+    return sendWire(id, w.to, pendingId, w.pending.body, false);
+  };
+  if (wireActsRef)
+    wireActsRef.current = {
+      show: (id) => openGate(id),
+      send: sendNamed,
+      finish: (id) => {
+        const s = sessionOn(id);
+        const c = s ? finishOf(s) : undefined;
+        if (!c) return s ? `${titleOf(s)} has no handoff or feedback wire out: there's no step to finish` : "That workspace isn't on the landscape";
+        if (typeof c !== "function") return c.no;
+        c();
+        return null;
+      },
+    };
+  // what offers these outside the landscape finds none while it isn't up
+  useEffect(
+    () => () => {
+      if (wireActsRef) wireActsRef.current = null;
+    },
+    []
+  );
 
   /** What's under the pointer a wire would go to: a workspace (the tab under it, of a stack, else its front), or a ghost. */
   const wireTargetAt = (e: { clientX: number; clientY: number }): { key: string; rect: Rect; s: SessionInfo } | null => {
@@ -2468,7 +2559,8 @@ export function Landscape({
     if (hotEl.current) hotEl.current.hidden = true;
   }
 
-  const tileActions = (t: Tile): ModelAction[] => actionsFor(t);
+  // Finish step is among them for the focus header's button
+  const tileActions = (t: Tile): ModelAction[] => actionsFor(t, t.front, { finish: finishOf(t.front) });
   /** The picked workspaces still drawn, in layout order. */
   const pickedTiles = (): Tile[] => layoutNow.current.tiles.filter((t) => !t.hidden && pickedNow.current.includes(t.key));
   /** The picked workspaces stacked into one card with a tab each (planStack): its front tab is selected once it's made. */
@@ -2670,6 +2762,11 @@ export function Landscape({
         ctx.openAt(menuAt.current, menuOf(menuActions(tile)));
       }}
       onClosedTab={(s, from) => ctx.openBelow(from, menuOf(ghostActions(s)))}
+      onFinish={(tile, from) => {
+        // the header's button is at its right end: the popover hangs from there, flipped left to stay in the window
+        const r = from.getBoundingClientRect();
+        openFinish(tile.front.id, { x: r.right, y: r.bottom + 2 });
+      }}
       body={(s, sz) => body(s, sz, mode === "focus" ? { w: t.rect.w, h: t.rect.h } : null)}
     />
   );
@@ -2885,6 +2982,28 @@ export function Landscape({
           }}
           home={surfaceEl}
           onClose={() => closeGate(wireGate.n)}
+        />
+      )}
+      {finishFor && finishing && !finishGone && (
+        <FinishStepPopover
+          key={`${finishFor.id}:${finishFor.n}`}
+          at={finishFor.at}
+          id={finishFor.id}
+          title={titleOf(finishing)}
+          verdictDue={verdictDue(finishFor.id, wireBook?.book?.links ?? {})}
+          blocked={finishing.status === "working" ? "It's working again: finish its step once its turn ends." : null}
+          lines={(v) => {
+            const ctx = wireCtx([finishFor.id]);
+            return ctx ? finishLines(finishFor.id, v, ctx) : null;
+          }}
+          onFinish={(summary, verdict) => finishStep(finishFor.id, summary, verdict)}
+          onLost={(why) => {
+            const what = `${titleOf(finishing)}'s step: ${why}`;
+            console.warn(`[mockingbird] the Finish step popover had closed: ${what}`);
+            say(what);
+          }}
+          home={surfaceEl}
+          onClose={() => closeFinish(finishFor.n)}
         />
       )}
       {tourList && (

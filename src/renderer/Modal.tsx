@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { useLiftOut } from "./lift";
-import { DIALOG_OPENED, armFocus, isArmed, isNowhere, keyboardNowhere, userLeft } from "./keyArm";
+import { DIALOG_OPENED, armFocus, isArmed, isNowhere, keyboardNowhere, userEscaped, userLeft } from "./keyArm";
 import { useArrivalGuard } from "./answerGuard";
 
 /**
@@ -82,21 +82,36 @@ export function useKeyboardHome(get: () => HTMLElement | null): void {
   }, []);
 }
 
+/** A workspace's terminal on the landscape, in focus or not: where a hand-back's keyboard would land in an agent's prompt. */
+const LANDSCAPE_TERM = ".ls-world .xterm, .ls-focus .xterm";
+/**
+ * What never gives the keyboard back to a terminal, and what was opened from it doesn't either: the send popover, Finish
+ * step and Needs you, whose acts land in sessions the user wasn't typing in.
+ */
+const OFF_TERMINALS = ".wg-pop, .fs-pop, .ny-tray";
+
 /**
  * What opens over the app: says so (DIALOG_OPENED), and gives focus back to what had it when it closes, if nothing has
  * taken it since and what was picked isn't placing it (`keyboardMoves`); past what has gone, to what had it before
  * (`openers`). What the user had armed is armed again (keyArm.ts), unless `rearms` is false: the tour, which comes up
  * on its own. `handsBack` can keep it from giving the keyboard to a place its owner hands back to itself. Returns where
  * the keyboard goes back to now, for passing on.
+ *
+ * A terminal on the landscape gets it back only by the user's own Esc (userEscaped), and never past what was opened
+ * from the send popover, Finish step or Needs you: closed any other way (its button pressed, its act done, it going on
+ * its own) the landscape gets it, disarmed. An agent's prompt answers to a single key (Codex approves on y), so a key
+ * aimed at what closed mustn't land there.
  */
 export function useDialogFocus(opts: { rearms?: boolean; handsBack?: (to: HTMLElement) => boolean } = {}): () => HTMLElement | null {
   // read as it renders: the palette or menu it was opened from is still there
   const chain = useRef<Element[] | null>(null);
   const armedThen = useRef<Set<Element> | null>(null);
+  const offTerminals = useRef(false);
   if (!chain.current) {
     const had = document.activeElement;
     chain.current = [had, ...[...openers].reverse().flatMap((o) => o.chain)].filter((e): e is Element => !!e);
     armedThen.current = opts.rearms === false ? new Set() : new Set([...(had && isArmed(had) ? [had] : []), ...openers.flatMap((o) => [...o.armed])]);
+    offTerminals.current = chain.current.some((el) => !!el.closest?.(OFF_TERMINALS));
   }
   const handsBack = useRef(opts.handsBack);
   handsBack.current = opts.handsBack;
@@ -117,7 +132,13 @@ export function useDialogFocus(opts: { rearms?: boolean; handsBack?: (to: HTMLEl
       openers.splice(openers.indexOf(entry), 1);
       if (!keyboardNowhere() || keyboardClaimed()) return;
       const to = placeFor(chain.current!);
-      if (to && (handsBack.current?.(to) ?? true)) giveBack(to, entry.armed);
+      if (!to || handsBack.current?.(to) === false) return;
+      if (to.closest(LANDSCAPE_TERM) && (offTerminals.current || !userEscaped())) {
+        const surface = home?.();
+        if (surface && !surface.closest(LANDSCAPE_TERM)) surface.focus({ preventScroll: true });
+        return;
+      }
+      giveBack(to, entry.armed);
     };
   }, []);
   return () => placeFor(chain.current!);

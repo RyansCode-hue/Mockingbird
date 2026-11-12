@@ -92,6 +92,12 @@ export interface WorkspaceEnv {
   connect?: Can;
   /** Save as template (W9): the chain of wires through it, as a pipeline template. Absent where it isn't offered. */
   saveTemplate?: Can;
+  /**
+   * Finish step… (W5): its step finished by you, from its latest message, in a small popover that says what each wire out
+   * does before anything moves; or why it can't be now. Absent where it isn't offered: a workspace with no handoff or
+   * feedback wire out, or where wires aren't drawn.
+   */
+  finish?: Can;
 }
 
 const can = (c: Can): Pick<Action, "onPick" | "disabled" | "title"> => (typeof c === "function" ? { onPick: c } : { onPick: () => {}, disabled: true, title: c.no });
@@ -211,6 +217,15 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
       { section: "handon", key: "review", label: "Second opinion", menuLabel: `Second opinion from ${other}`, ...can(tookIt(env.secondOpinion, "to have its branch reviewed")) }
     );
   if (env.connect) out.push({ section: "wires", key: "connect", label: "Connect", menuLabel: "Connect…", title: "Wire it to another workspace: a handoff, a context link, a feedback loop or a shared worktree", ...can(env.connect) });
+  if (env.finish)
+    out.push({
+      section: "wires",
+      key: "finish",
+      label: "Finish step",
+      menuLabel: "Finish step…",
+      title: "Finish its step yourself, from its latest message: what each wire out does is shown before anything moves",
+      ...can(tookIt(env.finish, "to finish its step here")),
+    });
   if (env.saveTemplate && s.role !== "tasks")
     out.push({ section: "wires", key: "saveTemplate", label: "Save as template", menuLabel: "Save as template…", title: "Keep the chain of wires through it as a pipeline template, to lay out again from a ticket", ...can(env.saveTemplate) });
   out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
@@ -518,19 +533,42 @@ export interface NeedsEnv {
   open?: { can: Can; title: string } | null;
   /** An agent's pull request request: Dismiss… in place of Dismiss, asking for a note to the agent before main drops it. */
   dismissRequest?: Can | null;
+  /**
+   * A wire's item (W5): Send, the main action while what waits is ready (main's call for the pending the item names,
+   * taken only from a pointer's click, as Allow is), and Show, its send popover.
+   */
+  wire?: { send: Answer | null; show: Can } | null;
+  /** A pull request the merge watch can't follow (W16): Check now, asking its provider again, and Mark merged…, asked first. */
+  merge?: { check: Can; mark: Can } | null;
+  /** A finished session's item with a handoff or feedback wire out: Finish step…, its popover. */
+  finish?: Can | null;
 }
 
 const answerOf = (a: Answer): Pick<ModelAction, "onPick" | "answer" | "disabled" | "title"> =>
   typeof a === "function" ? { onPick: () => void a(), answer: a } : { onPick: () => {}, disabled: true, title: a.no };
 
 /**
- * A Needs you item's actions, in the tray's order: Go there, the main one on every row but a ticket's, whose is Open; a
- * typing ask's Allow for 15 min and Deny; then Dismiss (until its state changes), or an agent's pull request request's
- * Dismiss…. The tray offers only the bounded allowance: one until it's taken back is given from the strip, with the
- * session in view.
+ * A Needs you item's actions, in the tray's order: Go there, the main one on every row but a ticket's, whose is Open, a
+ * wire's, whose are Send (while what waits is ready) and Show, and a pull request's, whose is Check now; a typing ask's
+ * Allow for 15 min and Deny, a pull request's Mark merged…, a finished step's Finish step…; then Dismiss (until its
+ * state changes), or an agent's pull request request's Dismiss…. The tray offers only the bounded allowance: one until
+ * it's taken back is given from the strip, with the session in view.
  */
 export function needsActions(env: NeedsEnv): ModelAction[] {
   const a = env.answer;
+  const dismissRow: ModelAction = { section: "needs", key: "dismiss", label: "Dismiss", title: "Take it off the list until its state changes", onPick: env.dismiss };
+  if (env.wire)
+    return [
+      ...(env.wire.send ? [{ section: "needs", key: "send", label: "Send", primary: true, title: "Send what waits at its gate as it is: Show has it, to read or change first", ...answerOf(env.wire.send) } satisfies ModelAction] : []),
+      { section: "needs", key: "show", label: "Show", primary: !env.wire.send, title: "Its send popover: what waits at its gate, and what can be done there", ...can(env.wire.show) },
+      dismissRow,
+    ];
+  if (env.merge)
+    return [
+      { section: "needs", key: "check", label: "Check now", primary: true, title: "Ask its provider now whether it has merged", ...can(env.merge.check) },
+      { section: "needs", key: "markMerged", label: "Mark merged…", title: "Say it merged, when Mockingbird can't tell: asked first, and the ticket and its wires go on as for a merge", ...can(env.merge.mark) },
+      dismissRow,
+    ];
   if (env.open)
     return [
       { section: "needs", key: "open", label: "Open", primary: true, title: env.open.title, ...can(env.open.can) },
@@ -546,7 +584,8 @@ export function needsActions(env: NeedsEnv): ModelAction[] {
           { section: "needs", key: "deny", label: "Deny", title: `Tell ${a.who} no: they can ask again in a minute`, ...answerOf(a.deny) },
         ] satisfies ModelAction[])
       : []),
-    { section: "needs", key: "dismiss", label: "Dismiss", title: "Take it off the list until its state changes", onPick: env.dismiss },
+    ...(env.finish ? [{ section: "needs", key: "finish", label: "Finish step…", title: "Finish its step yourself, from its latest message: what each wire out does is shown before anything moves", ...can(env.finish) } satisfies ModelAction] : []),
+    dismissRow,
   ];
 }
 
