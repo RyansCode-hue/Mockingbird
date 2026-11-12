@@ -833,6 +833,55 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     });
   });
 
+  it("asks before Close session's Push branch pushes a room session's base-named branch, naming it, and sends the branch it showed", async () => {
+    // @ts-expect-error — a plain .mjs build script, no type declarations
+    const { pageResult } = await import("../scripts/ui-preview.mjs");
+    const read = `(() => {
+      window.__t0 ??= Date.now();
+      if (Date.now() - window.__t0 < 3000) return null;
+      const late = () => (Date.now() - window.__t0 > 25000 ? JSON.stringify({ error: window.__step ?? "nothing" }) : null);
+      if (!window.__menu) {
+        const n = document.querySelector('.ls-world .ls-node[data-front="s1"]');
+        if (!n) return late();
+        const r = n.getBoundingClientRect();
+        n.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: r.left + r.width / 2, clientY: r.top + r.height * 0.3 }));
+        window.__menu = 1;
+        window.__step = "menu";
+        return null;
+      }
+      if (!window.__closing) {
+        const b = [...document.querySelectorAll(".mb-ctx button")].find((x) => x.querySelector(".mb-ctx-t")?.textContent === "Close…");
+        if (!b) return late();
+        b.click();
+        window.__closing = 1;
+        window.__step = "dialog";
+        return null;
+      }
+      if (!window.__asked) {
+        const push = [...document.querySelectorAll(".close-dlg .opt")].find((x) => /Push branch, then remove worktree/.test(x.textContent || ""));
+        if (!push) return late();
+        push.click();
+        window.__asked = [];
+        window.confirm = (m) => (window.__asked.push(m), true);
+        setTimeout(() => document.querySelector(".close-dlg .primary")?.click(), 300);
+        window.__step = "confirm";
+        return null;
+      }
+      const cleanups = window.__mbCalls.filter((c) => c.fn === "worktreeCleanup").map((c) => c.args.slice(2));
+      if (cleanups.length < 2 || document.querySelector(".close-dlg")) return late();
+      return JSON.stringify({ asked: window.__asked, cleanups });
+    })()`;
+    const json: string | null = await pageResult({ size: "1400x900", query: "motion=off&cleanupConfirm", outDir: path.join(tempDir("needs-close"), "out"), read });
+    expect(JSON.parse(json!)).toEqual({
+      asked: ["The worktree is on develop, a base branch's name: pushing it would update origin's develop directly. Move the work to a branch of its own first.\n\nPush develop to origin anyway?"],
+      // first with the branch the dialog showed, then with the say-so naming the one main read
+      cleanups: [
+        ["push", { shown: "5101-orgDropdowns" }],
+        ["push", { shown: "develop", confirmBranch: "develop" }],
+      ],
+    });
+  });
+
   it("keeps the user's unsaved patch notes edit when the agent's newer draft arrives, saving nothing over it until they pick", async () => {
     const r = await run<NewerNotesAudit>("r", "prRequest=notes&lsCamera=0,0,0.5");
     expect(r.error).toBeUndefined();

@@ -64,7 +64,7 @@ import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, UpdateOutcome } from "../shared/types";
+import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, UpdateOutcome, WorktreeCleanupSay } from "../shared/types";
 import { BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
@@ -848,19 +848,21 @@ function assertWorktreeFree(wtPath: string): void {
 }
 handle("repos:list", () => indexRepos(store.settings.repoRoots));
 handle("worktree:state", (wtPath) => worktreeState(wtPath));
-handle("worktree:cleanup", (repo, wtPath, mode) => {
+handle("worktree:cleanup", (repo, wtPath, mode, say: Partial<WorktreeCleanupSay> | undefined) => {
   const folder = String(wtPath);
   assertWorktreeFree(folder);
-  return cleanupWorktree(repo, folder, mode, { own: folderOwnHooks(folder) });
+  const text = (v: unknown) => (typeof v === "string" ? v : undefined);
+  return cleanupWorktree(repo, folder, mode, { ...folderOwnHooks(folder), shown: text(say?.shown), confirmBranch: text(say?.confirmBranch) });
 });
 /**
  * pushesOwnHooks for a folder, from the sessions there, live or closed but resumable (Close session closes the pane
  * before it cleans its worktree up): when any of them is a team room's, or none is found, its git fires only the
- * user's own hooks.
+ * user's own hooks. `recorded`: the branch they were made on, when they agree (else none, and a room push asks).
  */
-function folderOwnHooks(folder: string): boolean {
+function folderOwnHooks(folder: string): { own: boolean; recorded: string | null } {
   const there = [...sessions.list(), ...sessions.resumable()].filter((s) => samePath(s.cwd, folder));
-  return !there.length || there.some((s) => pushesOwnHooks(s.id));
+  const branches = [...new Set(there.map((s) => s.branch ?? null))];
+  return { own: !there.length || there.some((s) => pushesOwnHooks(s.id)), recorded: branches.length === 1 ? branches[0] : null };
 }
 handle("worktrees:list", () =>
   listWorktrees(

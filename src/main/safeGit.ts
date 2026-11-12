@@ -149,13 +149,17 @@ function treeHolding(p: string, t: Trees): string | null {
  * trees, outside its .git: a config file there (one the user's config includes, a team's tracked .gitconfig) is the
  * session's agent's to write.
  */
-function originTree(v: Scoped, t: Trees): string | null {
-  if (!v.origin.startsWith("file:")) return null;
-  const file = realOr(path.resolve(t.top, v.origin.slice("file:".length)));
-  const tree = treeHolding(file, t);
-  if (!tree) return null;
+function originTree(v: Pick<Scoped, "origin">, t: Trees): string | null {
+  const file = originFile(v, t);
+  const tree = file && treeHolding(file, t);
+  if (!file || !tree) return null;
   const rel = path.relative(tree, file);
   return rel === ".git" || rel.startsWith(`.git${path.sep}`) ? null : tree;
+}
+
+/** The file `v` is set in, as a whole path with symlinks followed (a repository's own is named from its top), or null for a command line's or a blob's. */
+function originFile(v: Pick<Scoped, "origin">, t: Trees): string | null {
+  return v.origin.startsWith("file:") ? realOr(path.resolve(t.top, v.origin.slice("file:".length))) : null;
 }
 
 /** Whether `p` is `folder` or in it, symlinks followed. */
@@ -164,6 +168,64 @@ function within(p: string, folder: string): boolean {
   const top = realOr(folder);
   return abs === top || abs.startsWith(top + path.sep);
 }
+
+/** One setting as `git config --list --show-origin` gives it: where it's set, its key (as git spells it), and its value (null for a bare key). */
+interface Listed {
+  origin: string;
+  key: string;
+  value: string | null;
+}
+
+/** Every setting git reads in `cwd`, includes and includeIfs followed: one git. */
+async function configListing(cwd: string): Promise<Listed[]> {
+  const parts = (await git(cwd, ["config", "-z", "--list", "--show-origin", "--includes"], { trim: false })).split("\0");
+  const out: Listed[] = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const nl = parts[i + 1].indexOf("\n");
+    out.push({ origin: parts[i], key: nl < 0 ? parts[i + 1] : parts[i + 1].slice(0, nl), value: nl < 0 ? null : parts[i + 1].slice(nl + 1) });
+  }
+  return out;
+}
+
+/**
+ * What a team room session's git in `cwd` runs with, from one listing of its config (configListing). Throws when a
+ * setting comes from a file the room's agent can write: one in a working tree of the repository outside its .git (a
+ * team's tracked .gitconfig the repository's config includes; a file the user's config includes from there), or in the
+ * folder room sessions keep their caches in. Such a file can name a program git runs as the user (credential.helper, a
+ * filter's command, an ssh, an editor), so none of the session's git runs with it, whatever the key. Otherwise gives
+ * the filter drivers to turn off (driversToTurnOff): every one but git-lfs's own, as for a guarded read, since a
+ * filter runs from the working tree's top and can load code from it (`python -m nbstripout`).
+ */
+async function roomConfig(cwd: string, t: Trees): Promise<{ filtersOff: string[] }> {
+  const listing = await configListing(cwd);
+  const agents = listing.filter((e) => {
+    const file = originFile(e, t);
+    return file && (originTree(e, t) || within(file, ROOM_CACHES_DIR));
+  });
+  if (agents.length) {
+    const file = originFile(agents[0], t)!;
+    const where = originTree(agents[0], t) ?? path.dirname(file);
+    const keys = [...new Set(agents.filter((e) => originFile(e, t) === file).map((e) => e.key))];
+    const named = keys.length > 3 ? `${keys.slice(0, 3).join(", ")} and ${keys.length - 3} more` : keys.join(", ");
+    throw new Error(
+      `Mockingbird runs none of a team room session's git with this repository's config: ${shownPath(file, t.top)}, a file in ${where}, which the room's sessions can change, sets ${named}, and a setting there can name a program git runs as you`
+    );
+  }
+  const filters = listing
+    .filter((e) => decidesWhatRuns(e.key))
+    .map((e) => (e.value === null ? `${e.key}\0` : `${e.key}\n${e.value}\0`))
+    .join("");
+  return { filtersOff: driversToTurnOff(filters, gitLfsOnPath()) };
+}
+
+/** The overrides that turn filter drivers `off` (driversToTurnOff's): emptied and made optional, so git reads and writes the files as they are. */
+const filtersOffPairs = (off: readonly string[]): Pair[] =>
+  off.flatMap((d): Pair[] => [
+    [`filter.${d}.clean`, ""],
+    [`filter.${d}.smudge`, ""],
+    [`filter.${d}.process`, ""],
+    [`filter.${d}.required`, "false"],
+  ]);
 
 /** What one of Mockingbird's own network gits set aside of what the repository's config names, and why. */
 export interface SetAside {
@@ -222,42 +284,42 @@ function shownPath(p: string, top: string): string {
 const holdsPrePush = (folder: string): boolean => fs.existsSync(path.join(folder, "pre-push"));
 
 /**
- * The hooks folder for a team room session's git in `cwd`, which main runs as the user, outside any sandbox, in a
- * worktree the room's agent can write: the user's own core.hooksPath (the last global or system value, an includeIf for
- * the folder among them) when it's theirs alone, else none (`/dev/null`). Theirs alone: a whole path (a relative one is
- * found from whichever working tree git runs in), outside every working tree of the repository, set in a file outside
- * them too (originTree: not an include of one), and outside the folders room sessions write (ROOM_CACHES_DIR). Never the
- * repository's own, its config's folder (Husky's `.husky/_`, a tracked `.githooks`) nor its `.git/hooks`: git runs a
- * hook from the working tree's top, so a hook manager there (pre-commit, lefthook, Husky v4), or any hook running
- * `npm test`, `make` or a script, runs what the agent wrote.
+ * What a team room session's git in `cwd` runs with, which main runs as the user, outside any sandbox, in a worktree
+ * the room's agent can write: refused when its config comes partly from a file the agent can write (roomConfig), else
+ * the filter drivers to turn off (roomConfig's), and the hooks folder: the user's own core.hooksPath (the last global
+ * or system value, an includeIf for the folder among them) when it's theirs alone, else none (`/dev/null`). Theirs
+ * alone: a whole path (a relative one is found from whichever working tree git runs in), outside every working tree of
+ * the repository, and outside the folders room sessions write (ROOM_CACHES_DIR). Never the repository's own, its
+ * config's folder (Husky's `.husky/_`, a tracked `.githooks`) nor its `.git/hooks`: git runs a hook from the working
+ * tree's top, so a hook manager there (pre-commit, lefthook, Husky v4), or any hook running `npm test`, `make` or a
+ * script, runs what the agent wrote.
  */
-async function usersHooks(cwd: string): Promise<{ folder: string; values: Scoped[]; t: Trees }> {
-  const values = await scopedValues(cwd, "core.hooksPath", { path: true });
+async function roomGit(cwd: string): Promise<{ folder: string; filtersOff: string[]; values: Scoped[]; t: Trees }> {
   const t = await treesOf(cwd);
+  const { filtersOff } = await roomConfig(cwd, t);
+  const values = await scopedValues(cwd, "core.hooksPath", { path: true });
   const users = values.filter(isUsers).at(-1);
-  const alone = users && path.isAbsolute(users.value) && !treeHolding(users.value, t) && !originTree(users, t) && !within(users.value, ROOM_CACHES_DIR);
-  return { folder: users && alone ? users.value : NO_HOOKS[1], values, t };
+  const alone = users && path.isAbsolute(users.value) && !treeHolding(users.value, t) && !within(users.value, ROOM_CACHES_DIR);
+  return { folder: users && alone ? users.value : NO_HOOKS[1], filtersOff, values, t };
 }
 
 /**
  * The hooks for a team room session's push (a take-over backup's, the PR form's, Source Control's, Close session's):
- * usersHooks' folder. `runs` is the user's folder when it holds a pre-push; `skipped` the folder git would have run one
- * from (the one the config names, else .git/hooks) when it holds one and isn't the user's; `repoHooks` that folder,
- * where git-lfs's own pre-push is found.
+ * roomGit's folder, with its filters off. `runs` is the user's folder when it holds a pre-push; `skipped` the folder git
+ * would have run one from (the one the config names, else .git/hooks) when it holds one and isn't the user's;
+ * `repoHooks` that folder, where git-lfs's own pre-push is found.
  */
-async function ownHooks(cwd: string): Promise<{ folder: string; runs: string | null; skipped: SetAside | null; repoHooks: string }> {
-  const { folder, values, t } = await usersHooks(cwd);
+async function ownHooks(cwd: string): Promise<{ folder: string; filtersOff: string[]; runs: string | null; skipped: SetAside | null; repoHooks: string }> {
+  const { folder, filtersOff, values, t } = await roomGit(cwd);
   const runs = folder !== NO_HOOKS[1] && holdsPrePush(folder) ? shownPath(folder, t.top) : null;
   const wanted = values.at(-1);
   const repoHooks = wanted ? realOr(path.resolve(t.top, wanted.value)) : path.join(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks");
-  if ((folder !== NO_HOOKS[1] && repoHooks === realOr(folder)) || !holdsPrePush(repoHooks)) return { folder, runs, skipped: null, repoHooks };
-  return { folder, runs, skipped: { value: wanted ? wanted.value : shownPath(repoHooks, t.top), why: whySkipped(wanted, t) }, repoHooks };
+  if ((folder !== NO_HOOKS[1] && repoHooks === realOr(folder)) || !holdsPrePush(repoHooks)) return { folder, filtersOff, runs, skipped: null, repoHooks };
+  return { folder, filtersOff, runs, skipped: { value: wanted ? wanted.value : shownPath(repoHooks, t.top), why: whySkipped(wanted, t) }, repoHooks };
 }
 
 /** Why the hooks folder git would run from (`wanted`'s, else .git/hooks) isn't run for a room session, as a person reads it. */
 function whySkipped(wanted: Scoped | undefined, t: Trees): string {
-  const setIn = wanted ? originTree(wanted, t) : null;
-  if (wanted && setIn) return `it's set in ${shownPath(path.resolve(t.top, wanted.origin.slice("file:".length)), t.top)}, a file in ${setIn}, which the session can change`;
   if (wanted && treeHolding(wanted.value, t)) return "hooks in the working tree can be changed by the session";
   if (wanted && within(wanted.value, ROOM_CACHES_DIR)) return "room sessions write the folder it's in";
   return "this repository's hooks can run files its agent writes (a hook manager's config, its scripts)";
@@ -344,39 +406,49 @@ async function lfsRedirect(cwd: string, remote: string): Promise<string | null> 
 }
 
 /** A room session's git environment with hooks from `folder` (usersHooks'): NEUTRAL_OVERRIDES, and no ext:: transport. */
-const roomEnvAt = (folder: string): Record<string, string> => configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", folder], NO_EXT]);
+const roomEnvAt = (g: { folder: string; filtersOff: readonly string[] }): Record<string, string> =>
+  configEnv([...NEUTRAL_OVERRIDES, ["core.hooksPath", g.folder], NO_EXT, ...filtersOffPairs(g.filtersOff)]);
 
 /**
- * The environment for git that writes a team room session's folder when someone asks (Source Control's stage, unstage,
- * discard and commit, Close session's WIP commit and branch deletion, a worktree made or checked out for it): WRITE_ENV
- * with hooks from the user's own folder only (usersHooks), never the repository's, and no ext:: transport. Each can fire
- * a hook (pre-commit, prepare-commit-msg, commit-msg, post-commit, post-checkout, post-index-change,
- * reference-transaction), and `--no-verify` skips only two of them. Filters stay on, as for WRITE_ENV.
+ * How git writes a team room session's folder when someone asks (Source Control's stage, unstage, discard and commit,
+ * Close session's WIP commit and branch deletion, a worktree made or checked out for it), after roomGit's refusal: `env`
+ * is WRITE_ENV with hooks from the user's own folder only, never the repository's, no ext:: transport, and every filter
+ * driver but git-lfs's turned off (`filtersOff`). Each write can fire a hook (pre-commit, prepare-commit-msg,
+ * commit-msg, post-commit, post-checkout, post-index-change, reference-transaction), and `--no-verify` skips only two.
+ * A file a turned-off filter keeps would be stored as it is: a stage refuses it first (scm.ts's unfilteredRefusal).
  */
-export async function roomWriteEnv(cwd: string): Promise<Record<string, string>> {
-  return roomEnvAt((await usersHooks(cwd)).folder);
+export async function roomWrite(cwd: string): Promise<{ env: Record<string, string>; filtersOff: string[] }> {
+  const g = await roomGit(cwd);
+  return { env: roomEnvAt(g), filtersOff: g.filtersOff };
 }
+
+/** roomWrite's environment alone. */
+export const roomWriteEnv = async (cwd: string): Promise<Record<string, string>> => (await roomWrite(cwd)).env;
 
 /**
  * The environment for Mockingbird's own network gits in `cwd`: OWN_WRITE_ENV, with ssh as ownSsh says (GIT_SSH_COMMAND
  * in main's environment wins over any config already, and is left as it is), and no credential manager's window (no one
  * is watching for it). Hooks stay off, unless `room` (a room session's pull or fetch) or `roomPush` (its push, to that
- * remote) is set: then they run from the user's own folder only (ownHooks), so a secret scanner there reads what's
- * pushed first. Credential helpers stay as they are: a remote may need them.
+ * remote) is set: then they run from the user's own folder only, with its filters off and refused for config the agent
+ * can write (ownHooks, roomGit), so a secret scanner there reads what's pushed first. `roomRepo` (take-over's own gits in
+ * a room's repository) keeps hooks off and is refused the same way. Credential helpers stay as they are: a remote may
+ * need them, and one a room's agent could have named is refused with the rest of its file.
  */
-async function ownNetwork(cwd: string, o: { room?: boolean; roomPush?: string } = {}): Promise<OwnNetwork> {
+async function ownNetwork(cwd: string, o: { room?: boolean; roomPush?: string; roomRepo?: boolean } = {}): Promise<OwnNetwork> {
+  const room = o.room || o.roomPush !== undefined;
+  if (o.roomRepo && !room) await roomConfig(cwd, await treesOf(cwd));
   const ssh = process.env.GIT_SSH_COMMAND ? null : await ownSsh(cwd);
   const netEnv: Record<string, string> = { GCM_INTERACTIVE: "never", ...(ssh ? { GIT_SSH_COMMAND: ssh.command } : {}) };
   const common = { ssh: ssh?.command ?? null, sshSetAside: ssh?.setAside ?? null };
-  if (!o.room && o.roomPush === undefined) return { env: { ...OWN_WRITE_ENV, ...netEnv }, ...common, room: null };
+  if (!room) return { env: { ...OWN_WRITE_ENV, ...netEnv }, ...common, room: null };
   const hooks = await ownHooks(cwd);
-  const env = { ...roomEnvAt(hooks.folder), ...netEnv };
+  const env = { ...roomEnvAt(hooks), ...netEnv };
   if (o.roomPush === undefined) return { env, ...common, room: null };
   return { env, ...common, room: { runs: hooks.runs, skipped: hooks.skipped, lfs: await lfsPlan(cwd, hooks.repoHooks, o.roomPush) } };
 }
 
 /** ownNetwork's environment, for a test to read. */
-export const ownNetworkEnv = async (cwd: string, o: { room?: boolean; roomPush?: string } = {}): Promise<Record<string, string>> => (await ownNetwork(cwd, o)).env;
+export const ownNetworkEnv = async (cwd: string, o: { room?: boolean; roomPush?: string; roomRepo?: boolean } = {}): Promise<Record<string, string>> => (await ownNetwork(cwd, o)).env;
 
 /** What a room session's push from `cwd` to `remote` would run, set aside and do with Git LFS files (ownHooks, lfsPlan): what a form says before it. */
 export async function roomPushPlan(cwd: string, remote: string): Promise<RoomPush> {
@@ -425,21 +497,23 @@ export interface RoomPushOpts {
  * One of Mockingbird's own network gits in `cwd`: `command` with its OWN_FLAGS before `args`, under ownNetwork. What
  * it set aside is logged once (logOwnGitFailuresTo). With `roomPush`, a room session's push: what it runs is told to
  * `roomPush.told`, its Git LFS files are uploaded first (git lfs push, which a push with the repository's hooks off
- * doesn't do), and when they can't be, nothing is pushed. With `room`, a room session's pull or fetch: its hooks the
- * user's own only. A failure is logged with the folder and the whole command, then thrown in git's own words
- * (OwnGitError); when it looks like ssh's and a core.sshCommand was set aside, it says which and why.
+ * doesn't do), its endpoint pinned where it can be (lfsPin), and when they can't be, nothing is pushed. With `room`, a
+ * room session's pull or fetch: its hooks the user's own only. With `roomRepo`, one of take-over's own in a room's
+ * repository: refused for config the room's agent can write (roomConfig). A failure is logged with the folder and the
+ * whole command, then thrown in git's own words (OwnGitError); when it looks like ssh's and a core.sshCommand was set
+ * aside, it says which and why.
  */
 export async function ownNetworkGit(
   cwd: string,
   command: keyof typeof OWN_FLAGS,
   args: readonly string[],
-  opts: GitOptions & { trim?: boolean; roomPush?: RoomPushOpts; room?: boolean } = {}
+  opts: GitOptions & { trim?: boolean; roomPush?: RoomPushOpts; room?: boolean; roomRepo?: boolean } = {}
 ): Promise<string> {
-  const { roomPush, room, ...gitOpts } = opts;
+  const { roomPush, room, roomRepo, ...gitOpts } = opts;
   let all = [command, ...OWN_FLAGS[command], ...args];
   let n: OwnNetwork | null = null;
   try {
-    n = await ownNetwork(cwd, { room, roomPush: roomPush?.lfs.remote });
+    n = await ownNetwork(cwd, { room, roomPush: roomPush?.lfs.remote, roomRepo });
     if (n.sshSetAside) tellOnce(cwd, `core.sshCommand ${n.sshSetAside.value} set aside for ${n.ssh}: ${n.sshSetAside.why}`);
     if (roomPush && n.room) {
       if (n.room.skipped) tellOnce(cwd, prePushNote(n.room.skipped, roomPush.pushes));
@@ -447,7 +521,9 @@ export async function ownNetworkGit(
       if (typeof n.room.lfs === "object") throw new Error(`Nothing was pushed: ${n.room.lfs.refused}.`);
       if (n.room.lfs === "push") {
         const lfs = ["lfs", "push", roomPush.lfs.remote, ...roomPush.lfs.refs];
-        await git(cwd, lfs, { ...gitOpts, env: { ...gitOpts.env, ...n.env } }).catch((err: unknown) => {
+        const env = withPairs({ ...gitOpts.env, ...n.env }, await lfsPin(cwd, roomPush.lfs.remote));
+        // it uploads the repository's big files, which take longer than a push's refs
+        await git(cwd, lfs, { ...gitOpts, timeoutMs: gitOpts.timeoutMs ?? LFS_PUSH_TIMEOUT_MS, env }).catch((err: unknown) => {
           all = lfs;
           throw new Error(`Nothing was pushed: its Git LFS files couldn't be uploaded first: ${err instanceof Error ? err.message : String(err)}`);
         });
@@ -466,7 +542,43 @@ export async function ownNetworkGit(
 }
 
 /** `git fetch` as Mockingbird makes it on its own (ownNetworkGit). */
-export const ownFetch = (cwd: string, args: readonly string[], opts: GitOptions = {}): Promise<string> => ownNetworkGit(cwd, "fetch", args, opts);
+export const ownFetch = (cwd: string, args: readonly string[], opts: GitOptions & { roomRepo?: boolean } = {}): Promise<string> => ownNetworkGit(cwd, "fetch", args, opts);
+
+const LFS_PUSH_TIMEOUT_MS = 10 * 60_000;
+
+/** `env` (configEnv's, or none) with `pairs` added after its overrides. */
+function withPairs(env: Record<string, string>, pairs: readonly Pair[]): Record<string, string> {
+  const n = Number(env.GIT_CONFIG_COUNT ?? 0);
+  const out: Record<string, string> = { ...env, GIT_CONFIG_COUNT: String(n + pairs.length) };
+  pairs.forEach(([key, value], i) => {
+    out[`GIT_CONFIG_KEY_${n + i}`] = key;
+    out[`GIT_CONFIG_VALUE_${n + i}`] = value;
+  });
+  return out;
+}
+
+/**
+ * Overrides pinning a room push's Git LFS endpoint to the one git-lfs works out from `remote`'s push URL
+ * (`<url>.git/info/lfs`), so .lfsconfig, which the agent writes and git-lfs reads at its own moment, can't move it to
+ * another host or to another repository on the same one: git's own config outranks .lfsconfig. Only for an http(s) URL
+ * with no credentials in it, and only when git's own config names no endpoint (that one stands, as git-lfs takes it).
+ * An ssh remote's endpoint comes through git-lfs-authenticate and a local one's is a folder: for those, lfsRedirect's
+ * check is what holds.
+ */
+async function lfsPin(cwd: string, remote: string): Promise<Pair[]> {
+  const url = (await git(cwd, ["remote"])).split("\n").includes(remote) ? await git(cwd, ["remote", "get-url", "--push", remote]) : remote;
+  const authority = /^https?:\/\/([^/?#]*)/i.exec(url)?.[1];
+  if (authority === undefined || authority.includes("@")) return [];
+  // git's own config, which never reads .lfsconfig: exits 1 when it names none
+  const own = await git(cwd, ["config", "-z", "--get-regexp", "^(lfs\\.(url|pushurl)|remote\\..*\\.(lfsurl|lfspushurl))$"], { okCodes: [0, 1], trim: false });
+  if (own.split("\0").some((e) => e && lfsEndpointKey(e.split("\n", 1)[0], remote))) return [];
+  const base = url.replace(/\/+$/, "");
+  const endpoint = `${base}${path.extname(base) === ".git" ? "" : ".git"}/info/lfs`;
+  return [
+    ["lfs.url", endpoint],
+    ["lfs.pushurl", endpoint],
+  ];
+}
 
 /**
  * Settings that would run a command for a read: NEUTRAL_OVERRIDES', a hook (post-index-change, when a diff refreshes

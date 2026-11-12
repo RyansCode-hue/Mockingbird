@@ -4231,6 +4231,132 @@ git writes main makes in a room session's folder still ran the repository's hook
     `relhooks` resolves inside the tree anyway; a `../beside-hooks` case was added.
   - The included ssh run, and the credential manager's window.
 
+#### W15 review fixes 4 as built
+
+The security verify of fixes 3 confirmed H-a, H-b and the sweep, and found two
+Mediums.
+- **M-1.** Close session's room push sent a base-named branch straight to origin. The
+  agent put its worktree on `develop` with a file left uncommitted, and
+  `cleanupWorktree(…, "push", { own: true })` moved origin's `develop`.
+- **M-2.** Programs a config names still ran for room gits.
+  - (b) A room session in the main checkout, whose repository config has
+    `include.path = ../team.gitconfig`, a file the agent wrote. Its
+    `credential.helper` ran on the room push, and its filter on Stage. Take-over's
+    backup pushes run with no click.
+  - (a) A filter whose program loads code from its cwd (`python -m nbstripout`)
+    reads the agent's files.
+
+- **Close session asks (M-1).**
+  - `cleanupWorktree(…, { own, recorded, shown, confirmBranch })` reads the branch
+    fresh, before anything is committed.
+    - It refuses when the branch differs from `shown`, the branch the dialog showed.
+      This holds for Discard too, which would otherwise delete another branch.
+    - For a room session, `roomPushWhy` (Source Control's rule, now shared with
+      `roomPushAsk`) asks on a base name or a branch other than `recorded`.
+      - It returns `{ removed: false, confirm, branch }` with nothing done until
+        `confirmBranch` names that branch.
+  - `worktree:cleanup` takes the dialog's `WorktreeCleanupSay`. `folderOwnHooks`
+    also gives `recorded`, the branch the sessions there were made on when they
+    agree, else none, which asks.
+  - The dialog sends the branch it showed. On `confirm` it asks with
+    `window.confirm`, naming the branch, then sends `confirmBranch`. Told no, the
+    session stays closed and its worktree is kept.
+- **Nothing from a file the agent can write (M-2, origin).**
+  - `roomConfig` reads `git config -l -z --show-origin --includes` once per call. It
+    refuses when any value's origin is a file in a working tree of the repository
+    (`originTree`, outside `.git`) or in `ROOM_CACHES_DIR`, naming the file and its
+    keys.
+  - It runs in `roomGit`, which every room write, pull, fetch and push goes
+    through, and the PR form's preflight with them.
+  - A new `roomRepo` option on `ownNetworkGit` and `ownFetch` runs it for the own
+    gits in a room's repository, keeping hooks off:
+    - take-over's `ls-remote`, backup deletion and fetches;
+    - `fetchOrigin` (teammates' changes, the House board);
+    - artifact fetches.
+  - It replaces fixes 3's narrower checks: `usersHooks`' include check and its
+    `skipped` reason are gone. `ownSsh`'s set-aside stays for Mockingbird's own
+    gits outside rooms.
+- **No filter but git-lfs's (M-2, filters).**
+  - `roomConfig` also gives `driversToTurnOff` from the same listing.
+  - `roomEnvAt` empties those drivers and marks them not required, as guarded reads
+    do. That covers `roomWrite` (and `roomWriteEnv`) and the room network
+    environment, so pulls and checkouts too.
+  - Before writing, `unfilteredRefusal` checks the files the write would touch
+    (`check-attr filter`) against the drivers turned off, and refuses, naming the
+    file and filter:
+    - Stage checks the files it would store (`filesToStore`, a guarded status);
+    - Close session's WIP commit checks every changed file;
+    - Discard checks the files it would write back.
+  - git-lfs's own driver stays on when it can run safely, so LFS files stage as
+    pointers. When it can't, staging one is refused by name.
+- **The LFS endpoint, pinned.**
+  - Before a room `git lfs push`, `lfsPin` reads the push remote's URL and, when it's
+    http(s) with no credentials in it, passes `lfs.url` and `lfs.pushurl` as
+    `<url>.git/info/lfs` through the environment. Git's config outranks
+    `.lfsconfig`.
+    - That closes the check-then-use race and same-host, other-repository uploads.
+    - When git's own config names an endpoint for the remote, that one stands.
+  - ssh and local remotes aren't pinned: ssh's endpoint comes through
+    git-lfs-authenticate, and a wrong guess would break it. `lfsRedirect`'s host
+    check still holds there.
+  - The LFS push now has a 10-minute timeout. It had git's 30-second local one,
+    since `lfs` isn't a network command to `git.ts`.
+- **Residual.**
+  - Turn snapshots (`snapshots.ts`) still `add -A` a room session's changed files
+    every turn under `OWN_WRITE_ENV`.
+    - Filters are on there, and config from a working-tree file isn't refused, so
+      (a) and (b) still run with no click.
+    - Turning filters off there would store a git-crypt file's plaintext in the
+      snapshot and in take-over's backup.
+    - A fix would refuse, or leave out, such files, as big files are. Not done here.
+  - Checkouts and pulls for a room session write files a turned-off smudge filter
+    keeps as they're stored, for example a git-crypt file's ciphertext. Only stage,
+    the WIP commit and discard refuse.
+  - `gpg.program` from the user's own config runs for room commits (Low, as asked).
+  - The ssh-remote LFS endpoint isn't pinned (above).
+- **Tests.**
+  - `scm.test.ts`:
+    - Close session: a base name and an unrecorded branch each ask with nothing
+      done; a say-so for another branch doesn't pass; the move off the branch shown
+      is refused, Discard's too; told yes, it pushes.
+    - An absolute include of a worktree file setting `credential.helper` is refused
+      for push, fetch, pull, stage, a backup's push and take-over's fetch, while a
+      local push goes.
+    - An include from the room caches folder is refused.
+    - The `strip` filter (`nbstripout`'s shape): turned off in the room environment;
+      Stage, Close session's WIP commit and Discard refuse `nb.ipynb` without
+      running it; a local Stage runs it.
+    - git-lfs's filter stays on for a room Stage.
+    - The LFS pin against a 127.0.0.1 stub remote: every LFS request goes to
+      `/team/r.git/info/lfs/`, none to `.lfsconfig`'s other repository on that host.
+    - Fixes 3's include cases now expect the refusal.
+  - `safeGit.test.ts`: the included ssh is set aside for an own fetch and refused for
+    a room's (`fetchOrigin`, `room`).
+  - `pipeline.test.ts`: the cleanup handler's wiring.
+  - `uiLandscapeNeeds`: Close session's Push branch (`?cleanupConfirm`) sends the
+    branch shown, asks naming `develop`, and sends the say-so.
+
+**Checked:**
+- `npm run typecheck` and `npm run build` pass. `CI=true npm test` exits 0: 196 files
+  pass and 35 skip; 3,312 tests pass and 329 skip.
+- `uiLandscapeNeeds` alone, without CI: 24 tests pass.
+- The reviewer's `pushhook4` and `close5` cases, run as a throwaway test under the
+  test HOME (not committed):
+  - G, H, H2: nothing ran.
+  - E and both (b) cases: refused, naming the file. Neither the filter nor the
+    credential helper ran against the 127.0.0.1 server that answers 401.
+  - close5: refused on the branch shown, then asked on `develop`. Origin's `develop`
+    didn't move.
+- Each change undone in turn (`w15/mutate5.py`) fails a test, 17 mutations:
+  - M-1 (7): never asking; any say-so passing; the branch shown unchecked; the
+    handler passing no branch shown or no recorded branch; the dialog not asking; the
+    dialog sending no branch shown.
+  - M-2 origin (4): no refusal; the room caches folder; take-over's own gits; a team
+    feature's fetch.
+  - M-2 filters (5): filters left on; git-lfs's turned off too; Stage, Discard and the
+    WIP commit not refusing.
+  - The LFS pin.
+
 ### W16 · A PR merging as a wire's When. Size M
 **What the app knows today.** The pane's PR cell asks `pr:status` (`index.ts:1533`),
 cached 2 minutes per folder, every 3 minutes while the workspace is drawn

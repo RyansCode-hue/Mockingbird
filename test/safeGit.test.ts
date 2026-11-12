@@ -10,7 +10,7 @@ import { listAllFiles } from "../src/main/find";
 import { repoState } from "../src/main/handoff";
 import { prDescriptionPrompt } from "../src/main/pullRequests";
 import { ignoredCandidates } from "../src/main/runDraft";
-import { driversToTurnOff, guardedGit, ownNetworkEnv, programOnPath } from "../src/main/safeGit";
+import { driversToTurnOff, guardedGit, ownFetch, ownNetworkEnv, programOnPath } from "../src/main/safeGit";
 import { scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
 import { dropSnapshots, skippedIn, snapshotCommit, takeSnapshot } from "../src/main/snapshots";
 import { fetchOrigin } from "../src/main/team/branchFiles";
@@ -405,15 +405,20 @@ describe("Mockingbird's own network gits", { timeout: 300_000 }, () => {
     expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe(userSsh);
     // and no credential manager's window, which nobody is watching for
     expect((await ownNetworkEnv(clone)).GCM_INTERACTIVE).toBe("never");
-    expect((await ownNetworkEnv(clone, { room: true })).GCM_INTERACTIVE).toBe("never");
-    await expect(fetchOrigin(clone)).rejects.toThrow(unreachable);
+    await expect(ownFetch(clone, ["-q", "origin"])).rejects.toThrow(unreachable);
     expect(w.ran()).toEqual(["userssh"]);
     expect(own.find((l) => / set aside /.test(l))).toContain(`: it's set in team.gitconfig, a file in ${fs.realpathSync(clone)}, a working tree of this repository, which a session there can change`);
+    // a room's git, a team room feature's fetch among them, runs none of it: that file names what it may
+    w.clear();
+    await expect(fetchOrigin(clone)).rejects.toThrow(`Mockingbird runs none of a team room session's git with this repository's config: team.gitconfig, a file in ${fs.realpathSync(clone)}`);
+    await expect(ownNetworkEnv(clone, { room: true })).rejects.toThrow("sets core.sshcommand");
+    expect(w.ran()).toEqual([]);
     // the repository's own config, in its .git, is the user's tools': an ssh set there runs
     git(clone, "config", "--unset", "include.path");
     const localSsh = w.plant("localssh", "exit 1");
     git(clone, "config", "core.sshCommand", localSsh);
     expect((await ownNetworkEnv(clone)).GIT_SSH_COMMAND).toBe(localSsh);
+    expect((await ownNetworkEnv(clone, { room: true })).GCM_INTERACTIVE).toBe("never");
   });
 
   it("log a failure with the repository, the whole command and git's words, and say which ssh was set aside and why", async () => {

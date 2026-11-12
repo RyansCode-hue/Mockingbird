@@ -1,6 +1,6 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
-import { guardedGit, ownNetworkGit, roomPushPlan, roomWriteEnv, SAFE_DIFF, WRITE_ENV } from "./safeGit";
+import { guardedGit, ownNetworkGit, roomPushPlan, roomWrite, roomWriteEnv, SAFE_DIFF, WRITE_ENV } from "./safeGit";
 import { prBranchProblem, unrecordedBranch, type GitChange, type GraphCommit, type GraphRef, type RoomPush, type ScmGraph, type ScmPushResult, type ScmStatus, type ScmStatusCode } from "../shared/types";
 
 /**
@@ -9,7 +9,7 @@ import { prBranchProblem, unrecordedBranch, type GitChange, type GraphCommit, ty
  * checked to stay inside the folder before git sees it. What it reads goes
  * through guardedGit, so nothing the folder's config names runs for a read.
  * Each write takes `own` for a team room session's folder: then the hooks it
- * fires are the user's own only (roomWriteEnv), never the repository's.
+ * fires are the user's own only, and its filters git-lfs's alone (roomWrite).
  */
 
 /** Whether a write is for a team room session's folder (its hooks the user's own only), as main's handlers decide it. */
@@ -19,6 +19,37 @@ export interface Own {
 
 /** The environment a write in `root` runs with: roomWriteEnv's for a room session's folder, else WRITE_ENV. */
 const writeEnv = async (root: string, o: Own): Promise<Readonly<Record<string, string>>> => (o.own ? roomWriteEnv(root) : WRITE_ENV);
+
+/**
+ * The first of `files` kept through a filter roomWrite turned off (one in `filtersOff` its `filter` attribute names),
+ * with that filter, or null. The attributes are the working tree's, which the session's agent writes.
+ */
+async function filteredBy(root: string, files: readonly string[], filtersOff: readonly string[]): Promise<{ file: string; filter: string } | null> {
+  if (!filtersOff.length || !files.length) return null;
+  const out = await (await guardedGit(root)).run(["check-attr", "-z", "--stdin", "filter"], { input: `${files.join("\0")}\0`, trim: false });
+  const parts = out.split("\0");
+  for (let i = 0; i + 2 < parts.length; i += 3) if (filtersOff.includes(parts[i + 2])) return { file: parts[i], filter: parts[i + 2] };
+  return null;
+}
+
+/**
+ * Why a room session's write mustn't go ahead, as `done` ("staged") says it, or null: one of `files` is kept through a
+ * filter roomWrite turned off, so the write would store it, or write it back, as it is (`without` says how): a notebook
+ * with the outputs its filter strips, a file git-crypt would have encrypted. A filter runs as the user, from the working
+ * tree the agent writes, and can load code from there (`python -m nbstripout`), so it isn't run for the agent's files.
+ */
+export async function unfilteredRefusal(root: string, files: readonly string[], filtersOff: readonly string[], done: string, without: string): Promise<string | null> {
+  const hit = await filteredBy(root, files, filtersOff);
+  return hit
+    ? `Nothing was ${done}: ${hit.file} is kept through the "${hit.filter}" filter, which Mockingbird doesn't run for a team room session's git, as a filter runs as you, from the working tree the session's agent writes, and can load code from there. Without it, ${hit.file} would be ${without}.`
+    : null;
+}
+
+/** The files a stage of `pathspecs` would store (changed or new, not deleted), read as Source Control reads its list. */
+export async function filesToStore(root: string, pathspecs: readonly string[]): Promise<string[]> {
+  const st = parseStatus(await (await guardedGit(root)).status(["--porcelain=v2", "-z", "--untracked-files=all", "--", ...pathspecs], { trim: false }));
+  return [...new Set([...st.staged, ...st.unstaged, ...st.conflicted].filter((e) => e.status !== "D").map((e) => e.path))];
+}
 
 const code = (c: string): ScmStatusCode => (c === "A" ? "A" : c === "D" ? "D" : c === "R" || c === "C" ? "R" : "M");
 
@@ -77,8 +108,14 @@ async function inside(root: string, paths: string[]): Promise<string[]> {
   return paths;
 }
 
+/** Stage `paths`. A room session's (`own`) refuses a file a turned-off filter keeps (unfilteredRefusal) before anything is staged. */
 export async function scmStage(root: string, paths: string[], o: Own = {}): Promise<void> {
-  await git(root, ["add", "-A", "--", ...(await inside(root, paths))], { env: await writeEnv(root, o) });
+  const rel = await inside(root, paths);
+  if (!o.own) return void (await git(root, ["add", "-A", "--", ...rel], { env: WRITE_ENV }));
+  const w = await roomWrite(root);
+  const no = w.filtersOff.length ? await unfilteredRefusal(root, await filesToStore(root, rel), w.filtersOff, "staged", "stored unfiltered") : null;
+  if (no) throw new Error(no);
+  await git(root, ["add", "-A", "--", ...rel], { env: w.env });
 }
 
 export async function scmUnstage(root: string, paths: string[], o: Own = {}): Promise<void> {
@@ -94,7 +131,17 @@ export async function scmUnstage(root: string, paths: string[], o: Own = {}): Pr
 export async function scmDiscard(root: string, entries: { path: string; untracked: boolean }[], trash: (abs: string) => Promise<void>, o: Own = {}): Promise<void> {
   const tracked = entries.filter((e) => !e.untracked).map((e) => e.path);
   const untracked = entries.filter((e) => e.untracked).map((e) => e.path);
-  if (tracked.length) await git(root, ["restore", "--worktree", "--", ...(await inside(root, tracked))], { env: await writeEnv(root, o) });
+  if (tracked.length) {
+    const rel = await inside(root, tracked);
+    let env: Readonly<Record<string, string>> = WRITE_ENV;
+    if (o.own) {
+      const w = await roomWrite(root);
+      const no = await unfilteredRefusal(root, rel, w.filtersOff, "discarded", "written back as it's stored");
+      if (no) throw new Error(no);
+      env = w.env;
+    }
+    await git(root, ["restore", "--worktree", "--", ...rel], { env });
+  }
   for (const p of untracked) await trash(await resolveIn(root, p));
 }
 
@@ -156,8 +203,11 @@ export async function scmRoomPushPlan(root: string): Promise<RoomPush> {
  */
 export async function roomPushAsk(root: string, recorded: string | null): Promise<{ branch: string | null; why: string | null }> {
   const branch = (await scmStatus(root)).branch;
-  return { branch, why: branch ? (prBranchProblem(branch, "") ?? unrecordedBranch(branch, recorded)) : null };
+  return { branch, why: branch ? roomPushWhy(branch, recorded) : null };
 }
+
+/** Why a team room session made on `recorded` pushing `branch` takes the user's say-so, or null: roomPushAsk's rule, for a branch already read (Close session's). */
+export const roomPushWhy = (branch: string, recorded: string | null): string | null => prBranchProblem(branch, "") ?? unrecordedBranch(branch, recorded);
 
 /**
  * Source Control's Push for a team room session made on `recorded`: scmPush's `own`, from the branch roomPushAsk read.

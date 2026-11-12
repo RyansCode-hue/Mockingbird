@@ -1,4 +1,4 @@
-import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode } from "../shared/types";
+import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
@@ -352,8 +352,8 @@ const api = {
   listWorktrees: () => ipcRenderer.invoke("worktrees:list"),
   removeWorktree: (repo: string, wtPath: string) => ipcRenderer.invoke("worktrees:remove", repo, wtPath),
   migrateWorktree: (repo: string, wtPath: string) => ipcRenderer.invoke("worktrees:migrate", repo, wtPath),
-  worktreeCleanup: (repo: string, wtPath: string, mode: WorktreeCleanupMode) =>
-    ipcRenderer.invoke("worktree:cleanup", repo, wtPath, mode),
+  worktreeCleanup: (repo: string, wtPath: string, mode: WorktreeCleanupMode, say?: WorktreeCleanupSay) =>
+    ipcRenderer.invoke("worktree:cleanup", repo, wtPath, mode, say),
   repoBranches: (repoPath: string) => ipcRenderer.invoke("repo:branches", repoPath),
 
   // CLAUDE.md

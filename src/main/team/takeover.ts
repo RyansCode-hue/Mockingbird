@@ -975,8 +975,8 @@ export class TakeoverService {
    * leave a backup on origin for good. Throws when it couldn't.
    */
   private async deleteOnOrigin(repo: string, ref: string): Promise<void> {
-    const there = (await ownNetworkGit(repo, "ls-remote", ["origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 })).split("\t")[0];
-    if (there) await ownNetworkGit(repo, "push", ["--no-verify", "--quiet", `--force-with-lease=${ref}:${there}`, "origin", `:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000 });
+    const there = (await ownNetworkGit(repo, "ls-remote", ["origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000, roomRepo: true })).split("\t")[0];
+    if (there) await ownNetworkGit(repo, "push", ["--no-verify", "--quiet", `--force-with-lease=${ref}:${there}`, "origin", `:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000, roomRepo: true });
   }
 
   /**
@@ -1231,7 +1231,7 @@ export class TakeoverService {
         timeoutMs: this.d.pushTimeoutMs ?? 60_000,
         roomPush: { lfs: { remote: "origin", refs: [rec.sha] }, told },
       });
-    const onOrigin = async () => (await ownNetworkGit(top, "ls-remote", ["origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 })).split("\t")[0];
+    const onOrigin = async () => (await ownNetworkGit(top, "ls-remote", ["origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000, roomRepo: true })).split("\t")[0];
     try {
       try {
         // without a record (a lost takeover.json), origin's value is the session's own earlier backup
@@ -1427,7 +1427,7 @@ export class TakeoverService {
       await fs.promises.writeFile(tmp, bytes, { mode: 0o600 });
       try {
         // the bundle's objects only: the ref is set to the commit named, never to whatever the bundle's own ref says
-        await ownFetch(clone, ["--no-tags", "--no-write-fetch-head", tmp, ref]);
+        await ownFetch(clone, ["--no-tags", "--no-write-fetch-head", tmp, ref], { roomRepo: true });
       } finally {
         await fs.promises.rm(tmp, { force: true });
       }
@@ -1656,7 +1656,7 @@ export class TakeoverService {
       const pin = roomBackupRef(roomId, sessionId, LEFT_ROOT);
       if (!(await hasCommits(repo, [base])).length && backupsToOrigin(this.d.team.room(roomId))) {
         try {
-          await ownFetch(repo, ["--no-tags", "--no-write-fetch-head", "origin", `+${roomBackupRef(roomId, sessionId)}:${pin}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 });
+          await ownFetch(repo, ["--no-tags", "--no-write-fetch-head", "origin", `+${roomBackupRef(roomId, sessionId)}:${pin}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000, roomRepo: true });
         } catch (err) {
           // logged by ownFetch
           const why = shownFailure(err);
@@ -2212,7 +2212,7 @@ export class TakeoverService {
     // origin holds a backup of this session only when its owner pushed one (the room offers it and they allowed it)
     if (backupsToOrigin(this.d.team.room(roomId)) && (b.toOrigin || b.pushed || handed)) {
       try {
-        await ownFetch(clone, ["--no-tags", "--no-write-fetch-head", "origin", `+${ref}:${copy}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 });
+        await ownFetch(clone, ["--no-tags", "--no-write-fetch-head", "origin", `+${ref}:${copy}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000, roomRepo: true });
         const got = await git(clone, ["rev-parse", "--verify", copy]);
         const at = signed.get(got);
         if (at !== undefined) found.push({ sha: got, takenAt: at, source: "origin" });

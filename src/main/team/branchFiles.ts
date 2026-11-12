@@ -20,9 +20,12 @@ export function originKey(url: string): string {
     .toLowerCase();
 }
 
-/** Fetch origin's branches into the clone (remote-tracking refs only), as Mockingbird fetches on its own (ownFetch). */
+/**
+ * Fetch origin's branches into the clone (remote-tracking refs only), as Mockingbird fetches on its own (ownFetch): a
+ * room's repository, so refused for config its sessions' agents can write (`roomRepo`).
+ */
 export async function fetchOrigin(repo: string): Promise<void> {
-  await ownFetch(repo, ["-q", "--prune", "--no-tags", "origin"]);
+  await ownFetch(repo, ["-q", "--prune", "--no-tags", "origin"], { roomRepo: true });
 }
 
 /**

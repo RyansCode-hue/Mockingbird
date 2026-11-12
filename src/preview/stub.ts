@@ -1755,6 +1755,12 @@ const api: Record<string, (...a: any[]) => any> = {
       400
     ),
   contextBriefStart: async () => err("UI preview: no session starts"),
+  // with ?cleanupConfirm, Close session's push as a team room session's on a branch with a base's name answers: it
+  // waits for a say-so naming the branch, then goes
+  worktreeCleanup: async (_repo: string, _wt: string, _mode: string, say?: { shown?: string; confirmBranch?: string }) =>
+    params.has("cleanupConfirm") && say?.confirmBranch !== "develop"
+      ? later({ removed: false, confirm: "The worktree is on develop, a base branch's name: pushing it would update origin's develop directly. Move the work to a branch of its own first.", branch: "develop" }, 200)
+      : later({ removed: true }, 300),
   // ?gitFail=<part of a folder>: that folder's git state can't be read (main's error); ?closeFail=<part>: reading it
   // throws, as an IPC call whose handler threw does; ?gitSlow=<part>: reading it takes 4 s
   worktreeState: async (cwd: string) => {

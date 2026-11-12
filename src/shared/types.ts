@@ -153,6 +153,18 @@ export type WorktreeCleanupMode = "keep" | "push" | "discard";
 export interface WorktreeCleanupResult {
   removed: boolean;
   branchKept?: string;
+  /**
+   * Close session's push for a team room session, on a branch with a base's name or not its own: why it waits for the
+   * user's say-so. Nothing was committed, pushed or removed; asked again with `confirmBranch` naming `branch`, it goes.
+   */
+  confirm?: string;
+  branch?: string;
+}
+
+/** What Close session says along with a cleanup: the branch it showed (`shown`), and the user's say-so to push one (`confirmBranch`). */
+export interface WorktreeCleanupSay {
+  shown?: string;
+  confirmBranch?: string;
 }
 
 /** One entry of the worktree janitor: a `<repo>-worktrees/<name>` checkout. */

@@ -157,7 +157,7 @@ export class RepoRefs {
     let fetchFailed: string | null = null;
     if (!out.commitPresent && (policy === "always" || (policy === "unless-missed" && !recentMiss))) {
       try {
-        await ownFetch(dir, ["origin"], { timeoutMs: FETCH_CAP_MS });
+        await ownFetch(dir, ["origin"], { timeoutMs: FETCH_CAP_MS, roomRepo: true });
       } catch (err) {
         // logged by ownFetch
         fetchFailed = shownFailure(err);

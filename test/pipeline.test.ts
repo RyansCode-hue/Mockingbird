@@ -725,8 +725,10 @@ describe("a pull request's branch", () => {
       expect(main.slice(at, main.indexOf("\n});", at)), call).toContain(`const { root, own } = scmIn(id);\n  return ${run};`);
     }
     // the session is looked up by its folder: Close session has closed its pane by then, so it's among the resumable
-    expect(main).toContain("return cleanupWorktree(repo, folder, mode, { own: folderOwnHooks(folder) });");
-    expect(main).toContain("const there = [...sessions.list(), ...sessions.resumable()].filter((s) => samePath(s.cwd, folder));\n  return !there.length || there.some((s) => pushesOwnHooks(s.id));");
+    // with the branch they were made on, and what the dialog showed and said
+    expect(main).toContain("return cleanupWorktree(repo, folder, mode, { ...folderOwnHooks(folder), shown: text(say?.shown), confirmBranch: text(say?.confirmBranch) });");
+    expect(main).toContain("const there = [...sessions.list(), ...sessions.resumable()].filter((s) => samePath(s.cwd, folder));");
+    expect(main).toContain("return { own: !there.length || there.some((s) => pushesOwnHooks(s.id)), recorded: branches.length === 1 ? branches[0] : null };");
     // a folder made or checked out for one, by the group it starts in
     expect(main).toContain("sessions.ownHooksFor = (group) => !roomsKnown || !!sessions.roomOfGroup?.(group ?? LOOSE_GROUP);");
   });

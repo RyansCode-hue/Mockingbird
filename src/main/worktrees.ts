@@ -1,7 +1,7 @@
-import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
+import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeCleanupSay, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
 import { branchesOf, currentBranch, git, isAncestor, isRepo, originUrl, pickDefaultBase, upstreamOf } from "./git";
-import { dirtyFileCount, type Own, scmPush } from "./scm";
-import { guardedGit, ownFetch, ownNetworkGit, roomWriteEnv, WRITE_ENV } from "./safeGit";
+import { dirtyFileCount, filesToStore, type Own, roomPushWhy, scmPush, unfilteredRefusal } from "./scm";
+import { guardedGit, ownFetch, ownNetworkGit, roomWrite, roomWriteEnv, WRITE_ENV } from "./safeGit";
 import { unpinGitDirs } from "./gitPins";
 import * as fs from "fs";
 import * as path from "path";
@@ -329,19 +329,37 @@ export function worktreeState(wtPath: string): Promise<WorktreeStateInfo> {
  *  - keep:    leave the worktree untouched
  *  - push:    commit WIP if dirty, push the branch (scmPush), then remove the worktree
  *  - discard: remove the worktree and delete its branch — not recoverable
- * `own`: a team room session's worktree, whose agent wrote what its hooks would read. Then the WIP commit (which
- * `--no-verify` keeps from pre-commit and commit-msg only) and the branch's deletion fire only the user's own hooks
- * (roomWriteEnv), and the push is a room session's (scmPush's `own`).
+ * `shown`: the branch Close session showed. When the worktree is on another now, nothing is done.
+ * `own`: a team room session's worktree, whose agent wrote what its hooks would read and picks the branch it's on.
+ *  - The WIP commit (which `--no-verify` keeps from pre-commit and commit-msg only) and the branch's deletion run as
+ *    roomWrite says: the user's own hooks only, and no filter but git-lfs's. A changed file a turned-off filter keeps
+ *    refuses the push before anything is committed (unfilteredRefusal).
+ *  - The push is a room session's (scmPush's `own`), and asks first, as Source Control's does (roomPushWhy), on a
+ *    branch with a base's name or not `recorded`, the session's: it returns `confirm` with nothing done, until
+ *    `confirmBranch` names that branch.
  */
-export async function cleanupWorktree(repoPath: string, wtPath: string, mode: WorktreeCleanupMode, o: Own = {}): Promise<WorktreeCleanupResult> {
+export async function cleanupWorktree(
+  repoPath: string,
+  wtPath: string,
+  mode: WorktreeCleanupMode,
+  o: Own & WorktreeCleanupSay & { recorded?: string | null } = {}
+): Promise<WorktreeCleanupResult> {
   if (mode === "keep") return { removed: false };
 
   const st = await readState(wtPath); // fresh: this decides what gets committed or deleted
   stateCache.delete(wtPath);
+  if (o.shown !== undefined && st.branch !== o.shown) {
+    throw new Error(`The worktree is on ${st.branch === "HEAD" ? "a detached HEAD" : st.branch} now, not ${o.shown}, the branch Close session showed: nothing was committed, pushed or removed`);
+  }
   // read in the worktree while it's there: discard removes it before deleting its branch
-  const env = o.own ? await roomWriteEnv(wtPath) : WRITE_ENV;
+  const w = o.own ? await roomWrite(wtPath) : { env: WRITE_ENV, filtersOff: [] };
+  const env = w.env;
   if (mode === "push") {
+    const why = o.own && st.branch !== "HEAD" ? roomPushWhy(st.branch, o.recorded ?? null) : null;
+    if (why && o.confirmBranch !== st.branch) return { removed: false, confirm: why, branch: st.branch };
     if (st.dirty) {
+      const no = w.filtersOff.length ? await unfilteredRefusal(wtPath, await filesToStore(wtPath, ["."]), w.filtersOff, "committed, pushed or removed", "stored unfiltered") : null;
+      if (no) throw new Error(no);
       await git(wtPath, ["add", "-A"], { env });
       await git(wtPath, ["commit", "--no-verify", "-m", `WIP: ${st.branch} (closed from Mockingbird)`], { env });
     }

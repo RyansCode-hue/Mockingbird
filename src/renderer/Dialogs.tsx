@@ -3,7 +3,7 @@ import { useOpenSettle } from "./answerGuard";
 import { Pick } from "./Menu";
 import { enterConfirms } from "./keys";
 import { titleOf } from "./appModel";
-import { isErr, splitGroupKey, topOfKey, groupKey, sanitizeSegment, type SessionInfo, type WorktreeStateInfo } from "../shared/types";
+import { isErr, splitGroupKey, topOfKey, groupKey, sanitizeSegment, type IpcResult, type SessionInfo, type WorktreeCleanupResult, type WorktreeStateInfo } from "../shared/types";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";
@@ -309,7 +309,14 @@ export function CloseSessionDialog({
       if (closeErr) return stop(`Couldn't close the session: ${closeErr}`);
       if (mode !== "keep") {
         if (!session.repoPath) return stop("The session closed, but it has no repository to clean its worktree up in.");
-        const r = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode);
+        // main refuses when the worktree has moved off the branch shown here
+        let r: IpcResult<WorktreeCleanupResult> = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode, st ? { shown: st.branch } : {});
+        // a room session's branch with a base's name, or not its own: pushed only once the user says so, naming it
+        if (!isErr(r) && r.confirm && r.branch) {
+          if (!window.confirm(`${r.confirm}\n\nPush ${r.branch} to origin anyway?`)) return stop("Nothing was pushed or removed: the session is closed, and its worktree is kept.");
+          r = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode, { shown: r.branch, confirmBranch: r.branch });
+          if (!isErr(r) && r.confirm) return stop(`Nothing was pushed or removed: ${r.confirm}`);
+        }
         if (isErr(r)) return stop(r.error);
         const forgot = await forget(session);
         if (isErr(forgot)) return stop(`The worktree is done with, but the session couldn't be let go: ${forgot.error}`);

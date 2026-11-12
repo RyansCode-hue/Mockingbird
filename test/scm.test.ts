@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { parseRefs, scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmPull, scmPush, scmRoomPush, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
-import { ownNetworkGit, programOnPath, urlHost } from "../src/main/safeGit";
+import { ownFetch, ownNetworkGit, programOnPath, roomWriteEnv, urlHost } from "../src/main/safeGit";
 import { checkoutBranch, cleanupWorktree, createWorktree, worktreeAt } from "../src/main/worktrees";
 import { prBranchProblem, unrecordedBranch } from "../src/shared/types";
 import { git, makeRepo, tempDir } from "./helpers";
@@ -210,16 +210,16 @@ describe("a push's hooks: a room session's and a local one's", () => {
       git(t.repo, ...id, "commit", "-q", "--allow-empty", "-m", "again");
       expect((await scmPush(t.repo, { own: true })).roomPush).toEqual({ runs: null, skipped: { value: ".husky/_", why: "hooks in the working tree can be changed by the session" }, lfs: "none" });
       expect(t.ran()).toEqual(["user"]);
-      // one set in a file the user's config includes from the working tree is the agent's too, wherever it points
+      // one set in a file the user's config includes from the working tree is the agent's too, wherever it points:
+      // nothing is pushed with config from there
       fs.writeFileSync(path.join(t.repo, "user.gitconfig"), `[core]\n\thooksPath = ${userHooks}\n`);
       fs.writeFileSync(global, `[include]\n\tpath = ${path.join(t.repo, "user.gitconfig")}\n`);
       git(t.repo, ...id, "commit", "-q", "--allow-empty", "-m", "and again");
-      expect((await scmPush(t.repo, { own: true })).roomPush).toEqual({
-        runs: null,
-        skipped: { value: userHooks, why: `it's set in user.gitconfig, a file in ${fs.realpathSync(t.repo)}, which the session can change` },
-        lfs: "none",
-      });
+      await expect(scmPush(t.repo, { own: true })).rejects.toThrow(
+        `Mockingbird runs none of a team room session's git with this repository's config: user.gitconfig, a file in ${fs.realpathSync(t.repo)}, which the room's sessions can change, sets core.hookspath, and a setting there can name a program git runs as you`
+      );
       expect(t.ran()).toEqual(["user"]);
+      expect(git(t.remote, "log", "-1", "--format=%s", "main")).toBe("again");
     } finally {
       vi.unstubAllEnvs();
     }
@@ -359,6 +359,20 @@ describe("a room session's push and Git LFS", () => {
     expect(t.objects()).toBe(1);
   });
 
+  it.skipIf(!lfsHere)("pins a room push's LFS endpoint to its http(s) remote's own, wherever .lfsconfig points on that host", async () => {
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+    onTestFinished(() => void vi.unstubAllEnvs());
+    const t = lfsRepo();
+    const remote = await listener();
+    git(t.repo, "remote", "set-url", "origin", `http://127.0.0.1:${remote.port}/team/r.git`);
+    // the remote's own host, another repository on it: the host check passes it, and .lfsconfig would win over the remote
+    fs.writeFileSync(path.join(t.repo, ".lfsconfig"), `[lfs]\n\turl = http://127.0.0.1:${remote.port}/agent/other.git/info/lfs\n`);
+    await expect(scmPush(t.repo, { own: true })).rejects.toThrow(/^Nothing was pushed: its Git LFS files couldn't be uploaded first/);
+    const asked = remote.hits.filter((h) => h.includes("/info/lfs"));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.filter((h) => !h.includes(" /team/r.git/info/lfs/"))).toEqual([]);
+  });
+
   it("reads a remote's host as git does: a URL's, an scp-like one's, none for a local path", () => {
     expect(urlHost("https://user:pw@Dev.Azure.com/org/p/_git/r")).toBe("dev.azure.com");
     expect(urlHost("ssh://git@github.com:22/o/r.git")).toBe("github.com");
@@ -463,10 +477,13 @@ describe("a room session's writes: none of the repository's hooks, only the user
     };
     fs.writeFileSync(global, `[core]\n\thooksPath = ${hooksAt(tempDir("user-hooks"), "user")}\n`);
     expect(await commit()).toEqual(["user"]);
-    // set in a file the user's config includes from a working tree: the agent's to write, wherever it points
+    // set in a file the user's config includes from a working tree: the agent's to write, wherever it points, so the
+    // commit is refused
     fs.writeFileSync(path.join(t.wt, "user.gitconfig"), `[core]\n\thooksPath = ${hooksAt(tempDir("outside"), "outside")}\n`);
     fs.writeFileSync(global, `[include]\n\tpath = ${path.join(t.wt, "user.gitconfig")}\n`);
-    expect(await commit()).toEqual([]);
+    await expect(commit()).rejects.toThrow(`user.gitconfig, a file in ${fs.realpathSync(t.wt)}, which the room's sessions can change, sets core.hookspath`);
+    expect(t.ran()).toEqual([]);
+    fs.rmSync(path.join(t.wt, "user.gitconfig"));
     // in the folder room sessions keep their caches in
     fs.writeFileSync(global, `[core]\n\thooksPath = ${hooksAt(path.join(os.homedir(), "Library", "Caches", "mockingbird-room-caches", "r1", "hooks"), "cache")}\n`);
     expect(await commit()).toEqual([]);
@@ -522,7 +539,7 @@ describe("a room session's folder made, checked out and cleaned up: none of the 
     const hooks = ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction", "pre-push"];
     const t = firedHooks(hooks);
     fs.writeFileSync(path.join(t.wt, "wip.txt"), "w\n");
-    expect(await cleanupWorktree(t.repo, t.wt, "push", { own: true })).toEqual({ removed: true });
+    expect(await cleanupWorktree(t.repo, t.wt, "push", { own: true, recorded: "5101-x", shown: "5101-x" })).toEqual({ removed: true });
     expect(t.ran()).toEqual([]);
     expect(git(t.remote, "log", "-1", "--format=%s", "5101-x")).toBe("WIP: 5101-x (closed from Mockingbird)");
     expect(fs.existsSync(t.wt)).toBe(false);
@@ -564,6 +581,107 @@ describe("a room session's folder made, checked out and cleaned up: none of the 
     git(t.repo, "worktree", "remove", again);
     await createWorktree(t.repo, "5101-x", undefined, { mustExist: true, at: path.join(tempDir("worktrees"), "5101-x") });
     expect(t.ran()).toContain("post-checkout");
+  });
+
+  it("asks before Close session pushes a room session's branch with a base's name or not its own, pushing only the one named, and does nothing once it's moved off what it showed", async () => {
+    const t = firedHooks([]);
+    // the agent: off its own branch, onto develop, with a file left uncommitted
+    git(t.wt, "switch", "-q", "-c", "develop");
+    fs.writeFileSync(path.join(t.wt, "agent.txt"), "straight to develop\n");
+    const refs = git(t.remote, "for-each-ref", "--format=%(refname) %(objectname)");
+    await expect(cleanupWorktree(t.repo, t.wt, "push", { own: true, recorded: "5101-x", shown: "5101-x" })).rejects.toThrow(
+      "The worktree is on develop now, not 5101-x, the branch Close session showed: nothing was committed, pushed or removed"
+    );
+    expect(await cleanupWorktree(t.repo, t.wt, "push", { own: true, recorded: "5101-x", shown: "develop" })).toEqual({ removed: false, confirm: prBranchProblem("develop", ""), branch: "develop" });
+    expect(await cleanupWorktree(t.repo, t.wt, "push", { own: true, recorded: "5101-x", shown: "develop", confirmBranch: "5101-x" })).toMatchObject({ removed: false, branch: "develop" });
+    expect(git(t.remote, "for-each-ref", "--format=%(refname) %(objectname)")).toBe(refs);
+    expect(git(t.wt, "log", "-1", "--format=%s")).toBe("the agent's work");
+    // told so, naming it: it goes
+    expect(await cleanupWorktree(t.repo, t.wt, "push", { own: true, recorded: "5101-x", shown: "develop", confirmBranch: "develop" })).toEqual({ removed: true });
+    expect(git(t.remote, "log", "-1", "--format=%s", "develop")).toBe("WIP: develop (closed from Mockingbird)");
+    // a branch of another name that isn't the session's asks too; Discard deletes only the branch it showed
+    const o = firedHooks([]);
+    git(o.wt, "switch", "-q", "-c", "5101-other");
+    expect(await cleanupWorktree(o.repo, o.wt, "push", { own: true, recorded: "5101-x", shown: "5101-other" })).toEqual({ removed: false, confirm: unrecordedBranch("5101-other", "5101-x"), branch: "5101-other" });
+    await expect(cleanupWorktree(o.repo, o.wt, "discard", { own: true, shown: "5101-x" })).rejects.toThrow("not 5101-x, the branch Close session showed");
+    expect(fs.existsSync(o.wt)).toBe(true);
+  });
+});
+
+describe("a room session's git and its repository's config: nothing from a file its agent can write, no filter but git-lfs's", () => {
+  it("runs none of a room's git with config from a file in a working tree: a credential.helper the repository's config includes, for its push, fetch, pull, stage, a backup's push and take-over's fetches", async () => {
+    const t = firedHooks([]);
+    const helper = path.join(t.dir, "helper");
+    fs.writeFileSync(path.join(t.wt, "team.gitconfig"), `[credential]\n\thelper = "!f() { echo helper >> '${helper}'; }; f"\n`);
+    git(t.repo, "config", "include.path", path.join(t.wt, "team.gitconfig"));
+    git(t.wt, ...id, "commit", "-q", "--allow-empty", "-m", "more");
+    const refused = `Mockingbird runs none of a team room session's git with this repository's config: team.gitconfig, a file in ${fs.realpathSync(t.wt)}, which the room's sessions can change, sets credential.helper, and a setting there can name a program git runs as you`;
+    await expect(scmPush(t.wt, { own: true })).rejects.toThrow(refused);
+    await expect(scmFetch(t.wt, { own: true })).rejects.toThrow(refused);
+    await expect(scmPull(t.wt, { own: true })).rejects.toThrow(refused);
+    fs.writeFileSync(path.join(t.wt, "w.txt"), "w\n");
+    await expect(scmStage(t.wt, ["w.txt"], { own: true })).rejects.toThrow(refused);
+    await expect(ownNetworkGit(t.wt, "push", ["--quiet", "origin", "HEAD:refs/mockingbird/backup"], { roomPush: { lfs: { remote: "origin", refs: ["HEAD"] } } })).rejects.toThrow(refused);
+    await expect(ownFetch(t.wt, ["origin"], { roomRepo: true })).rejects.toThrow(refused);
+    expect(git(t.remote, "log", "-1", "--format=%s", "5101-x")).toBe("the agent's work");
+    expect(git(t.wt, "diff", "--cached", "--name-only")).toBe("");
+    // a local session's runs as git would
+    expect(await scmPush(t.wt)).toEqual({ upstream: "origin/5101-x" });
+    expect(fs.existsSync(helper)).toBe(false); // a local remote asks no helper
+  });
+
+  it("runs none of it with config included from the folder room sessions keep their caches in", async () => {
+    const t = firedHooks([]);
+    const caches = path.join(os.homedir(), "Library", "Caches", "mockingbird-room-caches", "r1");
+    fs.mkdirSync(caches, { recursive: true });
+    fs.writeFileSync(path.join(caches, "x.gitconfig"), "[core]\n\teditor = vi\n");
+    const global = path.join(tempDir("global"), "gitconfig");
+    fs.writeFileSync(global, `[include]\n\tpath = ${path.join(caches, "x.gitconfig")}\n`);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    onTestFinished(() => void vi.unstubAllEnvs());
+    git(t.wt, ...id, "commit", "-q", "--allow-empty", "-m", "more");
+    await expect(scmPush(t.wt, { own: true })).rejects.toThrow(`x.gitconfig, a file in ${fs.realpathSync(caches)}, which the room's sessions can change, sets core.editor`);
+  });
+
+  it("turns off every filter but git-lfs's for a room session's writes, and refuses to stage, commit for Close session or discard a file one keeps", async () => {
+    const t = firedHooks([]);
+    const log = path.join(t.dir, "filter");
+    // the user's own filter, as `nbstripout --install` sets one: it runs from the working tree's top
+    git(t.repo, "config", "filter.strip.clean", `sh -c 'echo clean >> "${log}"; cat'`);
+    git(t.repo, "config", "filter.strip.smudge", `sh -c 'echo smudge >> "${log}"; cat'`);
+    expect(Object.entries(await roomWriteEnv(t.wt)).filter(([k, v]) => /^GIT_CONFIG_KEY_/.test(k) && v.startsWith("filter.strip."))).toHaveLength(4);
+    // the agent marks its files for it
+    fs.writeFileSync(path.join(t.wt, ".gitattributes"), "*.ipynb filter=strip\n");
+    fs.writeFileSync(path.join(t.wt, "nb.ipynb"), "{}\n");
+    await expect(scmStage(t.wt, [".gitattributes", "nb.ipynb"], { own: true })).rejects.toThrow(
+      'Nothing was staged: nb.ipynb is kept through the "strip" filter, which Mockingbird doesn\'t run for a team room session\'s git, as a filter runs as you, from the working tree the session\'s agent writes, and can load code from there. Without it, nb.ipynb would be stored unfiltered.'
+    );
+    expect(git(t.wt, "diff", "--cached", "--name-only")).toBe("");
+    // what it doesn't keep stages, the filter off
+    fs.writeFileSync(path.join(t.wt, "plain.txt"), "p\n");
+    await scmStage(t.wt, [".gitattributes", "plain.txt"], { own: true });
+    expect(git(t.wt, "diff", "--cached", "--name-only").split("\n")).toEqual([".gitattributes", "plain.txt"]);
+    await expect(cleanupWorktree(t.repo, t.wt, "push", { own: true, recorded: "5101-x" })).rejects.toThrow(/^Nothing was committed, pushed or removed: nb\.ipynb is kept through the "strip" filter/);
+    expect(fs.existsSync(log)).toBe(false);
+    // a local session's stage runs it, as git would; a room session's discard of it then refuses
+    await scmStage(t.wt, ["nb.ipynb"]);
+    expect(fs.readFileSync(log, "utf8")).toContain("clean");
+    git(t.wt, ...id, "commit", "-q", "--no-verify", "-m", "a notebook");
+    fs.rmSync(log);
+    fs.writeFileSync(path.join(t.wt, "nb.ipynb"), '{"cells": []}\n');
+    await expect(scmDiscard(t.wt, [{ path: "nb.ipynb", untracked: false }], async () => {}, { own: true })).rejects.toThrow(/^Nothing was discarded: nb\.ipynb is kept through the "strip" filter/);
+    expect(fs.existsSync(log)).toBe(false);
+  });
+
+  it.skipIf(!lfsHere)("keeps git-lfs's own filter on for a room session's stage: its files are stored as pointers", async () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    git(repo, "lfs", "install", "--local");
+    git(repo, "lfs", "track", "*.bin");
+    git(repo, "add", "-A");
+    git(repo, ...id, "commit", "-q", "-m", "LFS");
+    fs.writeFileSync(path.join(repo, "big.bin"), "x".repeat(4000));
+    await scmStage(repo, ["big.bin"], { own: true });
+    expect(git(repo, "cat-file", "-p", ":big.bin")).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\n/);
   });
 });
 
