@@ -127,6 +127,8 @@ if (wireBoard) {
 }
 /** The closed sessions whose folders are gone (main's sessions:missingFolders): g2's worktree and branch were removed. */
 const goneFolders = new Map([["g2", { reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" }]]);
+// ?lsSpikeGone: the wires board's ghost, Spike: streaming, can't run where it ran either, so it offers Start fresh
+if (wireBoard && new URLSearchParams(location.search).has("lsSpikeGone")) goneFolders.set(wireBoard.closed[0].id, goneFolders.get("g2")!);
 // ?lsClosed=<id,…>: those sessions are closed, as if closed with their places kept (y1, which Nick took over, shows Take it back)
 const lsClosedQ = new URLSearchParams(location.search).get("lsClosed")?.split(",").filter(Boolean) ?? [];
 // what each closed session last showed: its saved output (main's sessions:closedOutput)

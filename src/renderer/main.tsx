@@ -87,6 +87,7 @@ import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes }
 import { viewOnlyPatch, accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { wiresInOrder } from "../shared/wires";
 import { wiresNow } from "./WireLayer";
+import { droppedNote, unmovedNote } from "./wiresModel";
 import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
@@ -799,10 +800,21 @@ function App() {
       if (lettingGo.current === was.id) return;
       lettingGo.current = was.id;
       const hint = placeHint;
-      void forgetGhosts([was], `letting ${titleOf(was)} go for the fresh session in its place`, true).finally(() => {
-        lettingGo.current = null;
-        setPlaceHint((h) => (h === hint ? null : h));
-      });
+      const fresh = placeHint.took;
+      // its wires go to the fresh session first; those that can't go with it, and the note says why
+      void moveWires(was, fresh)
+        .then((why) => {
+          if (why) unmovedWires.current.set(was.id, why);
+          return forgetGhosts([was], `letting ${titleOf(was)} go for the fresh session in its place`, true);
+        })
+        .finally(() => {
+          // none went with it (it wasn't forgotten, or the book couldn't be changed either): why they stayed is still said
+          const left = unmovedWires.current.get(was.id);
+          unmovedWires.current.delete(was.id);
+          if (left) lsSay(unmovedNote(titleOf(was), left));
+          lettingGo.current = null;
+          setPlaceHint((h) => (h === hint ? null : h));
+        });
       return;
     }
     if (!placeHint.took && landscapeLayout?.hinted) return setPlaceHint({ ...placeHint, took: landscapeLayout.hinted });
@@ -1193,6 +1205,40 @@ function App() {
     const error = await lsSaves.update(patch, what);
     if (error) lsSay(`${what}: not saved, ${error}`);
   };
+  /** The closed session a Start fresh stands in for, while its New session is open. */
+  const freshFrom = useRef<SessionInfo | null>(null);
+  /** Why a Start fresh's session couldn't take the old one's wires, by the old one's id, for the note as they go with it. */
+  const unmovedWires = useRef(new Map<string, string>());
+  /** The closed sessions being forgotten now (forgetGhosts), so a note on wires dropped with one names it. */
+  const forgettingNow = useRef(new Set<string>());
+  /**
+   * Start fresh: session `old`'s wires and note go to `next` (wires:rekey, all or none; again is harmless, as the second
+   * finds nothing left to move). Resolves to why they couldn't, logged, or null.
+   */
+  const moveWires = async (old: SessionInfo, next: string): Promise<string | null> => {
+    const r = await Promise.resolve(window.mb.wiresRekey(old.id, next)).catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }));
+    const why = isErr(r) ? r.error : "refused" in r ? r.refused : null;
+    if (why) console.warn(`[mockingbird] ${old.id}'s wires didn't move to ${next}: ${why}`);
+    return why;
+  };
+  const knownNow = useRef(knownSessions);
+  knownNow.current = knownSessions;
+  // wires main drops with a forgotten session are said: which, and why they didn't move first when a Start fresh's couldn't
+  useEffect(
+    () =>
+      window.mb.onWiresChanged((c) => {
+        if (!c.dropped?.length) return;
+        const gone = c.dropped.flatMap((d) => [d.wire.from, d.wire.to]).find((id) => forgettingNow.current.has(id)) ?? null;
+        const unmoved = gone ? (unmovedWires.current.get(gone) ?? null) : null;
+        if (gone) unmovedWires.current.delete(gone);
+        const name = (id: string) => {
+          const s = knownNow.current?.find((x) => x.id === id);
+          return s ? titleOf(s) : null;
+        };
+        lsSay(droppedNote(c.dropped, gone, name, unmoved));
+      }),
+    []
+  );
   // a menu's pick (or a dialog's) acts on the landscape as it is then, not as it was when the menu opened
   const lsNow = useRef(landscapeState);
   lsNow.current = landscapeState;
@@ -1724,7 +1770,8 @@ function App() {
         const gone: string[] = [];
         const failures: string[] = [];
         for (const s of list) {
-          const r = await window.mb.killSession(s.id, true);
+          forgettingNow.current.add(s.id);
+          const r = await window.mb.killSession(s.id, true).finally(() => forgettingNow.current.delete(s.id));
           if (isErr(r)) failures.push(`${titleOf(s)}: ${r.error}`);
           else gone.push(s.id);
         }
@@ -1752,6 +1799,7 @@ function App() {
     setNewLaunch(s.shell ? "shell" : (s.agent ?? "claude"));
     setNewSeed({ ...(area !== LOOSE_GROUP ? areaSeed(area) : {}), ...(s.repoPath ? { repo: s.repoPath } : {}) });
     setPlaceHint(g ? { area, at: { x: g.rect.x, y: g.rect.y }, since: Date.now(), replaces: s.id } : null);
+    freshFrom.current = s;
     setModal("new");
   };
   /**
@@ -2321,12 +2369,21 @@ function App() {
     setNewGroup("");
     setNewLaunch("claude");
     setNewSeed({});
+    freshFrom.current = null;
     // a right-click's place lasts until its session is placed; closed without one, it's let go
     setPlaceHint((h) => (h?.created ? h : null));
   }, [modal]);
 
   const onCreated = async (s: SessionInfo, since?: number) => {
     setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
+    // Start fresh: the old session's wires come to this one. One in its ghost's place moves them again as the ghost is
+    // let go, and says it there; otherwise the old one stays closed, and keeps them if they can't come.
+    const was = freshFrom.current;
+    if (was) {
+      void moveWires(was, s.id).then((why) => {
+        if (why && placeHint?.replaces !== was.id) lsSay(`${unmovedNote(titleOf(was), why)}. They stay with it.`);
+      });
+    }
     // the lone pane joins its new workspace — unless the dialog put the session elsewhere
     const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
     if (lone && pendingWs) {

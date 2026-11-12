@@ -3,7 +3,7 @@
  * (the tile holding the session, a ghost's card, or a collapsed area's pill), what state it shows, and its curve
  * (Main.dc.html's). WireLayer.tsx draws them and keeps them on their ends as workspaces move.
  */
-import { DEFAULT_ROUNDS, ROOM_LINE, gateOf, wireEndOf, wireRefusal, wiresInOrder, type Gate, type GateContext, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
+import { DEFAULT_ROUNDS, ROOM_LINE, gateOf, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type GateContext, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
 import { topOfKey, type SessionInfo } from "../shared/types";
 import { LOOSE_GROUP, type Rect } from "../shared/landscape";
@@ -404,4 +404,25 @@ export function wireTargets(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, fr
   ];
   const order = [...new Set([...(own ? [own.area] : []), ...all.map((t) => t.area)])];
   return order.flatMap((a) => all.filter((t) => t.area === a));
+}
+
+// ---- wires that went with a session ----
+
+/**
+ * The note for the wires main dropped with forgotten session `gone` (WireChange.dropped; null when this window didn't
+ * forget it): each wire by its ends and type, with whether something was waiting at its gate. `name` is a session's
+ * title, null once it isn't known. `unmoved`: why they didn't move to a Start fresh's session first (`wiresRekey`).
+ */
+export function droppedNote(dropped: readonly DroppedWire[], gone: string | null, name: (id: string) => string | null, unmoved?: string | null): string {
+  const goneName = gone ? name(gone) : null;
+  const called = (id: string) => name(id) ?? (id === gone ? "the forgotten session" : "a session not here any more");
+  const list = dropped.map(({ wire: w }) => `${called(w.from)} → ${called(w.to)} (${WIRE_TYPE_NAME[w.type].toLowerCase()}${w.pending ? ", with what was waiting" : ""})`).join("; ");
+  const what = dropped.length === 1 ? "wire" : `${dropped.length} wires`;
+  if (unmoved) return `${unmovedNote(goneName ?? "the old session", unmoved)}. Its ${what} went with it: ${list}.`;
+  return goneName ? `“${goneName}” was forgotten, and its ${what} went with it: ${list}.` : `A forgotten session's ${what} went with it: ${list}.`;
+}
+
+/** Why a Start fresh's session didn't take session `title`'s wires (`wiresRekey` refused), as a note says it. */
+export function unmovedNote(title: string, why: string): string {
+  return `“${title}”'s wires couldn't move to the fresh session: ${why.replace(/\.$/, "")}`;
 }

@@ -349,3 +349,30 @@ describe.skipIf(!local)("making wires", () => {
     expect(m.remove.drawn).toBe(true);
   }, 150_000);
 });
+
+interface Fresh {
+  fresh: { dialog: boolean; made: string | null; ghost: boolean; wire: { from: string; to: string } | null; onSpike: number; rekey: Call[]; kill: Call[]; note: string | null };
+}
+
+describe.skipIf(!local)("Start fresh", () => {
+  const run = async (as = "") => ((await audit(`lsCamera=0,3040,1&lsSpikeGone&landscapeWiresAudit=fresh${as}`, "1600x1000", 120_000)) as unknown as Fresh).fresh;
+
+  it("gives the fresh session the old one's wires before the old one is let go, saying nothing", async () => {
+    const f = await run();
+    expect(f).toMatchObject({ dialog: true, ghost: false, onSpike: 0, note: null });
+    expect(f.made).toBeTruthy();
+    expect(f.wire).toEqual({ from: "wb-fixtures", to: f.made });
+    // moved before the forget, which then finds nothing to drop
+    expect(f.rekey[0]).toEqual(["wb-spike", f.made]);
+    expect(f.kill).toEqual([["wb-spike", true]]);
+  }, 150_000);
+
+  it("says why when its wires can't move, and which went with the old session", async () => {
+    // a terminal can't be a handoff's end, so the move is refused whole and the handoff goes with Spike
+    const f = await run("&freshAs=terminal");
+    expect(f).toMatchObject({ dialog: true, ghost: false, wire: null, onSpike: 0, kill: [["wb-spike", true]] });
+    expect(f.note).toBe(
+      "“Spike: streaming”'s wires couldn't move to the fresh session: “new session” isn't the same kind of workspace as “Spike: streaming”, so its wires can't move there. Its wire went with it: Fixtures → Spike: streaming (handoff)."
+    );
+  }, 150_000);
+});

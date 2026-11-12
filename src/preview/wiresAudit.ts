@@ -22,7 +22,9 @@
  * - =keys (at 100%): Builder's terminal typed in, then keys typed while a wire is dragged and straight after its drop,
  *   a click on a row that came up under the pointer, and Enter straight after a row of Connect…'s menu picked with it;
  * - =menus (at 100%): Connect…'s rows, a wire's right-click, its settings changed, and its Remove and Undo;
- * - =pick and =settings: the picker, and Reviewer → Tester's settings, left open for a screenshot (synthetic events).
+ * - =pick and =settings: the picker, and Reviewer → Tester's settings, left open for a screenshot (synthetic events);
+ * - =fresh (with ?lsSpikeGone): Start fresh from Spike's ghost, its handoff from Fixtures moved to the fresh session, or
+ *   with `&freshAs=terminal` refused, gone with Spike and said.
  */
 import type { Area, Landscape, Rect } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
@@ -461,6 +463,40 @@ async function menusAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
   out.remove = { removed, restore: since(mark, "wiresRestore"), drawn: !!document.querySelector(`.ls-wires g[data-wire="${W("held")}"]`) };
 }
 
+/**
+ * Start fresh from Spike's ghost (with ?lsSpikeGone): New session made from it (with `&freshAs=terminal`, a terminal,
+ * which a handoff can't end at), then what became of Fixtures' handoff to it, and the note.
+ */
+async function freshAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const mark = env.calls.length;
+  const since = (fn: string) => env.calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
+  const ghost = () => document.querySelector<HTMLElement>(`.ls-world .ls-ghost[data-front="${W("spike")}"]`);
+  const fronts = () => [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node[data-front]")].map((n) => n.dataset.front!);
+  const before = new Set(fronts());
+  ghost()?.querySelector<HTMLButtonElement>('[data-act="fresh"]')?.click();
+  await sleep(600);
+  const dlg = document.querySelector<HTMLElement>(".modal.ns");
+  if (new URLSearchParams(location.search).get("freshAs") === "terminal") {
+    [...(dlg?.querySelectorAll<HTMLButtonElement>(".ns-launch button") ?? [])].find((b) => b.textContent === "Terminal")?.click();
+    await sleep(300);
+  }
+  dlg?.querySelector<HTMLButtonElement>("button.primary.cta")?.click();
+  await sleep(2500);
+  const r = await window.mb.wiresGet();
+  const links = "book" in r && r.book ? r.book.links : {};
+  const w = links[W("ghost")];
+  out.fresh = {
+    dialog: !!dlg,
+    made: fronts().find((id) => !before.has(id)) ?? null,
+    ghost: !!ghost(),
+    wire: w ? { from: w.from, to: w.to } : null,
+    onSpike: Object.values(links).filter((x) => x.from === W("spike") || x.to === W("spike")).length,
+    rekey: since("wiresRekey"),
+    kill: since("killSession"),
+    note: noteNow(),
+  };
+}
+
 /** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */
 async function showAudit(part: string): Promise<void> {
   if (part === "pick") {
@@ -496,6 +532,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       if (part === "make") await makeAudit(env, out);
       else if (part === "keys") await keysAudit(env, out);
       else if (part === "menus") await menusAudit(env, out);
+      else if (part === "fresh") await freshAudit(env, out);
       const boxes = () => Object.fromEntries(["shape", "builder", "reviewer", "dev", "tester", "fixtures", "spike"].map((k) => [k, box(node(W(k)))]));
       if (part === "near" || part === "far") {
         out.wires = wiresNow();

@@ -2145,10 +2145,21 @@ workspace, the Helpdesk tasks workspace) or there's nowhere else.
   automatically and press it.
 - Both popovers are outside the viewport, so their keys never reach the landscape's handlers.
 
+**Start fresh keeps the old session's wires** (W1's row, taken here now that wires are made; `main.tsx`):
+- The fresh session takes them (`moveWires`, `wiresRekey`, all or none) as soon as it's made (`onCreated`, from
+  `freshFrom`, which lasts while its New session is open). From a ghost they're moved again just before the ghost is
+  forgotten, which finds nothing left to move unless the first was refused, so the order holds however the two land.
+- Where they can't move (a terminal started fresh for an agent, a wire it would newly refuse), a ghost's go with it as
+  it's forgotten, and the note says why and which, from main's `dropped`; from the Closed sessions list they stay with
+  the old session, and the note says so. No drop lands at all (the book couldn't be changed either): why is still said.
+- Every forget's dropped wires are said now (`droppedNote`), naming the session this window is forgetting
+  (`forgettingNow`), which was W1's Forget note.
+
 **Preview** (`src/preview/wiresAudit.ts`): `?landscapeWiresAudit=make|keys|menus`, the mouse and keys pressed for real by
 the test's driver (`drive`, needsYouAudit.ts); `=pick` and `=settings` leave the picker and Reviewer → Tester's settings
-open for a screenshot. No new `window.mb` call: `wiresAdd`, `wiresSet`, `wiresRemove`, `wiresRestore` and
-`wiresResetRounds` are the stub's already.
+open for a screenshot; `=fresh` (with `?lsSpikeGone`, Spike's worktree gone) starts fresh from Spike's ghost, as a
+terminal with `&freshAs=terminal`. No new `window.mb` call: `wiresAdd`, `wiresSet`, `wiresRemove`, `wiresRestore`,
+`wiresRekey` and `wiresResetRounds` are the stub's already.
 
 **Tests:**
 - `test/workspaceActions.test.ts`: Connect… under Wires, on, off with its reason, and absent where wires aren't made;
@@ -2156,7 +2167,8 @@ open for a screenshot. No new `window.mb` call: `wiresAdd`, `wiresSet`, `wiresRe
   worktree, Remove).
 - `test/wiresModel.test.ts`: the four types and their lines, each refusal as the rules say it, a terminal's worktree
   running from the agent, a teammate's workspace refused outright, the reason most give, ghosts and a stack's tabs,
-  Connect…'s order, a right-click's hit (`curveDistance`, `wireNear`), the template chips.
+  Connect…'s order, a right-click's hit (`curveDistance`, `wireNear`), the template chips, the dropped-wires note
+  (named, unknown ends, what was waiting, why a Start fresh's couldn't move).
 - `test/wireService.test.ts`: main refuses the landscape's form of a teammate's id.
 - `test/uiLandscapeWires.test.ts` (Chrome, local), at 100%, 60% and 13%: a drag's line and outline, the picker's rows,
   ↵ making a handoff drawn from the change notice, Esc while dragging and in the picker, a refused drop (a terminal onto
@@ -2164,16 +2176,18 @@ open for a screenshot. No new `window.mb` call: `wiresAdd`, `wiresSet`, `wiresRe
   (its front, and at 100% its Docs tab). At 100%: Builder's terminal typed in, then keys while dragging (nothing written,
   no landscape key), a burst's ↵ after the drop (no wire) and one after a pause (the wire), a click on a row that just
   came up (let go, off), a click by code (nothing) and the next real one (made), Enter twice through Connect… (no wire),
-  the keyboard on the landscape after each; Connect…'s rows (the same from the tree's row), a wire's right-click, its settings saved as changed,
-  Settings… opened with Enter and Tab ×8 and Enter in the same burst (nothing pressed, Remove being the eighth stop), a
-  shared worktree's Settings… off, Remove and Undo.
+  the keyboard on the landscape after each; Connect…'s rows (the same from the tree's row), a wire's right-click, its
+  settings saved as changed, Settings… opened with Enter and Tab ×8 and Enter in the same burst (nothing pressed, Remove
+  being the eighth stop), a shared worktree's Settings… off, Remove and Undo. Start fresh from Spike's ghost: Fixtures'
+  handoff now ends at the fresh session, moved before the forget, no note; as a terminal, refused, the handoff gone
+  with Spike and the note saying why and which.
 - `test/uiLandscapeBar.test.ts` and `test/uiLandscapeTools.test.ts`: the workspace's menu, the same everywhere it's
   offered, now ends with Wires · Connect… before Close….
 
 **Checked by reverting** (each alone, its test failing): the picker's burst check (`afterPause`), the row's settle
 wait, the key's-click check, the gesture swallowing typed keys, the settings popover's burst check, the drop's refusal
-(`noChoice`, opening the picker instead), and the teammate rule in `wireRefusal` (main's tests and the window's all
-fail).
+(`noChoice`, opening the picker instead), the teammate rule in `wireRefusal` (main's tests and the window's all
+fail), Start fresh's `wiresRekey` (both Start fresh tests fail) and the dropped-wires note (the refused one fails).
 
 **Boards** (screenshots in the session's scratchpad,
 `/private/tmp/claude-501/-Users-ryanellerbroek-Code-Mockingbird/5aa8eb2c-2175-488e-ab1b-5588bc1fbc8a/scratchpad/w4b/`;
@@ -2192,9 +2206,8 @@ the boards beside them in `boards/project/`):
   cycle or a duplicate can refuse halfway. Remove it and drag the other way.
 - The handle sits inside the edge (above), and the worktree row's reason is the rules' (above).
 - The selection bar's menu and the side bar's rows have Connect… too, as the workspace's menu is one model everywhere.
-- **Not done, now that wires can be made:** Start fresh still forgets the old session's wires (W1 left the renderer's
-  `wiresRekey` before `forgetGhosts`, `main.tsx`'s Start fresh, to the first UI slice; W4a didn't take it, and it wasn't
-  in W4b's list). Main announces the drop in `wires:changed`'s `dropped`, but nothing shows that note yet.
+- Start fresh's wires and the dropped-wires note (above) weren't in W4b's list: W1 left them to the first UI slice that
+  makes wires.
 
 ### W4c · The send popover. Size M
 - `WirePopover.tsx`: Cards.dc.html:162–170, opened by the gate dot and Show, at

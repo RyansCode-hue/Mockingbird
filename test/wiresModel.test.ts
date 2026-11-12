@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { anchorOf, commonReason, curveDistance, defaultChoice, gateContextOf, noChoice, pillBox, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
+import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, gateContextOf, noChoice, pillBox, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
@@ -330,5 +330,28 @@ describe("a wire's template chips", () => {
     expect(togglePart("Fix these:\n{summary}\n\n{diff}", "summary")).toBe("Fix these:\n\n{diff}");
     expect(togglePart("{summary}\n{diff}", "diff")).toBe("{summary}");
     expect(togglePart("Review {diff} please", "diff")).toBe("Review please");
+  });
+});
+
+describe("wires that went with a forgotten session", () => {
+  const titles: Record<string, string> = { old: "Spike", fix: "Fixtures", rev: "Reviewer" };
+  const name = (id: string) => titles[id] ?? null;
+  const toOld = { id: "w1", wire: wire("fix", "old", "handoff") };
+  const back = { id: "w2", wire: wire("old", "rev", "feedback", { pending: { id: "p1", body: "notes", at: 1, flags: [] } }) };
+
+  it("names the session forgotten and each wire by its ends and type, with what was waiting", () => {
+    expect(droppedNote([toOld], "old", name)).toBe("“Spike” was forgotten, and its wire went with it: Fixtures → Spike (handoff).");
+    expect(droppedNote([toOld, back], "old", name)).toBe("“Spike” was forgotten, and its 2 wires went with it: Fixtures → Spike (handoff); Spike → Reviewer (feedback loop, with what was waiting).");
+  });
+
+  it("says so when the forgotten session, or another end, isn't known any more", () => {
+    expect(droppedNote([toOld], "old", (id) => (id === "old" ? null : name(id)))).toBe("A forgotten session's wire went with it: Fixtures → the forgotten session (handoff).");
+    expect(droppedNote([toOld], null, (id) => (id === "fix" ? null : name(id)))).toBe("A forgotten session's wire went with it: a session not here any more → Spike (handoff).");
+  });
+
+  it("says why a Start fresh's session didn't take them first", () => {
+    const why = "“Shell” isn't the same kind of workspace as “Spike”, so its wires can't move there.";
+    expect(unmovedNote("Spike", why)).toBe("“Spike”'s wires couldn't move to the fresh session: “Shell” isn't the same kind of workspace as “Spike”, so its wires can't move there");
+    expect(droppedNote([toOld], "old", name, why)).toBe(`${unmovedNote("Spike", why)}. Its wire went with it: Fixtures → Spike (handoff).`);
   });
 });
