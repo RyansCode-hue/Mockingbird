@@ -2162,8 +2162,18 @@ buttons (a click goes there); this one is marked `aria-current`. Each wire betwe
 two steps is coloured by its gate's state, a blocked one dashed. The `+n` chip
 opens the app's context menu: "Also from …", each row's dot and note, and "⌥→ takes
 …" as its last line. Titles are capped (150 px, 180 for this one) and a step's note
-is never cut. A chain wider than the strip scrolls sideways with faded edges, this
-one kept in the middle.
+is never cut. A chain wider than the strip scrolls sideways with faded edges. It
+scrolls as little as it takes to show this step and both its neighbours whole,
+clear of the fades. Where the three don't fit, it shows this one and the next
+(⌥→'s), then this one and the one before; failing that, this one in the middle. At
+1440 with the side bar open, Builder's three don't fit (Attached takes 357 px), so
+Builder and Reviewer show whole and Shape sits under the left fade. Letting Attached
+shrink first was tried: its buttons' minimum sizes don't reach its box, so it
+collapsed to 25 px titles.
+
+The strip is drawn by a memoized `StripView`, rendered again only when its chain or
+fold changes, or it scrolls or resizes (a `ResizeObserver`). Keeping in view, the
+fades (`edges`) and the settle check run then, not on every Landscape render.
 
 **Folding and reflow.** The strip is 64 px open and 28 px folded (its toggle and the
 chain's names); `mb.pipelineStrip.folded` is kept through `usePersisted`. In focus
@@ -2187,10 +2197,41 @@ while a workspace of this Mac's is in focus:
 - A stack's tab behind another: focus moves at once and the keyboard goes to the
   frame (the user's command, `armFocus`). The tab is asked to the front through
   `onTab`, and nothing waits on its answer, so no stamp is needed.
+- Held, an arrow moves once. Its repeats are swallowed (and kept from xterm), or
+  each step's terminal would take the keyboard in turn as the walk went on past it.
+- A terminal that doesn't take the keyboard when focus reaches it (`focusTerm`
+  finding none) leaves it with the frame, armed. Otherwise it would stay with the
+  terminal a menu just gave it back to, now out of sight under focus. This is in
+  `enterFocus`, so it holds for every way into focus.
+- With no wires, the arrows say so in the note ("No wires reach this workspace"),
+  or that the wires can't be read. Nothing that way says "Nothing hands work on to
+  this workspace" or "This workspace hands work on to nothing". The strip says
+  these; Landscape's `goAlong` only places an id.
 - A ghost (or a stack's closed tab) leaves focus and flies to it, where Reopen is.
   One in a collapsed area, a closed session with no place, an id that's gone, or
   nothing that way, is said in the landscape's note, which now shows over focus
   (it sat under the overlay).
+
+**Clicks, by answerGuard.ts's rules (review fixes 1).** A click on a step or an
+Attached chip goes there, its terminal given the keyboard, only when it was aimed at
+what's there now:
+- A double click's second (`detail > 1`) does nothing.
+- A step that arrived or moved under the pointer in the last `ANSWER_SETTLE_MS`
+  does nothing. `useSettledRows` now takes the position to watch, here the left
+  edge on screen, so a scroll or the chain laid out again counts as a move. It's
+  keyed by where a click goes, so a chip going to the same workspace from the same
+  place after a move counts as settled.
+- A click within `ANSWER_GUARD_MS` of a move along the strip (a click, a key or the
+  `+n` list) does nothing.
+- A click let go shows: its button is off until a click there would count
+  (`useHeldOff`). A key's click (Enter, Space) always counts.
+
+A double click on Reviewer used to land its second click on Tester, now under the
+pointer, whose terminal took the keyboard. The landscape's own rule already keeps a
+press on its buttons from taking the keyboard. A press on this workspace's own step,
+while its terminal is being typed in, leaves the keyboard there, as one on its
+header does. So a second click on the step its first moved to doesn't take the
+keyboard from the terminal.
 
 **Preview.** `?wires=chain|fanout` is W4a's wires board (`?lsWires`, area 5120)
 with `stripBoardBook`'s additions (wiresAudit.ts), focused on Builder
@@ -2221,7 +2262,9 @@ tree and focuses them with ⌘E, as the board's cards are a few px wide at the f
 
 **Tests:** `test/pipelineChain.test.ts`: no chain without wires; up and down along
 handoffs; a feedback loop (to this one and further up) and a damaged handoff cycle;
-a fan-out, handoffs before feedback, a fan-in; a ghost, a not-started step and a
+a fan-out, handoffs before feedback, a fan-in; a handoff and a feedback wire joining
+the same two, each other workspace in a `+n` once and never the step taken (one main
+allows, which gave duplicate rows and React keys); a ghost, a not-started step and a
 gone one; attached; the notes as the board has them. `test/wiresModel.test.ts`:
 `gateContextOf` naming a closed session with no place as main does, and a pr-merged
 wire main blocks reading the same on the strip's step as on the drawn wire.
@@ -2236,6 +2279,15 @@ wire main blocks reading the same on the strip's step as on the drawn wire.
 - ⌘⌥→ ⌘⌥← from inside terminals moving and writing nothing;
 - the +2 list: Docs, a stack's tab behind, brought to the front with the frame armed
   (⌥← goes back); Spike, closed, leaving focus for its ghost;
+- ⌘⌥→ in a workspace with no wires saying so;
+- Builder and Reviewer whole at Builder, and Builder, Reviewer and Tester at
+  Reviewer;
+- a click on a step only just shown let go, the step off;
+- a click straight after ⌥→ let go, on the Pathways chip that stayed put;
+- ⌘⌥→ held (repeats) moving once, `y` then going to Reviewer, not Tester;
+- a step whose terminal won't take the keyboard leaving it on the frame;
+- a double click aimed where Tester's step comes under the pointer: Reviewer
+  focused, `y` to Reviewer, nothing to Tester;
 - a click on Tester's step;
 - ⌘⌥← from a field elsewhere doing nothing;
 - ⌥← back to the top and once more: "Nothing hands work on to this workspace",
@@ -2245,12 +2297,31 @@ wire main blocks reading the same on the strip's step as on the drawn wire.
 rebase): the arming check on plain ⌥ arrows, failed; the ⌘⌥ "inside focus" check,
 failed; keeping the keyboard on the frame after a move from it, failed. Taking out
 `preventDefault` and `stopPropagation` survived: xterm writes nothing for a ⌘ chord,
-so nothing shows it. It's kept, as ⌘E's is, so no later handler or terminal mode can take the key.
+so nothing shows it. It's kept, as ⌘E's is, so no later handler or terminal mode can
+take the key.
+
+Review fixes 1, each taken out alone:
+- Swallowing repeats: failed on the held ⌘⌥→ (Tester reached, `y` written there).
+- The guard after a move: failed on the click straight after ⌥→.
+- The settle check: failed on the click on a step only just shown.
+- All three click guards: failed there first. The double click, run on its own
+  (the audit's groups each start afresh), went to Tester, its terminal taking the
+  keyboard and `y` written to it, as the review found.
+- `detail > 1` alone: survived. A double click's second always comes within the
+  guard after the first's move, and lands on a step that moved; it's kept as the
+  plain rule.
+- The frame fallback in `enterFocus`: failed on the step whose terminal won't take
+  the keyboard (it was left on the page; from the `+n` list, a menu gives it back
+  to the terminal that had it, out of sight).
 
 **Seen, not changed:** in a headless 1440 × 900 shot, a focused workspace ends about
 85 px above the status bar, with or without the strip. The suite's `leakGuard` test
 runs `node_modules/vitest/vitest.mjs` from the checkout, which a worktree without
 node_modules hasn't got. A link to the main checkout's vitest makes it pass.
+
+**Follow-up:** on a damaged cycle of handoffs (one main refuses to make), downstream
+comes out empty, so ⌥→ says "This workspace hands work on to nothing" though a step
+follows. The words are wrong; nothing unsafe happens.
 
 ### W7 · Shared worktree. Size S
 - Add terminal on its tree (`companionSession`, `index.ts:1424`, with `shell`).

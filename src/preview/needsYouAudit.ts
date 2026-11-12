@@ -65,7 +65,9 @@ const overlaps = (a: Box | null, b: Box | null) => !!a && !!b && a.x < b.x + b.w
 
 // ---- keys and the mouse: pressed for real by the driver when it's there ----
 export type Asked =
-  | { key: string; shift?: boolean; meta?: boolean; alt?: boolean; ctrl?: boolean; hold?: "down" | "up" }
+  // repeat: a press of a key held down, as the keyboard repeats it (with hold "down")
+  | { key: string; shift?: boolean; meta?: boolean; alt?: boolean; ctrl?: boolean; hold?: "down" | "up"; repeat?: boolean }
+  | { pause: number }
   | { mouse: { x: number; y: number; clickCount: number; button?: "left" | "right" | "middle"; shift?: boolean } }
   | { move: { x: number; y: number } }
   | { wheel: { x: number; y: number; dx?: number; dy?: number; meta?: boolean; ctrl?: boolean } }

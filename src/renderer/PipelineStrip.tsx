@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, type MutableRefObject, type RefObject } from "react";
 import type { SessionInfo } from "../shared/types";
 import { gateOf } from "../shared/wires";
 import { usePersisted } from "./prefs";
@@ -7,10 +7,11 @@ import { OVERLAYS, ownsKeys } from "./keys";
 import { StatusDot } from "./StatusDot";
 import { ChevronIcon } from "./Icons";
 import { menuHeading, useContextMenu } from "./ContextMenu";
+import { ANSWER_GUARD_MS, keyClick, useHeldOff, useSettledRows } from "./answerGuard";
 import type { ResolvedLayout } from "./landscapeModel";
 import { useWires } from "./WireLayer";
 import { gateContextOf, type WireRoom } from "./wiresModel";
-import { chainOf, stepEnds, stepNote, type Hop, type Step, type StripSessions } from "./pipelineChain";
+import { chainOf, stepEnds, stepNote, type Chain, type Hop, type Step, type StripSessions } from "./pipelineChain";
 
 /**
  * The pipeline strip (docs/landscape.md, Focus): over a focused workspace that has wires, the chain of steps through it
@@ -26,17 +27,50 @@ export const STRIP_H = 64;
 export const STRIP_FOLDED_H = 28;
 export const STRIP_FOLDED_PREF = "mb.pipelineStrip.folded";
 
-/**
- * Where a move along the chain goes: workspace `id` (null: there's nothing that way, `dir` says which), its terminal
- * given the keyboard (`terminal`) or the keyboard left on focus's frame, where the next ⌥ arrow is taken.
- */
-export type StripGo = (id: string | null, dir: "back" | "on", keys: "terminal" | "frame") => void;
+/** A move along the chain to workspace `id`: its terminal given the keyboard, or the keyboard left on focus's frame, where the next ⌥ arrow is taken. */
+export type StripGo = (id: string, keys: "terminal" | "frame") => void;
+
+/** How wide the chain's fades are (styles.css, .ls-strip-chain): a step under one isn't wholly in view. */
+const FADE = 28;
 
 /** A chain wider than the strip fades at the side(s) with more of it out of sight. */
 function edges(c: HTMLElement): void {
   const more = c.scrollWidth - c.clientWidth;
   c.classList.toggle("more-l", more > 1 && c.scrollLeft > 1);
   c.classList.toggle("more-r", more > 1 && c.scrollLeft < more - 1);
+}
+
+/**
+ * The chain scrolled as little as it takes to show this workspace's step and both its neighbours whole, clear of the
+ * fades; where the three don't fit, this one and the next (⌥→'s), then this one and the one before; else this one in
+ * the middle. By hand: scrollIntoView would scroll the landscape's viewport too.
+ */
+function keepInView(c: HTMLElement): void {
+  const steps = [...c.querySelectorAll<HTMLElement>(".ls-step")];
+  const i = steps.findIndex((el) => el.classList.contains("here"));
+  if (i < 0) return;
+  const box = c.getBoundingClientRect();
+  const x = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    return { l: r.left - box.left + c.scrollLeft, r: r.right - box.left + c.scrollLeft };
+  };
+  const max = c.scrollWidth - c.clientWidth;
+  const here = steps[i];
+  const [before, next] = [steps[i - 1] ?? here, steps[i + 1] ?? here];
+  for (const [from, to] of [
+    [before, next],
+    [here, next],
+    [before, here],
+  ]) {
+    // at either end there's no fade on that side, so scrolled all the way the end's step shows whole
+    const lo = Math.min(max, x(to).r + FADE - c.clientWidth);
+    const hi = Math.max(0, x(from).l - FADE);
+    if (lo > hi) continue;
+    c.scrollLeft = Math.round(Math.min(Math.max(c.scrollLeft, lo, 0), hi, max));
+    return;
+  }
+  const me = x(here);
+  c.scrollLeft = Math.round(Math.max(0, Math.min(max, (me.l + me.r - c.clientWidth) / 2)));
 }
 
 export function usePipelineStrip({
@@ -46,6 +80,7 @@ export function usePipelineStrip({
   closed,
   frame,
   onGo,
+  say,
 }: {
   /** The focused workspace's session, while one of this Mac's is in focus. */
   here: SessionInfo | null;
@@ -57,10 +92,11 @@ export function usePipelineStrip({
   /** Focus's frame: plain ⌥ arrows act only while it has the keyboard, armed by the user (keyArm.ts). */
   frame: RefObject<HTMLElement | null>;
   onGo: StripGo;
+  /** The landscape's one-line note: an arrow with nothing that way says so. */
+  say: (text: string) => void;
 }): { height: number; strip: React.ReactNode } {
   const state = useWires().state;
   const [folded, setFolded] = usePersisted(STRIP_FOLDED_PREF, false);
-  const ctx = useContextMenu("Pipeline");
   const sessions = useMemo<StripSessions>(
     () => ({ open: layout.tiles.flatMap((t) => t.members), ghosts: [...layout.tiles.flatMap((t) => t.closed ?? []), ...layout.ghosts.flatMap((g) => g.members)], closed }),
     [layout, closed]
@@ -69,19 +105,15 @@ export function usePipelineStrip({
     const gates = here && state ? gateContextOf(layout, state, rooms, closed) : null;
     return here && gates ? chainOf(here.id, gates.links, stepEnds(sessions), (id, w) => gateOf(id, w, gates)) : null;
   }, [here?.id, state, layout, rooms, closed, sessions]);
-  const now = useRef({ chain, onGo });
-  now.current = { chain, onGo };
-  // a chain wider than the strip scrolls; this workspace's step is kept in the middle of what shows
-  const chainEl = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    // by hand: scrollIntoView would scroll the landscape's viewport too
-    const c = chainEl.current;
-    const h = c?.querySelector(".ls-step.here")?.getBoundingClientRect();
-    if (!c || !h) return;
-    const r = c.getBoundingClientRect();
-    c.scrollLeft += h.left + h.width / 2 - (r.left + r.width / 2);
-  }, [here?.id, folded, !chain]);
-  useLayoutEffect(() => void (chainEl.current && edges(chainEl.current)));
+  const now = useRef({ chain, onGo, say, read: !!state?.book });
+  now.current = { chain, onGo, say, read: !!state?.book };
+  /** Until when a click on the strip is a double click's second, or aimed before the move it follows (answerGuard.ts). */
+  const guard = useRef(0);
+  const move = useCallback<StripGo>((id, keys) => {
+    guard.current = Date.now() + ANSWER_GUARD_MS;
+    now.current.onGo(id, keys);
+  }, []);
+  const onFold = useCallback(() => setFolded((f) => !f), [setFolded]);
 
   // ⌥← ⌥→ on focus's frame, armed by the user; ⌘⌥← ⌘⌥→ from anywhere in focus, taken before a terminal sees them.
   // A plain ⌥ arrow typed in a terminal is the terminal's (a word left or right), and a disarmed frame swallows it.
@@ -89,37 +121,107 @@ export function usePipelineStrip({
     if (!here) return;
     const onKey = (e: KeyboardEvent) => {
       if (!e.altKey || e.ctrlKey || e.shiftKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
-      const { chain, onGo } = now.current;
       const f = frame.current;
-      if (!chain || !f || document.querySelector(OVERLAYS)) return;
+      if (!f || document.querySelector(OVERLAYS)) return;
       const a = document.activeElement;
       if (e.metaKey ? !(f.contains(a) || keyboardNowhere()) : !isArmed(f)) return;
       e.preventDefault();
       e.stopPropagation();
+      // held, an arrow moves once: its repeats would walk on, each step's terminal taking the keyboard in turn
+      if (e.repeat) return;
+      const { chain, say, read } = now.current;
       const back = e.key === "ArrowLeft";
+      if (!chain) return say(read ? "No wires reach this workspace: there's no pipeline to move along" : "The wires can't be read, so there's no pipeline to move along");
       const to = back ? chain.up[chain.up.length - 1] : chain.down[0];
-      onGo(to?.id ?? null, back ? "back" : "on", a !== f && f.contains(a) && ownsKeys(a) ? "terminal" : "frame");
+      if (!to) return say(back ? "Nothing hands work on to this workspace" : "This workspace hands work on to nothing");
+      move(to.id, a !== f && f.contains(a) && ownsKeys(a) ? "terminal" : "frame");
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [here?.id]);
 
   if (!here || !chain) return { height: 0, strip: null };
-  const height = folded ? STRIP_FOLDED_H : STRIP_H;
+  return { height: folded ? STRIP_FOLDED_H : STRIP_H, strip: <StripView chain={chain} folded={folded} onFold={onFold} move={move} guard={guard} /> };
+}
+
+/**
+ * Each step's, and each attached workspace's, place on the strip, for the settle check: where it is on screen, keyed by
+ * where a click on it goes, so one going to the same workspace from the same place after a move counts as settled.
+ */
+const PICKS = "[data-pick]";
+const pickKey = (el: HTMLElement) => el.dataset.pick;
+const onScreen = (el: HTMLElement) => Math.round(el.getBoundingClientRect().left);
+
+/** The strip as drawn: rendered again only when its chain or fold changes, or it scrolls or resizes. */
+const StripView = memo(function StripView({
+  chain,
+  folded,
+  onFold,
+  move,
+  guard,
+}: {
+  chain: Chain;
+  folded: boolean;
+  onFold: () => void;
+  move: StripGo;
+  guard: MutableRefObject<number>;
+}) {
+  const ctx = useContextMenu("Pipeline");
+  const root = useRef<HTMLDivElement>(null);
+  const chainEl = useRef<HTMLDivElement>(null);
+  // a scroll or a resize moves the steps under a resting pointer: drawn again, so the settle check sees them move
+  const [, moved] = useReducer((n: number) => n + 1, 0);
+  const { up, here: me, down, attached } = chain;
+  // before the settle check records where each step is, so a step it scrolls counts as moved
+  useLayoutEffect(() => void (chainEl.current && keepInView(chainEl.current)), [me.id, folded]);
+  useLayoutEffect(() => void (chainEl.current && edges(chainEl.current)), [chain, folded]);
+  useEffect(() => {
+    const c = chainEl.current;
+    if (!c) return;
+    const watch = new ResizeObserver(() => {
+      keepInView(c);
+      edges(c);
+      moved();
+    });
+    watch.observe(c);
+    return () => watch.disconnect();
+  }, [folded]);
+  const settled = useSettledRows(root, PICKS, pickKey, onScreen);
+  const { holdOff, heldOff } = useHeldOff();
+  /**
+   * A click on a step or an attached workspace goes there, its terminal given the keyboard. A key's always does; a
+   * pointer's only when aimed at what's there now (answerGuard.ts): not a double click's second, not on a step that
+   * just moved under the pointer, nor straight after a move, when the chain is laid out again around the next step.
+   */
+  const pick = (e: React.MouseEvent, key: string, id: string) => {
+    if (keyClick(e)) return move(id, "terminal");
+    if (e.detail > 1) return;
+    const wait = Math.max(guard.current - Date.now(), settled(key));
+    if (wait > 0) return holdOff(key, wait);
+    move(id, "terminal");
+  };
+  /**
+   * A press on this workspace's own step while its terminal is being typed in leaves the keyboard there, as one on its
+   * header does: a double click's second, landing on the step its first moved to, doesn't take it from the terminal.
+   */
+  const keepTyping = (e: React.MouseEvent) => {
+    const a = document.activeElement;
+    if (a?.closest(".xterm") && e.currentTarget.closest(".ls-focus")?.contains(a)) e.preventDefault();
+  };
+
   const toggle = (
     <button
       type="button"
       className="ls-strip-toggle"
       aria-expanded={!folded}
       data-tip={folded ? "Show the pipeline strip" : "Fold the pipeline strip away (⌥← ⌥→ still move along it)"}
-      onClick={() => setFolded(!folded)}
+      onClick={onFold}
     >
       <ChevronIcon open={!folded} />
       Pipeline
     </button>
   );
-  const go = (id: string) => onGo(id, "on", "terminal");
-  const stepEl = (s: Step, side: "up" | "here" | "down", key: string | null) => {
+  const stepEl = (s: Step, side: "up" | "here" | "down", kbd: string | null) => {
     const n = stepNote(s, side);
     const title = s.end?.title ?? "A workspace that's gone";
     const inner = (
@@ -129,17 +231,27 @@ export function usePipelineStrip({
           <span className="ls-step-t">{title}</span>
           <span className="ls-step-n">{n.text}</span>
         </span>
-        {key && <span className="ls-step-k">{key}</span>}
+        {kbd && <span className="ls-step-k">{kbd}</span>}
       </>
     );
     if (side === "here")
       return (
-        <div key={s.id} className="ls-step here" data-step={s.id} aria-current="step">
+        <div key={s.id} className="ls-step here" data-step={s.id} aria-current="step" onMouseDown={keepTyping}>
           {inner}
         </div>
       );
+    const key = `s:${s.id}`;
     return (
-      <button key={s.id} type="button" className={`ls-step ${n.tone}`} data-step={s.id} data-tip={n.why ? `${title}: ${n.why}` : `Go to ${title}`} onClick={() => go(s.id)}>
+      <button
+        key={s.id}
+        type="button"
+        className={`ls-step ${n.tone}`}
+        data-step={s.id}
+        data-pick={key}
+        data-tip={n.why ? `${title}: ${n.why}` : `Go to ${title}`}
+        disabled={heldOff(key)}
+        onClick={(e) => pick(e, key, s.id)}
+      >
         {inner}
       </button>
     );
@@ -167,7 +279,7 @@ export function usePipelineStrip({
                   label: a.end?.title ?? "A workspace that's gone",
                   icon: a.end?.where === "open" ? <StatusDot status={a.end.status} /> : <span className="dot idle" />,
                   kbd: stepNote(a, side).text,
-                  onPick: () => go(a.id),
+                  onPick: () => move(a.id, "terminal"),
                 })),
                 menuHeading(foot),
               ])
@@ -179,7 +291,6 @@ export function usePipelineStrip({
       </span>
     );
   };
-  const { up, here: me, down, attached } = chain;
   const titleAt = (i: number) => [...up, me, ...down][i]?.end?.title ?? "it";
   const parts = [
     ...up.flatMap((s, i) => [
@@ -192,48 +303,57 @@ export function usePipelineStrip({
       stepEl(s, "down", i === 0 ? "⌥→" : null),
     ]),
   ];
-  return {
-    height,
-    strip: (
-      <div className={`ls-strip${folded ? " folded" : ""}`} role="navigation" aria-label="Pipeline">
-        {toggle}
-        {folded ? (
-          <span className="ls-strip-sum">
-            {[...up, me, ...down].map((s, i) => (
-              <React.Fragment key={s.id}>
-                {i > 0 && " › "}
-                <span className={s === me ? "here" : ""}>{s.end?.title ?? "gone"}</span>
-              </React.Fragment>
-            ))}
-          </span>
-        ) : (
-          <>
-            <div ref={chainEl} className="ls-strip-chain" onScroll={(e) => edges(e.currentTarget)}>
-              {parts}
-            </div>
-            {attached.length > 0 && (
-              <div className="ls-strip-attached">
-                <span className="ls-strip-label">Attached</span>
-                {attached.map((a) => (
+  return (
+    <div ref={root} className={`ls-strip${folded ? " folded" : ""}`} role="navigation" aria-label="Pipeline">
+      {toggle}
+      {folded ? (
+        <span className="ls-strip-sum">
+          {[...up, me, ...down].map((s, i) => (
+            <React.Fragment key={s.id}>
+              {i > 0 && " › "}
+              <span className={s === me ? "here" : ""}>{s.end?.title ?? "gone"}</span>
+            </React.Fragment>
+          ))}
+        </span>
+      ) : (
+        <>
+          <div
+            ref={chainEl}
+            className="ls-strip-chain"
+            onScroll={(e) => {
+              edges(e.currentTarget);
+              moved();
+            }}
+          >
+            {parts}
+          </div>
+          {attached.length > 0 && (
+            <div className="ls-strip-attached">
+              <span className="ls-strip-label">Attached</span>
+              {attached.map((a) => {
+                const key = `a:${a.id}`;
+                return (
                   <button
                     key={a.wire}
                     type="button"
                     className={`ls-attach ${a.type}`}
                     data-step={a.id}
+                    data-pick={key}
                     data-tip={a.type === "worktree" ? "A terminal in this workspace's folder: go to it" : a.reads ? "This workspace reads its context: go to it" : "It reads this workspace's context: go to it"}
-                    onClick={() => go(a.id)}
+                    disabled={heldOff(key)}
+                    onClick={(e) => pick(e, key, a.id)}
                   >
                     {a.type === "worktree" && (a.end?.where === "open" ? <StatusDot status={a.end.status} /> : <span className="dot idle" />)}
                     <span className="ls-attach-t">{a.end?.title ?? "A workspace that's gone"}</span>
                     {a.type === "context" && " · context"}
                   </button>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-        {ctx.menu}
-      </div>
-    ),
-  };
-}
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+      {ctx.menu}
+    </div>
+  );
+});

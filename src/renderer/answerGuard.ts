@@ -25,19 +25,26 @@ export function cameraMoved(): void {
 export const cameraWait = (): number => Math.max(0, ANSWER_SETTLE_MS - (Date.now() - cameraAt));
 
 /**
- * Where each row of `list` (`rows`, keyed by `idOf`) is, and since when, recorded after every render: how long until
- * row `id` has stayed where it is ANSWER_SETTLE_MS (0: it has). A row never seen waits the whole of it.
+ * Where each row of `list` (`rows`, keyed by `idOf`) is (`where`: its top in the list, unless given), and since when,
+ * recorded after every render: how long until row `id` has stayed where it is ANSWER_SETTLE_MS (0: it has). A row
+ * never seen waits the whole of it.
  */
-export function useSettledRows(list: RefObject<HTMLElement | null>, rows: string, idOf: (el: HTMLElement) => string | undefined): (id: string) => number {
-  const placed = useRef(new Map<string, { top: number; at: number }>());
+export function useSettledRows(
+  list: RefObject<HTMLElement | null>,
+  rows: string,
+  idOf: (el: HTMLElement) => string | undefined,
+  where: (el: HTMLElement) => number = (el) => el.offsetTop
+): (id: string) => number {
+  const placed = useRef(new Map<string, { pos: number; at: number }>());
   useLayoutEffect(() => {
     const now = Date.now();
-    const next = new Map<string, { top: number; at: number }>();
+    const next = new Map<string, { pos: number; at: number }>();
     for (const el of list.current?.querySelectorAll<HTMLElement>(rows) ?? []) {
       const id = idOf(el);
       if (!id) continue;
       const was = placed.current.get(id);
-      next.set(id, was && was.top === el.offsetTop ? was : { top: el.offsetTop, at: now });
+      const pos = where(el);
+      next.set(id, was && was.pos === pos ? was : { pos, at: now });
     }
     placed.current = next;
   });

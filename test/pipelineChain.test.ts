@@ -70,6 +70,18 @@ describe("chainOf", () => {
     expect(fanIn!.up[0].also.map((s) => s.id)).toEqual(["b"]);
   });
 
+  it("lists each other workspace in a +n once, and never the step taken, when two wires join the same two", () => {
+    // a handoff and a feedback wire the same way: the step taken isn't beside itself, and y is named once
+    const links = { w1: wire("builder", "reviewer"), w2: wire("builder", "reviewer", "feedback"), w3: wire("builder", "y"), w4: wire("builder", "y", "feedback") };
+    const c = chain("builder", links);
+    expect(ids(c)!.down).toEqual(["reviewer"]);
+    expect(c!.down[0].also.map((s) => [s.id, s.hop?.wire])).toEqual([["y", "w3"]]);
+    // upstream too
+    const up = chain("c", { w1: wire("a", "c"), w2: wire("a", "c", "feedback"), w3: wire("b", "c"), w4: wire("b", "c", "feedback") });
+    expect(ids(up)!.up).toEqual(["a"]);
+    expect(up!.up[0].also.map((s) => s.id)).toEqual(["b"]);
+  });
+
   it("names a ghost, a not-started step and one that's gone as their ends say", () => {
     const ends = { ghost: { ...open("ghost"), where: "ghost" as const }, planned: { ...open("planned"), where: "planned" as const }, gone: null };
     const c = chain("a", { w1: wire("a", "ghost"), w2: wire("ghost", "planned"), w3: wire("a", "gone") }, ends);

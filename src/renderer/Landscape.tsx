@@ -876,8 +876,14 @@ export function Landscape({
     setPeek(null);
     setFocusKey(t.key);
     select(t);
-    // your own terminal takes the keyboard; a teammate's waits for a click
-    if (keys) setTimeout(() => (!isRemote(t.front) && t.front.status !== "dead" ? focusTerm(t.front.id) : armFocus(overlay.current)), 50);
+    // your own terminal takes the keyboard; a teammate's waits for a click. A terminal not there to take it leaves it
+    // with focus's frame, never with one out of sight (a menu just closed gives it back to what had it before)
+    if (keys)
+      setTimeout(() => {
+        const own = !isRemote(t.front) && t.front.status !== "dead";
+        if (own) focusTerm(t.front.id);
+        if (!own || !termHasKeys(t.front.id)) armFocus(overlay.current);
+      }, 50);
   };
   const leaveFocus = () => {
     setFocusKey(null);
@@ -896,37 +902,33 @@ export function Landscape({
    * frame, and the terminal gets it once clicked. A closed step leaves focus for its ghost, where Reopen is; one with no
    * place is said.
    */
-  const goAlong: StripGo = (id, dir, keys) => {
+  const goAlong: StripGo = (id, keys) => {
     const l = layoutNow.current;
-    const tile = id ? l.tiles.find((t) => t.members.some((m) => m.id === id)) : undefined;
+    const tile = l.tiles.find((t) => t.members.some((m) => m.id === id));
     if (tile) {
       const behind = tile.front.id !== id;
       enterFocus(tile, keys === "terminal" && !behind);
       if (!behind) return;
       armFocus(overlay.current);
-      onTab(tile, id!);
+      onTab(tile, id);
       return;
     }
-    const ghost = id ? (l.ghosts.find((g) => g.members.some((m) => m.id === id)) ?? l.tiles.find((t) => t.closed?.some((m) => m.id === id))) : undefined;
+    const ghost = l.ghosts.find((g) => g.members.some((m) => m.id === id)) ?? l.tiles.find((t) => t.closed?.some((m) => m.id === id));
     if (ghost && !ghost.hidden) {
       leaveFocus();
       return flyTo(centreOn(cam.current, ghost.rect, vpNow.current));
     }
-    const s = id ? (ghost?.members.find((m) => m.id === id) ?? ghost?.closed?.find((m) => m.id === id) ?? closed.find((m) => m.id === id)) : undefined;
+    const s = ghost?.members.find((m) => m.id === id) ?? ghost?.closed?.find((m) => m.id === id) ?? closed.find((m) => m.id === id);
     const name = s ? `“${s.ticketTitle ?? s.title}”` : null;
     say(
-      !id
-        ? dir === "back"
-          ? "Nothing hands work on to this workspace"
-          : "This workspace hands work on to nothing"
-        : !name
-          ? "That workspace is gone: no session of this Mac's has its id"
-          : ghost
-            ? `${name} is closed, in a collapsed area: open the area to reopen it`
-            : `${name} is closed and not on the landscape: reopen it from Closed sessions`
+      !name
+        ? "That workspace is gone: no session of this Mac's has its id"
+        : ghost
+          ? `${name} is closed, in a collapsed area: open the area to reopen it`
+          : `${name} is closed and not on the landscape: reopen it from Closed sessions`
     );
   };
-  const strip = usePipelineStrip({ here: focusTile && !isRemote(focusTile.front) ? focusTile.front : null, layout, rooms, closed, frame: overlay, onGo: goAlong });
+  const strip = usePipelineStrip({ here: focusTile && !isRemote(focusTile.front) ? focusTile.front : null, layout, rooms, closed, frame: overlay, onGo: goAlong, say });
   // a workspace that leaves (closed, or merged into a stack) ends its focus, and its peek
   useEffect(() => {
     if (focusKey && !focusTile) setFocusKey(null);

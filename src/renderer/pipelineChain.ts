@@ -78,7 +78,10 @@ export function chainOf(here: string, links: Readonly<Record<string, Wire>>, end
       const [first, ...rest] = next(at).filter(([, w]) => !seen.has(far(w)));
       if (!first) return out;
       const s = step(far(first[1]), first);
-      s.also = rest.map((r) => step(far(r[1]), r));
+      // a handoff and a feedback wire can join the same two workspaces: each other workspace once, by its first wire
+      const also = new Map<string, Entry>();
+      for (const r of rest) if (far(r[1]) !== s.id && !also.has(far(r[1]))) also.set(far(r[1]), r);
+      s.also = [...also].map(([id, r]) => step(id, r));
       out.push(s);
       seen.add(s.id);
       at = s.id;

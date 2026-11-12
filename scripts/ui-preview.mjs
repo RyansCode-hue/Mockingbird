@@ -144,8 +144,8 @@ const KEYS = {
 };
 
 /**
- * Press, for real, the keys and the mouse the page asked for: it pushes { key, shift?, meta?, alt?, ctrl?, hold? } (hold:
- * "down" or "up", only that half of the press), { mouse: { x, y, clickCount, button?, shift? } } (clickCount 2: a double
+ * Press, for real, the keys and the mouse the page asked for: it pushes { key, shift?, meta?, alt?, ctrl?, hold?, repeat? }
+ * (hold: "down" or "up", only that half of the press; repeat: the key held, as the keyboard repeats it),{ mouse: { x, y, clickCount, button?, shift? } } (clickCount 2: a double
  * click's second), { move: { x, y } }, { wheel: { x, y, dx, dy, meta?, ctrl? } } or { drag: { x0, y0, x1, y1, hold? } } onto
  * window.__mbKeys, or { pause: ms } between two of them, and window.__mbKeysDone counts the ones done. They reach whatever has the keyboard or is under the
  * pointer, as a person's would, which an event dispatched at an element can't show.
@@ -192,7 +192,7 @@ async function pressAsked(ask) {
     if (!d) throw new Error(`the page asked for a key this driver doesn't press: ${k.key}`);
     const modifiers = mods(k);
     const typed = d.text && !k.meta && !k.ctrl && !k.alt;
-    const base = { modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, nativeVirtualKeyCode: d.keyCode };
+    const base = { modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, nativeVirtualKeyCode: d.keyCode, ...(k.repeat ? { autoRepeat: true } : {}) };
     if (k.hold !== "up") await ask("Input.dispatchKeyEvent", { type: typed ? "keyDown" : "rawKeyDown", ...base, ...(typed ? { text: d.text, unmodifiedText: d.text } : {}) });
     if (k.hold !== "down") await ask("Input.dispatchKeyEvent", { type: "keyUp", ...base });
   }
