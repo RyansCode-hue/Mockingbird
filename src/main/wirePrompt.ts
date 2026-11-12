@@ -38,10 +38,16 @@ const KEY_LINE_RE = /^[+-]?[ \t]*[A-Za-z0-9+/=]+[ \t]*\r?$/;
 const KEY_LINES_MAX = 200;
 /**
  * A key's body with neither its BEGIN nor its END line (a diff's hunk from a key's middle): three or more lines in a row
- * each exactly as wide as a PEM or PGP key's (64 base64 characters) or an OpenSSH key's (70), after a diff's `+`, `-`
- * or space, and a shorter last line. Each line is one width, so a run is read once; a certificate's body reads as one.
+ * each exactly as wide as a PEM or PGP key's (64 base64 characters), an OpenSSH key's (70) or one wrapped at MIME's 76
+ * (.NET's InsertLineBreaks), after a diff's `+`, `-` or space, and a shorter last line. Each line is one of those widths
+ * exactly, so a run is read once; a certificate's body reads as one.
+ *
+ * Each line also holds an upper-case letter, a lower-case one, and a letter past f. Random base64 lacks any of them in
+ * 64 characters about once in 10^14 lines; a SHA-256 in hex (one case, no letter past f) and a comment banner of slashes
+ * (no letter) lack them every time. Each check looks ahead at most one line's width.
  */
-const KEY_BODY_RE = /^(?:[+-]?[ \t]*[A-Za-z0-9+/]{64}(?:[A-Za-z0-9+/]{6})?[ \t]*(?:\r?\n|\r?$)){3,}(?:[+-]?[ \t]*[A-Za-z0-9+/]{1,69}={0,2}[ \t]*\r?$)?/gm;
+const KEY_BODY_RE =
+  /^(?:[+-]?[ \t]*(?=[A-Za-z0-9+/]{0,75}[A-Z])(?=[A-Za-z0-9+/]{0,75}[a-z])(?=[A-Za-z0-9+/]{0,75}[G-Zg-z])[A-Za-z0-9+/]{64}(?:[A-Za-z0-9+/]{6}){0,2}[ \t]*(?:\r?\n|\r?$)){3,}(?:[+-]?[ \t]*[A-Za-z0-9+/]{1,75}={0,2}[ \t]*\r?$)?/gm;
 /** A signed URL's signature: Azure's SAS `sig`, AWS's and Google's presigned `X-*-Signature`. */
 const URL_SIGNATURE_RE = /([?&](?:sig|x-amz-signature|x-goog-signature)=)[^&\s"'`#<>]+/gi;
 
@@ -120,27 +126,46 @@ function closingParens(value: string): [string, string] {
 }
 
 /**
- * Code, not a secret: a call (a lower-case identifier, maybe after `obj.` or `!`, then `(`), or optional chaining
- * from a lower-case identifier (`opts?.token`). An identifier is tried from its start alone, so a long run is read once.
+ * Code, not a secret: a call (a lower-case identifier, maybe after `obj.` or `!`, then `(`; see codeCall), or optional
+ * chaining from a lower-case identifier (`opts?.token`). An identifier is tried from its start alone, so a long run is
+ * read once.
  */
-const CODE_RE = /^!?(?:[A-Za-z_$][\w$]*\.)*[a-z_$][\w$]*\(|(?<![\w$])[a-z_$][\w$]*\?\.[A-Za-z_$]/;
+const CALL_RE = /^!?(?:[A-Za-z_$][\w$]*\.)*[a-z_$][\w$]*\(/;
+const CHAIN_RE = /(?<![\w$])[a-z_$][\w$]*\?\.[A-Za-z_$]/;
+/** What code puts after a call, on its line: a comma, the end of a statement or a bracket, an operator, a chained call. */
+const AFTER_CALL_RE = /^[ \t]*[,;)}\].?&|+*/%<>=!:-]/;
 
 /**
- * Whether `value`, set on a secret-looking `name`, looks like the secret itself rather than code that reads one: an
- * env file's line (an upper-case name, not one code declares: `const TOKEN = …`) takes any value of 4 or more, `(` and
- * `??` in it too (`Pa(ss)w0rd`); code takes a quoted one of 4 or more, or a bare one that's long or has digits in it.
- * Never a reference like `process.env.API_KEY` or a call on one (`path.join(dir`), another variable (`${TOKEN}`), nor
- * in code a type like `AccessToken` or an expression that looks like one (CODE_RE: `isSecretFileName(name)`,
- * `opts?.token`). A bare value ends at a space, so `a ?? b` is read as `a`.
+ * Whether bare `value`, which starts like a call (CALL_RE), is one: it opens a bracket it doesn't close (the call goes
+ * on past where a bare value ends: `tokens(900_000, 32)`), it's set with `=` (`const secret = isSecretFileName(name)`),
+ * or what follows it on its line (`next`) is what code puts after a call (`token: makeToken(user),`). A closed one
+ * set with `:` ending its line, as config writes a value (`db_password: hunter2(abc)`), or with more after its last
+ * bracket (`hunter2(abc)xyz`), is read as a value. A code object's last property, set from a call with no comma after
+ * it, reads as a value too: redacting code is the side to err on.
  */
-function secretValue(name: string, value: string, declared: boolean): boolean {
+function codeCall(value: string, sep: string, next: () => string): boolean {
+  let depth = 0;
+  for (const c of value) depth += c === "(" ? 1 : c === ")" ? -1 : 0;
+  if (depth > 0 || sep.includes("=")) return true;
+  return value.endsWith(")") && AFTER_CALL_RE.test(next());
+}
+
+/**
+ * Whether `value`, set on a secret-looking `name` with `sep`, looks like the secret itself rather than code that reads
+ * one: an env file's line (an upper-case name, not one code declares: `const TOKEN = …`) takes any value of 4 or more,
+ * `(` and `??` in it too (`Pa(ss)w0rd`); code takes a quoted one of 4 or more, or a bare one that's long or has digits
+ * in it. Never a reference like `process.env.API_KEY` or a call on one (`path.join(dir`), another variable
+ * (`${TOKEN}`), nor in code a type like `AccessToken` or an expression that looks like one (`opts?.token`, and a call
+ * by codeCall, which reads `next`, the rest of its line). A bare value ends at a space, so `a ?? b` is read as `a`.
+ */
+function secretValue(name: string, value: string, declared: boolean, sep: string, next: () => string): boolean {
   const isQuoted = /^["']/.test(value);
   const inner = isQuoted ? value.slice(1, -1) : value;
   if (inner.length < 4 || inner.includes(REDACTED) || /^\$\{?\w/.test(inner)) return false;
   if (!isQuoted && /^[A-Za-z_$][\w$]*(?:\.[\w$]+)+(?:\(.*)?$/.test(inner)) return false;
   if (/^[A-Z][A-Z0-9_]*$/.test(name) && !declared) return true;
   if (isQuoted) return true;
-  if (CODE_RE.test(inner)) return false;
+  if (CHAIN_RE.test(inner) || (CALL_RE.test(inner) && codeCall(inner, sep, next))) return false;
   return inner.length >= 20 || (inner.length >= 8 && /\d/.test(inner));
 }
 
@@ -156,7 +181,8 @@ export function redactSecrets(text: string): { text: string; count: number } {
   let count = 0;
   const hit = (to: string) => () => (count++, to);
   let out = redactKeyEnds(text.replace(PRIVATE_KEY_RE, hit("[redacted: a private key]")), () => count++);
-  out = out.replace(KEY_BODY_RE, (m) => (count++, `[redacted: lines that look like a key]${m.endsWith("\n") ? "\n" : ""}`));
+  // the run's own line ending stays, a Windows one included
+  out = out.replace(KEY_BODY_RE, (m) => (count++, `[redacted: lines that look like a key]${/\r?\n$|\r$/.exec(m)?.[0] ?? ""}`));
   for (const re of TOKEN_RES) out = out.replace(re, hit(REDACTED));
   out = out.replace(URL_SIGNATURE_RE, (_m, head: string) => (count++, `${head}${REDACTED}`));
   out = out.replace(URL_CREDENTIALS_RE, (_m, head: string) => (count++, `${head}${REDACTED}@`));
@@ -165,8 +191,10 @@ export function redactSecrets(text: string): { text: string; count: number } {
     const quote = /^["']/.test(read) ? read[0] : "";
     const [value, after] = quote ? [read, ""] : closingParens(read);
     const declared = /\b(?:const|let|var)\s+$/.test(whole.slice(Math.max(0, at - 12), at));
+    // what follows on its line, for a value that starts like a call: read lazily, and no further than it can matter
+    const next = () => after + whole.slice(at + m.length, at + m.length + 41).split("\n", 1)[0];
     // a name naming another (SharedAccessKeyName=RootManageSharedAccessKey) holds an identifier, not the secret
-    if (!SECRET_NAME_RE.test(name) || /name$/i.test(name) || !secretValue(name, value, declared)) return m;
+    if (!SECRET_NAME_RE.test(name) || /name$/i.test(name) || !secretValue(name, value, declared, sep, next)) return m;
     count++;
     return `${q}${name}${q}${sep}${quote}${REDACTED}${quote}${after}`;
   });

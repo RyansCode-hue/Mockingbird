@@ -113,6 +113,23 @@ describe("redaction", () => {
     expect(redactSecrets(wide)).toEqual({ text: wide, count: 0 });
   });
 
+  it("takes out a key's middle wrapped at 76, as MIME and .NET's InsertLineBreaks wrap it", () => {
+    const line = (i: number) => `${"FAKEkeyLINE".repeat(7)}${i}`.slice(-76);
+    const mime = [" ", `+${line(1)}`, `+${line(2)}`, `+${line(3)}`, "+Zm9vYmFyFAKE==", "+next"].join("\r\n");
+    expect(redactSecrets(mime)).toEqual({ text: " \r\n[redacted: lines that look like a key]\r\n+next", count: 1 });
+    const bare = [line(1), line(2), line(3), line(4)].join("\n");
+    expect(redactSecrets(bare)).toEqual({ text: "[redacted: lines that look like a key]", count: 1 });
+  });
+
+  it.each([
+    ["SHA-256 sums, one a line", Array.from({ length: 4 }, (_, i) => `${"0123456789abcdef".repeat(4).slice(i)}${"0123456789abcdef".slice(0, i)}`).join("\n")],
+    ["upper-case SHA-256s in a diff", Array.from({ length: 3 }, (_, i) => `+${"FEDCBA9876543210".repeat(4).slice(i)}${"FEDCBA9876543210".slice(0, i)}`).join("\n")],
+    ["comment banners of slashes", ["/".repeat(64), "// Section", "/".repeat(64), "/".repeat(64), "/".repeat(64)].join("\n")],
+    ["a word of one case, a key's width", Array.from({ length: 3 }, () => "abcdefghijklmnopqrstuvwxyz".repeat(3).slice(0, 64)).join("\n")],
+  ])("leaves %s alone", (_what, text) => {
+    expect(redactSecrets(text)).toEqual({ text, count: 0 });
+  });
+
   it("takes a command line's flag", () => {
     expect(redactSecrets("mysql --password=hunter22x -h db")).toEqual({ text: `mysql --password=${REDACTED} -h db`, count: 1 });
   });
@@ -160,8 +177,27 @@ describe("redaction", () => {
     ["an env file's key with question marks", "API_KEY=k9Zq??x7Wm2pLr", "API_KEY="],
     ["a YAML password ending in a bracket", "db_password: Zx9v(Q2mL7pR4)", "db_password: "],
     ["a key with a question mark and a dot", "apiKey = Q7x?.z9Wm2pLr8k", "apiKey = "],
+    ["a YAML password that starts like a call", "db_password: hunter2(abc)", "db_password: "],
+    ["one indented, under a list's dash", "  - client_secret: s3cr3t(x9)", "  - client_secret: "],
+    ["one with more after its bracket", "db_password: hunter2(abc)xyz", "db_password: "],
   ])("takes the whole of %s, past its brackets", (_what, text, kept) => {
     expect(redactSecrets(text)).toEqual({ text: `${kept}${REDACTED}`, count: 1 });
+  });
+
+  it("reads a value that starts like a call as config's when nothing after it is code's, and as code otherwise", () => {
+    expect(redactSecrets("db_password: hunter2(abc)  # the old one").text).toBe(`db_password: ${REDACTED}  # the old one`);
+    expect(redactSecrets("db_password: hunter2(abc)\r\nnext: 1").text).toBe(`db_password: ${REDACTED}\r\nnext: 1`);
+    for (const code of [
+      "  token: makeToken(user),",
+      "const auth = { token: makeToken(user) };",
+      "  token: makeToken(user) // a fresh one",
+      "  token: makeToken(user) ?? fallback,",
+      "  token: makeToken(user).trim(),",
+      "  token: makeToken(user, 32),",
+      "const token = makeToken(user)",
+      "token := makeToken(user)",
+    ])
+      expect(redactSecrets(code), code).toEqual({ text: code, count: 0 });
   });
 
   it("reads an upper-case name as an env file's unless code declares it, and a quoted value as a secret either way", () => {
@@ -209,6 +245,9 @@ describe("what redaction costs", () => {
     ["one long value under a secret's name, read for code", `token=${"a".repeat(400_000)}`],
     ["one long value of dotted words under a secret's name", `token=${"a.".repeat(200_000)}`],
     ["lines a key's width, two at a time", `${"QUJD".repeat(16)}\n${"QUJD".repeat(16)}\nx\n`.repeat(3_000)],
+    ["lines of both cases a key's width, two at a time", `${"QUJDzyxw".repeat(8)}\n${"QUJDzyxw".repeat(8)}\nx\n`.repeat(3_000)],
+    ["lines of both cases MIME's width, two at a time", `${"QUJDzyxw".repeat(10).slice(0, 76)}\n${"QUJDzyxw".repeat(10).slice(0, 76)}\nx\n`.repeat(2_500)],
+    ["lines of hex a key's width", `${"0123456789abcdef".repeat(4)}\n`.repeat(6_000)],
   ])("reads 400 KB of %s in under 100 ms", (_what, text) => {
     redactSecrets(text.slice(0, 100));
     expect(ms(() => redactSecrets(text))).toBeLessThan(100);
