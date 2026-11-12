@@ -159,7 +159,8 @@ function shownRefusal(p: Plan): string | null {
 
 /** A plan wire's settings as wires:add takes them, its gate `gate`. */
 const settingsOf = (w: PlanWire, gate: WireGate): WireSettings => ({
-  ...(w.template !== undefined ? { template: w.template } : {}),
+  // an emptied What flows sends the default, as the dialog says under it
+  ...(w.template?.trim() ? { template: w.template } : {}),
   ...(w.when !== undefined ? { when: w.when } : {}),
   ...(carriesWork(w.type) ? { gate } : {}),
   ...(w.rounds !== undefined ? { limit: w.rounds } : {}),

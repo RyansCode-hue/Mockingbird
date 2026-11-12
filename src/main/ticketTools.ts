@@ -158,7 +158,11 @@ export class TicketTools {
       if (op === TICKET_TOOL.setStage) return this.setStage(me, args);
       if (op === TICKET_TOOL.requestPr) return this.requestPr(me, args);
       if (op === TICKET_TOOL.writePatchNotes) return this.writePatchNotes(me, args);
-      if (op === TICKET_TOOL.proposePlan) return this.o.plans ? await this.o.plans.propose(me, args) : { error: "Plans aren't ready yet — try again in a moment." };
+      if (op === TICKET_TOOL.proposePlan) {
+        const taken = this.o.takenOver(me.id, "proposing a plan from this copy");
+        if (taken) return { error: taken };
+        return this.o.plans ? await this.o.plans.propose(me, args) : { error: "Plans aren't ready yet — try again in a moment." };
+      }
     } catch (err) {
       this.o.log(`tickets: ${op} for ${me.id} failed`, err);
       return { error: `${op} failed: ${errorText(err)}` };

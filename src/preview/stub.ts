@@ -9423,7 +9423,7 @@ Object.assign(api, {
         steps.push({ key: to.key, id: t.id, title: to.name });
         continue;
       }
-      const r: WireReply = await api.wiresAdd(endId(p.wire.from), endId(p.wire.to), p.wire.type, { ...(p.wire.template !== undefined ? { template: p.wire.template } : {}), ...(p.wire.when ? { when: p.wire.when } : {}), ...(p.wire.type === "handoff" || p.wire.type === "feedback" ? { gate: p.gate } : {}), ...(p.wire.rounds ? { limit: p.wire.rounds } : {}) });
+      const r: WireReply = await api.wiresAdd(endId(p.wire.from), endId(p.wire.to), p.wire.type, { ...(p.wire.template?.trim() ? { template: p.wire.template } : {}), ...(p.wire.when ? { when: p.wire.when } : {}), ...(p.wire.type === "handoff" || p.wire.type === "feedback" ? { gate: p.gate } : {}), ...(p.wire.rounds ? { limit: p.wire.rounds } : {}) });
       if ("refused" in r) return err(`Couldn't lay out the plan: ${p.wire.from} → ${p.wire.to} was refused: ${r.refused}`);
       wires.push(r.id!);
       wireAt.set(j, r.id!);

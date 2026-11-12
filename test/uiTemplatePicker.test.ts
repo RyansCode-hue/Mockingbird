@@ -127,7 +127,7 @@ describe.skipIf(!local)("an Orchestrator's plan in the template picker", () => {
     // Coder started, Verifier waiting for its handoff, Dev server made on the Orchestrator's tree, nothing there moved
     expect(t.laid.planned).toEqual(["Verifier"]);
     expect(t.laid.running.filter((x) => x === "Coder" || x === "Dev server").sort()).toEqual(["Coder", "Dev server", "Dev server"]);
-    expect(t.laid.note).toBe("Laid out the plan in #5120: 3 steps, Coder started. They went where there was room in #5120, and nothing there moved: Tidy in its ⋯ lines them up along their wires, with Undo.");
+    expect(t.laid.note).toBe("Laid out the plan in #5120: 3 steps, Coder started. They went where there was room in #5120, and nothing already in it moved: Tidy in its ⋯ lines them up along their wires, with Undo.");
     // the same id sent again, as a second dialog would: refused, nothing made twice
     expect(t.again).toEqual({ error: "That plan was laid out already." });
   }, 200_000);

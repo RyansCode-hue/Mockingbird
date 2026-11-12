@@ -6,7 +6,7 @@ import { ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { ANSWER_SETTLE_MS, useHeldOff, useOpenSettle } from "./answerGuard";
 import { baseName } from "../shared/paths";
 import { isErr, AGENT_NAME, type ModelCatalog } from "../shared/types";
-import { carriesWork, templateOf } from "../shared/wires";
+import { carriesWork, templateOf, WIRE_WHENS, type WireGate, type WireWhen } from "../shared/wires";
 import {
   asShown,
   flowOf,
@@ -26,7 +26,6 @@ import {
 } from "../shared/pipelineTemplates";
 import { checkPlan, ME, PLAN_MAX, planFlags, provenanceOf, type Plan, type PlanLayOut, type PlanStep, type PlanView, type PlanWire } from "../shared/plans";
 import { agoShort } from "../shared/format";
-import { WIRE_WHENS, type WireGate, type WireWhen } from "../shared/wires";
 
 /**
  * The template picker (docs/landscape-wires.md, W9; section 5's WireTemplates.dc.html A) and Save as template's dialog,
@@ -1107,6 +1106,11 @@ export function PlanPicker({ view, gone, dismissing, areaTitle, onLayOut, onDism
                     placeholder="{summary}"
                     onChange={(v) => setBody((b) => withPlanWire(b, j, { template: v }))}
                   />
+                  {w.template !== undefined && !w.template.trim() && (
+                    <div className="tp-line dim" data-flow-default>
+                      Empty, so it sends the default: {flowOf(w).replace(/\s+/g, " ")}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

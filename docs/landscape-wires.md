@@ -5658,7 +5658,7 @@ in turn (`w16/mutate2.py`, 14 mutations) fails a test:
 - Board: WireTemplates.dc.html A, plus the plan's provenance line.
 
 #### W17 as built
-Built on main 6c1436f. Council's start is W18's and isn't here.
+Built on main 6c1436f, rebased onto f58a16f. Council's start is W18's and isn't here.
 
 **The role** (`types.ts`, `sessions.ts`, `wireTools.ts`, `wirePrompt.ts`, `index.ts`):
 - `SessionRole` is `"tasks" | "orchestrator"`; `launchAgain` already copies it.
@@ -5696,7 +5696,8 @@ Built on main 6c1436f. Council's start is W18's and isn't here.
 - `propose_plan`'s schema has `additionalProperties: false` throughout, at most 6
   steps and 12 wires; `folder` is `"orchestrator" | "new" | { same_as }`, and
   `tool_output` takes only `false`. Every Mockingbird session lists the tool; only an
-  Orchestrator's call is held, and a taken-over copy's is refused.
+  Orchestrator's call is held, and a taken-over copy's is refused first, as every
+  ticket tool's is.
 - `readPlanArgs` (tool spelling) and `readShownPlan` (window spelling) refuse any
   field a plan doesn't have. `checkPlan` holds section 4's limits (6 steps, 12
   wires, prompts 8,000, names one line of 40, summary 2,000, rounds 1–5) and:
@@ -5737,6 +5738,8 @@ Built on main 6c1436f. Council's start is W18's and isn't here.
   so. The rules run on every edit, so Lay out is off saying why. W9's guards: no
   early click, a double click's second, a burst's key or a held ⌘↵, and the
   keyboard never handed to a terminal.
+- An emptied What flows says "Empty, so it sends the default", and is laid out
+  as the default (main f58a16f's rule for templates).
 - Lay out sends the plan as shown. Dismiss… asks for a note (up to 2,000) and sends
   it; the Orchestrator is told "the user dismissed your plan… Their note follows".
   A plan replaced or laid out while its dialog is open turns Lay out off, saying so.
@@ -5792,6 +5795,19 @@ the old unfenced form, so templates saved before are recognised.
 simulates `plans:*` and the Orchestrator start. `?landscapePlanAudit=plan | dismiss |
 gone | room | builtin` drives them for `test/uiTemplatePicker.test.ts`; `=shot` and
 `=builtinshot` leave the dialogs open for screenshots.
+
+**Checks**: typecheck and build clean. `CI=true npm test`: 3,566 passed, 348
+skipped; four team and scm tests timed out at 20 s under other builders' load and
+pass alone (148), as did peerCheck's timing on an earlier run (36).
+`test/plans.test.ts` 71. UI, one file at a time: `uiTemplatePicker` 5,
+`uiLandscapeWires` 31 (after the rebase), `uiLandscapeNeeds` 24 (before it; main's
+f58a16f doesn't touch Needs you). 40 mutations of the guards (propose's role,
+take-over, private key, invisible characters and redaction; Lay out's re-read,
+refusal of changed text, take-over, once and wire probe; the area's refusals; each
+limit and the strict shape; the room's forced ask; which steps start; the stage and
+`request_pr` refusals; the fences; counted sent; the template path's refusal): 39
+fail a test. The one that doesn't nulls the existing ends' refusals in Lay out's
+re-check, which the wire probe refuses the same way.
 
 **Left**: W18 (Council's Orchestrator). No real `claude` or `codex` ran: the
 Orchestrator's rules and kickoff are checked as text, not as a model's behaviour.
