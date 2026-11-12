@@ -411,11 +411,14 @@ export function wireSettingsOf(w: TemplateWire, gate: WireGate): WireSettings {
   };
 }
 
+/** What template wire `w` sends: its own What flows, or the default (templateOf) when it has none or it's been emptied. */
+export const flowOf = (w: Pick<TemplateWire, "template" | "when">): string => templateOf({ template: w.template?.trim() ? w.template : undefined, when: w.when ?? "finished" });
+
 /**
  * `b` as the picker and Save as template show it: each wire that carries work with its What flows written out
- * (templateOf: the default it would otherwise take), so what's laid out or saved is the text that was on screen.
+ * (flowOf; an emptied one is shown saying it sends the default), so what's laid out or saved is what was on screen.
  */
-export const asShown = (b: TemplateBody): TemplateBody => ({ ...b, wires: b.wires.map((w) => (carriesWork(w.type) ? { ...w, template: templateOf({ template: w.template, when: w.when ?? "finished" }) } : w)) });
+export const asShown = (b: TemplateBody): TemplateBody => ({ ...b, wires: b.wires.map((w) => (carriesWork(w.type) ? { ...w, template: flowOf(w) } : w)) });
 
 /** How many of a template's gates are automatic: the picker's "1 automatic". */
 export const automaticGates = (b: Pick<TemplateBody, "wires">): number => b.wires.filter((w) => w.gate === "automatic").length;

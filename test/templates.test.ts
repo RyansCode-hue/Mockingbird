@@ -193,6 +193,21 @@ describe("a draft's names and tickets (review fixes 1)", () => {
     expect(d.notes).toContain("“Planner”'s prompt names a folder in your home folder: a template is laid out in other folders, so take it out before saving.");
     expect(() => savedTemplates("Y", d.body, [], { home: HOME_DIR })).toThrow(/“Planner”'s prompt names a folder in your home folder/);
   });
+
+  it("knows the home folder however its name is cased: never the chain's folder, and a prompt naming it is said and refused", (ctx) => {
+    const home = tempDir("home");
+    const upper = home.toUpperCase();
+    // a case-sensitive volume: the two are different folders
+    if (upper === home || !fs.existsSync(upper)) ctx.skip();
+    const all = {
+      a: session("a", { title: "Planner", repoPath: null, cwd: upper, planned: { worktree: false, prompt: `Read ${upper}/notes.md.` } }),
+      b: session("b", { title: "Doer", repoPath: null, cwd: upper, planned: { worktree: false, prompt: "Do it" } }),
+    };
+    const d = pair(all, { home });
+    expect(d.body.steps[0].prompt).toBe(`Read ${upper}/notes.md.`);
+    expect(d.notes).toContain("“Planner”'s prompt names a folder in your home folder: a template is laid out in other folders, so take it out before saving.");
+    expect(() => savedTemplates("Y", d.body, [], { home })).toThrow(/“Planner”'s prompt names a folder in your home folder/);
+  });
 });
 
 describe("the home folder, however it's written (review fixes 1)", () => {

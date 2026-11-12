@@ -3303,6 +3303,32 @@ its "holds home" case, fails the unit tests. Sending the template as read rather
 than as shown, from Lay out or Save, or showing a wire's What flows blank when it
 takes the default, fails the Chrome test.
 
+#### W9 follow-up as built
+
+- **Home in any case.** `realpathSync` keeps the case it's given on macOS, so
+  `/USERS/sam` didn't read as home. `onDisk` (`handlers.ts`) uses
+  `realpathSync.native`, and `roomFolderRefusal` (moved there beside it) and the
+  draft's `holdsHome` compare by it. Save's home check reads text in any case.
+- **Extra folders.** A room agent's sandbox writes its folder and its extra
+  folders (`--add-dir`). `roomFolderRefusal` takes both: `create` refuses an
+  extra folder that's home or holds it before a worktree's made or a checkout's
+  branch changes, which covers a resumed record carrying one, and `roomLaunch`
+  (`livePanes.ts`) refuses the same again, whatever asked for it: "A team room's
+  session can't be given your home folder as an extra folder: the room's sandbox
+  would let it write across everything there. Leave it out." A plain terminal
+  isn't asked.
+- **M1's note** says "nothing already in it moved": an area that grows for the
+  steps can still push its neighbours aside.
+- **An emptied What flows** (blank or spaces) sends the default (`flowOf`), and
+  says so under it: "Empty, so it sends the default: {summary}". `asShown`
+  writes the default out, so Lay out and Save send it.
+
+**Checked.** Typecheck; the touched test files (sessionLifecycle, teamLivePanes,
+teamAgentReach, templates, pipelineTemplates, uiLandscapeWires alone in
+Chrome); the build. Mutations: `create` taking extra folders as given,
+`roomLaunch` granting what it's handed, and `realpathSync` in place of
+`.native` (the room check and the draft's) each fail their tests.
+
 ### W10 · Tidy along wires. Size M
 - `planTidy` (`landscapeModel.ts:2075`) takes edges. With none it's unchanged, so
   every test of it holds. Layers by longest path over handoffs; a feedback wire

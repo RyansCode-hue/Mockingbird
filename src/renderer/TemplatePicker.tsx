@@ -9,6 +9,7 @@ import { isErr, AGENT_NAME, type ModelCatalog } from "../shared/types";
 import { carriesWork, templateOf } from "../shared/wires";
 import {
   asShown,
+  flowOf,
   automaticGates,
   layOutPlan,
   ticketLine,
@@ -285,6 +286,11 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
                     placeholder="{summary}"
                     onChange={(v) => onWire(j, { template: v })}
                   />
+                  {w.template !== undefined && !w.template.trim() && (
+                    <div className="tp-line dim" data-flow-default>
+                      Empty, so it sends the default: {flowOf(w).replace(/\s+/g, " ")}
+                    </div>
+                  )}
                   {w.files?.length ? (
                     <div className="tp-files">
                       <span className="dim">Its files:</span>

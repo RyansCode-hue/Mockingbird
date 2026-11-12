@@ -10,7 +10,7 @@ import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktree
 import { dirtyFileCount } from "./scm";
 import { BASE_NAMES, branchesOf, currentBranch, git } from "./git";
 import { uniqueBranch } from "./presets";
-import { canonical, samePath } from "./handlers";
+import { roomFolderRefusal, samePath } from "./handlers";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, type LaunchContext } from "./agents";
 import { HELPDESK_FOLDER_ONLY, HELPDESK_IN_ROOM, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
@@ -317,19 +317,6 @@ function relaunchPlan(old: SessionInfo): RelaunchPlan {
   };
 }
 
-/**
- * Why a session in a team room's group can't work in `cwd`: the home folder, or a folder holding it, all of which the
- * room's sandbox would let its agent write across (bar the names it denies). Null when it can. A plain terminal isn't
- * asked: it runs no agent and no sandbox.
- */
-export function roomFolderRefusal(cwd: string, home = os.homedir()): string | null {
-  const h = canonical(home);
-  const c = canonical(cwd);
-  if (c === h) return "A team room's session can't work in your home folder: the room's sandbox would let it write across everything there. Choose a repo for it.";
-  if (h.startsWith(c === "/" ? "/" : `${c}/`)) return `A team room's session can't work in ${cwd}, which holds your home folder: the room's sandbox would let it write across everything there. Choose a repo for it.`;
-  return null;
-}
-
 export class SessionManager {
   private live = new Map<string, LiveSession>();
   /**
@@ -602,10 +589,12 @@ export class SessionManager {
       req.branchName?.trim() ||
       (req.ticketId && req.ticketTitle ? slugBranch(req.ticketId, req.ticketTitle) : null);
     const own = !!this.ownHooksFor?.(req.taskGroup ?? req.ticketId ?? null);
-    // a plain terminal runs no agent and no sandbox, so its folder grants it nothing it hasn't already
+    // a plain terminal runs no agent and no sandbox, so its folders grant it nothing it hasn't already
     const runsAgent = !req.shell || !!req.shellResume;
-    // a room session in a repo's checkout: refused before its branch is changed there, as after the folder's known below
-    if (!tasks && !req.debrief && runsAgent && !req.cwd && repoPath && !req.useWorktree) this.refuseRoomFolder(req.taskGroup ?? req.ticketId ?? null, repoPath);
+    const extraDirs = (req.extraDirs ?? []).map(expandHome);
+    // a room session's extra folders, and a repo's checkout when that's its folder: refused before a worktree's made or
+    // a checkout's branch is changed, as its folder is once it's known below
+    if (!tasks && !req.debrief && runsAgent) this.refuseRoomFolder(req.taskGroup ?? req.ticketId ?? null, !req.cwd && repoPath && !req.useWorktree ? repoPath : null, extraDirs);
     if (tasks) {
       cwd = helpdeskFolder();
       repoPath = null;
@@ -661,7 +650,6 @@ export class SessionManager {
     // the file the link names now is the installed one: a pane started on it isn't behind it (updateNotices)
     if (pinned?.version && pinned.version !== this.agentVersions.claude) this.setAgentVersions({ claude: pinned.version });
     const binOf = (a: AgentAdapter) => (pinned && a.binSetting === "claudeBin" ? pinned.bin : this.resolveBin(a));
-    const extraDirs = (req.extraDirs ?? []).map(expandHome);
     const room = req.debrief || tasks ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs })) ?? null);
     const instructions = tasks ? HELPDESK_RULES : [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id)].filter(Boolean).join("\n\n");
     const roomCtx: LaunchContext = {
@@ -1357,10 +1345,10 @@ export class SessionManager {
     });
   }
 
-  /** Refuses a session in a team room's group `group` working in `cwd` when roomFolderRefusal says so. */
-  private refuseRoomFolder(group: string | null, cwd: string): void {
+  /** Refuses a session in a team room's group `group` working in `cwd`, or given `extraDirs`, when roomFolderRefusal says so. */
+  private refuseRoomFolder(group: string | null, cwd: string | null, extraDirs: readonly string[] = []): void {
     if (!group || !this.roomOfGroup?.(group)) return;
-    const why = roomFolderRefusal(cwd);
+    const why = roomFolderRefusal(cwd, extraDirs);
     if (why) throw new Error(why);
   }
 

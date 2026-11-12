@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import type { NewSessionRequest, SessionInfo, Settings } from "../shared/types";
 import { expandHome } from "./store";
@@ -32,6 +33,36 @@ export function canonical(p: string): string {
 }
 
 export const samePath = (a: string, b: string) => canonical(a) === canonical(b);
+
+/**
+ * canonical, spelled as the disk spells it: on a case-insensitive volume realpathSync keeps the case it was given, so
+ * "/USERS/sam" and "/Users/sam" would read as different folders.
+ */
+export function onDisk(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p); // gone already: compare by spelling
+  }
+}
+
+/**
+ * Why a session in a team room's group can't work in `cwd`, or be given `extraDirs`: the home folder, or a folder
+ * holding it, all of which the room's sandbox would let its agent write across (bar the names it denies). Null when
+ * it can. A plain terminal isn't asked: it runs no agent and no sandbox.
+ */
+export function roomFolderRefusal(cwd: string | null, extraDirs: readonly string[] = [], home = os.homedir()): string | null {
+  const h = onDisk(home);
+  const why = (folder: string, extra: boolean): string | null => {
+    const c = onDisk(folder);
+    const home = c === h;
+    if (!home && !h.startsWith(c === "/" ? "/" : `${c}/`)) return null;
+    const across = "the room's sandbox would let it write across everything there.";
+    if (extra) return `A team room's session can't be given ${home ? "your home folder" : `${folder}, which holds your home folder,`} as an extra folder: ${across} Leave it out.`;
+    return `A team room's session can't work in ${home ? "your home folder" : `${folder}, which holds your home folder`}: ${across} Choose a repo for it.`;
+  };
+  return (cwd === null ? null : why(cwd, false)) ?? extraDirs.map((d) => why(d, true)).find((w) => w !== null) ?? null;
+}
 
 /** The sessions still running in `folder` — worktrees are shared by a handoff's or review's companion session. */
 export function liveSessionsIn(sessions: SessionInfo[], folder: string): SessionInfo[] {

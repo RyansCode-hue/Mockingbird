@@ -1742,6 +1742,41 @@ describe("a team room's session and the home folder", () => {
     await expect(m.create({ repoPath: repo, useWorktree: false, agent: "claude", title: "r", taskGroup: "Shared", cwd: repo })).resolves.toMatchObject({ cwd: repo });
   });
 
+  it("knows the home folder however its name is cased", async (ctx) => {
+    const upper = os.homedir().toUpperCase();
+    // a case-sensitive volume: the two are different folders
+    if (upper === os.homedir() || !fs.existsSync(upper)) ctx.skip();
+    const { m } = await manager();
+    rooms(m);
+    await expect(m.create({ ...agentPane, taskGroup: "Shared", cwd: upper })).rejects.toThrow(AT_HOME);
+    await expect(m.create({ ...agentPane, taskGroup: "Shared", cwd: path.join(upper, "..") })).rejects.toThrow("which holds your home folder");
+  });
+
+  it("isn't given the home folder, or one holding it, as an extra folder: refused before a worktree's made, and when an old record carrying it is resumed", async () => {
+    const { m } = await manager();
+    const repo = makeRepo({ "a.txt": "1" }, "extrarepo");
+    const before = await m.create({ repoPath: repo, useWorktree: false, cwd: repo, agent: "claude", title: "before", taskGroup: "Shared", extraDirs: ["~"] });
+    rooms(m);
+    const n = ptys.length;
+    const EXTRA_HOME = "A team room's session can't be given your home folder as an extra folder: the room's sandbox would let it write across everything there. Leave it out.";
+    await expect(m.create({ repoPath: repo, useWorktree: false, cwd: repo, agent: "claude", title: "r", taskGroup: "Shared", extraDirs: ["~"] })).rejects.toThrow(EXTRA_HOME);
+    await expect(m.create({ repoPath: repo, useWorktree: false, cwd: repo, agent: "codex", title: "r", taskGroup: "Shared", extraDirs: [path.dirname(os.homedir())] })).rejects.toThrow(
+      `A team room's session can't be given ${path.dirname(os.homedir())}, which holds your home folder, as an extra folder`
+    );
+    // a terminal bringing an agent back runs it in the room's sandbox
+    await expect(m.create({ repoPath: repo, useWorktree: false, cwd: repo, shell: true, shellResume: { agent: "codex", id: "019a-conv" }, title: "t", taskGroup: "Shared", extraDirs: ["~"] })).rejects.toThrow(EXTRA_HOME);
+    await expect(m.create({ repoPath: repo, useWorktree: true, branchName: "mb-extra", agent: "claude", title: "w", taskGroup: "Shared", extraDirs: ["~"] })).rejects.toThrow(EXTRA_HOME);
+    expect(fs.existsSync(path.join(worktreeRoot(repo), "mb-extra"))).toBe(false);
+    // the record of one given home before its area was a room's: its resume is refused, and it's kept
+    await expect(m.restart(before.id)).rejects.toThrow(EXTRA_HOME);
+    expect(ptys.length).toBe(n);
+    expect(m.resumable().map((s) => s.id)).toContain(before.id);
+    // a folder inside home is fine in a room, and home outside one is as before
+    const notes = tempDir("notes");
+    await expect(m.create({ repoPath: repo, useWorktree: false, cwd: repo, agent: "claude", title: "ok", taskGroup: "Shared", extraDirs: [notes] })).resolves.toMatchObject({ extraDirs: [notes] });
+    await expect(m.create({ ...agentPane, taskGroup: "Mine", extraDirs: ["~"] })).resolves.toMatchObject({ taskGroup: "Mine" });
+  });
+
   it("isn't planned at home, by Add next step or a template's lay-out, nor in the folder of a session at home, saving nothing", async () => {
     const { m, store } = await manager();
     const a = await m.create({ ...agentPane, taskGroup: "Mine" });

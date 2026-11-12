@@ -23,6 +23,7 @@ import { codexMcpNames } from "../codexMcpNames";
 import { claudeRoomSettings } from "../claudeRoomSandbox";
 import { sandboxMarkerCommand } from "../hooks";
 import { gitPinRefusal, gitTop, onGitPinRefused, pinGitDirs, unpinGitDirs } from "../gitPins";
+import { roomFolderRefusal } from "../handlers";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
 import { isTermReply, isViewControl } from "../../shared/termInput";
 import { CLAUDE_INLINE_ENV, codexMcpOff } from "../agents";
@@ -442,6 +443,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     let sandboxMarker: string | null = null;
     // the agent the room's settings are for: an agent pane's, or the one a terminal brings back
     const runs = target.agent ?? target.resumes ?? null;
+    // the folders its sandbox lets it write, whatever asked for them (a request, an old record resumed): never home
+    if (runs) {
+      const why = roomFolderRefusal(target.cwd, target.extraDirs ?? []);
+      if (why) throw new Error(why);
+    }
     const codexGuarded = runs === "codex" && codexGuardsSecrets(target.agentVersion);
     const claudeSandboxed = runs === "claude" && claudeSandboxes(target.agentVersion);
     let git: RoomGitDirs | null = null;

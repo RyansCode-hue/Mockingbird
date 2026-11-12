@@ -786,6 +786,19 @@ describe("views: who's looking at what", () => {
 });
 
 describe("room session launch", () => {
+  it("never lets a room agent's sandbox write home, as its folder or an extra one, whatever asked for it; a plain terminal's isn't asked", async () => {
+    const { ryan } = await pair();
+    const work = tempDir("launch");
+    const target = { id: "x1", group: "5110", agent: "claude" as const, agentVersion: CLAUDE_ROOM_SANDBOX_SINCE, cwd: work, repoPath: null };
+    await expect(ryan.live.roomLaunch({ ...target, extraDirs: [os.homedir()] })).rejects.toThrow("can't be given your home folder as an extra folder");
+    await expect(ryan.live.roomLaunch({ ...target, agent: "codex", agentVersion: CODEX_ROOM_GUARD_SINCE, extraDirs: [path.dirname(os.homedir())] })).rejects.toThrow("which holds your home folder, as an extra folder");
+    await expect(ryan.live.roomLaunch({ ...target, cwd: os.homedir() })).rejects.toThrow("can't work in your home folder");
+    // a terminal bringing a conversation back runs that agent under the room's settings
+    await expect(ryan.live.roomLaunch({ ...target, agent: null, resumes: "claude", extraDirs: ["/"] })).rejects.toThrow("which holds your home folder, as an extra folder");
+    await expect(ryan.live.roomLaunch({ ...target, agent: null, cwd: os.homedir(), extraDirs: [os.homedir()] })).resolves.toMatchObject({ guards: { secrets: false } });
+    await expect(ryan.live.roomLaunch({ ...target, extraDirs: [tempDir("extra")] })).resolves.toMatchObject({ guards: { secrets: true } });
+  });
+
   it("denies reading secrets to Claude, and points git at the co-author hooks", async () => {
     const { ryan } = await pair();
     const s = await ryan.start();

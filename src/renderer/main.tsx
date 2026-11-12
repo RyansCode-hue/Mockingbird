@@ -2184,7 +2184,7 @@ function App() {
     laidOut.current = null;
     if (!p.tidy) {
       goToArea(p.area);
-      return lsSay(`${p.said} They went where there was room in ${areaTitle(p.area)}, and nothing there moved: Tidy in its ⋯ lines them up along their wires, with Undo.`);
+      return lsSay(`${p.said} They went where there was room in ${areaTitle(p.area)}, and nothing already in it moved: Tidy in its ⋯ lines them up along their wires, with Undo.`);
     }
     const plan = planTidy(placed, layout, p.area, areaTitle, wiresInOrder(links).map(([, w]) => w));
     goToArea(p.area);

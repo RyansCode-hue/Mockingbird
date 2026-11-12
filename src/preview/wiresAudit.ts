@@ -1422,6 +1422,11 @@ async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
   const flow = picker()!.querySelector<HTMLTextAreaElement>('.tp-step[data-step="s3"] .tp-flow textarea');
   await drive([{ mouse: { ...mid(flow), clickCount: 1 } }, { pause: 200 }, ..." Be brief".split("").map((key) => ({ key }))]);
   await sleep(200);
+  // what Reviewer sends back to Builder, emptied (a space typed over it): it sends the default, and says so
+  const back = picker()!.querySelector<HTMLTextAreaElement>('.tp-step[data-step="s1"] .tp-flow textarea');
+  const backAt = mid(back);
+  await drive([{ mouse: { ...backAt, clickCount: 1 } }, { mouse: { ...backAt, clickCount: 2 } }, { mouse: { ...backAt, clickCount: 3 } }, { pause: 200 }, { key: " " }, { pause: 200 }]);
+  out.emptied = { text: back?.value ?? null, hint: picker()?.querySelector('.tp-step[data-step="s1"] [data-flow-default]')?.textContent ?? null };
   // its ticket: #5115, whose area is new; then ⌘↵ held down, as the keyboard repeats it, the first lay-out refused
   // (?lsLayOutFails=1): said, its area taken back, and the repeats after it lay nothing out
   await choose(".tp-ticket", "#5115");

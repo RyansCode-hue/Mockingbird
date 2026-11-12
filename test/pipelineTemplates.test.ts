@@ -137,6 +137,9 @@ describe("laying one out (layOutPlan)", () => {
     const edited = { ...b, wires: b.wires.map((w, i) => (i === 0 ? { ...w, template: "Only the diff: {diff}" } : w)) };
     expect(asShown(edited).wires[0].template).toBe("Only the diff: {diff}");
     expect(parseTemplateBody(asShown(b))).toEqual(asShown(b));
+    // an emptied What flows sends the default, its When's
+    const emptied = { ...b, wires: b.wires.map((w, i) => (i === 0 ? { ...w, template: "" } : i === 2 ? { ...w, template: " \n " } : w)) };
+    expect(asShown(emptied).wires.map((w) => w.template ?? null)).toEqual(["{summary}", "{summary}", "{pr}\n\n{summary}", null, null]);
   });
 
   it("gives a wire its settings as wires:add takes them", () => {

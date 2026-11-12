@@ -724,6 +724,7 @@ interface Templates {
   quick: TP;
   makeAsk: { asked: TP; again: TP };
   ticketed: TP;
+  emptied: { text: string | null; hint: string | null };
   laidOut: {
     calls: number;
     sent: { area: string; ticketId: string; prompts: string[]; efforts: (string | null)[]; gates: (string | null)[] } | null;
@@ -817,7 +818,10 @@ describe.skipIf(!local)("Pipeline templates", () => {
     // what each wire carries is laid out as it was shown, the What flows into Tester as it was edited, and the shared
     // worktree, which carries nothing, as nothing
     expect(t.laidOut.shownFlows!.find(([j]) => j === 2)![1]).toMatch(/ Be brief/);
-    expect(byWire(t.laidOut.sentFlows)).toEqual([...byWire(t.laidOut.shownFlows!), [3, null, []]]);
+    // an emptied What flows sends the default, as it says under it
+    expect(t.emptied).toEqual({ text: " ", hint: "Empty, so it sends the default: {summary}" });
+    const asSent = byWire(t.laidOut.shownFlows!).map(([j, text, files]): Flow => [j, text?.trim() ? text : "{summary}", files]);
+    expect(byWire(t.laidOut.sentFlows)).toEqual([...asSent, [3, null, []]]);
     expect(t.laidOut.open).toBe(false);
     // Builder started, Reviewer and Tester not started yet, Dev server on Builder's tree, every wire made
     expect(t.laidOut.planned).toBe(2);
@@ -845,7 +849,7 @@ describe.skipIf(!local)("Pipeline templates", () => {
     expect(t.room.laid).toMatchObject({ calls: 1, open: false, error: null, wires: ["feedback:ask", "handoff:ask", "handoff:ask", "worktree:ask"] });
     // #5110's area was there already: its steps go where there's room, nothing there moves, and the note says how to tidy
     expect(t.room.laid.note).toBe(
-      "Laid out “Build, review, test” in #5110: Builder started, 2 steps wait for their handoffs. In a team room's area every gate asks, so its automatic gate was laid out asking. They went where there was room in #5110, and nothing there moved: Tidy in its ⋯ lines them up along their wires, with Undo."
+      "Laid out “Build, review, test” in #5110: Builder started, 2 steps wait for their handoffs. In a team room's area every gate asks, so its automatic gate was laid out asking. They went where there was room in #5110, and nothing already in it moved: Tidy in its ⋯ lines them up along their wires, with Undo."
     );
   }, 200_000);
 

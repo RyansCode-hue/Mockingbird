@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { canonical } from "./handlers";
+import { canonical, onDisk } from "./handlers";
 import { redactSecrets } from "./wirePrompt";
 import { tildePath } from "../shared/paths";
 import { oneLine } from "../shared/team/agentText";
@@ -67,8 +67,8 @@ function namedForTicket(s: SessionInfo, ticketTitle: string | null): boolean {
 
 /** Whether `f` is the home folder or holds it: never a chain's folder, so nothing under home becomes "[its folder]". */
 const holdsHome = (f: string, home: string): boolean => {
-  const h = canonical(home);
-  const c = canonical(f);
+  const h = onDisk(home);
+  const c = onDisk(f);
   return c === h || h.startsWith(c.endsWith("/") ? c : `${c}/`);
 };
 
@@ -276,8 +276,11 @@ function namesHome(text: string, home: string): boolean {
   if (/\$\{?HOME\b/.test(text)) return true;
   if (/(^|[^\w~$])~([A-Za-z_][\w.-]*)?(?=$|[/\s"'`)\]},;:|&<>])/.test(text)) return true;
   if (home.length < 2) return false;
-  for (let at = text.indexOf(home); at >= 0; at = text.indexOf(home, at + 1)) {
-    const next = text[at + home.length];
+  // in any case: this Mac's volumes don't tell /USERS/sam from /Users/sam
+  const t = text.toLowerCase();
+  const h = home.toLowerCase();
+  for (let at = t.indexOf(h); at >= 0; at = t.indexOf(h, at + 1)) {
+    const next = t[at + h.length];
     if (next === undefined || !/[\w.-]/.test(next)) return true;
   }
   return false;
