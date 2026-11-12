@@ -3,7 +3,7 @@
  * (the tile holding the session, a ghost's card, or a collapsed area's pill), what state it shows, and its curve
  * (Main.dc.html's). WireLayer.tsx draws them and keeps them on their ends as workspaces move.
  */
-import { DEFAULT_ROUNDS, ROOM_LINE, gateOf, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type GateContext, type MergeView, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
+import { DEFAULT_ROUNDS, ROOM_LINE, countedFor, gateOf, isSending, wireEndOf, wireRefusal, wiresInOrder, type Gate, type DroppedWire, type GateContext, type MergeView, type Wire, type WireContext, type WireEnd, type WireState, type WireType } from "../shared/wires";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
 import { topOfKey, type PipelinePr, type SessionInfo, type TicketPipeline } from "../shared/types";
 import { LOOSE_GROUP, type Rect } from "../shared/landscape";
@@ -474,8 +474,14 @@ export function gateView(w: Wire, gate: Gate, to: WireEnd | null, merge: MergeVi
   const pendingId = gate.pendingId ?? null;
   const starts: GateView["starts"] = to?.where === "closed" ? "reopen" : to?.where === "dead" ? "resume" : null;
   const base = { why: gate.why ?? null, pendingId, starts, merge: null };
-  if (gate.state === "ready" && pendingId) return { ...base, face: "ready", kind: `${name} · ${w.rounds ? `round ${w.rounds.used + 1} of ${w.rounds.limit}` : "ready"}` };
-  if (gate.state === "blocked" && gate.atLimit && w.rounds && pendingId) return { ...base, face: "limit", kind: `${name} · at the limit · ${w.rounds.used} of ${w.rounds.limit}` };
+  // a pending whose round was counted when it went (sent again after it failed) is that round, not the next
+  const round = (r: NonNullable<Wire["rounds"]>, id: string) => Math.min(countedFor(w, id) ? r.used : r.used + 1, r.limit);
+  if (gate.state === "ready" && pendingId) return { ...base, face: "ready", kind: `${name} · ${w.rounds ? `round ${round(w.rounds, pendingId)} of ${w.rounds.limit}` : "ready"}` };
+  // blocked by the limit itself, as gateOf blocks it: a pending at the limit not yet counted, nothing in flight and
+  // nothing unconfirmed. A wire at the limit blocked for another reason (an end's silent hooks) says that reason, with
+  // no One more round, which wouldn't clear it.
+  if (gate.state === "blocked" && gate.atLimit && w.rounds && pendingId && !gate.unconfirmed && !isSending(w) && !countedFor(w, pendingId))
+    return { ...base, face: "limit", kind: `${name} · at the limit · ${w.rounds.used} of ${w.rounds.limit}` };
   if (gate.unconfirmed && pendingId) return { ...base, face: "unconfirmed", kind: `${name} · may have arrived` };
   const byMerge = gate.state === "blocked" && !!merge && "blocked" in merge && merge.blocked === gate.why;
   return { ...base, face: "settings", kind: `${name} · ${gate.state}`, pendingId: null, starts: null, merge: byMerge ? { prs: merge.prs ?? [] } : null };

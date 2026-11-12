@@ -391,6 +391,29 @@ describe("the send popover's face", () => {
     expect(faceOf({ u: maybe }, "u")).toMatchObject({ face: "unconfirmed", kind: "handoff · may have arrived", why: "It may have reached “reviewer”.", pendingId: "p2" });
   });
 
+  it("shows a pending sent again as the round it already counted, never past the limit, ready", () => {
+    // round 3 went and failed: sending it again counts nothing, so it's still round 3 of 3
+    const retry = wire("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 3 }, ...waiting("p1"), delivery: { id: "p1", state: "failed", at: 1, why: "The paste failed." } });
+    expect(faceOf({ f: retry }, "f")).toMatchObject({ face: "ready", kind: "feedback loop · round 3 of 3", why: "The paste failed.", pendingId: "p1" });
+    expect(faceOf({ f: { ...retry, rounds: { limit: 3, used: 2 } } }, "f")).toMatchObject({ face: "ready", kind: "feedback loop · round 2 of 3" });
+    // the limit lowered under what's been counted: capped at it
+    expect(faceOf({ f: { ...retry, rounds: { limit: 2, used: 3 } } }, "f")).toMatchObject({ face: "ready", kind: "feedback loop · round 2 of 2" });
+    // held by an automatic gate, it never went, so it's the next round
+    expect(faceOf({ f: { ...retry, rounds: { limit: 3, used: 1 }, delivery: { id: "p1", state: "held", at: 1, why: "Asks." } } }, "f")).toMatchObject({ kind: "feedback loop · round 2 of 3" });
+  });
+
+  it("gives a wire at the limit blocked for its end's silent hooks that reason, without One more round", () => {
+    const silent = running.map((s) => (s.id === "builder" ? { ...s, hooksSilent: true } : s));
+    const retry = wire("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 3 }, ...waiting("p1"), delivery: { id: "p1", state: "failed", at: 1 } });
+    expect(faceOf({ f: retry }, "f", { shown: silent })).toMatchObject({ face: "settings", kind: "feedback loop · blocked", why: expect.stringMatching(/its hooks aren't reporting, so a message might never go/) });
+    // queued for that end, a newer pending beside it
+    const stalled = wire("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 3 }, ...waiting("p2"), delivery: { id: "p1", state: "queued", at: 1 } });
+    expect(faceOf({ f: stalled }, "f", { shown: silent })).toMatchObject({ face: "settings", why: expect.stringMatching(/what's queued for it may never go/) });
+    // the limit itself, hooks silent or not, offers One more round
+    const fresh = wire("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 3 }, ...waiting("p3") });
+    expect(faceOf({ f: fresh }, "f", { shown: silent })).toMatchObject({ face: "limit", why: "At the limit: 3 of 3 rounds." });
+  });
+
   it("is otherwise its settings, saying why it's blocked or what it waits for, a merge that can't be read with Check now", () => {
     const pr = wire("builder", "reviewer", "handoff", { when: "pr-merged" });
     const unread = "Can't tell whether PR 12 to dev merged (3 tries): 503";
