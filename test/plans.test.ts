@@ -912,6 +912,8 @@ describe("plan text a terminal or the user can't read as it shows", () => {
     const withPrompt = (prompt: string) => ({ ...base, steps: [{ ...base.steps[0], prompt }, base.steps[1]] });
     for (const bad of [
       "\u2705\udb40\udc41\udb40\udc42", // tag characters after an emoji
+      "\u2705\udb40\udc41", // one tag character straight after an emoji
+      "\ud83c\udff4\udb40\udc7f", // a black flag and a cancel tag
       "\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc7f", // a tag flag sequence
       "\u2705\u202e evil", // a bidi override after an emoji
       "\u2705\u2066x\u2069", // an isolate
