@@ -1,7 +1,7 @@
 import { fence } from "./fence";
 import { isObj } from "./landscape";
 import { oneLine, quoted } from "./team/agentText";
-import { hiddenTextRefusal, INVISIBLE_RE, visibleLine } from "./hiddenText";
+import { hiddenTextRefusal, INVISIBLE_RE, visibleLine, type TextUse } from "./hiddenText";
 import { AGENT_KINDS, ticketIdOf, type AgentKind } from "./types";
 import { carriesWork, linkRefusal, templateOf, WIRE_GATES, WIRE_TYPES, WIRE_WHENS, type Wire, type WireGate, type WireSettings, type WireType, type WireWhen } from "./wires";
 
@@ -325,13 +325,25 @@ function bodyRules(b: TemplateBody): void {
 /**
  * `{ticket}` in a step's prompt: `#4182 (its title, the ticket's own words: "Stream the donor export")`, or nothing with
  * no ticket. The title is others' words outside any fence, so it's quoted and said to be theirs, with its invisible and
- * control characters taken out.
+ * control characters taken out (titleQuotable).
  */
 export const ticketLine = (id: string | null | undefined, title: string | null | undefined): string => {
   if (!id?.trim()) return "";
-  const t = visibleLine(title, 200);
+  const t = titleQuotable(visibleLine(title, 200));
   return `#${oneLine(ticketIdOf(id.trim()), 40)}${t ? ` (its title, the ticket's own words: ${quoted(t, 200)})` : ""}`;
 };
+
+/**
+ * Title `t` as it goes between quotes among Mockingbird's words: curly and angle double quotes as straight ones, which
+ * quoted() escapes, curly single ones as an apostrophe, and square brackets as lookalikes (as fenced() turns < >), so
+ * it can't read as closing its quotes or as a [Mockingbird: …] note of its own.
+ */
+export const titleQuotable = (t: string): string =>
+  t
+    .replace(/[\u201c\u201d\u201e\u201f\u00ab\u00bb]/g, '"')
+    .replace(/[\u2018\u2019\u201a\u201b]/g, "'")
+    .replace(/\[/g, "\uff3b")
+    .replace(/\]/g, "\uff3d");
 export const withTicket = (prompt: string, line: string): string => prompt.replace(/\{ticket\}/g, line);
 
 /**
@@ -428,19 +440,19 @@ export function layOutPlan(b: TemplateBody, where: LayOutWhere): LayOutPlan {
 
 /**
  * Why template `b`'s text can't be laid out as it shows: a name, prompt, command or What flows holding invisible or
- * control characters (a terminal's command is typed into a shell, a prompt into an agent).
+ * control characters, or a command a tab (a terminal's command is typed into a shell, a prompt into an agent).
  */
 export function hiddenTextProblems(b: TemplateBody): string[] {
   const nameOf = (k: string) => b.steps.find((s) => s.key === k)?.name ?? k;
-  const texts = [
-    ...b.steps.flatMap((s) => [
-      { where: `Step ${s.key}'s name`, text: s.name },
-      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, text: s.prompt },
+  const texts: { where: string; text: string; use: TextUse }[] = [
+    ...b.steps.flatMap((s): { where: string; text: string; use: TextUse }[] => [
+      { where: `Step ${s.key}'s name`, text: s.name, use: "text" },
+      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, text: s.prompt, use: s.agent === "terminal" ? "command" : "prompt" },
     ]),
-    ...b.wires.flatMap((w) => (w.template === undefined ? [] : [{ where: `What ${nameOf(w.from)} → ${nameOf(w.to)} sends`, text: w.template }])),
+    ...b.wires.flatMap((w) => (w.template === undefined ? [] : [{ where: `What ${nameOf(w.from)} → ${nameOf(w.to)} sends`, text: w.template, use: "prompt" as const }])),
   ];
   return texts.flatMap((t) => {
-    const why = hiddenTextRefusal(t.where, t.text);
+    const why = hiddenTextRefusal(t.where, t.text, t.use);
     return why ? [why] : [];
   });
 }

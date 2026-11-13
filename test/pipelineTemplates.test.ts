@@ -120,6 +120,18 @@ describe("laying one out (layOutPlan)", () => {
     expect(hiddenTextProblems(chain())).toEqual([]);
   });
 
+  it("lays out a prompt's emoji as shown, and not a terminal command's emoji or tab", () => {
+    const emoji = "\u2705\ufe0f \ud83d\udc68\u200d\ud83d\udcbb \ud83d\udc69\ud83c\udffd\u200d\ud83d\udcbb 1\ufe0f\u20e3";
+    const b = chain();
+    const dev = b.steps.findIndex((s) => s.agent === "terminal");
+    b.steps[0] = { ...b.steps[0], prompt: `${b.steps[0].prompt} ${emoji}` };
+    expect(layOutPlan(b, { room: false, ticket: true }).problems).toEqual([]);
+    b.steps[dev] = { ...b.steps[dev], prompt: "npm run dev\t" };
+    expect(hiddenTextProblems(b)).toEqual([`\u201c${b.steps[dev].name}\u201d's command holds a tab, which a shell takes as completion rather than a space: use spaces.`]);
+    b.steps[dev] = { ...b.steps[dev], prompt: "npm run dev \u2705\ufe0f" };
+    expect(hiddenTextProblems(b)).toEqual([`\u201c${b.steps[dev].name}\u201d's command holds invisible characters, which can hide or reorder text where you read it: retype it.`]);
+  });
+
   it("makes every gate ask in a team room's area, counting what it forced", () => {
     const p = layOutPlan(chain(), { room: true, ticket: true });
     expect(p.wires.map((w) => [w.gate, w.forced])).toEqual([["ask", false], ["ask", false], ["ask", true], ["ask", false]]);

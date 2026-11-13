@@ -26,10 +26,37 @@ const holds = (re: RegExp, text: string): boolean => {
   return found;
 };
 
-/** Why `text`, at `where`, can't be laid out as it shows, or null: it holds invisible or control characters. */
-export function hiddenTextRefusal(where: string, text: string): string | null {
+/**
+ * Where a text goes, which sets what it may hold: a `prompt` (a step's, or what a wire sends) is read by an agent and may
+ * hold the invisible parts of an emoji; a `command` is typed into a shell; any other `text` (a name, a summary) holds no
+ * invisible character at all.
+ */
+export type TextUse = "text" | "prompt" | "command";
+
+/**
+ * The invisible characters an emoji is drawn with, one at a time: a variation selector (U+FE0E, U+FE0F) straight after
+ * an emoji base or its skin tone, U+FE0F in a keycap (#, * or a digit, then U+20E3), and a zero-width joiner between
+ * two emoji (man, joiner, laptop: the technologist). A second selector or joiner in a row follows no base, so it isn't
+ * one; tag characters and bidi controls never are.
+ */
+const EMOJI_PARTS_RE =
+  /(?<=\p{Extended_Pictographic}[\u{1f3fb}-\u{1f3ff}]?)[\ufe0e\ufe0f]|(?<=[#*0-9])\ufe0f(?=\u20e3)|(?<=\p{Extended_Pictographic}[\ufe0e\ufe0f]?[\u{1f3fb}-\u{1f3ff}]?)\u200d(?=\p{Extended_Pictographic})/gu;
+
+/** `text` without the invisible characters a `use` can't hold: in a prompt, an emoji's own parts stay. */
+export function withoutHidden(text: string, use: TextUse = "text"): string {
+  const keep = use === "prompt" ? new Set([...text.matchAll(EMOJI_PARTS_RE)].map((m) => m.index)) : null;
+  return text.replace(INVISIBLE_RE, (c: string, at: number) => (keep?.has(at) ? c : ""));
+}
+
+/**
+ * Why `text`, at `where`, can't be laid out as it shows, or null: it holds control characters, or invisible ones its
+ * `use` can't hold; a command holds a tab, which a shell takes as completion (running the repo's own completion
+ * scripts) rather than as the space it shows as.
+ */
+export function hiddenTextRefusal(where: string, text: string, use: TextUse = "text"): string | null {
   if (holds(CONTROL_RE, text)) return `${where} holds control characters, which a terminal or an agent acts on rather than shows: retype it.`;
-  if (holds(INVISIBLE_RE, text)) return `${where} holds invisible characters, which can hide or reorder text where you read it: retype it.`;
+  if (use === "command" && text.includes("\t")) return `${where} holds a tab, which a shell takes as completion rather than a space: use spaces.`;
+  if (withoutHidden(text, use) !== text) return `${where} holds invisible characters, which can hide or reorder text where you read it: retype it.`;
   return null;
 }
 

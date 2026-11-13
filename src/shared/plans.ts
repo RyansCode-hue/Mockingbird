@@ -2,7 +2,7 @@ import { isObj } from "./landscape";
 import { fencedTicket, startsAtOrchestrator, TEMPLATE_AGENTS, type LayOutReply, type TemplateAgent, type TemplateBody } from "./pipelineTemplates";
 import { oneLine, quoted } from "./team/agentText";
 import { isRemotePaneId } from "./team/livePanes";
-import { hiddenTextRefusal } from "./hiddenText";
+import { hiddenTextRefusal, type TextUse } from "./hiddenText";
 import { AGENT_KINDS, AGENT_NAME, type AgentKind, type ModelCatalog } from "./types";
 import { carriesWork, DEFAULT_ROUNDS, linkRefusal, WIRE_GATES, WIRE_TYPES, WIRE_WHENS, type Wire, type WireGate, type WireType, type WireWhen } from "./wires";
 
@@ -220,15 +220,15 @@ export interface PlanLayOut {
 
 const agentStep = (s: PlanStep): s is PlanStep & { agent: AgentKind } => s.agent !== "terminal";
 
-/** Each piece of plan `p`'s text, and where it is, as the dialog and the agent are told of it. */
-export function planTexts(p: Plan): { where: string; text: string }[] {
+/** Each piece of plan `p`'s text, where it is, as the dialog and the agent are told of it, and where it goes. */
+export function planTexts(p: Plan): { where: string; text: string; use: TextUse }[] {
   return [
-    { where: "Its summary", text: p.summary },
-    ...p.steps.flatMap((s) => [
-      { where: `Step ${s.key}'s name`, text: s.name },
-      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, text: s.prompt },
+    { where: "Its summary", text: p.summary, use: "text" },
+    ...p.steps.flatMap((s): { where: string; text: string; use: TextUse }[] => [
+      { where: `Step ${s.key}'s name`, text: s.name, use: "text" },
+      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, text: s.prompt, use: s.agent === "terminal" ? "command" : "prompt" },
     ]),
-    ...p.wires.flatMap((w, j) => (w.template === undefined ? [] : [{ where: `Wire ${j + 1}'s template`, text: w.template }])),
+    ...p.wires.flatMap((w, j) => (w.template === undefined ? [] : [{ where: `Wire ${j + 1}'s template`, text: w.template, use: "prompt" as const }])),
   ];
 }
 
@@ -245,7 +245,7 @@ export function planTexts(p: Plan): { where: string; text: string }[] {
 export function checkPlan(p: Plan, ctx: PlanContext): PlanLayOut {
   // laid out as it shows: no text the user can't see, nor what a terminal or an agent acts on rather than shows
   for (const t of planTexts(p)) {
-    const why = hiddenTextRefusal(t.where, t.text);
+    const why = hiddenTextRefusal(t.where, t.text, t.use);
     if (why) bad(why);
   }
   if (!p.summary.trim()) bad("Its summary is empty: say what the plan does and why.");

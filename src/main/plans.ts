@@ -27,7 +27,7 @@ import {
   type PlanView,
   type PlanWire,
 } from "../shared/plans";
-import { INVISIBLE_RE, visibleLine } from "../shared/hiddenText";
+import { visibleLine, withoutHidden, type TextUse } from "../shared/hiddenText";
 import { oneLine, plainLine } from "../shared/team/agentText";
 import { slugBranch, suggestTicketName, ticketIdOf, ticketOfSession, topOfKey, type AgentKind, type AgentTold, type ModelCatalog, type NewSessionRequest, type SessionInfo } from "../shared/types";
 import { carriesWork, ROOM_LINE, ROOMS_STARTING, settingsRefusal, wireRefusal, type GateContext, type Wire, type WireEnd, type WireGate, type WireReply, type WireSettings } from "../shared/wires";
@@ -107,21 +107,37 @@ const NOTE_MAX = 2000;
 /** The least time between two plans one Orchestrator has held: a looping agent can't keep replacing what the user reads. */
 export const PROPOSE_EVERY_MS = 30_000;
 
-/** Each piece of a plan's text, and where it is, for redaction at propose_plan and the checks at Lay out. */
-function textsOf(p: Plan): { where: string; get: () => string; set: (t: string) => void; max: number; line?: true }[] {
+/** A piece of a plan's text: where it is, read and written in place, its limit, and where it goes. */
+interface PlanText {
+  where: string;
+  get: () => string;
+  set: (t: string) => void;
+  max: number;
+  use: TextUse;
+  line?: true;
+}
+
+/** Each piece of a plan's text, for redaction at propose_plan and the checks at Lay out. */
+function textsOf(p: Plan): PlanText[] {
   return [
-    { where: "Its summary", get: () => p.summary, set: (t) => void (p.summary = t), max: PLAN_MAX.summary },
-    ...p.steps.flatMap((s) => [
-      { where: `Step ${s.key}'s name`, get: () => s.name, set: (t: string) => void (s.name = t), max: PLAN_MAX.name, line: true as const },
-      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, get: () => s.prompt, set: (t: string) => void (s.prompt = t), max: PLAN_MAX.prompt },
+    { where: "Its summary", get: () => p.summary, set: (t) => void (p.summary = t), max: PLAN_MAX.summary, use: "text" },
+    ...p.steps.flatMap((s): PlanText[] => [
+      { where: `Step ${s.key}'s name`, get: () => s.name, set: (t) => void (s.name = t), max: PLAN_MAX.name, use: "text", line: true },
+      {
+        where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`,
+        get: () => s.prompt,
+        set: (t) => void (s.prompt = t),
+        max: PLAN_MAX.prompt,
+        use: s.agent === "terminal" ? "command" : "prompt",
+      },
     ]),
-    ...p.wires.flatMap((w, j) => (w.template === undefined ? [] : [{ where: `Wire ${j + 1}'s template`, get: () => w.template!, set: (t: string) => void (w.template = t), max: PLAN_MAX.prompt }])),
+    ...p.wires.flatMap((w, j): PlanText[] => (w.template === undefined ? [] : [{ where: `Wire ${j + 1}'s template`, get: () => w.template!, set: (t) => void (w.template = t), max: PLAN_MAX.prompt, use: "prompt" }])),
   ];
 }
 
 /**
  * Plan `p` as an agent sent it, made safe to show: invisible characters taken out (they reorder or hide text where the
- * user reads it; an emoji's variation selector among them, so taken out rather than refused), and secret-looking values
+ * user reads it; taken out rather than refused, as an emoji outside a prompt holds one), and secret-looking values
  * replaced (redactSecrets). Refused whole when any text holds a private key, when a name would change, or when a
  * redacted text no longer fits; control characters are checkPlan's to refuse. Answers what was done, for the dialog.
  */
@@ -132,7 +148,7 @@ function cleaned(p: Plan): { plan: Plan; notes: string[] } {
   for (const t of textsOf(plan)) {
     const raw = t.get();
     if (holdsPrivateKey(raw)) throw new PlanError(`${t.where} holds a private key, so nothing was held: take it out and call again.`);
-    const seen = raw.replace(INVISIBLE_RE, "");
+    const seen = withoutHidden(raw, t.use);
     invisible += [...raw].length - [...seen].length;
     const r = redactSecrets(seen);
     if (t.line && r.count) throw new PlanError(`${t.where} holds a secret-looking value: name the step plainly.`);
@@ -263,9 +279,13 @@ export class Plans {
     }
   }
 
-  /** Held plan `id`, or why there's none to lay out or dismiss. */
+  /**
+   * Held plan `id`, or why there's none to lay out or dismiss. One waiting for another's dialog to close isn't held yet:
+   * it isn't listed, so nobody has been shown it.
+   */
   private heldOf(id: string): HeldPlan {
     const held = Object.hasOwn(this.data, id) ? this.data[id] : undefined;
+    if (held?.waitsFor) throw new Error("That plan waits for the plan open in your dialog to close, and nobody has been shown it yet: it's in Needs you once that one closes.");
     if (held) return held;
     throw new Error(this.spent.get(id) ?? "That plan isn't held any more: it was laid out, dismissed or replaced.");
   }

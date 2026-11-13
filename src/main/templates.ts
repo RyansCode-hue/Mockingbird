@@ -6,7 +6,7 @@ import { canonical, onDisk } from "./handlers";
 import { redactSecrets } from "./wirePrompt";
 import { tildePath } from "../shared/paths";
 import { oneLine } from "../shared/team/agentText";
-import { CONTROL_RE, hiddenTextRefusal, INVISIBLE_RE } from "../shared/hiddenText";
+import { CONTROL_RE, hiddenTextRefusal, withoutHidden, type TextUse } from "../shared/hiddenText";
 import { isRemotePaneId } from "../shared/team/livePanes";
 import {
   kickoffAsTicket,
@@ -119,9 +119,9 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
   let redacted = 0;
   let pathsOut = 0;
   let hidden = 0;
-  const clean = (t: string): string => {
-    // what a template is laid out with is what's read: invisible and control characters go, said
-    const seen = t.replace(INVISIBLE_RE, "").replace(CONTROL_RE, "");
+  const clean = (t: string, use: TextUse): string => {
+    // what a template is laid out with is what's read: invisible and control characters go, said (a prompt keeps an emoji's parts)
+    const seen = withoutHidden(t, use).replace(CONTROL_RE, "");
     hidden += [...t].length - [...seen].length;
     let out = seen;
     for (const f of folders) {
@@ -202,7 +202,7 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
       folder: folderOf(s, i),
-      prompt: clean(told).slice(0, TEMPLATE_MAX.prompt),
+      prompt: clean(told, s.shell ? "command" : "prompt").slice(0, TEMPLATE_MAX.prompt),
     };
   });
 
@@ -220,7 +220,7 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
       to,
       type: w.type,
       ...(carriesWork(w.type) ? { when: w.when, gate: w.gate } : {}),
-      ...(w.template !== undefined ? { template: clean(w.template).slice(0, TEMPLATE_MAX.prompt) } : {}),
+      ...(w.template !== undefined ? { template: clean(w.template, "prompt").slice(0, TEMPLATE_MAX.prompt) } : {}),
       ...(w.files?.length ? { files: w.files } : {}),
       ...(w.rounds ? { rounds: Math.min(TEMPLATE_MAX.rounds, w.rounds.limit) } : {}),
       ...(w.toolOutput === false ? { toolOutput: false as const } : {}),
@@ -256,18 +256,18 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
 }
 
 /** Each piece of text a template keeps, with where it is for what's said. */
-function textsOf(name: string, b: TemplateBody): { where: string; text: string }[] {
+function textsOf(name: string, b: TemplateBody): { where: string; text: string; use?: TextUse }[] {
   const n = (k: string) => b.steps.find((s) => s.key === k)?.name ?? k;
   return [
     { where: "Its name", text: name },
-    ...b.steps.flatMap((s) => [
+    ...b.steps.flatMap((s): { where: string; text: string; use?: TextUse }[] => [
       { where: `“${s.name}”'s name`, text: s.name },
-      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, text: s.prompt },
+      { where: `“${s.name}”'s ${s.agent === "terminal" ? "command" : "prompt"}`, text: s.prompt, use: s.agent === "terminal" ? "command" : "prompt" },
       { where: `“${s.name}”'s model`, text: s.model ?? "" },
       { where: `“${s.name}”'s effort`, text: s.effort ?? "" },
     ]),
     ...b.wires.flatMap((w) => [
-      { where: `${n(w.from)} → ${n(w.to)}'s What flows`, text: w.template ?? "" },
+      { where: `${n(w.from)} → ${n(w.to)}'s What flows`, text: w.template ?? "", use: "prompt" as const },
       ...(w.files ?? []).map((f) => ({ where: `${n(w.from)} → ${n(w.to)}'s files`, text: f })),
     ]),
   ];
@@ -320,9 +320,9 @@ export function savedTemplates(nameRaw: unknown, bodyRaw: unknown, stored: unkno
     if (err instanceof TemplateError) throw new Error(`It can't be saved: ${err.message}`, { cause: err });
     throw err;
   }
-  for (const { where, text } of textsOf(name, body)) {
+  for (const { where, text, use } of textsOf(name, body)) {
     if (!text) continue;
-    const hiddenWhy = hiddenTextRefusal(where, text);
+    const hiddenWhy = hiddenTextRefusal(where, text, use);
     if (hiddenWhy) throw new Error(hiddenWhy);
     const r = redactSecrets(text);
     if (r.count) throw new Error(`${where} holds ${plural(r.count, "secret-looking value")}: take ${r.count === 1 ? "it" : "them"} out, as a template is kept in Mockingbird's settings and laid out for other tickets.`);

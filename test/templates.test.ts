@@ -132,6 +132,24 @@ describe("saving a template", () => {
     expect(() => save("X", withPrompt("Implement it.\ufe0f\u034f"), [])).toThrow("“Builder”'s prompt holds invisible characters, which can hide or reorder text where you read it: retype it.");
     expect(() => save("X", withPrompt("Implement it.\n\tThen test."), [])).not.toThrow();
   });
+
+  it("saves a prompt's and What flows' emoji whole, and refuses them in a name or a terminal's command, as it does a command's tab", () => {
+    const emoji = "\u2705\ufe0f \ud83d\udc68\u200d\ud83d\udcbb \ud83d\udc69\ud83c\udffd\u200d\ud83d\udcbb 1\ufe0f\u20e3";
+    const b = body();
+    b.steps[0] = { ...b.steps[0], prompt: `Implement {ticket}. ${emoji}` };
+    b.wires[0] = { ...b.wires[0], template: `Over to you ${emoji}` };
+    expect(save("X", b, []).template.steps[0].prompt).toBe(`Implement {ticket}. ${emoji}`);
+    expect(() => save("X", { ...body(), steps: [{ ...body().steps[0], name: "Builder \u2705\ufe0f" }, body().steps[1]] }, [])).toThrow("\u201cBuilder \u2705\ufe0f\u201d's name holds invisible characters");
+    expect(() => save("Ship \u2705\ufe0f", body(), [])).toThrow("Its name holds invisible characters");
+    const withDev = (cmd: string): TemplateBody => ({
+      ...body(),
+      steps: [...body().steps, { key: "s3", name: "Dev server", agent: "terminal", folder: { sameAs: "s1" }, prompt: cmd }],
+      wires: [...body().wires, { from: "s1", to: "s3", type: "worktree" }],
+    });
+    expect(() => save("X", withDev("npm run dev"), [])).not.toThrow();
+    expect(() => save("X", withDev("npm run dev \u2705\ufe0f"), [])).toThrow("\u201cDev server\u201d's command holds invisible characters");
+    expect(() => save("X", withDev("npm\trun dev"), [])).toThrow("\u201cDev server\u201d's command holds a tab, which a shell takes as completion rather than a space: use spaces.");
+  });
 });
 
 describe("a draft's invisible and control characters", () => {
@@ -143,6 +161,17 @@ describe("a draft's invisible and control characters", () => {
     const d = draftTemplate(["a", "b"], { sessionOf: (id) => all[id as "a" | "b"], book: () => ({ ...emptyWireBook(), links: { w1: wire("a", "b", "handoff", 1) } }) });
     expect(d.body.steps[0].prompt).toBe("Implement it.");
     expect(d.notes).toContain("3 invisible or control characters were taken out: they hide text where you read it, or act in a terminal rather than show.");
+  });
+
+  it("leave a prompt's emoji whole, and take a stray selector out", () => {
+    const emoji = "\u2705\ufe0f \ud83d\udc68\u200d\ud83d\udcbb \ud83d\udc69\ud83c\udffd\u200d\ud83d\udcbb 1\ufe0f\u20e3";
+    const all = {
+      a: session("a", { title: "Builder", planned: { worktree: true, prompt: `Implement it. ${emoji}\ufe0f` } }),
+      b: session("b", { title: "Reviewer", planned: { worktree: false, prompt: "Review it." } }),
+    };
+    const d = draftTemplate(["a", "b"], { sessionOf: (id) => all[id as "a" | "b"], book: () => ({ ...emptyWireBook(), links: { w1: wire("a", "b", "handoff", 1) } }) });
+    expect(d.body.steps[0].prompt).toBe(`Implement it. ${emoji}`);
+    expect(d.notes).toContain("1 invisible or control character was taken out: they hide text where you read it, or act in a terminal rather than show.");
   });
 });
 
