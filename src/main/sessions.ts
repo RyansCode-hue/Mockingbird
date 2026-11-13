@@ -2057,6 +2057,12 @@ export class SessionManager {
       // hook events reach main every POLL_MS: read what's written so far, so a permission prompt that came up since the
       // paste is seen before its Enter would answer it
       this.catchUpHooks();
+      // quitting ends every pane and leaves its status as it was (onExit), so the check below can't see this one going:
+      // an Enter now reaches an agent being ended, or none, and nothing submitted it
+      if (this.quitting) {
+        this.settle(receipt, "failed", `Mockingbird quit after this was pasted into ${paneName(s.info)} and before its Enter, so it wasn't submitted`);
+        return;
+      }
       if (this.live.get(id) !== s || s.info.status === "dead") {
         this.settle(receipt, "failed", `${paneName(s.info)} stopped after this was pasted and before its Enter, so it wasn't submitted`);
         return;

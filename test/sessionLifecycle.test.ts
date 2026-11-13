@@ -329,6 +329,23 @@ describe("a queued message's receipt", () => {
     expect(ptys.at(-1)!.writes).toEqual([]);
   });
 
+  it("is told failed, and no Enter goes, when Mockingbird quits between its paste and its Enter", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Reviewer" });
+    m.statusFromHook({ paneId: s.id, status: "idle" });
+    const r = receipt(() => ptys.at(-1)!);
+    m.deliverAgentMessage(s.id, "the summary", true, undefined, r);
+    const quit = m.shutdown(1000);
+    const pty = ptys.at(-1)!;
+    expect(pty.signals).toEqual(["SIGHUP"]);
+    pty.exit(129);
+    vi.advanceTimersByTime(150);
+    await quit;
+    expect(pty.writes).toEqual(["|the summary|"]);
+    expect(r.heard).toEqual(["pasting (0 written)", "failed: Mockingbird quit after this was pasted into “Reviewer” and before its Enter, so it wasn't submitted"]);
+  });
+
   it("keeps its message out of the pane when it says not to paste, and the turn goes to the next one", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const { m } = await manager();
