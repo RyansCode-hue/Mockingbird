@@ -736,6 +736,28 @@ export class CollabRooms {
     return [base, groupKey(`${base} (${room.id.slice(0, 4)})`), groupKey(`${base} (${room.id})`)].find((name) => !taken(name)) ?? groupKey(`${base} (${room.id})`);
   }
 
+  /**
+   * Whether session `sessionId` is gone from this Mac: no running, closed or not-started session has its id. False when
+   * the sessions can't be asked (no `places.sessions`), so a link to one is kept.
+   */
+  private forgotten(sessionId: string): boolean {
+    const sessions = this.places.sessions?.();
+    return !!sessions && !sessions.some((s) => s.id === sessionId);
+  }
+
+  /**
+   * Session `sessionId` was forgotten: a Council whose Orchestrator it was lets go of it, saying so, so its plan can be
+   * implemented again (its branch and what's on it stay).
+   */
+  sessionForgotten(sessionId: string): void {
+    for (const room of this.rooms.values()) {
+      if (room.implementedIn !== sessionId) continue;
+      room.implementedIn = null;
+      this.note(room, `Its Orchestrator (session ${sessionId}) was forgotten: Implement starts another, on branch ${CollabRooms.branchFor(room)}, where its work stays.`);
+      this.save(room);
+    }
+  }
+
   /** The branch room `room`'s Orchestrator works on: its title's slug and its id, so no two Councils' share one. */
   static branchFor(room: Pick<CollabRoom, "id" | "title">): string {
     const slug = room.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
@@ -766,8 +788,9 @@ export class CollabRooms {
     if (room.running) throw new Error("Wait for the current round to finish, or stop it");
     if (!room.plan?.approved) throw new Error("Approve a plan first");
     if (!room.repoPath) throw new Error("This council has no repository to implement in");
-    // one Orchestrator per room: a second would start on the same branch
-    if (room.implementedIn || this.implementing.has(id)) throw new Error("The plan is already being implemented — open its Orchestrator");
+    // one Orchestrator per room: a second would start on the same branch. One that was forgotten holds nothing
+    const gone = room.implementedIn && !this.implementing.has(id) && this.forgotten(room.implementedIn) ? room.implementedIn : null;
+    if ((room.implementedIn && !gone) || this.implementing.has(id)) throw new Error("The plan is already being implemented — open its Orchestrator");
     const m = active(room).find((x) => x.key === key);
     if (!m) throw new Error("That model isn't in this council");
     const repoPath = room.repoPath;
@@ -804,7 +827,8 @@ export class CollabRooms {
       const removed = plan.removed
         ? ` ${plan.removed} invisible or control character${plan.removed === 1 ? " was" : "s were"} taken out of the plan it was given, so it reads the plan's characters in their order: this view may show the plan reordered or with text hidden.`
         : "";
-      this.note(room, `${m.label} is the plan's Orchestrator, on branch ${branch} in “${area}”: it proposes the workspaces to build the plan, and nothing more is made until you lay them out.${removed}`);
+      const again = gone ? ` Its earlier Orchestrator (session ${gone}) was forgotten, so this one replaces it, on the same branch.` : "";
+      this.note(room, `${m.label} is the plan's Orchestrator, on branch ${branch} in “${area}”: it proposes the workspaces to build the plan, and nothing more is made until you lay them out.${again}${removed}`);
       this.save(room);
       return info;
     } finally {

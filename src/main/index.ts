@@ -847,6 +847,15 @@ handle("sessions:kill", (id, forget) => {
   if (forget) void takeover?.sessionForgotten(String(id)); // team rooms: take-over — its room backup goes too (failures shown in the sidebar)
   if (forget) wires.sessionForgotten(String(id));
   if (forget) plans.sessionForgotten(String(id));
+  if (forget) {
+    // a Council whose Orchestrator it was can be implemented again; one that can't be saved now still can, as implement
+    // reads which sessions are gone
+    try {
+      collab.sessionForgotten(String(id));
+    } catch (err) {
+      logError(`collab: letting go of forgotten Orchestrator ${id}`, err);
+    }
+  }
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
