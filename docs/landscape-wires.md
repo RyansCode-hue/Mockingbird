@@ -3892,6 +3892,27 @@ The run plans its step before the restart, which reads them.
 **Not covered:** real CLIs (the stand-ins send the hook fields Mockingbird reads, not every field a CLI sends);
 automatic gates and Not yet in a real window; the ticket run.
 
+**`wiresApp.e2e` under W5.** W5 refuses a person's Finish step while the agent works. wiresApp's stand-in never ends a
+turn, so that test failed on main. It now checks the refusal, ends the turn with a Stop event left as hook.sh leaves
+one, and then finishes by hand. That's in a commit of its own.
+
+**Checked** (rebased onto main b3b3e0c, with W5 and W17):
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0: 199 files pass and 37 skip; 3649 tests pass and 358 skip.
+- UI tests, alone and without CI, one file at a time: `uiLandscapeClosed`, `Ghosts`, `Wires`, `Needs` and `FirstRun`.
+  177 of 178 pass. FirstRun's "says once why typed keys do nothing…" failed in that 32-minute run and passes alone,
+  twice, with its describe.
+- `MB_E2E_APP=1`:
+  - `wireRunApp.e2e` alone, three runs in a row: 16.9 s, 16.1 s and 15.3 s (vitest's wall time).
+  - All nine `MB_E2E_APP` files together pass (24 tests, 1 skipped) in 80.7 s.
+  - Before wiresApp was adapted, that joint run failed two files. wiresApp failed on W5's rule, and fails alone on main
+    too. quitApp failed on an orphaned `git config --get user.email` the app had started, which is the follow-up
+    list's timing note; it passes alone.
+- Mutation checks:
+  - the new `sessionLifecycle` test fails with the quit check removed;
+  - the run fails at "Builder off the Closed sessions list" with the window's read-again off;
+  - the zoom-in branch of opening the popover ran once with its threshold raised to 95%.
+
 ### W13 · Ticket stages reworked (main and the pipeline panel). Size M
 Ryan's table, with each stage's id. "Moves on when" is read as the event or
 checklist that marks each stage (*my reading*: rows 1, 6 and 8 name an exit, 4, 5
