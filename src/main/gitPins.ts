@@ -192,17 +192,39 @@ function pinsOver(cwd: string): Pin[] {
 }
 
 /**
+ * Whether anything is at `p`, a link included (not followed); its name in another case too, on a volume that ignores
+ * case. Throws when it can't be looked at, but for its absence.
+ */
+function present(p: string): boolean {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
+  }
+}
+
+/**
  * Whether the `.git` in `top` is repository `dirs`' own, leading only where the room's agent can't write: a `gitdir:`
  * file naming either a linked worktree's folder, one already in `<common>/worktrees/` (not deeper) whose `commondir`
  * leads back to `dirs.common`, or a submodule's git folder under `modules/` (the shared folder's, or the worktree's
  * own). The rest of the shared folder its agent can write, so a git folder made there, config and all, is no more
  * its repository's than one anywhere else; and a `.git` folder is always a repository of its own.
+ *
+ * A worktree's folder holding a `config.worktree`, of any kind, isn't, but for the session's own (`dirs.own`): a
+ * Claude room session in a linked worktree can rename a folder it made elsewhere into `worktrees/` (its sandbox
+ * looks only at a rename's two ends, not the in-place denies below them), and git reads that file as config once
+ * `extensions.worktreeConfig` is on, as `git sparse-checkout` turns it. Being there at launch vouches for nothing: a
+ * relaunch would find the agent's folder there too.
  */
 function ofRepository(dirs: GitFolders, top: string): boolean {
   try {
     if (!fs.lstatSync(path.join(top, ".git")).isFile()) return false;
     const to = readGitPointer(top);
-    if (path.dirname(to.own) === path.join(dirs.common, "worktrees")) return to.common === dirs.common;
+    if (path.dirname(to.own) === path.join(dirs.common, "worktrees")) {
+      return to.common === dirs.common && (to.own === dirs.own || !present(path.join(to.own, "config.worktree")));
+    }
     return [dirs.common, dirs.own].some((d) => {
       const modules = path.join(d, "modules");
       return to.own !== modules && within(to.own, modules) && within(to.common, modules);
@@ -320,7 +342,7 @@ export async function nestedRepoRefusal(folders: readonly ScannedFolder[], own: 
           if (dir !== root) {
             if (!theirs(dir)) return holding(dir);
           } else if (f.held) {
-            return `A team room's session can't ${where}: it had no repository when a room session first started there, and now has one (${at}), which that session's agent could have made, config and all. Delete it if you didn't make it; to work in it as a repository, forget the room sessions that started there without one, then open a new session there.`;
+            return `A team room's session can't ${where}: it is, or is in, a folder that had no repository when a room session first started there, and now has one (${at}), which that session's agent could have made, config and all. Delete it if you didn't make it; to work in it as a repository, forget the room sessions that started there without one, then open a new session there.`;
           } else if (f.extra && !theirs(dir)) return holding(dir);
           continue;
         }

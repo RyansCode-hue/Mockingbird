@@ -9106,6 +9106,23 @@ submodule's `.git` file repointed, waiting for a session opened there. 59921e6's
   Both are read-only in the room's sandboxes (`gitWrites`; in a worktree session, Claude's denies every worktree's
   `commondir`, `gitdir`, `config.worktree` and `modules/` by pattern). A `.git` folder never counts, even in
   `modules/`. It now takes the folders, not a pin: the pins' outer check asks it only of a repository pin.
+- **The verify's follow-up (p10): a worktree's folder holding a `config.worktree` isn't the repository's own**, but
+  for the session's own worktree folder. A Claude room session in a linked worktree can rename a folder it made in
+  temp into `<common>/worktrees/<new>/` (Seatbelt looks only at a rename's two ends, so the `worktrees/**` in-place
+  denies don't stop it), with a `commondir` leading back and a `config.worktree` of its own, which git reads as config
+  once `extensions.worktreeConfig` is on (`git sparse-checkout` turns it on): a `.git` naming it passed, and a room
+  push from there ran its core.sshCommand. Looked for by `lstat` of `config.worktree` (a link counts, and the name in
+  any case on a volume that ignores case); absent only on ENOENT, any other error refusing. Being there at launch
+  vouches for nothing, as a relaunch would find the agent's folder there too. Codex sessions, and Claude's in a main
+  checkout, deny `worktrees/` whole. The trade: a real linked worktree nested in a session's folder whose own folder
+  has a `config.worktree` (`git config --worktree` or sparse-checkout run in it) is now another repository there.
+  The look's message for a held folder now reads "it is, or is in, a folder that had no repository when a room
+  session first started there", fitting a folder made inside one since. Tests (`gitPins.test`): p10's folder refused
+  by the pin and the look, its room push running nothing; as a dangling link too; without it, passing; the session's
+  own worktree folder with one passing; a real nested worktree passing until it has one. Mutation check
+  (`mut/p10.json`): 4 of 4 caught (`config.worktree` not looked at, the session's own not exempt, a link followed, a
+  readdir name compare). Checked: typecheck; `gitPins` and `teamLivePanes` under CI, 88 pass; the p10 probe refused
+  with `extensions.worktreeConfig` off and on.
 
 ### Lows
 

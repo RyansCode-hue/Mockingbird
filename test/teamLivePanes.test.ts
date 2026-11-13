@@ -839,7 +839,7 @@ describe("room session launch", () => {
     // one there since, the agent's or not: the relaunch is refused, and git there too, till it's deleted
     execFileSync("git", ["init", "-q", folder]);
     try {
-      await expect(ryan.live.roomLaunch(target)).rejects.toThrow(`can't work in ${s.cwd}: it had no repository when a room session first started there, and now has one (${path.join(folder, ".git")}), which that session's agent could have made, config and all. Delete it if you didn't make it`);
+      await expect(ryan.live.roomLaunch(target)).rejects.toThrow(`can't work in ${s.cwd}: it is, or is in, a folder that had no repository when a room session first started there, and now has one (${path.join(folder, ".git")}), which that session's agent could have made, config and all. Delete it if you didn't make it`);
       expect(gitPinRefusal(s.cwd)).toMatch(/it had no repository when its room session started, .* Delete it if you didn't make it/);
     } finally {
       fs.rmSync(path.join(folder, ".git"), { recursive: true, force: true });
@@ -859,7 +859,7 @@ describe("room session launch", () => {
     // a .git there since: refused to another session as to its own relaunch, and git there stays refused
     execFileSync("git", ["init", "-q", folder]);
     try {
-      await expect(ryan.live.roomLaunch(other)).rejects.toThrow(`can't work in ${s.cwd}: it had no repository when a room session first started there, and now has one (${path.join(folder, ".git")})`);
+      await expect(ryan.live.roomLaunch(other)).rejects.toThrow(`can't work in ${s.cwd}: it is, or is in, a folder that had no repository when a room session first started there, and now has one (${path.join(folder, ".git")})`);
       await expect(ryan.live.roomLaunch({ ...other, id: "x6", cwd: sub })).resolves.toMatchObject({ noRepo: [sub] });
       expect(gitPinRefusal(folder)).toMatch(/it had no repository when its room session started, and now git would find /);
       expect(gitPinRefusal(sub)).toMatch(/it had no repository when its room session started, and now git would find /);

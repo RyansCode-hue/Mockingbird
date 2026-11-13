@@ -828,7 +828,9 @@ Member replace the single admin (creator, else longest-standing member).
     user's own terminal git would run. A `.git` is the session's own only
     when it's a `gitdir:` file naming where the agent can't write: a linked
     worktree's folder, directly in the shared folder's `worktrees/`, whose
-    `commondir` leads back to it, or a submodule's git folder under
+    `commondir` leads back to it and which holds no `config.worktree` (git
+    reads one as config; the session's own worktree folder may), or a
+    submodule's git folder under
     `modules/` (the shared folder's or the worktree's own). One naming a git
     folder anywhere else in the shared folder, which the agent writes, and
     every `.git` folder, are other repositories. A `.GIT`, or the name in
