@@ -122,7 +122,11 @@ export interface RoomGitDirs {
   own: string;
 }
 
-/** The git folders of the repository at `cwd`; null outside a repository. */
+/**
+ * The git folders of the repository at `cwd`, as the disk has them: links resolved and each name in its own case (a cwd
+ * typed "~/code/app" for ~/Code/app), since the sandboxes' rules match a path as the kernel resolves it, and git keeps
+ * the case it's given. Null outside a repository.
+ */
 export async function roomGitDirs(cwd: string): Promise<RoomGitDirs | null> {
   let out: string;
   try {
@@ -132,7 +136,7 @@ export async function roomGitDirs(cwd: string): Promise<RoomGitDirs | null> {
     throw err;
   }
   const [common, own] = out.split("\n");
-  return { common, own: own || common };
+  return { common: fs.realpathSync.native(common), own: fs.realpathSync.native(own || common) };
 }
 
 /**
@@ -305,6 +309,13 @@ export function codexHomeOf(env: Record<string, string | undefined>): string | u
 }
 
 /**
+ * What every room session's agent is told of the git it can't run: a new worktree writes its pointers into the shared
+ * git folder's `worktrees/`, and a submodule's update its git folder under `modules/`, both read-only to its sandbox.
+ */
+export const ROOM_WORKTREE_NOTE =
+  "`git worktree add` and `git submodule update` fail here, as they write git data the sandbox keeps read-only, so a sub-agent or tool that makes its own worktree can't start: work in this folder, or ask the user to open another session from Mockingbird.";
+
+/**
  * What a Codex room session is told about its sandbox, so it doesn't ask for
  * approvals that can't help.
  */
@@ -313,5 +324,6 @@ export const CODEX_ROOM_SANDBOX_NOTE =
   "Secret files (.env files, keys, certificates, credential files), logins (SSH keys, the keychain, git and GitHub credentials) and the user's Messages and Mail can't be read. " +
   "Commands can write this folder, temp folders, package caches and this repository's git data, so commits, branches and stashes work — but not git config or hooks, nor the editors', agents' and shells' settings files here (.vscode, .claude, .codex, .mcp.json, .envrc, rc files: read-only in this folder, hidden in the folders below). " +
   "Nothing that needs a login works from here: pushing, or fetching from a private remote. When work is ready to push, tell the user, who pushes from Mockingbird's Source Control or with a `!` command in this pane. " +
+  `${ROOM_WORKTREE_NOTE} ` +
   "Don't request escalation for any of this.\n\n" +
   CODEX_AGENTS_NOTE;

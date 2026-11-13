@@ -826,6 +826,12 @@ Member replace the single admin (creator, else longest-standing member).
   - **No pushing:** like a Codex room session, it can't `git push` (the
     keychain and ssh are denied). A PR is pushed and opened by Mockingbird
     itself when its owner approves it.
+- **No new worktree or submodule update from inside a room pane:** `git
+  worktree add` and `git submodule update` fail in every room pane, Claude's
+  and Codex's, a loud sandbox denial: they write the git folder's `worktrees/`
+  and `modules/`, which the sandbox keeps read-only. So a Claude sub-agent
+  with worktree isolation fails there too. Each pane's agent is told so as it
+  launches; Mockingbird makes a session's worktree itself.
 - **What the deny rules don't cover:** Claude's sandbox doesn't stop a
   shell command reading a secret file inside its own folders (`cat .env`);
   Codex's stops everything the agent runs. Neither stops a `!` command typed

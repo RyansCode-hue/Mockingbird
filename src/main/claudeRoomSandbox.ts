@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { CREDENTIAL_STORES, gitWrites, IN_FOLDER_RUNS_CODE, type RoomGitDirs, SHARED_GIT_FILES } from "./codexRoomSandbox";
+import { CREDENTIAL_STORES, gitWrites, IN_FOLDER_RUNS_CODE, ROOM_WORKTREE_NOTE, type RoomGitDirs, SHARED_GIT_FILES } from "./codexRoomSandbox";
 import { HOME_PRIVATE_DATA, HOME_RUNS_CODE, HOME_SECRETS, knownSecretFiles, notDeniedByPath } from "./secrets";
 
 /**
@@ -45,6 +45,9 @@ export interface ClaudeRoomPlaces {
   /** The command of the SessionStart hook that reports this launch's settings were taken (sandboxMarkerCommand). */
   marker?: string;
 }
+
+/** What a Claude room session is told about its sandbox: the git it can't run there, worktree isolation's included. */
+export const CLAUDE_ROOM_SANDBOX_NOTE = `This Mockingbird team room session runs its Bash commands in the room's sandbox. ${ROOM_WORKTREE_NOTE} That includes a sub-agent with worktree isolation.`;
 
 /** A home pattern as a sandbox path: the folder for "~/x/**", the file otherwise. */
 export const sandboxPath = (p: string) => p.replace(/\/\*\*$/, "");

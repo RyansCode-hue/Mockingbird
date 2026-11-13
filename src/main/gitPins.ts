@@ -53,9 +53,10 @@ export function onGitPinRefused(cb: (top: string, why: string) => void): () => v
   return () => listeners.delete(cb);
 }
 
+/** `p` as the disk has it, links resolved and each name in its own case, so a folder named in another case is the same. */
 const real = (p: string): string => {
   try {
-    return fs.realpathSync(p);
+    return fs.realpathSync.native(p);
   } catch {
     return path.resolve(p);
   }
@@ -66,6 +67,7 @@ const real = (p: string): string => {
  * linked worktree's folder (`gitdir: …`), whose `commondir` names the shared one. Throws, saying why, when they can't
  * be read; a link is refused, as git would follow it too, and so is a folder holding a `commondir`, which git follows
  * from a main checkout's `.git` as from a linked worktree's folder, to another folder's config, hooks and attributes.
+ * Given as the disk has them, links resolved and each name in its own case, as roomGitDirs gives them.
  */
 export function readGitPointer(top: string): GitFolders {
   const dotGit = path.join(top, ".git");
@@ -79,16 +81,16 @@ export function readGitPointer(top: string): GitFolders {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
     if (pointer) throw new Error(`${dotGit} holds a commondir, which would lead git to another folder's git data`);
-    const r = fs.realpathSync(dotGit);
+    const r = fs.realpathSync.native(dotGit);
     return { common: r, own: r };
   }
   if (!st.isFile()) throw new Error(`${dotGit} isn't a folder or a file`);
   const m = /^gitdir: (.+?)\r?\n?$/.exec(fs.readFileSync(dotGit, "utf8"));
   if (!m) throw new Error(`${dotGit} doesn't name a git folder`);
-  const own = fs.realpathSync(path.resolve(top, m[1]));
+  const own = fs.realpathSync.native(path.resolve(top, m[1]));
   let common = own;
   try {
-    common = fs.realpathSync(path.resolve(own, fs.readFileSync(path.join(own, "commondir"), "utf8").trim()));
+    common = fs.realpathSync.native(path.resolve(own, fs.readFileSync(path.join(own, "commondir"), "utf8").trim()));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }

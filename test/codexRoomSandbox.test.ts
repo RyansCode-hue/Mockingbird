@@ -17,6 +17,7 @@ import {
   type CodexRoomPlaces,
 } from "../src/main/codexRoomSandbox";
 import { CodexMcpNames } from "../src/main/codexMcpNames";
+import { clearGitPins, gitPinRefusal, pinGitDirs } from "../src/main/gitPins";
 import { SECRET_FILE_GLOBS } from "../src/main/secrets";
 import { agentFor, cliVersion, codexMcpOff } from "../src/main/agents";
 import { quote } from "../src/main/shell";
@@ -102,6 +103,58 @@ describe("a Codex room session's permission profile", () => {
     expect(await real(repo)).toEqual({ common, own: common });
     expect(await real(wt)).toEqual({ common, own: path.join(common, "worktrees", "feature") });
     expect(await roomGitDirs(tempDir("plain"))).toBeNull();
+  });
+
+  it("gives its git folders with symlinks resolved, as the sandboxes' rules match paths, for a repository and a worktree reached through a link", async () => {
+    const repo = makeRepo();
+    const wt = path.join(tempDir("wt"), "feature");
+    git(repo, "worktree", "add", "-q", "-b", "feature", wt);
+    const links = tempDir("links");
+    fs.symlinkSync(repo, path.join(links, "repo"));
+    fs.symlinkSync(path.dirname(wt), path.join(links, "wts"));
+    const common = fs.realpathSync(path.join(repo, ".git"));
+    expect(await roomGitDirs(path.join(links, "repo"))).toEqual({ common, own: common });
+    const viaLink = (await roomGitDirs(path.join(links, "wts", "feature")))!;
+    expect(viaLink).toEqual({ common, own: path.join(common, "worktrees", "feature") });
+    // and the rules made from them name what the sandbox compares against
+    const profile = profileOf(codexRoomPermissions(places({ git: viaLink })).config);
+    for (const f of ["config", "hooks", "remotes", "worktrees/feature/commondir"]) expect(profile, f).toContain(`${JSON.stringify(path.join(common, f))}="read"`);
+    // a worktree whose own .git file names its git folder through a link
+    const gitLink = path.join(links, "git");
+    fs.symlinkSync(common, gitLink);
+    fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(gitLink, "worktrees", "feature")}\n`);
+    expect(await roomGitDirs(wt)).toEqual({ common, own: path.join(common, "worktrees", "feature") });
+  });
+
+  it("gives its git folders in the case the disk has them, for a folder named in another case, and still pins them", async () => {
+    const repo = makeRepo({ "a.txt": "a\n" }, "CaseRepo");
+    const shouted = path.join(path.dirname(repo), "CASEREPO");
+    // only where names are matched without case, as on a Mac's own disk
+    if (!fs.existsSync(shouted)) return;
+    const wt = path.join(tempDir("wt"), "Feature");
+    git(repo, "worktree", "add", "-q", "-b", "feature", wt);
+    const common = fs.realpathSync.native(path.join(repo, ".git"));
+    expect(path.basename(path.dirname(common))).toBe("CaseRepo");
+    expect(await roomGitDirs(shouted)).toEqual({ common, own: common });
+    const shoutedWt = path.join(path.dirname(wt), "FEATURE");
+    expect(await roomGitDirs(shoutedWt)).toEqual({ common, own: path.join(common, "worktrees", "Feature") });
+    const profile = profileOf(codexRoomPermissions(places({ git: (await roomGitDirs(shoutedWt))! })).config);
+    expect(profile).toContain(`${JSON.stringify(path.join(common, "config"))}="read"`);
+    // pinned as found, the folder's own .git read the same way, so git still runs there
+    try {
+      expect(pinGitDirs(shouted, (await roomGitDirs(shouted))!, shouted)).toBeNull();
+      expect(pinGitDirs(shoutedWt, (await roomGitDirs(shoutedWt))!, shouted)).toBeNull();
+      expect(gitPinRefusal(shoutedWt)).toBeNull();
+      expect(gitPinRefusal(shouted)).toBeNull();
+      // and held there however the folder is named: led elsewhere, git is refused in it by its own case too
+      const evil = path.join(tempDir("evil"), "wt");
+      fs.cpSync(path.join(common, "worktrees", "Feature"), evil, { recursive: true });
+      fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${evil}\n`);
+      expect(gitPinRefusal(wt)).toMatch(/won't run git in .*its \.git now leads to /);
+      expect(gitPinRefusal(shoutedWt)).toMatch(/won't run git in /);
+    } finally {
+      clearGitPins();
+    }
   });
 
   it("names CODEX_HOME only when it isn't ~/.codex", () => {

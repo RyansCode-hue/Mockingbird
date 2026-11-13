@@ -20,7 +20,7 @@ import {
   type RoomGitDirs,
 } from "../codexRoomSandbox";
 import { codexMcpNames } from "../codexMcpNames";
-import { claudeRoomSettings } from "../claudeRoomSandbox";
+import { CLAUDE_ROOM_SANDBOX_NOTE, claudeRoomSettings } from "../claudeRoomSandbox";
 import { sandboxMarkerCommand } from "../hooks";
 import { gitPinRefusal, gitTop, onGitPinRefused, pinGitDirs, unpinGitDirs } from "../gitPins";
 import { roomFolderRefusal } from "../handlers";
@@ -547,7 +547,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       denyReads,
       codexPermissions,
       claudeSettings,
-      instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
+      instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : claudeSandboxed ? CLAUDE_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
       allowTools: target.agent === "claude" ? [...HOUSE_READ_TOOLS, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read, ...TEAM_CHANGES_READ_TOOLS] : [],
       inline,
       // a terminal is a shell once the agent it brought back quits: never guarded

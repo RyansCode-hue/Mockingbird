@@ -904,6 +904,7 @@ describe("room session launch", () => {
       expect(cmd).toContain(`"**/.env"="deny"`);
       expect(cmd).toContain(JSON.stringify(path.join(ryan.settings.workTrackerPath, "secrets/ado.pat")));
       expect(cmd).toContain("so commits, branches and stashes work");
+      expect(cmd).toContain("git worktree add` and `git submodule update` fail here");
       expect(cmd).not.toContain("--disallowedTools");
       // the board couldn't be read here, so the SessionStart hook still adds it
       expect(ptyOf(s.id).env[ROOM_CONTEXT_ENV]).toBeUndefined();
@@ -1028,6 +1029,9 @@ describe("room session launch", () => {
       const cmd = claude.args.join(" ");
       expect(cmd).toContain("--append-system-prompt");
       expect(cmd).toContain("Mockingbird team room");
+      // what its sandbox refuses that an agent reaches for: a worktree of its own, a submodule's update
+      expect(cmd).toContain("git worktree add` and `git submodule update` fail here");
+      expect(cmd).toContain("a sub-agent with worktree isolation");
       // the House's reads run without asking; its writes are left to Claude's permission prompt in the pane
       const allowed = /'--allowedTools' '([^']+)'/.exec(cmd)![1].split(",");
       for (const tool of HOUSE_READ_TOOLS) expect(allowed).toContain(claudeToolName(tool));
@@ -1058,7 +1062,10 @@ describe("room session launch", () => {
   it("without the House board running, an agent starts without it and the SessionStart hook adds it", async () => {
     const { ryan } = await pair();
     const s = await ryan.start();
-    expect(ptyOf(s.id).args.join(" ")).not.toContain("--append-system-prompt");
+    // told only of its sandbox, not the board
+    const cmd = ptyOf(s.id).args.join(" ");
+    expect(cmd).not.toContain("tracked as Radley House tickets");
+    expect(cmd).toContain("--append-system-prompt' 'This Mockingbird team room session runs its Bash commands in the room'\\''s sandbox.");
     expect(ptyOf(s.id).env[ROOM_CONTEXT_ENV]).toBeUndefined();
     expect(ryan.logs.some((l) => /House board for session/.test(l))).toBe(true);
   });
