@@ -707,14 +707,16 @@ function App() {
   /**
    * Show session `s` and give its terminal the keyboard. `since`: the user's input as they asked for it (`inputStamp`),
    * for a jump that waited on main (resuming, starting a preset, opening a search hit): if they typed, pressed or a
-   * dialog opened meanwhile, it's still shown, but the keyboard stays where it is.
+   * dialog opened meanwhile, its tab is shown, but the view doesn't move to it and the keyboard stays where it is.
    */
   const jumpToSession = (s: SessionInfo, since?: number) => {
     // A jump that waited on main (a resume, a preset started, a search hit opened) is superseded by anything the user did
-    // meanwhile: it changes no tab, flies nowhere, selects nothing and moves no keyboard. The note says it's there.
+    // meanwhile: its tab is still shown, where what was started is, but the view flies nowhere, nothing is selected and
+    // the keyboard stays where it is. The note says it's there.
     if (since !== undefined && inputStamp() !== since) {
-      console.info(`[mockingbird] the jump to ${s.id} was superseded by input while main answered: nothing moved`);
-      lsSay(`${titleOf(s)} is ready: you'd moved on meanwhile, so the view stayed where it was`);
+      console.info(`[mockingbird] the jump to ${s.id} was superseded by input while main answered: its tab shown, nothing else moved`);
+      setTab(s.debrief ? "worktracker" : "sessions");
+      if (!s.debrief) lsSay(`${titleOf(s)} is ready: you'd moved on meanwhile, so the view stayed where it was`);
       return;
     }
     if (s.debrief) {

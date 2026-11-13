@@ -3422,12 +3422,12 @@ Design O, with Artifacts as a window, and N's workspace header.
     need re-reading against it.
     - **Note from the 1.7.0 follow-ups (stale jumps), still not built:** a
       jump that waited on main and was superseded (`jumpToSession`'s
-      `since` moved on) is now dropped whole as it arrives, tab, flight,
-      selection and keyboard alike, and a reveal that waited is dropped by
-      its stamp before any flight; a new reveal stops an earlier one's
-      flight, as does that flight's session leaving the landscape. That
-      takes one source of late code moves away (a superseded jump no longer
-      moves anything), so the choke point would have fewer moves to judge,
+      `since` moved on) now only shows its tab as it arrives: no flight,
+      selection or keyboard. A reveal that waited is dropped by its stamp
+      before any flight; a new reveal stops an earlier one's flight, as does
+      that flight's session leaving the landscape. That takes one source of
+      late code moves away (a superseded jump no longer moves the view or
+      the keyboard), so the choke point would have fewer moves to judge,
       but it changes none of the paths it would sit across: the moves made
       a frame or a timer after the user's own key (⌘K's jump, a menu's
       hand-back, the 50 ms retry) are as they were, and so is the reason it
