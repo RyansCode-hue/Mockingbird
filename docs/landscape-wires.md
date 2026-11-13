@@ -8851,3 +8851,146 @@ to a session gone unsaid; a Council with no sessions to ask). Mutation check (`m
   and the stub's `templatesLayOut` changed. No other renderer file changed.
 - No real claude or codex ran: the sandbox tests that start them skip under CI, and every sandbox test here ran
   under it.
+
+## 1.7.0 follow-ups 2 review fixes as built
+
+The security review of follow-ups 2 found two Highs and a Medium; with four Lows, fixed here on main c6ed6c0. Its
+probes (p1–p7, each under a throwaway HOME) are tests now. Outside main, L3 touched `src/renderer/main.tsx` (Start
+now's `startStep`), `src/renderer/Landscape.tsx` (`sendWire`) and `src/preview/stub.ts` (`startPlanned`).
+
+### H1: gh ran its own git in the agent's tree
+
+`gh pr create` runs `git status --porcelain` in its folder, which goes into a nested repository with that
+repository's own config (core.fsmonitor, a filter); a room's agent can `git init sub`, set one, and `git add sub`.
+A tracked hooks folder's pre-push would run if gh pushed. W15's runGh only turned filters off for gh's gits.
+
+- **gh never runs in a session's folder** (`runGh`): it runs in `~/.mockingbird/gh` (`ghFolder`), Mockingbird's own,
+  with `GIT_CEILING_DIRECTORIES` set to its parent, so the gits gh runs for itself find no repository.
+  - The folder is checked empty before each run; anything in it refuses gh, saying what's there.
+  - Every gh call is told the repository: `--repo owner/name`, for `pr list`, `pr view <branch>` (the rail), `pr view
+    <id>` (the merge watch) and `pr create`. `pr create` names `--head` and `--base` already, so gh, outside the
+    repository, reads neither from it and pushes nothing.
+  - Origin is read through guarded git (`guardedOrigin`, which `originRepoOf`, the preflight, the rail and Push and
+    open PR now use), refused where any Mockingbird git is.
+- **The room check stays:** for a room session's folder, or one with no session found there (L1), gh is refused for
+  config from a file the room's agent can write (`roomFilters`), as the repository it's told is read from that
+  config. The filters-off pairs went: gh runs no git in the tree.
+- The merge watch and the rail: the same `--repo` they had (the watch) or now have (the rail), so they read the same
+  pull request; the W12 e2e drives the form's lookup, its create and the watch's reads through `fakeGh.cjs`, which
+  takes `--repo` and records each call's folder.
+
+Tests (`pipeline.test`): p3's trap, a nested repository with an fsmonitor marker in the index and a tracked
+`.husky/pre-push`, and a stand-in gh that runs `git remote -v`, `git status --porcelain` and `git push` in its folder.
+Run in the repository's folder (the control), both the fsmonitor and the hook run. Through `findOpenPr` and `openPr`
+nothing runs, and each call was run in `~/.mockingbird/gh` with `--repo me/app`. A repository holding gh's folder
+isn't found from it (the control without the ceiling finds it). A `.git` in the folder refuses gh. A stray commondir
+refuses the rail and the preflight at the origin read, gh never run. `prStatus.test`: the merge watch's command and
+folder.
+
+### H2: a room folder with no repository at launch could get one
+
+A folder with no repository wasn't pinned (`pinGitDirs`' `if (!top) return null`), so a `.git` its agent made later,
+with an ssh origin and a core.sshCommand, was trusted: a room push ran the command (p6).
+
+- **Neither agent can make one.** With no repository at launch:
+  - Claude's sandbox denies writing `<cwd>/.git` and below, named as the disk has the folder (`onDisk`: links
+    resolved, the disk's case), and the file tools' rules already covered it. livePanes passes the session's cwd
+    (`ClaudeRoomPlaces.cwd`).
+  - Codex's profile names `".git"="read"` in its `:workspace_roots`, whether or not `:workspace` keeps a missing one
+    so. Only at the top: a repository a command makes in a folder below is another one.
+- **Pinned as having none** (`gitPins`): `pinGitDirs` pins the folder `{ none: true }`. A `.git` git would find from it
+  later, in it or above it, refuses every Mockingbird git there: "Mockingbird won't run git in …: it had no repository
+  when its room session started, and now git would find …/.git, which that session's agent could have made, config
+  and all." A repository inside it is another one, left as any other.
+- **The innermost pin speaks** (`pinOf`): a room session pinned in a repository inside another pinned folder is held
+  by its own pin, so a no-repository pin above it doesn't stand in for it (one put in place of its `.git` is refused).
+- **A launch reads the folder afresh:** livePanes lets go of whatever was pinned at the session's folder, as well as
+  at its repository's top, before it asks git; `pinGitDirs` replaces what was pinned at the folder. So a repository
+  made above a no-repository folder is pinned at the next launch there, rather than refused as "git found no
+  repository".
+
+Tests: `gitPins.test` (p6: the agent's `git init`, ssh origin and core.sshCommand; `gitPinRefusal`, the room push,
+`roomFilters` and a status all refused, told once, the command never run; a relaunch pins it; a repository above,
+refused till pinned again; a nested repository left alone, its own pin holding it), `claudeRoomSandbox.test` and
+`codexRoomSandbox.test` (the rules, only with no repository), `teamLivePanes` (a launch's settings for each agent, the
+refusal after `git init`, and a relaunch under a repository made above).
+
+### M1: a folder below the top made to look like a bare repository
+
+`gitTop` looks for `.git` only, and git takes a folder holding `HEAD`, `objects/`, `refs/` and a `config` as a bare
+repository; a plain `git log` there ran the agent's `gpg.program` (p4, p5).
+
+- **Every Mockingbird git finds a repository only by its `.git`:** `git.ts` gives each git
+  `-c safe.bareRepository=explicit` first (`FIND_BY_DOT_GIT`), and Find's own `git grep` too. In such a folder git
+  refuses ("cannot use bare repository '…' (safe.bareRepository is 'explicit')"), and Mockingbird says so.
+- **Nothing relied on a bare cwd:** the artifact references and take-over open the user's own clones (found by origin
+  in the repo index), working trees; the test copies are clones with a `.git` (`--no-checkout`, not `--bare`); the
+  room caches hold package caches, no repository; selfUpdate's gits run in the user's Mockingbird checkout, through
+  its shell. A `-c` also reaches the gits git runs (hooks, its own subprocesses); a local or ssh push's far side opens
+  its repository by path, which the setting doesn't govern (the W12 e2e pushes to a bare origin over the stand-in
+  ssh).
+
+Tests: `gitPins.test` (p5: the signed commit and the agent's `gpg.program`; plain git runs it, Mockingbird's log and
+Find are refused, nothing runs, the top still works), `findPins.test` (Find's own spawn, past `isRepo`).
+
+### Lows
+
+- **L1: gh fails closed.** `roomRulesFor` (`handlers.ts`) decides both `folderOwnHooks` and gh's room check: a folder
+  is a room's when a session there is, or none is found there. `ghInRoom`, which answered no for a folder with no
+  session record, is gone.
+- **L3: the window hears a stage that couldn't be moved.** `sessions:startPlanned` answers `StepStarted` (now in
+  `shared/types`), and Start now says "… started, but #5115 couldn't be moved to Coding (…)." A Send that started a
+  step answers it in `note`, which the landscape says; a Send that then failed says it after its refusal. The
+  notification (`startPlannedStep`, subject to settings and a 30-second throttle) is gone; an automatic gate never
+  starts a step, so it has nothing to say.
+- **L4: worded from the failure.** `PipelineStore.sessionOpened` makes the move a session opened on a ticket makes,
+  and words its failure: "#5 couldn't be moved to Coding (…)", or "tracked at BA" for an Orchestrator's. Showing it
+  in the windows failing after says the ticket's stage and that the windows couldn't be shown it. `sessionOpened`
+  (index.ts) uses it, for a new session and a started step alike.
+- **L6: one `onDisk`.** `gitPins` uses `handlers.ts`' `onDisk` for its `real`.
+- **L2** (follow-up list): `info/exclude`, `info/attributes` and `objects/info/alternates` sit in folders the agent
+  can write (`info/`, `objects/info/`), so one renamed away and replaced by a folder of its own replaces the file,
+  past a rule that names the file (p7, at the macOS sandbox level). Added to the hand checks below.
+- **L5:** the area-left case is said already; no change.
+
+### Found on the way
+
+- A repository nested in a room session's writable folder (not a submodule) has its git data written freely by that
+  agent, and a session Mockingbird later runs there (a local one included) takes its config. This was so before this
+  batch, for a folder with a repository at its top too; the no-repository pin leaves nested repositories as they
+  were. On the follow-up list.
+- `collab.test`'s Council lay-out read its wires in the object's key order, so a wire id that read as an integer (8
+  hex digits, all of them digits) came first and the test failed now and then. It reads them with `wiresInOrder`.
+
+Mutation check (`mut/review.json`): 25 of 25 caught. H1: gh in the repository's folder, without `--repo`, without the
+ceiling, the folder not checked empty, the room check dropped, `pr create` without `--head`. H2: no none-pin, a
+none-pin refusing nothing, one refusing nested repositories, one passing a repository above, the outermost pin
+chosen, `pinGitDirs` keeping the old pin, livePanes not letting go of it, either sandbox's rule dropped, Claude's
+named as given, livePanes not passing Claude its cwd. M1: `git.ts` and Find without the setting. L1: none found not a
+room's, prDeps without the rules. L3: the Send's note, and a failed Send's. L4: the failure unworded, an
+Orchestrator's worded as Coding. One more, origin read through plain git rather than guarded, changes nothing a test
+can see (`remote get-url` runs nothing either way) and isn't counted.
+
+**Hand checks with real CLIs** (none run here):
+- The PR form, the rail and the merge watch against a real GitHub repository, with a real gh: `gh pr list|view|create
+  … --repo` from `~/.mockingbird/gh`, outside any repository, opens and reads the PR (gh ignores its remotes' error
+  under `--repo`, and `pr create` with `--head` pushes nothing).
+- A Claude and a Codex room pane in a folder with no repository: `git init`, `mkdir .git`, `echo > .git`, `mv` of a
+  folder made in the temp folder to `.git`, and the Edit tool on `.git/config`: all refused. `git init sub` and a
+  clone into a folder below still work. `get_sandbox_dialog` lists `<folder>/.git` in `fs_deny_write`.
+- The parent swap (L2), in both panes, on a main checkout and a linked worktree: `mv .git/info .git/info.old && mkdir
+  .git/info && echo x > .git/info/exclude`, the same for `objects/info` (`alternates`), and through Bash and `node -e`.
+  Expected to go through, as p7 found; what it lets the agent do is on the follow-up list.
+
+### Checked
+
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0, the main checkout's `node_modules` linked in for `leakGuard`'s nested run (removed
+  afterwards): 199 files pass and 37 skip; 3,702 tests pass and 361 skip. Two earlier runs failed on things not of
+  this batch: the link first made inside the worktree's own `node_modules` folder (leakGuard's nested run found no
+  vitest there), then collab.test's key-order flake above.
+- The W12 e2e once (`MB_E2E_APP=1 npx vitest run test/wireRunApp.e2e.test.ts`): 2 passed, the form's lookup and create
+  and the watch's reads through the stand-in gh with `--repo`, from `~/.mockingbird/gh`, and the push to its bare
+  origin under `safe.bareRepository=explicit`.
+- `uiLandscapeWires`' Start now and Send tests alone in Chrome, without CI: 2 passed. The PR form wasn't touched.
+- No real claude, codex or gh ran.

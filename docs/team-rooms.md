@@ -804,15 +804,33 @@ Member replace the single admin (creator, else longest-standing member).
     Find's `git grep` — goes through one check first (`gitPins.ts`, from
     `git.ts`, and from `find.ts` for the grep it starts itself): a `.git`
     that now leads elsewhere, or a
-    new `.git` between the folder and its top, refuses it, saying so once.
-    Restarting the session reads the folder afresh. `gh`, which the PR form,
-    the pane's PR status and the merge watch run in a session's folder and
-    which runs git there itself (`pr create` reads the index), goes through
-    the same check first, and so does any folder whose `.git` holds a
-    `commondir`. In a room session's folder it also goes through the room's
-    config check (nothing from a file the room's agent can write), and its
-    gits run with the filters a room's git turns off. A refused one says why
-    in the form, the rail or the merge watch's failure.
+    new `.git` between the folder and its top, refuses it, saying so once;
+    so does any folder whose `.git` holds a `commondir`. A folder with no
+    repository at its launch is pinned as having none: its agent can't make
+    a `.git` there (Claude's sandbox denies it by the folder's own path,
+    Codex's profile names `.git` read-only at its folders' tops), and a
+    `.git` git would find from it later, there or above, refuses every git
+    Mockingbird runs there all the same, as its agent could have written its
+    config; a repository inside the folder is another one, left as any
+    other. Restarting the session reads the folder afresh.
+  - **Every git Mockingbird runs finds a repository only by its `.git`**
+    (`safe.bareRepository=explicit`): a folder an agent made look like a
+    bare repository (`HEAD`, `objects/`, `refs/` and a `config`), its own or
+    one below a repository's top, is refused by git, saying so, rather than
+    taken as a repository whose config names what runs.
+  - **`gh` never runs in a session's folder.** The PR form, the pane's PR
+    status and the merge watch run it in Mockingbird's own empty folder
+    (`~/.mockingbird/gh`, refused while it holds anything, with
+    `GIT_CEILING_DIRECTORIES` so git finds no repository above it), told the
+    repository with `--repo` (origin, read through Mockingbird's guarded
+    git) and, for `pr create`, the branch and base with `--head` and
+    `--base`. So none of the gits gh runs for itself — its remotes, `pr
+    create`'s status of the working tree, which goes into nested
+    repositories with configs of their own — run in an agent's tree, and gh
+    pushes nothing. For a room session's folder, or one no session is found
+    in, it's also refused for config from a file the room's agent can write,
+    as origin is read from that config. A refused one says why in the form,
+    the rail or the merge watch's failure.
   - **Mockingbird's own commits aren't signed.** A turn's snapshot and a
     take-over's backup are commits under Mockingbird's own refs, made with
     `git commit-tree`, which, as git's plumbing, ignores `commit.gpgSign`
