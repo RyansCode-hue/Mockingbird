@@ -3809,14 +3809,20 @@ button.ls-step:hover { border-color: var(--line-strong2); }
   font: 500 11px/16px var(--ui); color: var(--text-1); cursor: pointer;
 }
 .ls-strip-more:hover { border-color: var(--text-3); }
-.ls-strip-attached { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; padding-left: 8px; }
+/* Attached gives up its room before the chain does (a shrink far above the chain's): a context link's "· context" first,
+   then each title down to its floor, its own width or 64 px, whichever is less; only then does the chain scroll its
+   steps under the fades. Both are one line of wrapping text cut with an ellipsis (line-clamp) rather than unbreakable
+   text, which would hold a chip at its whole width */
+.ls-strip-attached { display: flex; align-items: center; gap: 8px; flex-shrink: 1000; margin-left: auto; padding-left: 8px; }
 .ls-attach {
   display: flex; align-items: center; gap: 6px; max-width: 180px; padding: 5px 10px; border-radius: 14px; border: 1px solid var(--line-strong);
   background: var(--bg-pane); font: 400 12px var(--ui); color: var(--text-2); white-space: nowrap; cursor: pointer;
 }
 .ls-attach:hover { border-color: var(--line-strong2); }
 .ls-attach .dot { width: 7px; height: 7px; }
-.ls-attach-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ls-attach-t, .ls-attach-s { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; white-space: normal; overflow-wrap: anywhere; }
+.ls-attach-t { min-width: calc-size(max-content, min(size, 64px)); }
+.ls-attach-s { flex-shrink: 100; min-width: 0; }
 .ls-attach.context .ls-attach-t { max-width: 112px; }
 .ls-attach.context { color: var(--teal-text); background: color-mix(in srgb, var(--teal) 6%, var(--bg-pane)); border: 1px dashed color-mix(in srgb, var(--teal) 45%, transparent); }
 .ls-hud {

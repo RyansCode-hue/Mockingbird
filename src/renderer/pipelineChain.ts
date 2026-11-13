@@ -120,6 +120,18 @@ export function chainOf(here: string, links: Readonly<Record<string, Wire>>, end
   return chain;
 }
 
+/**
+ * What ⌥← (`back`) or ⌥→ says when the chain has no step that way. A cycle of handoffs (one a damaged book holds; main
+ * makes none) ends where it would come round, so with nothing after this one it still hands work on: back round to the
+ * step before it its handoff goes to, which is said.
+ */
+export function noStepNote(c: Pick<Chain, "up" | "here">, back: boolean): string {
+  if (back) return "Nothing hands work on to this workspace";
+  const round = c.here.back?.type === "handoff" ? c.up.find((s) => s.id === c.here.back!.to) : undefined;
+  if (!round) return "This workspace hands work on to nothing";
+  return `This workspace hands work on to ${round.end ? `“${round.end.title}”` : "a workspace that's gone"}, which comes before it: its handoffs run in a circle`;
+}
+
 /** How a step's card reads: its line under the title, and the tone it's drawn in. */
 export interface StepNote {
   text: string;

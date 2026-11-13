@@ -202,12 +202,13 @@ export function runStripAudit(env: StripAuditEnv): void {
         await press("ArrowLeft", { alt: true });
         out.altLeft = { focused: inFocus(), keyboard: keyboard(), wrote: writes(B) - w1 };
 
-        // a click straight after a move is let go, even on what stayed put going to the same place: Pathways, attached to
-        // Builder and to Reviewer both, at the strip's right end
-        const pathways = () => document.querySelector<HTMLButtonElement>('.ls-strip .ls-attach[data-step="s5"]');
-        const pathwaysAt = pathways()?.getBoundingClientRect().left;
-        await drive([{ key: "ArrowRight", alt: true }, { pause: 120 }, { mouse: { ...centre(pathways()!), clickCount: 1 } }]);
-        out.soonAfter = { focused: inFocus(), stayed: pathways()?.getBoundingClientRect().left === pathwaysAt, heldOff: !!pathways()?.disabled, keyboard: keyboard() };
+        // a click straight after a move is let go, even on what stayed put going to the same place: Shape's step, at the
+        // chain's start from Builder and from Reviewer both (Attached, at the right end, gives up its room to the chain
+        // first, so its chips move as the chain does)
+        const shape = () => document.querySelector<HTMLButtonElement>('.ls-strip .ls-step[data-step="wb-shape"]');
+        const shapeAt = shape()?.getBoundingClientRect().left;
+        await drive([{ key: "ArrowRight", alt: true }, { pause: 120 }, { mouse: { ...centre(shape()!), clickCount: 1 } }]);
+        out.soonAfter = { focused: inFocus(), stayed: shape()?.getBoundingClientRect().left === shapeAt, heldOff: !!shape()?.disabled, keyboard: keyboard() };
         await settle();
         await press("ArrowLeft", { alt: true });
 

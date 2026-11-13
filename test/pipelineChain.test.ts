@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { newWire, type Gate, type Wire, type WireType } from "../src/shared/wires";
-import { chainOf, stepNote, type Chain, type StepEnd } from "../src/renderer/pipelineChain";
+import { chainOf, noStepNote, stepNote, type Chain, type StepEnd } from "../src/renderer/pipelineChain";
 
 // The pipeline strip's chain (W6): upstream as one chain, downstream the first branch with the others beside it, the
 // attached workspaces, and what each step says.
@@ -49,6 +49,22 @@ describe("chainOf", () => {
     const cycle = chain("a", { w1: wire("a", "b"), w2: wire("b", "c"), w3: wire("c", "a") });
     expect(ids(cycle)).toEqual({ up: ["b", "c"], here: "a", down: [] });
     expect(cycle!.here.back?.to).toBe("b");
+  });
+
+  it("says, with no step after this one, that it hands work on to nothing, or round to a step before it in a cycle", () => {
+    const line = chain("b", { w1: wire("a", "b") })!;
+    expect(noStepNote(line, false)).toBe("This workspace hands work on to nothing");
+    expect(noStepNote(chain("a", { w1: wire("a", "b") })!, true)).toBe("Nothing hands work on to this workspace");
+    // a feedback loop back isn't handing work on
+    const loop = chain("b", { w1: wire("a", "b"), w2: wire("b", "a", "feedback") })!;
+    expect(ids(loop)!.down).toEqual([]);
+    expect(noStepNote(loop, false)).toBe("This workspace hands work on to nothing");
+    // a damaged cycle of handoffs: a hands on to b, which comes before it here
+    const cycle = chain("a", { w1: wire("a", "b"), w2: wire("b", "c"), w3: wire("c", "a") })!;
+    expect(noStepNote(cycle, false)).toBe("This workspace hands work on to “B”, which comes before it: its handoffs run in a circle");
+    expect(noStepNote(chain("a", { w1: wire("a", "b"), w2: wire("b", "a") }, { b: null })!, false)).toBe(
+      "This workspace hands work on to a workspace that's gone, which comes before it: its handoffs run in a circle"
+    );
   });
 
   it("takes the first branch of a fan-out, the others beside it as its +n", () => {

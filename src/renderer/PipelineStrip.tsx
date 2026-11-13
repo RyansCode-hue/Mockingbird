@@ -11,7 +11,7 @@ import { ANSWER_GUARD_MS, keyClick, useHeldOff, useSettledRows } from "./answerG
 import type { ResolvedLayout } from "./landscapeModel";
 import { useWires } from "./WireLayer";
 import { gateContextOf, type WireRoom } from "./wiresModel";
-import { chainOf, stepEnds, stepNote, type Chain, type Hop, type Step, type StripSessions } from "./pipelineChain";
+import { chainOf, noStepNote, stepEnds, stepNote, type Chain, type Hop, type Step, type StripSessions } from "./pipelineChain";
 
 /**
  * The pipeline strip (docs/landscape.md, Focus): over a focused workspace that has wires, the chain of steps through it
@@ -133,7 +133,7 @@ export function usePipelineStrip({
       const back = e.key === "ArrowLeft";
       if (!chain) return say(read ? "No wires reach this workspace: there's no pipeline to move along" : "The wires can't be read, so there's no pipeline to move along");
       const to = back ? chain.up[chain.up.length - 1] : chain.down[0];
-      if (!to) return say(back ? "Nothing hands work on to this workspace" : "This workspace hands work on to nothing");
+      if (!to) return say(noStepNote(chain, back));
       move(to.id, a !== f && f.contains(a) && ownsKeys(a) ? "terminal" : "frame");
     };
     window.addEventListener("keydown", onKey, true);
@@ -345,7 +345,7 @@ const StripView = memo(function StripView({
                   >
                     {a.type === "worktree" && (a.end?.where === "open" ? <StatusDot status={a.end.status} /> : <span className="dot idle" />)}
                     <span className="ls-attach-t">{a.end?.title ?? "A workspace that's gone"}</span>
-                    {a.type === "context" && " · context"}
+                    {a.type === "context" && <span className="ls-attach-s">{"·\u00a0context"}</span>}
                   </button>
                 );
               })}

@@ -71,9 +71,9 @@ describe.skipIf(!local)("the pipeline strip", () => {
     // each wire between steps in its gate's state, as the drawn wires have it
     expect(r.arrows).toEqual(["wb-sent: sent", "wb-sending: sending", "wb-held: blocked"]);
     expect(r.attached).toEqual(["wb-dev", "s5"]);
-    // with the side bar narrowing it, scrolled to show both neighbours whole where the three fit (from Reviewer), else
-    // this one and the next, ⌥→'s (from Builder, Attached taking the room Shape needs)
-    expect(r.inView).toEqual(["wb-builder", "wb-reviewer"]);
+    // with the side bar narrowing it, Attached gives up its room first (its context link's "· context", then its titles
+    // to their floor), so from Builder both neighbours show whole, clear of the fades; and from Reviewer
+    expect(r.inView).toEqual(["wb-shape", "wb-builder", "wb-reviewer"]);
     expect(r.inViewOn).toEqual(["wb-builder", "wb-reviewer", "wb-tester"]);
     // a click on a step only just shown is let go, the step off a moment
     expect(r.fresh).toEqual({ focused: "wb-builder", heldOff: true });
