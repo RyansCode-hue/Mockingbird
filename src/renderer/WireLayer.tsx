@@ -4,7 +4,7 @@ import type { Camera, Rect } from "../shared/landscape";
 import type { WireState } from "../shared/wires";
 import { createIpcStore } from "./ipcStore";
 import { GHOST_INSET, type Band, type Point } from "./landscapeModel";
-import { pillBox, shiftedBox, translateOf, wireCurve, wireNear, type WireAnchor, type WireCurve, type WireLook, type WireView } from "./wiresModel";
+import { endKey, pillBox, shiftedBox, translateOf, wireCurves, wireNear, type WireAnchor, type WireCurve, type WireLook, type WireView } from "./wiresModel";
 
 /** The wire book as main last said it (wires:get, then wires:changed), and why it couldn't be read when it couldn't. */
 export interface WiresRead {
@@ -45,6 +45,11 @@ export const rereadWires = (): void => readWires();
 /** The arrowhead each look ends in: its colour's. */
 const MARK: Record<WireLook, string> = { idle: "idle", ready: "amber", sending: "amber", sent: "green", blocked: "red", context: "idle", tree: "idle" };
 const MARKS = ["idle", "amber", "green", "red"];
+const SVG_NS = "http://www.w3.org/2000/svg";
+/** What the lines pass under (a mask holds them out): areas' headers and names, collapsed areas' pills, and ghosts. */
+const UNDER = ".ls-area-head, .ls-area-title, .ls-area-pill, .ls-ghost:not(.hidden)";
+/** The mask's reach, in landscape px either way from the origin: past any landscape. */
+const FAR = 1e6;
 
 export interface WireLayerHandle {
   /** Draw the wires again where their ends are now: a workspace being dragged (its `translate`) or let go. */
@@ -59,11 +64,14 @@ export interface WireLayerHandle {
 
 /**
  * The landscape's wires (docs/landscape-wires.md, W4a): one SVG in the world, over the areas and under the workspaces,
- * and their labels beside it, kept at screen size by --ls-inv (Landscape's paintScale). React draws what each wire is;
- * where it runs is written straight to the elements, as the guides are: when the layout changes, when the zoom does
- * (a card's inset and a pill's size are a few screen px), and as a dragged workspace moves (`follow`), never through a
- * render. Nothing here takes a pointer or the keyboard: a right-click on a wire, and a click on its gate dot, are found
- * from where it was last drawn (`wireAt`, `dotAt`).
+ * and their labels and gate dots beside it, over the workspaces, kept at screen size by --ls-inv (Landscape's
+ * paintScale). React draws what each wire is; where it runs is written straight to the elements, as the guides are:
+ * when the layout changes, when the zoom does (a card's inset and a pill's size are a few screen px), and as a dragged
+ * workspace moves (`follow`), never through a render. The lines pass under the areas' headers and names, collapsed
+ * areas' pills and ghosts, as under the workspaces: a mask holds those places out, read from where they're drawn as
+ * the lines are painted. Nothing here takes the keyboard, and nothing but a gate dot takes a pointer, so a dot a
+ * workspace lies under is still pressed: the press is the landscape's, and a right-click on a wire, and a click on its
+ * dot, are found from where it was last drawn (`wireAt`, `dotAt`).
  */
 export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; band: Band; cam: React.MutableRefObject<Camera>; listeners: Set<(c: Camera) => void> }>(function WireLayer(
   { views, band, cam, listeners },
@@ -71,6 +79,7 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
 ) {
   const svg = useRef<SVGSVGElement>(null);
   const labels = useRef<HTMLDivElement>(null);
+  const dots = useRef<SVGSVGElement>(null);
   const now = useRef({ views, band });
   now.current = { views, band };
   /** Each wire's curve as last painted, for `wireAt`: the layer itself takes no pointer. */
@@ -79,8 +88,9 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
   const paint = () => {
     const s = svg.current;
     const lb = labels.current;
+    const ds = dots.current;
     const world = s?.parentElement;
-    if (!s || !lb || !world) return;
+    if (!s || !lb || !ds || !world) return;
     const zoom = cam.current.zoom;
     const px = 1 / zoom;
     // zoomed out to cards, workspaces and ghosts are drawn a few screen px in from their places (styles.css --ci)
@@ -100,23 +110,50 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
           const el = world.querySelector<HTMLElement>(`.ls-area-pill[data-area="${CSS.escape(a.key)}"]`);
           pills.set(a.key, el ? { w: el.offsetWidth, h: el.offsetHeight } : null);
         }
+    // what the lines pass under, where it's drawn, in landscape px: the svg is 1 × 1 at the world's origin
+    const origin = s.getBoundingClientRect();
+    const under: Rect[] = [];
+    if (now.current.views.length)
+      for (const el of world.querySelectorAll<HTMLElement>(UNDER)) {
+        const r = el.getBoundingClientRect();
+        if (r.width && r.height) under.push({ x: (r.left - origin.left) / zoom, y: (r.top - origin.top) / zoom, w: r.width / zoom, h: r.height / zoom });
+      }
     const box = (a: WireAnchor): Rect =>
       a.kind === "pill" ? pillBox(a.rect, pills.get(a.key) ?? null, zoom) : shiftedBox(a.rect, a.kind === "tile" ? moved.get(a.key) : undefined, inset);
     const texts = new Map<string, HTMLElement[]>();
     for (const el of lb.querySelectorAll<HTMLElement>("[data-wire]")) texts.set(el.dataset.wire!, [...(texts.get(el.dataset.wire!) ?? []), el]);
     const groups = new Map<string, SVGGElement>();
-    for (const g of s.querySelectorAll<SVGGElement>(":scope > g.ls-wire")) groups.set(g.dataset.wire!, g);
+    for (const g of s.querySelectorAll<SVGGElement>("g.ls-wire")) groups.set(g.dataset.wire!, g);
+    const circles = new Map<string, SVGCircleElement>();
+    for (const c of ds.querySelectorAll<SVGCircleElement>("circle.dot")) circles.set(c.dataset.wire!, c);
+    const holes = s.querySelector<SVGGElement>("mask g.holes");
+    if (holes) {
+      while (holes.childElementCount > under.length) holes.lastElementChild!.remove();
+      while (holes.childElementCount < under.length) holes.appendChild(document.createElementNS(SVG_NS, "rect"));
+      under.forEach((r, i) => {
+        const h = holes.children[i];
+        h.setAttribute("x", String(r.x));
+        h.setAttribute("y", String(r.y));
+        h.setAttribute("width", String(r.w));
+        h.setAttribute("height", String(r.h));
+      });
+    }
+    const runs = wireCurves(
+      now.current.views.map((v) => ({ id: v.id, from: endKey(v.from), to: endKey(v.to), a: box(v.from), b: box(v.to) })),
+      px
+    );
     curves.current.clear();
     for (const v of now.current.views) {
       const g = groups.get(v.id);
       if (!g) continue;
-      const c = wireCurve(box(v.from), box(v.to), px);
+      const c = runs.get(v.id) ?? null;
+      const dot = circles.get(v.id);
       g.style.display = c ? "" : "none";
+      if (dot) dot.style.display = c ? "" : "none";
       for (const t of texts.get(v.id) ?? []) t.style.display = c ? "" : "none";
       if (!c) continue;
       curves.current.set(v.id, c);
       for (const p of g.querySelectorAll("path")) p.setAttribute("d", c.d);
-      const dot = g.querySelector("circle");
       if (dot) {
         dot.setAttribute("cx", String(c.mid.x));
         dot.setAttribute("cy", String(c.mid.y));
@@ -136,8 +173,8 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
   /** A wire's dot element while it's drawn: none zoomed out of the live band, where the dots are hidden. */
   const dotEl = (id: string): SVGCircleElement | null => {
     if (now.current.band !== "live") return null;
-    const c = svg.current?.querySelector<SVGCircleElement>(`:scope > g.ls-wire[data-wire="${CSS.escape(id)}"] > circle.dot`);
-    return c && c.parentElement?.style.display !== "none" ? c : null;
+    const c = dots.current?.querySelector<SVGCircleElement>(`circle.dot[data-wire="${CSS.escape(id)}"]`);
+    return c && c.style.display !== "none" ? c : null;
   };
   useImperativeHandle(
     ref,
@@ -183,14 +220,19 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
               <path d="M2 1L8 5L2 9" />
             </marker>
           ))}
+          <mask id="ls-wire-under" maskUnits="userSpaceOnUse" x={-FAR} y={-FAR} width={2 * FAR} height={2 * FAR}>
+            <rect x={-FAR} y={-FAR} width={2 * FAR} height={2 * FAR} fill="white" />
+            <g className="holes" fill="black" />
+          </mask>
         </defs>
-        {views.map((v) => (
-          <g key={v.id} className={`ls-wire lk-${v.look}`} data-wire={v.id} data-type={v.type}>
-            {v.look === "ready" && <path className="glow" />}
-            <path className="line" markerEnd={v.arrow ? `url(#ls-wa-${MARK[v.look]})` : undefined} />
-            {v.dot && <circle className={`dot ${v.dot}`} />}
-          </g>
-        ))}
+        <g className="ls-wire-runs" mask="url(#ls-wire-under)">
+          {views.map((v) => (
+            <g key={v.id} className={`ls-wire lk-${v.look}`} data-wire={v.id} data-type={v.type}>
+              {v.look === "ready" && <path className="glow" />}
+              <path className="line" markerEnd={v.arrow ? `url(#ls-wa-${MARK[v.look]})` : undefined} />
+            </g>
+          ))}
+        </g>
       </svg>
       <div ref={labels} className="ls-wire-labels" style={inv} aria-hidden="true">
         {views.map((v) => (
@@ -213,6 +255,9 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
           </React.Fragment>
         ))}
       </div>
+      <svg ref={dots} className="ls-wire-dots" width="1" height="1" style={inv} aria-hidden="true">
+        {views.map((v) => v.dot && <circle key={v.id} className={`dot ${v.dot}`} data-wire={v.id} />)}
+      </svg>
     </>
   );
 }));

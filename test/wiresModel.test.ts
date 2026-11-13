@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, finishLines, finishedLine, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
+import { LANE_PX, anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, finishLines, finishedLine, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireCurves, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { mergeViewOf } from "../src/main/prWatch";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
@@ -231,6 +231,39 @@ describe("a wire's curve", () => {
     expect(translateOf("")).toBeUndefined();
     expect(shiftedBox(a, { x: 12, y: 30 }, 0)).toEqual({ x: 12, y: 30, w: 100, h: 100 });
     expect(shiftedBox(a, undefined, 5)).toEqual({ x: 5, y: 5, w: 90, h: 90 });
+  });
+
+  it("runs beside another between the same two boxes rather than on it, its gate dot a dot's width from the other's", () => {
+    const a = { x: 0, y: 0, w: 200, h: 100 };
+    const right = { x: 300, y: 0, w: 200, h: 100 };
+    const below = { x: 0, y: 300, w: 200, h: 100 };
+    const left = { x: -400, y: 0, w: 200, h: 100 };
+    const run = (id: string, from: string, to: string, ra: typeof a, rb: typeof a) => ({ id, from, to, a: ra, b: rb });
+    // a handoff and a context link one way side to side: either side of the line one alone takes
+    const side = wireCurves([run("h", "A", "B", a, right), run("c", "A", "B", a, right), run("x", "A", "C", a, below)]);
+    const alone = wireCurve(a, right)!;
+    expect(side.get("h")!.from.y).toBe(alone.from.y - LANE_PX / 2);
+    expect(side.get("c")!.from.y).toBe(alone.from.y + LANE_PX / 2);
+    expect(side.get("x")).toEqual(wireCurve(a, below));
+    const apart = (p: { x: number; y: number }, q: { x: number; y: number }) => Math.hypot(p.x - q.x, p.y - q.y);
+    expect(apart(side.get("h")!.mid, side.get("c")!.mid)).toBeGreaterThanOrEqual(LANE_PX - 0.01);
+    // down and back up take one line top to bottom: they're spread too
+    const updown = wireCurves([run("d", "A", "C", a, below), run("u", "C", "A", below, a)]);
+    expect(updown.get("d")!.from.x).toBe(100 - LANE_PX / 2);
+    expect(updown.get("u")!.from.x).toBe(100 + LANE_PX / 2);
+    // a wire forward and a loop back don't lie on one another: each runs as it would alone
+    const back = wireCurves([run("f", "A", "B", a, right), run("b", "B", "A", right, a)]);
+    expect(back.get("f")).toEqual(wireCurve(a, right));
+    expect(back.get("b")).toEqual(wireCurve(right, a));
+    // two loops back: one inside the other, apart where their dots are; at a zoom, by screen px
+    const loops = wireCurves([run("l1", "A", "L", a, left), run("l2", "A", "L", a, left)], 2);
+    expect(apart(loops.get("l1")!.mid, loops.get("l2")!.mid)).toBeGreaterThanOrEqual(LANE_PX * 2);
+    // an end kept on its box however far its lane moves it
+    const thin = wireCurves([0, 1, 2, 3, 4].map((i) => run(`t${i}`, "A", "B", { x: 0, y: 0, w: 200, h: 20 }, right)));
+    for (const c of thin.values()) {
+      expect(c!.from.y).toBeGreaterThanOrEqual(0);
+      expect(c!.from.y).toBeLessThanOrEqual(20);
+    }
   });
 
   it("is found by a point near its line, the nearest of two, and not by one farther than it reaches", () => {

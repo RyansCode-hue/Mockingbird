@@ -132,7 +132,7 @@ export async function wireNeedsPart(env: WireNeedsEnv, out: Record<string, unkno
     await act([click(q('.ls-world .ls-node[data-front="wb-builder"] .ls-term')!)]);
     await sleep(1300);
     const typedIn = keyboard();
-    await act([click(q('.ls-wires g[data-wire="wb-ghost"] circle.dot')!)]);
+    await act([click(q('.ls-wire-dots circle.dot[data-wire="wb-ghost"]')!)]);
     await until(() => !!q(".wg-pop:not(.mb-ghost)"));
     await sleep(700);
     const send = qs(".wg-pop:not(.mb-ghost) button").find((b) => b.textContent === "Send");

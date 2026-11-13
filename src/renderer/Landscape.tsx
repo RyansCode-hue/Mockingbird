@@ -646,7 +646,7 @@ export function Landscape({
   const paintScale = (zoom: number) => {
     const inv = String(1 / zoom);
     const hs = String(Math.max(1, 1 / zoom));
-    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-wh, .ls-window, .ls-acard, .ls-ghost, .ls-wires, .ls-wire-labels") ?? []) {
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-wh, .ls-window, .ls-acard, .ls-ghost, .ls-wires, .ls-wire-labels, .ls-wire-dots") ?? []) {
       el.style.setProperty("--ls-inv", inv);
       el.style.setProperty("--ls-hs", hs);
     }
@@ -839,6 +839,8 @@ export function Landscape({
   // the layout now has where they were dropped
   useLayoutEffect(() => {
     paintScale(cam.current.zoom);
+    // the wires painted as this layout rendered, before a pill just collapsed had its --ls-hs, which sizes it
+    wiresRef.current?.follow();
     looked();
     settling.current = settling.current.filter((s) => {
       if (!s.moved()) return true;
@@ -847,7 +849,10 @@ export function Landscape({
     });
     dragDone();
   }, [layout]);
-  useLayoutEffect(() => paintScale(cam.current.zoom), [band]);
+  useLayoutEffect(() => {
+    paintScale(cam.current.zoom);
+    wiresRef.current?.follow();
+  }, [band]);
 
   const zoomTo = (zoom: number, at?: { x: number; y: number }) => {
     stopFly();

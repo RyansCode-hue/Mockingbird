@@ -30,8 +30,11 @@ interface Audit {
   wires: Drawn[];
   boxes: Record<string, Box>;
   docsTab: Box | null;
-  order: { svg: number; labels: number; lastArea: number; firstGhost: number; firstNode: number };
+  order: { svg: number; labels: number; dots: number; lastArea: number; firstGhost: number; firstNode: number };
   events: string[];
+  layers: string[];
+  dotEvents: string[];
+  blockedMix: number[] | null;
   pill: Box;
   before: { builder: Box; sent: { from: Pt; to: Pt } };
   during: { builder: Box; sent: { from: Pt; to: Pt }; tree: { from: Pt; to: Pt }; loop: { from: Pt; to: Pt }; translate: string };
@@ -108,11 +111,44 @@ describe.skipIf(!local)("the landscape's wires", () => {
     near(wire(a, "context").ends!.to.y, fixtures.t - 2);
     near(wire(a, "ghost").ends!.to.y, spike.t - 2);
 
-    // over the areas, under every ghost and workspace; nothing in it takes a pointer
+    // over the areas, under every ghost and workspace; nothing in it takes a pointer but the gate dots, which are over
+    // the workspaces with the labels
     expect(a.order.svg).toBeGreaterThan(a.order.lastArea);
     expect(a.order.svg).toBeLessThan(a.order.firstGhost);
     expect(a.order.svg).toBeLessThan(a.order.firstNode);
     expect(a.events).toEqual(["none", "none"]);
+    expect(a.layers).toEqual(["auto", "5", "5"]);
+    expect(a.dotEvents).toEqual(["auto", "auto"]);
+    // the blocked label's ground is 5% of the red over the app's background, as Inbox.dc.html's
+    expect(a.blockedMix?.length).toBeGreaterThan(0);
+    for (const m of a.blockedMix!) near(m, 0.05, 0.008);
+  });
+
+  it.each([
+    ["45%", "lsCamera=-200,2700,0.45", "pill under header:5120"],
+    ["13%", "lsCamera=-1200,-600,0.13", "pill under ghost:Spike: org cache"],
+  ])("at %s: pass under an area's header or name and a ghost, held out by a mask, as the boards draw them clear", async (_at, camera, crossing) => {
+    const a = (await audit(`${camera}&landscapeWiresAudit=under`)) as unknown as { under: { crossed: Record<string, { points: number; open: number }>; masked: string | null } };
+    expect(a.under.masked).toBe("url(#ls-wire-under)");
+    expect(a.under.crossed[crossing]?.points).toBeGreaterThan(0);
+    for (const [k, c] of Object.entries(a.under.crossed)) expect([k, c.open]).toEqual([k, 0]);
+  });
+
+  it("end at a pill as it's collapsed, at its size zoomed out, before a frame is drawn", async () => {
+    const a = (await audit("lsCamera=-1200,-600,0.13&landscapeWiresAudit=collapse")) as unknown as Record<"first" | "settled", { pill: Box; ends: { from: Pt; to: Pt } }>;
+    for (const s of [a.first, a.settled]) {
+      expect(s.ends.to.x).toBeGreaterThanOrEqual(s.pill.l);
+      expect(s.ends.to.x).toBeLessThanOrEqual(s.pill.r);
+      near(s.ends.to.y, s.pill.b + 2);
+    }
+    expect(a.first.ends).toEqual(a.settled.ends);
+  });
+
+  it("keep a gate dot on top, and pressed, where a workspace lies over its loop", async () => {
+    const a = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=dotover")) as unknown as { dotOver: { under: boolean; top: string }; dotClick: { pop: { ends: string } | null; selected: string | null } };
+    expect(a.dotOver).toEqual({ under: true, top: "dot:wb-loop" });
+    expect(a.dotClick.pop?.ends).toBe("Reviewer → Builder");
+    expect(a.dotClick.selected).not.toBe("wb-dev");
   });
 
   it("zoomed out to 13%: lines alone, at screen size, to the cards as they're drawn", async () => {

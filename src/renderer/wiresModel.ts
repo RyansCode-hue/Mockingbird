@@ -205,14 +205,19 @@ const shared = (lo1: number, hi1: number, lo2: number, hi2: number): number | nu
   return lo <= hi ? (lo + hi) / 2 : null;
 };
 
+/** How far apart, in screen px, wires that would run on one line are drawn: their gate dots (7 px round) side by side. */
+export const LANE_PX = 16;
+const within = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
 /**
  * The curve from box `a` to box `b` (Main.dc.html:67–73): side to side when `b` is beside `a` to the right, top to
  * bottom when it's above or below, and a loop under both when it's to the left, so a wire back doesn't lie on the one
  * forward. Ends face each other where the boxes overlap across the wire, and are each side's middle otherwise. `px`
  * is a screen pixel in landscape px: the end stops 2 of them short of `b`, under its arrow, and a loop drops at least
- * 32 below. Null when the boxes overlap: there's nowhere to draw it.
+ * 32 below. `lane` moves it across its run by that many LANE_PX, its ends kept on their boxes, so wires that would lie
+ * on one another run side by side (wireCurves). Null when the boxes overlap: there's nowhere to draw it.
  */
-export function wireCurve(a: Rect, b: Rect, px = 1): WireCurve | null {
+export function wireCurve(a: Rect, b: Rect, px = 1, lane = 0): WireCurve | null {
   const ar = a.x + a.w;
   const ab = a.y + a.h;
   const br = b.x + b.w;
@@ -221,21 +226,22 @@ export function wireCurve(a: Rect, b: Rect, px = 1): WireCurve | null {
   const gy = b.y >= ab ? b.y - ab : a.y >= bb ? a.y - bb : -1;
   if (gx < 0 && gy < 0) return null;
   const gap = 2 * px;
+  const off = lane * LANE_PX * px;
   let p0: Point, c1: Point, c2: Point, p3: Point;
   let fromSide: Side, toSide: Side, bend: Bend;
   if (gx >= 0 && gx >= gy && b.x >= ar) {
     const y = shared(a.y, ab, b.y, bb);
     const k = gx / 2;
-    p0 = { x: ar, y: y ?? a.y + a.h / 2 };
-    p3 = { x: b.x - gap, y: y ?? b.y + b.h / 2 };
+    p0 = { x: ar, y: within((y ?? a.y + a.h / 2) + off, a.y, ab) };
+    p3 = { x: b.x - gap, y: within((y ?? b.y + b.h / 2) + off, b.y, bb) };
     c1 = { x: ar + k, y: p0.y };
     c2 = { x: b.x - k, y: p3.y };
     [fromSide, toSide, bend] = ["right", "left", "h"];
   } else if (gx >= 0 && gx >= gy) {
-    const low = Math.max(ab, bb) + Math.max(gx / 2, 32 * px);
+    const low = Math.max(ab, bb) + Math.max(gx / 2, 32 * px) + off;
     // left of the middle, so it leaves apart from a wire down from the middle (Inbox.dc.html: Reviewer's two)
-    p0 = { x: a.x + (a.w * 2) / 5, y: ab };
-    p3 = { x: b.x + (b.w * 3) / 4, y: bb + gap };
+    p0 = { x: within(a.x + (a.w * 2) / 5 + off, a.x, ar), y: ab };
+    p3 = { x: within(b.x + (b.w * 3) / 4 + off, b.x, br), y: bb + gap };
     c1 = { x: p0.x, y: low };
     c2 = { x: p3.x, y: low };
     [fromSide, toSide, bend] = ["bottom", "bottom", "u"];
@@ -243,8 +249,8 @@ export function wireCurve(a: Rect, b: Rect, px = 1): WireCurve | null {
     const x = shared(a.x, ar, b.x, br);
     const down = b.y >= ab;
     const k = gy / 2;
-    p0 = { x: x ?? a.x + a.w / 2, y: down ? ab : a.y };
-    p3 = { x: x ?? b.x + b.w / 2, y: down ? b.y - gap : bb + gap };
+    p0 = { x: within((x ?? a.x + a.w / 2) + off, a.x, ar), y: down ? ab : a.y };
+    p3 = { x: within((x ?? b.x + b.w / 2) + off, b.x, br), y: down ? b.y - gap : bb + gap };
     c1 = { x: p0.x, y: down ? ab + k : a.y - k };
     c2 = { x: p3.x, y: down ? b.y - k : bb + k };
     [fromSide, toSide, bend] = down ? ["bottom", "top", "v"] : ["top", "bottom", "v"];
@@ -252,6 +258,36 @@ export function wireCurve(a: Rect, b: Rect, px = 1): WireCurve | null {
   const mid = { x: (p0.x + 3 * c1.x + 3 * c2.x + p3.x) / 8, y: (p0.y + 3 * c1.y + 3 * c2.y + p3.y) / 8 };
   const d = `M${r1(p0.x)} ${r1(p0.y)} C${r1(c1.x)} ${r1(c1.y)}, ${r1(c2.x)} ${r1(c2.y)}, ${r1(p3.x)} ${r1(p3.y)}`;
   return { d, from: p0, to: p3, fromSide, toSide, mid, bend, c1, c2 };
+}
+
+/** One wire to draw: what its ends are drawn as (an anchor's kind and key, `endKey`) and their boxes. */
+export interface WireRun {
+  id: string;
+  from: string;
+  to: string;
+  a: Rect;
+  b: Rect;
+}
+/** What a wire's end is drawn as, for telling which wires run between the same two things. */
+export const endKey = (a: Pick<WireAnchor, "kind" | "key">): string => `${a.kind}:${a.key}`;
+
+/**
+ * Each wire's curve (wireCurve), wires that would lie on one another drawn side by side: those between the same two
+ * things one way (side to side, or a loop back), or either way top to bottom, where a wire down and one back up take
+ * one line. Each such set is spread about that line, a LANE_PX apart, in the order given.
+ */
+export function wireCurves(runs: readonly WireRun[], px = 1): Map<string, WireCurve | null> {
+  const out = new Map<string, WireCurve | null>();
+  const sets = new Map<string, WireRun[]>();
+  for (const r of runs) {
+    const c = wireCurve(r.a, r.b, px);
+    out.set(r.id, c);
+    if (!c) continue;
+    const k = c.bend === "v" ? [r.from, r.to].sort().join("\n") : `${r.from}\n${r.to}`;
+    sets.set(k, [...(sets.get(k) ?? []), r]);
+  }
+  for (const set of sets.values()) if (set.length > 1) set.forEach((r, i) => out.set(r.id, wireCurve(r.a, r.b, px, i - (set.length - 1) / 2)));
+  return out;
 }
 
 /** How far from point `p` curve `c` passes, found along it in steps: near enough for a right-click on a thin line. */

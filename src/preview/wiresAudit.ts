@@ -13,7 +13,11 @@
  *   and every call to the main process meanwhile (no sessionResize);
  * - =area (zoomed out to cards): 5120 dragged by its name, the wires on its workspaces and still under the others;
  * - =pill (with ?lsCollapsed=5102): the wire to Pathways ending at 5102's pill;
- * - =tidy: 5120 tidied from its toolbar (W10), laid out along its wires, and what the note says.
+ * - =tidy: 5120 tidied from its toolbar (W10), laid out along its wires, and what the note says;
+ * - =under: where each wire runs under an area's header or name, a pill or a ghost, and whether the mask holds it out;
+ * - =collapse (zoomed out): 5102 collapsed from its toolbar, the wire to Pathways read as the pill comes, before a frame;
+ * - =dotover (at 100%): Dev server moved 16 px under Builder, over Reviewer → Builder's dot: what's on top at the dot, and
+ *   a click there.
  *
  * W4b's parts press the mouse and keys for real where the test's driver is there (needsYouAudit.ts' `drive`):
  * - =make (at the ?lsCamera's zoom): a wire dragged from Shape export's handle and dropped on Tester, the picker's ↵
@@ -280,12 +284,12 @@ const wiresNow = () => {
     const id = g.dataset.wire!;
     const line = g.querySelector<SVGPathElement>("path.line")!;
     const label = document.querySelector<HTMLElement>(`.ls-wire-labels .ls-wire-label[data-wire="${CSS.escape(id)}"]`);
-    const dot = g.querySelector("circle");
+    const dot = document.querySelector(`.ls-wire-dots circle.dot[data-wire="${CSS.escape(id)}"]`);
     return {
       id,
       look: [...g.classList].find((c) => c.startsWith("lk-"))?.slice(3) ?? null,
       arrow: !!line.getAttribute("marker-end"),
-      dot: dot ? (getComputedStyle(dot).display === "none" ? "hidden" : dot.classList.contains("blocked") ? "blocked" : "ready") : null,
+      dot: dot ? (!dot.getClientRects().length || getComputedStyle(dot).display === "none" ? "hidden" : dot.classList.contains("blocked") ? "blocked" : "ready") : null,
       glow: !!g.querySelector("path.glow"),
       label: label ? { text: label.textContent, shown: getComputedStyle(label).display !== "none" && label.getBoundingClientRect().height > 0, h: r1(label.getBoundingClientRect().height) } : null,
       tabs: [...document.querySelectorAll<HTMLElement>(`.ls-wire-labels .ls-wire-tab[data-wire="${CSS.escape(id)}"]`)].map((t) => ({ end: t.dataset.end, text: t.textContent })),
@@ -294,6 +298,53 @@ const wiresNow = () => {
       dash: getComputedStyle(line).strokeDasharray,
     };
   });
+};
+
+/** A colour as Chrome gives it back (rgb(), or color(srgb) from a color-mix), 0–255 a channel. */
+const rgbOf = (c: string): number[] => {
+  const srgb = /color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)/.exec(c);
+  if (srgb) return srgb.slice(1, 4).map((v) => Number(v) * 255);
+  return (/rgba?\(([\d.]+), ([\d.]+), ([\d.]+)/.exec(c) ?? []).slice(1, 4).map(Number);
+};
+/** How much of `over` is mixed into `base` to make `mix`, by each channel that differs enough to tell. */
+const mixOf = (mix: number[], over: number[], base: number[]) =>
+  [0, 1, 2].filter((i) => Math.abs(over[i] - base[i]) > 40).map((i) => Math.round(((mix[i] - base[i]) / (over[i] - base[i])) * 1000) / 1000);
+
+/**
+ * Where the wires run under what they pass beneath (an area's header or name, a pill, a ghost): each wire's line read
+ * every few px along it, the points inside each of those boxes, and those the mask doesn't hold out (none of its holes
+ * over them). `masked`: the lines are drawn through the mask.
+ */
+const underNow = () => {
+  const holes = [...document.querySelectorAll<SVGRectElement>(".ls-wires mask g.holes rect")].map((h) => {
+    const m = h.getScreenCTM()!;
+    const a = new DOMPoint(Number(h.getAttribute("x")), Number(h.getAttribute("y"))).matrixTransform(m);
+    const b = new DOMPoint(Number(h.getAttribute("x")) + Number(h.getAttribute("width")), Number(h.getAttribute("y")) + Number(h.getAttribute("height"))).matrixTransform(m);
+    return { l: a.x - 0.5, t: a.y - 0.5, r: b.x + 0.5, b: b.y + 0.5 };
+  });
+  const things = [...document.querySelectorAll<HTMLElement>(".ls-world :is(.ls-area-head, .ls-area-title, .ls-area-pill, .ls-ghost:not(.hidden))")].map((el) => {
+    const r = el.getBoundingClientRect();
+    const name = el.matches(".ls-ghost") ? `ghost:${el.querySelector(".lg-title")?.textContent ?? "?"}` : `${el.matches(".ls-area-pill") ? "pill" : el.matches(".ls-area-title") ? "name" : "header"}:${el.closest<HTMLElement>("[data-area]")?.dataset.area ?? "?"}`;
+    return { name, l: r.left + 1, t: r.top + 1, r: r.right - 1, b: r.bottom - 1 };
+  });
+  const crossed: Record<string, { points: number; open: number }> = {};
+  for (const p of document.querySelectorAll<SVGPathElement>(".ls-wires g.ls-wire path.line")) {
+    const m = p.getScreenCTM();
+    if (!m || !p.getAttribute("d")) continue;
+    const len = p.getTotalLength();
+    const id = p.closest<SVGGElement>("g.ls-wire")!.dataset.wire!;
+    for (let i = 0; i <= 400; i++) {
+      const q = p.getPointAtLength((len * i) / 400).matrixTransform(m);
+      for (const t of things) {
+        if (q.x < t.l || q.x > t.r || q.y < t.t || q.y > t.b) continue;
+        const k = `${id.slice(3)} under ${t.name}`;
+        crossed[k] ??= { points: 0, open: 0 };
+        crossed[k].points++;
+        if (!holes.some((h) => q.x >= h.l && q.x <= h.r && q.y >= h.t && q.y <= h.b)) crossed[k].open++;
+      }
+    }
+  }
+  return { crossed, masked: document.querySelector(".ls-wires g.ls-wire-runs")?.getAttribute("mask") ?? null, holes: holes.length };
 };
 
 // ---- W4b: making wires --------------------------------------------------------------------
@@ -752,7 +803,7 @@ async function freshAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
 // ---- W4c: the send popover ----------------------------------------------------------------
 
 /** Wire `id`'s gate dot on screen, its middle. */
-const dotMid = (id: string): Pt => mid(document.querySelector(`.ls-wires g[data-wire="${CSS.escape(id)}"] circle.dot`));
+const dotMid = (id: string): Pt => mid(document.querySelector(`.ls-wire-dots circle.dot[data-wire="${CSS.escape(id)}"]`));
 const popEl = () => document.querySelector<HTMLElement>(".wg-pop:not(.mb-ghost)");
 const popButton = (label: string) => [...(popEl()?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((b) => b.textContent === label) ?? null;
 /** The send popover as shown: its face, title, whys, what it sends, its buttons (off ones marked), and what it said. */
@@ -1602,8 +1653,21 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
         const kids = [...world().children];
         const at = (sel: string) => kids.findIndex((k) => k.matches(sel));
         const areas = kids.flatMap((k, i) => (k.matches(".ls-area, .ls-area-pill") ? [i] : []));
-        out.order = { svg: at(".ls-wires"), labels: at(".ls-wire-labels"), lastArea: Math.max(...areas), firstGhost: at(".ls-ghost"), firstNode: at(".ls-node") };
+        out.order = { svg: at(".ls-wires"), labels: at(".ls-wire-labels"), dots: at(".ls-wire-dots"), lastArea: Math.max(...areas), firstGhost: at(".ls-ghost"), firstNode: at(".ls-node") };
         out.events = [getComputedStyle(document.querySelector(".ls-wires")!).pointerEvents, getComputedStyle(document.querySelector(".ls-wire-labels")!).pointerEvents];
+        out.layers = [".ls-wires", ".ls-wire-labels", ".ls-wire-dots"].map((s) => getComputedStyle(document.querySelector(s)!).zIndex);
+        out.dotEvents = [...document.querySelectorAll(".ls-wire-dots circle.dot")].map((c) => getComputedStyle(c).pointerEvents);
+        // the blocked label's ground: how much of the theme's red is mixed into the app's background (Inbox.dc.html's ~5%)
+        const probe = (v: string) => {
+          const el = document.createElement("i");
+          el.style.color = `var(${v})`;
+          document.body.appendChild(el);
+          const c = getComputedStyle(el).color;
+          el.remove();
+          return rgbOf(c);
+        };
+        const held = document.querySelector<HTMLElement>(`.ls-wire-labels .ls-wire-label[data-wire="${W("held")}"]`);
+        out.blockedMix = held ? mixOf(rgbOf(getComputedStyle(held).backgroundColor), probe("--red"), probe("--bg-app")) : null;
       } else if (part === "area") {
         // 5120 dragged by its name zoomed out to cards: the wires follow its workspaces, and stay where they are among the world's
         const name = document.querySelector<HTMLElement>(`.ls-world .ls-area[data-area="5120"] .ls-area-title .n`);
@@ -1634,6 +1698,44 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       } else if (part === "pill") {
         out.wires = wiresNow();
         out.pill = box(document.querySelector(`.ls-world .ls-area-pill[data-area="5102"]`));
+      } else if (part === "under") {
+        out.under = underNow();
+      } else if (part === "collapse") {
+        // 5102 collapsed from its toolbar: the wire to Pathways read as soon as its pill is in the page (a mutation's
+        // callback, after the render's layout effects and before any frame), and again once things have settled
+        const button = document.querySelector<HTMLButtonElement>(`.ls-world .ls-area[data-area="5102"] .ls-area-tools button[data-act="collapse"]`);
+        if (!button) throw new Error("5102 has no Collapse");
+        const pillEl = () => document.querySelector(`.ls-world .ls-area-pill[data-area="5102"]`);
+        const first = new Promise<unknown>((done) => {
+          const mo = new MutationObserver(() => {
+            if (!pillEl()) return;
+            mo.disconnect();
+            done({ pill: box(pillEl()), ends: endsOf(W("pill")) });
+          });
+          mo.observe(world(), { childList: true, subtree: true });
+        });
+        button.click();
+        out.first = await first;
+        await sleep(800);
+        out.settled = { pill: box(pillEl()), ends: endsOf(W("pill")) };
+      } else if (part === "dotover") {
+        // Dev server moved to 16 px under Builder and across under Reviewer → Builder's loop (its translate, as a drag
+        // sets it), so it lies over the loop's dot
+        const dev = node(W("dev"))!;
+        const builderBox = box(node(W("builder")))!;
+        const was = dotMid(W("loop"));
+        dev.style.translate = `${was.x - 80 - box(dev)!.l}px ${builderBox.b + 16 - box(dev)!.t}px`;
+        await sleep(300);
+        const at = dotMid(W("loop"));
+        const devBox = box(dev)!;
+        const top = document.elementFromPoint(at.x, at.y);
+        out.dotOver = {
+          under: at.x >= devBox.l && at.x <= devBox.r && at.y >= devBox.t && at.y <= devBox.b,
+          top: top?.matches("circle.dot") ? `dot:${(top as SVGElement).dataset.wire}` : (top?.className?.toString() ?? null),
+        };
+        await clickAt(at);
+        await sleep(500);
+        out.dotClick = { pop: popNow(), selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-front") ?? null };
       } else if (part === "drag") {
         const mark = env.calls.length;
         const head = node(W("builder"))?.querySelector<HTMLElement>(".ls-head .ls-spacer") ?? node(W("builder"))?.querySelector<HTMLElement>(".ls-head");
