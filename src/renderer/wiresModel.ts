@@ -539,6 +539,11 @@ export interface GateView {
   starts: "reopen" | "resume" | "start" | null;
   /** Blocked by its pull requests, as the merge watch has them: Check now applies, and Mark merged… to each of `prs` (urls). */
   merge: { prs: readonly string[] } | null;
+  /**
+   * On the settings face of a blocked wire, what waits at its gate (its pending, which a block such as "needs approve"
+   * leaves without a `pendingId` to act on): shown read-only, as what will go once it's unblocked.
+   */
+  waiting?: { body: string; flags: readonly string[] };
 }
 
 /**
@@ -562,7 +567,8 @@ export function gateView(w: Wire, gate: Gate, to: WireEnd | null, merge: MergeVi
     return { ...base, face: "limit", kind: `${name} · at the limit · ${w.rounds.used} of ${w.rounds.limit}` };
   if (gate.unconfirmed && pendingId) return { ...base, face: "unconfirmed", kind: `${name} · may have arrived` };
   const byMerge = gate.state === "blocked" && !!merge && "blocked" in merge && merge.blocked === gate.why;
-  return { ...base, face: "settings", kind: `${name} · ${gate.state}`, pendingId: null, starts: null, merge: byMerge ? { prs: merge.prs ?? [] } : null };
+  const waiting = gate.state === "blocked" && w.pending ? { waiting: { body: w.pending.body, flags: w.pending.flags } } : {};
+  return { ...base, face: "settings", kind: `${name} · ${gate.state}`, pendingId: null, starts: null, merge: byMerge ? { prs: merge.prs ?? [] } : null, ...waiting };
 }
 
 /**

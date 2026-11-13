@@ -505,6 +505,7 @@ interface Pop {
   err: string | null;
   hint: string | null;
   keyboard: boolean;
+  box: { l: number; t: number; r: number; b: number };
 }
 type Sends = [string, string, string, unknown][];
 interface SendRun {
@@ -577,12 +578,36 @@ describe.skipIf(!local)("the send popover", () => {
     expect(k.esc).toEqual({ opened: "popover", pop: false, keys: "landscape" });
   }, 150_000);
 
-  it("presses nothing with a double click's second on its dot, where it flips up over the dot near the window's foot", async () => {
-    const d = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=dbl", "1600x1000", 120_000)) as unknown as { dbl: { under: string; sends: number; pop: Pop }; after: { sends: number; pop: Pop | null; keys: string } };
-    expect(d.dbl.under).toBe("popover");
+  it("flips up above its dot near the window's foot, and a double click's second on the dot presses nothing", async () => {
+    const d = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=dbl", "1600x1000", 120_000)) as unknown as { dbl: { under: string; dotBox: { t: number }; sends: number; pop: Pop }; after: { sends: number; pop: Pop | null; keys: string } };
+    // the dot stays uncovered: the popover sits wholly above it, and the second click lands on the dot, keeping it open
+    expect(d.dbl.under).toBe("dot");
+    expect(d.dbl.pop.box.b).toBeLessThanOrEqual(d.dbl.dotBox.t);
     expect(d.dbl.sends).toBe(0);
     expect(d.dbl.pop).toMatchObject({ face: "ready", buttons: ["Send", "Not yet"], keyboard: true });
     expect(d.after).toEqual({ sends: 1, pop: null, keys: "landscape" });
+  }, 150_000);
+
+  it("is placed again as it grows near the window's foot, every button kept on screen and its dot uncovered", async () => {
+    const g = ((await audit("lsGates&lsCamera=0,3040,1&landscapeWiresAudit=grow", "1600x1000", 120_000)) as unknown as {
+      grow: { dotBox: { t: number }; opened: Pop; grown: Pop; window: { h: number }; buttonsShown: boolean; buttons: number };
+    }).grow;
+    expect(g.opened.buttons).toContain("Mark merged…");
+    expect(g.grown.question).toMatch(/^Mark PR 11 to dev in backoffice merged\?/);
+    const was = g.opened.box;
+    const now = g.grown.box;
+    // taller, and moved up to stay above the dot and inside the window
+    expect(now.b - now.t).toBeGreaterThan(was.b - was.t);
+    expect(now.b).toBeLessThanOrEqual(g.dotBox.t);
+    expect(now.t).toBeGreaterThanOrEqual(0);
+    expect(g.buttonsShown).toBe(true);
+    expect(g.buttons).toBeGreaterThan(2);
+  }, 150_000);
+
+  it("shows what waits behind a block such as needs approve, read-only, as what will go", async () => {
+    const h = ((await audit("lsHeldWaits&lsCamera=0,3040,1&landscapeWiresAudit=heldpop", "1600x1000", 120_000)) as unknown as { heldpop: Pop }).heldpop;
+    expect(h).toMatchObject({ face: "settings", kind: "handoff · blocked", whys: ["needs approve"], body: "Ready for e2e: the stream is capped at 40k rows." });
+    expect(h.buttons).not.toContain("Send");
   }, 150_000);
 
   it("shows its other faces: a stopped end started once its cost is asked, Mark sent, Check now, Mark merged… behind its confirm, and a blocked wire's settings", async () => {

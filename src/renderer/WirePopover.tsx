@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isErr, prAskedState, type IpcResult, type TicketPipeline } from "../shared/types";
-import { AnchoredPopover } from "./Popover";
+import { AnchoredPopover, type AnchorBox } from "./Popover";
 import { useDialogFocus } from "./Modal";
 import { keyboardNowhere } from "./keyArm";
 import { ANSWER_SETTLE_MS, EARLY_KEYS_HINT, keyClick, useAimedKeys, useHeldOff, useSettledRows } from "./answerGuard";
@@ -34,8 +34,8 @@ import { mergePrsOf, type GateView } from "./wiresModel";
  * - it takes the keyboard as it opens and gives it back as it closes, never to a terminal: there the landscape gets it.
  */
 export interface WirePopoverProps {
-  /** Where on screen: under the wire's gate dot. The same object while it's open. */
-  at: { x: number; y: number };
+  /** Where on screen: under the wire's gate dot, and the dot's box, which it flips above rather than over. The same object while it's open. */
+  at: { x: number; y: number; box?: AnchorBox };
   view: GateView;
   /** The wire's settings, as Settings… shows them, and its ends' titles: the face of a wire with nothing at its gate. */
   form: WireSettingsProps;
@@ -195,6 +195,21 @@ export function WirePopover({ at, view, form, ticket, onSend, onMarkSent, onMore
     const about = (
       <>
         {why}
+        {view.waiting && (
+          <>
+            <div className="wr-label">Waiting at its gate</div>
+            <pre className="wr-tpl wg-body" aria-label="What's waiting">
+              {view.waiting.body}
+            </pre>
+            {view.waiting.flags.length > 0 && (
+              <ul className="wg-flags">
+                {view.waiting.flags.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
         {view.merge && ticket && (
           <div className="wg-acts">
             {btn("check", "Check now", "Checking…", act("check", () => pipeCall("check the pull request", () => window.mb.pipelinePrCheck(ticket, prs.length === 1 ? prs[0].url : undefined))))}
@@ -300,6 +315,7 @@ export function WirePopover({ at, view, form, ticket, onSend, onMarkSent, onMore
   return (
     <AnchoredPopover
       anchor={at}
+      refit
       className={`wr-pop wg-pop f-${view.face} t-${w.type}`}
       label={`Wire ${form.fromTitle} → ${form.toTitle}`}
       onClose={(how) => {

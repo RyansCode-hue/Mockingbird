@@ -114,7 +114,8 @@ import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCa
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
 import { namedSendRefusal, typingAsksOf } from "./needsYouModel";
-import { cameraMoved } from "./answerGuard";
+import { ANSWER_GUARD_MS, cameraMoved } from "./answerGuard";
+import type { AnchorBox } from "./Popover";
 import { WireLayer, rereadWires, useWires, wiresNow, type WireLayerHandle } from "./WireLayer";
 import { WIRE_TYPE_NAME, commonReason, finishLines, finishedLine, gateContextOf, gateView, mateWireNote, noChoice, plannedLine, plannedShort, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
 import { WireSettingsPopover, WireTypePicker, type WirePick, type WireSettingsProps } from "./WireMaking";
@@ -2020,6 +2021,15 @@ export function Landscape({
       grab(space.current ? "ready" : "");
     };
     const onDown = (e: PointerEvent) => {
+      // a double click's second on the gate dot whose send popover its first just opened is the popover's: nothing
+      // happens on the landscape, and the popover keeps the keyboard
+      const dot = (e.target as Element | null)?.closest?.<SVGElement>(".ls-wire-dots circle.dot");
+      const open = gateNow.current;
+      if (dot && open && dot.dataset.wire === open.id && Date.now() - open.opened < ANSWER_GUARD_MS) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       // A press on the landscape arms it (keyArm.ts): at once if it has the keyboard, or as the press gives it it. A
       // press that gives the keyboard to something of its own (a terminal, a button) arms nothing.
       if (inFocus(e.target)) return armOnPress(overlay.current);
@@ -2424,13 +2434,18 @@ export function Landscape({
   }, [wireEdit, !!editing]);
 
   // ---- the send popover (W4c): a wire's gate dot clicked, or Show ----
-  const [wireGate, setWireGate] = useState<{ id: string; at: { x: number; y: number }; n: number } | null>(null);
-  /** Wire `id`'s send popover, under its gate dot while that's drawn, else where it's asked for (`at`), else the view's middle. */
+  const [wireGate, setWireGate] = useState<{ id: string; at: { x: number; y: number; box?: AnchorBox }; n: number; opened: number } | null>(null);
+  /**
+   * Wire `id`'s send popover, under its gate dot while that's drawn, else where it's asked for (`at`), else the view's
+   * middle. Asked again for the same wire as it has only just opened (its dot double-clicked), it's the one open.
+   */
   const openGate = (id: string, at?: { x: number; y: number }) => {
     const r = viewport.current?.getBoundingClientRect();
     const place = wiresRef.current?.dotOnScreen(id) ?? at ?? (r ? { x: r.left + r.width / 2 - 180, y: r.top + r.height / 3 } : { x: 0, y: 0 });
-    setWireGate((g) => ({ id, at: place, n: (g?.n ?? 0) + 1 }));
+    setWireGate((g) => (g && g.id === id && Date.now() - g.opened < ANSWER_GUARD_MS ? g : { id, at: place, n: (g?.n ?? 0) + 1, opened: Date.now() }));
   };
+  const gateNow = useRef(wireGate);
+  gateNow.current = wireGate;
   const gating = wireGate ? liveWire(wireGate.id) : null;
   useEffect(() => {
     if (wireGate && !gating) setWireGate(null);

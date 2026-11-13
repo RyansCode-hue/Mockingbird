@@ -3,6 +3,7 @@ import { isErr } from "../shared/types";
 import type { Camera, Rect } from "../shared/landscape";
 import type { WireState } from "../shared/wires";
 import { createIpcStore } from "./ipcStore";
+import type { AnchorBox } from "./Popover";
 import { GHOST_INSET, type Band, type Point } from "./landscapeModel";
 import { endKey, pillBox, shiftedBox, translateOf, wireCurves, wireNear, type WireAnchor, type WireCurve, type WireLook, type WireView } from "./wiresModel";
 
@@ -58,8 +59,8 @@ export interface WireLayerHandle {
   wireAt: (p: Point, within: number) => string | null;
   /** The wire whose gate dot, as drawn (in the live band), is within `within` of landscape point `p`: what a click there opens (W4c). */
   dotAt: (p: Point, within: number) => string | null;
-  /** Where wire `id`'s gate dot is on screen, its foot's middle, while it's drawn: where its send popover opens. */
-  dotOnScreen: (id: string) => { x: number; y: number } | null;
+  /** Where wire `id`'s gate dot is on screen while it's drawn: its foot's middle, where its send popover opens, and its box, which the popover keeps clear of. */
+  dotOnScreen: (id: string) => { x: number; y: number; box: AnchorBox } | null;
 }
 
 /**
@@ -193,7 +194,7 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
       },
       dotOnScreen: (id) => {
         const r = dotEl(id)?.getBoundingClientRect();
-        return r && r.width ? { x: r.left + r.width / 2, y: r.bottom } : null;
+        return r && r.width ? { x: r.left + r.width / 2, y: r.bottom, box: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } } : null;
       },
     }),
     []

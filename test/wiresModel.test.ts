@@ -492,6 +492,10 @@ describe("the send popover's face", () => {
     // blocked for another reason first: no Check now
     const held = { h: wire("reviewer", "tester", "handoff", { when: "pr-merged" }), f: wire("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 } }) };
     expect(faceOf(held, "h", { merges: { h: { blocked: unread } }, notes: { reviewer: { verdict: "changes", hops: 0 } } })).toMatchObject({ face: "settings", why: "needs approve", merge: null });
+    expect(faceOf(held, "h", { notes: { reviewer: { verdict: "changes", hops: 0 } } }).waiting).toBeUndefined();
+    // what waits behind "needs approve" has no pendingId to act on, and is shown, read-only, as what will go
+    const heldWaits = { ...held, h: { ...held.h, pending: { id: "p9", body: "Ship it.", at: 1, flags: ["A secret was redacted."] } } };
+    expect(faceOf(heldWaits, "h", { notes: { reviewer: { verdict: "changes", hops: 0 } } })).toMatchObject({ face: "settings", why: "needs approve", pendingId: null, waiting: { body: "Ship it.", flags: ["A secret was redacted."] } });
     // on its way: nothing to send from here
     expect(faceOf({ q: wire("builder", "reviewer", "handoff", { ...waiting("p1"), delivery: { id: "p1", state: "queued", at: 1 } }) }, "q")).toMatchObject({ face: "settings", kind: "handoff · sending", pendingId: null });
   });

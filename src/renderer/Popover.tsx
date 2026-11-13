@@ -4,6 +4,15 @@ import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { placeMenu } from "./ContextMenu";
 import { useLiftOut } from "./lift";
+import { ANSWER_SETTLE_MS } from "./answerGuard";
+
+/** A box on screen something hangs from (a wire's gate dot): what a point anchor opens under. */
+export interface AnchorBox {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
 
 /**
  * A popover under an element anywhere, even one inside a scaled layer (the landscape's world): it's drawn over
@@ -15,7 +24,10 @@ import { useLiftOut } from "./lift";
  * scrolls), and placed again whenever its size changes; otherwise a tall one flips above, as a menu does. `anchor` can
  * be a function, read whenever it's placed, for an element that's swapped for another while it's open, or a point on
  * screen (the same object while it's open), where it opens as a menu does at the pointer; `placeKey` changing places
- * it again.
+ * it again. A point can carry the `box` it hangs from: flipped, it goes above that box rather than over it, and a press
+ * inside it isn't one outside. `refit` places it again whenever its size changes (a note or a question coming into
+ * it), flipping as it must, so it never grows off the window's foot. Moved once it has opened, it takes no pointer's
+ * click until it has stayed put ANSWER_SETTLE_MS: what's under the pointer now isn't what was aimed at.
  */
 export function AnchoredPopover({
   anchor,
@@ -27,8 +39,9 @@ export function AnchoredPopover({
   below = false,
   onKeyDown,
   placeKey,
+  refit = false,
 }: {
-  anchor: HTMLElement | (() => HTMLElement | null) | { x: number; y: number };
+  anchor: HTMLElement | (() => HTMLElement | null) | { x: number; y: number; box?: AnchorBox };
   className: string;
   label: string;
   onClose: (how: "escape" | "outside" | "away") => void;
@@ -37,6 +50,7 @@ export function AnchoredPopover({
   below?: boolean;
   onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void;
   placeKey?: string;
+  refit?: boolean;
 }) {
   useEscape(() => onClose("escape"));
   const anchorNow = useRef(anchor);
@@ -49,6 +63,9 @@ export function AnchoredPopover({
   const box = useRef<HTMLDivElement | null>(null);
   const presence = usePresence<HTMLDivElement>("menu", { also: box });
   const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
+  const posNow = useRef(pos);
+  /** When it was last moved once placed: a pointer's click is let go until it has stayed put ANSWER_SETTLE_MS. */
+  const movedAt = useRef(-Infinity);
   const close = useRef(onClose);
   close.current = onClose;
   useLayoutEffect(() => {
@@ -62,20 +79,32 @@ export function AnchoredPopover({
       if (!r || (a && !a.isConnected)) return;
       const x = align === "end" ? r.right - el.offsetWidth : r.left;
       const view = { width: window.innerWidth, height: window.innerHeight };
-      const at = placeMenu({ x, y: r.bottom + 4 }, { width: el.offsetWidth, height: below ? 0 : el.scrollHeight }, view);
+      const height = below ? 0 : el.scrollHeight;
+      let at = placeMenu({ x, y: r.bottom + 4 }, { width: el.offsetWidth, height }, view);
+      // flipped up from a point that hangs from a box: above the box, not over it
+      const hung = typeof to === "function" || to instanceof HTMLElement ? undefined : to.box;
+      if (hung && !below && at.top < r.bottom + 4) at = { ...at, top: Math.max(8, hung.top - 4 - Math.min(height, at.maxHeight)) };
       const next = below ? { left: at.left, top: r.bottom + 4, maxHeight: Math.max(0, view.height - r.bottom - 4 - 8) } : at;
-      setPos((p) => (p && p.left === next.left && p.top === next.top && p.maxHeight === next.maxHeight ? p : next));
+      const p = posNow.current;
+      if (p && p.left === next.left && p.top === next.top && p.maxHeight === next.maxHeight) return;
+      if (p && (p.left !== next.left || p.top !== next.top)) movedAt.current = Date.now();
+      posNow.current = next;
+      setPos(next);
     };
     place();
-    if (!below) return;
+    if (!below && !refit) return;
     const ro = new ResizeObserver(place);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [fixed, align, below, placeKey]);
+  }, [fixed, align, below, placeKey, refit]);
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
+    const hung = fixed && !(fixed instanceof HTMLElement) ? fixed.box : undefined;
     const outside = (e: Event) => {
       const t = e.target as Node;
+      const p = e instanceof MouseEvent ? e : null;
+      // a press on what it hangs from (its dot clicked again, a double click's second) is no press outside it
+      if (hung && p && p.clientX >= hung.left && p.clientX <= hung.right && p.clientY >= hung.top && p.clientY <= hung.bottom) return;
       if (!box.current?.contains(t) && !anchorEl()?.contains(t)) close.current("outside");
     };
     const away = () => close.current("away");
@@ -106,6 +135,13 @@ export function AnchoredPopover({
       // a portal's events reach its component tree: a press here isn't a press on the landscape under the button
       onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
+      onClickCapture={(e) => {
+        // moved under a resting pointer (placed again as it grew): a pointer's click was aimed at what was there before
+        if (e.detail >= 1 && Date.now() - movedAt.current < ANSWER_SETTLE_MS) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.stopPropagation()}

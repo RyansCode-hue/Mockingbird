@@ -40,6 +40,9 @@
  * - =send, =gatekeys and =dbl (at 100%): Send and Not yet, and the clicks and keys they take or don't;
  * - =gates: B closed, unconfirmed, a merge that can't be read, a blocked wire's settings; with lsGates=limit, the limit;
  * - =pop&pop=<wire> (&popConfirm): a wire's popover left open for a screenshot (synthetic events);
+ * - 1.7.0 follow-ups: =grow (lsGates): Shape → Builder's popover opened 50 px above the landscape's foot, then Mark
+ *   merged…'s question growing it; =heldpop (with ?lsHeldWaits): Reviewer → Tester's, blocked till approve, with what
+ *   waits at its gate;
  * - review fixes 1: =refocus (a newer finish, or a face change, under the keyboard), =limitkeys (lsGates=limit: Send
  *   reached by keys as it comes up), =shift (a Shift in a burst), and with lsGates&lsBigResume=wb-spike =costrepeat (a
  *   held Enter at the cost question), =costlost and =closeother (what a Send comes to as its popover stays or goes).
@@ -134,6 +137,11 @@ export function gateBoardBook(book: WireBook, at: number, limit: boolean): WireB
   const { delivery: _sent, ...shape } = links[W("sent")];
   links[W("sent")] = { ...shape, when: "pr-merged", since: at };
   if (limit) links[W("loop")] = { ...links[W("loop")], rounds: { limit: 3, used: 3 } };
+  return { ...book, links };
+}
+/** `?lsHeldWaits` (with `?lsWires`): Reviewer → Tester, blocked till Reviewer approves, has something waiting at its gate. */
+export function heldWaitsBook(book: WireBook, at: number): WireBook {
+  const links = { ...book.links, [W("held")]: { ...book.links[W("held")], pending: { id: "pd-held", body: "Ready for e2e: the stream is capped at 40k rows.", at, flags: [] } } };
   return { ...book, links };
 }
 /** Main's merge view of `?lsGates`' pr-merged wire: its pull request can't be read. */
@@ -926,9 +934,11 @@ async function dblAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promi
   await drive([{ wheel: { x: Math.round(v.left + v.width / 2), y: Math.round(v.top + v.height / 2), dy: was.y - (v.bottom - 50) } }]);
   await sleep(800);
   const at = dotMid(W("loop"));
+  const dotBox = box(document.querySelector(`.ls-wire-dots circle.dot[data-wire="${W("loop")}"]`));
   await drive([{ mouse: { ...at, clickCount: 1 } }, { mouse: { ...at, clickCount: 2 } }]);
   const p = popNow();
-  out.dbl = { dot: at, pop: p, under: document.elementFromPoint(at.x, at.y)?.closest(".wg-pop") ? "popover" : "landscape", sends: sends() };
+  const top = document.elementFromPoint(at.x, at.y);
+  out.dbl = { dot: at, dotBox, pop: p, under: top?.closest(".wg-pop") ? "popover" : top?.matches(".ls-wire-dots circle.dot") ? "dot" : "landscape", sends: sends() };
   await sleep(600);
   await clickAt(mid(popButton("Send")));
   await sleep(2200);
@@ -972,6 +982,32 @@ async function gateKeysAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
  * arrived (Mark sent), a merge that can't be read (Check now, Mark merged… and its confirm), a blocked wire's settings
  * (When its PR merges, edits saved); with =limit, a feedback loop at its limit (One more round, then Send under it).
  */
+/** Wire `id`'s dot brought to 50 px above the landscape's foot (a wheel pan): where its popover has to flip up. */
+async function dotToFoot(id: string): Promise<Pt> {
+  const v = document.querySelector(".ls-viewport")!.getBoundingClientRect();
+  const was = dotMid(id);
+  await drive([{ wheel: { x: Math.round(v.left + v.width / 2), y: Math.round(v.top + v.height / 2), dy: was.y - (v.bottom - 50) } }]);
+  await sleep(800);
+  return dotMid(id);
+}
+
+/**
+ * The popover opened near the window's foot, flipped above Shape → Builder's dot, then grown by Mark merged…'s question:
+ * placed again, it stays in the window, every button on screen, and the dot uncovered.
+ */
+async function growAudit(out: Record<string, unknown>): Promise<void> {
+  const at = await dotToFoot(W("sent"));
+  const dotBox = box(document.querySelector(`.ls-wire-dots circle.dot[data-wire="${W("sent")}"]`));
+  await clickAt(at);
+  await sleep(700);
+  const opened = popNow();
+  await clickAt(mid(popButton("Mark merged…")));
+  await sleep(700);
+  const grown = popNow();
+  const buttons = [...(popEl()?.querySelectorAll("button") ?? [])].map((b) => box(b)!);
+  out.grow = { dotBox, opened, grown, window: { w: innerWidth, h: innerHeight }, buttonsShown: buttons.every((b) => b.t >= 0 && b.b <= innerHeight && b.l >= 0 && b.r <= innerWidth), buttons: buttons.length };
+}
+
 async function gatesAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
   const start = env.calls.length;
   const since = (fn: string) => env.calls.slice(start).filter((c) => c.fn === fn).map((c) => c.args);
@@ -1673,6 +1709,12 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "costrepeat") await costRepeatAudit(env, out);
       else if (part === "costlost") await costLostAudit(env, out);
       else if (part === "closeother") await closeOtherAudit(env, out);
+      else if (part === "grow") await growAudit(out);
+      else if (part === "heldpop") {
+        await clickAt(dotMid(W("held")));
+        await sleep(700);
+        out.heldpop = popNow();
+      }
       const boxes = () => Object.fromEntries(["shape", "builder", "reviewer", "dev", "tester", "fixtures", "spike"].map((k) => [k, box(node(W(k)))]));
       if (part === "near" || part === "far") {
         out.wires = wiresNow();
