@@ -1384,7 +1384,7 @@ if (ticketsMode !== null || councilPlanMode !== null) {
       speaker: "system",
       round: 2,
       at: now - 2_800_000,
-      text: "Claude Opus 5.5 is the plan's Orchestrator, on branch collab-csv-export-for-the-donor-list in “Council — CSV export for the donor list”: it proposes the workspaces to build the plan, and nothing more is made until you lay them out.",
+      text: "Claude Opus 5.5 is the plan's Orchestrator, on branch collab-csv-export-for-the-donor-list-k1 in “Council — CSV export for the donor list”: it proposes the workspaces to build the plan, and nothing more is made until you lay them out.",
     });
   }
 }

@@ -79,7 +79,7 @@ export function boardPlan(make: (id: string, over: Partial<SessionInfo>) => Sess
 /** The Council fixture's title (stub.ts' councils[0]), and its own area (collab.ts' councilArea). */
 const COUNCIL_TITLE = "CSV export for the donor list";
 const COUNCIL_AREA = `Council — ${COUNCIL_TITLE}`;
-const COUNCIL_DIR = "collab-csv-export-for-the-donor-list";
+const COUNCIL_DIR = "collab-csv-export-for-the-donor-list-k1";
 
 /**
  * A Council's Orchestrator (W18), in its Council's own area on no ticket, and the plan it holds: COUNCIL_SHAPE as an

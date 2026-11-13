@@ -1156,7 +1156,12 @@ const collab = new CollabRooms(
   () => ({
     claude: [...new Set([...COLLAB_EFFORTS.claude, ...(lastCatalog?.claude.efforts ?? [])])],
     codex: [...new Set([...COLLAB_EFFORTS.codex, ...(lastCatalog?.codex.efforts ?? [])])],
-  })
+  }),
+  // a Council's Orchestrator gets an area and a worktree of its own: no session's, landscape area's or team room's
+  {
+    sessions: () => [...sessions.list(), ...sessions.resumable(), ...sessions.planned()],
+    areaTaken: (name) => Object.hasOwn(landscape.get().landscape.areas, name) || !!sessions.roomOfGroup?.(name),
+  }
 );
 
 handle("collab:models", async () => {
@@ -1652,7 +1657,7 @@ const plans: Plans = new Plans({
     }
   },
   ticketTitleOf: (id) => pipeline.get(id)?.title ?? null,
-  councilOf: (id) => collab.list().find((r) => r.implementedIn === id)?.title ?? null,
+  councilOf: (id) => collab.councilOf(id),
   onChanged: () => toWindow("plans:changed"),
   log: logError,
 });

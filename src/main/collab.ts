@@ -15,9 +15,10 @@ import type {
   NewSessionRequest,
   SessionInfo,
 } from "../shared/types";
-import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, groupKey, SEAT_PALETTE_SIZE } from "../shared/types";
-import { councilKickoff } from "../shared/plans";
-import { oneLine } from "../shared/team/agentText";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, groupKey, SEAT_PALETTE_SIZE, topOfKey } from "../shared/types";
+import { cleanCouncilPlan, councilKickoff } from "../shared/plans";
+import { visibleLine } from "../shared/hiddenText";
+import { legacyWorktreeRoot, worktreeRoot } from "./worktrees";
 import { MB_DIR } from "./store";
 import { writeFileAtomic } from "./fileOps";
 import { claudeRoomSettings } from "./claudeRoomSandbox";
@@ -45,8 +46,19 @@ export const COLLAB_EFFORTS: Record<AgentKind, string[]> = {
   codex: ["minimal", "low", "medium", "high", "xhigh"],
 };
 
-/** A Council's own area, where its Orchestrator and the steps of its plan go: one path segment, so a "/" in its title is a "-". */
-export const councilArea = (title: string): string => groupKey(`Council — ${oneLine(title, 80)}`);
+/**
+ * A Council's area's name, where its Orchestrator and the steps of its plan go: its title as a visible line, one path
+ * segment (a "/" in it is a "-"). CollabRooms.areaFor makes it the Council's own when another holds the name.
+ */
+export const councilArea = (title: string): string => groupKey(`Council — ${visibleLine(title, 80)}`);
+
+/** What a Council's Orchestrator's start is checked against, so it gets an area and a worktree of its own. */
+export interface CouncilPlaces {
+  /** Every session this Mac knows: running, closed or not started. */
+  sessions?: () => readonly SessionInfo[];
+  /** Whether a top-level group named `name` is in use beside the sessions: a landscape area, or a team room's group. */
+  areaTaken?: (name: string) => boolean;
+}
 
 const DEFAULT_ROUNDS: Record<CollabMode, number> = { step: 1, auto: 3, consensus: 6 };
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]{0,80}$/;
@@ -235,7 +247,8 @@ export class CollabRooms {
     // reminder: the request is still waiting PERMISSION_REMIND_MS later
     private onPermissionRequest: (room: CollabRoom, req: CollabPermissionRequest, reminder: boolean) => void = () => {},
     // the effort levels each CLI accepts — read from the CLIs, so new levels work without a release
-    private efforts: () => Record<AgentKind, string[]> = () => COLLAB_EFFORTS
+    private efforts: () => Record<AgentKind, string[]> = () => COLLAB_EFFORTS,
+    private places: CouncilPlaces = {}
   ) {
     fs.mkdirSync(dir, { recursive: true });
     for (const f of fs.readdirSync(dir)) {
@@ -708,37 +721,90 @@ export class CollabRooms {
   }
 
   /**
-   * Start the approved plan's Orchestrator (W18): the chosen seat's model, with role "orchestrator", in a worktree on
-   * collab-<slug>, in the Council's own area. Its kickoff is the plan fenced as a model's text. It proposes the workspaces
-   * to build it, which are made only when the user lays its plan out: so the Orchestrator is the room's implementedIn.
+   * Room `room`'s own area: councilArea's name, or with " (<id4>)" (else its whole id) when another Council's
+   * Orchestrator went there, a session of this Mac's is in it, or it's a landscape area or a team room's group. Two
+   * Councils never share one, so neither's plan can wire the other's workspaces, and none is a team room's, whose
+   * teammates would see the Orchestrator's pane and the private plan in it.
+   */
+  areaFor(room: CollabRoom): string {
+    const base = councilArea(room.title);
+    const sessions = this.places.sessions?.() ?? [];
+    const taken = (name: string) =>
+      [...this.rooms.values()].some((r) => r !== room && r.implementedArea === name) ||
+      sessions.some((s) => topOfKey(s.taskGroup ?? s.ticketId ?? "") === name) ||
+      !!this.places.areaTaken?.(name);
+    return [base, groupKey(`${base} (${room.id.slice(0, 4)})`), groupKey(`${base} (${room.id})`)].find((name) => !taken(name)) ?? groupKey(`${base} (${room.id})`);
+  }
+
+  /** The branch room `room`'s Orchestrator works on: its title's slug and its id, so no two Councils' share one. */
+  static branchFor(room: Pick<CollabRoom, "id" | "title">): string {
+    const slug = room.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    return slug ? `collab-${slug}-${room.id}` : `collab-${room.id}`;
+  }
+
+  /**
+   * The Council whose Orchestrator session `sessionId` is, as the plan dialog names it: its title, with its id's first
+   * four characters when another Council shows the same title (as its area's name has when that was taken). Null when
+   * it's no Council's.
+   */
+  councilOf(sessionId: string): string | null {
+    const room = [...this.rooms.values()].find((r) => r.implementedIn === sessionId);
+    if (!room) return null;
+    const title = visibleLine(room.title, 80);
+    return [...this.rooms.values()].some((r) => r !== room && visibleLine(r.title, 80) === title) ? `${title} (${room.id.slice(0, 4)})` : title;
+  }
+
+  /**
+   * Start the approved plan's Orchestrator (W18): the chosen seat's model, with role "orchestrator", in a worktree of its
+   * own on branchFor's branch, in the Council's own area (areaFor). Its kickoff is the plan fenced as a model's text.
+   * It proposes the workspaces to build it, which are made only when the user lays its plan out: so the Orchestrator is
+   * the room's implementedIn. Everything it's told is read before the first await, so a write-up finishing meanwhile
+   * isn't what it's given; refused while a turn runs, and when another session already works in the worktree.
    */
   async implement(id: string, key: string): Promise<SessionInfo> {
     const room = this.get(id);
+    if (room.running) throw new Error("Wait for the current round to finish, or stop it");
     if (!room.plan?.approved) throw new Error("Approve a plan first");
     if (!room.repoPath) throw new Error("This council has no repository to implement in");
     // one Orchestrator per room: a second would start on the same branch
     if (room.implementedIn || this.implementing.has(id)) throw new Error("The plan is already being implemented — open its Orchestrator");
     const m = active(room).find((x) => x.key === key);
     if (!m) throw new Error("That model isn't in this council");
-    const slug = room.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || room.id;
-    const area = councilArea(room.title);
+    const repoPath = room.repoPath;
+    const branch = CollabRooms.branchFor(room);
+    const folders = [path.join(worktreeRoot(repoPath), branch), path.join(legacyWorktreeRoot(repoPath), branch)];
+    const there = (this.places.sessions?.() ?? []).find((s) => folders.includes(s.cwd));
+    if (there) {
+      throw new Error(
+        `“${visibleLine(there.ticketTitle ?? there.title, 80)}” works in ${there.cwd}, where ${branch} is checked out, and a Council's Orchestrator gets a worktree of its own: ` +
+          `forget that session, or move its worktree, and implement again.`
+      );
+    }
+    const area = this.areaFor(room);
+    const plan = cleanCouncilPlan(room.plan.text);
+    const prompt = councilKickoff({ title: room.title, models: active(room).map((p) => p.label), plan: room.plan.text });
     this.implementing.add(id);
     try {
+      const base = await this.defaultBase(repoPath);
       const info = await this.startSession({
-        repoPath: room.repoPath,
+        repoPath,
         useWorktree: true,
-        branchName: `collab-${slug}`,
-        baseBranch: (await this.defaultBase(room.repoPath)) ?? undefined,
+        branchName: branch,
+        baseBranch: base ?? undefined,
         agent: m.agent,
         model: m.model,
         ...(m.effort ? { effort: m.effort } : {}),
         taskGroup: area,
         title: "Orchestrator",
         role: "orchestrator",
-        initialPrompt: councilKickoff({ title: room.title, models: active(room).map((p) => p.label), plan: room.plan.text }),
+        initialPrompt: prompt,
       });
       room.implementedIn = info.id;
-      this.note(room, `${m.label} is the plan's Orchestrator, on branch collab-${slug} in “${area}”: it proposes the workspaces to build the plan, and nothing more is made until you lay them out.`);
+      room.implementedArea = area;
+      const removed = plan.removed
+        ? ` ${plan.removed} invisible or control character${plan.removed === 1 ? " was" : "s were"} taken out of the plan it was given, so it reads the plan's characters in their order: this view may show the plan reordered or with text hidden.`
+        : "";
+      this.note(room, `${m.label} is the plan's Orchestrator, on branch ${branch} in “${area}”: it proposes the workspaces to build the plan, and nothing more is made until you lay them out.${removed}`);
       this.save(room);
       return info;
     } finally {

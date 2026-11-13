@@ -927,6 +927,8 @@ export interface CollabRoom {
   speaking: string | null; // participant key mid-turn
   plan: { text: string; by: string; approved: boolean; at: number } | null;
   implementedIn: string | null; // session id started from the approved plan
+  /** The area its Orchestrator started in (W18); absent for a Council implemented before, whose session went in "Council". */
+  implementedArea?: string;
   /** A disposable git worktree of the repo where command-running models work; never the user's checkout. */
   workspacePath?: string | null;
   /** A model's tool calls waiting for the user to allow or deny them (gone if the app quits). */

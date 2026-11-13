@@ -5987,9 +5987,10 @@ Built on W17, rebased onto its review fixes 1 (0f0cd14, on main 04256b5).
   permissions) inside a `fence("plan", …)` nonce fence that the plan's own text
   can't close. Nothing a model wrote is outside the fence. Its invisible characters
   (`INVISIBLE_RE`) and control characters (`CONTROL_RE`: all but newline and tab) are
-  taken out first, as a ticket description's invisible ones are, so the Orchestrator
-  reads what the user read. The brief and the discussion aren't in it: the approved
-  plan is what's built.
+  taken out first, as a ticket description's invisible ones are. (Not "so it reads
+  what the user read": the Council's view draws them, bidi controls reordering it.
+  Review fixes 1 count them in the Council's note.) The brief and the discussion
+  aren't in it: the approved plan is what's built.
 - Then: no ticket, so no stages, pull requests or PR-merged wires; research, then
   `propose_plan`; and the starting shape in `propose_plan`'s terms: Coder (Codex, the
   Orchestrator's folder) → Verifier (Claude, the Coder's folder), handoff me → Coder,
@@ -6085,6 +6086,80 @@ check): all 22 fail a test. Not unit-tested: index.ts's two lines of wiring
 
 **Left**: nothing for W18. Ryan approved the button's words. No real `claude` or `codex`
 ran: the Council Orchestrator's rules and kickoff are checked as text.
+
+#### W18 review fixes 1 as built
+The review of e798a30 found the fence holding and the role and ticketless rules
+surviving every relaunch; one Medium (M1) and five Lows, fixed here. Its probes P2,
+P3 and P5 are tests now.
+
+**M1: Councils with matching titles shared a branch, a worktree and an area**
+(`collab.ts` `branchFor`, `areaFor`, `councilOf`, `implement`; `CollabRoom.implementedArea`;
+`index.ts`):
+- The branch is `collab-<slug>-<room id>` (`collab-<id>` with no slug), so two titles
+  slugging alike ("…paging, phase 1" and "…phase 2", cut at 40) get two branches, and
+  git two worktree folders.
+- The area is `councilArea(title)`, or with " (<first 4 of its id>)" (else its whole
+  id) when the name is held by another Council's Orchestrator (`implementedArea`, kept
+  on the room), by a session of this Mac's (running, closed or not started), or by a
+  landscape area or a team room's group (`CouncilPlaces.areaTaken`, from index.ts).
+  "Auth / sessions" and "Auth - sessions" are two areas. A plan names only its own
+  area's workspaces, so one Council's Orchestrator can't wire the other's Coder: P5's
+  plan is refused ("Wire 1 names "coderA", which isn't one of the plan's steps…").
+- `implement` is refused, starting nothing, when a session of this Mac's works in the
+  folder its branch would use (`worktreeRoot`'s or the legacy root's), saying whose and
+  where: "“<title>” works in <folder>, where <branch> is checked out, and a Council's
+  Orchestrator gets a worktree of its own: forget that session, or move its worktree,
+  and implement again."
+- The plan dialog's Council line is `councilOf`'s: the title, with its id's first four
+  when another Council shows the same title (the same four its area's name carries
+  when that was taken), so two dialogs never read alike.
+- A Council implemented before keeps working: its `implementedIn` still opens its
+  session and still refuses a second start; it has no `implementedArea`, and its
+  branch and "Council" group are left as they are.
+
+**L1: implement read the plan after an await** (`collab.ts` `implement`): the plan,
+title and seats are read and the kickoff made before `defaultBase` is awaited, with
+`room.plan.approved` checked as they're read, so a write-up finishing meanwhile isn't
+what the Orchestrator is given (it gets the approved text; the room's plan is the new,
+unapproved write-up after). `implement` is refused while a turn runs: "Wait for the
+current round to finish, or stop it", as Write up plan is.
+
+**L2**: the area's name is the title's `visibleLine` (80): no bidi control or
+zero-width character in it, as the kickoff names the title.
+
+**L3**: a team room's group is a taken name (`areaTaken` asks `sessions.roomOfGroup`),
+so the Orchestrator starts in an area of its own, never a room's, and its pane, with
+the private approved plan in it, isn't shared. That's why nothing is said or asked
+about a room before starting: the area chosen is never one.
+
+**L4** (`shared/plans.ts` `cleanCouncilPlan`): the cleaning counts what it takes out
+(a CRLF is a newline and isn't counted), and the Council's note says so when it took
+any: "N invisible or control characters were taken out of the plan it was given, so it
+reads the plan's characters in their order: this view may show the plan reordered or
+with text hidden." The "reads what the user read" claim is corrected above and in the
+code.
+
+**L6**: the kickoff's title is `quoted()` (JSON-quoted, its own quotes escaped, `<` and
+`>` as `\u003c` `\u003e`), so a ” in it closes nothing.
+
+**Follow-ups, not done**: L5 (Councils implemented before W18: their "Council" group
+and branch stay). L7: one cold-run flake in `test/collab.test.ts`, not reproduced:
+it passed whole in every unmutated run here (three alone, two full suites).
+
+**Checks**, rebased with W18 onto main b3b3e0c (W17 merged, W5 in): typecheck and build
+clean. `CI=true npm test`: 3,664 passed, 359 skipped, exit 0, no timeouts.
+`test/collab.test.ts` 73: eight new (the note's count; the quoted title; P2's write-up
+during the await and the refusal while a turn runs; P3's alike titles, with git making
+two worktree folders; an area held by a session, a landscape area or a room's group;
+the worktree refusal at both roots; P5's two Councils, the cross-wire refused and each
+dialog named apart; a Council implemented before) and three updated for the branch,
+the note and the quoted title. UI, one file at a time: `uiTemplatePicker` 8,
+`uiCouncilTickets` 3. 16 mutations (M1: the worktree refusal and its legacy folder, the
+branch's id, the area's own name and each of its three takers, `implementedArea`, the
+dialog's name; L1: the kickoff read after the await, implement while a turn runs; L2;
+L4's count and CRLF; L6): all 16 fail a test. One full run failed `leakGuard`'s real
+run: the worktree's `node_modules` was a folder of a probe's Vite cache, not the link
+to the main checkout's, so its nested vitest wasn't found; with the link it passes.
 
 ### W19 · Helpdesk tasks workspace. Size S
 A standing Claude workspace on no ticket, wire or pipeline, where you paste
