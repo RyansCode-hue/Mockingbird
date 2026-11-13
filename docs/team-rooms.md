@@ -585,8 +585,10 @@ Member replace the single admin (creator, else longest-standing member).
     (git reads a remote's URL from them for a name the config doesn't
     define), other worktrees, and this worktree's `config.worktree`,
     `commondir` and `gitdir`. So `git config`, `git remote add` and new
-    upstream tracking fail. A commit, branch, stash, fetch or gc writes none
-    of them. Nothing on `PATH` (`~/.local/bin`, `~/go/bin`, `~/.cargo/bin`) is
+    upstream tracking fail. A commit, branch, stash or fetch writes none of
+    them. `git gc` fails in a repository with linked worktrees, as it locks
+    each worktree's HEAD, other worktrees' included; the automatic gc a
+    commit can start runs on its own and doesn't fail the commit. Nothing on `PATH` (`~/.local/bin`, `~/go/bin`, `~/.cargo/bin`) is
     writable. In the session's folders, the files something outside the
     sandbox runs later (`IN_FOLDER_RUNS_CODE`: `.claude/`, `.codex/`,
     `.vscode/`, `.idea/`, `.mcp.json`, `.envrc`, `.gitconfig`, `.gitmodules`,
