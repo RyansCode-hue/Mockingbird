@@ -9,6 +9,13 @@ import { topOfKey } from "../shared/types";
 /** A session's display name: its ticket title when it has one. */
 export const titleOf = (s: Pick<SessionInfo, "title" | "ticketTitle">): string => s.ticketTitle ?? s.title;
 
+/**
+ * Whether main's live sessions include one the window still holds as closed or not started (`held`, ids): main started
+ * it itself (a wire's Send reopens or starts its other end), and the window reads its lists of those only after its own
+ * acts, so they're read again.
+ */
+export const startedSince = (live: readonly Pick<SessionInfo, "id">[], held: ReadonlySet<string>): boolean => live.some((s) => held.has(s.id));
+
 /** The session whose folder holds `path`: `prefer` when it does, else the first one that does. */
 export function sessionHolding(sessions: SessionInfo[], path: string, prefer?: SessionInfo | null): SessionInfo | null {
   const inside = (s: SessionInfo) => path.startsWith(s.cwd + "/");

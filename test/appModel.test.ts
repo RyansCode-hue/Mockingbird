@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { reachesBroadcast, closeStep, closeWaits, groupChoices, nextToClose, queueClose, sessionHolding, sessionOutline, worktreeGone, type OutlineEntry } from "../src/renderer/appModel";
+import { reachesBroadcast, closeStep, closeWaits, groupChoices, nextToClose, queueClose, sessionHolding, sessionOutline, startedSince, worktreeGone, type OutlineEntry } from "../src/renderer/appModel";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
 import type { SessionInfo } from "../src/shared/types";
@@ -159,5 +159,17 @@ describe("several sessions closing one after another", () => {
     expect(closeWaits("a", "a", ["b"])).toBeNull();
     expect(closeWaits("y1", "s8", ["s6"])).toEqual(["s8", "s6"]);
     expect(closeWaits("y1", "s8", ["s6", "s8"])).toEqual(["s8", "s6"]);
+  });
+});
+
+describe("the closed and not-started lists, when main starts one of them", () => {
+  it("are read again once a session they hold is among the live ones, and not for any other change", () => {
+    const held = new Set(["closed-b", "step-c"]);
+    expect(startedSince([session("a"), session("closed-b")], held)).toBe(true);
+    expect(startedSince([session("step-c", { status: "working" })], held)).toBe(true);
+    // a status change of a session that ran all along, or nothing held
+    expect(startedSince([session("a", { status: "working" })], held)).toBe(false);
+    expect(startedSince([session("a")], new Set())).toBe(false);
+    expect(startedSince([], held)).toBe(false);
   });
 });

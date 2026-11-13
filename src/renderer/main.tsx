@@ -18,7 +18,7 @@ import { LAST_SEEN_KEY, justUpdated, seenNow } from "./whatsNewModel";
 import { DragLabel, installDragListeners } from "./drag";
 import { resumeExited } from "./resumeFlow";
 import { OVERLAYS, inEditor } from "./keys";
-import { closeStep, closeWaits, groupChoices, queueClose, sessionHolding, sessionOutline, titleOf, worktreeGone } from "./appModel";
+import { closeStep, closeWaits, groupChoices, queueClose, sessionHolding, sessionOutline, startedSince, titleOf, worktreeGone } from "./appModel";
 import { FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, UpdateIcon, NoteIcon } from "./Icons";
 import { ActionBar, pickActions, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
@@ -647,12 +647,24 @@ function App() {
     const t = setTimeout(() => void readGone(), retryIn(goneFails));
     return () => clearTimeout(t);
   }, [goneFails]);
+  // what the window holds as closed or not started, for the live list's changes below: one running now is read again
+  const heldClosed = useRef<ReadonlySet<string>>(new Set());
+  heldClosed.current = useMemo(() => new Set([...resumable, ...planned].map((s) => s.id)), [resumable, planned]);
+  const readClosedNow = useRef(readClosed);
+  readClosedNow.current = readClosed;
+  const rereading = useRef(false);
   useEffect(() => {
     refresh();
     window.mb.hooksInstalled().then(unlessError("whether the status hooks are installed", (ok: unknown) => setHooksOk(ok === true)));
     const off = window.mb.onSessionsChanged((s: SessionInfo[]) => {
       setSessions(s);
       listLoaded("live");
+      if (rereading.current || !startedSince(s, heldClosed.current)) return;
+      rereading.current = true;
+      void readClosedNow
+        .current()
+        .catch((err: unknown) => console.error("[mockingbird] reading the closed sessions again, as one of them runs now:", err))
+        .finally(() => (rereading.current = false));
     });
     const offUi = window.mb.onUiCommand((cmd: string, arg?: string) => {
       if (cmd === UI_COMMANDS.newSession) setModal("new");
