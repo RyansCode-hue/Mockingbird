@@ -8,10 +8,17 @@ import type { MemberId } from "../../shared/team/types";
  * RoomLive.tsx, kept apart so it can be tested without a DOM.
  */
 
-/** This window's sessions with teammates' room sessions added, and its own room sessions tagged. */
+/**
+ * This window's sessions with teammates' room sessions added, its own room sessions tagged, and its own whose room
+ * sandbox isn't what their room asks for now marked so (in a room or not).
+ */
 export function mergeRoomSessions(own: SessionInfo[], state: LivePanesState | null): SessionInfo[] {
   if (!state) return own;
-  const tagged = own.map((s) => (state.own[s.id] ? { ...s, room: state.own[s.id] } : s));
+  const tagged = own.map((s) => {
+    const room = state.own[s.id];
+    const change = state.sandboxUntilRestart[s.id];
+    return room || change ? { ...s, ...(room ? { room } : {}), ...(change ? { sandboxUntilRestart: change } : {}) } : s;
+  });
   const ids = new Set(own.map((s) => s.id));
   return [...tagged, ...state.remote.filter((r) => !ids.has(r.id))];
 }

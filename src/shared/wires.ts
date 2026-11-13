@@ -468,7 +468,7 @@ export function wireRefusal(from: string, to: string, type: WireType, ctx: WireC
   for (const e of [a, b]) if (e.debrief) return `“${e.title}” is a debrief interview with you, and takes no wires.`;
   for (const e of [a, b]) if (e.tasks) return `“${e.title}” is the Helpdesk tasks workspace: it works in your Chrome on what you paste in, and takes no wires.`;
   for (const e of [a, b]) if (e.takenOver) return e.takenOver;
-  for (const e of [a, b]) if (e.outsideSandbox) return `“${e.title}” isn't in its team room's sandbox (it joined the room while it was running, or its sandbox didn't start): restart it in the room to wire it there.`;
+  for (const e of [a, b]) if (e.outsideSandbox) return `“${e.title}” isn't in its team room's sandbox (it joined the room while it was running, its sandbox didn't start, or the room's sandbox was switched on after it started): restart it in the room to wire it there.`;
 
   if (type === "worktree") {
     if (a.kind !== "agent" || b.kind !== "terminal") return "A shared worktree wire runs from an agent to a terminal.";

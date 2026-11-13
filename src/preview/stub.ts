@@ -37,7 +37,7 @@ import type { AuditEntry } from "../shared/team/audit";
 import { draftsFromModel, splitPlan, wholePlanDraft, type CouncilCreateResult, type CouncilHouseTargets, type TicketDraft } from "../shared/collabTickets";
 import type { PhoneStatus } from "../shared/phoneAlerts";
 // team rooms: live panes
-import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
+import { remotePaneId, roomSandboxOff, type LivePanesState, type RoomSandboxChange, type RoomSessionTag } from "../shared/team/livePanes";
 // team rooms: artifacts
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
@@ -1085,6 +1085,32 @@ const live: LivePanesState = {
   // ?samView: Sam, a member of 5101's room only, connected and showing his session too (someone to follow there, never in 5110)
   views: [{ member: NICK, name: "Nick Smith", shown: ["s1", NICK_PANE], focused: "s1", at: now }, ...(new URLSearchParams(location.search).has("samView") ? [{ member: SAM, name: "Sam", shown: [SAM_PANE], focused: SAM_PANE, at: now }] : [])],
   problems: [],
+  sandboxUntilRestart: {},
+};
+// ?roomSandbox: 5101's sandbox is switched off on this Mac (=on: switched back on since); s8 started with it off, and s5
+// left a room whose sandbox it started in. s1 and s2 started in 5101's sandbox. What each keeps until it restarts
+// follows the switch in Settings → Team, as main's roomSandboxChange has it.
+const roomSandboxQ = new URLSearchParams(location.search).get("roomSandbox");
+if (roomSandboxQ !== null && roomSandboxQ !== "on") settings = { ...settings, roomsUnsandboxed: [ROOM_5101] };
+/** Which of 5101's agent sessions started with its sandbox switched off; whether s5 keeps a sandbox from the room it left. */
+const launchedOff: Record<string, boolean> = { s1: false, s2: false, s8: roomSandboxQ !== null };
+let s5Kept = roomSandboxQ !== null;
+const applyRoomSandbox = () => {
+  const off = roomSandboxOff(settings, ROOM_5101);
+  const change: Record<string, RoomSandboxChange> = s5Kept ? { s5: "kept" } : {};
+  for (const [id, started] of Object.entries(launchedOff)) {
+    live.own[id].guards = started ? { secrets: off, coauthors: true, unsandboxed: true } : { secrets: true, coauthors: true };
+    if (started !== off) change[id] = started ? "missing" : "kept";
+  }
+  live.sandboxUntilRestart = change;
+};
+applyRoomSandbox();
+/** Session `id` restarted (sessionRestart): it starts under its room's switch as it is now. */
+const restartedUnderSwitch = (id: string) => {
+  if (id in launchedOff) launchedOff[id] = roomSandboxOff(settings, ROOM_5101);
+  if (id === "s5") s5Kept = false;
+  applyRoomSandbox();
+  emit("onTeamLive", clone(live));
 };
 buffers[SAM_PANE] = `${C.dim}codex${C.reset}\r\n› Cover the last-org endpoint's error cases\r\n\r\n• Added 3 tests for 404 and 403\r\n`;
 buffers[remotePaneId(NICK, "n7")] = `${C.bold}> Carry on with the donor entity: add the gift aid flag${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Update(src/donors/entity.ts)\r\n`;
@@ -1716,7 +1742,11 @@ const api: Record<string, (...a: any[]) => any> = {
   sessionRestart: async (id: string) => {
     const s = byId(id);
     if (!s) return err("Session is no longer running");
-    return api.relaunchSession(id);
+    // as main's restart: its pty goes first, then it starts again, under its room's rules as they are now
+    sessions = sessions.map((x) => (x.id === id ? { ...x, status: "dead" as const } : x));
+    const r = await api.relaunchSession(id);
+    restartedUnderSwitch(id);
+    return r;
   },
   // as main's: each agent session relaunched in place (a new createdAt) unless it's busy, then the list sent once
   restartAllSessions: async (includeBusy: boolean) => {
@@ -1748,6 +1778,10 @@ const api: Record<string, (...a: any[]) => any> = {
   getSettings: async () => settings,
   setSettings: async (patch: Partial<Settings>) => {
     settings = { ...settings, ...patch }; // main merges what it's sent
+    if ("roomsUnsandboxed" in patch) {
+      applyRoomSandbox();
+      emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+    }
   },
   usageGet: async () => usage,
   contextWindow: async (id: string): Promise<ContextWindow | { error: string }> =>
@@ -3205,6 +3239,8 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
     if (el) then(el);
   }, 100);
 };
+// ?roomSandboxAsk (with ?section=team): the first room's Sandbox this room's sessions switch turned off, which asks first
+if (params.has("roomSandboxAsk")) waitFor('.team-room [aria-label^="Sandbox this room\'s sessions"]', (el) => el.click());
 {
   const label = { explorer: "Files", scm: "Changes", search: "Search", run: "Run & debug" }[view ?? ""];
   if (label) waitFor(`.ab-btn[aria-label="${label}"]`, (el) => setTimeout(() => el.click(), 900));

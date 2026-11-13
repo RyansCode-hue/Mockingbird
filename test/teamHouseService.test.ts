@@ -208,10 +208,13 @@ describe("the House board's tools for agents", () => {
     const unknown = session("c2", { agent: "codex", branch: "5110-b" });
     const current = session("c3", { agent: "codex", agentVersion: "0.156.1", branch: "5110-c" });
     const joined = session("c4", { agent: "codex", agentVersion: "0.156.1", branch: "5110-d" });
-    // c3 started in the room (its sandbox); c4 joined it while running, under its user's own Codex settings
-    const roomGuards = (id: string) => (id === "c3" ? { secrets: true } : null);
-    const { r } = await pair(h, { ryan: { sessions: () => [old, unknown, current, joined], roomGuards } });
+    const unsandboxed = session("c5", { agent: "codex", agentVersion: "0.156.1", branch: "5110-e" });
+    // c3 started in the room (its sandbox); c4 joined it while running, under its user's own Codex settings; c5 started
+    // with the room's sandbox switched off on this Mac
+    const roomGuards = (id: string) => (id === "c3" ? { secrets: true } : id === "c5" ? { secrets: false, unsandboxed: true as const } : null);
+    const { r } = await pair(h, { ryan: { sessions: () => [old, unknown, current, joined, unsandboxed], roomGuards } });
     expect(await r.svc.toolCall("c4", "release_house_ticket", { n: 141 })).toEqual({ error: expect.stringMatching(/^This Codex session joined the room while it was running, so it doesn't run under the room's settings that make Codex ask/) });
+    expect(await r.svc.toolCall("c5", "release_house_ticket", { n: 141 })).toEqual({ error: expect.stringMatching(/^This Codex session started with its team room's sandbox switched off on this Mac, so it doesn't run under the room's settings that make Codex ask/) });
     const before = h.by(RYAN_T).length;
     expect(await r.svc.toolCall("c1", "claim_house_ticket", { n: 141 })).toEqual({ error: expect.stringMatching(/^Codex 0\.131\.0 is older than 0\.138\.0, so it can't be relied on to ask your user before each House write, and Mockingbird refuses them/) });
     expect(await r.svc.toolCall("c2", "create_house_ticket", { title: "x", description: "y" })).toEqual({ error: expect.stringMatching(/^Mockingbird couldn't read this Codex's version/) });

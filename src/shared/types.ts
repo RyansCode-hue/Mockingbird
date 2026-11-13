@@ -1,6 +1,6 @@
 import type { LspRange, LspTextEdit } from "./textEdits";
 // team rooms: live panes
-import type { RoomSessionTag } from "./team/livePanes";
+import type { RoomSandboxChange, RoomSessionTag } from "./team/livePanes";
 import type { CouncilHouseTicket, CouncilTicketDrafts } from "./collabTickets";
 import type { PhoneAlertSettings } from "./phoneAlerts";
 
@@ -89,6 +89,11 @@ export interface SessionInfo {
   // team rooms: live panes
   /** Set in the window on a session in a shared group: its room, owner, and who's looking at it. */
   room?: RoomSessionTag;
+  /**
+   * Set in the window on a running session of this Mac's whose room sandbox isn't what its room asks for now, until it
+   * restarts (LivePanesState.sandboxUntilRestart).
+   */
+  sandboxUntilRestart?: RoomSandboxChange;
   /**
    * Not started yet (PlannedStep): a record with no pty and no folder of its own. It's never resumed, relaunched,
    * published to a room or listed as closed; startPlanned starts it under its id, so its wires keep their ends.
@@ -438,6 +443,13 @@ export interface Settings {
    * full screen.
    */
   roomSessionsInline?: boolean;
+  /**
+   * Team rooms whose sessions run without the room's sandbox on this Mac (Settings → Team, per room), by room id:
+   * their Claude and Codex sessions start as this Mac's own do, with the user's credentials, MCP servers and home
+   * folder. A room not listed, or anything here that isn't a list of ids, keeps its sandbox (roomSandboxOff). Never
+   * sent to teammates; leaving a room drops its id.
+   */
+  roomsUnsandboxed?: string[];
 }
 
 export interface QuietHours {

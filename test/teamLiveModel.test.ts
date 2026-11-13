@@ -15,10 +15,16 @@ const top = (x: SessionInfo) => (x.taskGroup ?? "ungrouped").split("/")[0];
 
 describe("teammates' sessions in the window", () => {
   it("are added to this window's, and its own room sessions are tagged", () => {
-    const state: LivePanesState = { remote: [s("r~nick~n1", "5110", { room: tag({ sessionId: "n1" }) })], own: { a: tag({ remote: false, sessionId: "a" }) }, views: [], problems: [] };
+    const state: LivePanesState = { remote: [s("r~nick~n1", "5110", { room: tag({ sessionId: "n1" }) })], own: { a: tag({ remote: false, sessionId: "a" }) }, views: [], problems: [], sandboxUntilRestart: {} };
     const merged = mergeRoomSessions([s("a", "5110"), s("b", "private")], state);
     expect(merged.map((x) => [x.id, !!x.room, x.room?.remote ?? null])).toEqual([["a", true, false], ["b", false, null], ["r~nick~n1", true, true]]);
     expect(mergeRoomSessions([s("a", null)], null).map((x) => x.id)).toEqual(["a"]);
+  });
+
+  it("mark this window's sessions whose room sandbox isn't what their room asks for now, in a room or out of one", () => {
+    const state: LivePanesState = { remote: [], own: { a: tag({ remote: false, sessionId: "a" }) }, views: [], problems: [], sandboxUntilRestart: { a: "missing", b: "kept" } };
+    const merged = mergeRoomSessions([s("a", "5110"), s("b", null), s("c", "private")], state);
+    expect(merged.map((x) => [x.id, !!x.room, x.sandboxUntilRestart ?? null])).toEqual([["a", true, "missing"], ["b", false, "kept"], ["c", false, null]]);
   });
 });
 

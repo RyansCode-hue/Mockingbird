@@ -69,6 +69,7 @@ function side(m: LoopbackMember, dir: string, listen = false) {
     rooms: () => m.team.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey })),
     sessions,
     settings: () => settings,
+    saveSettings: (patch) => Object.assign(settings, patch),
     notify: () => {},
     toWindow: () => {},
     audit: () => {},
@@ -94,6 +95,7 @@ function side(m: LoopbackMember, dir: string, listen = false) {
     resumable: () => sessions.resumable(),
     roomGroups: () => m.team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
     roomOf: (id) => live.roomOfSession(id),
+    guardsOf: (id) => sessions.guardsOf(id),
     ask: async () => "",
     houseBoard: async () => null,
     chatChanged: () => {},
@@ -117,7 +119,7 @@ function side(m: LoopbackMember, dir: string, listen = false) {
     }
     return s;
   };
-  return { m, sessions, live, room, log, lines, start, stop: () => (live.stop(), room.stop()) };
+  return { m, settings, sessions, live, room, log, lines, start, stop: () => (live.stop(), room.stop()) };
 }
 
 /** One request over the socket, the way the MCP server sends it. */
@@ -241,5 +243,29 @@ describe("a teammate's session someone can watch is one their agent can find and
     await until(() => !!nick.m.team.room(roomId)?.ext.takeover?.sessions[s.id]?.takenOver, "the take-over to reach Nick");
     const r = await send(s.id);
     expect(r.error).toMatch(/Nick's session "Handed over" was taken over: it continues in your own Mockingbird, as "beef0001"/);
+  });
+
+  it("a session started with the room's sandbox switched off on its Mac takes messages; once it's switched back on there, it's refused saying so till it restarts", async () => {
+    const switchTo = (off: string[]) => {
+      const before = { ...nick.settings };
+      nick.settings.roomsUnsandboxed = off;
+      nick.live.settingsChanged(before, nick.settings);
+    };
+    switchTo([roomId]);
+    try {
+      const s = await nick.start({ title: "Unsandboxed" });
+      nick.sessions.clearWaiting(s.id);
+      await until(() => viewOf(s.id)?.status === "idle", "the record");
+      expect(await listed(s.id)).toMatchObject({ title: "Unsandboxed", status: "idle" });
+      expect(await listed(s.id)).not.toHaveProperty("accepts_messages");
+      expect((await send(s.id)).result).toMatch(/^Delivered to /);
+      switchTo([]);
+      await until(() => viewOf(s.id)?.room?.guards.secrets === false, "Ryan to see it outside the sandbox");
+      const r = await send(s.id);
+      expect(r.error).toMatch(/Nick's session "Unsandboxed": it isn't in the room's sandbox on Nick's Mac \(.*or the room's sandbox was switched on after it started\) — ask Nick to restart it in the room/);
+      expect(nick.log.at(-1)).toMatchObject({ to: s.id, refused: true });
+    } finally {
+      switchTo([]);
+    }
   });
 });

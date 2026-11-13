@@ -11,7 +11,7 @@
  * the owner lets them type (TypingAnswer), and never takes keys while the
  * owner's agent is asking for permission.
  */
-import type { AgentKind, SessionInfo, SessionStatus } from "../types";
+import type { AgentKind, SessionInfo, SessionStatus, Settings } from "../types";
 import { isNewer } from "../versions";
 import { named } from "./agentText";
 import type { MemberId, RoomId } from "./types";
@@ -134,23 +134,44 @@ export function roomMessageRefusal(s: { agent: AgentKind | null; status: Session
   }
   if (s.status === "dead") return `its agent has exited on ${who}'s Mac (the pane is still open) — ask ${who} to restart it`;
   if (s.guards?.starting && s.agent === "claude") return `it's still starting on ${who}'s Mac, and its sandbox hasn't reported in yet — try again in a moment`;
-  if (s.guards !== undefined && outsideRoomSandbox(s.agent, s.guards)) return `it isn't in the room's sandbox on ${who}'s Mac (it joined the room while it was running, or its sandbox didn't start) — ask ${who} to restart it in the room`;
+  if (s.guards !== undefined && outsideRoomSandbox(s.agent, s.guards)) return `it isn't in the room's sandbox on ${who}'s Mac (${OUTSIDE_WHY}) — ask ${who} to restart it in the room`;
   return null;
 }
 
 /**
  * Whether a session in a room runs outside the room's sandbox, so nothing crosses the room's line to or from it: a
  * Claude session that wasn't started there (it joined the room's area while it was running), one whose Claude Code
- * is too old for it (claudeSandboxes), or one whose sandbox didn't report in, or hasn't yet (`starting`:
- * RoomSandboxWatch). `guards` are its launch's (secrets: it runs under the room's settings); none for one that wasn't
- * started in a room.
+ * is too old for it (claudeSandboxes), one whose sandbox didn't report in, or hasn't yet (`starting`:
+ * RoomSandboxWatch), or one started with the room's sandbox switched off on its Mac whose room has it on now
+ * (RoomSandboxChange "missing"). `guards` are its launch's (secrets: it runs under the room's settings); none for one
+ * that wasn't started in a room.
  */
 export const outsideRoomSandbox = (agent: AgentKind | null | undefined, guards: { secrets: boolean; starting?: boolean } | null | undefined): boolean =>
   agent === "claude" && (!guards?.secrets || !!guards.starting);
 
+/** Why a session can be outside its room's sandbox, as what it and its teammates are told says it. */
+const OUTSIDE_WHY = "it joined the room while it was running, its sandbox didn't start, or the room's sandbox was switched on after it started";
+
 /** What a session outside the room's sandbox is told when it reaches for the room. */
-export const ROOM_SANDBOX_REFUSAL =
-  "This session doesn't run in its team room's sandbox (it joined the room while it was running, or its sandbox didn't start), so nothing crosses the room's line to or from it: teammates' sessions, the House board, room artifacts and teammates' changes. Tell your user: restart this session in the room to use them.";
+export const ROOM_SANDBOX_REFUSAL = `This session doesn't run in its team room's sandbox (${OUTSIDE_WHY}), so nothing crosses the room's line to or from it: teammates' sessions, the House board, room artifacts and teammates' changes. Tell your user: restart this session in the room to use them.`;
+
+/**
+ * The rooms whose sessions run without the room's sandbox on this Mac (Settings.roomsUnsandboxed): only ids, so
+ * anything else there leaves every room sandboxed.
+ */
+export const roomsUnsandboxedOf = (s: Pick<Settings, "roomsUnsandboxed">): string[] =>
+  Array.isArray(s.roomsUnsandboxed) ? s.roomsUnsandboxed.filter((id): id is string => typeof id === "string") : [];
+
+/** Whether room `roomId`'s sessions start without its sandbox on this Mac: only when it's listed (fails closed). */
+export const roomSandboxOff = (s: Pick<Settings, "roomsUnsandboxed">, roomId: string): boolean => roomsUnsandboxedOf(s).includes(roomId);
+
+/**
+ * How a running session's room sandbox differs from what its room asks for now; sandbox settings are read at launch
+ * only, so it lasts until the session restarts. "kept": it started in a room's sandbox and keeps it, though it has left
+ * the room or the room's sandbox is switched off on this Mac. "missing": it started with its room's sandbox switched
+ * off, and the room it's in has it on now — it runs outside it.
+ */
+export type RoomSandboxChange = "kept" | "missing";
 
 /** A room session's key in room state and views: the same on every member's Mockingbird. */
 export const roomSessionKey = (owner: MemberId, id: string): string => `${owner}:${id}`;
@@ -190,7 +211,8 @@ export interface RoomSessionTag {
   git: RoomGitState | null;
   repo: string | null;
   repoName: string | null;
-  guards: { secrets: boolean; coauthors: boolean };
+  /** Own only, `unsandboxed`: it started with its room's sandbox switched off on this Mac (Settings → Team). */
+  guards: { secrets: boolean; coauthors: boolean; unsandboxed?: true };
   /** Why typing into it or showing it failed just now (remote only). */
   problem?: string;
   /**
@@ -238,6 +260,11 @@ export interface LivePanesState {
   views: MemberView[];
   /** Problems worth showing (a session record that couldn't be published…). */
   problems: string[];
+  /**
+   * This install's running sessions whose room sandbox isn't what their room asks for now, by session id: in a room
+   * or not (one that left keeps the sandbox it started in).
+   */
+  sandboxUntilRestart: Record<string, RoomSandboxChange>;
 }
 
 // ---- the pty stream --------------------------------------------------------------

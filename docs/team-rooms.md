@@ -798,6 +798,30 @@ Member replace the single admin (creator, else longest-standing member).
     `send_message` to teammates, wires and its wire tools (`finish_step`,
     `read_context`, `read_terminal`, `list_links`), and the House, artifact
     and teammates'-changes tools are refused, saying why.
+  - **Switched off on this Mac.** Settings → Team → Rooms has **Sandbox
+    this room's sessions** for each room, on by default; turning it off asks
+    first. It's this Mac's alone (`roomsUnsandboxed` in its settings, never
+    sent to teammates, whose Macs decide for themselves), it's dropped when
+    this Mac leaves the room, and anything there but a list of room ids
+    leaves every room sandboxed. Off, the room's Claude and Codex sessions
+    start as this Mac's own do: no sandbox settings and no
+    `--setting-sources user --strict-mcp-config` (so the user's MCP servers,
+    claude.ai connectors, `~/.claude` and the repository's settings apply),
+    no Codex room profile or untrusted folders, no room caches, and no
+    nested-repository refusal. Claude keeps its secret deny rules, so it
+    stays on the room's line as 1.6's room sessions did; every session
+    keeps the co-author hooks, the House board, inline, the not-at-home
+    refusal and the pins on its folder's git. Whatever teammates type into
+    such a session, and what their agents send it, runs with the user's
+    credentials too; teammates see it as guarded, as any session with the
+    deny rules. A Codex one's House writes are refused, as it doesn't run
+    under the settings that make it ask first. Its pane says "no room
+    sandbox". The switch is read at launch: a session started without the
+    sandbox whose room has it on now (switched back on, or it moved into
+    a room with it on) is outside it until restarted, and one started in
+    the sandbox keeps it until restarted, after the switch goes off or
+    after it leaves the room (its workspace moved out of the room's area).
+    Its pane says which, with a restart.
   - **Its folder's git is held to where it started.** Mockingbird pins a
     room launch's git folders, read from the filesystem and checked against
     the repository the session was opened on. Every git Mockingbird runs

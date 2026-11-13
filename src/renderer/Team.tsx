@@ -9,6 +9,7 @@ import { RoomMigrationsSetting } from "./team/Migrations";
 import { RemoteActivity } from "./team/RemoteActivity";
 import { isErr, type Settings } from "../shared/types";
 import { allowCreatorsCommand } from "../shared/team/protocol";
+import { roomsUnsandboxedOf } from "../shared/team/livePanes";
 import type { LeaveOutcome, PeerStatus, RemoveOutcome, TeamNotice, TeamRoomSummary, TeamStatus } from "../shared/team/types";
 import { OLD_WORKER_APPROVE, pendingJoinText, RoomJoinRequests } from "./team/JoinRequests";
 import type { ConnectedSummary } from "./team/connectedModel";
@@ -740,6 +741,60 @@ function RoomMembers({ room }: { room: TeamRoomSummary }) {
   );
 }
 
+/**
+ * Settings → Team, per room: whether this Mac runs the room's Claude and Codex sessions in the room's sandbox (on by
+ * default). Turning it off asks first; it's this Mac's alone (Settings.roomsUnsandboxed) and applies as sessions start
+ * or restart. The list saved holds only rooms this Mac is in, so a room left meanwhile isn't listed again.
+ */
+function RoomSandboxSetting({ room, rooms, settings, onChange }: { room: TeamRoomSummary; rooms: readonly TeamRoomSummary[]; settings: Settings; onChange: (patch: Partial<Settings>) => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const off = roomsUnsandboxedOf(settings).filter((id) => rooms.some((r) => r.id === id));
+  const on = !off.includes(room.id);
+  const set = (sandboxed: boolean) => onChange({ roomsUnsandboxed: sandboxed ? off.filter((id) => id !== room.id) : [...off, room.id] });
+  return (
+    <>
+      <SetRow
+        title="Sandbox this room's sessions"
+        note={
+          on
+            ? "On this Mac, its Claude and Codex sessions run in the room's sandbox: away from your credentials, your MCP servers and your home folder. Teammates' Macs decide for themselves."
+            : "Off on this Mac: its Claude and Codex sessions run like your own, with your credentials, MCP servers and home folder. Teammates' Macs decide for themselves. Applies as sessions start or restart."
+        }
+      >
+        <Toggle label={`Sandbox this room's sessions: ${room.name}`} on={on} onChange={(v) => (v ? set(true) : setConfirming(true))} />
+      </SetRow>
+      {confirming && (
+        <Modal className="modal team-dlg" onClose={() => setConfirming(false)}>
+          <h3>Run sessions without the sandbox in {room.name}?</h3>
+          <div className="sub-h">On this Mac only, as its sessions start or restart.</div>
+          <ul className="team-effects">
+            <li>
+              Its Claude and Codex sessions run like your own: with your git and GitHub credentials, your MCP servers (Slack…), <code>~/.claude</code>, Docker and your
+              caches.
+            </li>
+            <li className="warn">So does anyone you let type into them, and anything a teammate's agent sends them.</li>
+            <li>Teammates' Macs decide for themselves: this changes nothing on theirs.</li>
+          </ul>
+          <div className="row">
+            <button className="outline" onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+            <button
+              className="primary"
+              onClick={() => {
+                set(false);
+                setConfirming(false);
+              }}
+            >
+              Turn the sandbox off
+            </button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 /** Settings → Team. */
 export function TeamSection({ settings, onChange }: { settings: Settings; onChange: (patch: Partial<Settings>) => void }) {
   const status = useTeamStatus();
@@ -844,6 +899,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
             </button>
           </SetRow>
           <RoomWarnings room={r} />
+          <RoomSandboxSetting room={r} rooms={st.rooms} settings={settings} onChange={onChange} />
           <RoomBackupsSetting room={r} />
           <RoomMigrationsSetting roomId={r.id} />
           <RoomMembers room={r} />

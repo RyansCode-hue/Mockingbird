@@ -78,7 +78,7 @@ export interface HouseServiceDeps {
    * room's permission profile, where Codex can't auto-approve a tool set to
    * ask (its approval_policy "never" refuses the call instead).
    */
-  roomGuards?: (sessionId: string) => { secrets: boolean } | null;
+  roomGuards?: (sessionId: string) => { secrets: boolean; unsandboxed?: true } | null;
   /** Folders that may be clones of a room's repositories (sessions' repos, the repo index). */
   knownRepos: () => string[];
   emit: (channel: string, payload: unknown) => void;
@@ -652,7 +652,11 @@ export class HouseService {
       return { error: `${which}, so it can't be relied on to ask your user before each House write, and Mockingbird refuses them. Tell your user: they can do it on the room's board (▦), or update Codex and restart this session.` };
     }
     // outside the room's permission profile, a Codex run with approval_policy "never" and full disk access approves a tool set to ask
-    if (writes && s.agent === "codex" && this.d.roomGuards && !this.d.roomGuards(s.id)?.secrets) {
+    const guards = writes && s.agent === "codex" && this.d.roomGuards ? this.d.roomGuards(s.id) : undefined;
+    if (guards?.unsandboxed) {
+      return { error: "This Codex session started with its team room's sandbox switched off on this Mac, so it doesn't run under the room's settings that make Codex ask your user before each House write, and Mockingbird refuses them. Tell your user: they can do it on the room's board (▦), or restart this session with the room's sandbox on (Settings → Team)." };
+    }
+    if (guards !== undefined && !guards?.secrets) {
       return { error: "This Codex session joined the room while it was running, so it doesn't run under the room's settings that make Codex ask your user before each House write, and Mockingbird refuses them. Tell your user: they can do it on the room's board (▦), or restart this session in the room." };
     }
     let o: HouseToolOp;

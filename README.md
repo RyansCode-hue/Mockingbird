@@ -620,7 +620,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
     `-c` on that launch alone, enforced on every command it runs: it commits,
     stashes and installs packages, but can't read logins or push — pushing is
     yours. Commits in turns a teammate typed into credit them with
-    Co-authored-by.
+    Co-authored-by. Settings → Team can switch a room's sandbox off on your
+    Mac (after a warning) for work it blocks — pushes, `gh`, your MCP
+    servers: that room's sessions then run like your own as they start or
+    restart, and a running one says so until it restarts.
   - **Backups and Take over:** after every agent turn a room session's worktree
     (ignored and secret files left out) is snapshotted to a hidden ref,
     `refs/mockingbird/rooms/<room>/<session>`, and sent peer to peer to

@@ -57,6 +57,9 @@ import {
   type ViewMessage,
   TYPING_MINUTES,
   outsideRoomSandbox,
+  roomSandboxOff,
+  roomsUnsandboxedOf,
+  type RoomSandboxChange,
 } from "../../shared/team/livePanes";
 import { quoted } from "../../shared/team/agentText";
 import { takenOverOwn, takenOverTag } from "../../shared/team/takeover";
@@ -111,6 +114,8 @@ export interface LivePanesDeps {
   rooms: () => { id: RoomId; groupKey: string }[];
   sessions: SessionManager;
   settings: () => Settings;
+  /** Save a change to this Mac's settings (Store.setSettings): leaving a room drops its sandbox switch. */
+  saveSettings: (patch: Partial<Settings>) => void;
   /** A desktop notification; clicking it brings up the pane `paneId`. */
   notify: (title: string, body: string, paneId: string) => void;
   toWindow: (channel: string, ...args: unknown[]) => void;
@@ -291,6 +296,10 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     s.remote = this;
     s.roomLaunch = (target) => this.roomLaunch(target);
     s.roomOfGroup = (group) => this.roomForGroup(splitGroupKey(group).top);
+    s.roomSandboxOff = (group) => {
+      const roomId = this.roomForGroup(splitGroupKey(group).top);
+      return roomId ? roomSandboxOff(this.d.settings(), roomId) : null;
+    };
     s.sandboxLost = (info, why) =>
       this.problem(`“${info.ticketTitle ?? info.title}” isn't in its team room's sandbox: ${why}. Nothing crosses the room's line for it, and teammates see it as unguarded; restart it to try again.`);
     s.folderNoticeSeen = (info, what, why) => {
@@ -356,6 +365,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     if (s.remote === this) s.remote = null;
     s.roomLaunch = null;
     s.roomOfGroup = null;
+    s.roomSandboxOff = null;
     s.sandboxLost = null;
     setRoomSessionLookup(null);
   }
@@ -433,10 +443,17 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
    * so teammates' copies hold its history and scroll it themselves (a
    * full-screen agent keeps its history inside itself: a copy would show one
    * screen of it).
+   *
+   * With the room's sandbox switched off on this Mac (Settings.roomsUnsandboxed), an agent starts as this Mac's own
+   * do — no sandbox settings, no room caches, the user's own settings sources and MCP servers — keeping Claude's
+   * secret deny rules, the co-author hooks, the House board and inline. What only the sandbox needs is skipped (the
+   * nested-repository refusal, holding extra folders to having no repository); the pins on its folder's git stay, as
+   * a terminal's do, since they guard the git Mockingbird runs there.
    */
   async roomLaunch(target: LaunchTarget): Promise<RoomLaunch | null> {
     const roomId = target.group ? this.roomForGroup(splitGroupKey(target.group).top) : null;
     if (!roomId) return null;
+    const sandboxed = !roomSandboxOff(this.d.settings(), roomId);
     let denyReads: string[] = [];
     let codexPermissions: string[] = [];
     let claudeSettings: Record<string, unknown> | null = null;
@@ -448,8 +465,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       const why = roomFolderRefusal(target.cwd, target.extraDirs ?? []);
       if (why) throw new Error(why);
     }
-    const codexGuarded = runs === "codex" && codexGuardsSecrets(target.agentVersion);
-    const claudeSandboxed = runs === "claude" && claudeSandboxes(target.agentVersion);
+    const codexGuarded = sandboxed && runs === "codex" && codexGuardsSecrets(target.agentVersion);
+    const claudeSandboxed = sandboxed && runs === "claude" && claudeSandboxes(target.agentVersion);
     let git: RoomGitDirs | null = null;
     let gitRead = false;
     // the folders held to having no repository: those any session's first launch there found none in (its record's, and
@@ -491,8 +508,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       } else if (!top) noRepo.push(onDisk(target.cwd));
       return git;
     };
-    await gitDirs(runs === "claude" ? "Claude" : codexGuarded ? "Codex" : null);
-    if (runs) {
+    await gitDirs(sandboxed && runs === "claude" ? "Claude" : codexGuarded ? "Codex" : null);
+    if (runs && sandboxed) {
       const extras = target.extraDirs ?? [];
       // a repository in its folders that isn't its own is one its agent could rewrite, outside Mockingbird's pins
       const why = await nestedRepoRefusal(
@@ -514,11 +531,13 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       }
     }
     const hooks = [this.d.hooksDir ?? HOOKS_DIR, this.d.coauthorsDir ?? COAUTHORS_DIR];
-    const caches = runs ? this.cachesFor(roomId) : null;
+    const caches = runs && sandboxed ? this.cachesFor(roomId) : null;
     if (runs === "claude") {
       const secrets = roomSecretReads(this.d.settings().workTrackerPath);
       if (secrets.problem) this.problem(secrets.problem);
       denyReads = secrets.rules;
+    }
+    if (runs === "claude" && sandboxed) {
       // a terminal is never on the room's line, so only an agent pane's sandbox reports in
       if (target.agent === "claude" && claudeSandboxed) sandboxMarker = randomBytes(16).toString("hex");
       if (!claudeSandboxed) this.problem(claudeTooOld(target.agentVersion));
@@ -591,8 +610,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : claudeSandboxed ? CLAUDE_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
       allowTools: target.agent === "claude" ? [...HOUSE_READ_TOOLS, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read, ...TEAM_CHANGES_READ_TOOLS] : [],
       inline,
-      // a terminal is a shell once the agent it brought back quits: never guarded
-      guards: { secrets: target.agent !== null && (claudeSandboxed || (codexGuarded && codexServers !== null && codexFoldersKnown)), coauthors: this.hooksReady },
+      // a terminal is a shell once the agent it brought back quits: never guarded. Unsandboxed, a Claude pane has its
+      // deny rules, so it stays on the room's line, as 1.6's room sessions were
+      guards: sandboxed
+        ? { secrets: target.agent !== null && (claudeSandboxed || (codexGuarded && codexServers !== null && codexFoldersKnown)), coauthors: this.hooksReady }
+        : { secrets: target.agent === "claude", coauthors: this.hooksReady, ...(target.agent ? { unsandboxed: true as const } : {}) },
       sandboxMarker,
       agentEnv: caches ? roomCacheEnv(caches) : {},
       // its folders are named untrusted (codexOutsideOff), so an interactive Codex opens on its folder notice
@@ -1333,6 +1355,15 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     }
     const muteProblem = this.unmute(theirs);
     if (muteProblem) problems.push(muteProblem);
+    // joining the room again starts its sessions sandboxed, whatever this Mac said before
+    const off = roomsUnsandboxedOf(this.d.settings());
+    if (off.includes(room.id)) {
+      try {
+        this.d.saveSettings({ roomsUnsandboxed: off.filter((id) => id !== room.id) });
+      } catch (err) {
+        problems.push(`Its sandbox switch on this Mac couldn't be cleared, so joining it again would start its sessions without the room's sandbox: turn it on in Settings → Team after you join (${this.d.log(`team: clearing room ${room.id}'s sandbox switch`, err)})`);
+      }
+    }
     for (const byRoom of this.views.values()) byRoom.delete(room.id);
     this.sentViews.delete(room.id);
     this.roomCache = null;
@@ -1495,9 +1526,15 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
 
   // ---- the window -----------------------------------------------------------------------------------
 
-  /** Settings changed: the window's room sessions say whether a restart brings them inline. */
+  /**
+   * Settings changed: the window's room sessions say whether a restart brings them inline, and which run with another
+   * sandbox than their room's switch now asks for; teammates see the ones that left the room's sandbox unguarded.
+   */
   settingsChanged(before: Settings, after: Settings): void {
-    if ((before.roomSessionsInline !== false) !== (after.roomSessionsInline !== false)) this.changed();
+    if (!sameJson(roomsUnsandboxedOf(before), roomsUnsandboxedOf(after))) {
+      this.schedule(0);
+      this.changed();
+    } else if ((before.roomSessionsInline !== false) !== (after.roomSessionsInline !== false)) this.changed();
   }
 
   private changed(): void {
@@ -1521,7 +1558,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   /** Everything the window shows about room sessions. */
   state(): LivePanesState {
     const team = this.team();
-    if (!team) return { remote: [], own: {}, views: [], problems: this.problems };
+    if (!team) return { remote: [], own: {}, views: [], problems: this.problems, sandboxUntilRestart: {} };
     const self = team.self.id;
     const toLocal = (key: string): string | null => {
       const k = parseRoomSessionKey(key);
@@ -1631,7 +1668,12 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         ...(taken ? { takenOver: takenOverTag(taken, self, (m) => memberNameIn(team, taken.roomId, m)) } : {}),
       };
     }
-    return { remote, own, views, problems: this.problems };
+    const sandboxUntilRestart: Record<string, RoomSandboxChange> = {};
+    for (const s of this.d.sessions.list()) {
+      const change = this.d.sessions.roomSandboxChange(s.id);
+      if (change) sandboxUntilRestart[s.id] = change;
+    }
+    return { remote, own, views, problems: this.problems, sandboxUntilRestart };
   }
 }
 

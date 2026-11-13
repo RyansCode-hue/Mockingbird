@@ -749,7 +749,7 @@ describe("a Claude room session outside the room's sandbox", () => {
     wire(t.service.add("a", "term", "worktree"));
     for (const id of ["a", "b", "c", "term"]) t.rooms[id] = "R1";
     t.unsandboxed.add("b");
-    const why = "“Reviewer” isn't in its team room's sandbox (it joined the room while it was running, or its sandbox didn't start): restart it in the room to wire it there.";
+    const why = "“Reviewer” isn't in its team room's sandbox (it joined the room while it was running, its sandbox didn't start, or the room's sandbox was switched on after it started): restart it in the room to wire it there.";
     for (const id of [ab, ba, bc]) expect(gate(t, id)).toMatchObject({ state: "blocked", why });
     // what it would read, and what would be read from it
     expect(((await t.tools.call(t.me("b"), WIRE_TOOL.readContext, { from: "a" })) as { error?: string }).error).toBe(why);

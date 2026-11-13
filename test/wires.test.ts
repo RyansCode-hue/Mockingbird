@@ -88,7 +88,7 @@ describe("wireRefusal", () => {
   it("refuses a room session outside the room's sandbox, at either end, until it's restarted in the room", () => {
     const joined = end("j", { room: "R1", title: "Joined", outsideSandbox: true });
     const ctx = ctxOf([end("r", { room: "R1" }), joined]);
-    const why = "“Joined” isn't in its team room's sandbox (it joined the room while it was running, or its sandbox didn't start): restart it in the room to wire it there.";
+    const why = "“Joined” isn't in its team room's sandbox (it joined the room while it was running, its sandbox didn't start, or the room's sandbox was switched on after it started): restart it in the room to wire it there.";
     expect(wireRefusal("r", "j", "handoff", ctx)).toBe(why);
     expect(wireRefusal("j", "r", "context", ctx)).toBe(why);
     // across the line it's the line that's said, naming nothing on the far side

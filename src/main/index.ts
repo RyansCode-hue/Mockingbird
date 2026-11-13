@@ -335,6 +335,7 @@ const livePanes = new LivePanes({
   rooms: () => team.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey })),
   sessions,
   settings: () => store.settings,
+  saveSettings: (patch) => store.setSettings(patch),
   notify: (title, body, paneId) => {
     const n = new Notification({ title, body });
     n.on("click", () => focusPane(paneId));

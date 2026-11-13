@@ -96,6 +96,7 @@ function app(m: LoopbackMember, clone: string, takeoverOpts: Partial<TakeoverDep
       rooms,
       sessions,
       settings: () => settings,
+      saveSettings: (patch) => Object.assign(settings, patch),
       notify: () => {},
       toWindow: () => {},
       audit: () => {},

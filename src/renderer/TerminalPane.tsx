@@ -22,7 +22,7 @@ import { TypingAsks, TypingChip, TypingRefused, Typists, typingOn } from "./team
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
 import type { RoomSessionBackupView } from "../shared/team/takeover";
-import { CODEX_ROOM_GUARD_SINCE, claudeSandboxes, claudeTooOld, codexGuardsSecrets, isRemotePaneId } from "../shared/team/livePanes";
+import { CODEX_ROOM_GUARD_SINCE, claudeSandboxes, claudeTooOld, codexGuardsSecrets, isRemotePaneId, type RoomSandboxChange, type RoomSessionTag } from "../shared/team/livePanes";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
 import { ago, fmtElapsed, plural } from "../shared/format";
@@ -234,9 +234,21 @@ export { shortReason };
  * A room session of this Mac's that teammates see but that runs without the
  * room's protections: a terminal (it can read anything), a Codex too old for
  * the room's permission profile, a Claude Code too old for the room's sandbox,
- * or a session that joined the room while running or whose sandbox didn't start.
+ * a session that joined the room while running or whose sandbox didn't start,
+ * or one started with the room's sandbox switched off on this Mac.
  */
-function GuardChip({ session, guards, inline, onRestart }: { session: SessionInfo; guards: { secrets: boolean; coauthors: boolean }; inline?: boolean; onRestart?: () => void }) {
+function GuardChip({ session, guards, inline, onRestart }: { session: SessionInfo; guards: RoomSessionTag["guards"]; inline?: boolean; onRestart?: () => void }) {
+  if (guards.unsandboxed && !session.shell) {
+    const credit = guards.coauthors ? "" : " Its commits don't credit teammates who type into it: the git hooks that add them couldn't be set up (the reason is above the session list).";
+    return (
+      <span
+        className="chip warn"
+        title={`Its room's sandbox is off on this Mac (Settings → Team), so this session runs with your credentials, MCP servers and home folder — and so do teammates you let type into it, and what their agents send it.${credit}`}
+      >
+        no room sandbox
+      </span>
+    );
+  }
   if (guards.secrets && guards.coauthors) return null;
   if (guards.secrets) {
     return (
@@ -281,6 +293,40 @@ function GuardChip({ session, guards, inline, onRestart }: { session: SessionInf
       }}
     >
       secrets unguarded · restart
+    </button>
+  );
+}
+
+/**
+ * A running session of this Mac's whose room sandbox isn't what its room asks for now (RoomSandboxChange), read as it
+ * started: it keeps one it no longer needs (it left the room, or the room's sandbox was switched off here), or runs
+ * outside one its room has on now. Either way a restart puts it right.
+ */
+function SandboxChangeChip({ session, change, inRoom, onRestart }: { session: SessionInfo; change: RoomSandboxChange; inRoom: boolean; onRestart?: () => void }) {
+  const restart = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onRestart?.();
+  };
+  if (change === "kept") {
+    const why = inRoom ? "its room's sandbox is switched off on this Mac now (Settings → Team)" : "it has left its team room since";
+    return (
+      <button
+        className="chip"
+        title={`This session started in its team room's sandbox, and ${why}. It keeps the sandbox until it restarts: no git push or GitHub login, no MCP servers but Mockingbird's, no writes outside its folders. Click to restart it without it (its conversation resumes).`}
+        onClick={restart}
+      >
+        room sandbox on · restart
+      </button>
+    );
+  }
+  const line = session.agent === "codex" ? "its House board writes are refused" : "nothing crosses the room's line for it (teammates' sessions, the House board, room artifacts)";
+  return (
+    <button
+      className="chip warn"
+      title={`This session started with its room's sandbox switched off on this Mac, and its room has the sandbox on now (Settings → Team). Until it restarts it runs without it — with your credentials, MCP servers and home folder — and ${line}. Click to restart it in the room's sandbox (its conversation resumes).`}
+      onClick={restart}
+    >
+      no room sandbox · restart
     </button>
   );
 }
@@ -473,7 +519,12 @@ export function PaneChips({ session, density, git, gitErr, overlaps, overlapsUnr
       {session.shell && density !== "min" && <span className="chip">shell</span>}
       {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
       {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row, its ⋯ or ⌘K)">muted</span>}
-      {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />}
+      {!remote && !room?.takenOver && !dead && density !== "min" &&
+        (session.sandboxUntilRestart ? (
+          <SandboxChangeChip session={session} change={session.sandboxUntilRestart} inRoom={!!room} onRestart={onRestart} />
+        ) : (
+          room && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />
+        ))}
     </>
   );
 }

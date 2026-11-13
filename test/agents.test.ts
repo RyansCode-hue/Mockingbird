@@ -47,6 +47,13 @@ describe("Claude launch", () => {
     expect(local[local.indexOf("--settings") + 1]).toMatch(/statusline-settings\.json$/);
     expect(local).not.toContain("--setting-sources");
     expect(local).not.toContain("--strict-mcp-config");
+    // a room launch with its sandbox switched off: its deny rules and the room's tools, but the user's own settings and MCP servers
+    const unsandboxed = agentFor("claude").launchArgs({ ...base }, { mcp, denyReads: ["Read(**/.env)"], allowTools: ["list_house_tickets"], instructions: "the board" });
+    expect(unsandboxed).toContain("--disallowedTools");
+    expect(unsandboxed).toContain("--mcp-config");
+    expect(unsandboxed[unsandboxed.indexOf("--settings") + 1]).toMatch(/statusline-settings\.json$/);
+    expect(unsandboxed).not.toContain("--setting-sources");
+    expect(unsandboxed).not.toContain("--strict-mcp-config");
     // the user's own status line is theirs: the room's settings go alone
     fs.mkdirSync(path.join(os.homedir(), ".claude"), { recursive: true });
     fs.writeFileSync(path.join(os.homedir(), ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "mine" } }));
