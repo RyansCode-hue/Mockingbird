@@ -1050,4 +1050,20 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(w.headerClosed.keyboard).not.toBe("terminal");
     expect(w.menu).toEqual(["Connect…", "Finish step…"]);
   }, 150_000);
+
+  it("never gives a terminal the keyboard from a dialog opened off the send popover, Finish step or Needs you, each begun as a terminal was typed in", async () => {
+    type Chain = { typedIn: string; opened: string; palette: boolean; dialog: string | null; closed: boolean; open: boolean; keyboard: string; typed: number; item?: boolean };
+    const k = await run<{ error?: string; keys: string; fromPopover: Chain; fromFinish: Chain; fromNeeds: Chain }>("k", "lsWires&lsGates&lsCamera=0,3040,1", "1600x1000");
+    expect(k.error).toBeUndefined();
+    expect(k.keys).toBe("real");
+    // each: a terminal typed in, then what opened took the keyboard, then ⌘K's New session, closed by Cancel (which
+    // closes what it was opened from too)
+    const chain = { typedIn: "terminal", palette: true, dialog: "New session", closed: true, open: false, typed: 0 };
+    // the dot's press gave the landscape the keyboard: it's next in the chain
+    expect(k.fromPopover).toEqual({ ...chain, opened: "popover", keyboard: "landscape" });
+    // the focus header's press left it in the terminal, the only place left in the chain: focus's frame gets it instead
+    expect(k.fromFinish).toEqual({ ...chain, opened: "finish", keyboard: "focus" });
+    // the tray hands back its button
+    expect(k.fromNeeds).toEqual({ ...chain, item: true, opened: "finish", keyboard: "button" });
+  }, 150_000);
 });

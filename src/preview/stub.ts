@@ -3232,7 +3232,7 @@ if (params.has("landscapeFirstRunAudit")) {
   };
   runFirstRunAudit({ sessions: () => sessions, calls, stored: () => landscape, patch: patchLandscape, setSession, waitFor }, params.get("landscapeFirstRunAudit") || "k");
 }
-// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r|o works Needs you and the cards' badges, and W15's ticket items (needsYouAudit.ts), for test/uiLandscapeNeeds.test.ts
+// S7: ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r|o|w|k works Needs you and the cards' badges, and W15's ticket items (needsYouAudit.ts), for test/uiLandscapeNeeds.test.ts
 if (params.has("landscapeNeedsAudit")) {
   recordConsole();
   const setSession = (id: string, over: Partial<SessionInfo>) => {

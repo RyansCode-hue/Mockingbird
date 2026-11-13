@@ -357,6 +357,97 @@ export async function wireNeedsPart(env: WireNeedsEnv, out: Record<string, unkno
   await act([{ key: "Escape" }]);
 }
 
+/**
+ * `?landscapeNeedsAudit=k` (with ?lsWires&lsGates, on 5120 at 100%: lsCamera=0,3040,1, at 1600×1000): what's opened from
+ * the send popover, Finish step or Needs you never gives a terminal the keyboard (Modal.tsx's OFF_TERMINALS). Each chain
+ * starts with a workspace's terminal being typed in and goes on to ⌘K's New session, from what opened, closed by its
+ * Cancel (a press outside what it was opened from, which closes that): what has the keyboard then, and whether a key
+ * typed reaches a terminal.
+ * - the send popover, from Fixtures → Spike's gate dot as Builder's terminal was typed in;
+ * - Finish step, from Reviewer's focus header as its terminal was typed in: the header's press leaves the keyboard in
+ *   the terminal, so the terminal is all that's left of Finish step's chain once it has closed;
+ * - Needs you, in focus as Reviewer's terminal was typed in: its Finished item's Finish step….
+ */
+export async function offTerminalsPart(env: Pick<WireNeedsEnv, "calls" | "setSession">, out: Record<string, unknown>): Promise<void> {
+  const writes = () => env.calls.filter((c) => c.fn === "sessionWrite").length;
+  const typedNow = async () => {
+    const k = keyboard();
+    const was = writes();
+    await act([{ key: "x" }]);
+    await sleep(250);
+    return { keyboard: k, typed: writes() - was };
+  };
+  /** ⌘K's New session from what has the keyboard, then its Cancel. */
+  const newSessionCancelled = async () => {
+    await act([{ key: "k", meta: true }]);
+    const palette = await until(() => !!q(".palette input"));
+    await sleep(250);
+    const input = q<HTMLInputElement>(".palette input");
+    if (input) {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "New session");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(300);
+      await act([{ key: "Enter" }]);
+    }
+    await until(() => !!q(".modal h3"));
+    const dialog = q(".modal h3")?.textContent ?? null;
+    await sleep(700);
+    const cancel = qs(".modal button").find((b) => b.textContent?.trim() === "Cancel");
+    if (cancel) await act([click(cancel)]);
+    await sleep(400);
+    return { palette, dialog, closed: !q(".modal h3") };
+  };
+  const typeIn = async (term: Element | null) => {
+    if (!term) throw new Error("no terminal to type in");
+    await act([click(term)]);
+    await sleep(1300);
+    return keyboard();
+  };
+  env.setSession("wb-reviewer", { status: "idle", finishedAt: Date.now() - 60_000, promptAt: Date.now() - 1 });
+  await sleep(400);
+
+  // ---- the send popover ----
+  {
+    const typedIn = await typeIn(q('.ls-world .ls-node[data-front="wb-builder"] .ls-term'));
+    await act([click(q('.ls-wire-dots circle.dot[data-wire="wb-ghost"]')!)]);
+    await until(() => !!q(".wg-pop:not(.mb-ghost)"));
+    await sleep(700);
+    const opened = keyboard();
+    const chain = await newSessionCancelled();
+    out.fromPopover = { typedIn, opened, ...chain, open: !!q(".wg-pop:not(.mb-ghost)"), ...(await typedNow()) };
+  }
+
+  // ---- Finish step, from the focus header ----
+  await act([click(q('.ls-world .ls-node[data-front="wb-reviewer"] .ls-head .ls-title')!)]);
+  await sleep(200);
+  await act([{ key: "Enter" }]);
+  await until(() => !!q(".ls-focus .ls-finish"));
+  await sleep(600);
+  const focusTerm = () => q(".ls-focus .ls-term");
+  {
+    const typedIn = await typeIn(focusTerm());
+    await act([click(q(".ls-focus .ls-finish")!)]);
+    await until(() => !!finishPop()?.body);
+    await sleep(700);
+    const opened = keyboard();
+    const chain = await newSessionCancelled();
+    out.fromFinish = { typedIn, opened, ...chain, open: !!q(".fs-pop"), ...(await typedNow()) };
+  }
+
+  // ---- Needs you, in focus ----
+  {
+    const typedIn = await typeIn(focusTerm());
+    await openTray();
+    const finish = actBtn("s:wb-reviewer", "finish");
+    if (finish) await act([click(finish)]);
+    await until(() => !!finishPop()?.body);
+    await sleep(700);
+    const opened = keyboard();
+    const chain = await newSessionCancelled();
+    out.fromNeeds = { typedIn, item: !!finish, opened, ...chain, open: !!q(".fs-pop"), ...(await typedNow()) };
+  }
+}
+
 /** ?lsFinish=<session>: its Finish step opened from its right-click menu, synthetic events, for a screenshot. */
 export function openFinishShot(id: string, verdict: string | null, waitFor: (selector: string, then: (el: HTMLElement) => void, tries?: number) => void): void {
   waitFor(`.ls-world .ls-node[data-front="${CSS.escape(id)}"] .ls-head`, (head) =>

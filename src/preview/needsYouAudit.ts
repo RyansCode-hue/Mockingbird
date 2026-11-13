@@ -1,5 +1,5 @@
 /**
- * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r|o (with ?motion=off): S7's Needs you and card badges, worked as a person
+ * ?landscapeNeedsAudit=a|g|b|c|d|e|f|s|p|t|h|q|r|o|w|k (with ?motion=off): S7's Needs you and card badges, worked as a person
  * would in the UI preview, into <script id="mb-landscape-needs-audit"> for test/uiLandscapeNeeds.test.ts. Keys and the
  * mouse are pressed for real where the test's Chrome driver is there to press them (scripts/ui-preview.mjs's pageResult
  * takes them from window.__mbKeys), so they go wherever the browser sends them; without it (a person's browser) they're
@@ -47,11 +47,13 @@
  * =o (with ?prRequest=otherbranch): the PR form on a branch its session wasn't made on: the say-so asked, then carried.
  * =w (with ?lsWires&lsGates, W5): the wires waiting at their gates, a pull request that can't be read, and Finish step
  *   (wireNeedsAudit.ts).
+ * =k (with ?lsWires&lsGates): a dialog chain from the send popover, Finish step and Needs you, each begun as a terminal
+ *   was typed in, never giving a terminal the keyboard (wireNeedsAudit.ts' offTerminalsPart).
  */
 import type { SessionInfo, TicketPipeline } from "../shared/types";
 import type { Wire } from "../shared/wires";
 import { armFocus } from "../renderer/keyArm";
-import { wireNeedsPart } from "./wireNeedsAudit";
+import { offTerminalsPart, wireNeedsPart } from "./wireNeedsAudit";
 
 export interface NeedsAuditEnv {
   sessions: () => SessionInfo[];
@@ -235,6 +237,7 @@ export function runNeedsAudit(env: NeedsAuditEnv, part: string): void {
         if (!env.wire || !env.setWire || !env.costly || !env.latest || !env.checkTakes) throw new Error("part w needs the stub's wires");
         await wireNeedsPart({ ...env, wire: env.wire, setWire: env.setWire, costly: env.costly, latest: env.latest, checkTakes: env.checkTakes }, out);
       }
+      else if (part === "k") await offTerminalsPart(env, out);
       else await badgePart(env, out);
     } catch (err) {
       out.error = String((err as Error)?.stack ?? err);
