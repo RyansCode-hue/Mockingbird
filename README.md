@@ -505,6 +505,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
+- **1.8.0: a room's sandbox switch** — released in 1.8.0. Settings → Team
+  can run a room's sessions on your Mac without the room's sandbox, after a
+  warning; a session that left its room or whose sandbox was switched off
+  offers a restart to lift it.
 - **1.7.0: the landscape, its wires, the Orchestrator and Helpdesk**
   ([design](docs/landscape.md), [build plan](docs/landscape-phase1.md),
   [wires](docs/landscape-wires.md)) — released in 1.7.0. The

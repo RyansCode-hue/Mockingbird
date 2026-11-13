@@ -42,6 +42,15 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.8.0",
+    date: "2026-11-13",
+    items: [
+      n("Settings → Team can switch a room's sandbox off on your Mac: its sessions then push, use gh, your MCP servers and memory like your own"),
+      f("A session that leaves a team room, or whose room's sandbox was switched off, says it keeps the sandbox and offers a restart to lift it"),
+      f("Switching a room's sandbox back on cuts the room off from sessions started without it, Codex's included, until they restart"),
+    ],
+  },
+  {
     version: "1.7.0",
     date: "2026-11-13",
     items: [
