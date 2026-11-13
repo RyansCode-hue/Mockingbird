@@ -18,6 +18,7 @@ import {
   emptyLandscape,
   fitAreaTo,
   fitView,
+  growSpot,
   overlaps,
   own,
   parseLandscape,
@@ -35,6 +36,7 @@ import {
   type Ghost,
   type Landscape,
   type Rect,
+  type Size,
 } from "../src/shared/landscape";
 import { cellKeyFor } from "../src/shared/legacyLayout";
 
@@ -181,6 +183,49 @@ describe("placeNew", () => {
       a = fitAreaTo(a, [p]);
     }
     expect(noneOverlap(placed)).toBe(true);
+  });
+
+  it("takes the free spot first in reading order of every spot beside what's there, among rectangles repeated, overlapping, off the grid or outside the area", () => {
+    // every spot tried, the free ones sorted: what placeNew answers, by brute force
+    const firstFree = (s: Size, occupied: Rect[], a: Rect): Rect => {
+      const left = snapUp(a.x + AREA_PAD);
+      const xs = [left, ...occupied.map((o) => snapUp(o.x + o.w + GAP))].filter((x) => x >= left && x + s.w <= a.x + a.w - AREA_PAD);
+      const ys = [snapUp(a.y + AREA_HEADER), ...occupied.map((o) => snapUp(o.y + o.h + GAP))].filter((y) => y >= snapUp(a.y + AREA_HEADER) && y + s.h <= a.y + a.h - AREA_PAD);
+      const spots = xs.flatMap((x) => ys.map((y) => ({ x, y, ...s }))).filter((p) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6)));
+      return spots.sort((p, q) => p.y - q.y || p.x - q.x)[0] ?? growSpot(s, { x: left, y: a.y + a.h }, occupied, a);
+    };
+    let seed = 11;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const int = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
+    let held = 0;
+    for (let round = 0; round < 300; round++) {
+      const a = area({ x: 8 * int(-50, 50), y: 8 * int(-50, 50), w: 8 * int(40, 400), h: 8 * int(30, 300) });
+      const occupied: Rect[] = [];
+      for (let i = int(0, 30); i > 0; i--) {
+        const r = { x: a.x + int(-200, a.w), y: a.y + int(-200, a.h), w: int(16, 900), h: int(16, 700) };
+        occupied.push(r);
+        if (rnd() < 0.2) occupied.push({ ...r });
+      }
+      const s = rnd() < 0.5 ? size : { w: 8 * int(10, 120), h: 8 * int(10, 90) };
+      const p = placeNew(s, occupied, a);
+      expect(p, `round ${round}`).toEqual(firstFree(s, occupied, a));
+      if (p.y + p.h <= a.y + a.h - AREA_PAD) held++;
+    }
+    // both answers are exercised: a spot inside, and the area grown
+    expect(held).toBeGreaterThan(50);
+    expect(held).toBeLessThan(250);
+
+    // filling an area as migration does, M agents grown into rows
+    const m = presetSize("agent", "M");
+    let a: Rect = area({ w: 2 * AREA_PAD + 8 * (m.w + GAP) - GAP, h: AREA_HEADER + AREA_PAD });
+    const placed: Rect[] = [];
+    for (let i = 0; i < 70; i++) {
+      const p = placeNew(m, placed, a);
+      expect(p, `placement ${i}`).toEqual(firstFree(m, placed, a));
+      placed.push(p);
+      a = fitAreaTo(a, [p]);
+    }
+    expect(new Set(placed.map((p) => p.x)).size).toBe(8);
   });
 
   it("goes below everything when the area is full, for the caller to grow it", () => {

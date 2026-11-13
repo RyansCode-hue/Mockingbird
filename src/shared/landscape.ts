@@ -294,11 +294,12 @@ export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | nul
   const top = snapUp(area.y + AREA_HEADER);
   const right = area.x + area.w - AREA_PAD;
   const bottom = area.y + area.h - AREA_PAD;
-  const xs = [left, ...occupied.map((o) => snapUp(o.x + o.w + GAP))].filter((x) => x >= left && x + size.w <= right);
-  const ys = [top, ...occupied.map((o) => snapUp(o.y + o.h + GAP))].filter((y) => y >= top && y + size.h <= bottom);
-  const spots = xs.flatMap((x) => ys.map((y) => ({ x, y, ...size }))).filter(free);
-  const inside = spots.sort((a, b) => a.y - b.y || a.x - b.x)[0];
-  if (inside) return inside;
+  // each distinct edge once, tried in reading order, stopping at the first free spot: placements in rows share their
+  // edges, so trying every pair of them against all of them made filling an area of n cost about n⁴
+  const ascending = (vs: number[]) => [...new Set(vs)].sort((a, b) => a - b);
+  const xs = ascending([left, ...occupied.map((o) => snapUp(o.x + o.w + GAP))].filter((x) => x >= left && x + size.w <= right));
+  const ys = ascending([top, ...occupied.map((o) => snapUp(o.y + o.h + GAP))].filter((y) => y >= top && y + size.h <= bottom));
+  for (const y of ys) for (const x of xs) if (free({ x, y, ...size })) return { x, y, ...size };
   // from its bottom-left corner: a new row, at the left
   return growSpot(size, { x: left, y: area.y + area.h }, occupied, area);
 }
