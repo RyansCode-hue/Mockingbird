@@ -1,8 +1,10 @@
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PipelineStore, stageComment } from "../src/main/pipeline";
 import { parseRemote } from "../src/main/git";
+import { clearGitPins, pinGitDirs } from "../src/main/gitPins";
+import { roomGitDirs } from "../src/main/codexRoomSandbox";
 import { findOpenPr, prBaseProblem, prCreateRefusal, openPr, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
 import type { ShellRunner } from "../src/main/headless";
 import { BY_YOU, GATES, prBranchProblem, roomPushLine, unrecordedBranch, stageLabel, stageStep, tickOf, TICKET_STAGES, type PipelinePr, type TicketPipeline, type TicketStage } from "../src/shared/types";
@@ -573,6 +575,66 @@ describe("opening pull requests", () => {
     const loud: ShellRunner = async () => ({ code: 1, out: "  To get started with GitHub CLI, please run:  gh auth login\n" });
     await expect(findOpenPr(gh, "b", "main", { ado: async () => ({}), run: loud, cwd: "/", env: {} })).rejects.toThrow(/^gh: To get started/);
   });
+  describe("gh in a repository's folder, which runs git there itself", () => {
+    const gh = { provider: "github" as const, owner: "me", repo: "app" };
+    afterEach(() => clearGitPins());
+    /** A runner that records what it's asked to run, and with what environment. */
+    const recording = () => {
+      const seen: { cmd: string; env: Record<string, string> }[] = [];
+      const run: ShellRunner = async (cmd, _input, o) => {
+        seen.push({ cmd, env: { ...(o?.env ?? {}) } });
+        return { code: 0, out: cmd.startsWith("gh pr create") ? "https://github.com/me/app/pull/3" : "[]" };
+      };
+      return { seen, run };
+    };
+
+    it("isn't run in a folder whose .git holds a stray commondir, which would lead its gits to another folder's config", async () => {
+      const repo = makeRepo();
+      fs.writeFileSync(path.join(repo, ".git", "commondir"), `${tempDir("elsewhere")}\n`);
+      const r = recording();
+      const deps = { ado: async () => ({}), run: r.run, cwd: repo, env: {} };
+      await expect(findOpenPr(gh, "b", "main", deps)).rejects.toThrow(/^gh wasn't run: Mockingbird won't run git in .*: its \.git holds a commondir/);
+      await expect(openPr(gh, { branch: "b", base: "main", title: "t", description: "d" }, deps)).rejects.toThrow(/^gh wasn't run: /);
+      expect(r.seen).toEqual([]);
+    });
+
+    it("isn't run in a room session's folder once its .git leads elsewhere than at its launch", async () => {
+      const repo = makeRepo();
+      const wt = path.join(tempDir("wt"), "5101-x");
+      git(repo, "worktree", "add", "-q", "-b", "5101-x", wt);
+      expect(pinGitDirs(wt, (await roomGitDirs(wt))!, repo)).toBeNull();
+      const r = recording();
+      const deps = { ado: async () => ({}), run: r.run, cwd: wt, env: {}, room: true };
+      expect(await findOpenPr(gh, "5101-x", "main", deps)).toBeNull();
+      const evil = path.join(tempDir("evil"), "wt");
+      fs.cpSync(path.join(repo, ".git", "worktrees", "5101-x"), evil, { recursive: true });
+      fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${evil}\n`);
+      await expect(findOpenPr(gh, "5101-x", "main", deps)).rejects.toThrow(/^gh wasn't run: Mockingbird won't run git in .*: its \.git now leads to /);
+      expect(r.seen).toHaveLength(1);
+    });
+
+    it("isn't run in a room session's folder whose config comes from a file its agent can write, and runs there with the filters a room's git turns off", async () => {
+      const repo = makeRepo();
+      git(repo, "config", "filter.strip.clean", "nbstripout");
+      git(repo, "config", "include.path", "../team.gitconfig");
+      const r = recording();
+      const room = { ado: async () => ({}), run: r.run, cwd: repo, env: { PATH: "/usr/bin" }, room: true };
+      await expect(openPr(gh, { branch: "b", base: "main", title: "t", description: "d" }, room)).rejects.toThrow(
+        /^gh wasn't run: Mockingbird runs none of a team room session's git with this repository's config: \.git\/config includes team\.gitconfig, a file in /
+      );
+      expect(r.seen).toEqual([]);
+      // a local session's gh runs there with the user's environment as it is
+      expect(await findOpenPr(gh, "b", "main", { ...room, room: false })).toBeNull();
+      expect(r.seen[0].env).toEqual({ PATH: "/usr/bin" });
+      git(repo, "config", "--unset", "include.path");
+      expect(await openPr(gh, { branch: "b", base: "main", title: "t", description: "d" }, room)).toEqual({ id: 3, url: "https://github.com/me/app/pull/3" });
+      const env = r.seen[1].env;
+      const pairs = Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_v, i) => [env[`GIT_CONFIG_KEY_${i}`], env[`GIT_CONFIG_VALUE_${i}`]]);
+      expect(pairs).toEqual(expect.arrayContaining([["filter.strip.clean", ""], ["filter.strip.process", ""], ["filter.strip.required", "false"]]));
+      expect(env.PATH).toBe("/usr/bin");
+    });
+  });
+
   it("says which PAT scope is missing when ADO refuses", () => {
     expect(prError(new Error("Azure DevOps 401 Unauthorized: x"))).toMatch(/Code \(Read & Write\)/);
     expect(prError(new Error("Azure DevOps 404 Not Found: x"))).toBe("Azure DevOps 404 Not Found: x");

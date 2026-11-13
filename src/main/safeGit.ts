@@ -75,7 +75,6 @@ const NO_EXT: Pair = ["protocol.ext.allow", "never"];
  * Filters stay on, as for WRITE_ENV. REAL_OBJECTS: a snapshot restored, a backup or a take-over's copy is what was stored.
  */
 export const OWN_WRITE_ENV: Readonly<Record<string, string>> = { ...configEnv([...NEUTRAL_OVERRIDES, NO_HOOKS, NO_EXT]), ...REAL_OBJECTS };
-
 /**
  * What each of Mockingbird's own network gits adds before its arguments: git's own upload-pack or receive-pack, never
  * the one a remote's config names (an override in the environment doesn't reach that: git keeps the first it reads,
@@ -235,12 +234,23 @@ const INCLUDE_KEY = /^include(?:if\..*)?\.path$/i;
 
 /**
  * The file an include in `origin` (`--show-origin`'s) names with `value`, as git resolves it: `~/` from the home
- * folder, a relative path from the folder of the file that holds it, symlinks followed. Null when git reads none: an
- * include from the command line or a blob must be a whole path, and `%(prefix)/` is git's own install folder.
+ * folder ($HOME), `~name/` from that account's home folder as the system has it (getpwnam, not $HOME), a relative path
+ * from the folder of the file that holds it, symlinks followed. Null when git reads none: an include from the command
+ * line or a blob must be a whole path, and `%(prefix)/` is git's own install folder. Throws for `~name/` of another
+ * account, whose home folder isn't known here: what it names can't be checked.
  */
 function includeTarget(origin: string, value: string, t: Trees): string | null {
   if (value.startsWith("%(prefix)/")) return null;
   if (value === "~" || value.startsWith("~/")) return realOr(path.join(os.homedir(), value.slice(1)));
+  const account = /^~([^/]+)(?:\/|$)/.exec(value);
+  if (account) {
+    const me = os.userInfo();
+    if (account[1] !== me.username)
+      throw new Error(
+        `Mockingbird runs none of a team room session's git with this repository's config: it includes ${JSON.stringify(value)}, a file in the home folder of another account (${account[1]}), which Mockingbird can't look up, so what it holds can't be checked`
+      );
+    return realOr(path.join(me.homedir, value.slice(account[0].length)));
+  }
   if (path.isAbsolute(value)) return realOr(value);
   const from = originFile({ origin }, t);
   return from ? realOr(path.resolve(path.dirname(from), value)) : null;

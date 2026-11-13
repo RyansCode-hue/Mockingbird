@@ -2,11 +2,35 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { programOnPath } from "../src/main/safeGit";
+import { scmCommit } from "../src/main/scm";
 import { changesSince, dropSnapshots, KEEP, leftOutIn, listSnapshots, restoreSnapshot, snapshotCommit, snapshotTurn, takeSnapshot, worktreeCommitOn, worktreeTree } from "../src/main/snapshots";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 const read = (root: string, rel: string) => fs.readFileSync(path.join(root, rel), "utf8");
 const exists = (root: string, rel: string) => fs.existsSync(path.join(root, rel));
+
+describe("Mockingbird's own commits", () => {
+  it("are never signed, whatever commit.gpgSign says (commit-tree, as git's plumbing, ignores it): the config's gpg.program never runs for a turn's snapshot or a backup's commit, and still does for the user's own Commit", async () => {
+    const repo = makeRepo();
+    const dir = tempDir("gpg");
+    const ran = path.join(dir, "ran");
+    const gpg = path.join(dir, "gpg.sh");
+    fs.writeFileSync(gpg, `#!/bin/sh\necho "$@" >> "${ran}"\nexit 1\n`, { mode: 0o755 });
+    git(repo, "config", "commit.gpgSign", "true");
+    git(repo, "config", "gpg.program", gpg);
+    write(repo, { "a.txt": "a\n" });
+    const head = git(repo, "rev-parse", "HEAD");
+    const turn = await takeSnapshot(repo, "s1", "a turn");
+    const backup = await snapshotCommit(repo, "a backup");
+    const copy = await worktreeCommitOn(repo, head, "a copy");
+    for (const sha of [turn!.sha, backup!.sha, copy.sha]) expect(git(repo, "cat-file", "-p", sha)).not.toContain("gpgsig");
+    expect(fs.existsSync(ran)).toBe(false);
+    // the user's own, which signs as their config says: here its gpg.program runs, and fails the commit
+    git(repo, "add", "a.txt");
+    await expect(scmCommit(repo, "mine")).rejects.toThrow(/gpg failed to sign/);
+    expect(fs.existsSync(ran)).toBe(true);
+  });
+});
 
 describe("undoing an agent's turn", () => {
   it("records the files without touching the branch, the index or the history", async () => {

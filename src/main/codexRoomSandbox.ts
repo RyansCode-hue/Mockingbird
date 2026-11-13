@@ -139,10 +139,23 @@ export async function roomGitDirs(cwd: string): Promise<RoomGitDirs | null> {
  * The files in the shared git folder that git reads as config, or follows to another folder, when it runs in the main
  * checkout: its config, and its config.worktree once the config turns extensions.worktreeConfig on; `commondir` and
  * `gitdir`, which make the folder a linked worktree's and lead git to another folder's config, hooks and attributes;
- * the attributes that pick a config's drivers for files; and `objects/info/alternates`, which adds another folder's
- * objects. None is written by a commit, branch, stash or fetch.
+ * the attributes that pick a config's drivers for files; `objects/info/alternates`, which adds another folder's
+ * objects; the legacy `remotes/` and `branches/` folders, whose files git reads as a remote's URL and refspecs for a
+ * name the config doesn't define (a fetch or pull of it then reaches wherever they say); and `info/exclude`, which hides
+ * files from status, so from Mockingbird's turn snapshots and take-over's backups. None is written by a commit, branch,
+ * stash, fetch or gc.
  */
-export const SHARED_GIT_FILES = ["config", "config.worktree", "commondir", "gitdir", path.join("info", "attributes"), path.join("objects", "info", "alternates")];
+export const SHARED_GIT_FILES = [
+  "config",
+  "config.worktree",
+  "commondir",
+  "gitdir",
+  path.join("info", "attributes"),
+  path.join("info", "exclude"),
+  path.join("objects", "info", "alternates"),
+  "remotes",
+  "branches",
+];
 
 /**
  * Inside the git folders the session writes, what stays read-only: anything

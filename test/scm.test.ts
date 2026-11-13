@@ -735,6 +735,34 @@ describe("a room session's git and its repository's config: nothing from a file 
     await expect(roomFilters(repo)).resolves.toEqual([]);
   });
 
+  it("follows an include's ~name/ as git does, from the account's own home folder rather than $HOME, and refuses another account's", async () => {
+    const repo = makeRepo();
+    const me = os.userInfo();
+    // git takes ~name/ from the system's record of the account, never $HOME: here a throwaway, deeper than the
+    // account's own, so a path out of one leads somewhere else from the other
+    const home = path.join(tempDir("home"), "a", "b");
+    fs.mkdirSync(home, { recursive: true });
+    vi.stubEnv("HOME", home);
+    const viaAccount = `~${me.username}/${path.relative(me.homedir, fs.realpathSync(repo))}/team.gitconfig`;
+    const global = path.join(tempDir("global"), "gitconfig");
+    fs.writeFileSync(global, `[include]\n\tpath = ${viaAccount}\n`);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+    onTestFinished(() => void vi.unstubAllEnvs());
+    // missing for now, which the agent could fill in before the git runs
+    await expect(roomFilters(repo)).rejects.toThrow(`includes team.gitconfig, a file in ${fs.realpathSync(repo)}, which the room's sessions can change`);
+    // where git reads it from
+    fs.writeFileSync(path.join(repo, "team.gitconfig"), "[core]\n\teditor = vi\n");
+    expect(git(repo, "config", "--show-origin", "core.editor")).toContain(`${fs.realpathSync(repo)}/team.gitconfig`);
+    fs.rmSync(path.join(repo, "team.gitconfig"));
+    // another account's home folder isn't known here, so what it names can't be checked
+    fs.writeFileSync(global, `[includeIf "onbranch:other"]\n\tpath = ~nobody/team.gitconfig\n`);
+    await expect(roomFilters(repo)).rejects.toThrow(
+      `Mockingbird runs none of a team room session's git with this repository's config: it includes "~nobody/team.gitconfig", a file in the home folder of another account (nobody), which Mockingbird can't look up, so what it holds can't be checked`
+    );
+    // a local session's git reads it as git would
+    expect(git(repo, "status", "--porcelain")).toBe("");
+  });
+
   it("turns off every filter but git-lfs's for a room session's writes, and refuses to stage, commit for Close session or discard a file one keeps", async () => {
     const t = firedHooks([]);
     const log = path.join(t.dir, "filter");

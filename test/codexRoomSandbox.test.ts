@@ -59,7 +59,7 @@ describe("a Codex room session's permission profile", () => {
     const profile = profileOf(codexRoomPermissions(places({ git: { common: "/r/.git", own: "/r/.git/worktrees/wt" }, caches: "/c/rooms/r1" })).config);
     for (const w of ["/r/.git", "/r/.git/worktrees/wt", "/c/rooms/r1"]) expect(profile).toContain(`"${w}"="write"`);
     for (const w of ["~/.npm", "~/Library/Caches", "~/.cache", "~/go/pkg", "~/.nuget/packages", "~/.cargo/registry"]) expect(profile).not.toContain(`"${w}"="write"`);
-    const shared = ["config", "config.worktree", "commondir", "gitdir", "info/attributes", "objects/info/alternates", "hooks", "modules", "worktrees"];
+    const shared = ["config", "config.worktree", "commondir", "gitdir", "info/attributes", "info/exclude", "objects/info/alternates", "remotes", "branches", "hooks", "modules", "worktrees"];
     for (const r of [...shared, "worktrees/wt/config.worktree", "worktrees/wt/commondir", "worktrees/wt/gitdir", "worktrees/wt/modules"]) expect(profile).toContain(`"/r/.git/${r}"="read"`);
     // no folder on PATH
     for (const bin of ["~/.yarn\"", "~/go\"", "~/.cargo\"", "~/.dotnet", "~/.local/bin", "~/Library/pnpm\""]) expect(profile).not.toContain(bin);

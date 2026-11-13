@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { claudeRoomSettings } from "../src/main/claudeRoomSandbox";
-import { roomGitDirs } from "../src/main/codexRoomSandbox";
+import { codexRoomPermissions, roomGitDirs } from "../src/main/codexRoomSandbox";
 import { HOME_RUNS_CODE } from "../src/main/secrets";
 import { git, makeRepo, tempDir } from "./helpers";
 
@@ -127,13 +127,74 @@ describe("a Claude room session's settings", () => {
     fs.cpSync(path.join(repo, ".git"), path.join(elsewhere, "git"), { recursive: true });
     fs.writeFileSync(path.join(repo, ".git", "commondir"), path.join(elsewhere, "git") + "\n");
     expect(fs.realpathSync(git(repo, "rev-parse", "--path-format=absolute", "--git-path", "config"))).toBe(fs.realpathSync(path.join(elsewhere, "git", "config")));
-    const files = ["config", "config.worktree", "commondir", "gitdir", "info/attributes", "objects/info/alternates"];
+    const files = ["config", "config.worktree", "commondir", "gitdir", "info/attributes", "info/exclude", "objects/info/alternates", "remotes", "branches"];
     for (const own of ["/code/app/.git", "/code/app/.git/worktrees/5110"]) {
       const s = settingsOf({ git: { common: "/code/app/.git", own }, hooks: [] });
       for (const f of files) {
         expect(s.sandbox.filesystem.denyWrite, `${own}: ${f}`).toContain(`/code/app/.git/${f}`);
         expect(s.permissions.deny, `${own}: ${f}`).toContain(`Edit(//code/app/.git/${f})`);
       }
+    }
+  });
+
+  it("keeps the legacy remotes and branches folders and info/exclude read-only, to Bash and to the file tools: git takes a remote from them, and hides what's excluded, and nothing a commit, branch, stash, fetch or gc does writes them", () => {
+    const repo = makeRepo();
+    const common = fs.realpathSync(path.join(repo, ".git"));
+    // a remote the config doesn't define, from either legacy folder: a fetch of it reaches wherever the file says
+    const elsewhere = makeRepo({ "x.txt": "x\n" }, "elsewhere");
+    fs.mkdirSync(path.join(common, "remotes"));
+    fs.writeFileSync(path.join(common, "remotes", "team"), `URL: ${elsewhere}\nPull: refs/heads/main:refs/remotes/team/main\n`);
+    fs.mkdirSync(path.join(common, "branches"), { recursive: true });
+    fs.writeFileSync(path.join(common, "branches", "old"), `${elsewhere}#main\n`);
+    expect(git(repo, "config", "--list").split("\n").filter((l) => l.startsWith("remote."))).toEqual([]);
+    git(repo, "fetch", "-q", "team");
+    expect(git(repo, "rev-parse", "refs/remotes/team/main")).toBe(git(elsewhere, "rev-parse", "HEAD"));
+    git(repo, "fetch", "-q", "old");
+    expect(git(repo, "rev-parse", "FETCH_HEAD")).toBe(git(elsewhere, "rev-parse", "HEAD"));
+    // a file info/exclude names isn't in status, so not in what a snapshot or a take-over's backup stores
+    fs.writeFileSync(path.join(repo, "hidden.txt"), "h\n");
+    expect(git(repo, "status", "--porcelain")).toContain("hidden.txt");
+    fs.appendFileSync(path.join(common, "info", "exclude"), "hidden.txt\n");
+    expect(git(repo, "status", "--porcelain")).toBe("");
+
+    // denied by both sandboxes, a main checkout's session and a linked worktree's
+    const paths = ["remotes/team", "branches/old", "info/exclude"].map((f) => path.join(common, f));
+    for (const own of [common, path.join(common, "worktrees", "wt")]) {
+      const s = settingsOf({ git: { common, own }, hooks: [] });
+      const editRules = (s.permissions.deny as string[]).flatMap((r) => (r.startsWith("Edit(//") ? [r.slice("Edit(/".length, -1)] : []));
+      const deniedBy = (list: string[], p: string) => list.some((d) => p === d || p.startsWith(d + "/") || (d.endsWith("/**") && p.startsWith(d.slice(0, -2))));
+      for (const p of paths) {
+        expect(deniedBy(s.sandbox.filesystem.denyWrite, p), `${own}: ${p}`).toBe(true);
+        expect(deniedBy(editRules, p), `${own}: ${p}`).toBe(true);
+      }
+      const profile = codexRoomPermissions({ workTrackerPath: tempDir("wt"), git: { common, own }, hooks: [] }).config.join("\n");
+      for (const f of ["remotes", "branches", "info/exclude"]) expect(profile, `${own}: ${f}`).toContain(`${JSON.stringify(path.join(common, f))}="read"`);
+    }
+
+    // with them read-only, a commit, a branch, a stash, a fetch and a gc go through
+    const remote = path.join(tempDir("remote"), "origin.git");
+    git(path.dirname(remote), "init", "-q", "--bare", remote);
+    git(repo, "remote", "add", "origin", remote);
+    git(repo, "push", "-q", "origin", "main");
+    const locked = [path.join(common, "remotes"), path.join(common, "branches")];
+    for (const d of locked) for (const f of fs.readdirSync(d)) fs.chmodSync(path.join(d, f), 0o444);
+    for (const d of locked) fs.chmodSync(d, 0o555);
+    fs.chmodSync(path.join(common, "info", "exclude"), 0o444);
+    try {
+      fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
+      git(repo, "add", "a.txt");
+      git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "a");
+      git(repo, "branch", "side");
+      fs.writeFileSync(path.join(repo, "a.txt"), "b\n");
+      git(repo, "stash", "-q");
+      git(repo, "fetch", "-q", "origin");
+      git(repo, "gc", "-q");
+      expect(git(repo, "log", "-1", "--format=%s")).toBe("a");
+      expect(git(repo, "stash", "list")).toContain("stash@{0}");
+    } finally {
+      for (const d of locked) fs.chmodSync(d, 0o755);
+      for (const d of locked) for (const f of fs.readdirSync(d)) fs.chmodSync(path.join(d, f), 0o644);
+      fs.chmodSync(path.join(common, "info", "exclude"), 0o644);
     }
   });
 

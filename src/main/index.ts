@@ -1716,7 +1716,9 @@ const ticketTools = new TicketTools({
 });
 // a held PR request a move or another session's PR dropped: its asker hears why, as a dismissal tells it
 pipeline.onRequestsDropped = (id, dropped) => void ticketTools.requestsDropped(id, dropped);
-const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
+/** Whether gh in `folder` goes by a room session's rules: a session there, open or closed, is a team room's (pushesOwnHooks). */
+const ghInRoom = (folder: string): boolean => [...sessions.list(), ...sessions.resumable()].some((s) => samePath(s.cwd, folder) && pushesOwnHooks(s.id));
+const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root, room: ghInRoom(root) });
 // a pull request merging: saved, the ticket moved on from its PR stage, and its pr-merged wires readied once each
 const prWatch: PrWatch = new PrWatch({
   pipeline,

@@ -579,10 +579,14 @@ Member replace the single admin (creator, else longest-standing member).
     outside the sandbox stays read-only: `config` (fsmonitor, aliases,
     credential helpers) and `config.worktree`, the shared folder's own `commondir`
     and `gitdir` (which would repoint the main checkout's git), `hooks`,
-    `modules`, `info/attributes`, `objects/info/alternates`, other
-    worktrees, and this worktree's `config.worktree`, `commondir` and
-    `gitdir`. So `git config`, `git remote add` and new upstream tracking
-    fail. Nothing on `PATH` (`~/.local/bin`, `~/go/bin`, `~/.cargo/bin`) is
+    `modules`, `info/attributes`, `info/exclude` (which hides files from
+    status, so from turn snapshots and take-over's backups),
+    `objects/info/alternates`, the legacy `remotes/` and `branches/` folders
+    (git reads a remote's URL from them for a name the config doesn't
+    define), other worktrees, and this worktree's `config.worktree`,
+    `commondir` and `gitdir`. So `git config`, `git remote add` and new
+    upstream tracking fail. A commit, branch, stash, fetch or gc writes none
+    of them. Nothing on `PATH` (`~/.local/bin`, `~/go/bin`, `~/.cargo/bin`) is
     writable. In the session's folders, the files something outside the
     sandbox runs later (`IN_FOLDER_RUNS_CODE`: `.claude/`, `.codex/`,
     `.vscode/`, `.idea/`, `.mcp.json`, `.envrc`, `.gitconfig`, `.gitmodules`,
@@ -668,7 +672,8 @@ Member replace the single admin (creator, else longest-standing member).
   `~/.claude/settings.json` is never touched. It mirrors Codex's profile:
   - **Commands** (Bash and what it starts) write only the session's folders,
     the temp folder, the repository's git data but its config, hooks,
-    attributes, submodules and the other worktrees' folders (whole as they
+    attributes, `info/exclude`, the legacy `remotes/` and `branches/`
+    folders, submodules and the other worktrees' folders (whole as they
     are at launch; in one made later, its config, pointers and submodules,
     by pattern), and the room's own caches, as a Codex room session's do. They
     can't read the home secrets, credential stores, Messages, Mail or the PAT
@@ -800,7 +805,20 @@ Member replace the single admin (creator, else longest-standing member).
     `git.ts`, and from `find.ts` for the grep it starts itself): a `.git`
     that now leads elsewhere, or a
     new `.git` between the folder and its top, refuses it, saying so once.
-    Restarting the session reads the folder afresh.
+    Restarting the session reads the folder afresh. `gh`, which the PR form,
+    the pane's PR status and the merge watch run in a session's folder and
+    which runs git there itself (`pr create` reads the index), goes through
+    the same check first, and so does any folder whose `.git` holds a
+    `commondir`. In a room session's folder it also goes through the room's
+    config check (nothing from a file the room's agent can write), and its
+    gits run with the filters a room's git turns off. A refused one says why
+    in the form, the rail or the merge watch's failure.
+  - **Mockingbird's own commits aren't signed.** A turn's snapshot and a
+    take-over's backup are commits under Mockingbird's own refs, made with
+    `git commit-tree`, which (as git's plumbing, since 2.1) ignores
+    `commit.gpgSign`, so the user's `gpg.program` (or `ssh-keygen`) never runs
+    for them. The user's own Commit and Close session's WIP commit sign as
+    their config says.
   - **Messages stay on its side of the line.** `send_message` and
     `list_sessions` reach only this Mac's sessions on the same side of the
     room's line as the caller (both in the room, or neither), as wires do;
@@ -1146,6 +1164,23 @@ owner's Mac was connected to the taker's then, which it refuses (below:
   start and daily), and — for a taken-over session — once the taker's own
   first backup has been taken (and, in a room backing up to origin, pushed).
   A deletion that fails is shown and retried.
+- **Known limits.**
+  - **A filter's files arrive as they're stored.** A take-over's copy is
+    written with the filters a room's git turns off (every one but
+    git-lfs's), as a filter runs as the user from config and a working tree
+    the agent can write. So a file kept through one arrives in its stored
+    form: a git-crypt file as its ciphertext, a notebook as nbstripout
+    stored it. The taker's own git restores it once the filter can run there
+    (`git-crypt unlock`, or checking the file out again).
+  - **Git LFS uploads to ssh remotes, and to URLs with credentials in them,
+    aren't pinned.** A room push's LFS upload is pinned to the push remote's
+    own endpoint (`<url>.git/info/lfs`, outranking `.lfsconfig`) only when
+    the remote's URL is http(s) with no credentials in it. An ssh remote's
+    endpoint comes from git-lfs-authenticate, which a guessed one would
+    break, so for it, and for a URL with credentials in it, git-lfs finds the
+    endpoint itself, `.lfsconfig` included. Only the host check holds there
+    (an `.lfsconfig` naming another host is refused), so a room's agent
+    could point the upload at another repository on the same host.
 
 ### Also back up to GitHub (the owner's opt-in)
 

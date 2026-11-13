@@ -1,7 +1,8 @@
 import { ADO_API } from "./ado";
 import { BASE_NAMES, branchesOf, currentBranch, git, originRemote, remoteName, type RemoteRepo } from "./git";
 import { dirtyFileCount, scmRoomPushPlan } from "./scm";
-import { guardedGit } from "./safeGit";
+import { gitPinRefusal } from "./gitPins";
+import { guardedGit, roomFilters, withFiltersOff } from "./safeGit";
 import { listAllFiles } from "./find";
 import { quote, type ShellResult } from "./shell";
 import type { ShellRunner } from "./headless";
@@ -54,11 +55,30 @@ export interface PrDeps {
   run: ShellRunner;
   cwd: string;
   env: Record<string, string>;
+  /** A team room's session works in `cwd` (or rooms haven't started): gh's gits there go by a room session's config check. */
+  room?: boolean;
 }
 
-/** The user's gh, run in the repository, so its sign-in applies. */
-export const runGh = (deps: PrDeps, cmd: string, input = "", timeoutMs = 30_000): Promise<ShellResult> =>
-  deps.run(cmd, input, { cwd: deps.cwd, env: deps.env, timeoutMs });
+/**
+ * The user's gh, run in the repository, so its sign-in applies. gh runs git there itself (its remotes and branch, and
+ * for `pr create` the index and working tree's status), outside git.ts, so it's refused, saying why, where git.ts
+ * would refuse a git: a folder whose .git a room session's agent could have led to another folder's config
+ * (gitPinRefusal, a stray commondir in any folder); and in a room session's folder, config from a file the room's
+ * agent can write (roomFilters), its gits then running with the filters a room's git turns off.
+ */
+export async function runGh(deps: PrDeps, cmd: string, input = "", timeoutMs = 30_000): Promise<ShellResult> {
+  const pinned = gitPinRefusal(deps.cwd);
+  if (pinned) throw new Error(`gh wasn't run: ${pinned}`);
+  let env = deps.env;
+  if (deps.room) {
+    try {
+      env = withFiltersOff(env, await roomFilters(deps.cwd));
+    } catch (err) {
+      throw new Error(`gh wasn't run: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+  }
+  return deps.run(cmd, input, { cwd: deps.cwd, env, timeoutMs });
+}
 
 /** A failed gh run's error: what it printed, else its exit code. */
 export const ghError = (r: ShellResult): Error => new Error(`gh: ${r.out.trim().slice(0, 300) || `exited with code ${r.code}`}`);
