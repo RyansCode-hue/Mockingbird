@@ -15,6 +15,7 @@ import { TicketTools } from "../src/main/ticketTools";
 import { TICKET_TOOL } from "../src/main/ticketToolSchemas";
 import { orchestratorRules } from "../src/main/wirePrompt";
 import { WireService } from "../src/main/wires";
+import { wiresInOrder } from "../src/shared/wires";
 import { checkPlan, cleanCouncilPlan, COUNCIL_PLAN_LABEL, COUNCIL_SHAPE, councilKickoff, provenanceOf, readPlanArgs, type PlanContext } from "../src/shared/plans";
 import { createWorktree } from "../src/main/worktrees";
 import { makeRepo, tempDir } from "./helpers";
@@ -1318,7 +1319,8 @@ describe("the Council's Orchestrator (W18)", () => {
       ["Coder", "Council — CSV export", null, "working"],
       ["Verifier", "Council — CSV export", null, "idle"],
     ]);
-    const links = Object.values(store.wires().book!.links).map((w) => [w.from, w.to, w.type, w.when, w.gate]);
+    // in the order they were made: an 8-hex id that reads as an integer comes first in the object's own key order
+    const links = wiresInOrder(store.wires().book!.links).map(([, w]) => [w.from, w.to, w.type, w.when, w.gate]);
     expect(links).toEqual([
       ["orch", "p1", "handoff", "finished", "ask"],
       ["p1", "p2", "handoff", "finished", "ask"],
