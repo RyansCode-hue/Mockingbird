@@ -5,7 +5,7 @@ import * as path from "path";
 import { tempDir } from "../helpers";
 import { removeAtEnd } from "../leaks";
 import { ensureElectron } from "./electron";
-import { descendants, killOrphans, killTree, track } from "./processes";
+import { descendants, killOrphans, killTree, orphaned, track } from "./processes";
 import { startLocalSignaling } from "../../signaling/src/local/server";
 import { DEFAULT_SETTINGS, type Settings } from "../../src/shared/types";
 import type { TeamStatus } from "../../src/shared/team/types";
@@ -158,7 +158,10 @@ export async function quitApp(child: ChildProcess): Promise<{ killed: boolean; l
     killTree(child.pid);
     await exited;
   }
-  await new Promise((r) => setTimeout(r, 1000)); // Electron's helper processes end just after it
+  // Electron's helpers end just after it, and a short git it started ends on its own: under load either can take a few
+  // seconds, so only what still runs 5 s on is a leftover
+  await new Promise((r) => setTimeout(r, 1000));
+  for (const until = Date.now() + 4000; Date.now() < until && orphaned(started).length; ) await new Promise((r) => setTimeout(r, 250));
   return { killed, leftovers: killOrphans(started) };
 }
 

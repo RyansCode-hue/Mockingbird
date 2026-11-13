@@ -717,9 +717,9 @@ describe.skipIf(!local)("the empty landscape", () => {
     expect(e.tilesOpen["new:ticket"]).toMatchObject({ launch: "Claude", mode: "New", ticket: true });
     expect(e.tilesOpen["new:claude"]).toMatchObject({ launch: "Claude", mode: "New" });
     expect(e.tilesOpen["new:import"]).toMatchObject({ mode: "Import" });
-    // the template picker, saying there are none, as it does from the menu
+    // the template picker, saying none are saved (the built-in one is always offered), as it does from the menu
     expect(e.tilesOpen["new:pipeline"]).toMatchObject({ picker: true });
-    expect(e.tilesOpen["new:pipeline"].none).toMatch(/^No templates yet/);
+    expect(e.tilesOpen["new:pipeline"].none).toMatch(/^No saved templates yet/);
     expect(e.keyboardAfterDialog).toBe("landscape");
     expect(e.joinDialog).toMatch(/join/i);
   }, 120_000);

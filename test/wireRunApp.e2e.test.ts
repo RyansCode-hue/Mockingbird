@@ -70,15 +70,16 @@ type Pt = { x: number; y: number };
  */
 async function openGate(a: AppInstance, wireId: string): Promise<string> {
   // where its centre is on screen, from its place in the drawing: below the live band it's drawn with no radius, so it
-  // has no box of its own; `r` is its radius on screen, 0 until it takes clicks
+  // has no box of its own; `r` is its radius on screen, 0 until it takes clicks. Gate dots are drawn in their own layer
+  // above the wires (svg.ls-wire-dots), hidden while their wire is, or while it runs wholly beneath what takes clicks
   const dot = () =>
     a.evaluate<(Pt & { r: number }) | null>(
-      `(() => { const c = document.querySelector('g.ls-wire[data-wire=${JSON.stringify(wireId)}] > circle.dot'); if (!c || c.parentElement.style.display === "none") return null; const m = c.getScreenCTM(); if (!m) return null; const p = new DOMPoint(c.cx.baseVal.value, c.cy.baseVal.value).matrixTransform(m); return { x: p.x, y: p.y, r: c.getBoundingClientRect().width / 2 }; })()`
+      `(() => { const c = document.querySelector('svg.ls-wire-dots > circle.dot[data-wire=${JSON.stringify(wireId)}]'); if (!c || c.style.display === "none") return null; const m = c.getScreenCTM(); if (!m) return null; const p = new DOMPoint(c.cx.baseVal.value, c.cy.baseVal.value).matrixTransform(m); return { x: p.x, y: p.y, r: c.getBoundingClientRect().width / 2 }; })()`
     );
   const zoom = () => a.evaluate<number>(`Number(/scale\\(([\\d.]+)\\)/.exec(document.querySelector(".ls-world")?.style.transform ?? "")?.[1] ?? 0)`);
   await untilTrue(`wire ${wireId}'s gate dot drawn`, async () => !!(await dot()), 30_000).catch(async (err: Error) => {
     const drawn = await a.evaluate<string>(
-      `JSON.stringify({ wires: [...document.querySelectorAll("g.ls-wire")].map((g) => ({ id: g.dataset.wire, shown: g.style.display !== "none", dot: !!g.querySelector(":scope > circle.dot") })), modal: !!document.querySelector(".modal") })`
+      `JSON.stringify({ wires: [...document.querySelectorAll("g.ls-wire")].map((g) => { const c = document.querySelector('svg.ls-wire-dots > circle.dot[data-wire="' + CSS.escape(g.dataset.wire) + '"]'); return { id: g.dataset.wire, shown: g.style.display !== "none", dot: c ? (c.style.display === "none" ? "hidden:" + (c.dataset.fit ?? "") : "shown") : false }; }), modal: !!document.querySelector(".modal") })`
     );
     throw new Error(`${err.message}; drawn: ${drawn}`);
   });
@@ -89,9 +90,18 @@ async function openGate(a: AppInstance, wireId: string): Promise<string> {
   // workspaces take the mouse and draw their wires' dots from 75%
   for (let i = 0; i < 10 && (await zoom()) < 0.8; i++) {
     const was = await zoom();
-    const at = (await dot()) ?? mid;
+    // about the dot while it's on screen (a gate dot sits at the nearest clear point along its wire, which zoomed out
+    // can be past the view's edge); otherwise about the middle, where the pans below bring it
+    const d = await dot();
+    const onScreen = !!d && d.x > vp.left && d.x < vp.left + vp.width && d.y > vp.top && d.y < vp.top + vp.height;
+    const at = onScreen ? d! : mid;
     await cdp(a, "Input.dispatchMouseEvent", { type: "mouseWheel", x: at.x, y: at.y, deltaX: 0, deltaY: -100, modifiers: 4 });
-    await untilTrue("the landscape to zoom in", async () => (await zoom()) !== was, 5000);
+    await untilTrue("the landscape to zoom in", async () => (await zoom()) !== was, 5000).catch(async (err: Error) => {
+      const under = await a.evaluate<string>(
+        `(() => { const e = document.elementFromPoint(${at.x}, ${at.y}); return JSON.stringify({ at: ${JSON.stringify(at)}, zoom: ${was}, viewport: ${JSON.stringify(vp)}, under: e ? e.outerHTML.slice(0, 160) : null, inViewport: !!e?.closest(".ls-viewport") }); })()`
+      );
+      throw new Error(`${err.message}: ${under}`);
+    });
   }
   await untilTrue("the dot drawn at 80% or more", async () => (await zoom()) >= 0.8 && !!(await dot())?.r, 10_000);
   const open = () => a.evaluate<boolean>(`!!document.querySelector(".wg-pop")`);

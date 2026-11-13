@@ -62,6 +62,12 @@ export function killTree(pid: number): void {
   for (const p of tree) kill(p);
 }
 
+/** Of `pids`, those running now as orphans (adopted by launchd), left as they are. */
+export function orphaned(pids: number[]): number[] {
+  const table = processTable();
+  return pids.filter((p) => table.get(p) === 1);
+}
+
 /**
  * Of `pids` (a process's descendants, taken while it ran), those still
  * running now that it's gone: orphans, adopted by launchd. They're killed,
