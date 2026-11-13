@@ -2643,7 +2643,7 @@ template…: the step's own act before the chain's. The review of 3057c0c found 
       which is an agent's request.
     - Its text names the ticket only when its area isn't the ticket's.
     - `workspaceActions.tsx`' `can =(c` is formatted.
-  - L6 (OFF_TERMINALS not reached by a test) stands, as noted above.
+  - L6 (OFF_TERMINALS not reached by a test) stands, as noted above. (A test reaches it since 1.7.0 follow-ups (screens).)
 
 **Checks** (on 04256b5, W11 merged):
 - `npm run typecheck` clean; `npm run build` ok.
@@ -3186,7 +3186,7 @@ Attached board does.
   waiting, and W4c has no Send now for an idle wire. Start now starts a step before
   the step before it finishes, and one that nothing hands off to.
 - The dialog gains Name, Works in and Tell it, and refuses a new room for a step.
-- The area tree doesn't list steps, as it doesn't list ghosts.
+- The area tree doesn't list steps, as it doesn't list ghosts. (It does since 1.7.0 follow-ups (screens), marked "not started".)
 - The layout tests went in `landscapeArrange.test.ts`'s "ghosts", beside the rest
   of the ghost rules, not `landscapeView.test.ts`.
 
@@ -3194,7 +3194,7 @@ Attached board does.
 - The window's planned list refreshes on its own reads. A step started by main
   (a Send) drops out at the next refresh. Until then it's drawn as running,
   because a shown id is never drawn as a ghost.
-- Steps aren't in the Closed sessions list or ⌘K. Their way in is the landscape.
+- Steps aren't in the Closed sessions list or ⌘K. Their way in is the landscape. (Listed in ⌘K and the area tree since 1.7.0 follow-ups (screens); still never in the Closed list.)
 
 #### W8 review fixes 1 as built
 
@@ -9172,3 +9172,171 @@ from resumable records only, for the held folder only and not those inside.
 - The p9 probes against this build: case 1 refused by the pin and the look, the room push running nothing; case 2's
   `.GIT` and case 3's mode-0300 folder refused, naming them.
 - No real claude, codex or gh ran.
+
+## 1.7.0 follow-ups (screens) as built
+
+Deferred Lows from W4a, W4b, W4c, W5, W6, W8, W9/W17 and S8, on main b3b3e0c, one commit per area. Nothing here
+touches W18's files (`collab.ts`, `Council.tsx`, `shared/plans.ts`, `wirePrompt.ts`) or W12's e2e.
+
+### W4a (WireLayer.tsx)
+
+- **L4: wires pass under area chrome and ghosts.** The runs are drawn through a mask (`#ls-wire-under`). As the lines are
+  painted, each area's header and name, each collapsed area's pill and each shown ghost card is read where it's drawn
+  and cut out of it, so "Ask for status" and a ghost's faded text are never crossed.
+- **L6: a gate dot stays seen and pressable over a workspace.** The dots are their own layer (`.ls-wire-dots`, z-index
+  5, over the workspaces) and the only part of the wires that takes a pointer. A feedback loop whose dot lies under a
+  workspace 16 px below shows it, and a click opens its popover.
+- **L7:** the blocked label's ground is 5% of the red on the board's ground, as Inbox.dc.html has it.
+- **L10:** Landscape's layout effect paints the wires again (`follow()`) after `paintScale`, so a pill just collapsed
+  is measured at its `--ls-hs`. Tested by the ends of a wire at a pill as it collapses, before a frame is drawn.
+- **L13: wires between the same two things run side by side.** `wireCurves` gives each wire a lane: wires that would
+  share a line (a v-bend between the same pair, either way round; an h or u run the same way) run `LANE_PX` (16) apart,
+  so both are seen and both dots take a click.
+
+### W4b (WireMaking.tsx)
+
+- **L3: Start fresh's Import takes nothing.** New session says whether its session was resumed (`onCreated`'s
+  `resumed`) and which mode it's in (`onMode`). While the dialog is on Import, Start fresh's place isn't offered, so its
+  ghost is drawn again. A resumed conversation leaves the old session its wires and its place, and the note says so:
+  "“X” was resumed, not started fresh: “Y” keeps its wires and its place".
+- **L9: Connect… follows the wire rules, which know no stacks.** It lists a stack's closed tabs ("(closed)") and the
+  session's own stack-mates first ("(in this stack)"). A drop on another tab of its own stack offers a wire too. Such
+  a wire isn't drawn (both ends are one card), so making it says: "… is made. They're tabs of one stack, so it isn't
+  drawn on the landscape: the pipeline strip shows it in focus" (`mateWireNote`).
+
+### W6 (PipelineStrip.tsx)
+
+- **L1: Attached shrinks first.** `.ls-strip-attached` gives up its room before the chain does (`flex-shrink: 1000`):
+  a context link's "· context" goes first, then each title down to its own width or 64 px, cut with an ellipsis. At
+  1440 with the side bar open, Builder's three steps show whole, clear of the fades (`after-w6-1440.png`).
+- **L3: a damaged handoff cycle is worded as it is.** With no step after this one, where a cycle of handoffs in a
+  damaged book leads back to an earlier step, ⌥→ says "This workspace hands work on to “Builder”, which comes before
+  it: its handoffs run in a circle" (`noStepNote`), not "to nothing".
+
+### S8 (a stale jump)
+
+- A jump that waited on main (a preset, a resume, a search hit) and has input since only shows its tab, where what
+  was started is (`jumpToSession`'s `since`). Nothing else moves: no flight, selection or keyboard. The note says
+  "“X” is ready: you'd moved on meanwhile, so the view stayed where it was".
+  - The first S8 commit dropped the tab change too. That broke an earlier rule, which "a session started from a
+    Dashboard ticket" in `uiLandscapeFirstRun` holds: started from the Dashboard, its landscape is shown even after
+    typing meanwhile. The tab change is kept (`S8, fix`).
+- A reveal that waited (a stack's tab to the front, an area opening, a session yet to come) moves no camera once
+  input came meanwhile.
+- A new reveal stops an earlier reveal's flight where it is. A reveal's flight also stops once its session is no
+  longer a workspace (or a not-started step's card) on the landscape (flight `target`).
+- Not done, as asked: the single focus-move choke point. docs/landscape-phase1.md says what these change for it. There
+  are fewer late moves to route, but the paths are the same ones, so it's no easier yet.
+
+### W4c (WirePopover.tsx)
+
+- **Flipped up, it sits above its dot.** `AnchoredPopover`'s point anchor takes the `box` it hangs from. Flipped near
+  the window's foot, it goes above that box, and a press on it isn't a press outside. A double click's second on the
+  dot is the popover's: Landscape's press handler swallows it, and `openGate` keeps the one just opened.
+- **L4: placed again as it grows.** `refit` re-places it on every size change (a note, an error, Mark merged…'s
+  question), flipping as it must, so every button stays in the window and the dot stays uncovered. Once it has moved
+  while open, it takes no pointer's click until it has stayed put `ANSWER_SETTLE_MS`. This holds for any
+  `AnchoredPopover` placed again (the shortcuts sheet's `placeKey` too), and only after a move.
+- **L8: what waits behind a block is shown.** A blocked wire's settings face shows what waits at its gate ("Waiting
+  at its gate", its flags), read-only, as what will go once it's unblocked (`gateView`'s `waiting`). "needs approve"
+  leaves no `pendingId` to act on, so there's no Send.
+
+### W5 (OFF_TERMINALS)
+
+- **L6: a test reaches it.** `?landscapeNeedsAudit=k` (`offTerminalsPart`) begins three chains as a terminal is
+  typed in, each going on to ⌘K → New session → Cancel:
+  - from the send popover;
+  - from Finish step opened by the focus header;
+  - from Needs you's Finish step….
+  None gives a terminal the keyboard, and a key typed after reaches none.
+- Only the Finish step chain needs `OFF_TERMINALS` today. The focus header's press leaves the keyboard in the terminal,
+  so the terminal is all that's left of the chain once Finish step has closed. The other two always have a place
+  before any terminal: a dot's press gives the landscape the keyboard, and the tray hands back its button. Their
+  selectors stay as a backstop.
+- Mutation: `OFF_TERMINALS` matching nothing sends the Finish step chain's keyboard to the terminal, and the typed key
+  into it. Caught.
+
+### W8 (not-started steps)
+
+- **L9: the step dialog's ⌘↵ waits out the settle.** Add next step's ⌘↵ does nothing while Add step is off settling,
+  nor on a held key's repeat. Tested by a name typed and ⌘↵ pressed as the dialog opens, after a pause (so no burst
+  holds them): nothing is made. Mutation (the settle check gone): a step was made. Caught.
+- **Steps are listed where sessions are.**
+  - The area tree lists an area's not-started steps after its workspaces, each marked "not started", as Inbox.dc.html
+    lists Tester (`w8-tree-after.png`).
+  - A click, double click or Enter on one brings its card into view (`showStep`, a reveal). `revealables` lets a
+    reveal reach a step's ghost, never focusing it. Nothing is selected, focused or started. Their right-click is the
+    card's menu: Start now… (W8's confirm, which asks first) and Forget it.
+  - ⌘K lists them apart, under "Steps not started: show the card", and picking one does the same.
+  - Never in the Closed sessions list (unchanged, now tested).
+  - Mutations: the tree's row, or ⌘K's, starting the step rather than showing it. Both caught.
+- `filterKeeps` is the area tree's filter, now shared by its workspaces and its steps.
+
+### W9/W17 (TemplatePicker.tsx)
+
+- **L8: what keeps Lay out off is said in the dialog.** "Its steps work in worktrees of their own: choose a repo. Lay
+  out is off until then." under Repo, and "Choose a ticket, so its steps have an area…" under the ticket, as well as on
+  the button. The area one can't be reached with a template chosen: the area falls back to the template's name, which
+  every template has. It's said all the same for the case.
+- **L10: the model catalog failing is said.** `useCatalog` keeps why it failed (still logged). `CatalogNote` says it
+  beside the steps in the picker, Save as template and a plan's dialog, with Try again: "The models offered on this Mac
+  couldn't be read (…): each step can keep its own model or take the default." The model choices stay on.
+- **L12: a refused lay-out keeps an area that isn't empty.** After a refusal the window reads what's in the area made
+  for it (`sessionsIn`: this Mac's sessions and steps) and takes the area back only when nothing is there. A step main
+  couldn't take back keeps it, is drawn (`readClosed`), and is named: "… Its area was kept for “Builder”." If what's
+  in it can't be read, the area is kept and that's said. This also keeps a second lay-out into the same new area from
+  taking back the first's area once the first's steps exist (L13's case, in part).
+- Preview: `?lsLayOutLeaves=<n>` fails a lay-out after making its steps, leaving the first ("“Builder” couldn't be
+  taken back: forget it from its menu."), as main says.
+
+### W11 (note only)
+
+- The shortcuts sheet is exactly full at 1024×768 (621 of 621 px). Left as it is: a new row needs two columns or
+  scrolling.
+
+### Tests
+
+- `wiresModel`:
+  - lanes for wires between the same two boxes;
+  - Connect…'s targets with stack-mates and closed tabs;
+  - `mateWireNote`;
+  - `gateView`'s `waiting`.
+- `pipelineChain`: `noStepNote`.
+- `landscapeArrange`: `revealables`.
+- `uiLandscapeWires`:
+  - the near view's dot layer, lanes, the blocked label's ground, and lines held out under area chrome and ghosts at
+    45% and 13%;
+  - a pill's ends as it collapses;
+  - a dot kept on top of a workspace;
+  - Start fresh's Import;
+  - Connect… to a stack-mate;
+  - the popover flipping above its dot, growing, and showing what waits;
+  - the step dialog's early ⌘↵;
+  - steps in the tree and ⌘K;
+  - the picker's notes and the kept area.
+- `uiLandscapeStrip`: Attached at 1440 with the side bar.
+- `uiLandscapeFirstRun`: a stale preset jump, and a flight stopped when superseded or gone.
+- `uiLandscapeNeeds`: the OFF_TERMINALS chains.
+
+**Shots** (`scratchpad/fixups2/shots/`): `before-`/`after-w4a-45.png` and `-13.png` (lines under headers and ghost
+text), `after-w4a-100.png`, `before-`/`after-w6-1440.png` (Attached and the fades), `after-w4c-heldwaits.png`,
+`w8-tree-after.png` (Tester in the tree, matching Inbox.dc.html).
+
+### Checked
+
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0: 199 files pass and 36 skip; 3,650 tests pass and 370 skip.
+- The affected UI files, one at a time:
+  - `uiLandscapeWires` 40 of 40;
+  - `uiLandscapeStrip` 1 of 1;
+  - `uiLandscapeNeeds` 26 of 26;
+  - `uiLandscapeGhosts` 3 of 3;
+  - `uiLandscape` 12 of 12;
+  - `uiTemplatePicker` 7 of 7;
+  - `uiLandscapeFirstRun` with `-t "preset|flight|jump|keyboard back"`, 21 of 21.
+- That first-run run found the Dashboard case S8 had broken (above). Fixed, and rerun.
+- Mutation checks, on the key-safety items only (all caught):
+  - the step dialog's ⌘↵ settle;
+  - a step started from the tree's row, and from ⌘K's;
+  - `OFF_TERMINALS` matching nothing.
+- W9/W17's L12 was also undone once (the area always taken back): its test failed.
