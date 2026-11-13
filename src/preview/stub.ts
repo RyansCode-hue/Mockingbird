@@ -9236,7 +9236,24 @@ Object.assign(api, {
   },
   // main's WireService.layOut: checked whole first, then the steps (not started), their wires, and the first step started
   // when the template says so, with what waited for it; a refusal once steps are made takes them all back
+  // as main's TemplateLayOuts: the area made (when the window sent one for an area that has none) before the lay-out,
+  // and taken back, when it's as it was made, if the lay-out is refused
   templatesLayOut: async (req: LayOutRequest) => {
+    const made = req.newArea && !Object.hasOwn(landscape.areas, req.area) ? req.area : null;
+    if (made) {
+      const r = await api.landscapeUpdate({ areas: { [made]: req.newArea } });
+      if (r && "error" in r) return err(`Its area couldn't be made: ${r.error}`);
+    }
+    const as = made ? JSON.stringify(landscape.areas[made]) : null;
+    const r = await api.previewLayOutNow(req);
+    if (r && "error" in r) {
+      if (made && JSON.stringify(landscape.areas[made]) === as) await api.landscapeUpdate({ areas: { [made]: null } });
+      return r;
+    }
+    return { ...r, madeArea: !!made } satisfies LayOutReply;
+  },
+  /** templatesLayOut's lay-out itself, once its area is made: the window never calls it. */
+  previewLayOutNow: async (req: LayOutRequest) => {
     await startLag();
     if (layOutFails > 0) {
       layOutFails--;

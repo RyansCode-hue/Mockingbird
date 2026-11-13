@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
-import { draftTemplate, FOLDER_MARK, removedTemplate, savedTemplates, setAsideTemplates } from "../src/main/templates";
+import { draftTemplate, FOLDER_MARK, removedTemplate, savedTemplates, setAsideTemplates, TemplateLayOuts, TEMPLATES_KEPT } from "../src/main/templates";
+import { LandscapeStore } from "../src/main/landscape";
 import { tempDir } from "./helpers";
-import { readTemplates, ticketKickoffPrompt, type TemplateBody } from "../src/shared/pipelineTemplates";
+import { readTemplates, ticketKickoffPrompt, type LayOutReply, type TemplateBody } from "../src/shared/pipelineTemplates";
 import type { SessionInfo } from "../src/shared/types";
 import { emptyWireBook, newWire, type Wire, type WireBook } from "../src/shared/wires";
 
@@ -120,6 +121,21 @@ describe("saving a template", () => {
 
   it("doesn't take a home folder's longer neighbour for it", () => {
     expect(() => save("X", { ...body(), steps: [{ ...body().steps[0], prompt: `${HOME}ish/x is another user's` }, body().steps[1]] }, [])).not.toThrow();
+  });
+
+  it("keeps at most TEMPLATES_KEPT.count templates, entries it can't read counted, refusing the next saying why", () => {
+    const stored = Array.from({ length: TEMPLATES_KEPT.count - 1 }, (_v, i) => (i === 0 ? { id: "tpl-b", steps: "three" } : { id: `tpl-${i}`, name: `T${i}`, savedAt: i, ...body() }));
+    const r = save("Last", body(), stored);
+    expect(r.list).toHaveLength(TEMPLATES_KEPT.count);
+    expect(() => savedTemplates("One more", body(), r.list, { home: HOME, newId: () => "tpl-more" })).toThrow(`There are ${TEMPLATES_KEPT.count} saved templates, the most Mockingbird keeps: remove one you don't use first.`);
+  });
+
+  it("keeps at most TEMPLATES_KEPT.bytes of templates, refusing one that would take them past it saying why", () => {
+    const long = (n: number): TemplateBody => ({ ...body(), steps: body().steps.map((s) => ({ ...s, prompt: "é".repeat(n) })) });
+    // two-byte characters: what's kept is counted in bytes, as it's written
+    const big = Array.from({ length: 16 }, (_v, i) => ({ id: `tpl-${i}`, name: `T${i}`, savedAt: i, ...long(7900) }));
+    expect(() => save("Fits", long(100), big)).not.toThrow();
+    expect(() => save("Too much", long(7900), big)).toThrow(/^With this one the saved templates would take \d+ KB, past the 512 KB Mockingbird keeps, as they're written with its settings every time a session changes: remove one you don't use, or shorten this one's prompts\.$/);
   });
 
   it("saves nothing over a list that isn't one", () => {
@@ -283,8 +299,116 @@ describe("saved templates that aren't a list (review fixes 1)", () => {
     expect(path.basename(file)).toBe("pipelineTemplates-set-aside-2026-11-12T15-00-00-000Z.json");
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ a: 1 });
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
-    expect(() => setAsideTemplates({ b: 2 }, { dir, now: () => Date.UTC(2026, 10, 12, 15) })).toThrow(/EEXIST/);
+    // set aside again in the same millisecond: a name of its own, the first copy left as it was
+    const again = setAsideTemplates({ b: 2 }, { dir, now: () => Date.UTC(2026, 10, 12, 15) });
+    expect(path.basename(again)).toBe("pipelineTemplates-set-aside-2026-11-12T15-00-00-000Z-2.json");
+    expect(JSON.parse(fs.readFileSync(again, "utf8"))).toEqual({ b: 2 });
+    expect(fs.statSync(again).mode & 0o777).toBe(0o600);
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ a: 1 });
+    expect(path.basename(setAsideTemplates({ c: 3 }, { dir, now: () => Date.UTC(2026, 10, 12, 15) }))).toBe("pipelineTemplates-set-aside-2026-11-12T15-00-00-000Z-3.json");
     expect(() => setAsideTemplates([], { dir })).toThrow("The saved templates read as a list: there's nothing to set aside.");
+  });
+});
+
+describe("a lay-out's area (TemplateLayOuts)", () => {
+  const AREA = { x: 900, y: 0, w: 480, h: 120, repos: [{ path: REPO, base: "dev" }] };
+  const reply = (over: Partial<LayOutReply> = {}): LayOutReply => ({ steps: [{ key: "s1", id: "p1", title: "Builder" }], wires: [], started: null, notes: [], ...over });
+  function setup() {
+    const logged: string[] = [];
+    const log = (context: string, err: unknown) => void logged.push(`${context}: ${err instanceof Error ? err.message : String(err)}`);
+    const store = new LandscapeStore({ file: path.join(tempDir("tpl-area"), "landscape.json"), emit: () => {}, emitWires: () => {}, log, saveMs: 60_000 });
+    store.update({ areas: { "5110": { x: 0, y: 0, w: 400, h: 300, repos: [] } } });
+    const layOuts = new TemplateLayOuts({ store, log });
+    const areas = () => store.get().landscape.areas;
+    return { store, layOuts, areas, logged };
+  }
+  /** A lay-out held until `go()`, then refused with `why` (or laid out when none). */
+  const held = (why?: string) => {
+    let go = () => {};
+    const run = vi.fn(() => new Promise<LayOutReply>((ok, no) => (go = () => (why ? no(new Error(why)) : ok(reply())))));
+    return { run, go: () => go() };
+  };
+
+  it("makes the area the window sent before laying out, saying it did; one that's there already is neither made nor said", async () => {
+    const t = setup();
+    const run = vi.fn(async () => {
+      expect(t.areas()["5115"]).toMatchObject(AREA);
+      return reply();
+    });
+    await expect(t.layOuts.layOut({ area: "5115", newArea: AREA }, run)).resolves.toMatchObject({ madeArea: true });
+    const before = JSON.stringify(t.areas()["5110"]);
+    await expect(t.layOuts.layOut({ area: "5110", newArea: AREA }, async () => reply())).resolves.toMatchObject({ madeArea: false });
+    expect(JSON.stringify(t.areas()["5110"])).toBe(before);
+    await expect(t.layOuts.layOut({ area: "5116" }, async () => reply())).resolves.toMatchObject({ madeArea: false });
+    expect(Object.hasOwn(t.areas(), "5116")).toBe(false);
+  });
+
+  it("takes back the area it made when the lay-out is refused, and never one that was there already", async () => {
+    const t = setup();
+    await expect(t.layOuts.layOut({ area: "5115", newArea: AREA }, async () => Promise.reject(new Error("“Builder” was refused")))).rejects.toThrow(/^“Builder” was refused$/);
+    expect(Object.hasOwn(t.areas(), "5115")).toBe(false);
+    await expect(t.layOuts.layOut({ area: "5110", newArea: AREA }, async () => Promise.reject(new Error("refused")))).rejects.toThrow("refused");
+    expect(t.areas()["5110"]).toMatchObject({ x: 0, y: 0, w: 400, h: 300 });
+  });
+
+  it("refuses a second lay-out while one runs before it makes or takes back anything, so the first keeps the area it made", async () => {
+    const t = setup();
+    const first = held();
+    const laying = t.layOuts.layOut({ area: "5115", newArea: AREA }, first.run);
+    await vi.waitFor(() => expect(first.run).toHaveBeenCalled());
+    // into the same new area, as a window that hadn't heard of the first's area yet would send it
+    const second = vi.fn(async () => reply());
+    await expect(t.layOuts.layOut({ area: "5115", newArea: { ...AREA, x: 1500 } }, second)).rejects.toThrow("A template is being laid out already: wait for that to finish.");
+    expect(second).not.toHaveBeenCalled();
+    expect(t.areas()["5115"]).toMatchObject(AREA);
+    first.go();
+    await expect(laying).resolves.toMatchObject({ madeArea: true });
+    expect(t.areas()["5115"]).toMatchObject(AREA);
+    // once it's done, the next goes: the area is there now, so it's not made again, and its refusal leaves it
+    await expect(t.layOuts.layOut({ area: "5115", newArea: { ...AREA, x: 1500 } }, async () => Promise.reject(new Error("refused")))).rejects.toThrow(/^refused$/);
+    expect(t.areas()["5115"]).toMatchObject(AREA);
+  });
+
+  it("takes back its own area when it's refused after a second was turned away meanwhile", async () => {
+    const t = setup();
+    const first = held("“Builder” was refused");
+    const laying = t.layOuts.layOut({ area: "5115", newArea: AREA }, first.run);
+    await vi.waitFor(() => expect(first.run).toHaveBeenCalled());
+    await expect(t.layOuts.layOut({ area: "5115", newArea: AREA }, async () => reply())).rejects.toThrow(/being laid out already/);
+    first.go();
+    await expect(laying).rejects.toThrow(/^“Builder” was refused$/);
+    expect(Object.hasOwn(t.areas(), "5115")).toBe(false);
+  });
+
+  it("leaves an area it made that has changed since, saying so, and says one that couldn't be taken back", async () => {
+    const t = setup();
+    await expect(
+      t.layOuts.layOut({ area: "5115", newArea: AREA }, async () => {
+        t.store.update({ areas: { "5115": { x: 2000 } } });
+        throw new Error("refused.");
+      })
+    ).rejects.toThrow("refused. Its area, made for it, has changed since, so it's left: remove it from its ⋯ if it's not wanted.");
+    expect(t.areas()["5115"]).toMatchObject({ x: 2000 });
+    expect(t.logged).toContain("templates: area 5115, made for a lay-out that was refused, changed since it was made, so it's left: changed since it was made");
+
+    const u = setup();
+    const update = u.store.update.bind(u.store);
+    vi.spyOn(u.store, "update").mockImplementation((patch: unknown) => {
+      if ((patch as { areas?: Record<string, unknown> }).areas?.["5117"] === null) throw new Error("landscape.json is read-only");
+      return update(patch);
+    });
+    await expect(u.layOuts.layOut({ area: "5117", newArea: AREA }, async () => Promise.reject(new Error("refused.")))).rejects.toThrow(
+      "refused. Its area, made for it, couldn't be taken back (landscape.json is read-only): remove it from its ⋯."
+    );
+    expect(u.logged).toContain("templates: area 5117, made for a lay-out that was refused, couldn't be taken back: landscape.json is read-only");
+  });
+
+  it("refuses an area that isn't one before anything is laid out, and lets the next lay-out go", async () => {
+    const t = setup();
+    const run = vi.fn(async () => reply());
+    await expect(t.layOuts.layOut({ area: "5115", newArea: { x: 1 } }, run)).rejects.toThrow(/^Its area couldn't be made: /);
+    expect(run).not.toHaveBeenCalled();
+    expect(Object.hasOwn(t.areas(), "5115")).toBe(false);
+    await expect(t.layOuts.layOut({ area: "5115", newArea: AREA }, run)).resolves.toMatchObject({ madeArea: true });
   });
 });

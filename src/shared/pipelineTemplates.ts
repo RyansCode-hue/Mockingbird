@@ -1,5 +1,5 @@
 import { fence } from "./fence";
-import { isObj } from "./landscape";
+import { isObj, type Area } from "./landscape";
 import { oneLine, quoted } from "./team/agentText";
 import { hiddenTextRefusal, INVISIBLE_RE, visibleLine, type TextUse } from "./hiddenText";
 import { AGENT_KINDS, ticketIdOf, type AgentKind } from "./types";
@@ -542,6 +542,11 @@ export interface LayOutRequest {
   base?: string | null;
   /** The area its steps go in: a top-level group. */
   area: string;
+  /**
+   * Where to make `area` when it has none (the window works it out, as newAreaPatch does): main makes it under its
+   * lay-out lock, and takes it back only when this lay-out made it and is refused (main's TemplateLayOuts).
+   */
+  newArea?: Area | null;
 }
 export interface LayOutReply {
   /** Each step made, by its key: its session's id and title. */
@@ -552,6 +557,8 @@ export interface LayOutReply {
   started: string | null;
   /** What was forced, left out, or didn't go after the steps were made, each said. */
   notes: string[];
+  /** Whether this lay-out made its area (LayOutRequest.newArea): only an area made for it is tidied along its wires. */
+  madeArea?: boolean;
 }
 
 /** Save as template's first half (templates:draft): the chain as a template would keep it, and what that leaves out. */

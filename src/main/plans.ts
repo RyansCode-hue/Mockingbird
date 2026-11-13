@@ -6,7 +6,7 @@ import { holdsPrivateKey } from "./team/artifactStore";
 import { TICKET_TOOL } from "./ticketToolSchemas";
 import { REDACTED, redactSecrets } from "./wirePrompt";
 import { WIRE_TOOL } from "./wireToolSchemas";
-import type { LayOutDeps, WireService } from "./wires";
+import type { LayOutDeps, StepStarted, WireService } from "./wires";
 import { isObj } from "../shared/landscape";
 import { agentOf, layOutPlan, parseTemplateBody, startsAtOrchestrator, TemplateError, ticketLine, withTicket, type LayOutReply, type TemplateBody } from "../shared/pipelineTemplates";
 import {
@@ -55,7 +55,7 @@ export interface PlanLayOutDeps {
   /** Let a step made go again, with its wires: throws when it couldn't be, and answers why its wires stayed, else null. */
   forget(id: string): string | null;
   /** Start a not-started step, from session `from`'s commit (null: the step's own base), placed, its ticket's coding started. */
-  start(id: string, from: string | null, ticketTitle: string | null): Promise<SessionInfo>;
+  start(id: string, from: string | null, ticketTitle: string | null): Promise<StepStarted>;
   /** A terminal on a started agent's tree, wired to it, running `command` (WireService.addTerminal). */
   addTerminal(agent: SessionInfo, as: { title: string; command: string }): Promise<SessionInfo>;
   /** A handoff Lay out sent as its step's own prompt, counted sent (WireDelivery.countSent). */
@@ -715,6 +715,11 @@ export class Plans {
     const notes: string[] = [];
     if (layout.forced) notes.push(`In a team room's area every gate asks, so ${layout.forced === 1 ? "its automatic gate was" : `its ${layout.forced} automatic gates were`} laid out asking.`);
     for (const p of layout.steps) if (p.terminal && !p.terminal.laid) notes.push(`“${p.step.name}” ${p.terminal.why.replace(/^It /, "")}`);
+    // what goes wrong once the steps are made is said in the reply and logged here, under the session it's about
+    const missed = (sid: string, note: string, err: unknown) => {
+      notes.push(note);
+      this.o.log(`plans: laying out ${id}'s plan, session ${sid}: ${note}`, err);
+    };
     const started: string[] = [];
     for (const p of layout.steps) {
       if (!p.starts) continue;
@@ -722,9 +727,11 @@ export class Plans {
       const sentIn = layout.wires.map((w, j) => ({ w, j })).filter((x) => x.w.sentByLayOut && x.w.wire.to === s.key);
       let info: SessionInfo;
       try {
-        info = await d.start(idOf.get(s.key)!, sentIn.length ? me.id : null, ctx.ticket ? visibleLine(this.o.ticketTitleOf(ctx.ticket), 200) || null : null);
+        const r = await d.start(idOf.get(s.key)!, sentIn.length ? me.id : null, ctx.ticket ? visibleLine(this.o.ticketTitleOf(ctx.ticket), 200) || null : null);
+        info = r.info;
+        if (r.stageWhy) notes.push(`“${s.name}” started, but ${r.stageWhy}.`);
       } catch (err) {
-        notes.push(`“${s.name}” didn't start: ${errText(err).replace(/\.$/, "")}. It's laid out and waits: Start now in its menu starts it with its prompt.`);
+        missed(idOf.get(s.key)!, `“${s.name}” didn't start: ${errText(err).replace(/\.$/, "")}. It's laid out and waits: Start now in its menu starts it with its prompt.`, err);
         for (const w of layout.wires.filter((x) => x.afterStart && !x.skipped && x.wire.from === s.key))
           notes.push(w.wire.type === "worktree" ? `“${keyed.get(w.wire.to)!.name}” wasn't made, as it runs on “${s.name}”'s tree: once that has started, Add terminal on its tree makes one.` : `${label(w.wire)} wasn't made, as it needs “${s.name}” started on its branch: make it from “${s.name}” once it has.`);
         continue;
@@ -737,12 +744,12 @@ export class Plans {
             const t = await d.addTerminal(info, { title: to.name, command: to.prompt });
             made.push({ key: to.key, id: t.id, title: to.name });
           } catch (err) {
-            notes.push(`“${to.name}” wasn't made on “${s.name}”'s tree: ${errText(err)}`);
+            missed(info.id, `“${to.name}” wasn't made on “${s.name}”'s tree: ${errText(err)}`, err);
           }
           continue;
         }
         const r = this.o.wires.add(info.id, endId(w.wire.to), w.wire.type, settingsOf(w.wire, w.gate));
-        if ("refused" in r) notes.push(`${label(w.wire)} wasn't made: ${r.refused}`);
+        if ("refused" in r) missed(info.id, `${label(w.wire)} wasn't made: ${r.refused}`, new Error(r.refused));
         else wires.push(r.id!);
       }
     }

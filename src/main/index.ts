@@ -33,7 +33,7 @@ import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, reorderWorkItem, adoRequest, setWorkItemTags, projectTags } from "./ado";
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
-import { WireService } from "./wires";
+import { WireService, type StepStarted } from "./wires";
 import { wiresInOrder, type WireState } from "../shared/wires";
 import { WireDelivery } from "./wireDelivery";
 import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
@@ -47,7 +47,7 @@ import { TicketTools } from "./ticketTools";
 import { Plans } from "./plans";
 import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
-import { draftTemplate, removedTemplate, savedTemplates, setAsideTemplates } from "./templates";
+import { draftTemplate, removedTemplate, savedTemplates, setAsideTemplates, TemplateLayOuts } from "./templates";
 import { readTemplates } from "../shared/pipelineTemplates";
 import { isObj } from "../shared/landscape";
 import { HELPDESK_KEEPS_ITS_CONVERSATION, helpdeskShareRefusal, inHelpdeskFolder } from "./helpdesk";
@@ -807,16 +807,29 @@ function upstreamOf(id: string): string | null {
 /**
  * Start not-started step `id` (SessionManager.startPlanned) from upstream session `from`'s commit as it is now: the
  * Send's source, or (Start now) upstreamOf's. Placed in its own area as a reopened session is; a step on a ticket starts
- * its coding, as a session opened on one does (`ticketTitle` naming the ticket there when its record has none).
+ * its coding, as a session opened on one does (`ticketTitle` naming the ticket there when its record has none). Throws
+ * only when it didn't start: a stage that couldn't be moved once its pty runs is logged and said in `stageWhy`.
  */
-async function startPlannedStep(id: string, from?: string, ticketTitle?: string | null): Promise<SessionInfo> {
+async function startStep(id: string, from?: string | null, ticketTitle?: string | null): Promise<StepStarted> {
   const info = await sessions.startPlanned(id, from ?? upstreamOf(id));
   try {
     landscape.sessionReopened(info);
   } catch (err) {
     logError(`landscape: placing started step ${info.id}`, err);
   }
-  return sessionOpened(info, info.ticketId, info.ticketTitle ?? ticketTitle);
+  try {
+    return { info: sessionOpened(info, info.ticketId, info.ticketTitle ?? ticketTitle), stageWhy: null };
+  } catch (err) {
+    logError(`pipeline: step ${info.id} started, but ticket ${info.ticketId}'s stage couldn't be moved`, err);
+    const to = info.role === "orchestrator" ? "tracked at BA" : "moved to Coding";
+    return { info, stageWhy: `#${info.ticketId} couldn't be ${to} (${err instanceof Error ? err.message : String(err)})` };
+  }
+}
+/** startStep for Start now and a Send's start, which answer the session: a stage that couldn't be moved is notified. */
+async function startPlannedStep(id: string, from?: string): Promise<SessionInfo> {
+  const { info, stageWhy } = await startStep(id, from);
+  if (stageWhy) notifySession(info.id, `${info.ticketTitle ?? info.title} started`, `But ${stageWhy}.`);
+  return info;
 }
 handle("sessions:resume", (id) => sessions.resume(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
@@ -1549,19 +1562,23 @@ handle("templates:setAside", () => {
 });
 /** Whether a lay-out's template starts at an Orchestrator (as sent: each path reads it whole), laid out alone (W17). */
 const atOrchestrator = (req: unknown): boolean => isObj(req) && isObj(req.template) && Array.isArray(req.template.steps) && isObj(req.template.steps[0]) && req.template.steps[0].role === "orchestrator";
-handle("templates:layOut", (req) =>
-  atOrchestrator(req)
-    ? plans.startOrchestrator(req, { create: (q) => sessions.create(q), opened: (info, title) => void sessionOpened(info, info.ticketId, title) })
-    : wires.layOut(req, {
-        planStep: (q) => sessions.planStep(q),
-        forget: (id) => {
-          sessions.kill(id, true);
-          return wires.sessionForgotten(id);
-        },
-        start: (id, ticketTitle) => startPlannedStep(id, undefined, ticketTitle),
-        addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
-        roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
-      })
+// one lay-out at a time, the area it goes in made under that lock and taken back only by the lay-out that made it
+const templateLayOuts = new TemplateLayOuts({ store: landscape, log: logError });
+handle("templates:layOut", (raw) =>
+  templateLayOuts.layOut(raw, (req) =>
+    atOrchestrator(req)
+      ? plans.startOrchestrator(req, { create: (q) => sessions.create(q), opened: (info, title) => void sessionOpened(info, info.ticketId, title) })
+      : wires.layOut(req, {
+          planStep: (q) => sessions.planStep(q),
+          forget: (id) => {
+            sessions.kill(id, true);
+            return wires.sessionForgotten(id);
+          },
+          start: (id, ticketTitle) => startStep(id, undefined, ticketTitle),
+          addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
+          roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
+        })
+  )
 );
 // the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an
 // agent is told of its wires as it launches
@@ -1670,7 +1687,7 @@ handle("plans:layOut", (id, shown, at) =>
       sessions.kill(id, true);
       return wires.sessionForgotten(id);
     },
-    start: (id, from, ticketTitle) => startPlannedStep(id, from ?? undefined, ticketTitle),
+    start: (id, from, ticketTitle) => startStep(id, from, ticketTitle),
     addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
     countSent: (wire, why) => delivery.countSent(wire, why),
   })

@@ -1259,7 +1259,7 @@ describe("the Council's Orchestrator (W18)", () => {
         const { planned: _step, ...rest } = planned.splice(planned.findIndex((s) => s.id === id), 1)[0];
         const s = { ...rest, status: "working" } as SessionInfo;
         running.push(s);
-        return s;
+        return { info: s, stageWhy: null };
       },
       addTerminal: async () => {
         throw new Error("the plan has no terminal");

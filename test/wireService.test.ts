@@ -4,7 +4,7 @@ import * as path from "path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
-import { WireService, type LayOutDeps } from "../src/main/wires";
+import { WireService, type LayOutDeps, type StepStarted } from "../src/main/wires";
 import type { LayOutRequest, TemplateBody } from "../src/shared/pipelineTemplates";
 import { freeWorktree } from "../src/main/handlers";
 import type { NewSessionRequest, PlanRequest, SessionInfo } from "../src/shared/types";
@@ -839,12 +839,12 @@ describe("laying a template out (W9)", () => {
       for (const list of [t.planned, t.running]) if (list.some((s) => s.id === id)) list.splice(list.findIndex((s) => s.id === id), 1);
       return t.service.sessionForgotten(id);
     });
-    const start = vi.fn(async (id: string): Promise<SessionInfo> => {
+    const start = vi.fn(async (id: string, _title?: string | null): Promise<StepStarted> => {
       const p = t.planned.splice(t.planned.findIndex((s) => s.id === id), 1)[0];
       const { planned: _step, ...rest } = p;
       const s = { ...rest, status: "working", branch: `5115-${id}` } as SessionInfo;
       t.running.push(s);
-      return s;
+      return { info: s, stageWhy: null };
     });
     const create = async (req: NewSessionRequest) => {
       created.push(req);
@@ -971,10 +971,52 @@ describe("laying a template out (W9)", () => {
     expect(t.planned.map((s) => s.id)).toEqual(["p1", "p2", "p3"]);
   });
 
+  it("logs under the step's id what it says once the steps are made: the first not starting", async () => {
+    const t = laying();
+    t.start.mockRejectedValueOnce(new Error("origin/dev isn't there"));
+    await t.service.layOut(request(), t.d);
+    expect(t.logged).toContain(
+      "wires: laying out “Build, review, test”, session p1: “Builder” didn't start: origin/dev isn't there. Its 3 steps are laid out and wait: start it with Start now in its menu.: origin/dev isn't there"
+    );
+  });
+
+  /** chainBody with Tester waiting for Builder's PR to merge rather than for Reviewer: a wire made once Builder starts. */
+  const prBody = () => chainBody({ wires: [...chainBody().wires.slice(0, 2), { from: "s1", to: "s3", type: "handoff", when: "pr-merged", gate: "ask" }, chainBody().wires[3]] });
+
+  it("says a first step started whose ticket's stage couldn't be moved, and still makes its terminal and its PR-merged wire", async () => {
+    const t = laying();
+    t.start.mockImplementationOnce(async (id: string) => ({ ...(await t.start.getMockImplementation()!(id)), stageWhy: "#5115 couldn't be moved to Coding (pipeline.json is read-only)" }));
+    const r = await t.service.layOut(request({ template: prBody() }), t.d);
+    expect(r.started).toBe("p1");
+    expect(r.notes).toEqual(["“Builder” started, but #5115 couldn't be moved to Coding (pipeline.json is read-only)."]);
+    expect(t.addTerminal).toHaveBeenCalledTimes(1);
+    expect(t.links().map((w) => [w.from, w.to, w.type, w.when])).toEqual([
+      ["p1", "p2", "handoff", "finished"],
+      ["p2", "p1", "feedback", "finished"],
+      ["p1", "p3", "handoff", "pr-merged"],
+      ["p1", "t1", "worktree", "manual"],
+    ]);
+  });
+
+  it("logs under the started step's id a terminal that wasn't made on its tree, and a wire refused once it started", async () => {
+    const t = laying();
+    t.addTerminal.mockRejectedValueOnce(new Error("the pty couldn't be opened"));
+    // the started step taken over: the PR-merged wire out of it is refused as it's made
+    t.start.mockImplementationOnce(async (id: string) => {
+      const r = await t.start.getMockImplementation()!(id);
+      t.takenOver[id] = "“Builder” continues on Nick's laptop";
+      return r;
+    });
+    const r = await t.service.layOut(request({ template: prBody() }), t.d);
+    expect(r.notes).toEqual(["Builder → Tester wasn't made: “Builder” continues on Nick's laptop", "“Dev server” wasn't made on “Builder”'s tree: the pty couldn't be opened"]);
+    expect(t.logged).toContain("wires: laying out “Build, review, test”, session p1: “Dev server” wasn't made on “Builder”'s tree: the pty couldn't be opened: the pty couldn't be opened");
+    expect(t.logged).toContain("wires: laying out “Build, review, test”, session p1: Builder → Tester wasn't made: “Builder” continues on Nick's laptop: “Builder” continues on Nick's laptop");
+  });
+
   it("lays out one template at a time", async () => {
     const t = laying();
     let go = () => {};
-    t.start.mockImplementationOnce((id: string) => new Promise((ok) => (go = () => ok(t.start.getMockImplementation()!(id)))) as Promise<SessionInfo>);
+    t.start.mockImplementationOnce((id: string) => new Promise((ok) => (go = () => ok(t.start.getMockImplementation()!(id)))) as Promise<StepStarted>);
     const first = t.service.layOut(request(), t.d);
     await vi.waitFor(() => expect(t.start).toHaveBeenCalled());
     await expect(t.service.layOut(request({ area: "5116" }), t.d)).rejects.toThrow("A template is being laid out already: wait for that to finish.");

@@ -52,14 +52,23 @@ export interface LayOutDeps {
    */
   forget(id: string): string | null;
   /**
-   * Start a not-started step, placed and its ticket's coding started, as Start now does (index.ts' startPlannedStep):
-   * `ticketTitle` names the ticket there, as the step's own record carries only its id.
+   * Start a not-started step, placed and its ticket's coding started, as Start now does (index.ts' startStep):
+   * `ticketTitle` names the ticket there, as the step's own record carries only its id. Throws when it didn't start.
    */
-  start(id: string, ticketTitle: string | null): Promise<SessionInfo>;
+  start(id: string, ticketTitle: string | null): Promise<StepStarted>;
   /** A terminal on a started agent's tree, wired to it (addTerminal), running `command`. */
   addTerminal(agent: SessionInfo, as: { title: string; command: string }): Promise<SessionInfo>;
   /** The team room a top-level group is shared as, or null. */
   roomOfGroup(group: string): string | null;
+}
+
+/**
+ * A step that started (index.ts' startStep). Its ticket's stage is moved once its pty runs, so a failure there doesn't
+ * undo the start: `stageWhy` says what couldn't be done and why ("#5115 couldn't be moved to Coding (…)"), else null.
+ */
+export interface StepStarted {
+  info: SessionInfo;
+  stageWhy: string | null;
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -481,11 +490,19 @@ export class WireService {
     const first = plan.steps[0].step;
     const waiting = plan.wires.filter((p) => p.afterStart && !p.skipped);
     if (!body.startFirst) return { steps: made, wires, started: null, notes };
+    // what goes wrong once the steps are made is said in the reply and logged here, under the session it's about
+    const missed = (id: string, note: string, err: unknown) => {
+      notes.push(note);
+      this.o.log(`wires: laying out “${name}”, session ${id}: ${note}`, err);
+    };
+    const firstId = idOf.get(first.key)!;
     let started: SessionInfo;
     try {
-      started = await d.start(idOf.get(first.key)!, ticketTitle);
+      const r = await d.start(firstId, ticketTitle);
+      started = r.info;
+      if (r.stageWhy) notes.push(`“${first.name}” started, but ${r.stageWhy}.`);
     } catch (err) {
-      notes.push(`“${first.name}” didn't start: ${errText(err)}. ${made.length === 1 ? "It's laid out and waits" : `Its ${made.length} steps are laid out and wait`}: start it with Start now in its menu.`);
+      missed(firstId, `“${first.name}” didn't start: ${errText(err)}. ${made.length === 1 ? "It's laid out and waits" : `Its ${made.length} steps are laid out and wait`}: start it with Start now in its menu.`, err);
       for (const p of waiting)
         notes.push(
           p.wire.type === "worktree"
@@ -502,12 +519,12 @@ export class WireService {
           made.push({ key: to.key, id: t.id, title: to.name });
           idOf.set(to.key, t.id);
         } catch (err) {
-          notes.push(`“${to.name}” wasn't made on “${first.name}”'s tree: ${errText(err)}`);
+          missed(started.id, `“${to.name}” wasn't made on “${first.name}”'s tree: ${errText(err)}`, err);
         }
         continue;
       }
       const r = this.add(idOf.get(p.wire.from), idOf.get(p.wire.to), p.wire.type, wireSettingsOf(p.wire, p.gate));
-      if ("refused" in r) notes.push(`${label(p.wire)} wasn't made: ${r.refused}`);
+      if ("refused" in r) missed(started.id, `${label(p.wire)} wasn't made: ${r.refused}`, new Error(r.refused));
       else wires.push(r.id!);
     }
     return { steps: made, wires, started: started.id, notes };

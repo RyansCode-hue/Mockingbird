@@ -95,7 +95,7 @@ import { usePlans } from "./usePlans";
 import { toldLine } from "./ticketPipelineModel";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
-import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
+import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type Area, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
 import { useWireNeeds } from "./NeedsWire";
@@ -2146,26 +2146,22 @@ function App() {
    * Lay out (W9): template `req.template` as not-started steps and their wires in area `req.area` (made first when it
    * has none: steps not started make no area), then, once they're drawn, an area made for them tidied along its wires
    * (planTidy). In an area that was there already they go where there's room, and nothing there moves.
-   * The one act that does it, from the picker's Lay out: main checks it all again and makes everything. Settles with
-   * why nothing was laid out (an area made for it is taken back), or null.
+   * The one act that does it, from the picker's Lay out: main checks it all again and makes everything, the area
+   * included, under its lay-out lock (where it goes is worked out here). Settles with why nothing was laid out (main
+   * takes back an area it made for it), or null.
    */
   const layOutTemplate = async (req: LayOutRequest): Promise<string | null> => {
     const l = lsNow.current?.landscape;
     if (!l) return `The landscape isn't read in yet: ${LAYOUT_LOADING}`;
-    const area = newAreaPatch(l, req.area, req.repoPath ? { path: req.repoPath, base: req.base ?? null } : null);
-    if (area) {
-      const why = await lsSaves.update(area, `making ${req.area}'s area`);
-      if (why) return `Its area couldn't be made: ${why}`;
-    }
+    const newArea = newAreaPatch(l, req.area, req.repoPath ? { path: req.repoPath, base: req.base ?? null } : null)?.areas?.[req.area] as Area | undefined;
     let r: IpcResult<LayOutReply>;
     try {
-      r = await window.mb.templatesLayOut(req);
+      r = await window.mb.templatesLayOut({ ...req, ...(newArea ? { newArea } : {}) });
     } catch (err) {
       r = { error: err instanceof Error ? err.message : String(err) };
     }
     if (isErr(r)) {
       console.warn(`[mockingbird] laying out ${req.name}: ${r.error}`);
-      if (area) await lsChange({ areas: { [req.area]: null } }, `taking back ${req.area}'s area`);
       return r.error;
     }
     setTemplatePicker(null);
@@ -2179,7 +2175,7 @@ function App() {
       started ? `${started} started${waiting ? `, ${waiting === 1 ? "1 step waits" : `${waiting} steps wait`} for ${waiting === 1 ? "its" : "their"} handoffs` : ""}.` : `${waiting === 1 ? "its step waits" : `its ${waiting} steps wait`}.`,
       ...r.notes,
     ].join(" ");
-    laidOut.current = { area: req.area, ids: r.steps.map((s) => s.id), wires: r.wires, said, tidy: !!area, until: Date.now() + LAID_OUT_WAIT_MS };
+    laidOut.current = { area: req.area, ids: r.steps.map((s) => s.id), wires: r.wires, said, tidy: !!r.madeArea, until: Date.now() + LAID_OUT_WAIT_MS };
     setLaidTick((n) => n + 1);
     return null;
   };

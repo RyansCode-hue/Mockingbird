@@ -7,7 +7,7 @@ import { Plans, PROPOSE_EVERY_MS, type OrchestratorStartDeps, type PlanLayOutDep
 import { orchestratorRefusal, TicketTools } from "../src/main/ticketTools";
 import { TICKET_TOOL, TICKET_TOOL_SCHEMAS } from "../src/main/ticketToolSchemas";
 import { orchestratorRules } from "../src/main/wirePrompt";
-import { WireService } from "../src/main/wires";
+import { WireService, type StepStarted } from "../src/main/wires";
 import { BUILT_IN_TEMPLATE, kickoffAsTicket, layOutPlan, parseTemplateBody, ticketKickoffPrompt, ticketLine, TICKET_LABEL, withTicket, type LayOutRequest } from "../src/shared/pipelineTemplates";
 import { checkPlan, ME, orchestratorKickoff, PLAN_MAX, planFlags, provenanceOf, readPlanArgs, readShownPlan, startingShape, type Plan, type PlanContext } from "../src/shared/plans";
 import { BY_YOU, type ModelCatalog, type NewSessionRequest, type SessionInfo } from "../src/shared/types";
@@ -119,7 +119,7 @@ function setup(o: { groupRooms?: Record<string, string>; takenOver?: Record<stri
     for (const list of [planned, running]) if (list.some((s) => s.id === id)) list.splice(list.findIndex((s) => s.id === id), 1);
     return wires.sessionForgotten(id);
   });
-  const start = vi.fn(async (id: string, _from: string | null, _title: string | null): Promise<SessionInfo> => {
+  const start = vi.fn(async (id: string, _from: string | null, _title: string | null): Promise<StepStarted> => {
     const p = planned.splice(planned.findIndex((s) => s.id === id), 1)[0];
     const { planned: step, ...rest } = p;
     const shares = step?.sharesWith ? running.find((s) => s.id === step.sharesWith) : undefined;
@@ -127,7 +127,7 @@ function setup(o: { groupRooms?: Record<string, string>; takenOver?: Record<stri
     running.push(s);
     // a step on a ticket starts its coding, as index.ts' sessionOpened does
     if (s.ticketId) pipeline.startCoding(s.ticketId, undefined, BY_YOU);
-    return s;
+    return { info: s, stageWhy: null };
   });
   const created: NewSessionRequest[] = [];
   const addTerminal = vi.fn(async (agent: SessionInfo, as: { title: string; command: string }) =>
@@ -368,6 +368,26 @@ describe("plans:layOut", () => {
     expect(t.told.at(-1)).toMatchObject({ id: "orch", text: expect.stringMatching(/laid out your plan for #4182.*“Coder” started with its prompt; “Verifier” waits for its handoff.*don't call mockingbird finish_step/s) });
   });
 
+  it("says a step started whose ticket's stage couldn't be moved, and still makes the wire waiting on its start", async () => {
+    const t = setup();
+    t.start.mockImplementationOnce(async (id, from, title) => ({ ...(await t.start.getMockImplementation()!(id, from, title)), stageWhy: "#4182 couldn't be moved to Coding (pipeline.json is read-only)" }));
+    await t.propose();
+    const r = await t.plans.layOut((await t.held()).id, shown(), t.at(), t.d);
+    expect(r.started).toBe("p1");
+    expect(r.notes).toEqual(["“Coder” started, but #4182 couldn't be moved to Coding (pipeline.json is read-only)."]);
+    expect(t.links().find((w) => w.from === "p1" && w.to === "p2")).toMatchObject({ type: "handoff", when: "pr-merged" });
+  });
+
+  it("logs under the step's id what it says once the steps are made: a step that didn't start", async () => {
+    const t = setup();
+    t.start.mockRejectedValueOnce(new Error("origin/dev isn't there"));
+    await t.propose();
+    const id = (await t.held()).id;
+    const r = await t.plans.layOut(id, shown(), t.at(), t.d);
+    expect(r.notes[0]).toBe("“Coder” didn't start: origin/dev isn't there. It's laid out and waits: Start now in its menu starts it with its prompt.");
+    expect(t.logged).toContain(`plans: laying out ${id}'s plan, session p1: ${r.notes[0]}: origin/dev isn't there`);
+  });
+
   it("an emptied What flows sends the default, as the dialog says under it; one written is kept", async () => {
     const t = setup();
     await t.propose();
@@ -573,7 +593,7 @@ describe("an Orchestrator's start", () => {
 
   it("is refused by a template's own lay-out, which never makes the rest", async () => {
     const t = setup();
-    await expect(t.wires.layOut(request(), { planStep: t.planStep, forget: t.forget, start: async () => t.orch, addTerminal: async () => t.orch, roomOfGroup: () => null })).rejects.toThrow(/starts at an Orchestrator, which is laid out alone/);
+    await expect(t.wires.layOut(request(), { planStep: t.planStep, forget: t.forget, start: async () => ({ info: t.orch, stageWhy: null }), addTerminal: async () => t.orch, roomOfGroup: () => null })).rejects.toThrow(/starts at an Orchestrator, which is laid out alone/);
     expect(t.planStep).not.toHaveBeenCalled();
   });
 });

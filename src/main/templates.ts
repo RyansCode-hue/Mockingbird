@@ -8,6 +8,7 @@ import { tildePath } from "../shared/paths";
 import { oneLine } from "../shared/team/agentText";
 import { CONTROL_RE, hiddenTextRefusal, withoutHidden, type TextUse } from "../shared/hiddenText";
 import { isRemotePaneId } from "../shared/team/livePanes";
+import { isObj, LandscapeShapeError, own, type Area } from "../shared/landscape";
 import {
   kickoffAsTicket,
   ticketLine,
@@ -15,6 +16,7 @@ import {
   readTemplates,
   TemplateError,
   TEMPLATE_MAX,
+  type LayOutReply,
   type PipelineTemplate,
   type TemplateBody,
   type TemplateDraft,
@@ -299,13 +301,23 @@ export interface SaveDeps {
 }
 
 /**
+ * The most saved templates kept, by count and by size as JSON: they live in Mockingbird's settings, which are written
+ * whole with every session's change of status, and one template can be some 200 KB.
+ */
+export const TEMPLATES_KEPT = { count: 50, bytes: 512 * 1024 } as const;
+const kb = (bytes: number) => `${Math.ceil(bytes / 1024)} KB`;
+
+/**
  * `stored` (settings.pipelineTemplates as it is) with template `name`, `body` added: refused, saying why, for a list that
- * can't be read, a name another template has, a body that isn't one, and text holding a secret-looking value or naming
- * a folder in the home folder. Every entry already there is kept as it is, ones this version can't read included.
+ * can't be read, a name another template has, a body that isn't one, text holding a secret-looking value or naming a
+ * folder in the home folder, and a list that would be past TEMPLATES_KEPT. Every entry already there is kept as it is,
+ * ones this version can't read included (and counted).
  */
 export function savedTemplates(nameRaw: unknown, bodyRaw: unknown, stored: unknown, d: SaveDeps): { list: unknown[]; template: PipelineTemplate } {
   const read = readTemplates(stored);
   if (read.broken) throw new Error(`${read.broken} Set them aside from Pipeline from a ticket… to start the list again.`);
+  const kept = Array.isArray(stored) ? stored.length : 0;
+  if (kept >= TEMPLATES_KEPT.count) throw new Error(`There are ${kept} saved templates, the most Mockingbird keeps: remove one you don't use first.`);
   const raw = typeof nameRaw === "string" ? nameRaw : "";
   if (/[\r\n]/.test(raw)) throw new Error("A template's name is one line.");
   const name = oneLine(raw, TEMPLATE_MAX.name * 4);
@@ -333,7 +345,13 @@ export function savedTemplates(nameRaw: unknown, bodyRaw: unknown, stored: unkno
   do id = d.newId?.() ?? `tpl-${randomUUID().slice(0, 8)}`;
   while (ids.has(id));
   const template: PipelineTemplate = { id, name, savedAt: (d.now ?? Date.now)(), ...body };
-  return { list: [...(Array.isArray(stored) ? stored : []), template], template };
+  const list = [...(Array.isArray(stored) ? stored : []), template];
+  const bytes = Buffer.byteLength(JSON.stringify(list), "utf8");
+  if (bytes > TEMPLATES_KEPT.bytes)
+    throw new Error(
+      `With this one the saved templates would take ${kb(bytes)}, past the ${kb(TEMPLATES_KEPT.bytes)} Mockingbird keeps, as they're written with its settings every time a session changes: remove one you don't use, or shorten this one's prompts.`
+    );
+  return { list, template };
 }
 
 /** `stored` without template `id`: one this version can't read too, when its id can be. Refused when there's none. */
@@ -351,14 +369,95 @@ export function removedTemplate(idRaw: unknown, stored: unknown): { list: unknow
 /**
  * The saved templates set aside when they can't be read as a list (readTemplates' `broken`), which stops every save
  * and remove: a copy kept as it was, in `dir`, readable only by you, so the list can start again empty. Refused when
- * the list reads fine. Answers the copy's path.
+ * the list reads fine. Answers the copy's path: named for the time, with "-2", "-3"… when a copy has that name already.
  */
 export function setAsideTemplates(stored: unknown, d: { dir: string; now?: () => number }): string {
   if (!readTemplates(stored).broken) throw new Error("The saved templates read as a list: there's nothing to set aside.");
   const stamp = new Date((d.now ?? Date.now)()).toISOString().replace(/[:.]/g, "-");
-  const file = path.join(d.dir, `pipelineTemplates-set-aside-${stamp}.json`);
   fs.mkdirSync(d.dir, { recursive: true });
-  // a copy already there under this name stays: the write fails rather than replace it
-  fs.writeFileSync(file, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-  return file;
+  const text = `${JSON.stringify(stored, null, 2)}\n`;
+  for (let n = 1; n <= 100; n++) {
+    const file = path.join(d.dir, `pipelineTemplates-set-aside-${stamp}${n === 1 ? "" : `-${n}`}.json`);
+    try {
+      // "wx": a copy already there under this name is never written over
+      fs.writeFileSync(file, text, { mode: 0o600, flag: "wx" });
+      return file;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+  throw new Error(`The saved templates couldn't be set aside: ${d.dir} has 100 copies named for ${stamp} already.`);
+}
+
+/** What a template's lay-out needs of the landscape (LandscapeStore): its areas as they are, and a patch to them. */
+export interface AreaStore {
+  get(): { landscape: { areas: Readonly<Record<string, Area>> } };
+  update(patch: unknown): unknown;
+}
+
+/**
+ * templates:layOut, one at a time. The area its steps go in is made here, when the window sent one (`newArea`) for an
+ * area that has none: under this lock, before anything is laid out, so a second lay-out can't make it too and then
+ * take it back from under the first. A refused lay-out takes back only the area it made, and only as it made it (one
+ * moved or changed since is left, and said). The reply says whether it made it (`madeArea`): only an area made for the
+ * lay-out is tidied along its wires.
+ */
+export class TemplateLayOuts {
+  private running = false;
+
+  constructor(private readonly o: { store: AreaStore; log: (context: string, err: unknown) => void }) {}
+
+  async layOut(raw: unknown, go: (req: unknown) => Promise<LayOutReply>): Promise<LayOutReply> {
+    if (this.running) throw new Error("A template is being laid out already: wait for that to finish.");
+    this.running = true;
+    try {
+      const made = this.makeArea(raw);
+      let reply: LayOutReply;
+      try {
+        reply = await go(raw);
+      } catch (err) {
+        const left = made ? this.takeBack(made) : null;
+        if (left) throw new Error(`${err instanceof Error ? err.message : String(err)} ${left}`, { cause: err });
+        throw err;
+      }
+      return { ...reply, madeArea: !!made };
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /** Area `raw.area` made from `raw.newArea` when it has none, and how it was made; null when nothing was made. */
+  private makeArea(raw: unknown): { key: string; as: string } | null {
+    if (!isObj(raw) || raw.newArea === undefined || raw.newArea === null) return null;
+    const key = typeof raw.area === "string" ? raw.area.trim() : "";
+    // the lay-out refuses these itself, saying why
+    if (!key || key.includes("/")) return null;
+    if (own(this.o.store.get().landscape.areas, key)) return null;
+    try {
+      this.o.store.update({ areas: { [key]: raw.newArea } });
+    } catch (err) {
+      if (err instanceof LandscapeShapeError) throw new Error(`Its area couldn't be made: ${err.message}`, { cause: err });
+      throw err;
+    }
+    const now = own(this.o.store.get().landscape.areas, key);
+    if (!now) throw new Error(`Its area couldn't be made: ${key} has none after it was written.`);
+    return { key, as: JSON.stringify(now) };
+  }
+
+  /** Area `made` taken back after a refused lay-out, unless it has changed since. What couldn't be is said, or null. */
+  private takeBack(made: { key: string; as: string }): string | null {
+    const now = own(this.o.store.get().landscape.areas, made.key);
+    if (!now) return null;
+    if (JSON.stringify(now) !== made.as) {
+      this.o.log(`templates: area ${made.key}, made for a lay-out that was refused, changed since it was made, so it's left`, new Error("changed since it was made"));
+      return "Its area, made for it, has changed since, so it's left: remove it from its ⋯ if it's not wanted.";
+    }
+    try {
+      this.o.store.update({ areas: { [made.key]: null } });
+      return null;
+    } catch (err) {
+      this.o.log(`templates: area ${made.key}, made for a lay-out that was refused, couldn't be taken back`, err);
+      return `Its area, made for it, couldn't be taken back (${err instanceof Error ? err.message : String(err)}): remove it from its ⋯.`;
+    }
+  }
 }
