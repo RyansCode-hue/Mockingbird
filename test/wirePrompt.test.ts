@@ -220,17 +220,25 @@ describe("redaction", () => {
 
 // Redaction runs on the thread that carries every pane's keystrokes, over text an agent wrote. Each pattern reads a long
 // run once, not once per character of it: these are the runs that each one, written the obvious way, read over and over.
+// Each may cost 100 ms per 400 KB it reads, about three times what a CI runner takes for the slowest of them; reading a
+// run once per character of it costs seconds to minutes at these sizes. A cost is the fastest of three runs: one run
+// alone times the runner as much as the code, as a collection or a busy machine lands in it now and then.
 describe("what redaction costs", () => {
   const ms = (f: () => unknown) => {
-    const t = performance.now();
-    f();
-    return performance.now() - t;
+    let fastest = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const t = performance.now();
+      f();
+      fastest = Math.min(fastest, performance.now() - t);
+    }
+    return fastest;
   };
+  const budget = (text: string) => (100 * text.length) / 400_000;
   const base64 = "+QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3";
-  it("reads 20,000 base64 lines with no END line in under 100 ms", () => {
+  it("reads 20,000 base64 lines (1.6 MB) with no END line in under 100 ms per 400 KB", () => {
     const text = Array.from({ length: 20_000 }, () => base64).join("\n");
     redactSecrets(base64); // compiled before it's timed
-    expect(ms(() => redactSecrets(text))).toBeLessThan(100);
+    expect(ms(() => redactSecrets(text))).toBeLessThan(budget(text));
   });
   it.each([
     ["a dotted run, as a URL's scheme begins", "a.".repeat(200_000)],
@@ -250,7 +258,7 @@ describe("what redaction costs", () => {
     ["lines of hex a key's width", `${"0123456789abcdef".repeat(4)}\n`.repeat(6_000)],
   ])("reads 400 KB of %s in under 100 ms", (_what, text) => {
     redactSecrets(text.slice(0, 100));
-    expect(ms(() => redactSecrets(text))).toBeLessThan(100);
+    expect(ms(() => redactSecrets(text))).toBeLessThan(budget(text));
   });
   it("shapes a diff of megabytes in under 100 ms: only what could be carried is redacted", () => {
     const raw = `diff --git a/big.txt b/big.txt\n${"+line of the diff\n".repeat(400_000)}API_KEY=${"z".repeat(30)}\n`;
