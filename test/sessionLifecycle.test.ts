@@ -1581,6 +1581,19 @@ describe("a step not started yet (W8)", () => {
     expect(fs.existsSync(ran)).toBe(false);
   });
 
+  it("starts at the step before's commit when its uncommitted files can't be counted, saying so", async () => {
+    const { m, clone, a, work } = await upstream();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // a corrupt index: rev-parse HEAD still reads, status fails
+    fs.writeFileSync(path.resolve(a.cwd, git(a.cwd, "rev-parse", "--git-path", "index")), "not an index");
+    const b = m.plan(step(a.id, { repoPath: clone, worktree: true }));
+    const started = await m.startPlanned(b.id, a.id);
+    expect(started.branch).toBe("feat-tester");
+    expect(git(started.cwd, "rev-parse", "HEAD")).toBe(work);
+    expect(m.buffer(b.id)).toMatch(new RegExp(`Started at “Builder”'s commit ${work.slice(0, 7)}: its uncommitted files couldn't be counted \\(.*index.*\\), and none are carried\\.`));
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("“Builder”'s uncommitted files") && String(c[0]).includes(work.slice(0, 7)))).toBe(true);
+  });
+
   it("starts in the folder of the session it shares one with, on its branch as it stands (decision 7)", async () => {
     const { m, a } = await upstream();
     const b = m.plan(step(a.id, { sharesFolder: true, repoPath: "/elsewhere", worktree: true }));

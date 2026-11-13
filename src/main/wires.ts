@@ -330,7 +330,8 @@ export class WireService {
   /**
    * Add next step (W8): a not-started step (`plan`) after session `req.after`, joined to it by a handoff wire. Refused
    * before it's made when no handoff could leave `req.after` now (stepRefusal); one made that the wire is then refused
-   * for (its group across a room's line, the book changed meanwhile) is forgotten (`forget`), and the refusal thrown.
+   * for (its group across a room's line, the book changed meanwhile) is forgotten (`forget`), and the refusal thrown;
+   * a step that then can't be forgotten is said with it, as it stays with no wire into it.
    */
   addStep(req: PlanRequest, d: { plan(req: PlanRequest): SessionInfo; forget(id: string): void }): { info: SessionInfo; wire: string } {
     const refused = this.stepRefusal(String(req?.after ?? ""));
@@ -342,6 +343,7 @@ export class WireService {
       d.forget(info.id);
     } catch (err) {
       this.o.log(`wires: not-started step ${info.id} wasn't wired from ${req.after}, and couldn't be forgotten`, err);
+      throw new Error(`${made.refused} “${info.title}” was made, and couldn't be taken back, so it's there with no wire into it: forget it from its menu (${err instanceof Error ? err.message : err})`, { cause: err });
     }
     throw new Error(made.refused);
   }

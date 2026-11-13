@@ -167,6 +167,24 @@ describe("a next step (Add next step)", () => {
     expect(t.planned).toEqual([]);
     expect(Object.keys(onDisk(t.file).wires?.links ?? {})).toEqual([]);
   });
+
+  it("says both the wire's refusal and that the step stays when it can't be forgotten, and logs it", () => {
+    const t = steps();
+    t.plan.mockImplementationOnce((req: PlanRequest) => {
+      const s = session("p9", { title: req.title, planned: { worktree: true } });
+      t.planned.push(s);
+      t.rooms.p9 = "R1";
+      return s;
+    });
+    t.forget.mockImplementationOnce(() => {
+      throw new Error("state.json couldn't be written");
+    });
+    expect(() => t.service.addStep(t.req("a"), t)).toThrow(
+      `${ROOM_LINE} “Tester” was made, and couldn't be taken back, so it's there with no wire into it: forget it from its menu (state.json couldn't be written)`,
+    );
+    expect(t.planned.map((s) => s.id)).toEqual(["p9"]);
+    expect(t.logged).toContain("wires: not-started step p9 wasn't wired from a, and couldn't be forgotten: state.json couldn't be written");
+  });
 });
 
 describe("a terminal on its tree", () => {

@@ -257,7 +257,7 @@ type StepWhere = Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "us
 /** A session a not-started step starts from (its folder, or its commit), and what of it: "in “Builder”'s folder". */
 type StepUse = { id: string; what: string };
 /** The commit a not-started step starts at, from the step before it (SessionManager.upstreamCommit), or why there's none. */
-type UpstreamCommit = { sha: string; branch: string | null; of: string; dirty: number; gone: boolean } | { why: string };
+type UpstreamCommit = { sha: string; branch: string | null; of: string; dirty: number | { unread: string }; gone: boolean } | { why: string };
 
 /** Why not-started step `s` can't be reopened, resumed or restarted: it has no conversation or folder to go back to. */
 export const notStartedWhy = (s: Pick<SessionInfo, "title" | "ticketTitle">): string =>
@@ -1577,7 +1577,14 @@ export class SessionManager {
     let at: Pick<NewSessionRequest, "startAt" | "baseBranch">;
     let how: string;
     if ("sha" in from) {
-      const left = from.dirty === 1 ? ": its uncommitted file isn't carried" : from.dirty ? `: its ${from.dirty} uncommitted files aren't carried` : "";
+      const left =
+        typeof from.dirty === "object"
+          ? `: its uncommitted files couldn't be counted (${from.dirty.unread}), and none are carried`
+          : from.dirty === 1
+            ? ": its uncommitted file isn't carried"
+            : from.dirty
+              ? `: its ${from.dirty} uncommitted files aren't carried`
+              : "";
       how = from.gone ? `at ${from.of}'s branch ${from.branch} (${from.sha.slice(0, 7)}): its folder is gone` : `at ${from.of}'s commit ${from.sha.slice(0, 7)}${left}`;
       at = { startAt: from.sha };
     } else {
@@ -1616,7 +1623,8 @@ export class SessionManager {
 
   /**
    * The commit a not-started step's new worktree in `repo` starts at: the one upstream session `upId`'s folder is on now
-   * (its branch's tip when its folder is gone, `gone`), with that branch and how many files there are uncommitted. Else
+   * (its branch's tip when its folder is gone, `gone`), with that branch and how many files there are uncommitted (or
+   * why they couldn't be counted: the count only informs the pane, so a status that fails doesn't stop the start). Else
    * why there's none to start at in `repo`: nothing hands off to it, the step before it was forgotten or hasn't started
    * itself, works in another repository or none, or its folder and branch are gone. `mayUse` refuses (throws) an
    * upstream whose commit mustn't be used; so does a commit that can't be read.
@@ -1632,9 +1640,17 @@ export class SessionManager {
     try {
       if (fs.existsSync(up.cwd)) {
         const sha = await git(up.cwd, ["rev-parse", "--verify", "HEAD"]);
-        // a guarded status: the upstream's folder may be a team room session's, whose config could name what a status runs
-        const dirty = await dirtyFileCount(up.cwd);
-        return { sha, branch: await currentBranch(up.cwd), of, dirty, gone: false };
+        const branch = await currentBranch(up.cwd);
+        let dirty: number | { unread: string };
+        try {
+          // a guarded status: the upstream's folder may be a team room session's, whose config could name what a status runs
+          dirty = await dirtyFileCount(up.cwd);
+        } catch (err) {
+          const unread = err instanceof Error ? err.message : String(err);
+          console.warn(`[sessions] ${of}'s uncommitted files in ${up.cwd} couldn't be counted for a step's start at ${sha.slice(0, 7)}:`, err);
+          dirty = { unread };
+        }
+        return { sha, branch, of, dirty, gone: false };
       }
       if (!up.branch) return { why: `${of}'s folder is gone` };
       const sha = await git(repo, ["rev-parse", "--verify", "-q", `refs/heads/${up.branch}`], { okCodes: [0, 1] });
