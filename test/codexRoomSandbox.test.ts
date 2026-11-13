@@ -4,7 +4,7 @@ import * as http from "http";
 import type { AddressInfo } from "net";
 import * as os from "os";
 import * as path from "path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   CODEX_ROOM_APPROVALS,
   CODEX_ROOM_PROFILE,
@@ -24,6 +24,7 @@ import { quote } from "../src/main/shell";
 import { ensureHooks, hooksEnv } from "../src/main/team/coauthors";
 import { CODEX_ROOM_GUARD_SINCE, codexGuardsSecrets } from "../src/shared/team/livePanes";
 import { git, makeRepo, tempDir, write } from "./helpers";
+import { removeAtEnd } from "./leaks";
 import { ORDINARY, SECRETS, workTracker } from "./secretFixtures";
 
 const profileOf = (config: string[]) => config.find((c) => c.startsWith(`permissions.${CODEX_ROOM_PROFILE}=`))!;
@@ -257,14 +258,24 @@ function inRoomSandbox(o: { cwd: string; places: CodexRoomPlaces; home: string; 
   });
 }
 
+/**
+ * No network past this machine for Codex run outside its sandbox: its stand-in model and MCP servers are local. A fresh
+ * CODEX_HOME otherwise starts Codex's curated plugins sync, a git clone of thousands of files into it (as many as the
+ * network allows), which made this file's folders take seconds to remove. A proxy on a closed port refuses each
+ * connection at once; git and Codex read both spellings.
+ */
+const CLOSED = "http://127.0.0.1:9";
+const OFFLINE: Record<string, string> = Object.fromEntries(
+  Object.entries({ HTTPS_PROXY: CLOSED, HTTP_PROXY: CLOSED, ALL_PROXY: CLOSED, NO_PROXY: "127.0.0.1,localhost" }).flatMap(([k, v]) => [[k, v], [k.toLowerCase(), v]])
+);
+
 describe.skipIf(!realCodex)("the installed Codex in a room session's sandbox", () => {
   beforeAll(() => {
     const root = path.resolve("out", "sandbox-tests");
     fs.mkdirSync(root, { recursive: true });
     scratch = fs.mkdtempSync(path.join(root, "run-"));
-  });
-  afterAll(() => {
-    if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
+    // removed with the file's other folders, once what still runs from it is found and named
+    removeAtEnd(scratch);
   });
 
   it("can't read secret files, logins, Messages or Mail, while ordinary files and certificate bundles stay readable", async () => {
@@ -436,7 +447,7 @@ describe.skipIf(!realCodex)("the installed Codex in a room session's sandbox", (
         `[mcp_servers.usersrv]\n${server("usersrv")}\n[mcp_servers."dotted.name"]\n${server("dotted")}\n` +
         `[projects.${JSON.stringify(fs.realpathSync(repo))}]\ntrust_level = "trusted"\n`,
     });
-    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^npm_/i.test(k))), CODEX_HOME: codexHome };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^npm_/i.test(k))), CODEX_HOME: codexHome, ...OFFLINE };
     const codex = (cwd: string, args: string[]) => spawnSync("codex", args, { cwd, encoding: "utf8", env, timeout: 90_000, stdio: ["ignore", "pipe", "pipe"] });
     /** codex, leaving this process free to answer it (the stand-in model runs here). */
     const codexAsync = (cwd: string, args: string[]) =>
