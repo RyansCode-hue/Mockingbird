@@ -5,8 +5,11 @@ import { describe, expect, it, onTestFailed } from "vitest";
 import { appE2E, launchApp, mainLog, quitApp, untilTrue, type AppInstance } from "./e2e/appInstance";
 import { alive, descendants, killOrphans } from "./e2e/processes";
 import { fakeClis, fakeLog, killOnPaste, type FakeEntry } from "./e2e/fakeCli";
+import { fakeGithub, ghCalls, ghPrs, ghResolved, mergePr, sshCalls } from "./e2e/fakeGithub";
 import { git, makeRepo, tempDir } from "./helpers";
-import type { SessionInfo } from "../src/shared/types";
+import { BUILT_IN_TEMPLATE, ticketLine, withTicket, type LayOutReply } from "../src/shared/pipelineTemplates";
+import type { PlanView } from "../src/shared/plans";
+import type { SessionInfo, TicketPipeline } from "../src/shared/types";
 import type { Wire, WireBook } from "../src/shared/wires";
 
 /**
@@ -17,7 +20,10 @@ import type { Wire, WireBook } from "../src/shared/wires";
  * asks: Builder commits and finishes; its gate holds what it said across a quit; the person's Send in the window's
  * popover starts Reviewer at Builder's commit and its queue delivers the handoff once; a run that ends while the next
  * handoff is being pasted leaves it marked as may-have-arrived, never pasted again by itself, and the person's Send
- * again delivers it once. Windows open on screen while it runs, so it's opt-in:
+ * again delivers it once. A ticket run starts an Orchestrator from the built-in template: its plan, opened from Needs
+ * you, is laid out as its dialog shows it; the Coder's pull request is opened only at the PR form's click, on a stand-in
+ * GitHub (test/e2e/fakeGithub.ts: its ssh and gh, never the real ones); and the merge the watch reads readies the
+ * Verifier's wire, whose gate asks. Windows open on screen while it runs, so it's opt-in:
  *
  *   npm run build && MB_E2E_APP=1 npx vitest run test/wireRunApp.e2e.test.ts
  */
@@ -63,12 +69,19 @@ type Pt = { x: number; y: number };
  * draws it (⌘ and the wheel zoom about the pointer, the wheel alone pans), then click the dot. The popover's face class.
  */
 async function openGate(a: AppInstance, wireId: string): Promise<string> {
+  // where its centre is on screen, from its place in the drawing: below the live band it's drawn with no radius, so it
+  // has no box of its own; `r` is its radius on screen, 0 until it takes clicks
   const dot = () =>
-    a.evaluate<Pt | null>(
-      `(() => { const c = document.querySelector('g.ls-wire[data-wire=${JSON.stringify(wireId)}] > circle.dot'); if (!c || c.parentElement.style.display === "none") return null; const r = c.getBoundingClientRect(); return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null; })()`
+    a.evaluate<(Pt & { r: number }) | null>(
+      `(() => { const c = document.querySelector('g.ls-wire[data-wire=${JSON.stringify(wireId)}] > circle.dot'); if (!c || c.parentElement.style.display === "none") return null; const m = c.getScreenCTM(); if (!m) return null; const p = new DOMPoint(c.cx.baseVal.value, c.cy.baseVal.value).matrixTransform(m); return { x: p.x, y: p.y, r: c.getBoundingClientRect().width / 2 }; })()`
     );
   const zoom = () => a.evaluate<number>(`Number(/scale\\(([\\d.]+)\\)/.exec(document.querySelector(".ls-world")?.style.transform ?? "")?.[1] ?? 0)`);
-  await untilTrue(`wire ${wireId}'s gate dot drawn`, async () => !!(await dot()), 30_000);
+  await untilTrue(`wire ${wireId}'s gate dot drawn`, async () => !!(await dot()), 30_000).catch(async (err: Error) => {
+    const drawn = await a.evaluate<string>(
+      `JSON.stringify({ wires: [...document.querySelectorAll("g.ls-wire")].map((g) => ({ id: g.dataset.wire, shown: g.style.display !== "none", dot: !!g.querySelector(":scope > circle.dot") })), modal: !!document.querySelector(".modal") })`
+    );
+    throw new Error(`${err.message}; drawn: ${drawn}`);
+  });
   const vp = await a.evaluate<{ left: number; top: number; width: number; height: number }>(
     `(() => { const r = document.querySelector(".ls-viewport").getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; })()`
   );
@@ -80,7 +93,7 @@ async function openGate(a: AppInstance, wireId: string): Promise<string> {
     await cdp(a, "Input.dispatchMouseEvent", { type: "mouseWheel", x: at.x, y: at.y, deltaX: 0, deltaY: -100, modifiers: 4 });
     await untilTrue("the landscape to zoom in", async () => (await zoom()) !== was, 5000);
   }
-  await untilTrue("the dot drawn at 80% or more", async () => (await zoom()) >= 0.8 && !!(await dot()), 10_000);
+  await untilTrue("the dot drawn at 80% or more", async () => (await zoom()) >= 0.8 && !!(await dot())?.r, 10_000);
   const open = () => a.evaluate<boolean>(`!!document.querySelector(".wg-pop")`);
   for (let tries = 1; ; tries++) {
     // the layout can still move it (a list read in, a workspace drawn anew), so it's measured after each pan
@@ -179,6 +192,54 @@ const stillRunning = (pids: number[]): string => {
     return `${left.join(", ")} (ps: ${(err as Error).message.split("\n")[0]})`;
   }
 };
+
+/** Paste into a pane's terminal as a person does (a bracketed paste, as the terminal sends one), then Enter. */
+const pasteInto = (a: AppInstance, id: string, text: string) => a.evaluate(`window.mb.sessionWrite(${JSON.stringify(id)}, ${JSON.stringify(`\x1b[200~${text}\x1b[201~\r`)})`);
+
+/** The wire book's wires, none before the first is made. */
+const linksOf = (home: string): Record<string, Wire> => {
+  const f = path.join(home, ".mockingbird", "landscape.json");
+  return fs.existsSync(f) ? (JSON.parse(fs.readFileSync(f, "utf8")).wires?.links ?? {}) : {};
+};
+
+/** Ticket `id`'s record in the ticket pipeline, as the window reads it. */
+async function pipelineOf(a: AppInstance, id: string): Promise<TicketPipeline> {
+  const all = await a.evaluate<Record<string, TicketPipeline> | { error: string }>("window.mb.pipelineAll()");
+  if ("error" in all && typeof all.error === "string") throw new Error(`the ticket pipeline can't be read: ${all.error}`);
+  const p = (all as Record<string, TicketPipeline>)[id];
+  if (!p) throw new Error(`#${id} isn't in the ticket pipeline`);
+  return p;
+}
+
+/**
+ * Click element `sel` as a person does: once it takes clicks and has for a moment (the window's settles hold a click
+ * made as a row, a dialog or a form's facts arrive), scrolled into view, and only when nothing covers it.
+ */
+async function clickEl(a: AppInstance, sel: string, what: string): Promise<void> {
+  const S = JSON.stringify(sel);
+  let since = 0;
+  await untilTrue(`${what} to take a click`, async () => {
+    const on = await a.evaluate<boolean>(`(() => { const b = document.querySelector(${S}); return !!b && !b.disabled && b.getClientRects().length > 0; })()`);
+    if (!on) since = 0;
+    else since ||= Date.now();
+    return on && Date.now() - since > 800;
+  }, 30_000);
+  const at = await a.evaluate<(Pt & { covered: string }) | null>(
+    `(() => { const b = document.querySelector(${S}); if (!b) return null; b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; const e = document.elementFromPoint(x, y); return { x, y, covered: e && (e === b || b.contains(e)) ? "" : (e?.outerHTML.slice(0, 200) ?? "nothing") }; })()`
+  );
+  if (!at) throw new Error(`${what} went before its click`);
+  if (at.covered) throw new Error(`${what} is under ${at.covered}`);
+  await clickAt(a, at.x, at.y);
+}
+
+const textOf = (a: AppInstance, sel: string) => a.evaluate<string | null>(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`);
+const isThere = (a: AppInstance, sel: string) => a.evaluate<boolean>(`!!document.querySelector(${JSON.stringify(sel)})`);
+
+/** Needs you's tray, opened from its button when it isn't open. */
+async function openNeeds(a: AppInstance): Promise<void> {
+  if (!(await isThere(a, ".ny-tray"))) await clickEl(a, ".ny-btn", "the Needs you button");
+  await untilTrue("the Needs you tray", () => isThere(a, ".ny-tray"), 10_000);
+}
 
 describe.skipIf(!appE2E)("a whole wire run in the real app", () => {
   it("a finish waits at its gate across a quit, Send starts the step at the finisher's commit and delivers once, and a paste the run's end cut off may have arrived and is never pasted again by itself", async () => {
@@ -345,6 +406,247 @@ describe.skipIf(!appE2E)("a whole wire run in the real app", () => {
       expect(promptsWith(all, "Built the parser").length).toBe(1);
       // reopened by the Send, it's running, not listed as closed with a Reopen of its own
       await untilTrue("Reviewer off the Closed sessions list", async () => !(await closedRows(app)).includes("Reviewer"), 10_000);
+
+      app.close();
+      expect(await quitApp(app.child)).toEqual({ killed: false, leftovers: [] });
+    } finally {
+      app.close();
+      await quitApp(app.child);
+    }
+  }, 300_000);
+
+  it("a ticket run: the Orchestrator's plan, opened from Needs you, is laid out as its dialog shows it, the Coder's pull request is opened only at the form's click, and the merge the watch reads readies the Verifier's wire, whose gate asks", async () => {
+    const TICKET = "4182";
+    const TITLE = "Stream the parser's input";
+    const seed = makeRepo({ "README.md": "parser\n" }, "parser");
+    git(seed, "branch", "dev");
+    const bare = path.join(tempDir("origin"), "parser.git");
+    execFileSync("git", ["clone", "--bare", "-q", seed, bare]);
+    const code = tempDir("code");
+    const clone = path.join(code, "parser");
+    execFileSync("git", ["clone", "-q", bare, clone]);
+    const home = tempDir("ticketer");
+    // origin is on "GitHub": its ssh and gh are stand-ins, and the gh Mockingbird's login shell finds is the stand-in
+    const github = fakeGithub(tempDir("github"), home, "acme/parser", bare);
+    git(clone, "remote", "set-url", "origin", github.origin);
+    expect(ghResolved(home)).toBe(path.join(github.bin, "gh"));
+    const onOrigin = (branch: string): string | null => {
+      try {
+        return execFileSync("git", ["--git-dir", bare, "rev-parse", "--verify", "-q", `refs/heads/${branch}`], { encoding: "utf8" }).trim();
+      } catch {
+        return null;
+      }
+    };
+    const created = () => ghCalls(home).filter((c) => c.args[0] === "pr" && c.args[1] === "create");
+    const bins = fakeClis(tempDir("bins"));
+    const app = await launchApp("Ticketer", "", { home, settings: { claudeBin: bins.claude, codexBin: bins.codex, repoRoots: [code] }, env: github.env });
+    onTestFailed(() => console.error(runState(home)));
+    const turnsOf = (id: string) => ofKind(fakeLog(home, id), "turn-ended").length;
+    /**
+     * Wait for `id` to have had `n` turns or more and be done for now: at its prompt with nothing queued, its stand-in's
+     * last turn over, and still so a moment later (a queued notice is pasted at idle, and read as working only once its
+     * hook is), so what Mockingbird had for it has all arrived.
+     */
+    const settled = (id: string, n: number, what: string) => {
+      let since = 0;
+      return untilTrue(what, async () => {
+        const s = await liveOne(app, id);
+        const quiet = turnsOf(id) >= n && fakeLog(home, id).at(-1)?.kind === "turn-ended" && s?.status === "idle" && !s.queuedCount;
+        if (!quiet) since = 0;
+        else since ||= Date.now();
+        return quiet && Date.now() - since > 1500;
+      }, 60_000);
+    };
+    /** Paste `text` into `id` once it's settled, and the tool calls of that turn, `calls` of them. */
+    const toolsAfter = async (id: string, text: string, calls: number) => {
+      await settled(id, 1, `${id} settled`);
+      const had = ofKind(fakeLog(home, id), "tool").length;
+      const turns = turnsOf(id);
+      await pasteInto(app, id, text);
+      await settled(id, turns + 1, `${id}'s turn on ${text.slice(0, 40)}`);
+      const made = ofKind(fakeLog(home, id), "tool").slice(had);
+      expect(made.length).toBe(calls);
+      return made;
+    };
+    try {
+      expect(await app.evaluate<{ installed: boolean }>("window.mb.installHooks()")).toMatchObject({ installed: true });
+
+      // 1. Pipeline from a ticket… with the built-in template: only its Orchestrator is made, on the ticket's branch
+      const { startFirst, steps, wires } = BUILT_IN_TEMPLATE;
+      const req = { name: BUILT_IN_TEMPLATE.name, template: { startFirst, steps, wires }, ticketId: TICKET, ticketTitle: TITLE, ticketDescription: "Read the input as a stream, not whole.", repoPath: clone, base: "dev", area: "Parser" };
+      let started = null as LayOutReply | null;
+      await untilTrue("the Orchestrator started", async () => {
+        const r = await app.evaluate<LayOutReply | { error: string }>(`window.mb.templatesLayOut(${JSON.stringify(req)})`);
+        if ("error" in r) {
+          if (r.error.includes("still starting its team rooms")) return false;
+          throw new Error(r.error);
+        }
+        started = r;
+        return true;
+      }, 30_000);
+      const O = started!.started!;
+      await settled(O, 1, "the Orchestrator's kickoff read");
+      const orch = (await liveOne(app, O))!;
+      expect(orch).toMatchObject({ role: "orchestrator", ticketId: TICKET, agent: "claude", taskGroup: "Parser" });
+      const branch = orch.branch!;
+      expect(git(orch.cwd, "rev-parse", "HEAD")).toBe(onOrigin("dev"));
+      const kickoff = ofKind(fakeLog(home, O), "prompt")[0];
+      expect(kickoff).toMatchObject({ how: "pasted" });
+      expect(kickoff.text).toContain(`You're the Orchestrator for Azure DevOps ticket #${TICKET}`);
+      const shape = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(kickoff.text!)![1]);
+      expect(shape.steps.map((s: { key: string }) => s.key)).toEqual(["coder", "verifier"]);
+      expect((await pipelineOf(app, TICKET)).stage).toBe("ba");
+
+      // 2. the Orchestrator moves no stage: the Coder does
+      const [stage] = await toolsAfter(O, `@call set_stage ${JSON.stringify({ stage: "coding" })}`, 1);
+      expect(stage).toMatchObject({ name: "set_stage", isError: true });
+      expect(stage.reply).toContain("Orchestrator");
+      expect((await pipelineOf(app, TICKET)).stage).toBe("ba");
+
+      // 3. it proposes the starting shape it was told: held for the person, nothing made
+      const summary = "Coder streams the parser's input in this folder; Verifier checks the build once its pull request to dev merges.";
+      const [proposed] = await toolsAfter(O, `@call propose_plan ${JSON.stringify({ summary, ...shape })}`, 1);
+      expect(proposed).toMatchObject({ name: "propose_plan", isError: false });
+      expect(proposed.reply).toMatch(new RegExp(`^Held for the user: 2 steps and 3 wires for #${TICKET}\\. Nothing exists until they lay it out`));
+      expect((await live(app)).map((s) => s.id)).toEqual([O]);
+      expect(await planned(app)).toEqual([]);
+      expect(linksOf(home)).toEqual({});
+      const views = await app.evaluate<PlanView[]>("window.mb.plansList()");
+      expect(views).toEqual([expect.objectContaining({ held: expect.objectContaining({ ticket: TICKET }), area: "Parser", problem: null })]);
+      const view = views[0];
+
+      // 4. Needs you's Plan item opens the picker on it; the person changes the Coder's prompt and lays out what's shown
+      await openNeeds(app);
+      await untilTrue("the plan in Needs you", async () => (await textOf(app, ".ny-item.k-plan .ny-text")) === `Orchestrator proposes 2 workspaces · #${TICKET}`, 30_000);
+      await clickEl(app, ".ny-item.k-plan [data-action=open]", "the plan's Open");
+      await untilTrue("the plan's dialog", () => isThere(app, ".modal.tp-plan"), 10_000);
+      expect(await textOf(app, ".tp-plan [data-provenance]")).toBe(`Proposed by Orchestrator's agent, which read #${TICKET}, written by others`);
+      expect(await textOf(app, ".tp-plan [data-summary]")).toBe(summary);
+      const shownPrompt = (key: string) => app.evaluate<string | null>(`document.querySelector('.tp-plan .tp-step[data-step=${JSON.stringify(key)}] textarea.tp-prompt')?.value ?? null`);
+      expect(await shownPrompt("coder")).toBe(shape.steps[0].prompt);
+      expect(await shownPrompt("verifier")).toBe(shape.steps[1].prompt);
+      const edit = " Keep the parser's public API as it is.";
+      await clickEl(app, '.tp-plan .tp-step[data-step="coder"] textarea.tp-prompt', "the Coder's prompt");
+      await app.evaluate(`(() => { const t = document.activeElement; t.setSelectionRange(t.value.length, t.value.length); })()`);
+      await app.send("Input.insertText", { text: edit });
+      expect(await shownPrompt("coder")).toBe(shape.steps[0].prompt + edit);
+      await clickEl(app, ".tp-plan button[data-act=layout]", "Lay out");
+      await untilTrue("the plan laid out and its dialog closed", async () => {
+        const err = await textOf(app, ".tp-plan [role=alert], .tp-plan [data-flag=blocked]");
+        if (err) throw new Error(`Lay out was refused: ${err}`);
+        return !(await isThere(app, ".modal.tp-plan"));
+      }, 60_000);
+
+      // what was laid out: the Coder started in the Orchestrator's folder with the prompt as shown, the Verifier waits,
+      // and the three wires, the Orchestrator's handoff counted sent
+      const coder = (await live(app)).find((s) => s.title === "Coder")!;
+      expect(coder).toMatchObject({ agent: "codex", cwd: orch.cwd, ticketId: TICKET, taskGroup: "Parser" });
+      const verifier = (await planned(app)).find((s) => s.title === "Verifier")!;
+      expect(verifier).toMatchObject({ agent: "claude", ticketId: TICKET });
+      const links = Object.entries(linksOf(home));
+      expect(links.length).toBe(3);
+      const wireOf = (from: string, to: string, type: Wire["type"]) => links.find(([, w]) => w.from === from && w.to === to && w.type === type)!;
+      expect(wireOf(O, coder.id, "handoff")[1]).toMatchObject({ delivery: { state: "sent" } });
+      expect(wireOf(O, coder.id, "handoff")[1].pending).toBeUndefined();
+      const [toVerifierId, toVerifier] = wireOf(coder.id, verifier.id, "handoff");
+      expect(toVerifier).toMatchObject({ when: "pr-merged", gate: "ask" });
+      expect(toVerifier.pending).toBeUndefined();
+      expect(wireOf(verifier.id, coder.id, "feedback")[1]).toMatchObject({ gate: "ask", rounds: { limit: 3, used: 0 } });
+      await settled(coder.id, 1, "the Coder's first turn over");
+      // its prompt, then any word of the pr-merged wire made once it had started (it launched before that wire was made)
+      const [first, ...told] = ofKind(fakeLog(home, coder.id), "prompt");
+      expect(first).toMatchObject({ how: "argv", text: withTicket(shape.steps[0].prompt + edit, ticketLine(TICKET, TITLE)) });
+      for (const t of told) expect(t.text).toMatch(/^\[Mockingbird: the user wired this workspace to "Verifier"/);
+      expect((await pipelineOf(app, TICKET)).stage).toBe("coding");
+
+      // a second Lay out of the plan is refused, and makes nothing
+      const again = await app.evaluate<{ error?: string }>(`window.mb.plansLayOut(${JSON.stringify(view.id)}, ${JSON.stringify(view.held.plan)}, ${JSON.stringify({ area: view.area, room: view.room })})`);
+      expect(again).toEqual({ error: "That plan was laid out already." });
+      expect((await live(app)).length).toBe(2);
+      expect((await planned(app)).length).toBe(1);
+      expect(Object.keys(linksOf(home)).length).toBe(3);
+
+      // 5. the Coder commits, moves the ticket to local testing and asks for the pull request: held, nothing pushed
+      const pr = { target: "dev", title: `#${TICKET} ${TITLE}`, description: "## Summary\nThe parser reads its input as a stream.\n\n## Testing\nRan the parser's tests." };
+      const [local, asked] = await toolsAfter(coder.id, `@commit stream.txt; @call set_stage ${JSON.stringify({ stage: "local-test" })}; @call request_pr ${JSON.stringify(pr)}`, 2);
+      expect(local).toMatchObject({ name: "set_stage", isError: false });
+      expect(asked).toMatchObject({ name: "request_pr", isError: false });
+      const coderSha = ofKind(fakeLog(home, coder.id), "commit")[0].sha!;
+      const held = await pipelineOf(app, TICKET);
+      expect(held.stage).toBe("local-test");
+      expect(held.requests).toEqual([expect.objectContaining({ target: "dev", from: coder.id, fromTitle: "Coder", title: pr.title, description: pr.description })]);
+      expect(onOrigin(branch)).toBeNull();
+      expect(created()).toEqual([]);
+
+      // 6. Needs you's request opens the PR form, filled from it; nothing is pushed or opened until its button
+      await openNeeds(app);
+      await untilTrue("the request in Needs you", async () => (await textOf(app, ".ny-item.k-pr .ny-text")) === `Coder asks to open the PR to dev · #${TICKET}`, 30_000);
+      await clickEl(app, ".ny-item.k-pr [data-action=open]", "the request's Open");
+      await untilTrue("the PR form, its branch checked", () => isThere(app, ".modal.pl-modal .pl-prform .row button.primary"), 30_000);
+      const form = await app.evaluate<{ title: string; description: string; marks: string[]; asked: string }>(
+        `(() => { const f = document.querySelector(".pl-prform"); return { title: f.querySelector("input[type=text]").value, description: f.querySelector("textarea").value, marks: [...f.querySelectorAll(".pl-by")].map((e) => e.textContent), asked: f.querySelector(".pl-asked")?.textContent ?? "" }; })()`
+      );
+      expect(form).toMatchObject({ title: pr.title, description: pr.description, marks: ["written by Coder's agent", "written by Coder's agent"] });
+      expect(form.asked).toContain("Nothing is pushed or opened until you press Push and open PR.");
+      expect(onOrigin(branch)).toBeNull();
+      expect(created()).toEqual([]);
+      await clickEl(app, ".pl-prform .row button.primary", "Push and open PR");
+      await untilTrue("the pull request opened", async () => {
+        const err = await textOf(app, ".pl-prform .fp-note.err");
+        if (err) throw new Error(`Push and open PR failed: ${err}`);
+        return ghPrs(home).length === 1 && !(await isThere(app, ".pl-prform"));
+      }, 60_000);
+      const opened = ghPrs(home)[0];
+      expect(opened).toMatchObject({ number: 1, head: branch, base: "dev", title: pr.title, body: pr.description, state: "OPEN", headSha: coderSha });
+      expect(created().length).toBe(1);
+      expect(onOrigin(branch)).toBe(coderSha);
+      expect(sshCalls(home).some((l) => l.endsWith("git-receive-pack 'acme/parser.git'"))).toBe(true);
+      const tracked = await pipelineOf(app, TICKET);
+      expect(tracked.stage).toBe("pr-dev");
+      expect(tracked.prs).toEqual([expect.objectContaining({ target: "dev", provider: "github", id: 1, url: opened.url, repo: "acme/parser", branch, base: "dev", by: coder.id })]);
+      expect(tracked.requests ?? []).toEqual([]);
+      // the pipeline dialog put away, as Escape does
+      await app.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await app.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await untilTrue("the pipeline dialog closed", async () => !(await isThere(app, ".modal.pl-modal")), 10_000);
+
+      // 7. the merge watch reads it: open, so nothing's readied; merged on "GitHub", the watch's next read moves the
+      // ticket on and readies the Verifier's wire, which asks
+      expect(await app.evaluate(`window.mb.pipelinePrCheck(${JSON.stringify(TICKET)}, ${JSON.stringify(opened.url)})`)).toMatchObject({ stage: "pr-dev" });
+      expect(linksOf(home)[toVerifierId].pending).toBeUndefined();
+      const mergeSha = mergePr(home, opened.number);
+      await untilTrue("the watch's read of the merge", async () => {
+        const r = await app.evaluate<TicketPipeline | { error: string }>(`window.mb.pipelinePrCheck(${JSON.stringify(TICKET)}, ${JSON.stringify(opened.url)})`);
+        // the watch's own check, every 2 minutes, may have read it first
+        if ("error" in r && !r.error.includes("merged already")) throw new Error(r.error);
+        return !!linksOf(home)[toVerifierId].pending;
+      }, 30_000);
+      const moved = await pipelineOf(app, TICKET);
+      expect(moved.stage).toBe("dev-test");
+      expect(moved.prs[0]).toMatchObject({ mergeCommit: mergeSha });
+      const waits = linksOf(home)[toVerifierId];
+      expect(waits.delivery).toBeUndefined();
+      expect(waits.pending!.body).toContain(opened.url);
+      expect(waits.pending!.body).toContain(mergeSha);
+      await openNeeds(app);
+      await untilTrue("the Verifier's gate in Needs you", async () => (await textOf(app, `.ny-item.k-wire[data-item="wire:${toVerifierId}"] .ny-text`)) !== null, 30_000);
+      expect(await isThere(app, `.ny-item.k-wire[data-item="wire:${toVerifierId}"] [data-action=send]`)).toBe(true);
+      await clickEl(app, ".ny-btn", "the Needs you button");
+      await untilTrue("the tray put away", async () => !(await isThere(app, ".ny-tray")), 10_000);
+      expect(await openGate(app, toVerifierId)).toBe("f-ready");
+      const shown = await popover(app);
+      expect(shown).toMatchObject({ ends: "Coder → Verifier", body: waits.pending!.body });
+      expect(shown.why).toContain("“Verifier” hasn't started: sending starts it.");
+
+      // the person's Send starts the Verifier in the Coder's folder, and it's handed the merge once
+      await press(app, "send");
+      await untilTrue("the Verifier's handoff sent", async () => linksOf(home)[toVerifierId].delivery?.state === "sent", 90_000);
+      const v = (await liveOne(app, verifier.id))!;
+      expect(v).toMatchObject({ agent: "claude", cwd: orch.cwd });
+      await untilTrue("the Verifier handed the merge", async () => promptsWith(fakeLog(home, verifier.id), mergeSha).length === 1 && (await liveOne(app, verifier.id))?.status === "idle", 60_000);
+      expect(promptsWith(fakeLog(home, verifier.id), opened.url).length).toBe(1);
+      // every gh call was one the stand-in answers: the form's lookup, its create and the watch's reads
+      expect(ghCalls(home).map((c) => `${c.args[0]} ${c.args[1]}`).filter((c) => !["pr list", "pr create", "pr view"].includes(c))).toEqual([]);
 
       app.close();
       expect(await quitApp(app.child)).toEqual({ killed: false, leftovers: [] });

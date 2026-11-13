@@ -9,7 +9,8 @@
 // - it starts Mockingbird's MCP server from its arguments as the CLI would, inside the pane, and calls its tools;
 // - Codex's prompt in its arguments (after `--`) is its first turn.
 // A turn's prompt can hold directives, each "@word args", several joined by "; @": `@commit <file>` writes the file in
-// its folder and commits it; `@finish <summary>` calls finish_step with that summary.
+// its folder and commits it; `@finish <summary>` calls finish_step with that summary; `@call <tool> <JSON arguments>`
+// calls any of Mockingbird's tools (propose_plan, set_stage, request_pr…).
 // Everything it sees and does is a JSON line in $HOME/fake-cli/<pane>.jsonl ("started", "paste", "prompt", "commit",
 // "tool", "turn-ended"), each with its pid, so a test can tell one launch from the next. A file
 // $HOME/fake-cli/kill-on-paste ({ pid, marker, signal }) has it send that pid the signal as soon as a paste holding the
@@ -158,6 +159,15 @@ const ready = launch
     })
   : Promise.resolve();
 
+/** One of Mockingbird's tools called through its server, as the CLI calls a tool: what it answered is logged. */
+async function callTool(name, args) {
+  await ready;
+  const r = await request("tools/call", { name, arguments: args });
+  const reply = r.error ? `error: ${r.error.message}` : r.result.content.map((c) => c.text).join("\n");
+  log({ kind: "tool", name, isError: !!(r.error || r.result.isError), reply });
+  return `${name}: ${reply.split("\n")[0]}`;
+}
+
 // ---- turns -----------------------------------------------------------------------------------------------------------
 
 async function turn(text, how) {
@@ -178,11 +188,11 @@ async function turn(text, how) {
       log({ kind: "commit", file: m[2], sha });
       did.push(`committed ${m[2]} (${sha.slice(0, 7)})`);
     } else if (m[1] === "finish") {
-      await ready;
-      const r = await request("tools/call", { name: "finish_step", arguments: { summary: m[2] } });
-      const reply = r.error ? `error: ${r.error.message}` : r.result.content.map((c) => c.text).join("\n");
-      log({ kind: "tool", name: "finish_step", isError: !!(r.error || r.result.isError), reply });
-      did.push(`finish_step: ${reply.split("\n")[0]}`);
+      did.push(await callTool("finish_step", { summary: m[2] }));
+    } else if (m[1] === "call") {
+      const c = /^(\w+)\s+([\s\S]+)$/.exec(m[2]);
+      if (!c) throw new Error(`@call wants a tool's name and its arguments as JSON: ${m[2].slice(0, 80)}`);
+      did.push(await callTool(c[1], JSON.parse(c[2])));
     }
   }
   const answer = did.length ? did.join("; ") : "Read it.";
