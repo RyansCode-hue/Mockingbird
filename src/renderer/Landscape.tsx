@@ -563,7 +563,8 @@ export function Landscape({
     if (!gesture.current?.on && !settling.current.length) viewport.current?.classList.remove("ls-dragging");
   };
   // a flight to an area: the clock animation whose progress moves the camera, and the frame that reads it
-  const flight = useRef<{ anim: Animation; raf: number; to: Camera } | null>(null);
+  /** The camera's flight under way: where to, and for a reveal the session it brings into view (`target`). */
+  const flight = useRef<{ anim: Animation; raf: number; to: Camera; target: string | null } | null>(null);
   const clock = useRef<HTMLDivElement>(null);
 
   // semantic zoom: the band the camera's zoom is in, changed only once a new one has held for a moment
@@ -787,14 +788,14 @@ export function Landscape({
    * reduced motion, or after a key (the palette, the switcher by keyboard), it's there at once. The camera follows a
    * clock animation's progress, so finishing that animation (as the motion audit does) ends the flight at `to`.
    */
-  const flyTo = (to: Camera) => {
+  const flyTo = (to: Camera, target: string | null = null) => {
     stopFly();
     const v = vpNow.current;
     const el = clock.current;
     if (!el || !v.w || motion() !== "full" || fromKeyboard() || document.hidden || typeof el.animate !== "function") return apply(to);
     const from = cam.current;
     const anim = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: D.l, easing: EASE.move });
-    const f = { anim, raf: 0, to };
+    const f = { anim, raf: 0, to, target };
     flight.current = f;
     viewport.current?.setAttribute("data-flying", "");
     const step = () => {
@@ -838,6 +839,10 @@ export function Landscape({
   // workspaces and areas added, moved, resized, collapsed or opened: what's on screen, their type's scale, and drops
   // the layout now has where they were dropped
   useLayoutEffect(() => {
+    // a reveal's flight whose session is no longer a workspace on the landscape (closed, forgotten, folded into a
+    // collapsed area) stops where it is: there's nothing there to bring into view
+    const target = flight.current?.target;
+    if (target && !layout.tiles.some((t) => !t.hidden && t.members.some((m) => m.id === target))) stopFly();
     paintScale(cam.current.zoom);
     // the wires painted as this layout rendered, before a pill just collapsed had its --ls-hs, which sizes it
     wiresRef.current?.follow();
@@ -1032,6 +1037,9 @@ export function Landscape({
       // a jump placing the keyboard (keyboardMoves) is for its session's terminal, which the tour holds it from till then
       if (keyboardClaimed()) tourJump.current.asked = reveal.id;
     }
+    // a flight still bringing an earlier one into view is superseded: stopped where it is, so this one is judged in view
+    // or not from there, and nothing carries the camera on to the earlier one's place
+    if (flight.current?.target) stopFly();
     revealFocus.current = !!reveal.focus;
     revealOpts.current = { keys: !!reveal.keys, avoid: reveal.avoid ?? null, answer: !!reveal.answer };
     const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
@@ -1082,12 +1090,14 @@ export function Landscape({
     if (t === "expired") return gaveUp(p);
     const room = roomClearOf(revealOpts.current.avoid);
     const seen = !vpNow.current.w || inView(cam.current, t.rect, room);
-    // The user did something while it waited (main slow to bring a stack's tab to the front, or to open an area), or a
-    // dialog opened (inputStamp counts those too), or one is open now: it moves no keyboard and enters no focus, which
-    // would take what's being typed now, or the dialog's keys. It's still brought into view, unless that would move the
-    // view from under a terminal or a field being typed in.
-    if (inputStamp() !== revealStamp.current || document.querySelector(OVERLAYS)) {
-      if (!seen && !ownsKeys(document.activeElement)) flyTo(centreOn(cam.current, t.rect, room));
+    // The user did something while it waited (main slow to bring a stack's tab to the front, or to open an area, or the
+    // session yet to come), or a dialog opened (inputStamp counts those too): it's superseded, and moves nothing, not the
+    // camera, not the keyboard, not focus. A dialog open now with nothing since (a notification's jump came while one was
+    // up) keeps the keyboard and focus from it; it's still brought into view, unless that would move the view from under
+    // a terminal or a field being typed in.
+    if (inputStamp() !== revealStamp.current) return;
+    if (document.querySelector(OVERLAYS)) {
+      if (!seen && !ownsKeys(document.activeElement)) flyTo(centreOn(cam.current, t.rect, room), p.id);
       return;
     }
     if (revealFocus.current) {
@@ -1105,8 +1115,8 @@ export function Landscape({
       if (keys) leaveFocus();
       else setFocusKey(null);
     }
-    if (revealOpts.current.answer && (!seen || !mouseAt(cam.current.zoom))) flyTo(answerOn(t.rect, room));
-    else if (!seen) flyTo(centreOn(cam.current, t.rect, room));
+    if (revealOpts.current.answer && (!seen || !mouseAt(cam.current.zoom))) flyTo(answerOn(t.rect, room), p.id);
+    else if (!seen) flyTo(centreOn(cam.current, t.rect, room), p.id);
     // Go there: the user's command to go to the landscape
     if (keys && !leaving) armFocus(surfaceEl());
   }, [reveal?.n, layout]);

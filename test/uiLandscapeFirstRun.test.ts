@@ -575,6 +575,28 @@ describe.skipIf(!local)("a move of the keyboard that waited on main", () => {
     expect(a.afterLag).toEqual({ keyboard: "terminal", in: "s2" });
   }, 120_000);
 
+  it("moves nothing for a preset's session out of view once the user typed meanwhile, and says where it is; idle, it's flown to", async () => {
+    const typed = await run("a", "case=preset&how=typed&far&lsCamera=500,0,0.75&needsMany");
+    expect(typed.afterLag).toEqual({ keyboard: "terminal", in: "s1" });
+    expect(typed.farView).toMatchObject({ moved: false, inView: false, selected: false });
+    expect(typed.farView.note).toMatch(/ is ready: you'd moved on meanwhile, so the view stayed where it was$/);
+    expect(typed.after.others).toEqual([]);
+    const idle = await run("a", "case=preset&how=idle&far&lsCamera=500,0,0.75&needsMany");
+    expect(idle.farView).toMatchObject({ moved: true, inView: true, selected: true });
+  }, 180_000);
+
+  it.each([
+    ["a jump to another workspace, in view", "superseded"],
+    ["its session closing", "gone"],
+  ])("stops a jump's flight under way when it's superseded by %s: the camera never ends on the first one", async (_what, how) => {
+    const a = await run("a", `case=flight&how=${how}&motion=full&lsCamera=0,0,0.3&needsMany`);
+    expect(a.flight.flying).toBe(true);
+    expect(a.flight.landed).toBe(true);
+    // a flight that ran on would end with the first workspace in the view's middle
+    expect(a.flight.farOffCentre).toBeGreaterThan(60);
+    if (how === "superseded") expect(a.flight.nearInView).toBe(true);
+  }, 120_000);
+
   it("still moves it when nothing happened meanwhile: Go there's landscape armed once s3 is in front", async () => {
     const a = await run("a", "case=lag&how=idle&needsMany&lsCamera=0,0,1");
     expect(a.afterLag).toEqual({ keyboard: "landscape", front: "s3", focus: false, prompt: false });

@@ -2981,7 +2981,10 @@ Design O, with Artifacts as a window, and N's workspace header.
       it moves no keyboard and enters no focus. Nor does a reveal while a
       dialog, the palette, a menu or the tour is open (`OVERLAYS`). It's
       still brought into view, unless that would move the view from under a
-      terminal or a field being typed in.
+      terminal or a field being typed in. (Since the 1.7.0 follow-ups, one
+      with input since moves nothing at all, not even the camera, and a jump
+      whose `since` moved on changes no tab and selects nothing; see
+      docs/landscape-wires.md, "1.7.0 follow-ups (screens) as built".)
     - **Disarmed whenever the keyboard goes anywhere else**, however that
       happens (`focusin` elsewhere, focus falling to the page), and nothing
       but the acts above arms it again. So a hand-back after a terminal,
@@ -3417,6 +3420,18 @@ Design O, with Artifacts as a window, and N's workspace header.
     frame or a timer after the user's own Enter or Esc (⌘K's jump, a
     menu's hand-back) would count as code's, so every typing test would
     need re-reading against it.
+    - **Note from the 1.7.0 follow-ups (stale jumps), still not built:** a
+      jump that waited on main and was superseded (`jumpToSession`'s
+      `since` moved on) is now dropped whole as it arrives, tab, flight,
+      selection and keyboard alike, and a reveal that waited is dropped by
+      its stamp before any flight; a new reveal stops an earlier one's
+      flight, as does that flight's session leaving the landscape. That
+      takes one source of late code moves away (a superseded jump no longer
+      moves anything), so the choke point would have fewer moves to judge,
+      but it changes none of the paths it would sit across: the moves made
+      a frame or a timer after the user's own key (⌘K's jump, a menu's
+      hand-back, the 50 ms retry) are as they were, and so is the reason it
+      was held back.
 - **As built, the switch · the audit.** Every control, shortcut, menu, drag and
   pref of the grid and the Sessions view, read from the code and driven in the
   preview. *Kept* works as it did; *moved* has its

@@ -710,6 +710,13 @@ function App() {
    * dialog opened meanwhile, it's still shown, but the keyboard stays where it is.
    */
   const jumpToSession = (s: SessionInfo, since?: number) => {
+    // A jump that waited on main (a resume, a preset started, a search hit opened) is superseded by anything the user did
+    // meanwhile: it changes no tab, flies nowhere, selects nothing and moves no keyboard. The note says it's there.
+    if (since !== undefined && inputStamp() !== since) {
+      console.info(`[mockingbird] the jump to ${s.id} was superseded by input while main answered: nothing moved`);
+      lsSay(`${titleOf(s)} is ready: you'd moved on meanwhile, so the view stayed where it was`);
+      return;
+    }
     if (s.debrief) {
       setTab("worktracker"); // debriefs live on their own tab, not the landscape
     } else {

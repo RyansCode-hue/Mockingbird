@@ -1664,7 +1664,10 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
  *   and typed in (go, side), a join prompt coming up on its own (dialog, with ?joinRequest=later), and going on its own
  *   too (dialogGone), or nothing (idle);
  * - preset (&how=typed|idle, with ?lsCamera=500,0,0.75&needsMany): ⌘K's Start preset while main is slow to start it
- *   (it answers with s2, on screen); meanwhile s1's terminal clicked into and typed in, or nothing;
+ *   (it answers with s2, on screen; with &far, a workspace out of view); meanwhile s1's terminal clicked into and typed
+ *   in, or nothing;
+ * - flight (&how=superseded|gone, with ?motion=full): a notification's jump to a workspace out of view, its flight
+ *   under way, then a jump to one in view, or the first one's session closed;
  * - selfClose (with ?joinRequest=later&lsCamera=0,0,0.4): the landscape armed by a press, a join prompt coming up and
  *   going on its own, then ?, N, Enter and y;
  * - frameGone (with ?lsCamera=0,700,0.75): a teammate's workspace focused by a press on its header and Enter, the
@@ -2281,15 +2284,20 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await sleep(150);
     out.left = { keyboard: keyboard(), isStart: !!want && document.activeElement === want };
   } else if (which === "preset") {
-    // a jump that waits on main: the preset's session (s2 here) shown and given the keyboard once main answers
+    // a jump that waits on main: the preset's session (s2 here, or with &far one out of view) shown and given the
+    // keyboard once main answers
+    const far = params.has("far") ? (qs(".ls-world .ls-node[data-front]").map((n) => n.dataset.front!).find((id) => !overlap(box(card(id)), box(vp()))) ?? null) : null;
+    if (params.has("far") && !far) throw new Error("no workspace out of view");
+    const answer = far ?? "s2";
     const w = window as unknown as { mb: Record<string, unknown> };
     const real = w.mb;
     w.mb = new Proxy(real, {
       get: (t, n) =>
         n === "presetStart"
-          ? async () => (await sleep(1500), ((await (t.listSessions as () => Promise<{ id: string }[]>)()) ?? []).find((s) => s.id === "s2"))
+          ? async () => (await sleep(1500), ((await (t.listSessions as () => Promise<{ id: string }[]>)()) ?? []).find((s) => s.id === answer))
           : t[n as string],
     });
+    const cam0 = camera();
     await press("k", { meta: true });
     await sleep(300);
     await typeKeys([..."Start preset"], 30);
@@ -2302,12 +2310,67 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     if (typedIn) await typeKeys(["a", "b"], 110);
     await sleep(1900);
     out.afterLag = { keyboard: keyboard(), in: document.activeElement?.closest<HTMLElement>(".ls-node")?.dataset.front ?? null };
+    if (far) out.farView = { moved: moved(cam0, camera()), inView: overlap(box(card(far)), box(vp())), selected: selected() === far, note: noteText() };
     if (typedIn) {
       await typeKeys(["n", "Enter", "y"], 120);
       await sleep(400);
       out.after = { others: writesSince(mark).filter((id) => id !== "s1"), s1Got: dataTo("s1", mark) };
     }
     w.mb = real;
+  } else if (which === "flight") {
+    // a notification's jump to a workspace out of view flies there (motion on); a jump to one in view as it flies, or
+    // its session closing, stops it where it is: the camera never ends centred on the first one
+    const ids = qs(".ls-world .ls-node[data-front]").map((n) => n.dataset.front!);
+    const far = ids.find((id) => !overlap(box(card(id)), box(vp())));
+    const centreIn = (id: string) => {
+      const b = box(card(id))!;
+      const v = box(vp())!;
+      return b.x + b.w / 2 > v.x && b.x + b.w / 2 < v.x + v.w && b.y + b.h / 2 > v.y && b.y + b.h / 2 < v.y + v.h;
+    };
+    // the one nearest the view's middle, so it's still in view as the first flight starts
+    const fromMiddle = (id: string) => {
+      const b = box(card(id))!;
+      const v = box(vp())!;
+      return Math.hypot(b.x + b.w / 2 - (v.x + v.w / 2), b.y + b.h / 2 - (v.y + v.h / 2));
+    };
+    const near = ids.filter(centreIn).sort((a, b) => fromMiddle(a) - fromMiddle(b))[0];
+    if (!far || !near) throw new Error(`need a workspace out of view and one in it (out: ${far}, in: ${near})`);
+    const emit = (id: string) => (window as unknown as { __mbEmit: (ev: string, ...a: unknown[]) => void }).__mbEmit("onUiCommand", "focus-session", id);
+    // where each is on the landscape, from where it's drawn now
+    const at = (id: string) => {
+      const c = camera()!;
+      const b = box(card(id))!;
+      const v = box(vp())!;
+      return { x: c.x + (b.x + b.w / 2 - v.x) / c.zoom, y: c.y + (b.y + b.h / 2 - v.y) / c.zoom };
+    };
+    const farAt = at(far);
+    const nearAt = at(near);
+    /** How far, in screen px, the view's middle is from landscape point `p`. */
+    const offCentre = (p: { x: number; y: number }) => {
+      const c = camera()!;
+      const v = box(vp())!;
+      return Math.round(Math.hypot((p.x - c.x) * c.zoom - v.w / 2, (p.y - c.y) * c.zoom - v.h / 2));
+    };
+    const how = params.get("how") ?? "superseded";
+    // a press on the top bar's bare middle first, so the jump isn't taken as the keyboard's (which goes there at once)
+    const spacer = box(q(".topbar > .spacer"))!;
+    await act([{ mouse: { x: spacer.x + spacer.w / 2, y: spacer.y + spacer.h / 2, clickCount: 1 } }]);
+    await sleep(1200);
+    emit(far);
+    await sleep(40);
+    const flying = vp().hasAttribute("data-flying");
+    if (how === "gone") env.setSession(far, null);
+    else emit(near);
+    await sleep(1500);
+    const v = box(vp())!;
+    const c = camera()!;
+    const nearOnScreen = { x: (nearAt.x - c.x) * c.zoom, y: (nearAt.y - c.y) * c.zoom };
+    out.flight = {
+      flying,
+      landed: !vp().hasAttribute("data-flying"),
+      farOffCentre: offCentre(farAt),
+      nearInView: nearOnScreen.x >= 0 && nearOnScreen.y >= 0 && nearOnScreen.x <= v.w && nearOnScreen.y <= v.h,
+    };
   } else if (which === "headOther") {
     // typing in s1, then a press on another workspace's header, off its buttons: that one is selected, and the
     // landscape armed
