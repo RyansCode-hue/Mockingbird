@@ -14,7 +14,7 @@ Wires now ship with phase 1 in 1.7.0: [landscape-wires.md](landscape-wires.md) i
 
 Phase 1 replaces the grid with the landscape: workspaces, areas, tool
 windows, stacks, the Needs you tray and migration. This file's slices (S1–S8)
-build all of that but the wires, which are built next in their own slices, and
+build all of that but the wires, which are built in their own slices, and
 phase 1 ships with them as a minor release (1.7.0). `landscape.json` is new data, and an older
 version ignores it and still finds its grid layout in localStorage, so nothing
 breaks for a teammate who hasn't updated.
@@ -1341,8 +1341,8 @@ Design O, with Artifacts as a window, and N's workspace header.
     - the selection bar (design Q), Tidy, guides and snapping, stacks UI,
       right-click create and ghost cards (S6);
     - the Needs you tray and the top bar (S7–S8);
-    - context links (Link to a workspace) and a card wired to a workspace
-      (phase 2);
+    - context links (Link to a workspace: the wires' W4b) and a card wired to
+      a workspace (later);
     - a window can't be resized by hand yet: it opens at its tool's size.
     - area agents' artifact tools aren't pre-allowed or named in their
       instructions, as room agents' are: that needs the session's launch to
@@ -1368,8 +1368,8 @@ Design O, with Artifacts as a window, and N's workspace header.
   - ⌘G on a selection makes a sub-group (`top/sub`); its tabs switch the
     active workspace;
   - dragging a tab out unstacks that workspace.
-- **Tidy** (T) packs an area in creation order for now. Phase 3 lays it out
-  along wires. Undo puts the old placements back.
+- **Tidy** (T) packs an area in creation order for now; the wires' W10 lays it
+  out along wires. Undo puts the old placements back.
 - **Ghost cards:** they show the title, summary, branch and Reopen. The area
   ⋯ has **Clear ghosts** and **Reopen all** (today's restore all). A ghost
   continued on a teammate's Mac shows Take it back.
@@ -1896,7 +1896,8 @@ Design O, with Artifacts as a window, and N's workspace header.
       its actions under the title rather than centred;
     - ghosts aren't rows in the area tree; an area's summary counts them
       ("n closed").
-  - **Left for later:** a ghost dragged by hand; Tidy along wires (phase 3).
+  - **Left for later:** a ghost dragged by hand; Tidy along wires (built with
+    the wires, W10).
 - **S6b review fixes (round 1) — As built:**
   - **Closed sessions list** (Ryan's decision; `ClosedSessions.tsx`,
     `closedListOf`): only a closed session with a kept place (its own, or its
@@ -2289,8 +2290,8 @@ Design O, with Artifacts as a window, and N's workspace header.
       idle reminder keeps it, a second Stop keeps the first time), and goes
       when it works, waits or starts again, or exits. Claude Code's Stop
       fires once at the end of the agent's turn, not at each tool call, so
-      this is a turn ending, not wire-sense finishing (`finish_step`,
-      phase 2).
+      this is a turn ending, not wire-sense finishing (`finish_step`, the
+      wires' W2).
     - **Each item's actions** are the action model's rows (`needsActions` in
       `workspaceActions.tsx`, section `needs`), drawn as buttons:
       - **Go there** (`toNeeds` in `main.tsx`, the same path N takes): from

@@ -3913,6 +3913,100 @@ one, and then finishes by hand. That's in a commit of its own.
   - the run fails at "Builder off the Closed sessions list" with the window's read-again off;
   - the zoom-in branch of opening the popover ran once with its threshold raised to 95%.
 
+#### W12 part 2 as built
+
+On main be5d273 (W17 and W18 in). Part 2 is the ticket run, a second test in `test/wireRunApp.e2e.test.ts`, and a fix
+to part 1's run, which failed once in four on a loaded machine.
+
+**The ticket run**, in the real app, with the stand-in CLIs and a stand-in GitHub:
+1. **The Orchestrator starts.** `templates:layOut` with the built-in template on #4182, as Pipeline from a ticket… sends
+   it (repo, base `dev`, area Parser). Only the Orchestrator is made: role `orchestrator`, a worktree on the ticket's
+   branch at origin's `dev`. Its kickoff is pasted 6 s after it starts, and the ticket is tracked at BA.
+2. **Its `set_stage` is refused**, "An Orchestrator doesn't move its ticket…", and the ticket stays at BA.
+3. **`propose_plan`.** The stand-in proposes the starting shape its kickoff gave (the fenced JSON), with a summary. The
+   reply is "Held for the user: 2 steps and 3 wires for #4182. Nothing exists until they lay it out…". Nothing is made:
+   one session, none planned, no wires.
+4. **Needs you, the picker, Lay out.** The tray's "Orchestrator proposes 2 workspaces · #4182" is opened with its Open.
+   The dialog shows the provenance line, the summary and each step's prompt whole. The person types a sentence onto the
+   Coder's prompt and clicks Lay out. Then:
+   - the Coder (Codex) runs in the Orchestrator's folder, and its first turn is its prompt as the dialog showed it, edit
+     included, with `{ticket}` filled;
+   - the Verifier waits, not started;
+   - the Orchestrator → Coder handoff has a `sent` delivery and no pending;
+   - Coder → Verifier is `pr-merged` and asks; the feedback wire asks, with 3 rounds;
+   - the ticket is at Coding.
+
+   A second `plans:layOut` of the plan answers "That plan was laid out already." and makes nothing.
+5. **The pull request.** As its prompt says, the Coder commits, calls `set_stage("local-test")` (taken) and
+   `request_pr` to dev.
+   - The request is held. The branch isn't on origin, and gh was never asked to create anything.
+   - Needs you's "Coder asks to open the PR to dev · #4182" opens the PR form, filled with the agent's title and
+     description, each marked "written by Coder's agent", with "Nothing is pushed or opened until you press Push and
+     open PR." Still nothing is pushed or opened.
+   - Push and open PR pushes the branch (through the stand-in ssh, to the bare origin) and runs `gh pr create` once,
+     with the form's title and description as its body.
+   - The ticket is at PR to dev, its PR recorded (github, acme/parser, the branch, the Coder), and the request is gone.
+6. **The merge.** A Check now (`pipeline:pr:check`, the watch's own check) reads the PR open, and readies nothing. Then
+   the PR is merged on the stand-in (origin's `dev` fast-forwarded to it), and the next read:
+   - moves the ticket to AI testing in dev/UAT, with the merge commit saved;
+   - readies the Verifier's wire, its `{pr}` naming the pull request and the merge commit, with no delivery.
+
+   The gate asks: Needs you has the wire's item with Send, and the popover opens ready, "Coder → Verifier", with "“Verifier”
+   hasn't started: sending starts it." Send starts the Verifier in the Coder's folder, and it's handed the merge once.
+   Every gh call was `pr list`, `pr create` or `pr view`.
+
+**The stand-in GitHub** (`test/e2e/fakeGithub.ts`, `test/e2e/fakeGh.cjs`). Origin is `git@github.com:acme/parser.git`,
+so Mockingbird takes it for GitHub, and nothing reaches GitHub:
+- git's ssh is `GIT_SSH_COMMAND`, set in the app's environment, which main's own gits keep (`ownNetwork`). It's a script
+  that runs `upload-pack` or `receive-pack` on the bare repository, and refuses anything else.
+- `gh` is run by Mockingbird in the user's login shell. The HOME's `~/.zshrc` puts the stand-in first on PATH (it runs
+  after `/etc/zprofile`'s path_helper). Before the app starts, the test checks that `zsh -ilc 'command -v gh'` finds
+  the stand-in, so a real gh can't be run.
+- The stand-in answers `pr list`, `pr create` (refused, as gh's is, when the branch isn't on origin) and `pr view` by
+  number or branch, and refuses the rest. Its PRs are a JSON file; `mergePr` merges one. Every call is logged.
+
+The CLI stand-in's `@call <tool> <JSON>` calls any of Mockingbird's tools; `@finish` uses it too.
+
+**Part 1's flake.** Under load the stand-in Reviewer took longer than 120 ms to kill the app after the paste arrived:
+it read the kill file and wrote its log first. So the Enter won, the book said `sent`, and Reviewer ran a turn after
+its app was gone. That stand-in and its MCP server were then left running, which the run's leftover check names. The
+test now waits on what happened, not on timing:
+- the stand-in reads the kill ahead (every 100 ms) and signals before any file I/O;
+- having killed the app, it exits, as a real CLI's pane goes with its app, so an Enter it reads after submits nothing;
+- every stand-in ends once its parent (the app) is gone, and a turn read after that isn't run;
+- when the Enter still wins, that handoff was simply sent: the app is started again and Builder finishes once more, for a
+  new handoff, up to three takes (a forced delay of 400 ms checked this path);
+- the gate dot is measured again after each pan, and clicked again when no popover opens. A popover click counts as
+  held only when its button never showed under way;
+- a failure prints the wire book, each stand-in's last log lines, what was left running and main's log.
+
+Opening a gate also measures the dot from its place in the drawing (`getScreenCTM`). Below the live band the dot has no
+radius, so no box of its own, and the ticket run's fitted landscape (27%) is below it.
+
+No app bug turned up.
+
+**Seen, not changed:**
+- A `pr-merged` wire is made once its source has started (W17). So the Coder hears of it from a wire notice, not in its
+  launch's instructions, and only when it's working at that moment: an idle one isn't told (`wired`'s rule). The notice
+  says "When your current step is done, call … finish_step". For a `pr-merged` wire that adds the note the merge's
+  handoff carries as `{summary}`; it doesn't ready the wire. The run accepts either way.
+- The watch's own reads (15 s after a start, then every 2 minutes) aren't waited for. Check now runs the same check, and
+  the run accepts one of those reads seeing the merge first.
+
+**Not covered:** a plan's Dismiss…, a plan replaced while its dialog is open, and a room's area; the PR form's Dismiss
+the request…; Azure DevOps (no PAT is read; the HOME has no WorkTracker config); the Verifier's own turn (its deploy
+check, verdicts, the feedback wire); real CLIs and a real gh.
+
+**Checked** (on main be5d273, at loads of 8 to 21 from other builders):
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0: 199 files pass and 37 skip; 3666 tests pass and 361 skip. Run once alongside the e2e
+  (with the flake fix only), it passed too, and so did `leakGuard` and `collab` alone (78).
+- `MB_E2E_APP=1`:
+  - the flake fix, before part 2: `wireRunApp.e2e` five times, one right after `npm run build` and one alongside the
+    CI run, 15.7 to 21.1 s; and once with the Enter forced to win the first take, which took the retry and passed;
+  - both runs, the file alone, three in a row: 65.5 s, 64.8 s and 62.8 s;
+  - all nine `MB_E2E_APP` files, one file at a time: 25 tests pass, 1 skipped, in 208 s.
+
 ### W13 · Ticket stages reworked (main and the pipeline panel). Size M
 Ryan's table, with each stage's id. "Moves on when" is read as the event or
 checklist that marks each stage (*my reading*: rows 1, 6 and 8 name an exit, 4, 5
@@ -8340,8 +8434,8 @@ f. **The Tasks workspace runs in `~/Helpdesk`**, made on first start, so its
 | Focus, Inbox, Main, Cards, Zoomed | A collab step ("Shape donor export"), and it can be a chain's first | Collabs stay out. Chains begin at the first agent; Collab… and Spike with a panel aren't offered; `new:collab` stays "coming" |
 | Main, Cards, Inbox | Proposals ("Test runner", the tray's row) | `propose_workspace` and `propose_wire` out. The Orchestrator's `propose_plan` is in, as one held plan opened in the picker, not proposal cards |
 | `landscape.md:422–442` | Proposals one workspace at a time, an area's "create without asking" | Phase 2. A plan always asks; nothing is created without the click |
-| `landscape.md:49` | "Event triggers (a PR opens, tests pass) wait for a later phase" | A PR merging is in 1.7.0 (W16); the rest stay later. Updated after S8b (W12), as it's outside the parts this update edits |
-| `landscape.md:578–580` | When: "manual, or when the source says it's finished"; What flows lacks `{pr}` | W16 adds "when its PR merges" and `{pr}`; Connections updated in W12 |
+| `landscape.md:50` | "Event triggers (a PR opens, tests pass) wait for a later phase" | A PR merging is in 1.7.0 (W16); the rest stay later. Updated in W12 |
+| `landscape.md` Connections | When: "manual, or when the source says it's finished"; What flows lacked `{pr}` | W16 added "when its PR merges" and `{pr}`; Connections updated in W12 |
 | Spec's Pipelines | Stage chip = furthest finished step; template Ticket builder → Builder → Reviewer | Stages move by W13's table (open decision a); the built-in is Orchestrator → Coder → Verifier. Updated in this change |
 | `TICKET_STAGES` vs decision 15 | "Approved" and "PR to main" fold into 6 | Kept as ids inside 6, so 1.6 still reads them (W13) |
 | `addFeedback` vs decision 15 | Feedback goes to Local testing (`pipeline.ts:106`) | Back to Coding (W13) |
@@ -8354,8 +8448,8 @@ f. **The Tasks workspace runs in `~/Helpdesk`**, made on first start, so its
 | Empty vs spec | Tile has no ticket; spec's is "from a ticket" | The ticket is optional in the picker; `{ticket}` expands empty; an Orchestrator without a ticket is a Council's (W18) |
 | Spec's browser workspaces (I–K) | A workspace that's a Mockingbird browser | Phase 2. W19's Tasks workspace uses Claude in Chrome instead, in Ryan's Chrome |
 | Inbox, Focus, Zoomed | `tests ✓`, dollars, budget, "PR #88 draft" | S7's decisions stand |
-| `landscape.md:222` | "Until phase 3 brings wires"; `:495` artifact cards wired "phase 2" | W10 updates the first. A card's context link isn't one of the four types: later |
-| `landscape-phase1.md:12`, `:1366`, `:1894`, `:2287` | Say no wires, phase 2 or 3 | W12 updates them; the top pointer covers it till then |
+| `landscape.md` Workspaces, Tools | "Until phase 3 brings wires"; artifact cards wired "phase 2" | W10 updated the first. A card's context link isn't one of the four types: later, as the second says |
+| `landscape-phase1.md`'s top, Tidy, S6's and S7's left-for-later | Said no wires, phase 2 or 3 | The top pointer says wires ship in 1.7.0 by this plan; the Tidy, context link and `finish_step` lines name their wires slices (W12) |
 | Sheet vs spec | Add next step: "drag a wire into space" vs "on A's handle" | Both |
 | `landscape.md:102`, `:574` | Edges resize; "drag from an edge handle" | The handle is a dot above `.ls-rz`, as B |
 | `landscape.md:630` vs `index.ts:795` | A terminal "closes when the worktree is removed"; `assertWorktreeFree` refuses while one runs | W7 closes wired ones first |

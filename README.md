@@ -505,15 +505,25 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **The landscape and its wires** ([design](docs/landscape.md),
-  [build plan](docs/landscape-phase1.md), [wires](docs/landscape-wires.md)) —
-  the landscape has replaced the grid: workspaces, areas, stacks, tool
-  windows, ghosts, Needs you and reading the grid's layout in are built, and
-  the grid's code is gone. Wires between workspaces (handoff, context link,
-  feedback loop, shared worktree, with gates and pipelines) are being built
-  in their own slices: their book, delivery and drawing them on the landscape
-  are in; making them and the send popover are next. They ship with the
-  landscape in 1.7.0.
+- **1.7.0: the landscape, its wires, the Orchestrator and Helpdesk**
+  ([design](docs/landscape.md), [build plan](docs/landscape-phase1.md),
+  [wires](docs/landscape-wires.md)) — built, waiting for its release. The
+  landscape replaces the grid (workspaces, areas, stacks, tool windows,
+  ghosts, Needs you, the grid's layout read in). Wires between workspaces —
+  handoff, context link, feedback loop with its rounds, shared worktree — are
+  drawn and made on it, wait at a gate that asks or sends by itself, and are
+  sent from their popover or Needs you; Finish step, the pipeline strip, Add
+  next step with not-started workspaces, pipeline templates, Tidy along
+  wires and the tour are in. Ticket stages follow the work: agents move them
+  (`set_stage`), ask for pull requests the user opens from a filled form
+  (`request_pr`) and draft patch notes, and a PR merging can start the next
+  step (Mockingbird reads its provider). The **Orchestrator** reads a ticket
+  (or a Council's approved plan) and proposes its workspaces and wires as a
+  plan in Needs you, made only when you lay it out; the built-in template is
+  Orchestrator → Coder → Verifier. The **Helpdesk tasks** workspace is a
+  standing Claude in your Chrome for coworkers' requests. Checked end to end
+  in the real app with stand-in CLIs and a stand-in GitHub
+  (`test/wireRunApp.e2e.test.ts`).
 - **Team rooms** ([design](docs/team-rooms.md)) — a group shared live with a
   teammate's Mockingbird. Built and tested end to end on one Mac; next is the
   first run between two laptops through the deployed Worker.
@@ -777,7 +787,7 @@ so rules that fit one repo don't get in the way in another. Decided:
 
 **Phase 3 — coordination**
 - A ticket's House status follows its PR (opened → review, merged → onward).
-- Ticket pipeline stages update themselves from the work and ADO: a session on the ticket's branch → Coding, a PR to dev/UAT or main → PR stages, a merge → the testing stage after it, and the ADO board column. Each automatic move shows why; you can still set one by hand, and the drafted ADO comment still waits for your click.
+- Ticket pipeline stages follow the ADO board column too. (From 1.7.0 they follow the work: a Coder starting → Coding, agents' moves, a PR opened → its PR stage, its merge → the testing stage after it, each move saying why.)
 - Ask a teammate to review a session's changes; their line comments go back to your agent.
 - A prompt queue: line up instructions that send when a session goes idle.
 - A daily room digest of what each member's agents did (commits, tickets moved, sessions finished), without a model call.

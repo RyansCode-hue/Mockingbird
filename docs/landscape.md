@@ -47,7 +47,9 @@ together so work and context flow between them.
 - **Room controls are unchanged.** A room's shared area keeps today's
   controls: roles, approvals, take-over and guardrails. A collab in a room is a
   room session like any other.
-- **Event triggers** (a PR opens, tests pass) wait for a later phase.
+- **Event triggers.** A pull request merging can start a handoff (1.7.0, a
+  wire's "when its PR merges"); the others (a PR opens, tests pass) wait for a
+  later phase.
 - **Browser workspaces.** A workspace can be a browser, and an agent wired to
   it can see it (below). All browser workspaces share one Mockingbird browser
   profile, kept separate from your Chrome. By default a wire lets the agent
@@ -589,8 +591,11 @@ Right-click a wire to change its settings or remove it. Each wire has:
 
 - **Direction**: from → to.
 - **What flows**: a summary, the diff, named files, or a prompt template with
-  `{summary}`, `{diff}`, `{ticket}` and `{files}`.
-- **When**: manual, or when the source says it's finished.
+  `{summary}`, `{diff}`, `{ticket}`, `{files}` and `{pr}` (the merged pull
+  request: its target, when it merged and its merge commit).
+- **When**: manual, when the source says it's finished, or, for a handoff from
+  a workspace on a ticket and a branch, when its PR merges (Mockingbird reads
+  the provider; see [landscape-wires.md](landscape-wires.md), W16).
 - **State**, drawn on the wire:
   - **idle**: gray;
   - **ready**: glowing amber, with a gate dot that opens the send popover;
