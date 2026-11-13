@@ -48,6 +48,15 @@ const tokensIn = (home: string) => {
 };
 const onDisk = (home: string) => JSON.parse(fs.readFileSync(path.join(home, ".mockingbird", "landscape.json"), "utf8"));
 const sockOf = (home: string) => path.join(home, ".mockingbird", "mb.sock");
+/** Pane `pane`'s turn ends: its Stop hook event, left in the events folder as hook.sh leaves one (written, then renamed in). */
+function stopHook(home: string, pane: string): void {
+  const dir = path.join(home, ".mockingbird", "events");
+  fs.mkdirSync(dir, { recursive: true });
+  const ts = Math.floor(Date.now() / 1000);
+  const tmp = path.join(dir, `.tmp.${pane}`);
+  fs.writeFileSync(tmp, JSON.stringify({ event: "Stop", ts, pane, payload: {} }) + "\n");
+  fs.renameSync(tmp, path.join(dir, `${ts}-${pane}-${process.hrtime.bigint()}.json`));
+}
 const parsed = (r: { content: { text: string }[] }) => JSON.parse(r.content[0].text);
 
 async function launchOf(a: AppInstance, id: string, not?: string): Promise<McpLaunch> {
@@ -129,6 +138,15 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         expect(finished).toMatchObject({ isError: false, content: [{ text: expect.stringMatching(/^Step finished.*\n- the handoff wire to "Reviewer": readied\./) }] });
         expect(onDisk(home).wires.links[made.id].pending).toMatchObject({ body: "Built it.", flags: [] });
         expect(onDisk(home).wires.notes[builder.id].summary.text).toBe("Built it.");
+        // a person's Finish step waits for the turn to end: refused while the stand-in works, taken once its Stop is
+        // read (the first one flushes the wire's notice into it, a turn of its own)
+        expect(await app.evaluate(`window.mb.wiresFinish(${JSON.stringify(builder.id)}, "Built it, edited.")`)).toEqual({ refused: "“Builder” is working: finish its step once its turn ends." });
+        await untilTrue("Builder's turn over, its queue empty", async () => {
+          const b = (await app.evaluate<{ id: string; status: string; queuedCount?: number }[]>(`window.mb.listSessions()`)).find((s) => s.id === builder.id)!;
+          if (b.status === "idle" && !b.queuedCount) return true;
+          if (b.status === "working") stopHook(home, builder.id);
+          return false;
+        });
         const byHand = await app.evaluate<{ steps: { does: string; pending?: { id: string } }[] }>(`window.mb.wiresFinish(${JSON.stringify(builder.id)}, "Built it, edited.")`);
         expect(byHand.steps).toEqual([expect.objectContaining({ does: "readies" })]);
         expect(onDisk(home).wires.links[made.id].pending).toMatchObject({ id: byHand.steps[0].pending!.id, body: "Built it, edited." });
