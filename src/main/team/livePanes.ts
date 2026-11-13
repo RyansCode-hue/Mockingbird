@@ -452,14 +452,21 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const claudeSandboxed = runs === "claude" && claudeSandboxes(target.agentVersion);
     let git: RoomGitDirs | null = null;
     let gitRead = false;
-    // the folders held to having no repository: its record's (its first launch found none there), and any with none now
-    const held = new Set((target.noRepo ?? []).map(onDisk));
+    // the folders held to having no repository: those any session's first launch there found none in (its record's, and
+    // every other's, so a new session there can't read afresh what an earlier one's agent could have made), the
+    // folders inside them, and any with none now
+    const s = this.d.sessions;
+    const heldDirs = [...(target.noRepo ?? []), ...[...s.list(), ...s.resumable()].flatMap((x) => x.noRepo ?? [])].map(onDisk);
+    const isHeld = (dir: string) => {
+      const at = onDisk(dir);
+      return heldDirs.some((h) => at === h || at.startsWith(h + path.sep));
+    };
     const noRepo: string[] = [];
     /** `who`: the sandboxed agent that couldn't commit without them; null where nothing depends on them but pollGit. */
     const gitDirs = async (who: string | null): Promise<RoomGitDirs | null> => {
       if (gitRead) return git;
       gitRead = true;
-      if (held.has(onDisk(target.cwd))) {
+      if (isHeld(target.cwd)) {
         pinNoRepo(target.cwd);
         noRepo.push(onDisk(target.cwd));
         return git;
@@ -489,7 +496,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       const extras = target.extraDirs ?? [];
       // a repository in its folders that isn't its own is one its agent could rewrite, outside Mockingbird's pins
       const why = await nestedRepoRefusal(
-        [{ path: target.cwd, extra: false, held: held.has(onDisk(target.cwd)) }, ...extras.map((d) => ({ path: d, extra: true, held: held.has(onDisk(d)) }))],
+        [{ path: target.cwd, extra: false, held: isHeld(target.cwd) }, ...extras.map((d) => ({ path: d, extra: true, held: isHeld(d) }))],
         git
       );
       if (why) throw new Error(why);
@@ -497,7 +504,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       for (const d of extras) {
         let top: string | null;
         try {
-          top = held.has(onDisk(d)) ? null : gitTop(d);
+          top = isHeld(d) ? null : gitTop(d);
         } catch (err) {
           throw new Error(`A team room's session can't be given ${d} as an extra folder: whether it's in a repository couldn't be looked at (${errText(err)}).`, { cause: err });
         }

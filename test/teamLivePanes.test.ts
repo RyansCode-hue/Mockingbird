@@ -839,12 +839,38 @@ describe("room session launch", () => {
     // one there since, the agent's or not: the relaunch is refused, and git there too, till it's deleted
     execFileSync("git", ["init", "-q", folder]);
     try {
-      await expect(ryan.live.roomLaunch(target)).rejects.toThrow(`can't work in ${s.cwd}: it had no repository when the session first started, and now has one (${path.join(folder, ".git")}), which its agent could have made, config and all. Delete it if you didn't make it`);
+      await expect(ryan.live.roomLaunch(target)).rejects.toThrow(`can't work in ${s.cwd}: it had no repository when a room session first started there, and now has one (${path.join(folder, ".git")}), which that session's agent could have made, config and all. Delete it if you didn't make it`);
       expect(gitPinRefusal(s.cwd)).toMatch(/it had no repository when its room session started, .* Delete it if you didn't make it/);
     } finally {
       fs.rmSync(path.join(folder, ".git"), { recursive: true, force: true });
     }
     await expect(ryan.live.roomLaunch(target)).resolves.toMatchObject({ noRepo: [folder] });
+  });
+
+  it("holds a folder with no repository at a session's first launch there for every session opened in it or in a folder inside it, till that session is forgotten", async () => {
+    const { ryan } = await pair();
+    const s = await ryan.start();
+    const folder = fs.realpathSync(s.cwd);
+    const sub = path.join(folder, "sub");
+    fs.mkdirSync(sub);
+    const other = { id: "x5", group: "5110", agent: "claude" as const, agentVersion: CLAUDE_ROOM_SANDBOX_SINCE, cwd: s.cwd, repoPath: null };
+    await expect(ryan.live.roomLaunch(other)).resolves.toMatchObject({ noRepo: [folder] });
+    await expect(ryan.live.roomLaunch({ ...other, id: "x6", cwd: sub })).resolves.toMatchObject({ noRepo: [sub] });
+    // a .git there since: refused to another session as to its own relaunch, and git there stays refused
+    execFileSync("git", ["init", "-q", folder]);
+    try {
+      await expect(ryan.live.roomLaunch(other)).rejects.toThrow(`can't work in ${s.cwd}: it had no repository when a room session first started there, and now has one (${path.join(folder, ".git")})`);
+      await expect(ryan.live.roomLaunch({ ...other, id: "x6", cwd: sub })).resolves.toMatchObject({ noRepo: [sub] });
+      expect(gitPinRefusal(folder)).toMatch(/it had no repository when its room session started, and now git would find /);
+      expect(gitPinRefusal(sub)).toMatch(/it had no repository when its room session started, and now git would find /);
+      // forgotten, it holds the folder no longer: a new session there reads it afresh
+      ryan.sessions.kill(s.id, true);
+      const r = (await ryan.live.roomLaunch(other))!;
+      expect(r.noRepo).toBeUndefined();
+      expect(gitPinRefusal(folder)).toBeNull();
+    } finally {
+      fs.rmSync(path.join(folder, ".git"), { recursive: true, force: true });
+    }
   });
 
   it("denies reading secrets to Claude, and points git at the co-author hooks", async () => {
@@ -1186,13 +1212,13 @@ describe("room session launch", () => {
     } finally {
       fs.rmSync(path.join(folder, ".git"), { recursive: true, force: true });
     }
-    // a repository made above it since: a launch there reads the folder afresh, held to that repository
+    // a repository made above it since: another session there is held by this one's record, still refused
     const above = path.dirname(folder);
     execFileSync("git", ["init", "-q", above]);
     try {
       expect(gitPinRefusal(s.cwd)).toMatch(/now git would find /);
       await ryan.start();
-      expect(gitPinRefusal(s.cwd)).toBeNull();
+      expect(gitPinRefusal(s.cwd)).toMatch(/now git would find /);
     } finally {
       fs.rmSync(path.join(above, ".git"), { recursive: true, force: true });
     }

@@ -9085,3 +9085,73 @@ entries dropped.
   The neighbours that launch room sessions or run room git (`teamAgentReach`, `teamTakenOver`, `collab`, `scm`,
   `snapshots`, `pipeline`, `wireDelivery`): 296 pass. Per the brief, no full run.
 - No real claude, codex or gh ran.
+
+## 1.7.0 follow-ups 2 review: the second verify's follow-up as built
+
+The verify of 35d3aa6 confirmed the rest (p6b refused, p6c, the scan's limit, Codex's entries) and found one Medium
+and three Lows (probes in the scratchpad's `p9/`), fixed here.
+
+### Medium: a git folder the agent made, taken for the repository's own
+
+35d3aa6 let a nested `.git` through as the repository's own when it led anywhere into the shared git folder, and the
+agent writes most of that folder. In a room session on R's main checkout the agent made `R/.git/fake` (HEAD, objects,
+refs and a config of its own) and wrote `sub/.git` as `gitdir: R/.git/fake`: the pin let `sub` be, the relaunch's look
+passed it, and a room push from `sub` ran the agent's core.sshCommand (p9 case 1). The realistic form: a real
+submodule's `.git` file repointed, waiting for a session opened there. 59921e6's pin had refused it.
+
+- **`ofRepository` (`gitPins.ts`) counts a `.git` only when it's a `gitdir:` file naming where the agent can't
+  write**: a linked worktree's folder directly in `<common>/worktrees/` (one level, read through to an existing
+  folder) whose `commondir` leads back to the pinned shared folder; or a submodule's git folder under
+  `<common>/modules/` or the worktree's own `modules/`, its `commondir` (a submodule's worktree) staying there.
+  Both are read-only in the room's sandboxes (`gitWrites`; in a worktree session, Claude's denies every worktree's
+  `commondir`, `gitdir`, `config.worktree` and `modules/` by pattern). A `.git` folder never counts, even in
+  `modules/`. It now takes the folders, not a pin: the pins' outer check asks it only of a repository pin.
+
+### Lows
+
+- **The look takes `.GIT` for `.git`**, the name compared in lower case: git uses it so on a volume that ignores
+  case, macOS's default (p9 case 2). The pins already found it, by `lstat`.
+- **The look refuses a folder it isn't allowed to list** (EACCES: p9 case 3, mode 0300, writable and enterable but
+  not readable, or one its owner can chmod), naming it: "A team room's session can't work in …: Mockingbird isn't
+  allowed to list …, so it couldn't look there for other repositories its agent could rewrite, though its agent may
+  be able to write there. Make it readable or move it out, then start the session again." EPERM (macOS's privacy
+  settings, which keep the folder from the agent too) is still passed, as are a gone folder and a file.
+- **"No repository at launch" is held per folder, not per session.** A second session in the same folder read it
+  afresh (unpinning the first's hold) and pinned whatever `.git` was there. A room launch now holds every folder any
+  session's record holds (`list()` and `resumable()`, `SessionInfo.noRepo`), its own included, and the folders inside
+  them: a session in `notes/sub` with an agent-made `notes/.git` read it afresh too, unpinning `notes` itself. The
+  messages say how to get out: the look's "…when a room session first started there, …which that session's agent
+  could have made… to work in it as a repository, forget the room sessions that started there without one, then open
+  a new session there.", the pins' "…restarting its session, or opening another there, holds the folder to having
+  none all the same, until the room sessions that started there without one are forgotten."
+
+Tests:
+- `gitPins.test`: p9 case 1 (`sub/.git` naming `R/.git/fake` with its core.sshCommand: the pin and the look refuse
+  it, the room push runs nothing); a `worktrees/` entry whose `commondir` leads elsewhere, and one a level deeper
+  leading back, refused; a `.git` folder in `modules/` refused; the main checkout's submodule and nested worktree, and
+  a worktree's submodule (in its own `modules/`) under its own pin and look, passing. `.GIT` below a top and at a
+  held top; a mode-0300 folder refused, naming it; an EPERM folder passed.
+- `teamLivePanes`: a second session in a held folder, and one in a folder inside it, held by the first's record;
+  with a `.git` made there, the second refused and the inner one held, both folders' git refused; the first
+  forgotten, a new session reads it as a repository. The "repository made above" check stays refused through a
+  second session.
+
+Mutation check (`mut/p9.json`): 12 of 12 caught. Medium: the old loosening, a `.git` folder counting, a
+`worktrees/` entry not led back, `worktrees/` at any depth, no worktree counting, the worktree's own `modules/`
+dropped. `.GIT` compared in its case; EACCES passed; EPERM refused. The hold from the session's own record only,
+from resumable records only, for the held folder only and not those inside.
+
+**Hand checks with real CLIs** (none run here):
+- A room session on a repository with a submodule starts, and git runs in the submodule; with the submodule's
+  `.git` repointed at a folder made in `.git/`, Mockingbird's git there is refused, saying so, and restarting the
+  session is refused, naming the submodule.
+- A second Claude or Codex room session opened in a no-repository room session's folder, after a `git init` there:
+  refused, saying to forget the first; once it's forgotten, it starts as a repository session.
+
+### Checked
+
+- `npm run typecheck` and `npm run build` pass.
+- The full suite under CI: 199 files and 3,715 tests pass, 37 files and 361 tests skip; no rerun was needed.
+- The p9 probes against this build: case 1 refused by the pin and the look, the room push running nothing; case 2's
+  `.GIT` and case 3's mode-0300 folder refused, naming them.
+- No real claude, codex or gh ran.

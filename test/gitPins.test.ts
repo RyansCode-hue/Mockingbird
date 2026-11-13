@@ -265,12 +265,12 @@ describe("git in a room session's folder that had no repository at launch", () =
       off();
     }
     expect(told).toEqual([expect.stringContaining(refused)]);
-    expect(told[0]).toMatch(/Delete it if you didn't make it: restarting its session holds the folder to having none all the same\.$/);
+    expect(told[0]).toMatch(/Delete it if you didn't make it: restarting its session, or opening another there, holds the folder to having none all the same, until the room sessions that started there without one are forgotten\.$/);
     expect(fs.existsSync(t.ran)).toBe(false);
-    // its session relaunched holds the folder to having none (livePanes, from its record): still refused
+    // its session relaunched, or another opened there, holds the folder to having none (livePanes, from the records): still refused
     pinNoRepo(t.folder);
     expect(gitPinRefusal(t.folder)).toContain(refused);
-    // a new session opened there reads it afresh, as livePanes does: its pin let go of first
+    // with those sessions forgotten, a new one there reads it afresh, as livePanes does: its pin let go of first
     unpinGitDirs(t.folder);
     expect(pinGitDirs(t.folder, await roomGitDirs(t.folder), null)).toBeNull();
     expect(await git(t.folder, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
@@ -335,6 +335,63 @@ describe("git in a repository inside a room session's repository", () => {
     expect(gitPinRefusal(own)).toBeNull();
     expect(await git(own, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("w");
   });
+
+  it("takes a .git for the repository's own only when it's a file naming a worktree's folder or a submodule's: one leading to a git folder its agent made in the shared one is refused, a room push from it runs nothing", async () => {
+    const t = setup();
+    const own = (await roomGitDirs(t.repo))!;
+    expect(pinGitDirs(t.repo, own, t.repo)).toBeNull();
+    const scan = () => nestedRepoRefusal([{ path: t.repo, extra: false, held: false }], own);
+    // the agent: a git folder of its own in the shared one's writable part, with an ssh origin and a command for it
+    const scratch = makeRepo({ "b.txt": "b\n" }, "scratch", tempDir("scratch"));
+    const fake = path.join(own.common, "fake");
+    fs.cpSync(path.join(scratch, ".git"), fake, { recursive: true });
+    const ran = path.join(t.dir, "SSH-RAN");
+    sh(scratch, "config", "-f", path.join(fake, "config"), "remote.origin.url", "ssh://git@example.invalid/x/y.git");
+    sh(scratch, "config", "-f", path.join(fake, "config"), "core.sshCommand", `sh -c 'echo "$*" >> ${ran}; exit 1' --`);
+    const sub = path.join(t.repo, "sub");
+    fs.mkdirSync(sub);
+    fs.writeFileSync(path.join(sub, ".git"), `gitdir: ${fake}\n`);
+    const before = logOwnGitFailuresTo(() => {});
+    try {
+      expect(gitPinRefusal(sub)).toMatch(new RegExp(`won't run git in ${t.repo}: there's a \\.git in ${sub} that git would find before ${t.repo}'s`));
+      await expect(ownNetworkGit(sub, "push", ["origin", "HEAD"], { roomPush: { lfs: { remote: "origin", refs: ["HEAD"] } } })).rejects.toThrow("won't run git in");
+    } finally {
+      logOwnGitFailuresTo(before);
+    }
+    expect(fs.existsSync(ran)).toBe(false);
+    expect(await scan()).toMatch(new RegExp(`it holds another repository, at ${sub} \\(its \\.git\\)`));
+    // in worktrees/, one not leading back to the shared folder, or not directly there (a worktree session's agent writes its own)
+    const away = path.join(own.common, "worktrees", "away");
+    fs.cpSync(path.join(t.dir, "evilwt"), away, { recursive: true });
+    fs.writeFileSync(path.join(sub, ".git"), `gitdir: ${away}\n`);
+    expect(gitPinRefusal(sub)).toMatch(/that git would find before/);
+    expect(await scan()).toMatch(/it holds another repository, at .*\/sub/);
+    const deeper = path.join(own.common, "worktrees", "wt", "deeper");
+    fs.cpSync(path.join(t.dir, "evilwt"), deeper, { recursive: true });
+    fs.writeFileSync(path.join(deeper, "commondir"), own.common + "\n");
+    fs.writeFileSync(path.join(sub, ".git"), `gitdir: ${deeper}\n`);
+    expect(gitPinRefusal(sub)).toMatch(/that git would find before/);
+    expect(await scan()).toMatch(/it holds another repository, at .*\/sub/);
+    fs.rmSync(sub, { recursive: true });
+    // a .git folder is a repository of its own, even in modules/
+    const inModules = path.join(own.common, "modules", "x");
+    fs.mkdirSync(inModules, { recursive: true });
+    fs.cpSync(path.join(scratch, ".git"), path.join(inModules, ".git"), { recursive: true });
+    expect(gitPinRefusal(inModules)).toMatch(/that git would find before/);
+    // the session's own: a linked worktree's, a submodule's of the main checkout and of a worktree
+    const lib = makeRepo({ "s.txt": "s\n" }, "lib", tempDir("libsrc"));
+    sh(t.repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", lib, "libs/lib");
+    sh(t.wt, "-c", "protocol.file.allow=always", "submodule", "add", "-q", lib, "libs/lib");
+    expect(readGitPointer(path.join(t.wt, "libs", "lib")).own).toBe(path.join(own.common, "worktrees", "wt", "modules", "libs", "lib"));
+    const inside = path.join(t.repo, ".claude", "worktrees", "w");
+    sh(t.repo, "worktree", "add", "-q", "-b", "w", inside);
+    for (const d of [inside, path.join(t.repo, "libs", "lib")]) expect(gitPinRefusal(d)).toBeNull();
+    expect(pinGitDirs(t.wt, (await roomGitDirs(t.wt))!, t.repo)).toBeNull();
+    expect(gitPinRefusal(path.join(t.wt, "libs", "lib"))).toBeNull();
+    fs.rmSync(inModules, { recursive: true });
+    expect(await scan()).toBeNull();
+    expect(await nestedRepoRefusal([{ path: t.wt, extra: false, held: false }], (await roomGitDirs(t.wt))!)).toBeNull();
+  });
 });
 
 describe("a room launch's look through its folders for other repositories", () => {
@@ -381,7 +438,7 @@ describe("a room launch's look through its folders for other repositories", () =
     expect(await nestedRepoRefusal([folder(notes, { held: true })], null)).toBeNull();
     sh(notes, "init", "-q");
     expect(await nestedRepoRefusal([folder(notes, { held: true })], null)).toBe(
-      `A team room's session can't work in ${notes}: it had no repository when the session first started, and now has one (${path.join(notes, ".git")}), which its agent could have made, config and all. Delete it if you didn't make it; to work in it as a repository, open a new session there.`
+      `A team room's session can't work in ${notes}: it had no repository when a room session first started there, and now has one (${path.join(notes, ".git")}), which that session's agent could have made, config and all. Delete it if you didn't make it; to work in it as a repository, forget the room sessions that started there without one, then open a new session there.`
     );
     // not held, its cwd's own .git is its pin's to judge
     expect(await nestedRepoRefusal([folder(notes)], await dirsOf(notes))).toBeNull();
@@ -397,6 +454,40 @@ describe("a room launch's look through its folders for other repositories", () =
       `A team room's session can't work in ${work}: Mockingbird looks through a room session's folders for other repositories its agent could rewrite, and gave up past 2 entries or 10 s, so what it didn't look at can't be vouched for. Choose a smaller folder for it.`
     );
     expect(await nestedRepoRefusal([folder(work)], null, { entries: 1_000, ms: -1 })).toMatch(/gave up past 1,000 entries or -0\.001 s/);
+  });
+
+  it("takes a .git named in another case for one, as git does on a volume that ignores case", async () => {
+    const dir = fs.realpathSync(tempDir("scancase"));
+    const inner = path.join(dir, "inner");
+    fs.mkdirSync(inner);
+    sh(inner, "init", "-q");
+    fs.renameSync(path.join(inner, ".git"), path.join(inner, ".GIT"));
+    expect(await nestedRepoRefusal([folder(dir)], null)).toMatch(new RegExp(`can't work in ${dir}: it holds another repository, at ${inner} \\(its \\.git\\)`));
+    expect(await nestedRepoRefusal([folder(inner, { held: true })], null)).toMatch(/it had no repository when a room session first started there, and now has one/);
+  });
+
+  it("refuses a folder it isn't allowed to list, naming it, as its agent could still write there: one macOS's privacy settings keep from it is passed", async () => {
+    const dir = fs.realpathSync(tempDir("scanperm"));
+    const hid = path.join(dir, "hid");
+    fs.mkdirSync(path.join(hid, "inner"), { recursive: true });
+    sh(path.join(hid, "inner"), "init", "-q");
+    // writable and enterable, not readable
+    fs.chmodSync(hid, 0o300);
+    try {
+      expect(await nestedRepoRefusal([folder(dir)], null)).toBe(
+        `A team room's session can't work in ${dir}: Mockingbird isn't allowed to list ${hid}, so it couldn't look there for other repositories its agent could rewrite, though its agent may be able to write there. Make it readable or move it out, then start the session again.`
+      );
+    } finally {
+      fs.chmodSync(hid, 0o755);
+    }
+    const readdir = fs.promises.readdir;
+    const spy = vi.spyOn(fs.promises, "readdir").mockImplementation(((p: fs.PathLike, o: unknown) =>
+      p === hid ? Promise.reject(Object.assign(new Error(`EPERM: operation not permitted, scandir '${hid}'`), { code: "EPERM" })) : readdir(p, o as never)) as typeof readdir);
+    try {
+      expect(await nestedRepoRefusal([folder(dir)], null)).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

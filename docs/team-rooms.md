@@ -814,20 +814,30 @@ Member replace the single admin (creator, else longest-standing member).
     git Mockingbird runs there all the same, as its agent could have
     written its config: "Delete it if you didn't make it." The session's
     record keeps the folders its first launch found none in
-    (`SessionInfo.noRepo`), so a relaunch holds them too, and is refused
-    while one has a `.git` at its top; a new session there reads it as a
-    repository.
+    (`SessionInfo.noRepo`), and every room launch holds what any record
+    holds, and the folders inside them: a relaunch, or another session
+    opened there, is held to having none, and is refused while one has a
+    `.git` at its top. Once the sessions that started there without one are
+    forgotten, a new session there reads it as a repository.
   - **No other repository in its folders.** A room launch looks through its
     cwd and every extra folder (the filesystem only, no links followed, at
     most 300,000 entries or 10 s, refusing past that) and refuses a folder
     holding a repository that isn't the session's own, below its top or at
     an extra folder's top, naming it: the sandboxes let its agent rewrite
     that repository's config and hooks, which Mockingbird's git and the
-    user's own terminal git would run. A submodule's or a linked worktree's
-    `.git`, leading into the session's own shared git folder, is its own. A
-    repository that appears inside a room session's folder later, and isn't
-    its repository's, refuses every Mockingbird git in it, a room session's
-    there included.
+    user's own terminal git would run. A `.git` is the session's own only
+    when it's a `gitdir:` file naming where the agent can't write: a linked
+    worktree's folder, directly in the shared folder's `worktrees/`, whose
+    `commondir` leads back to it, or a submodule's git folder under
+    `modules/` (the shared folder's or the worktree's own). One naming a git
+    folder anywhere else in the shared folder, which the agent writes, and
+    every `.git` folder, are other repositories. A `.GIT`, or the name in
+    any case, counts as `.git`, as git takes it on a volume that ignores
+    case; a folder the look isn't allowed to list is refused, naming it (one
+    macOS's privacy settings keep from Mockingbird is passed, as they keep
+    it from the agent too). A repository that appears inside a room
+    session's folder later, and isn't its repository's, refuses every
+    Mockingbird git in it, a room session's there included.
   - **Every git Mockingbird runs finds a repository only by its `.git`**
     (`safe.bareRepository=explicit`): a folder an agent made look like a
     bare repository (`HEAD`, `objects/`, `refs/` and a `config`), its own or
