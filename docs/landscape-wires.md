@@ -3809,6 +3809,89 @@ The empty landscape's shots, dark and light, are `w11/shots/empty-fix1-dark.png`
 - README roadmap, the stale lines in section 7, 1.7.0's changelog lines drafted.
   Bump only when Ryan asks.
 
+#### W12 part 1 as built
+
+Part 1 is the wire run. Part 2, the ticket run, waits for W17.
+
+**`test/wireRunApp.e2e.test.ts`** (`MB_E2E_APP=1`, skipped under CI as the other app tests are) is one run of the real
+app (`dist/` under Electron, `launchApp`'s HOME and userData, `--use-mock-keychain --password-store=basic`):
+1. **A finishes.** Builder is a stand-in Claude in a worktree on `feat-parser`, cut from origin's `main`. Reviewer is a
+   Codex step that hasn't started (`planSession`, so W8's `addStep`), joined to Builder by a handoff that asks. Hooks
+   are installed the way Settings' button installs them (`hooks:install`). Builder's status comes from the hooks it
+   runs. Typed into Builder: commit `parser.txt`, then finish_step. Its reply says "readied. It waits at the wire's gate
+   for the user to send". The book holds the pending and no delivery.
+2. **Quit and restart with the gate pending.** The quit is a SIGTERM: it exits cleanly and leaves nothing running. After
+   the restart the book has the same pending id and text, with no delivery. Reviewer is still planned, with no launch
+   and nothing logged.
+3. **Send.** The popover is opened the way a person opens it: a wheel pans the gate dot to the middle of the landscape
+   (⌘ and the wheel zoom first, below 80%), then the dot is clicked.
+   - The popover shows "Builder → Reviewer", the text that waited, and "“Reviewer” hasn't started: sending starts it."
+   - Send is clicked once the popover's settle has passed. A click it held anyway is made again, and Send twice sends
+     once.
+   - Reviewer starts at Builder's commit, not origin's `main`, on `feat-parser-reviewer`. Its pane says "Started at
+     “Builder”'s commit abc1234".
+   - Its own prompt, in Codex's arguments, is its first turn. Then its queue pastes the labelled handoff once, the Enter
+     submits it, and the delivery is `sent` with the pending gone.
+4. **Quit and restart with a delivery marked `pasting`.** Builder is reopened, finishes again, and the person sends it.
+   - The stand-in Reviewer SIGKILLs the app as soon as the paste arrives, before its Enter, which comes 120 ms later.
+   - The book says `pasting` under the new pending, which is still there. Reviewer logged the paste, and no prompt
+     holds it. What the run had started has ended, and no orphan is left.
+   - After the restart, reconcile settles it as `unconfirmed`: "Mockingbird stopped while this was being pasted into
+     “Reviewer”: it may have reached it. Send it again, or mark it sent." It's logged.
+   - Reviewer is closed, and nothing reaches it until the popover's may-have-arrived face is answered. Send again
+     reopens Reviewer, resuming its conversation, and pastes the message once under a new pending id. It's `sent`.
+   - In all, that handoff was pasted twice (into the launch the kill ended, and into the reopened one) and submitted
+     once. The first handoff was submitted once.
+
+**Why the kill.** A delivery is `pasting` only for the 120 ms between its paste and its Enter, so a test can't time a
+quit into that window. A run that ends there (a crash, a kill, power lost) is what leaves one. The stand-in sees the
+paste's end marker before the Enter and ends the run there. If the Enter wins, the test fails and says so; it doesn't
+pass on a `sent`.
+
+**The stand-ins** (`test/e2e/fakeCli.cjs`, run by Electron as Node from bash shims that `test/e2e/fakeCli.ts` writes
+as Settings' `claudeBin` and `codexBin`) behave as Mockingbird reads a real CLI:
+- the terminal is read raw: keys, a bracketed paste whole, and Enter submitting the prompt;
+- the hooks in `~/.claude/settings.json` or `~/.codex/hooks.json` run with the CLI's JSON on stdin: SessionStart
+  (`source: "resume"` when resuming), and UserPromptSubmit and Stop around each turn;
+- the conversation is a Claude transcript or a Codex rollout (`session_meta`, `source: "cli"`), resumed by id;
+- Mockingbird's MCP server is started from the CLI's arguments inside the pane (`initialize`, then `tools/call`);
+- Codex's prompt after `--` is its first turn.
+
+A prompt's `@commit <file>` commits in the stand-in's folder, and `@finish <summary>` calls finish_step. Each launch
+logs what it saw to `$HOME/fake-cli/<pane>.jsonl`. `$HOME/fake-cli/kill-on-paste` is the kill above. teamLiveApp's
+`FAKE_CLAUDE` couldn't be extended to do this: it reads its terminal cooked, so a paste's last line arrives only with
+its Enter, and it has no MCP client. The argv-to-launch parsing that `agentRelay.cjs` had is in `test/e2e/cliLaunch.cjs`
+now, and both use it.
+
+**Bugs the run found, each fixed in its own commit.**
+
+*A quit between a paste and its Enter recorded the delivery `sent`.* Quitting SIGHUPs every pane, and `onExit` leaves a
+pane's status alone while quitting. So the Enter's timer still found the pane live, wrote the Enter to a pane already
+ended, and settled the delivery `sent`. The pending was dropped and nobody was told. A probe found it: a stand-in that
+SIGTERMs the app as the paste arrives. When the Enter came after the quit had ended the panes, the book said `sent`, and
+the stand-in had submitted nothing. `sendMessage`'s timer now settles `failed` while quitting, with no Enter:
+"Mockingbird quit after this was pasted into “Reviewer” and before its Enter, so it wasn't submitted". The pending stays,
+for Send. When the Enter beats the quit, the stand-in has the prompt, and `sent` is right. `test/sessionLifecycle.test.ts`
+covers it, and it fails with the check removed. The run itself kills rather than quits: which side of the Enter a quit
+lands on is timing.
+
+*The window kept a session that main started on its closed lists.* It read its closed and not-started lists only after
+its own acts, so a session that main started stayed listed:
+- a step started by a Send stayed in `planned` (W8's "Left for later");
+- a closed session reopened by a Send, or relaunched from outside the window, stayed in the Closed sessions list with a
+  Reopen that main refuses ("It's running already").
+
+`main.tsx` now reads both again when the live list holds a session that the window has as closed or not started
+(`startedSince`, `appModel.ts`, one read at a time). The checks are `test/appModel.test.ts` and the run's "off the Closed
+sessions list" waits. With the read-again turned off, the run fails at "Builder off the Closed sessions list".
+
+**Seen, not changed:** a step planned from outside the window (here, `planSession` through the IPC) isn't drawn until
+the window next reads its lists. The window's own Add next step and Lay out read them, so no person's path meets this.
+The run plans its step before the restart, which reads them.
+
+**Not covered:** real CLIs (the stand-ins send the hook fields Mockingbird reads, not every field a CLI sends);
+automatic gates and Not yet in a real window; the ticket run.
+
 ### W13 · Ticket stages reworked (main and the pipeline panel). Size M
 Ryan's table, with each stage's id. "Moves on when" is read as the event or
 checklist that marks each stage (*my reading*: rows 1, 6 and 8 name an exit, 4, 5
