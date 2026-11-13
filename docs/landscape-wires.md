@@ -5892,6 +5892,64 @@ Coding from past Ryan's approval (PR to main, AI testing in staging/prod, Patch
 notes), with a note; `stageRefusal` allows it and tells the user. Whether it should
 is a question for Ryan.
 
+#### W17 verify fixes as built
+
+The security verify of W17 found no High or Medium; P1–P10 hold. Rebased onto
+f9c2a5e (W5 and its review fixes), keeping both sides: `plan` sits beside W5's
+`wire` and `merge` kinds (rank 0, with the prompts and wires), `needsItems` and
+`useNeedsYou` take the wires and then the plans, and the tray's planError line sits
+above W5's rows.
+
+- **The Plan item keeps W5's row rules.**
+  - Its face is part of its state: `plan:<id>|ready` or `plan:<id>|blocked`, blocked
+    when main's checks on the sessions now refuse it (`PlanView.problem`). A blocked
+    one is labelled "Plan blocked", and Open says why it can't be laid out as it
+    stands.
+  - The tray's settle key (id, state, buttons) covers it as it does every row, so a
+    change of face is a new row.
+  - Open and Dismiss… are off, saying the plan isn't held any more, when it isn't
+    listed. Lay out's and Dismiss's refusals are logged as well as said (as before,
+    `layOutPlanNow` / `dismissPlanNow`).
+- **L1: `{ticket}`'s title can't seem to close its quotes or speak as Mockingbird.**
+  `titleQuotable`: curly and angle double quotes (“ ” „ ‟ « ») become `"`, which
+  `quoted()` escapes; curly single ones (‘ ’ ‚ ‛) an apostrophe, which can't close a
+  double-quoted string; `[` `]` become ［ ］, as `fenced()` turns `< >` into ‹ ›. The
+  plan dialog's `{ticket}` line and W9's lay-out use the same `ticketLine`.
+- **L2: a tab in a terminal's command is refused**, not turned into a space: a shell
+  takes it as completion. Refused at propose_plan and Lay out (`checkPlan`), in
+  W9's lay-out (`hiddenTextProblems`) and at save. A prompt's tab is only white
+  space to an agent and stays allowed. A draft doesn't change a command; save says
+  where the tab is.
+- **L3: a plan waiting for the dialog** (`waitsFor`) can't be laid out or dismissed
+  by its id: `heldOf` refuses it, saying it's in Needs you once the open plan closes.
+- **L4: a prompt may hold an emoji's own invisible parts.** `TextUse` says where a
+  text goes: `prompt` (a step's, or what a wire sends), `command`, or `text` (names,
+  summaries). In a prompt, `withoutHidden` keeps, one at a time:
+  - U+FE0E or U+FE0F straight after an emoji base (or its skin tone);
+  - U+FE0F in a keycap (#, * or a digit, then U+20E3);
+  - U+200D between two emoji.
+
+  Everything else in `INVISIBLE_RE` is still refused: a second selector or joiner,
+  one after or before a letter, supplementary selectors, tag characters (a flag's
+  included), bidi controls. Names, summaries and commands hold none of them.
+  propose_plan and W9's draft keep a prompt's emoji whole and still strip the rest.
+
+**Checks** (on f9c2a5e): typecheck and build clean. `CI=true npm test`: 3,647
+passed, 357 skipped, exit 0. `test/plans.test.ts` 100, `needsYou` 45, `templates`
+and `pipelineTemplates` 80. UI, one file at a time: `uiTemplatePicker` 7,
+`uiLandscapeNeeds` 25, `uiLandscapeWires` 31. 28 mutations, all failing a test:
+- L1: each quote class, the apostrophes, each bracket, and `ticketLine` skipping
+  `titleQuotable`.
+- L3: `heldOf`'s waiting check.
+- L4's allow-list: emoji parts kept in names or commands; a selector after anything;
+  a second, supplementary or zero-width one after a base; tag characters (one after
+  a base, or anywhere); bidi controls; a keycap's selector without its keycap; a
+  joiner after or before anything, or a second one; each place a text's use is
+  passed (propose_plan, a plan's template and checks, W9's lay-out, save and draft).
+- L2: the tab let through.
+
+The single tag character after a base survived the first run, and is now tested.
+
 ### W18 · Council's session is the Orchestrator. Size S
 - `collab.implement` (`collab.ts:702`) starts it with `role: "orchestrator"`, its
   kickoff the approved plan fenced ("worked out in a Council discussion and approved
