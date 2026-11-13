@@ -42,6 +42,20 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.7.0",
+    date: "2026-11-13",
+    items: [
+      n("The landscape replaces the old Sessions grid: workspaces and areas on one canvas, your groups carried over"),
+      n("Wire workspaces together to hand work on, share context or loop for feedback; send when you say or by itself"),
+      n("Needs you: approvals, wires ready to send, PRs to merge and plans to lay out, all in one place"),
+      n("The Orchestrator reads a ticket or Council plan and proposes workspaces and wires; you choose to lay them out"),
+      n("Pipeline templates and Finish step: Orchestrator → Coder → Verifier in one go, each step starting in turn"),
+      n("Agents move a ticket's stage, ask you for PRs and draft patch notes; a merged PR can start the next step"),
+      n("Helpdesk tasks: a standing Claude in your Chrome for coworkers' requests"),
+      n("Room sessions are sandboxed away from your git settings and home folder; both teammates need 1.7 for it"),
+    ],
+  },
+  {
     version: "1.6.0",
     date: "2026-10-27",
     items: [
@@ -347,7 +361,6 @@ export const COMING_NEXT: ComingNext[] = [
   { title: "Tooling profiles", text: "Choose per project which room tools and guards your agents get" },
   { title: "Closing a room", text: "The room's owner closes it for everyone in one step" },
   { title: "House status follows the PR", text: "A ticket moves to review when its PR opens and onward when it merges" },
-  { title: "Pipeline stages that update themselves", text: "Ticket stages follow the work and ADO, each move saying why" },
   { title: "Review requests", text: "Ask a teammate to review a session's changes; their comments go to your agent" },
   { title: "A prompt queue", text: "Line up instructions that send when a session goes idle" },
   { title: "Room tabs", text: "A team room gets tabs: Chat, Sessions, Artifacts and Board" },

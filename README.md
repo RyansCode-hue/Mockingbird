@@ -507,7 +507,7 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 - **1.7.0: the landscape, its wires, the Orchestrator and Helpdesk**
   ([design](docs/landscape.md), [build plan](docs/landscape-phase1.md),
-  [wires](docs/landscape-wires.md)) — built, waiting for its release. The
+  [wires](docs/landscape-wires.md)) — released in 1.7.0. The
   landscape replaces the grid (workspaces, areas, stacks, tool windows,
   ghosts, Needs you, the grid's layout read in). Wires between workspaces —
   handoff, context link, feedback loop with its rounds, shared worktree — are

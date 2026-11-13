@@ -1,7 +1,7 @@
 # The landscape
 
-Status: phase 1's landscape is built and is the Sessions tab, the grid gone;
-its wires are being built next ([landscape-wires.md](landscape-wires.md)).
+Status: released in 1.7.0. Phase 1's landscape is the Sessions tab, the grid
+gone, and its wires are built ([landscape-wires.md](landscape-wires.md)).
 [landscape-phase1.md](landscape-phase1.md) says what's built.
 
 The Sessions tab's grid becomes a **landscape**: an infinite surface you pan
