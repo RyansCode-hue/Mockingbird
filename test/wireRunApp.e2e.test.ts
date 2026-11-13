@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFailed } from "vitest";
 import { appE2E, launchApp, mainLog, quitApp, untilTrue, type AppInstance } from "./e2e/appInstance";
 import { alive, descendants, killOrphans } from "./e2e/processes";
 import { fakeClis, fakeLog, killOnPaste, type FakeEntry } from "./e2e/fakeCli";
@@ -81,18 +81,29 @@ async function openGate(a: AppInstance, wireId: string): Promise<string> {
     await untilTrue("the landscape to zoom in", async () => (await zoom()) !== was, 5000);
   }
   await untilTrue("the dot drawn at 80% or more", async () => (await zoom()) >= 0.8 && !!(await dot()), 10_000);
-  const at = (await dot())!;
-  await cdp(a, "Input.dispatchMouseEvent", { type: "mouseWheel", x: vp.left + 20, y: vp.top + 20, deltaX: at.x - mid.x, deltaY: at.y - mid.y });
-  await untilTrue("the dot in the landscape's middle", async () => {
-    const p = await dot();
-    return !!p && Math.hypot(p.x - mid.x, p.y - mid.y) < 2;
-  }, 10_000);
-  const covered = await a.evaluate<string>(
-    `(() => { const e = document.elementFromPoint(${mid.x}, ${mid.y}); return !e ? "nothing" : e.closest(".ls-viewport") && !e.closest(".ls-node, button, input, textarea, .wg-pop") ? "" : e.outerHTML.slice(0, 200); })()`
-  );
-  if (covered) throw new Error(`wire ${wireId}'s gate dot is under ${covered}`);
-  await clickAt(a, mid.x, mid.y);
-  await untilTrue("the send popover", async () => a.evaluate<boolean>(`!!document.querySelector(".wg-pop")`), 10_000);
+  const open = () => a.evaluate<boolean>(`!!document.querySelector(".wg-pop")`);
+  for (let tries = 1; ; tries++) {
+    // the layout can still move it (a list read in, a workspace drawn anew), so it's measured after each pan
+    await untilTrue("the dot in the landscape's middle", async () => {
+      const p = await dot();
+      if (!p) return false;
+      if (Math.hypot(p.x - mid.x, p.y - mid.y) < 2) return true;
+      await cdp(a, "Input.dispatchMouseEvent", { type: "mouseWheel", x: vp.left + 20, y: vp.top + 20, deltaX: p.x - mid.x, deltaY: p.y - mid.y });
+      return false;
+    }, 20_000);
+    const covered = await a.evaluate<string>(
+      `(() => { const e = document.elementFromPoint(${mid.x}, ${mid.y}); return !e ? "nothing" : e.closest(".ls-viewport") && !e.closest(".ls-node, button, input, textarea, .wg-pop") ? "" : e.outerHTML.slice(0, 200); })()`
+    );
+    if (covered) throw new Error(`wire ${wireId}'s gate dot is under ${covered}`);
+    await clickAt(a, mid.x, mid.y);
+    const opened = await untilTrue("the send popover", open, 5000).then(
+      () => true,
+      () => false
+    );
+    if (opened) break;
+    // the dot moved between its last measure and the click: it's brought back and clicked again
+    if (tries === 3) throw new Error(`wire ${wireId}'s gate dot was clicked ${tries} times and no popover opened`);
+  }
   return a.evaluate<string>(`[...document.querySelector(".wg-pop").classList].find((c) => c.startsWith("f-"))`);
 }
 
@@ -110,8 +121,9 @@ const button = (a: AppInstance, act: string) =>
 
 /**
  * Click the open popover's button `act` as a person does, once it has been up longer than its settle (answerGuard's
- * ANSWER_SETTLE_MS holds a click made as it opens). A click the popover held anyway is made again once the button is
- * back as it was. With `closes`, waits for it to close with its act done, saying why when it didn't.
+ * ANSWER_SETTLE_MS holds a click made as it opens). A click the popover didn't take (held, as it does one made while its
+ * content settles: the button back as it was, never shown under way) is made again. With `closes`, waits for it to close
+ * with its act done, saying why when it didn't.
  */
 async function press(a: AppInstance, act: string, closes = true): Promise<void> {
   const settle = Date.now() + 800;
@@ -119,25 +131,54 @@ async function press(a: AppInstance, act: string, closes = true): Promise<void> 
     const b = await button(a, act);
     return !!b && !b.off && Date.now() > settle;
   }, 10_000);
-  for (let tries = 0; ; tries++) {
+  for (let tries = 1; ; tries++) {
     const b = (await button(a, act))!;
     await clickAt(a, b.x, b.y);
     if (!closes) return;
     const clicked = Date.now();
+    let underWay = false;
     let held = false;
     await untilTrue(`the popover to close after ${act}`, async () => {
       if (!(await a.evaluate<boolean>(`!!document.querySelector(".wg-pop")`))) return true;
       const err = await a.evaluate<string | null>(`document.querySelector(".wg-pop .wr-err")?.textContent ?? null`);
       if (err) throw new Error(`${act} was refused: ${err}`);
       const now = await button(a, act);
-      // held (the button off a moment, then back as it was), not under way (off, "Sending…")
-      held = !!now && !now.off && now.label === b.label && Date.now() - clicked > 1500;
+      if (now && now.label !== b.label) underWay = true;
+      held = !underWay && !!now && !now.off && Date.now() - clicked > 3000;
       return held;
     }, 90_000);
     if (!held) return;
-    if (tries >= 3) throw new Error(`the popover's ${act} took none of ${tries + 1} clicks`);
+    if (tries === 4) throw new Error(`the popover's ${act} took none of ${tries} clicks`);
   }
 }
+
+/** The run as it stands, for a failure: the wire book, the last lines each stand-in logged, and the end of main.log. */
+function runState(home: string): string {
+  const parts: string[] = [];
+  try {
+    parts.push(`wires: ${JSON.stringify(bookOf(home).links)}`);
+  } catch (err) {
+    parts.push(`wires: unreadable (${(err as Error).message})`);
+  }
+  const dir = path.join(home, "fake-cli");
+  for (const f of fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith(".jsonl")) : []) {
+    const lines = fakeLog(home, f.slice(0, -".jsonl".length)).slice(-12);
+    parts.push(`${f}:\n${lines.map((e) => `  ${e.at} ${e.pid} ${e.kind}${e.how ? ` (${e.how})` : ""}${e.text ? ` ${JSON.stringify(e.text.slice(0, 80))}` : ""}${e.reply ? ` ${JSON.stringify(e.reply.slice(0, 80))}` : ""}${e.message ? ` ${e.message.slice(0, 300)}` : ""}`).join("\n")}`);
+  }
+  parts.push(`main.log:\n${mainLog({ home }).slice(-4000)}`);
+  return `[e2e] the run as it failed:\n${parts.join("\n")}`;
+}
+
+/** What's still running of `pids`, each with its parent and command line, for a failure to name. */
+const stillRunning = (pids: number[]): string => {
+  const left = pids.filter(alive);
+  if (!left.length) return "";
+  try {
+    return execFileSync("/bin/ps", ["-o", "pid=,ppid=,command=", "-p", left.join(",")], { encoding: "utf8" }).trim();
+  } catch (err) {
+    return `${left.join(", ")} (ps: ${(err as Error).message.split("\n")[0]})`;
+  }
+};
 
 describe.skipIf(!appE2E)("a whole wire run in the real app", () => {
   it("a finish waits at its gate across a quit, Send starts the step at the finisher's commit and delivers once, and a paste the run's end cut off may have arrived and is never pasted again by itself", async () => {
@@ -151,6 +192,8 @@ describe.skipIf(!appE2E)("a whole wire run in the real app", () => {
     const bins = fakeClis(tempDir("bins"));
     let app = await launchApp("Runner", "", { settings: { claudeBin: bins.claude, codexBin: bins.codex, repoRoots: [code] } });
     const { home } = app;
+    // a failure says where the run was: the wire book, what each stand-in saw last, and main's log
+    onTestFailed(() => console.error(runState(home)));
     try {
       // the hooks the stand-ins run, installed as Settings' button installs them
       expect(await app.evaluate<{ installed: boolean }>("window.mb.installHooks()")).toMatchObject({ installed: true });
@@ -220,32 +263,52 @@ describe.skipIf(!appE2E)("a whole wire run in the real app", () => {
       expect(handoff).toContain("Built the parser: see parser.txt.");
       expect(promptsWith(reviewerLog, "Built the parser").length).toBe(1);
 
-      // 3. Builder, reopened, finishes again; the run ends as that handoff reaches Reviewer's prompt, before its Enter
-      expect(await app.evaluate<SessionInfo | { error: string }>(`window.mb.relaunchSession(${JSON.stringify(A)})`)).toMatchObject({ id: A });
-      await untilTrue("Builder at its prompt again", async () => (await liveOne(app, A))?.status === "idle", 60_000);
-      // started by main, not by one of the window's own acts: the window's Closed sessions list no longer holds it
-      await untilTrue("Builder off the Closed sessions list", async () => !(await closedRows(app)).includes("Builder"), 10_000);
-      await typeInto(app, A, "@finish Fixed the edge cases the review will look for.");
-      await untilTrue("Builder's second finish", async () => ofKind(fakeLog(home, A), "tool").length === 2);
-      const second = bookOf(home).links[wireId].pending!;
-      expect(second).toMatchObject({ body: "Fixed the edge cases the review will look for." });
-      expect(second.id).not.toBe(p1);
-      expect(await openGate(app, wireId)).toBe("f-ready");
-      expect((await popover(app)).body).toBe(second.body);
-      killOnPaste(home, app.child.pid!, second.body);
-      const ranThen = descendants(app.child.pid!);
-      await press(app, "send", false);
-      expect(await Promise.race([exitOf(app), new Promise((r) => setTimeout(() => r("still running 60 s after Send"), 60_000))])).toBe("SIGKILL");
-      app.close();
-      // the panes' stand-ins end with their terminals, and their tool servers with them; what doesn't is named below
-      await untilTrue("what the run had started to end with it", async () => ranThen.every((p) => !alive(p)), 30_000).catch(() => undefined);
-      expect(killOrphans(ranThen)).toEqual([]);
-      const cut = bookOf(home).links[wireId];
-      if (cut.delivery?.state === "sent") throw new Error("the stand-in stopped the run only after the paste's Enter went: it had no paste to cut off");
-      expect(cut).toMatchObject({ pending: { id: second.id }, delivery: { id: second.id, state: "pasting" } });
-      const killedLaunch = pastesWith(fakeLog(home, B), second.body);
-      expect(killedLaunch.length).toBe(1);
-      expect(promptsWith(fakeLog(home, B), second.body)).toEqual([]);
+      // 3. Builder, reopened, finishes again; the run ends as that handoff reaches Reviewer's prompt, before its Enter.
+      // The stand-in has the 120 ms before the Enter to end it. When the Enter wins (a loaded machine), that handoff was
+      // simply sent: the app is started again and Builder finishes once more, a new handoff, as many as three times.
+      let cutOff: { id: string; body: string } | null = null;
+      let killedLaunch: FakeEntry | null = null;
+      for (let attempt = 1; !cutOff; attempt++) {
+        const finishes = ofKind(fakeLog(home, A), "tool").length;
+        expect(await app.evaluate<SessionInfo | { error: string }>(`window.mb.relaunchSession(${JSON.stringify(A)})`)).toMatchObject({ id: A });
+        await untilTrue("Builder at its prompt again", async () => (await liveOne(app, A))?.status === "idle", 60_000);
+        // started by main, not by one of the window's own acts: the window's Closed sessions list no longer holds it
+        await untilTrue("Builder off the Closed sessions list", async () => !(await closedRows(app)).includes("Builder"), 10_000);
+        const body = `Fixed the edge cases the review will look for (take ${attempt}).`;
+        await typeInto(app, A, `@finish ${body}`);
+        await untilTrue("Builder's finish", async () => ofKind(fakeLog(home, A), "tool").length === finishes + 1);
+        const waiting = bookOf(home).links[wireId].pending!;
+        expect(waiting).toMatchObject({ body });
+        expect(waiting.id).not.toBe(p1);
+        expect(await openGate(app, wireId)).toBe("f-ready");
+        expect((await popover(app)).body).toBe(body);
+        killOnPaste(home, app.child.pid!, body);
+        const ranThen = descendants(app.child.pid!);
+        await press(app, "send", false);
+        expect(await Promise.race([exitOf(app), new Promise((r) => setTimeout(() => r("still running 60 s after Send"), 60_000))])).toBe("SIGKILL");
+        app.close();
+        // the panes' stand-ins end with their terminals, and their tool servers with them
+        await untilTrue("what the run had started to end with it", async () => ranThen.every((p) => !alive(p)), 30_000).catch((err: Error) => {
+          throw new Error(`${err.message}; still running:\n${stillRunning(ranThen)}`);
+        });
+        expect(killOrphans(ranThen)).toEqual([]);
+        const cut = bookOf(home).links[wireId];
+        if (cut.delivery?.state === "sent") {
+          // the Enter was written before the app was killed: sent is what main saw happen
+          expect(cut.delivery.id).toBe(waiting.id);
+          if (attempt === 3) throw new Error("the paste's Enter beat the stand-in's kill 3 times: it never had a paste to cut off");
+          console.warn(`[e2e] take ${attempt}: the paste's Enter beat the stand-in's kill, so that handoff was sent; trying again`);
+          app = await launchApp("Runner", "", { home, keepState: true });
+          continue;
+        }
+        expect(cut).toMatchObject({ pending: { id: waiting.id }, delivery: { id: waiting.id, state: "pasting" } });
+        const pasted = pastesWith(fakeLog(home, B), body);
+        expect(pasted.length).toBe(1);
+        expect(promptsWith(fakeLog(home, B), body)).toEqual([]);
+        cutOff = { id: waiting.id, body };
+        killedLaunch = pasted[0];
+      }
+      const second = cutOff;
 
       // started again: it may have arrived, so it's for the person, and nothing pastes it again by itself
       app = await launchApp("Runner", "", { home, keepState: true });
@@ -267,12 +330,17 @@ describe.skipIf(!appE2E)("a whole wire run in the real app", () => {
       const again = bookOf(home).links[wireId];
       expect(again.delivery!.id).not.toBe(second.id);
       expect(again.pending).toBeUndefined();
-      await untilTrue("Reviewer's turn on it over", async () => promptsWith(fakeLog(home, B), second.body).length === 1 && ofKind(fakeLog(home, B), "turn-ended").length === 3, 30_000);
+      const turnOver = () => {
+        const log = fakeLog(home, B);
+        const last = ofKind(log, "started").at(-1)!;
+        return promptsWith(log, second.body).length === 1 && log.filter((e) => e.pid === last.pid).at(-1)?.kind === "turn-ended";
+      };
+      await untilTrue("Reviewer's turn on it over", async () => turnOver(), 30_000);
       const all = fakeLog(home, B);
       const reopened = ofKind(all, "started").at(-1)!;
       expect(reopened).toMatchObject({ resumed: true, conv: ofKind(all, "started")[0].conv });
       // pasted twice in all, into the launch the run's end took and into the one Send again reopened; submitted once
-      expect(pastesWith(all, second.body).map((e) => e.pid)).toEqual([killedLaunch[0].pid, reopened.pid]);
+      expect(pastesWith(all, second.body).map((e) => e.pid)).toEqual([killedLaunch!.pid, reopened.pid]);
       expect(promptsWith(all, second.body)).toEqual([expect.objectContaining({ pid: reopened.pid, how: "pasted" })]);
       expect(promptsWith(all, "Built the parser").length).toBe(1);
       // reopened by the Send, it's running, not listed as closed with a Reopen of its own

@@ -161,6 +161,8 @@ const ready = launch
 // ---- turns -----------------------------------------------------------------------------------------------------------
 
 async function turn(text, how) {
+  // an Enter read after its app is gone submits nothing: the pane went with the app
+  if (process.ppid !== parent) bye();
   log({ kind: "prompt", text, how });
   hook("UserPromptSubmit", { prompt: text });
   remember("user", text);
@@ -209,20 +211,35 @@ const partial = (s, marker) => {
   return 0;
 };
 
-function pasteArrived(text) {
-  log({ kind: "paste", text });
-  const killFile = path.join(logDir, "kill-on-paste");
-  let kill = null;
+// The kill is read ahead and kept: the paste's Enter comes 120 ms after it, and a file read or write before the signal
+// can take longer than that on a loaded machine.
+const killFile = path.join(logDir, "kill-on-paste");
+let killAsked = null;
+function readKill() {
   try {
-    kill = JSON.parse(fs.readFileSync(killFile, "utf8"));
+    return JSON.parse(fs.readFileSync(killFile, "utf8"));
   } catch (err) {
     if (err.code !== "ENOENT") throw err;
+    return null;
   }
+}
+setInterval(() => {
+  killAsked = readKill();
+}, 100).unref();
+
+function pasteArrived(text) {
+  const kill = killAsked ?? readKill();
   if (kill && text.includes(kill.marker)) {
-    fs.rmSync(killFile, { force: true });
-    log({ kind: "killed", target: kill.pid, signal: kill.signal });
     process.kill(kill.pid, kill.signal);
+    killAsked = null;
+    fs.rmSync(killFile, { force: true });
+    log({ kind: "paste", text });
+    log({ kind: "killed", target: kill.pid, signal: kill.signal });
+    // its pane goes with the app it ended, as a real CLI's would: it reads nothing more, an Enter included
+    if (kill.signal === "SIGKILL") bye();
+    return;
   }
+  log({ kind: "paste", text });
 }
 
 function feed(chunk) {
@@ -281,6 +298,12 @@ function bye() {
 }
 process.on("SIGHUP", bye);
 process.on("SIGTERM", bye);
+// it ends with the app that started its pane, as agentRelay.cjs does: its terminal's hangup alone hasn't always ended
+// it once that app was killed
+const parent = process.ppid;
+setInterval(() => {
+  if (process.ppid !== parent) bye();
+}, 200).unref();
 
 log({ kind: "started", agent: kind, conv, resumed: !!resumed, cwd, args: argv });
 process.stdout.write(`fake-${kind} started (${resumed ? "resumed" : "new"} conversation ${conv})\n`);
