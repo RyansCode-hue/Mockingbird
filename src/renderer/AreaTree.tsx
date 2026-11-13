@@ -63,6 +63,8 @@ export interface TreeArea {
   /** What needs you in it (S7: the Needs you tray's items here), its badge. */
   needs: number;
   items: TreeItem[];
+  /** Its steps not started yet (W8), those the filter keeps: listed after its workspaces, marked so, never counted as one. */
+  steps: SessionInfo[];
 }
 
 /**
@@ -70,6 +72,8 @@ export interface TreeArea {
  * (or how many workspaces it has), a room's with who's online, and its workspaces and stacks under it; the filter
  * finds a workspace. A press on an area flies there, on a workspace selects it and flies to it (its row and its
  * workspace are one selection, so ↑↓ move both), a double-click or Enter focuses it, and right-click is its menu.
+ * A step not started yet is a row of its area marked Not started: a press, a double-click or Enter brings its card into
+ * view (`onStep`) and nothing more; right-click is its card's menu (`stepMenu`: Start now…, which asks first, and Forget).
  */
 export function AreaTree({
   areas,
@@ -80,8 +84,10 @@ export function AreaTree({
   onArea,
   onPick,
   onFocus,
+  onStep,
   onHide,
   menuFor,
+  stepMenu,
   areaMenu,
   footer,
 }: {
@@ -95,10 +101,14 @@ export function AreaTree({
   onArea: (key: string) => void;
   onPick: (s: SessionInfo) => void;
   onFocus: (s: SessionInfo) => void;
+  /** A not-started step's row picked: its card brought into view. */
+  onStep: (s: SessionInfo) => void;
   /** Collapse the tree to the rail (⌘\). */
   onHide: () => void;
   /** A workspace row's right-click: its workspace's actions (its ⋯'s). */
   menuFor: (s: SessionInfo) => MenuEntry[];
+  /** A not-started step's row's right-click: its card's actions. */
+  stepMenu: (s: SessionInfo) => MenuEntry[];
   areaMenu: (key: string) => MenuEntry[] | null;
   /** Under the tree: the Closed sessions list and the Connected line. */
   footer: React.ReactNode;
@@ -110,24 +120,26 @@ export function AreaTree({
   const filtering = !!filter.trim();
   const open = (key: string) => filtering || !closed.includes(key);
   const toggle = (key: string) => setClosed((c) => (c.includes(key) ? c.filter((k) => k !== key) : [...c, key]));
-  // the rows the keyboard walks, top to bottom: every workspace row on screen
+  // the rows the keyboard walks, top to bottom: every workspace row on screen, then its area's not-started steps
   const rows = useMemo(
     () =>
       areas.flatMap((a) =>
-        open(a.key) ? a.items.flatMap((it) => (it.kind === "ws" ? [it.s] : [it.members[0], ...(openStacks.includes(it.key) ? it.members.slice(1) : [])])) : []
+        open(a.key) ? [...a.items.flatMap((it) => (it.kind === "ws" ? [it.s] : [it.members[0], ...(openStacks.includes(it.key) ? it.members.slice(1) : [])])), ...a.steps] : []
       ),
     [areas, closed, openStacks, filtering]
   );
   const onKey = (e: React.KeyboardEvent, s: SessionInfo) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      onFocus(s);
+      if (s.planned) onStep(s);
+      else onFocus(s);
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       const i = rows.findIndex((r) => r.id === s.id);
       const next = rows[i + (e.key === "ArrowDown" ? 1 : -1)];
       if (!next) return;
-      onPick(next);
+      if (next.planned) onStep(next);
+      else onPick(next);
       requestAnimationFrame(() => list.current?.querySelector<HTMLElement>(`[data-sid="${CSS.escape(next.id)}"]`)?.focus());
     }
   };
@@ -156,6 +168,29 @@ export function AreaTree({
       </div>
     );
   };
+  const stepRow = (s: SessionInfo) => (
+    <div
+      key={`step:${s.id}`}
+      data-sid={s.id}
+      data-step=""
+      className="lt-row lt-ws lt-planned d1"
+      tabIndex={0}
+      title={`${titleOf(s)} hasn't started: click to see its card, right-click to start it now or forget it`}
+      onClick={() => onStep(s)}
+      onDoubleClick={() => onStep(s)}
+      onKeyDown={(e) => e.target === e.currentTarget && onKey(e, s)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        menu.openAt({ x: e.clientX, y: e.clientY }, stepMenu(s));
+      }}
+    >
+      <span className="lt-line">
+        <StatusDot status="idle" className="sm" />
+        <span className="lt-t">{titleOf(s)}</span>
+        <span className="lt-tag">not started</span>
+      </span>
+    </div>
+  );
   return (
     <div className="area-tree">
       <div className="lt-find">
@@ -169,7 +204,7 @@ export function AreaTree({
         {areas.map((a) => {
           const isOpen = open(a.key);
           const loose = a.key === LOOSE_GROUP;
-          if (filtering && !a.items.length) return null;
+          if (filtering && !a.items.length && !a.steps.length) return null;
           return (
             <div key={a.key} className="lt-area" data-area={a.key}>
               <div
@@ -266,10 +301,11 @@ export function AreaTree({
                     </React.Fragment>
                   );
                 })}
+              {isOpen && a.steps.map(stepRow)}
             </div>
           );
         })}
-        {filtering && !areas.some((a) => a.items.length) && <div className="lt-none">No workspace matches “{filter.trim()}”</div>}
+        {filtering && !areas.some((a) => a.items.length || a.steps.length) && <div className="lt-none">No workspace matches “{filter.trim()}”</div>}
       </div>
       {footer}
       {menu.menu}

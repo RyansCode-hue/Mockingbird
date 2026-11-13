@@ -59,6 +59,7 @@ import {
   type Guide,
   rectFrom,
   revealTile,
+  revealables,
   clearRoom,
   sessionsOnScreen,
   shortAreaName,
@@ -840,10 +841,10 @@ export function Landscape({
   // workspaces and areas added, moved, resized, collapsed or opened: what's on screen, their type's scale, and drops
   // the layout now has where they were dropped
   useLayoutEffect(() => {
-    // a reveal's flight whose session is no longer a workspace on the landscape (closed, forgotten, folded into a
-    // collapsed area) stops where it is: there's nothing there to bring into view
+    // a reveal's flight whose session is no longer a workspace (or a not-started step's card) on the landscape (closed,
+    // forgotten, folded into a collapsed area) stops where it is: there's nothing there to bring into view
     const target = flight.current?.target;
-    if (target && !layout.tiles.some((t) => !t.hidden && t.members.some((m) => m.id === target))) stopFly();
+    if (target && !revealables(layout).some((t) => !t.hidden && t.members.some((m) => m.id === target))) stopFly();
     paintScale(cam.current.zoom);
     // the wires painted as this layout rendered, before a pill just collapsed had its --ls-hs, which sizes it
     wiresRef.current?.follow();
@@ -1057,7 +1058,7 @@ export function Landscape({
   useEffect(() => {
     const p = pendingReveal.current;
     if (!p) return;
-    const t = revealTile(p, layout.tiles, Date.now());
+    const t = revealTile(p, revealables(layout), Date.now());
     if (t === "wait") return;
     if (t !== "expired" && t.hidden) {
       // in a collapsed area: the area opens, and the reveal goes on once the layout has it open
@@ -1101,7 +1102,8 @@ export function Landscape({
       if (!seen && !ownsKeys(document.activeElement)) flyTo(centreOn(cam.current, t.rect, room), p.id);
       return;
     }
-    if (revealFocus.current) {
+    // a not-started step's card is a ghost: brought into view, never focused
+    if (revealFocus.current && layout.tiles.includes(t)) {
       // under the focus overlay, so there's no flight to see: the landscape is there when focus ends
       if (!seen) {
         stopFly();

@@ -901,6 +901,14 @@ function App() {
     const s = sessions.find((x) => x.id === id);
     setReveal({ id, n: ++asked.current, focus, answer: !!s && typingAsksOf(s).length > 0, ...o });
   };
+  /**
+   * A not-started step's card brought into view (its row in the area tree or ⌘K): nothing is selected, focused or
+   * started. Start now… and Forget are its card's menu's, as in the tree's right-click.
+   */
+  const showStep = (s: SessionInfo) => {
+    setTab("sessions");
+    revealWorkspace(s.id);
+  };
   // going to an area on the landscape: the area tree, the switcher, ⌘K
   const [goTo, setGoTo] = useState<GoToAsk | null>(null);
   const goToArea = (area: string, avoid: ScreenBox | null = null) => {
@@ -928,18 +936,12 @@ function App() {
     setGoTo((g) => (g?.n === n ? null : g));
   };
 
-  const visible = useMemo(() => {
-    const q = filter.toLowerCase();
-    return q
-      ? workSessions.filter(
-          (s) =>
-            s.title.toLowerCase().includes(q) ||
-            (s.ticketTitle ?? "").toLowerCase().includes(q) ||
-            (s.ticketId ?? "").includes(q) ||
-            (s.branch ?? "").toLowerCase().includes(q)
-        )
-      : workSessions;
-  }, [workSessions, filter]);
+  /** The area tree's filter `q` keeps session `s`: its title, ticket or branch has it. */
+  const filterKeeps = (s: SessionInfo, q: string) => {
+    const t = q.toLowerCase();
+    return !t || s.title.toLowerCase().includes(t) || (s.ticketTitle ?? "").toLowerCase().includes(t) || (s.ticketId ?? "").includes(t) || (s.branch ?? "").toLowerCase().includes(t);
+  };
+  const visible = useMemo(() => (filter ? workSessions.filter((s) => filterKeeps(s, filter)) : workSessions), [workSessions, filter]);
 
   // the groups shown as team rooms
   const roomGroups = useMemo(() => teamRooms.map((r) => r.groupKey), [teamRooms]);
@@ -2515,9 +2517,10 @@ function App() {
         counts: treeCounts(all.get(key) ?? []),
         needs: needs.byArea.get(key) ?? 0,
         items: shownItems.get(key) ?? [],
+        steps: landscapeLayout ? plannedIn(landscapeLayout, key).filter((s) => filterKeeps(s, filter)) : [],
       };
     });
-  }, [landscapeLayout, workSessions, visible, teamStatus, needs.byArea]);
+  }, [landscapeLayout, workSessions, visible, teamStatus, needs.byArea, filter]);
 
   // ---- first run: the migration tour, the empty landscape's place, the shortcuts sheet and + New ----
   const noteOf = (what: string) => readNotes.shown[what] ?? readNotes.dismissed[what] ?? null;
@@ -3316,8 +3319,10 @@ function App() {
                 setFocused(s.id);
                 revealWorkspace(s.id, true);
               }}
+              onStep={showStep}
               onHide={() => setSideCollapsed(true)}
               menuFor={sessionActions}
+              stepMenu={(s) => menuOf(ghostActionsFor(s))}
               areaMenu={(key) => (key === LOOSE_GROUP ? ((rows) => (rows.length ? menuOf(rows) : null))(looseGhostRows()) : areaMenu(key))}
               footer={
                 <>
@@ -3493,6 +3498,8 @@ function App() {
       {paletteOpen && (
         <CommandPalette
           sessions={sessions}
+          steps={planned}
+          onStep={showStep}
           onClose={() => setPaletteOpen(false)}
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },

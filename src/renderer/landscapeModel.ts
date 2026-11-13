@@ -313,6 +313,14 @@ export function revealTile(p: PendingReveal, tiles: readonly Tile[], now: number
   return t ?? (now > p.until ? "expired" : "wait");
 }
 
+/**
+ * What a reveal can bring into view: the workspaces, and the cards of steps not started yet (ghosts), which the area
+ * tree and ⌘K show. A step's card is only brought into view: nothing focuses or starts it from there.
+ */
+export function revealables(layout: Pick<ResolvedLayout, "tiles" | "ghosts">): Tile[] {
+  return [...layout.tiles, ...layout.ghosts.filter((g) => g.members.some((m) => !!m.planned))];
+}
+
 /** A box on screen, in window pixels: one the view keeps what it brings into view clear of (the open Needs you tray). */
 export interface ScreenBox {
   left: number;

@@ -9,6 +9,8 @@ import {
   carryPlan,
   closedIn,
   closedListOf,
+  revealTile,
+  revealables,
   forgetPatch,
   ghostDrawnHeight,
   minWorkspace,
@@ -870,6 +872,15 @@ describe("ghosts", () => {
     expect(loose.ghosts.map((g) => g.area)).toEqual([LOOSE_GROUP]);
     expect(loose.areas.map((a) => a.key)).toEqual(["A"]);
     expect(loose.patch?.workspaces?.p2).toEqual(loose.ghosts[0].rect);
+  });
+
+  it("can be brought into view as workspaces are (the area tree's and ⌘K's rows for them), where a closed session's ghost can't", () => {
+    const l = base();
+    const closed = [session("p1", { taskGroup: "A", createdAt: 10, planned: { worktree: true } }), session("c1", { taskGroup: "A", status: "dead" })];
+    const r = resolveLayout(l, two, undefined, [], null, closed);
+    expect(revealables(r).map((t) => t.key)).toEqual([...r.tiles.map((t) => t.key), "ghost:p1"]);
+    expect((revealTile({ id: "p1", until: 0 }, revealables(r), 1) as { key: string }).key).toBe("ghost:p1");
+    expect(revealTile({ id: "c1", until: 0 }, revealables(r), 1)).toBe("expired");
   });
 
   it("whose group has no area are drawn loose where they were, never making one", () => {

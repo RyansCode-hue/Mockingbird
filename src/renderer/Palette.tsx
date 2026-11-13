@@ -22,13 +22,18 @@ interface PaletteAction {
 
 export function CommandPalette({
   sessions,
+  steps = [],
   actions,
   onJump,
+  onStep,
   onClose,
 }: {
   sessions: SessionInfo[];
+  /** Steps not started yet (W8): listed apart, and picking one shows its card. It never starts one. */
+  steps?: readonly SessionInfo[];
   actions: PaletteAction[];
   onJump: (id: string) => void;
+  onStep?: (s: SessionInfo) => void;
   onClose: () => void;
 }) {
   const [q, setQ] = useState("");
@@ -51,8 +56,16 @@ export function CommandPalette({
       state: statusPhrase(s),
       run: () => onJump(s.id),
     }));
-    return { acts, sess, flat: [...acts, ...sess] };
-  }, [q, sessions, actions]);
+    const planned = rankMatches(q, [...steps], (s) => [titleOf(s)]).map((s) => ({
+      kind: "step" as const,
+      label: titleOf(s),
+      kbd: undefined,
+      status: "idle" as const,
+      state: "not started",
+      run: () => onStep?.(s),
+    }));
+    return { acts, sess, planned, flat: [...acts, ...sess, ...planned] };
+  }, [q, sessions, steps, actions]);
 
   const { sel, onArrow } = useListNav(rows.flat.length, [q]);
 
@@ -117,6 +130,19 @@ export function CommandPalette({
                 <span className="lab">{r.label}</span>
                 <span className={`state ${r.status === "waiting" ? "amber" : ""}`}>{r.state}</span>
                 {r.kbd && <span className="kbd">{r.kbd}</span>}
+              </div>
+            );
+          })}
+          {(rows.acts.length > 0 || rows.sess.length > 0) && rows.planned.length > 0 && <div className="grp-div" />}
+          {rows.planned.length > 0 && <div className="grp">Steps not started: show the card</div>}
+          {rows.planned.map((r, j) => {
+            flatIndex++;
+            const i = flatIndex;
+            return (
+              <div key={`p${j}`} className={`row planned ${i === sel ? "sel" : ""}`} title="Shows its card on the landscape: start it, or forget it, from the card's menu" onMouseDown={() => runRow(i)}>
+                <span className={`dot ${r.status}`} />
+                <span className="lab">{r.label}</span>
+                <span className="state">{r.state}</span>
               </div>
             );
           })}

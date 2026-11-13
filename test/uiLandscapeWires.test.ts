@@ -714,6 +714,7 @@ interface Step {
   dropped: { space: boolean; drop: Pt; dialog: boolean; head: string | null; picker: Shown; plan: Call[]; made: string | null; at: Pt | null; area: string | null; card: Card; wires: string[][] };
   stepSend: { opened: { face: string; ends: string; whys: string[]; body: string; buttons: string[] } | null; sends: unknown[][]; cost: number; pop: boolean; ghost: boolean; node: boolean; delivery: string | null };
   double: { dialog: boolean; under: string | null; closed: boolean };
+  earlyKey: { dialog: boolean; name: string | null; off: boolean | null; plan: number; open: boolean };
   terminal: { dialog: boolean; note: string | null; plan: Call[] };
   held: { menu: string[] | null; row: string | null; confirm: boolean; asked: number; start: number };
   confirm: { open: boolean; head: string | null; says: string | null; off: boolean | null; early: { open: boolean; start: number } };
@@ -757,6 +758,8 @@ describe.skipIf(!local)("Add next step", () => {
     expect(["queued", "sent"]).toContain(s.stepSend.delivery);
     // a double click on a handle: its second press, on the backdrop, doesn't close what its first opened
     expect(s.double).toEqual({ dialog: true, under: "modal-back", closed: true });
+    // a name typed and ⌘↵ pressed as it opens, while Add step is off settling: ⌘↵ makes nothing either
+    expect(s.earlyKey).toEqual({ dialog: true, name: "qb", off: true, plan: 0, open: true });
     // a terminal's handle: said, no dialog, nothing made
     expect(s.terminal).toEqual({ dialog: false, note: "No step can follow Dev server: “Dev server” is a terminal: only a shared worktree wire can reach one.", plan: [] });
     // its ⋯ with Enter held: the menu opens on Start now…, and the key's repeats run nothing there nor ask anything
@@ -768,6 +771,34 @@ describe.skipIf(!local)("Add next step", () => {
     // Enter, pressed for it: started under its id, a workspace where its card was
     expect(s.started).toEqual({ asked: [["wb-tester"]], start: [["wb-tester"]], confirm: false, ghost: false, node: true });
   }, 200_000);
+
+  it("lists a not-started step in the area tree and ⌘K, marked so and never in the Closed list; picking it there shows its card and never starts it", async () => {
+    type Picked = { before: boolean; inView: boolean; starts: string[]; focus: boolean; selected: boolean; confirm: boolean };
+    const l = (await audit("lsCamera=0,0,1&lsPlanned&landscapeWiresAudit=steplist", "1600x1000", 120_000)) as unknown as {
+      listed: { row: string[] | null; area: string | null; last: boolean; closed: boolean; inView: boolean };
+      clicked: Picked;
+      doubled: Picked;
+      entered: Picked;
+      menu: string[] | null;
+      palette: Picked & { groups: string[]; lit: string | null; open: boolean };
+      startNow: { open: boolean; head: string | null; calls: string[]; closed: boolean; starts: string[]; card: boolean };
+    };
+    // under 5120, after its workspaces, marked; not a closed session
+    expect(l.listed).toEqual({ row: ["Tester", "not started"], area: "5120", last: true, closed: false, inView: false });
+    // a click, a double click and Enter on its row: its card brought into view, nothing asked, started, focused or selected
+    const shown = { before: false, inView: true, starts: [], focus: false, selected: false, confirm: false };
+    expect(l.clicked).toEqual(shown);
+    expect(l.doubled).toEqual(shown);
+    expect(l.entered).toEqual(shown);
+    // its right-click is its card's: Start now… and Forget, nothing else
+    expect(l.menu).toEqual(["Start now…", "Forget it"]);
+    // ⌘K lists it apart from the sessions to jump to; Enter on it shows its card, the same
+    expect(l.palette.groups.slice(-2)).toEqual(["# Steps not started: show the card", "Tester · not started"]);
+    expect(l.palette.groups.filter((g) => g.startsWith("Tester"))).toEqual(["Tester · not started"]);
+    expect(l.palette).toMatchObject({ ...shown, lit: "Tester", open: false });
+    // Start now… from the tree's menu asks first (W8's confirm), and Esc starts nothing
+    expect(l.startNow).toEqual({ open: true, head: "Start Tester now?", calls: ["describeStart"], closed: true, starts: ["describeStart"], card: true });
+  }, 150_000);
 });
 
 // ---- W9: pipeline templates (?landscapeWiresAudit=template, with ?lsTemplates) ----

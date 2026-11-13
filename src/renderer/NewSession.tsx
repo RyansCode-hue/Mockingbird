@@ -531,6 +531,8 @@ export function NewSessionModal({
       onKeyDown={(e) => {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
+          // ⌘↵ is the main button's, and does nothing while that's off settling, nor as a held key repeats
+          if (e.repeat || heldOff("settle")) return;
           void create();
         }
       }}

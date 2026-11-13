@@ -35,6 +35,8 @@
  * - =step (with ?lsPlanned, at 100%): W8's not-started Tester and Add next step, from a handle clicked and from one
  *   dragged into empty space, the dialog's guards against a burst's key and an early click, its ⋯ with Enter held, and
  *   Start now…'s confirm (stepAudit).
+ * - =steplist (with ?lsPlanned, the camera away from 5120): Tester in the area tree and ⌘K, shown and never started from
+ *   there (stepListAudit).
  *
  * W4c's, the send popover (with ?lsGates for the gates `gateBoardBook` sets):
  * - =send, =gatekeys and =dbl (at 100%): Send and Not yet, and the clicks and keys they take or don't;
@@ -1208,8 +1210,9 @@ async function closeOtherAudit(env: WiresAuditEnv, out: Record<string, unknown>)
  * Add next step (W8; with ?lsPlanned, at 100%): Tester's not-started card and its right-click's menu; Shape's handle
  * dragged into the empty canvas under 5120 (a window tall enough to show some), the step placed where it was let go;
  * Reviewer's handle clicked straight after a key typed into Builder's terminal, with a key straight after it opened (the
- * same burst) and a click there at once, neither taken; the step named, set to work in Reviewer's folder and added; Dev
- * server's handle clicked, refused and said; and Tester started from its menu.
+ * same burst) and a click there at once, neither taken; the step named, set to work in Reviewer's folder and added; a
+ * name typed and ⌘↵ pressed straight after it opens, as Add step is off settling, making nothing; Dev server's handle
+ * clicked, refused and said; and Tester started from its menu.
  */
 async function stepAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
   const since = (mark: number, fn: string) => env.calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
@@ -1321,6 +1324,16 @@ async function stepAudit(env: WiresAuditEnv, out: Record<string, unknown>): Prom
   await drive([{ mouse: { ...RH, clickCount: 1 } }]);
   await sleep(300);
   out.double = { ...dbl, closed: !dialog() };
+  // ⌘↵ straight after it opens, a name typed first (the last key long before, so they're no burst's): Add step is off
+  // settling, and ⌘↵ makes nothing meanwhile either
+  await sleep(1100);
+  mark = env.calls.length;
+  await drive([{ mouse: { ...RH, clickCount: 1 } }, { key: "q" }, { key: "b" }, { key: "Enter", meta: true }]);
+  const earlyKey = { dialog: !!dialog(), name: nameField()?.value ?? null, off: dialog()?.querySelector<HTMLButtonElement>("button.primary.cta")?.disabled ?? null };
+  await sleep(300);
+  out.earlyKey = { ...earlyKey, plan: since(mark, "planSession").length, open: !!dialog() };
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
   // Dev server's handle: a terminal, which no step can follow
   await sleep(600);
   mark = env.calls.length;
@@ -1353,6 +1366,105 @@ async function stepAudit(env: WiresAuditEnv, out: Record<string, unknown>): Prom
   await drive([{ key: "Enter" }]);
   await sleep(1200);
   out.started = { asked: since(mark, "describeStart"), start: since(mark, "startPlanned"), confirm: !!confirm(), ghost: !!ghostOf(W("tester")), node: !!document.querySelector(`.ls-world .ls-node[data-front="${W("tester")}"]`) };
+}
+
+/**
+ * A not-started step where steps are listed (W8 follow-up; with ?lsPlanned, the camera away from 5120): Tester's row in
+ * the area tree, under 5120 after its workspaces and marked so, and not in the Closed sessions list; a click, a double
+ * click and Enter on it, each bringing its card into view and nothing more (no start asked, no focus, nothing selected);
+ * its right-click's menu; ⌘K's row for it, picked with Enter, the same; then Start now… from the tree's menu, the confirm
+ * W8 asks with, which takes no click straight after it opens, cancelled.
+ */
+async function stepListAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const tester = W("tester");
+  const starts = (mark: number) => env.calls.slice(mark).filter((c) => c.fn === "startPlanned" || c.fn === "describeStart").map((c) => c.fn);
+  const row = () => document.querySelector<HTMLElement>(`.area-tree .lt-planned[data-sid="${CSS.escape(tester)}"]`);
+  const card = () => document.querySelector<HTMLElement>(`.ls-world .ls-ghost[data-front="${CSS.escape(tester)}"]`);
+  const inViewNow = () => {
+    const v = document.querySelector(".ls-viewport")!.getBoundingClientRect();
+    const c = card()?.getBoundingClientRect();
+    return !!c && c.left >= v.left && c.right <= v.right && c.top >= v.top && c.bottom <= v.bottom;
+  };
+  const after = (mark: number, before: boolean) => ({
+    before,
+    inView: inViewNow(),
+    starts: starts(mark),
+    focus: !!document.querySelector(".ls-focus"),
+    selected: !!document.querySelector(".ls-world .ls-node.sel, .ls-world .ls-node.selected"),
+    confirm: !!document.querySelector(".modal.start-step:not(.mb-ghost)"),
+  });
+  /** The camera away from Tester's card again, by a wheel over the landscape: whether it's out of view now. */
+  const away = async () => {
+    const v = document.querySelector(".ls-viewport")!.getBoundingClientRect();
+    await drive([{ wheel: { x: Math.round(v.left + v.width / 2), y: Math.round(v.top + v.height / 2), dy: -2400 } }]);
+    await sleep(500);
+    return inViewNow();
+  };
+  const r = row();
+  const areaOf = r?.closest<HTMLElement>(".lt-area");
+  const listed = {
+    row: r ? [...r.querySelectorAll(".lt-t, .lt-tag")].map((x) => x.textContent) : null,
+    area: areaOf?.dataset.area ?? null,
+    // after its area's workspaces, the last of its rows
+    last: !!r && [...(areaOf?.querySelectorAll(".lt-ws") ?? [])].pop() === r,
+    closed: !!document.querySelector(`[data-closed-sid="${CSS.escape(tester)}"]`),
+    inView: inViewNow(),
+  };
+  out.listed = listed;
+  if (!r) return;
+  let mark = env.calls.length;
+  await drive([{ mouse: { ...mid(r), clickCount: 1 } }]);
+  await sleep(500);
+  out.clicked = after(mark, listed.inView);
+  let before = await away();
+  mark = env.calls.length;
+  await drive([{ mouse: { ...mid(row()), clickCount: 1 } }, { mouse: { ...mid(row()), clickCount: 2 } }]);
+  await sleep(600);
+  out.doubled = after(mark, before);
+  before = await away();
+  mark = env.calls.length;
+  row()?.focus();
+  await sleep(1100);
+  await drive([{ key: "Enter" }]);
+  await sleep(500);
+  out.entered = after(mark, before);
+  // its right-click: its card's menu
+  await drive([{ mouse: { ...mid(row()), clickCount: 1, button: "right" } }]);
+  await sleep(300);
+  out.menu = menuNow();
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  // ⌘K: listed apart from the sessions to jump to, and Enter on it (↓ to its row) shows its card
+  before = await away();
+  mark = env.calls.length;
+  await sleep(1100);
+  await drive([{ key: "k", meta: true }]);
+  await sleep(300);
+  const input = document.querySelector<HTMLInputElement>(".palette input");
+  if (input) {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "Tester");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  await sleep(300);
+  const groups = [...document.querySelectorAll<HTMLElement>(".palette .results > *")].map((el) => (el.classList.contains("grp") ? `# ${el.textContent}` : el.classList.contains("row") ? `${el.querySelector(".lab")?.textContent} · ${el.querySelector(".state")?.textContent ?? ""}` : null)).filter(Boolean);
+  const at = [...document.querySelectorAll<HTMLElement>(".palette .results .row")].findIndex((el) => el.classList.contains("planned"));
+  await drive([...Array.from({ length: Math.max(0, at) }, (): Asked => ({ key: "ArrowDown" })), { pause: 200 }]);
+  const lit = document.querySelector(".palette .results .row.sel .lab")?.textContent ?? null;
+  await drive([{ key: "Enter" }]);
+  await sleep(600);
+  out.palette = { groups, lit, open: !!document.querySelector(".palette"), ...after(mark, before) };
+  // Start now… from the tree's menu: W8's confirm asks first, where it would start, and Esc starts nothing
+  mark = env.calls.length;
+  await drive([{ mouse: { ...mid(row()), clickCount: 1, button: "right" } }]);
+  await sleep(300);
+  await drive([{ mouse: { ...mid(menuRow("Start now…")), clickCount: 1 } }]);
+  await sleep(300);
+  const confirm = document.querySelector<HTMLElement>(".modal.start-step:not(.mb-ghost)");
+  const asked = { open: !!confirm, head: confirm?.querySelector("h3")?.textContent ?? null, calls: starts(mark) };
+  await sleep(500);
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
+  out.startNow = { ...asked, closed: !document.querySelector(".modal.start-step:not(.mb-ghost)"), starts: starts(mark), card: !!card() };
 }
 
 /** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */
@@ -1695,6 +1807,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "guards") await guardsAudit(env, out);
       else if (part === "lost") await lostAudit(env, out);
       else if (part === "step") await stepAudit(env, out);
+      else if (part === "steplist") await stepListAudit(env, out);
       else if (part === "template") await templateAudit(env, out);
       else if (part === "tbroken") await brokenAudit(env, out);
       // which of 5120's workspaces carry a handle at this zoom: those big enough on screen for one
