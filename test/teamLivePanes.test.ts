@@ -8,7 +8,7 @@ import { loopbackMember, loopbackRoom, until, LoopbackNetwork, type LoopbackMemb
 import { TeamService } from "../src/main/team/service";
 import type { TeamCore } from "../src/main/team/transport";
 import { SessionManager } from "../src/main/sessions";
-import { LivePanes, type LivePanesDeps } from "../src/main/team/livePanes";
+import { LivePanes, windowSettingsPatch, type LivePanesDeps } from "../src/main/team/livePanes";
 import { onTurnEnded, isRoomSession, originIdentity, roomOfSession, setRoomSessionLookup, validateRecord, type TurnEnded } from "../src/main/team/roomSessions";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
 import { CLAUDE_ROOM_SANDBOX_SINCE, CODEX_ROOM_GUARD_SINCE, decodePtyChunk, encodePtyChunk, remotePaneId, ROOM_SANDBOX_REFUSAL, roomMessageRefusal, roomSandboxOff, type RoomSessionRecord } from "../src/shared/team/livePanes";
@@ -1622,26 +1622,36 @@ describe("the room's sandbox switched off on this Mac", () => {
     expect(r.noRepo).toEqual([clients]);
     execFileSync("git", ["init", "-q", docs]);
     expect(gitPinRefusal(docs)).toBeNull();
-    // never at home, sandbox or not
-    await expect(ryan.live.roomLaunch({ ...target, cwd: os.homedir(), extraDirs: [] })).rejects.toThrow("can't work in your home folder");
+    // never at home, sandbox or not, saying why without the sandbox
+    await expect(ryan.live.roomLaunch({ ...target, cwd: os.homedir(), extraDirs: [] })).rejects.toThrow(
+      "can't work in your home folder: a room's sessions work in a project's folders, not across all of home, even with the room's sandbox off on this Mac. Choose a repo for it."
+    );
+    await expect(ryan.start({ cwd: os.homedir() })).rejects.toThrow("even with the room's sandbox off on this Mac");
+    switchTo(ryan, []);
+    await expect(ryan.start({ cwd: os.homedir() })).rejects.toThrow("the room's sandbox would let it write across everything there");
+    switchTo(ryan, [roomId]);
     // a terminal is a terminal: no unsandboxed flag (its chip says it's a shared terminal)
     expect((await ryan.live.roomLaunch({ ...target, agent: null, extraDirs: [] }))!.guards).toEqual({ secrets: false, coauthors: true });
   });
 
-  it("puts a session started with it off outside the room's sandbox once it's back on, till it restarts: teammates see it unguarded and nothing crosses the line", async () => {
+  it("puts a session started with it off outside the room's sandbox once it's back on, till it restarts, Codex as Claude: teammates see it unguarded and nothing crosses the line", async () => {
     const { ryan, nick, roomId } = await pair();
     switchTo(ryan, [roomId]);
     ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
     const s = await ryan.start();
     const codex = await ryan.start({ agent: "codex" });
     await until(() => !!remoteOf(nick, s.id), "the record");
+    // under the switch, a Codex one is on the line as an older Codex is
+    expect(ryan.live.outsideSandbox(codex.id)).toBe(false);
     switchTo(ryan, []);
     expect(ryan.sessions.roomSandboxChange(s.id)).toBe("missing");
-    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: false, coauthors: true, unsandboxed: true });
-    expect(ryan.sessions.guardsOf(codex.id)).toEqual({ secrets: false, coauthors: true, unsandboxed: true });
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: false, coauthors: true, unsandboxed: true, outside: true });
+    expect(ryan.sessions.guardsOf(codex.id)).toEqual({ secrets: false, coauthors: true, unsandboxed: true, outside: true });
     expect(ryan.live.outsideSandbox(s.id)).toBe(true);
+    expect(ryan.live.outsideSandbox(codex.id)).toBe(true);
+    expect(roomMessageRefusal({ agent: "codex", status: "idle", live: true, guards: ryan.sessions.guardsOf(codex.id) }, "Ryan")).toContain("or the room's sandbox was switched on after it started");
     expect(ryan.live.state().sandboxUntilRestart).toEqual({ [s.id]: "missing", [codex.id]: "missing" });
-    expect(ryan.live.state().own[s.id].guards).toEqual({ secrets: false, coauthors: true, unsandboxed: true });
+    expect(ryan.live.state().own[s.id].guards).toEqual({ secrets: false, coauthors: true, unsandboxed: true, outside: true });
     await until(() => remoteOf(nick, s.id)?.room?.guards.secrets === false, "teammates to see it unguarded");
     const rec = remoteOf(nick, s.id)!;
     expect(roomMessageRefusal({ agent: "claude", status: rec.status, live: true, guards: rec.room!.guards }, "Ryan")).toContain("or the room's sandbox was switched on after it started");
@@ -1685,6 +1695,63 @@ describe("the room's sandbox switched off on this Mac", () => {
     expect(ryan.sessions.guardsOf(again.id)).toBeNull();
     expect(ryan.sessions.roomSandboxChange(again.id)).toBeNull();
     expect(ryan.live.state().sandboxUntilRestart).toEqual({});
+  });
+
+  it("claims no kept sandbox for a launch whose sandbox didn't start, or hasn't yet: its guards say it's outside instead", async () => {
+    const { ryan, roomId } = await pair();
+    const failed = await ryan.start({ title: "failed" });
+    const marker = /room-sandbox\.sh\\" ([0-9a-f]+)/.exec(ptyOf(failed.id).args.join(" "))![1];
+    // reported alongside its first turn: its agent could have written the marker itself
+    ryan.sessions.roomSandboxReported(failed.id, marker, true);
+    const starting = await ryan.start({ title: "starting" });
+    switchTo(ryan, [roomId]);
+    expect(ryan.sessions.guardsOf(failed.id)).toEqual({ secrets: false, coauthors: true });
+    expect(ryan.sessions.roomSandboxChange(failed.id)).toBeNull();
+    expect(ryan.sessions.roomSandboxChange(starting.id)).toBeNull();
+    expect(ryan.live.state().sandboxUntilRestart).toEqual({});
+    // its room tag keeps what GuardChip's outside-the-sandbox chip reads
+    expect(ryan.live.state().own[failed.id].guards).toEqual({ secrets: false, coauthors: true });
+    // once the other's sandbox confirms, it's one it keeps
+    await reportIn(ryan, starting.id);
+    expect(ryan.sessions.roomSandboxChange(starting.id)).toBe("kept");
+    // a Codex launch whose MCP servers couldn't be named started outside the sandbox: none kept either
+    ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
+    switchTo(ryan, []);
+    ryan.live["d"].codexMcpServers = async () => {
+      throw new Error("`codex mcp list` exited with code 1");
+    };
+    const codex = await ryan.start({ agent: "codex" });
+    ryan.live["d"].codexMcpServers = async () => [];
+    const guarded = await ryan.start({ agent: "codex" });
+    switchTo(ryan, [roomId]);
+    expect(ryan.sessions.roomSandboxChange(codex.id)).toBeNull();
+    expect(ryan.sessions.roomSandboxChange(guarded.id)).toBe("kept");
+  });
+
+  it("switches a room's sandbox through main's own list, for a room this Mac is in only: a copy of the settings from before can't switch one off", async () => {
+    const { ryan, roomId } = await pair();
+    const other = ryan.m.team.createRoom({ name: "Attom", groupKey: "attom", signalingUrl: "http://loopback.invalid" });
+    expect(() => ryan.live.setRoomSandbox("R-not-mine", false)).toThrow("this Mac isn't in the room");
+    expect(ryan.settings.roomsUnsandboxed).toBeUndefined();
+    ryan.live.setRoomSandbox(roomId, false);
+    expect(ryan.settings.roomsUnsandboxed).toEqual([roomId]);
+    // left (and joined again, under the same id): it starts sandboxed
+    const stale = { ...ryan.settings };
+    ryan.live.roomLeft(ryan.m.team.room(roomId)!, "5110");
+    expect(ryan.settings.roomsUnsandboxed).toEqual([]);
+    // the window's copy from before the leave, saved whole, leaves the switches alone
+    expect(windowSettingsPatch(stale)).toEqual({ patch: expect.not.objectContaining({ roomsUnsandboxed: expect.anything() }), dropped: true });
+    expect(windowSettingsPatch({ teamName: "Ryan" })).toEqual({ patch: { teamName: "Ryan" }, dropped: false });
+    // switching another room off leaves the one joined again sandboxed
+    ryan.live.setRoomSandbox(other.id, false);
+    expect(ryan.settings.roomsUnsandboxed).toEqual([other.id]);
+    expect(roomSandboxOff(ryan.settings, roomId)).toBe(false);
+    // an id of a room this Mac isn't in any more is dropped as another switch is set
+    ryan.settings.roomsUnsandboxed = ["R-left", other.id];
+    ryan.live.setRoomSandbox(roomId, true);
+    expect(ryan.settings.roomsUnsandboxed).toEqual([other.id]);
+    ryan.live.setRoomSandbox(other.id, true);
+    expect(ryan.settings.roomsUnsandboxed).toEqual([]);
   });
 
   it("drops a room's switch when this Mac leaves the room, so joining it again starts its sessions sandboxed; one that can't be dropped is said", async () => {

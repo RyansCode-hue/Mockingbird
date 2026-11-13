@@ -126,7 +126,7 @@ export function parseRemoteId(id: string): { session: string; member: string } |
  * agent quits would run as a shell command. Teammates' views show all of
  * these sessions, so list_sessions lists them too, with this reason.
  */
-export function roomMessageRefusal(s: { agent: AgentKind | null; status: SessionStatus; live: boolean; guards?: { secrets: boolean; starting?: boolean } | null }, owner: string): string | null {
+export function roomMessageRefusal(s: { agent: AgentKind | null; status: SessionStatus; live: boolean; guards?: { secrets: boolean; starting?: boolean; outside?: boolean } | null }, owner: string): string | null {
   const who = named(owner, 60);
   if (!s.live) return `${who} closed it; only ${who} can resume it`;
   if (s.agent === null) {
@@ -142,12 +142,12 @@ export function roomMessageRefusal(s: { agent: AgentKind | null; status: Session
  * Whether a session in a room runs outside the room's sandbox, so nothing crosses the room's line to or from it: a
  * Claude session that wasn't started there (it joined the room's area while it was running), one whose Claude Code
  * is too old for it (claudeSandboxes), one whose sandbox didn't report in, or hasn't yet (`starting`:
- * RoomSandboxWatch), or one started with the room's sandbox switched off on its Mac whose room has it on now
- * (RoomSandboxChange "missing"). `guards` are its launch's (secrets: it runs under the room's settings); none for one
- * that wasn't started in a room.
+ * RoomSandboxWatch); and a session of either agent started with the room's sandbox switched off on its Mac whose
+ * room has it on now (`outside`: RoomSandboxChange "missing", known only on its own Mac). `guards` are its launch's
+ * (secrets: it runs under the room's settings); none for one that wasn't started in a room.
  */
-export const outsideRoomSandbox = (agent: AgentKind | null | undefined, guards: { secrets: boolean; starting?: boolean } | null | undefined): boolean =>
-  agent === "claude" && (!guards?.secrets || !!guards.starting);
+export const outsideRoomSandbox = (agent: AgentKind | null | undefined, guards: { secrets: boolean; starting?: boolean; outside?: boolean } | null | undefined): boolean =>
+  !!guards?.outside || (agent === "claude" && (!guards?.secrets || !!guards.starting));
 
 /** Why a session can be outside its room's sandbox, as what it and its teammates are told says it. */
 const OUTSIDE_WHY = "it joined the room while it was running, its sandbox didn't start, or the room's sandbox was switched on after it started";
@@ -211,8 +211,11 @@ export interface RoomSessionTag {
   git: RoomGitState | null;
   repo: string | null;
   repoName: string | null;
-  /** Own only, `unsandboxed`: it started with its room's sandbox switched off on this Mac (Settings → Team). */
-  guards: { secrets: boolean; coauthors: boolean; unsandboxed?: true };
+  /**
+   * Own only: `unsandboxed`, it started with its room's sandbox switched off on this Mac (Settings → Team); `outside`,
+   * and its room has the sandbox on now (outsideRoomSandbox).
+   */
+  guards: { secrets: boolean; coauthors: boolean; unsandboxed?: true; outside?: true };
   /** Why typing into it or showing it failed just now (remote only). */
   problem?: string;
   /**

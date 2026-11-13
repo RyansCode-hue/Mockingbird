@@ -46,7 +46,7 @@ describe.skipIf(!local)("the room sandbox switch, in the window", () => {
       "section=team",
       SWITCH,
       `
-      const saves = () => calls().filter((c) => c.fn === "setSettings" && "roomsUnsandboxed" in c.args[0]).map((c) => c.args[0].roomsUnsandboxed);
+      const saves = () => calls().filter((c) => c.fn === "teamSetRoomSandbox" || (c.fn === "setSettings" && "roomsUnsandboxed" in c.args[0])).map((c) => [c.fn, ...c.args]);
       const before = $(${JSON.stringify(SWITCH)}).getAttribute("aria-checked");
       $(${JSON.stringify(SWITCH)}).click();
       await sleep(200);
@@ -70,15 +70,19 @@ describe.skipIf(!local)("the room sandbox switch, in the window", () => {
     expect(r.dialog).toContain("On this Mac only, as its sessions start or restart.");
     expect(r.dialog).toContain("your git and GitHub credentials, your MCP servers (Slack…), ~/.claude, Docker and your caches");
     expect(r.dialog).toContain("So does anyone you let type into them, and anything a teammate's agent sends them.");
+    expect(r.dialog).toContain("What teammates put in the room — House tickets, room artifacts, their changes — reaches an agent with your credentials and MCP servers too.");
     expect(r.dialog).toContain("Teammates' Macs decide for themselves");
     // nothing is saved until it's confirmed, and Cancel leaves it on
     expect(r.savedOnAsk).toEqual([]);
     expect(r.afterCancel).toBe("true");
     expect(r.after).toBe("false");
     expect(r.note).toContain("Off on this Mac: its Claude and Codex sessions run like your own");
-    // turned back on, it's saved at once
+    // turned back on, it's saved at once; main keeps the switch (never a settings save from the window)
     expect(r.askedAgain).toBe(false);
-    expect(r.saved).toEqual([[ROOM_5101], []]);
+    expect(r.saved).toEqual([
+      ["teamSetRoomSandbox", ROOM_5101, false],
+      ["teamSetRoomSandbox", ROOM_5101, true],
+    ]);
   }, 120_000);
 
   /** Session `id`'s header chips, with it in focus (its header at full width), under `query`. */

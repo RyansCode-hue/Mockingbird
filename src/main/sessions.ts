@@ -180,8 +180,9 @@ export interface RoomLaunch {
    * off, its deny rules alone; Codex: its permission profile).
    * starting: a Claude launch whose sandbox hasn't reported in yet (RoomSandboxWatch), shown only on this Mac.
    * unsandboxed: an agent pane started with its room's sandbox switched off on this Mac (Settings.roomsUnsandboxed).
+   * outside: guardsOf only, an unsandboxed launch whose room has its sandbox on now (outsideRoomSandbox).
    */
-  guards: { secrets: boolean; coauthors: boolean; starting?: boolean; unsandboxed?: true };
+  guards: { secrets: boolean; coauthors: boolean; starting?: boolean; unsandboxed?: true; outside?: true };
   /** The marker a Claude launch's sandbox settings report with (RoomSandboxWatch); null when none is awaited. */
   sandboxMarker: string | null;
   /** Environment on the agent's own command, not its pane's shell: the room's caches (roomCacheEnv). */
@@ -1386,7 +1387,7 @@ export class SessionManager {
   /** Refuses a session in a team room's group `group` working in `cwd`, or given `extraDirs`, when roomFolderRefusal says so. */
   private refuseRoomFolder(group: string | null, cwd: string | null, extraDirs: readonly string[] = []): void {
     if (!group || !this.roomOfGroup?.(group)) return;
-    const why = roomFolderRefusal(cwd, extraDirs);
+    const why = roomFolderRefusal(cwd, extraDirs, os.homedir(), this.roomSandboxOff?.(group) !== true);
     if (why) throw new Error(why);
   }
 
@@ -1911,27 +1912,30 @@ export class SessionManager {
 
   /**
    * What a live session was started with as a room session; null when it wasn't started in a room. A Claude launch is
-   * `starting` until its sandbox reports in, and without secrets once it didn't (RoomSandboxWatch), or once it's
-   * outside its room's sandbox for having started with it switched off (roomSandboxChange "missing").
+   * `starting` until its sandbox reports in, and without secrets once it didn't (RoomSandboxWatch). One started with
+   * its room's sandbox switched off is `outside` it, without secrets, once its room has it on (roomSandboxChange).
    */
   guardsOf(id: string): RoomLaunch["guards"] | null {
     const s = this.live.get(id);
     if (!s?.guards) return null;
     const state = s.sandbox?.state;
     const g = state === "failed" ? { ...s.guards, secrets: false } : state === "starting" ? { ...s.guards, starting: true } : s.guards;
-    return this.roomSandboxChange(id) === "missing" ? { ...g, secrets: false } : g;
+    return this.roomSandboxChange(id) === "missing" ? { ...g, secrets: false, outside: true } : g;
   }
 
   /**
    * How live session `id`'s room sandbox differs from what its group's room asks for now (RoomSandboxChange): a room's
    * sandbox settings are read at launch only, so it lasts until a restart. Null when they agree, or it's no room launch.
+   * Only a sandbox known to be on is one it keeps: a Claude launch's once it confirmed (RoomSandboxWatch), a Codex
+   * one's when it was guarded; one that didn't start or hasn't yet says so through its guards instead.
    */
   roomSandboxChange(id: string): RoomSandboxChange | null {
     const s = this.live.get(id);
     if (!s?.guards) return null;
     const off = s.info.taskGroup ? (this.roomSandboxOff?.(s.info.taskGroup) ?? null) : null;
     if (s.guards.unsandboxed) return off === false ? "missing" : null;
-    return s.roomSandboxed && off !== false ? "kept" : null;
+    const confirmed = s.roomSandboxed && s.guards.secrets && (s.sandbox ? s.sandbox.state === "confirmed" : s.info.agent === "codex");
+    return confirmed && off !== false ? "kept" : null;
   }
 
   /** A room launch's sandbox settings reported in for pane `id` (hooks.ts): `late`, beside one of its turn's events. */

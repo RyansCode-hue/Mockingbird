@@ -490,6 +490,8 @@ const api = {
   teamTakeoverDismissReceived: (roomId: string, id: string) => ipcRenderer.invoke("team:takeoverDismissReceived", roomId, id),
   /** Turn a room's backups to origin on or off (its admin only; off by default: peer to peer). */
   teamSetBackupsToOrigin: (roomId: string, on: boolean) => ipcRenderer.invoke("team:setBackupsToOrigin", roomId, on),
+  /** Whether this Mac runs room `roomId`'s sessions in the room's sandbox (Settings → Team); refused for a room this Mac isn't in. */
+  teamSetRoomSandbox: (roomId: string, sandboxed: boolean) => ipcRenderer.invoke("team:setRoomSandbox", roomId, sandboxed),
   /** This member allows (or stops) backing up their own sessions in a room to origin, once its admin made that available. */
   teamSetBackupConsent: (roomId: string, allow: boolean) => ipcRenderer.invoke("team:setBackupConsent", roomId, allow),
   /** Allow take-overs of this member's sessions in a room while they're away (`sessions`: null for all), for `hours`; null stops. */

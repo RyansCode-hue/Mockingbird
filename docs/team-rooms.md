@@ -801,9 +801,14 @@ Member replace the single admin (creator, else longest-standing member).
   - **Switched off on this Mac.** Settings → Team → Rooms has **Sandbox
     this room's sessions** for each room, on by default; turning it off asks
     first. It's this Mac's alone (`roomsUnsandboxed` in its settings, never
-    sent to teammates, whose Macs decide for themselves), it's dropped when
-    this Mac leaves the room, and anything there but a list of room ids
-    leaves every room sandboxed. Off, the room's Claude and Codex sessions
+    sent to teammates, whose Macs decide for themselves), and main keeps it:
+    the switch goes through `team:setRoomSandbox`, which takes only a room
+    this Mac is in now and drops rooms left meanwhile, the team status says
+    each room's state, and a settings save from the window never touches it
+    (a copy the window loaded earlier could list a room left and joined
+    again since). It's dropped when this Mac leaves the room or is removed
+    from it, and anything there but a list of room ids leaves every room
+    sandboxed. Off, the room's Claude and Codex sessions
     start as this Mac's own do: no sandbox settings and no
     `--setting-sources user --strict-mcp-config` (so the user's MCP servers,
     claude.ai connectors, `~/.claude` and the repository's settings apply),
@@ -813,15 +818,26 @@ Member replace the single admin (creator, else longest-standing member).
     keeps the co-author hooks, the House board, inline, the not-at-home
     refusal and the pins on its folder's git. Whatever teammates type into
     such a session, and what their agents send it, runs with the user's
-    credentials too; teammates see it as guarded, as any session with the
-    deny rules. A Codex one's House writes are refused, as it doesn't run
-    under the settings that make it ask first. Its pane says "no room
-    sandbox". The switch is read at launch: a session started without the
-    sandbox whose room has it on now (switched back on, or it moved into
-    a room with it on) is outside it until restarted, and one started in
-    the sandbox keeps it until restarted, after the switch goes off or
-    after it leaves the room (its workspace moved out of the room's area).
-    Its pane says which, with a restart.
+    credentials too, and so does what teammates put in the room (House
+    tickets, room artifacts, their changes) once its agent reads it;
+    teammates see it as guarded, as any session with the deny rules. A
+    Codex one's House writes are refused, as it doesn't run under the
+    settings that make it ask first. Its pane says "no room sandbox". The
+    switch is read at launch: a session of either agent started without
+    the sandbox whose room has it on now (switched back on, or it moved
+    into a room with it on) is outside it until restarted, and nothing
+    crosses the room's line for it, as for a Claude one that joined while
+    running; one started in the sandbox keeps it until restarted, after the
+    switch goes off or after it leaves the room (its workspace moved out of
+    the room's area), once its sandbox was confirmed (a Claude one's
+    reported in; one that didn't keeps its "secrets unguarded" chip). Its
+    pane says which, with a restart. The not-at-home refusal says, with the
+    switch off, that a room's sessions work in a project's folders.
+    A session started with the switch off in a folder with no repository
+    still holds that folder to having none, as a terminal's does (the pins
+    above): a `git init` there later makes Mockingbird refuse git in it,
+    saying so, until the sessions that started there are forgotten. It
+    fails safe; start the session in a repository to avoid it.
   - **Its folder's git is held to where it started.** Mockingbird pins a
     room launch's git folders, read from the filesystem and checked against
     the repository the session was opened on. Every git Mockingbird runs

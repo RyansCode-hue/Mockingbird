@@ -177,6 +177,11 @@ export interface TeamRoomSummary {
   requests?: JoinRequestSummary[];
   /** What this Mac refused or noticed in the room (a teammate over a limit, this install's key connected elsewhere), newest last. */
   warnings?: RoomWarning[];
+  /**
+   * This Mac runs the room's Claude and Codex sessions in the room's sandbox (Settings.roomsUnsandboxed, as main has
+   * it now): false only when switched off here. Set by the team service; absent, it's on.
+   */
+  sandboxed?: boolean;
 }
 
 /** Something about a room this Mac refused or noticed: shown under the room once (repeats count up) until Mockingbird restarts. */

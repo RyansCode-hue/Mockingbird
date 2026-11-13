@@ -59,15 +59,18 @@ export function roomRulesFor(folder: string, sessions: readonly Pick<SessionInfo
 /**
  * Why a session in a team room's group can't work in `cwd`, or be given `extraDirs`: the home folder, or a folder
  * holding it, all of which the room's sandbox would let its agent write across (bar the names it denies). Null when
- * it can. A plain terminal isn't asked: it runs no agent and no sandbox.
+ * it can. A plain terminal isn't asked: it runs no agent and no sandbox. With the room's sandbox switched off on this
+ * Mac (`sandboxed` false) a room's sessions still work in a project's folders, and the reason says that instead.
  */
-export function roomFolderRefusal(cwd: string | null, extraDirs: readonly string[] = [], home = os.homedir()): string | null {
+export function roomFolderRefusal(cwd: string | null, extraDirs: readonly string[] = [], home = os.homedir(), sandboxed = true): string | null {
   const h = onDisk(home);
   const why = (folder: string, extra: boolean): string | null => {
     const c = onDisk(folder);
     const home = c === h;
     if (!home && !h.startsWith(c === "/" ? "/" : `${c}/`)) return null;
-    const across = "the room's sandbox would let it write across everything there.";
+    const across = sandboxed
+      ? "the room's sandbox would let it write across everything there."
+      : "a room's sessions work in a project's folders, not across all of home, even with the room's sandbox off on this Mac.";
     if (extra) return `A team room's session can't be given ${home ? "your home folder" : `${folder}, which holds your home folder,`} as an extra folder: ${across} Leave it out.`;
     return `A team room's session can't work in ${home ? "your home folder" : `${folder}, which holds your home folder`}: ${across} Choose a repo for it.`;
   };

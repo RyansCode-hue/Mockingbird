@@ -8,6 +8,7 @@ import { WebRtcWire } from "./webrtc";
 import { REPLACED_ADVICE } from "./signalingClient";
 import { allowCreatorsCommand, formatFingerprint, SIGNALING_PROTOCOL, type SignalingHealth } from "../../shared/team/protocol";
 import { oneLine } from "../../shared/team/agentText";
+import { roomSandboxOff } from "../../shared/team/livePanes";
 import { isShareableGroup, type Settings } from "../../shared/types";
 import type { JoinAnswerOutcome, LeaveOutcome, RemoveOutcome, RoomEvent, RoomId, RoomState, TeamNotice, TeamStatus } from "../../shared/team/types";
 
@@ -129,7 +130,13 @@ export class TeamService {
     const s = this.d.settings();
     const base = { signalingUrl: s.signalingUrl ?? "", rooms: [], pending: [], peers: [], problems: [], notices: this.notices };
     if (!this.core || !this.identity) return { ...base, self: null, error: this.error ?? "Team rooms haven't started" };
-    return { ...base, self: { id: this.identity.id, name: this.displayName(), fingerprint: formatFingerprint(this.identity.id) }, ...this.core.status() };
+    const core = this.core.status();
+    return {
+      ...base,
+      self: { id: this.identity.id, name: this.displayName(), fingerprint: formatFingerprint(this.identity.id) },
+      ...core,
+      rooms: core.rooms.map((r) => ({ ...r, sandboxed: !roomSandboxOff(s, r.id) })),
+    };
   }
 
   // ---- leaving and removing -------------------------------------------------------------------

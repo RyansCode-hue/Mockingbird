@@ -8,6 +8,8 @@ import { TeamChat } from "../src/main/team/chat";
 import "../src/main/team/roomSessions";
 import { LoopbackNetwork, loopbackMember, loopbackRoom, until } from "../src/main/team/loopback";
 import { TeamService, workerProblem, type RoomCleanup } from "../src/main/team/service";
+import { LivePanes } from "../src/main/team/livePanes";
+import type { SessionManager } from "../src/main/sessions";
 import { SignalingClient, OLD_WORKER_REVOKE } from "../src/main/team/signalingClient";
 import { startLocalSignaling } from "../signaling/src/local/server";
 import { signalingJoinKey, signalingTokenHash } from "../src/main/team/identity";
@@ -312,7 +314,7 @@ function service(net: LoopbackNetwork, name: string, o: { cleanup?: RoomCleanup[
     notify: (title, body) => notified.push({ title, body }),
   });
   s.start();
-  return { s, dir, emitted, notified, logs };
+  return { s, dir, emitted, notified, logs, settings };
 }
 
 /** Cleanup parts that record what they're asked to forget; `fail` throws, `problem` reports one. */
@@ -393,6 +395,62 @@ describe("leaving and removing in the app", () => {
     // asked again: the Worker only
     const again = await ryan.s.removeMember(roomId, nickId);
     expect(again).toEqual({ name: "Nick", delivered: false, worker: null });
+  });
+
+  it("a member the admin removes has the room's sandbox switch dropped on their Mac, as the team status said it, so joining again starts sandboxed", async () => {
+    const net = new LoopbackNetwork();
+    const parts: RoomCleanup[] = [];
+    const { ryan, nick, roomId } = await sharedPair(net, { nick: parts });
+    // Nick's live panes, wired as index.ts wires them: the switch through them, their leave cleanup a room cleanup part
+    const live = new LivePanes({
+      team: () => nick.s.transport,
+      rooms: () => nick.s.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey })),
+      sessions: { list: () => [], resumable: () => [] } as unknown as SessionManager,
+      settings: () => nick.settings,
+      saveSettings: (patch) => Object.assign(nick.settings, patch),
+      notify: () => {},
+      toWindow: () => {},
+      audit: () => {},
+      log: (_c, e) => String(e),
+      dir: path.join(tempDir("live"), "live"),
+    });
+    parts.push({ what: "the room's live panes", roomLeft: (room, groupKey) => live.roomLeft(room, groupKey) });
+    expect(nick.s.status().rooms[0].sandboxed).toBe(true);
+    live.setRoomSandbox(roomId, false);
+    expect(nick.s.status().rooms[0].sandboxed).toBe(false);
+    await ryan.s.removeMember(roomId, nick.s.status().self!.id);
+    await until(() => !fs.existsSync(path.join(nick.dir, "rooms", roomId)), "Nick's copy to go");
+    expect(nick.settings.roomsUnsandboxed).toEqual([]);
+    expect(nick.s.status().notices).toMatchObject([{ roomId, kind: "removed", problems: [] }]);
+  });
+
+  it("a room left and joined again starts sandboxed, and stays so as another room's sandbox is switched off", async () => {
+    const net = new LoopbackNetwork();
+    const parts: RoomCleanup[] = [];
+    const { ryan, nick, roomId } = await sharedPair(net, { nick: parts });
+    const live = new LivePanes({
+      team: () => nick.s.transport,
+      rooms: () => nick.s.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey })),
+      sessions: { list: () => [], resumable: () => [] } as unknown as SessionManager,
+      settings: () => nick.settings,
+      saveSettings: (patch) => Object.assign(nick.settings, patch),
+      notify: () => {},
+      toWindow: () => {},
+      audit: () => {},
+      log: (_c, e) => String(e),
+      dir: path.join(tempDir("live"), "live"),
+    });
+    parts.push({ what: "the room's live panes", roomLeft: (room, groupKey) => live.roomLeft(room, groupKey) });
+    live.setRoomSandbox(roomId, false);
+    await nick.s.leaveRoom(roomId);
+    expect(nick.settings.roomsUnsandboxed).toEqual([]);
+    nick.s.join(ryan.s.createInvite(roomId));
+    await acceptNext(ryan.s, roomId);
+    await until(() => nick.s.status().rooms.some((r) => r.id === roomId), "Nick to join again");
+    const { roomId: other } = await nick.s.shareGroup("attom", "Attom");
+    live.setRoomSandbox(other, false);
+    expect(nick.settings.roomsUnsandboxed).toEqual([other]);
+    expect(Object.fromEntries(nick.s.status().rooms.map((r) => [r.id, r.sandboxed]))).toEqual({ [roomId]: true, [other]: false });
   });
 
   it("against a Worker from before revoke, removing says to update it", async () => {

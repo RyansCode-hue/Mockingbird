@@ -37,7 +37,7 @@ import type { AuditEntry } from "../shared/team/audit";
 import { draftsFromModel, splitPlan, wholePlanDraft, type CouncilCreateResult, type CouncilHouseTargets, type TicketDraft } from "../shared/collabTickets";
 import type { PhoneStatus } from "../shared/phoneAlerts";
 // team rooms: live panes
-import { remotePaneId, roomSandboxOff, type LivePanesState, type RoomSandboxChange, type RoomSessionTag } from "../shared/team/livePanes";
+import { remotePaneId, roomSandboxOff, roomsUnsandboxedOf, type LivePanesState, type RoomSandboxChange, type RoomSessionTag } from "../shared/team/livePanes";
 // team rooms: artifacts
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
@@ -1099,7 +1099,7 @@ const applyRoomSandbox = () => {
   const off = roomSandboxOff(settings, ROOM_5101);
   const change: Record<string, RoomSandboxChange> = s5Kept ? { s5: "kept" } : {};
   for (const [id, started] of Object.entries(launchedOff)) {
-    live.own[id].guards = started ? { secrets: off, coauthors: true, unsandboxed: true } : { secrets: true, coauthors: true };
+    live.own[id].guards = !started ? { secrets: true, coauthors: true } : off ? { secrets: true, coauthors: true, unsandboxed: true } : { secrets: false, coauthors: true, unsandboxed: true, outside: true };
     if (started !== off) change[id] = started ? "missing" : "kept";
   }
   live.sandboxUntilRestart = change;
@@ -1435,7 +1435,13 @@ const on = (name: string) => (cb: (...a: any[]) => void) => {
 };
 const emit = (name: string, ...args: unknown[]) => listeners[name]?.forEach((cb) => cb(...args));
 const sessionsChanged = () => emit("onSessionsChanged", sessions.map((s) => ({ ...s })));
-const teamChanged = () => emit("onTeamChanged", JSON.parse(JSON.stringify(team)));
+/** The team status as main's says it: each room with whether this Mac runs its sessions in its sandbox. */
+const teamNow = (): TeamStatus => {
+  const t: TeamStatus = JSON.parse(JSON.stringify(team));
+  t.rooms = t.rooms.map((r) => ({ ...r, sandboxed: !roomSandboxOff(settings, r.id) }));
+  return t;
+};
+const teamChanged = () => emit("onTeamChanged", teamNow());
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const byId = (id: string) => sessions.find((s) => s.id === id);
 /**
@@ -1777,11 +1783,18 @@ const api: Record<string, (...a: any[]) => any> = {
   appVersion: async () => version,
   getSettings: async () => settings,
   setSettings: async (patch: Partial<Settings>) => {
-    settings = { ...settings, ...patch }; // main merges what it's sent
-    if ("roomsUnsandboxed" in patch) {
-      applyRoomSandbox();
-      emit("onTeamLive", JSON.parse(JSON.stringify(live)));
-    }
+    // main merges what it's sent, but for the rooms' sandbox switches, which only teamSetRoomSandbox changes
+    const { roomsUnsandboxed: _off, ...rest } = patch;
+    settings = { ...settings, ...rest };
+  },
+  teamSetRoomSandbox: async (roomId: string, sandboxed: boolean) => {
+    const rooms = new Set(team.rooms.map((r) => r.id));
+    if (!rooms.has(roomId)) return err("That room's sandbox can't be switched on this Mac: this Mac isn't in the room");
+    const off = roomsUnsandboxedOf(settings).filter((id) => id !== roomId && rooms.has(id));
+    settings = { ...settings, roomsUnsandboxed: sandboxed ? off : [...off, roomId] };
+    applyRoomSandbox();
+    emit("onTeamLive", clone(live));
+    teamChanged();
   },
   usageGet: async () => usage,
   contextWindow: async (id: string): Promise<ContextWindow | { error: string }> =>
@@ -2289,7 +2302,7 @@ const api: Record<string, (...a: any[]) => any> = {
   },
 
   // team rooms: sharing, invites and joins are simulated; nothing connects
-  teamStatus: async () => (teamFails ? err("~/.mockingbird/team.json: EACCES: permission denied") : JSON.parse(JSON.stringify(team))),
+  teamStatus: async () => (teamFails ? err("~/.mockingbird/team.json: EACCES: permission denied") : teamNow()),
   teamShareGroup: async (groupKey: string, title: string) => {
     // ?refuse: the signaling Worker refuses new rooms, as one without this key on ALLOWED_CREATORS does
     if (new URLSearchParams(location.search).has("refuse") && !team.rooms.some((r) => r.groupKey === groupKey)) {

@@ -91,7 +91,7 @@ import type { TakeoverView } from "../shared/team/takeover";
 import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
 // team rooms: live panes
-import { LivePanes } from "./team/livePanes";
+import { LivePanes, windowSettingsPatch } from "./team/livePanes";
 import { RemoteAudit } from "./team/remoteAudit";
 import { stopTeamRooms } from "./team/shutdown";
 // team rooms: artifacts (importing it registers the artifacts' room events, before any room log loads)
@@ -1242,14 +1242,23 @@ handle("settings:get", () => store.settings);
 handle("settings:set", (s) => {
   // templates are saved through templates:save, which checks and redacts what's kept
   if (s && typeof s === "object" && Object.hasOwn(s, "pipelineTemplates")) throw new Error("Pipeline templates are saved with Save as template, not as a setting");
+  const { patch, dropped } = windowSettingsPatch(s);
+  if (dropped) console.warn("[settings] a settings change carried roomsUnsandboxed, which only team:setRoomSandbox changes: it was left as it was");
   const before = store.settings;
-  store.setSettings(s);
+  store.setSettings(patch);
   // a new claude or codex path applies without a restart
   if (binSettingsChanged(before, store.settings)) void lookUpBins(true);
   team.settingsChanged(before, store.settings);
   livePanes.settingsChanged(before, store.settings);
   phone?.alerts.settingsChanged();
   return store.settings;
+});
+// a room's sandbox switch on this Mac (Settings → Team): main's own list, for a room this Mac is in now
+handle("team:setRoomSandbox", (roomId, sandboxed) => {
+  if (typeof sandboxed !== "boolean") throw new Error("Whether to sandbox the room's sessions wasn't given as on or off");
+  const before = store.settings;
+  livePanes.setRoomSandbox(String(roomId), sandboxed);
+  team.settingsChanged(before, store.settings);
 });
 
 // ---- Phone alerts ----

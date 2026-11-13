@@ -302,7 +302,7 @@ function GuardChip({ session, guards, inline, onRestart }: { session: SessionInf
  * started: it keeps one it no longer needs (it left the room, or the room's sandbox was switched off here), or runs
  * outside one its room has on now. Either way a restart puts it right.
  */
-function SandboxChangeChip({ session, change, inRoom, onRestart }: { session: SessionInfo; change: RoomSandboxChange; inRoom: boolean; onRestart?: () => void }) {
+function SandboxChangeChip({ change, inRoom, onRestart }: { change: RoomSandboxChange; inRoom: boolean; onRestart?: () => void }) {
   const restart = (e: React.MouseEvent) => {
     e.stopPropagation();
     onRestart?.();
@@ -319,11 +319,10 @@ function SandboxChangeChip({ session, change, inRoom, onRestart }: { session: Se
       </button>
     );
   }
-  const line = session.agent === "codex" ? "its House board writes are refused" : "nothing crosses the room's line for it (teammates' sessions, the House board, room artifacts)";
   return (
     <button
       className="chip warn"
-      title={`This session started with its room's sandbox switched off on this Mac, and its room has the sandbox on now (Settings → Team). Until it restarts it runs without it — with your credentials, MCP servers and home folder — and ${line}. Click to restart it in the room's sandbox (its conversation resumes).`}
+      title={`This session started with its room's sandbox switched off on this Mac, and its room has the sandbox on now (Settings → Team). Until it restarts it runs without it — with your credentials, MCP servers and home folder — and nothing crosses the room's line for it (teammates' sessions and messages, the House board, room artifacts). Click to restart it in the room's sandbox (its conversation resumes).`}
       onClick={restart}
     >
       no room sandbox · restart
@@ -521,7 +520,7 @@ export function PaneChips({ session, density, git, gitErr, overlaps, overlapsUnr
       {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row, its ⋯ or ⌘K)">muted</span>}
       {!remote && !room?.takenOver && !dead && density !== "min" &&
         (session.sandboxUntilRestart ? (
-          <SandboxChangeChip session={session} change={session.sandboxUntilRestart} inRoom={!!room} onRestart={onRestart} />
+          <SandboxChangeChip change={session.sandboxUntilRestart} inRoom={!!room} onRestart={onRestart} />
         ) : (
           room && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />
         ))}

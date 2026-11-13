@@ -9,7 +9,7 @@ import { RoomMigrationsSetting } from "./team/Migrations";
 import { RemoteActivity } from "./team/RemoteActivity";
 import { isErr, type Settings } from "../shared/types";
 import { allowCreatorsCommand } from "../shared/team/protocol";
-import { roomsUnsandboxedOf } from "../shared/team/livePanes";
+import { settled } from "./settled";
 import type { LeaveOutcome, PeerStatus, RemoveOutcome, TeamNotice, TeamRoomSummary, TeamStatus } from "../shared/team/types";
 import { OLD_WORKER_APPROVE, pendingJoinText, RoomJoinRequests } from "./team/JoinRequests";
 import type { ConnectedSummary } from "./team/connectedModel";
@@ -743,14 +743,22 @@ function RoomMembers({ room }: { room: TeamRoomSummary }) {
 
 /**
  * Settings → Team, per room: whether this Mac runs the room's Claude and Codex sessions in the room's sandbox (on by
- * default). Turning it off asks first; it's this Mac's alone (Settings.roomsUnsandboxed) and applies as sessions start
- * or restart. The list saved holds only rooms this Mac is in, so a room left meanwhile isn't listed again.
+ * default). Turning it off asks first; it's this Mac's alone and applies as sessions start or restart. Main keeps it
+ * (team:setRoomSandbox) and says what it is in the team status, so no copy of the settings here can change it.
  */
-function RoomSandboxSetting({ room, rooms, settings, onChange }: { room: TeamRoomSummary; rooms: readonly TeamRoomSummary[]; settings: Settings; onChange: (patch: Partial<Settings>) => void }) {
+function RoomSandboxSetting({ room }: { room: TeamRoomSummary }) {
   const [confirming, setConfirming] = useState(false);
-  const off = roomsUnsandboxedOf(settings).filter((id) => rooms.some((r) => r.id === id));
-  const on = !off.includes(room.id);
-  const set = (sandboxed: boolean) => onChange({ roomsUnsandboxed: sandboxed ? off.filter((id) => id !== room.id) : [...off, room.id] });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const on = room.sandboxed !== false;
+  const set = async (sandboxed: boolean) => {
+    setBusy(true);
+    setError("");
+    const r = await settled(window.mb.teamSetRoomSandbox(room.id, sandboxed), sandboxed ? "Couldn't turn the room's sandbox on" : "Couldn't turn the room's sandbox off");
+    setBusy(false);
+    if (isErr(r)) return setError(r.error);
+    setConfirming(false);
+  };
   return (
     <>
       <SetRow
@@ -761,10 +769,11 @@ function RoomSandboxSetting({ room, rooms, settings, onChange }: { room: TeamRoo
             : "Off on this Mac: its Claude and Codex sessions run like your own, with your credentials, MCP servers and home folder. Teammates' Macs decide for themselves. Applies as sessions start or restart."
         }
       >
-        <Toggle label={`Sandbox this room's sessions: ${room.name}`} on={on} onChange={(v) => (v ? set(true) : setConfirming(true))} />
+        <Toggle label={`Sandbox this room's sessions: ${room.name}`} on={on} disabled={busy} onChange={(v) => (v ? void set(true) : setConfirming(true))} />
       </SetRow>
+      {error && !confirming && <div className="err">{error}</div>}
       {confirming && (
-        <Modal className="modal team-dlg" onClose={() => setConfirming(false)}>
+        <Modal className="modal team-dlg" onClose={busy ? undefined : () => setConfirming(false)}>
           <h3>Run sessions without the sandbox in {room.name}?</h3>
           <div className="sub-h">On this Mac only, as its sessions start or restart.</div>
           <ul className="team-effects">
@@ -772,21 +781,19 @@ function RoomSandboxSetting({ room, rooms, settings, onChange }: { room: TeamRoo
               Its Claude and Codex sessions run like your own: with your git and GitHub credentials, your MCP servers (Slack…), <code>~/.claude</code>, Docker and your
               caches.
             </li>
-            <li className="warn">So does anyone you let type into them, and anything a teammate's agent sends them.</li>
+            <li className="warn">
+              So does anyone you let type into them, and anything a teammate's agent sends them. What teammates put in the room — House tickets, room artifacts, their
+              changes — reaches an agent with your credentials and MCP servers too.
+            </li>
             <li>Teammates' Macs decide for themselves: this changes nothing on theirs.</li>
           </ul>
+          {error && <div className="err">{error}</div>}
           <div className="row">
-            <button className="outline" onClick={() => setConfirming(false)}>
+            <button className="outline" disabled={busy} onClick={() => setConfirming(false)}>
               Cancel
             </button>
-            <button
-              className="primary"
-              onClick={() => {
-                set(false);
-                setConfirming(false);
-              }}
-            >
-              Turn the sandbox off
+            <button className="primary" disabled={busy} onClick={() => void set(false)}>
+              {busy ? "Turning off…" : "Turn the sandbox off"}
             </button>
           </div>
         </Modal>
@@ -899,7 +906,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
             </button>
           </SetRow>
           <RoomWarnings room={r} />
-          <RoomSandboxSetting room={r} rooms={st.rooms} settings={settings} onChange={onChange} />
+          <RoomSandboxSetting room={r} />
           <RoomBackupsSetting room={r} />
           <RoomMigrationsSetting roomId={r.id} />
           <RoomMembers room={r} />

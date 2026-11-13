@@ -462,7 +462,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const runs = target.agent ?? target.resumes ?? null;
     // the folders its sandbox lets it write, whatever asked for them (a request, an old record resumed): never home
     if (runs) {
-      const why = roomFolderRefusal(target.cwd, target.extraDirs ?? []);
+      const why = roomFolderRefusal(target.cwd, target.extraDirs ?? [], os.homedir(), sandboxed);
       if (why) throw new Error(why);
     }
     const codexGuarded = sandboxed && runs === "codex" && codexGuardsSecrets(target.agentVersion);
@@ -1527,6 +1527,21 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   // ---- the window -----------------------------------------------------------------------------------
 
   /**
+   * Settings → Team's "Sandbox this room's sessions" for room `roomId` on this Mac (team:setRoomSandbox). The list kept
+   * is main's own, changed here alone (settings:set never takes it: windowSettingsPatch), and holds only rooms this
+   * Mac is in now: a room it isn't in is refused, and one left meanwhile is dropped, so it starts sandboxed if joined
+   * again.
+   */
+  setRoomSandbox(roomId: string, sandboxed: boolean): void {
+    const rooms = new Set(this.d.rooms().map((r) => r.id));
+    if (!rooms.has(roomId)) throw new Error("That room's sandbox can't be switched on this Mac: this Mac isn't in the room");
+    const before = { ...this.d.settings() };
+    const off = roomsUnsandboxedOf(before).filter((id) => id !== roomId && rooms.has(id));
+    this.d.saveSettings({ roomsUnsandboxed: sandboxed ? off : [...off, roomId] });
+    this.settingsChanged(before, this.d.settings());
+  }
+
+  /**
    * Settings changed: the window's room sessions say whether a restart brings them inline, and which run with another
    * sandbox than their room's switch now asks for; teammates see the ones that left the room's sandbox unguarded.
    */
@@ -1675,6 +1690,17 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     }
     return { remote, own, views, problems: this.problems, sandboxUntilRestart };
   }
+}
+
+/**
+ * A Settings patch from the window as settings:set saves it: without roomsUnsandboxed, which only setRoomSandbox
+ * changes, so a copy of the settings the window loaded earlier can't switch a room's sandbox off (it may list a room
+ * left and joined again since). `dropped`: the patch had it.
+ */
+export function windowSettingsPatch<T>(patch: T): { patch: T; dropped: boolean } {
+  if (!patch || typeof patch !== "object" || !Object.hasOwn(patch, "roomsUnsandboxed")) return { patch, dropped: false };
+  const { roomsUnsandboxed: _off, ...rest } = patch as Partial<Settings>;
+  return { patch: rest as T, dropped: true };
 }
 
 function memberNameIn(team: Team | null, roomId: RoomId, id: MemberId): string {

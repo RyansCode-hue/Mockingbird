@@ -245,27 +245,26 @@ describe("a teammate's session someone can watch is one their agent can find and
     expect(r.error).toMatch(/Nick's session "Handed over" was taken over: it continues in your own Mockingbird, as "beef0001"/);
   });
 
-  it("a session started with the room's sandbox switched off on its Mac takes messages; once it's switched back on there, it's refused saying so till it restarts", async () => {
-    const switchTo = (off: string[]) => {
-      const before = { ...nick.settings };
-      nick.settings.roomsUnsandboxed = off;
-      nick.live.settingsChanged(before, nick.settings);
-    };
-    switchTo([roomId]);
+  it("a session started with the room's sandbox switched off on its Mac takes messages; once it's switched back on there, it's refused saying so till it restarts, Codex as Claude", async () => {
+    nick.live.setRoomSandbox(roomId, false);
     try {
       const s = await nick.start({ title: "Unsandboxed" });
-      nick.sessions.clearWaiting(s.id);
-      await until(() => viewOf(s.id)?.status === "idle", "the record");
+      const codex = await nick.start({ title: "Unsandboxed Codex", agent: "codex" });
+      for (const x of [s, codex]) nick.sessions.clearWaiting(x.id);
+      await until(() => viewOf(s.id)?.status === "idle" && viewOf(codex.id)?.status === "idle", "the records");
       expect(await listed(s.id)).toMatchObject({ title: "Unsandboxed", status: "idle" });
       expect(await listed(s.id)).not.toHaveProperty("accepts_messages");
-      expect((await send(s.id)).result).toMatch(/^Delivered to /);
-      switchTo([]);
+      for (const x of [s, codex]) expect((await send(x.id)).result, x.title).toMatch(/^Delivered to /);
+      nick.live.setRoomSandbox(roomId, true);
       await until(() => viewOf(s.id)?.room?.guards.secrets === false, "Ryan to see it outside the sandbox");
-      const r = await send(s.id);
-      expect(r.error).toMatch(/Nick's session "Unsandboxed": it isn't in the room's sandbox on Nick's Mac \(.*or the room's sandbox was switched on after it started\) — ask Nick to restart it in the room/);
-      expect(nick.log.at(-1)).toMatchObject({ to: s.id, refused: true });
+      for (const x of [s, codex]) {
+        nick.sessions.clearWaiting(x.id);
+        const r = await send(x.id);
+        expect(r.error, x.title).toMatch(new RegExp(`Nick's session "${x.title}": it isn't in the room's sandbox on Nick's Mac \\(.*or the room's sandbox was switched on after it started\\) — ask Nick to restart it in the room`));
+        expect(nick.log.at(-1)).toMatchObject({ to: x.id, refused: true });
+      }
     } finally {
-      switchTo([]);
+      nick.live.setRoomSandbox(roomId, true);
     }
   });
 });
