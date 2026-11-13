@@ -108,6 +108,16 @@ export interface PlannedStep {
   prompt?: string;
 }
 
+/**
+ * A not-started step that started (main's startStep; Start now's answer). Its ticket's stage is moved once its pty runs,
+ * so a failure there doesn't undo the start: `stageWhy` says what couldn't be done and why ("#5115 couldn't be moved
+ * to Coding (…)"), else null.
+ */
+export interface StepStarted {
+  info: SessionInfo;
+  stageWhy: string | null;
+}
+
 /** Add next step's request (sessions:plan): a not-started step after session `after`, joined to it by a handoff wire. */
 export interface PlanRequest {
   after: string;

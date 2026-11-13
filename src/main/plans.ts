@@ -6,7 +6,7 @@ import { holdsPrivateKey } from "./team/artifactStore";
 import { TICKET_TOOL } from "./ticketToolSchemas";
 import { REDACTED, redactSecrets } from "./wirePrompt";
 import { WIRE_TOOL } from "./wireToolSchemas";
-import type { LayOutDeps, StepStarted, WireService } from "./wires";
+import type { LayOutDeps, WireService } from "./wires";
 import { isObj } from "../shared/landscape";
 import { agentOf, layOutPlan, parseTemplateBody, startsAtOrchestrator, TemplateError, ticketLine, withTicket, type LayOutReply, type TemplateBody } from "../shared/pipelineTemplates";
 import {
@@ -29,7 +29,7 @@ import {
 } from "../shared/plans";
 import { visibleLine, withoutHidden, type TextUse } from "../shared/hiddenText";
 import { oneLine, plainLine } from "../shared/team/agentText";
-import { slugBranch, suggestTicketName, ticketIdOf, ticketOfSession, topOfKey, type AgentKind, type AgentTold, type ModelCatalog, type NewSessionRequest, type SessionInfo } from "../shared/types";
+import { slugBranch, suggestTicketName, ticketIdOf, ticketOfSession, topOfKey, type AgentKind, type AgentTold, type ModelCatalog, type NewSessionRequest, type SessionInfo, type StepStarted } from "../shared/types";
 import { carriesWork, ROOM_LINE, ROOMS_STARTING, settingsRefusal, wireRefusal, type GateContext, type Wire, type WireEnd, type WireGate, type WireReply, type WireSettings } from "../shared/wires";
 
 /**

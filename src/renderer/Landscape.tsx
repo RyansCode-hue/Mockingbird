@@ -2418,16 +2418,22 @@ export function Landscape({
   }, [wireGate, !!gating]);
   /** Only popover `n` closes: an act of an earlier one, ending after another opened, leaves that one be. */
   const closeGate = (n: number) => setWireGate((g) => (g?.n === n ? null : g));
-  /** A person's Send along wire `id`: main first; a stopped other end asks about its cost before it's started (wireSend.ts). */
+  /**
+   * A person's Send along wire `id`: main first; a stopped other end asks about its cost before it's started (wireSend.ts).
+   * What main notes of a step it started (its ticket's stage not moved) is said.
+   */
   const sendWire = async (id: string, to: string, pendingId: string, body: string, again: boolean): Promise<string | null> => {
     const b = sessionOn(to);
     const call = again ? window.mb.wiresSendAgain : window.mb.wiresSend;
     let declined = false;
+    let note: string | undefined;
     const no = await wireCall("send it", async () => {
       const r = await sendAlongWire({ send: (start) => call(id, pendingId, body, start ? { start } : undefined), costOk: () => (b && resumeOk ? resumeOk(b) : Promise.resolve(true)) });
       declined = r === undefined;
+      if (r && !isErr(r) && "state" in r) note = r.note;
       return r ?? { state: null };
     });
+    if (note) say(note);
     return declined ? `Nothing was sent: “${b ? titleOf(b) : named(to)}” stays as it is.` : no;
   };
 

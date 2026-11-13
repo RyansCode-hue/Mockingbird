@@ -327,6 +327,19 @@ export class PipelineStore {
     });
   }
 
+  /**
+   * What a session opened on ticket `id` does to its stage: an Orchestrator's tracks it at BA (track), any other's
+   * starts its coding (startCoding). Null when nothing changed; throws, saying which move failed and why.
+   */
+  sessionOpened(id: string, o: { orchestrator: boolean; title?: string | null; by?: string }): TicketPipeline | null {
+    const title = o.title || undefined;
+    try {
+      return o.orchestrator ? this.track(id, title, o.by) : this.startCoding(id, title, o.by);
+    } catch (err) {
+      throw new Error(`#${id} couldn't be ${o.orchestrator ? "tracked at BA" : "moved to Coding"} (${err instanceof Error ? err.message : String(err)})`, { cause: err });
+    }
+  }
+
   /** Stakeholder feedback sends the ticket back to Coding, quoted in the comment it drafts. */
   addFeedback(id: string, text: string, by?: string): TicketPipeline {
     const t = text.trim();

@@ -1,4 +1,4 @@
-import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
+import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, StepStarted, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
@@ -20,7 +20,7 @@ const api = {
   /** Add next step: a not-started step after `req.after`, joined to it by a handoff wire (WireService.addStep). */
   planSession: (req: PlanRequest): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("sessions:plan", req),
   /** Start not-started step `id` now, from the commit the step before it is on (Start now). */
-  startPlanned: (id: string): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("sessions:startPlanned", id),
+  startPlanned: (id: string): Promise<IpcResult<StepStarted>> => ipcRenderer.invoke("sessions:startPlanned", id),
   /** Where Start now would start not-started step `id`, said for its confirm; refused as the start would be. */
   describeStart: (id: string): Promise<IpcResult<string>> => ipcRenderer.invoke("sessions:describeStart", id),
   /** Pipeline templates (W9): the saved ones as this version reads them, each refused one with why. */

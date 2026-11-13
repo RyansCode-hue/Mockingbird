@@ -7,7 +7,8 @@ import { Plans, PROPOSE_EVERY_MS, type OrchestratorStartDeps, type PlanLayOutDep
 import { orchestratorRefusal, TicketTools } from "../src/main/ticketTools";
 import { TICKET_TOOL, TICKET_TOOL_SCHEMAS } from "../src/main/ticketToolSchemas";
 import { orchestratorRules } from "../src/main/wirePrompt";
-import { WireService, type StepStarted } from "../src/main/wires";
+import { WireService } from "../src/main/wires";
+import type { StepStarted } from "../src/shared/types";
 import { BUILT_IN_TEMPLATE, kickoffAsTicket, layOutPlan, parseTemplateBody, ticketKickoffPrompt, ticketLine, TICKET_LABEL, withTicket, type LayOutRequest } from "../src/shared/pipelineTemplates";
 import { checkPlan, ME, orchestratorKickoff, PLAN_MAX, planFlags, provenanceOf, readPlanArgs, readShownPlan, startingShape, type Plan, type PlanContext } from "../src/shared/plans";
 import { BY_YOU, type ModelCatalog, type NewSessionRequest, type SessionInfo } from "../src/shared/types";

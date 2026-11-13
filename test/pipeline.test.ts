@@ -1,10 +1,12 @@
+import { execFile, execFileSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PipelineStore, stageComment } from "../src/main/pipeline";
 import { parseRemote } from "../src/main/git";
-import { clearGitPins, pinGitDirs } from "../src/main/gitPins";
-import { roomGitDirs } from "../src/main/codexRoomSandbox";
+import { clearGitPins } from "../src/main/gitPins";
+import { prStatusFor } from "../src/main/prStatus";
 import { findOpenPr, prBaseProblem, prCreateRefusal, openPr, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
 import type { ShellRunner } from "../src/main/headless";
 import { BY_YOU, GATES, prBranchProblem, roomPushLine, unrecordedBranch, stageLabel, stageStep, tickOf, TICKET_STAGES, type PipelinePr, type TicketPipeline, type TicketStage } from "../src/shared/types";
@@ -36,6 +38,20 @@ describe("the ticket pipeline store", () => {
     s.setStage("1", "dev-test");
     expect(s.startCoding("1")).toBeNull();
     expect(s.get("1")!.stage).toBe("dev-test");
+  });
+  it("moves a ticket as a session opened on it does, an Orchestrator's to BA, saying which move failed and why", () => {
+    const f = storeFile();
+    const s = new PipelineStore(f);
+    expect(s.sessionOpened("1", { orchestrator: false, title: "t", by: BY_YOU })!.stage).toBe("coding");
+    expect(s.sessionOpened("2", { orchestrator: true, title: "", by: BY_YOU })).toMatchObject({ stage: "ba", title: undefined });
+    expect(s.sessionOpened("2", { orchestrator: true })).toBeNull();
+    fs.chmodSync(path.dirname(f), 0o500); // the save's temporary file can't be made
+    try {
+      expect(() => s.sessionOpened("3", { orchestrator: false })).toThrow(/^#3 couldn't be moved to Coding \(.*EACCES/);
+      expect(() => s.sessionOpened("4", { orchestrator: true })).toThrow(/^#4 couldn't be tracked at BA \(.*EACCES/);
+    } finally {
+      fs.chmodSync(path.dirname(f), 0o700);
+    }
   });
   it("sends stakeholder feedback back to Coding, quoting it in the draft", () => {
     const s = new PipelineStore(storeFile());
@@ -314,7 +330,7 @@ describe("the window's moves and ticks", () => {
   it("pass BY_YOU on every pipeline call in index.ts that records who", () => {
     const src = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8");
     const calls: string[] = [];
-    for (const m of src.matchAll(/\bpipeline\.(setStage|startCoding|addFeedback|addPr|setCheck)\(/g)) {
+    for (const m of src.matchAll(/\bpipeline\.(setStage|startCoding|track|sessionOpened|addFeedback|addPr|setCheck)\(/g)) {
       let depth = 0;
       let i = m.index! + m[0].length - 1;
       for (; i < src.length; i++) {
@@ -323,7 +339,7 @@ describe("the window's moves and ticks", () => {
       }
       calls.push(src.slice(m.index!, i + 1));
     }
-    expect(calls.map((c) => c.match(/^pipeline\.(\w+)/)![1]).sort()).toEqual(["addFeedback", "addPr", "setCheck", "setStage", "startCoding"]);
+    expect(calls.map((c) => c.match(/^pipeline\.(\w+)/)![1]).sort()).toEqual(["addFeedback", "addPr", "sessionOpened", "setCheck", "setStage"]);
     for (const c of calls) expect(c, c).toMatch(/\bBY_YOU\b/);
   });
 });
@@ -565,7 +581,7 @@ describe("opening pull requests", () => {
     };
     const r = await openPr({ provider: "github", owner: "RyansCode-hue", repo: "Mockingbird" }, { branch: "feat/x", base: "main", title: "Add x", description: "body" }, { ado: async () => ({}), run, cwd: "/", env: {} });
     expect(r).toEqual({ id: 9, url: "https://github.com/RyansCode-hue/Mockingbird/pull/9" });
-    expect(seen[0].cmd).toBe("gh pr create --head 'feat/x' --base 'main' --title 'Add x' --body-file -");
+    expect(seen[0].cmd).toBe("gh pr create --head 'feat/x' --base 'main' --title 'Add x' --body-file - --repo 'RyansCode-hue/Mockingbird'");
     expect(seen[0].input).toBe("body");
   });
   it("reports a failed gh run by what it printed, or by its exit code when it printed nothing", async () => {
@@ -575,47 +591,119 @@ describe("opening pull requests", () => {
     const loud: ShellRunner = async () => ({ code: 1, out: "  To get started with GitHub CLI, please run:  gh auth login\n" });
     await expect(findOpenPr(gh, "b", "main", { ado: async () => ({}), run: loud, cwd: "/", env: {} })).rejects.toThrow(/^gh: To get started/);
   });
-  describe("gh in a repository's folder, which runs git there itself", () => {
+  describe("gh, which runs git in its own folder", () => {
     const gh = { provider: "github" as const, owner: "me", repo: "app" };
     afterEach(() => clearGitPins());
-    /** A runner that records what it's asked to run, and with what environment. */
+    /** A runner that records what it's asked to run, where, and with what environment. */
     const recording = () => {
-      const seen: { cmd: string; env: Record<string, string> }[] = [];
+      const seen: { cmd: string; cwd: string; env: Record<string, string> }[] = [];
       const run: ShellRunner = async (cmd, _input, o) => {
-        seen.push({ cmd, env: { ...(o?.env ?? {}) } });
+        seen.push({ cmd, cwd: o.cwd, env: { ...o.env } });
+        if (cmd.startsWith("gh pr view")) return { code: 1, out: 'no pull requests found for branch "main"' };
         return { code: 0, out: cmd.startsWith("gh pr create") ? "https://github.com/me/app/pull/3" : "[]" };
       };
       return { seen, run };
     };
+    /** sh, not the user's login shell, so the stand-in gh in the trap's bin folder is the one PATH finds. */
+    const sh: ShellRunner = (cmd, input, o) =>
+      new Promise((resolve) => {
+        const child = execFile("/bin/sh", ["-c", cmd], { cwd: o.cwd, env: o.env, timeout: o.timeoutMs }, (err, stdout, stderr) =>
+          resolve({ code: err ? (typeof (err as NodeJS.ErrnoException).code === "number" ? Number((err as NodeJS.ErrnoException).code) : 1) : 0, out: `${stdout}${stderr}` })
+        );
+        child.stdin?.on("error", () => {});
+        child.stdin?.end(input);
+      });
+    /**
+     * A repository whose working tree holds what a room session's agent can write there: a nested repository whose own
+     * config names a core.fsmonitor program, added to the index as a gitlink (status goes into it), and a pre-push hook
+     * in the tracked hooks folder its config names. `ran` is written when anything of the agent's runs. Its stand-in gh
+     * runs the gits gh runs in its folder: its remotes, pr create's count of uncommitted changes, and a push.
+     */
+    const trapped = () => {
+      const box = tempDir("gh-trap");
+      const ran = path.join(box, "ran");
+      const evil = path.join(box, "evil.sh");
+      fs.writeFileSync(evil, `#!/bin/sh\necho "$0 $* in $(pwd)" >> "${ran}"\nexit 1\n`, { mode: 0o755 });
+      const origin = path.join(box, "origin.git");
+      git(box, "init", "-q", "--bare", origin);
+      const repo = makeRepo({ "a.txt": "a\n" }, "app", box);
+      git(repo, "remote", "add", "origin", origin);
+      git(repo, "config", "core.hooksPath", ".husky");
+      const sub = makeRepo({ "s.txt": "s\n" }, "sub", repo);
+      git(sub, "config", "core.fsmonitor", evil);
+      git(repo, "add", "sub");
+      write(repo, { ".husky/pre-push": `#!/bin/sh\n"${evil}" pre-push\n` });
+      fs.chmodSync(path.join(repo, ".husky", "pre-push"), 0o755);
+      const bin = tempDir("gh-bin");
+      fs.writeFileSync(
+        path.join(bin, "gh"),
+        `#!/bin/sh\necho "$PWD $*" >> "${path.join(box, "gh-calls")}"\ngit remote -v >/dev/null 2>&1\ngit status --porcelain >/dev/null 2>&1\ngit push -q origin HEAD >/dev/null 2>&1\ncase "$2" in create) echo https://github.com/me/app/pull/3 ;; *) echo '[]' ;; esac\n`,
+        { mode: 0o755 }
+      );
+      const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: os.homedir(), GIT_CONFIG_NOSYSTEM: "1" };
+      return { repo, ran, env, calls: () => fs.readFileSync(path.join(box, "gh-calls"), "utf8").trim().split("\n") };
+    };
+    const ghFolderPath = () => path.join(os.homedir(), ".mockingbird", "gh");
 
-    it("isn't run in a folder whose .git holds a stray commondir, which would lead its gits to another folder's config", async () => {
-      const repo = makeRepo();
-      fs.writeFileSync(path.join(repo, ".git", "commondir"), `${tempDir("elsewhere")}\n`);
-      const r = recording();
-      const deps = { ado: async () => ({}), run: r.run, cwd: repo, env: {} };
-      await expect(findOpenPr(gh, "b", "main", deps)).rejects.toThrow(/^gh wasn't run: Mockingbird won't run git in .*: its \.git holds a commondir/);
-      await expect(openPr(gh, { branch: "b", base: "main", title: "t", description: "d" }, deps)).rejects.toThrow(/^gh wasn't run: /);
-      expect(r.seen).toEqual([]);
+    it("runs nothing of a repository's agent-written tree: it's run in Mockingbird's empty folder, told the repository", async () => {
+      const t = trapped();
+      // the trap holds: gh run in the repository's folder runs the nested repository's fsmonitor and the tracked hook
+      await sh("gh pr create", "", { cwd: t.repo, env: t.env, timeoutMs: 30_000 });
+      expect(fs.readFileSync(t.ran, "utf8")).toMatch(/evil\.sh .* in .*\/sub\n[\s\S]*evil\.sh pre-push/);
+      fs.rmSync(t.ran);
+      const deps = { ado: async () => ({}), run: sh, cwd: t.repo, env: t.env, room: true };
+      expect(await findOpenPr(gh, "main", "dev", deps)).toBeNull();
+      expect(await openPr(gh, { branch: "5101-x", base: "main", title: "t", description: "d" }, deps)).toEqual({ id: 3, url: "https://github.com/me/app/pull/3" });
+      expect(fs.existsSync(t.ran)).toBe(false);
+      const folder = fs.realpathSync(ghFolderPath());
+      expect(t.calls().slice(1)).toEqual([
+        `${folder} pr list --head main --base dev --state open --json number,url --limit 1 --repo me/app`,
+        `${folder} pr create --head 5101-x --base main --title t --body-file - --repo me/app`,
+      ]);
+      expect(fs.readdirSync(folder)).toEqual([]);
     });
 
-    it("isn't run in a room session's folder once its .git leads elsewhere than at its launch", async () => {
-      const repo = makeRepo();
-      const wt = path.join(tempDir("wt"), "5101-x");
-      git(repo, "worktree", "add", "-q", "-b", "5101-x", wt);
-      expect(pinGitDirs(wt, (await roomGitDirs(wt))!, repo)).toBeNull();
+    it("finds no repository above its folder, and isn't run while its folder holds anything", async () => {
       const r = recording();
-      const deps = { ado: async () => ({}), run: r.run, cwd: wt, env: {}, room: true };
-      expect(await findOpenPr(gh, "5101-x", "main", deps)).toBeNull();
-      const evil = path.join(tempDir("evil"), "wt");
-      fs.cpSync(path.join(repo, ".git", "worktrees", "5101-x"), evil, { recursive: true });
-      fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${evil}\n`);
-      await expect(findOpenPr(gh, "5101-x", "main", deps)).rejects.toThrow(/^gh wasn't run: Mockingbird won't run git in .*: its \.git now leads to /);
+      const deps = { ado: async () => ({}), run: r.run, cwd: makeRepo(), env: { PATH: "/usr/bin:/bin" } };
+      await findOpenPr(gh, "b", "main", deps);
+      const folder = ghFolderPath();
+      expect(r.seen[0]).toMatchObject({ cwd: folder, env: { PATH: "/usr/bin:/bin", GIT_CEILING_DIRECTORIES: path.dirname(folder) } });
+      // a repository holding the folder isn't found from it
+      const above = path.dirname(folder);
+      execFileSync("git", ["init", "-q", above]);
+      try {
+        expect(() => execFileSync("git", ["rev-parse", "--git-dir"], { cwd: folder, env: { ...process.env, ...r.seen[0].env }, stdio: ["ignore", "pipe", "pipe"] })).toThrow(/not a git repository/);
+        // the control: without the ceiling, git finds it
+        expect(execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: folder, encoding: "utf8" }).trim()).toBe(fs.realpathSync(path.join(above, ".git")));
+      } finally {
+        fs.rmSync(path.join(above, ".git"), { recursive: true, force: true });
+      }
+      fs.mkdirSync(path.join(folder, ".git"));
+      try {
+        await expect(findOpenPr(gh, "b", "main", deps)).rejects.toThrow(/^gh wasn't run: .*\.mockingbird\/gh, the empty folder Mockingbird runs it in, holds \.git\. Remove what's there\.$/);
+        expect(r.seen).toHaveLength(1);
+      } finally {
+        fs.rmSync(path.join(folder, ".git"), { recursive: true, force: true });
+      }
+    });
+
+    it("is told the origin as guarded git reads it, refused where git is", async () => {
+      const repo = makeRepo();
+      git(repo, "remote", "add", "origin", "git@github.com:me/app.git");
+      const r = recording();
+      const deps = { ado: async () => ({}), run: r.run, env: {} };
+      expect((await prStatusFor(repo, deps)).pr).toBeNull();
+      expect(r.seen.map((s) => s.cmd)).toEqual([expect.stringMatching(/^gh pr view 'main' --json \S+ --repo 'me\/app'$/)]);
+      // a stray commondir would lead git to another folder's config: nothing is read, and gh isn't run
+      fs.writeFileSync(path.join(repo, ".git", "commondir"), `${tempDir("elsewhere")}\n`);
+      await expect(prStatusFor(repo, deps)).rejects.toThrow(/Mockingbird won't run git in .*: its \.git holds a commondir/);
+      await expect(prPreflight(repo, "5101", "main", deps)).rejects.toThrow(/Mockingbird won't run git in /);
       expect(r.seen).toHaveLength(1);
     });
 
-    it("isn't run in a room session's folder whose config comes from a file its agent can write, and runs there with the filters a room's git turns off", async () => {
+    it("is refused for a room session's folder whose config comes from a file its agent can write, as its origin is read from that config", async () => {
       const repo = makeRepo();
-      git(repo, "config", "filter.strip.clean", "nbstripout");
       git(repo, "config", "include.path", "../team.gitconfig");
       const r = recording();
       const room = { ado: async () => ({}), run: r.run, cwd: repo, env: { PATH: "/usr/bin" }, room: true };
@@ -623,15 +711,11 @@ describe("opening pull requests", () => {
         /^gh wasn't run: Mockingbird runs none of a team room session's git with this repository's config: \.git\/config includes team\.gitconfig, a file in /
       );
       expect(r.seen).toEqual([]);
-      // a local session's gh runs there with the user's environment as it is
+      // a local session's gh runs
       expect(await findOpenPr(gh, "b", "main", { ...room, room: false })).toBeNull();
-      expect(r.seen[0].env).toEqual({ PATH: "/usr/bin" });
       git(repo, "config", "--unset", "include.path");
       expect(await openPr(gh, { branch: "b", base: "main", title: "t", description: "d" }, room)).toEqual({ id: 3, url: "https://github.com/me/app/pull/3" });
-      const env = r.seen[1].env;
-      const pairs = Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_v, i) => [env[`GIT_CONFIG_KEY_${i}`], env[`GIT_CONFIG_VALUE_${i}`]]);
-      expect(pairs).toEqual(expect.arrayContaining([["filter.strip.clean", ""], ["filter.strip.process", ""], ["filter.strip.required", "false"]]));
-      expect(env.PATH).toBe("/usr/bin");
+      expect(r.seen.map((s) => s.env.PATH)).toEqual(["/usr/bin", "/usr/bin"]);
     });
   });
 
@@ -790,7 +874,10 @@ describe("a pull request's branch", () => {
     // with the branch they were made on, and what the dialog showed and said
     expect(main).toContain("return cleanupWorktree(repo, folder, mode, { ...folderOwnHooks(folder), shown: text(say?.shown), confirmBranch: text(say?.confirmBranch) });");
     expect(main).toContain("const there = [...sessions.list(), ...sessions.resumable()].filter((s) => samePath(s.cwd, folder));");
-    expect(main).toContain("return { own: !there.length || there.some((s) => pushesOwnHooks(s.id)), recorded: branches.length === 1 ? branches[0] : null };");
+    expect(main).toContain("const roomRulesIn = (folder: string): boolean => roomRulesFor(folder, [...sessions.list(), ...sessions.resumable()], pushesOwnHooks);");
+    expect(main).toContain("return { own: roomRulesIn(folder), recorded: branches.length === 1 ? branches[0] : null };");
+    // gh for a folder goes by the same rules: a room session's there, or none found
+    expect(main).toMatch(/const prDeps = \(root: string\): PrDeps => \(\{ .*, cwd: root, room: roomRulesIn\(root\) \}\);/);
     // a folder made or checked out for one, by the group it starts in
     expect(main).toContain("sessions.ownHooksFor = (group) => !roomsKnown || !!sessions.roomOfGroup?.(group ?? LOOSE_GROUP);");
   });

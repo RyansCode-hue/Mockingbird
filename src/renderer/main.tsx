@@ -34,7 +34,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, HELPDESK_PRESET, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult, type AgentTold } from "../shared/types";
+import { AGENT_NAME, HELPDESK_PRESET, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult, type AgentTold, type StepStarted } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -1930,15 +1930,17 @@ function App() {
     });
   /**
    * Start now, agreed to: not-started step `s` started from the commit the step before it is on (main's startPlanned),
-   * where its card is. Its Start now and Forget are off meanwhile, as a ghost's are.
+   * where its card is. Its Start now and Forget are off meanwhile, as a ghost's are. A ticket's stage that couldn't be
+   * moved as it started is said.
    */
   const startStep = (s: SessionInfo) =>
     whileClosedBusy([s.id], `starting ${titleOf(s)}`, async () => {
-      const info: IpcResult<SessionInfo> = await window.mb.startPlanned(s.id);
+      const r: IpcResult<StepStarted> = await window.mb.startPlanned(s.id);
       await refresh();
-      if (isErr(info)) return closedSay(`Couldn't start ${titleOf(s)}: ${info.error}`);
-      setFocused(info.id);
-      revealWorkspace(info.id);
+      if (isErr(r)) return closedSay(`Couldn't start ${titleOf(s)}: ${r.error}`);
+      setFocused(r.info.id);
+      revealWorkspace(r.info.id);
+      if (r.stageWhy) closedSay(`${titleOf(r.info)} started, but ${r.stageWhy}.`);
     });
   /**
    * Reopen all and Clear over closed sessions `list` (GhostsEnv), each a `what` ("closed workspace"), `where` the

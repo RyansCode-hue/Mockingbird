@@ -62,6 +62,8 @@ interface Setup {
   frame?: FrameWire | "real";
   /** How a closed session is reopened; the manager's relaunch unless a test holds it back. */
   reopen?: (id: string, m: SessionManager) => Promise<SessionInfo | null>;
+  /** What couldn't be done to a started step's ticket's stage (index.ts's startStep); none unless a test says. */
+  stageWhy?: string;
   /** Each new wire's id, in turn; random ones otherwise. */
   ids?: string[];
   /**
@@ -134,7 +136,7 @@ function setup(o: Setup = {}) {
     },
     startPlanned: async (id, from) => {
       stepsStarted.push({ id, from });
-      return m.startPlanned(id, from);
+      return { info: await m.startPlanned(id, from), stageWhy: o.stageWhy ?? null };
     },
     submits: () => opts.submit,
     frame:
@@ -389,6 +391,26 @@ describe("a person's Send, by where the other end is", () => {
     expect(t.ptyOf(b.id).writes).toEqual(["|[sent from Builder to Tester] the summary|"]);
     vi.advanceTimersByTime(150);
     expect(t.wireOf(w).delivery!.state).toBe("sent");
+  });
+
+  it("not started, its ticket's stage not moved as it starts: the Send's answer says so, sent or not", async () => {
+    const t = setup({ stageWhy: "#5115 couldn't be moved to Coding (EACCES: pipeline.json)" });
+    const a = await t.pane("Builder");
+    const b = t.planned(a.id, "Tester");
+    const w = t.add(a.id, b.id);
+    const p = await t.offer(w);
+    const r = await t.d.send(w, p, "the summary");
+    expect(r).toMatchObject({ note: "“Tester” started, but #5115 couldn't be moved to Coding (EACCES: pipeline.json)." });
+    expect(t.m.list().find((s) => s.id === b.id)!.planned).toBeUndefined();
+    // a send that fails after the start says it with its refusal
+    const c = t.planned(a.id, "Verifier");
+    const w2 = t.add(a.id, c.id);
+    const p2 = await t.offer(w2);
+    t.m.deliverAgentMessage = () => {
+      throw new Error("its queue is full");
+    };
+    t.idle(c.id, { started: true });
+    expect(refusal(await t.d.send(w2, p2, "the summary"))).toBe("its queue is full “Verifier” started, but #5115 couldn't be moved to Coding (EACCES: pipeline.json).");
   });
 
   it("not started, and it can't be started: failed with why, the step kept to send again", async () => {

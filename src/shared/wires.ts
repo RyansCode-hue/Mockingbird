@@ -329,9 +329,10 @@ export interface WireChange extends WireState {
 export type WireReply = { state: WireState; id?: string } | { refused: string };
 /**
  * A person's Send: refused with `start` when its other end is stopped and starting it wasn't agreed to. The window
- * asks about its cost, then sends again with `{ start: true }` (renderer/wireSend.ts).
+ * asks about its cost, then sends again with `{ start: true }` (renderer/wireSend.ts). `note`, for the window to say: a
+ * not-started step it started whose ticket's stage couldn't be moved.
  */
-export type SendReply = { state: WireState; id?: string } | { refused: string; start?: "resume" | "reopen" };
+export type SendReply = { state: WireState; id?: string; note?: string } | { refused: string; start?: "resume" | "reopen" };
 
 // ---- the rules on making and using a wire -------------------------------------------------
 

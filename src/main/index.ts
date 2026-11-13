@@ -33,13 +33,13 @@ import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, reorderWorkItem, adoRequest, setWorkItemTags, projectTags } from "./ado";
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
-import { WireService, type StepStarted } from "./wires";
+import { WireService } from "./wires";
 import { wiresInOrder, type WireState } from "../shared/wires";
 import { WireDelivery } from "./wireDelivery";
 import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
-import { openPr, prCreateRefusal, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
+import { guardedOrigin, openPr, prCreateRefusal, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
-import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
+import { currentBranch, publicUrl, remoteName } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, claudeTranscriptOf, codexRolloutOf } from "./agentFiles";
 import { conversationFiles, handoffKickoff, handoffPrompt, replyOfConversation, repoState, transcriptDigest, transcriptLines, type ConversationLookup } from "./handoff";
 import { WireTools } from "./wireTools";
@@ -68,13 +68,13 @@ import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, UpdateOutcome, WorktreeCleanupSay } from "../shared/types";
+import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, StepStarted, UpdateOutcome, WorktreeCleanupSay } from "../shared/types";
 import { AGENT_KINDS, BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
 import { claudeRunner, freeForResume } from "./claudeBackground";
-import { binSettingsChanged, companionRequest, freeWorktree, guarded, instructionFile, rememberAnswer, samePath } from "./handlers";
+import { binSettingsChanged, companionRequest, freeWorktree, guarded, instructionFile, rememberAnswer, roomRulesFor, samePath } from "./handlers";
 import { TeamService, type RoomCleanup } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
 // team rooms: the Radley House board (importing it registers the board's room events, before any room log loads)
@@ -772,12 +772,20 @@ handle("sessions:closedOutput", (id) => sessions.closedOutput(String(id)));
 handle("sessions:missingFolders", () => sessions.missingFolders());
 /**
  * Session `info` just opened by you, on ticket `ticketId` or none: its folder's overlaps are checked, and the ticket's
- * coding has started; an Orchestrator's ticket is tracked at BA instead, as it researches and plans (W17).
+ * stage moved as a session opened on it moves it (PipelineStore.sessionOpened): its coding started, or an
+ * Orchestrator's ticket tracked at BA, as it researches and plans (W17). Throws, saying which failed: the move, or
+ * showing it in the windows.
  */
 function sessionOpened(info: SessionInfo, ticketId: unknown, ticketTitle: string | null | undefined): SessionInfo {
   if (info.repoPath) overlapsSoon(info.cwd);
   const ticket = ticketId ? String(ticketId) : null;
-  if (ticket && (info.role === "orchestrator" ? pipeline.track(ticket, ticketTitle || undefined, BY_YOU) : pipeline.startCoding(ticket, ticketTitle ?? undefined, BY_YOU))) pipelineChanged();
+  const moved = ticket ? pipeline.sessionOpened(ticket, { orchestrator: info.role === "orchestrator", title: ticketTitle, by: BY_YOU }) : null;
+  if (!moved) return info;
+  try {
+    pipelineChanged();
+  } catch (err) {
+    throw new Error(`#${ticket} is at ${stageLabel(moved.stage)} now, but the windows couldn't be shown it (${err instanceof Error ? err.message : String(err)})`, { cause: err });
+  }
   return info;
 }
 handle("sessions:create", async (req) => sessionOpened(await sessions.create(req), req?.ticketId, req?.ticketTitle));
@@ -797,7 +805,7 @@ handle("sessions:relaunch", (id) => reopenSession(id));
 // ---- not-started steps (W8): Add next step makes one, joined by a handoff; a Send along it, or Start now, starts it ----
 handle("sessions:planned", () => sessions.planned());
 handle("sessions:plan", (req: PlanRequest) => wires.addStep(req, { plan: (q) => sessions.plan(q), forget: (id) => sessions.kill(id, true) }).info);
-handle("sessions:startPlanned", (id) => startPlannedStep(String(id ?? "")));
+handle("sessions:startPlanned", (id) => startStep(String(id ?? "")));
 handle("sessions:describeStart", (id) => sessions.describeStart(String(id ?? ""), upstreamOf(String(id ?? ""))));
 /** The step before not-started step `id`: the source of the earliest handoff into it, or null with none (Start now's). */
 function upstreamOf(id: string): string | null {
@@ -808,7 +816,8 @@ function upstreamOf(id: string): string | null {
  * Start not-started step `id` (SessionManager.startPlanned) from upstream session `from`'s commit as it is now: the
  * Send's source, or (Start now) upstreamOf's. Placed in its own area as a reopened session is; a step on a ticket starts
  * its coding, as a session opened on one does (`ticketTitle` naming the ticket there when its record has none). Throws
- * only when it didn't start: a stage that couldn't be moved once its pty runs is logged and said in `stageWhy`.
+ * only when it didn't start: a stage that couldn't be moved or shown once its pty runs is logged, and said in
+ * `stageWhy` for whoever started it to say (Start now's window, a Send's reply, a lay-out's notes).
  */
 async function startStep(id: string, from?: string | null, ticketTitle?: string | null): Promise<StepStarted> {
   const info = await sessions.startPlanned(id, from ?? upstreamOf(id));
@@ -820,16 +829,9 @@ async function startStep(id: string, from?: string | null, ticketTitle?: string 
   try {
     return { info: sessionOpened(info, info.ticketId, info.ticketTitle ?? ticketTitle), stageWhy: null };
   } catch (err) {
-    logError(`pipeline: step ${info.id} started, but ticket ${info.ticketId}'s stage couldn't be moved`, err);
-    const to = info.role === "orchestrator" ? "tracked at BA" : "moved to Coding";
-    return { info, stageWhy: `#${info.ticketId} couldn't be ${to} (${err instanceof Error ? err.message : String(err)})` };
+    logError(`pipeline: step ${info.id} started, but ticket ${info.ticketId}'s stage`, err);
+    return { info, stageWhy: err instanceof Error ? err.message : String(err) };
   }
-}
-/** startStep for Start now and a Send's start, which answer the session: a stage that couldn't be moved is notified. */
-async function startPlannedStep(id: string, from?: string): Promise<SessionInfo> {
-  const { info, stageWhy } = await startStep(id, from);
-  if (stageWhy) notifySession(info.id, `${info.ticketTitle ?? info.title} started`, `But ${stageWhy}.`);
-  return info;
 }
 handle("sessions:resume", (id) => sessions.resume(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
@@ -884,15 +886,17 @@ handle("worktree:cleanup", (repo, wtPath, mode, say: Partial<WorktreeCleanupSay>
   const text = (v: unknown) => (typeof v === "string" ? v : undefined);
   return cleanupWorktree(repo, folder, mode, { ...folderOwnHooks(folder), shown: text(say?.shown), confirmBranch: text(say?.confirmBranch) });
 });
+/** Whether git and gh for `folder` go by a room session's rules (roomRulesFor), from the sessions there, live or closed but resumable. */
+const roomRulesIn = (folder: string): boolean => roomRulesFor(folder, [...sessions.list(), ...sessions.resumable()], pushesOwnHooks);
 /**
- * pushesOwnHooks for a folder, from the sessions there, live or closed but resumable (Close session closes the pane
- * before it cleans its worktree up): when any of them is a team room's, or none is found, its git fires only the
- * user's own hooks. `recorded`: the branch they were made on, when they agree (else none, and a room push asks).
+ * pushesOwnHooks for a folder (roomRulesIn; Close session closes the pane before it cleans its worktree up): its git
+ * fires only the user's own hooks. `recorded`: the branch its sessions were made on, when they agree (else none, and a
+ * room push asks).
  */
 function folderOwnHooks(folder: string): { own: boolean; recorded: string | null } {
   const there = [...sessions.list(), ...sessions.resumable()].filter((s) => samePath(s.cwd, folder));
   const branches = [...new Set(there.map((s) => s.branch ?? null))];
-  return { own: !there.length || there.some((s) => pushesOwnHooks(s.id)), recorded: branches.length === 1 ? branches[0] : null };
+  return { own: roomRulesIn(folder), recorded: branches.length === 1 ? branches[0] : null };
 }
 handle("worktrees:list", () =>
   listWorktrees(
@@ -1630,7 +1634,7 @@ const delivery: WireDelivery = new WireDelivery({
   context: (book) => wires.context(book),
   sessions,
   reopen: reopenSession,
-  startPlanned: (id, from) => startPlannedStep(id, from),
+  startPlanned: (id, from) => startStep(id, from),
   submits: submitsAgentMessages,
   // Mockingbird's label and fence around what's sent; a refusal fails the send, saying why
   frame: ({ wireId, body, automatic }) => {
@@ -1725,9 +1729,7 @@ const ticketTools = new TicketTools({
 });
 // a held PR request a move or another session's PR dropped: its asker hears why, as a dismissal tells it
 pipeline.onRequestsDropped = (id, dropped) => void ticketTools.requestsDropped(id, dropped);
-/** Whether gh in `folder` goes by a room session's rules: a session there, open or closed, is a team room's (pushesOwnHooks). */
-const ghInRoom = (folder: string): boolean => [...sessions.list(), ...sessions.resumable()].some((s) => samePath(s.cwd, folder) && pushesOwnHooks(s.id));
-const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root, room: ghInRoom(root) });
+const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root, room: roomRulesIn(root) });
 // a pull request merging: saved, the ticket moved on from its PR stage, and its pr-merged wires readied once each
 const prWatch: PrWatch = new PrWatch({
   pipeline,
@@ -1802,9 +1804,9 @@ handle(
       // checked here, not trusted from the form: the PR is recorded under `target`, and pushed under the branch's name
       const refused = prCreateRefusal({ ...pre, branch: pre.branch }, target, base, { recorded: s.branch, confirmed: req?.confirmBranch ? String(req.confirmBranch) : undefined });
       if (refused) throw new Error(refused);
-      const url = await originUrl(s.cwd);
-      const remote = url ? parseRemote(url) : null;
-      if (!remote) throw new Error(url ? `origin (${url}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
+      const origin = await guardedOrigin(s.cwd);
+      const remote = origin?.remote;
+      if (!remote) throw new Error(origin ? `origin (${publicUrl(origin.url)}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
       await scmPush(s.cwd, { own, branch: pre.branch });
       let made: { id: number; url: string };
       try {

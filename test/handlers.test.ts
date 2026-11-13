@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { binSettingsChanged, guarded, instructionFile, liveSessionsIn, rememberAnswer, samePath } from "../src/main/handlers";
+import { binSettingsChanged, guarded, instructionFile, liveSessionsIn, rememberAnswer, roomRulesFor, samePath } from "../src/main/handlers";
 import type { SessionInfo } from "../src/shared/types";
 import { tempDir } from "./helpers";
 
@@ -47,6 +47,19 @@ describe("a worktree in use", () => {
   it("compares folders that are gone by their spelling", () => {
     expect(samePath("/no/such/folder/", "/no/such/folder")).toBe(true);
     expect(samePath("/no/such/a", "/no/such/b")).toBe(false);
+  });
+});
+
+describe("a folder's git and gh under a room session's rules", () => {
+  it("is a room's when any session there is, and when none is found there", () => {
+    const wt = tempDir("wt");
+    const rooms = new Set(["r"]);
+    const isRoom = (id: string) => rooms.has(id);
+    expect(roomRulesFor(wt, [session("a", wt)], isRoom)).toBe(false);
+    expect(roomRulesFor(`${wt}/`, [session("a", wt), session("r", wt, "dead")], isRoom)).toBe(true);
+    // a forgotten session's folder, or one Mockingbird never had a session in, may hold what an agent wrote
+    expect(roomRulesFor(wt, [], isRoom)).toBe(true);
+    expect(roomRulesFor(wt, [session("a", tempDir("other"))], isRoom)).toBe(true);
   });
 });
 

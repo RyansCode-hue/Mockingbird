@@ -5,7 +5,7 @@ import { refuseTakenOver, type UntakenWireCall } from "./takenOverGuard";
 import { redactedFlag } from "./wirePrompt";
 import { filledFrom, titleAcross, usesSummary, type FinishFill, type MergeFill } from "./wireTools";
 import { isObj, own, put } from "../shared/landscape";
-import type { SessionInfo } from "../shared/types";
+import type { SessionInfo, StepStarted } from "../shared/types";
 import { outsideRoomSandbox } from "../shared/team/livePanes";
 import {
   AUTOMATIC_HOPS,
@@ -82,9 +82,9 @@ export interface WireDeliveryOptions {
   reopen: (id: string) => Promise<SessionInfo | null>;
   /**
    * Start not-started step `id` from upstream session `from`'s commit as it is now (SessionManager.startPlanned, by
-   * index.ts's startPlannedStep); left out, a send to one is refused.
+   * index.ts's startStep), with what couldn't be done to its ticket's stage; left out, a send to one is refused.
    */
-  startPlanned?: (id: string, from: string) => Promise<SessionInfo>;
+  startPlanned?: (id: string, from: string) => Promise<StepStarted>;
   /** Whether a message to this session is submitted or left in its prompt: its area's message mode. A person's Send always submits. */
   submits: (target: SessionInfo) => boolean;
   /** What the other end is sent (WireTools.messageFor, in index.ts); a throw fails the send with its message. */
@@ -112,6 +112,8 @@ interface Go {
   start: boolean;
   /** Its receipt has been heard from: the message reached the other end's queue. */
   heard?: boolean;
+  /** A not-started step this send started, whose ticket's stage couldn't be moved or shown: said with the send's answer. */
+  started?: string;
 }
 
 /** The send on its way on a wire, this run: from just before its write-ahead until its end is settled. */
@@ -627,7 +629,10 @@ export class WireDelivery {
     if (!target) {
       if (!go.start) return this.fail(go, "It isn't running, and starting it wasn't agreed to, so nothing was sent.");
       try {
-        target = await this.startWithin(go);
+        const started = await this.startWithin(go);
+        target = started.info;
+        // only a person's Send starts a step, so its window says this
+        if (started.stageWhy) go.started = `“${target.ticketTitle ?? target.title}” started, but ${started.stageWhy}.`;
       } catch (err) {
         return this.fail(go, message(err));
       }
@@ -664,7 +669,7 @@ export class WireDelivery {
       // it's in the other end's queue, or was pasted: its receipt tells what became of it
       this.o.log(`wires: ${go.wireId}'s ${go.id} reached ${go.to}'s queue, which failed after; its receipt says what became of it`, err);
     }
-    return { state: this.o.store.wires() };
+    return { state: this.o.store.wires(), ...(go.started ? { note: go.started } : {}) };
   }
 
   private running(id: string): SessionInfo | undefined {
@@ -688,7 +693,7 @@ export class WireDelivery {
   }
 
   /** The other end started (startEnd), or a refusal once START_WAIT_MS has gone by; a start that ends after that is logged. */
-  private startWithin(go: Go): Promise<SessionInfo> {
+  private startWithin(go: Go): Promise<StepStarted> {
     return new Promise((resolve, reject) => {
       let over = false;
       const timer = setTimeout(() => {
@@ -712,9 +717,10 @@ export class WireDelivery {
 
   /**
    * Start the other end, stopped: an exited pane is resumed in place, a closed one reopened, as the window does, and a
-   * not-started step started from `from`'s commit as it is at this Send (decision 1).
+   * not-started step started from `from`'s commit as it is at this Send (decision 1), with what couldn't be done to its
+   * ticket's stage (`stageWhy`, null for the others).
    */
-  private async startEnd(id: string, from: string): Promise<SessionInfo> {
+  private async startEnd(id: string, from: string): Promise<StepStarted> {
     const state = this.o.store.wires();
     const end = state.book ? this.o.context(state.book).end(id) : null;
     if (end?.where === "planned") {
@@ -729,13 +735,13 @@ export class WireDelivery {
         throw new Error(`Couldn't resume “${pane.ticketTitle ?? pane.title}”: ${err.message}`);
       });
       if ("refused" in r) throw new Error(`Couldn't resume “${pane.ticketTitle ?? pane.title}”: ${r.refused}`);
-      return r;
+      return { info: r, stageWhy: null };
     }
     const r = await this.o.reopen(id).catch((err: Error) => {
       throw new Error(`Couldn't reopen it: ${err.message}`);
     });
     if (!r) throw new Error("Couldn't reopen it: its saved record is gone.");
-    return r;
+    return { info: r, stageWhy: null };
   }
 
   /**
@@ -824,6 +830,7 @@ export class WireDelivery {
     else this.o.log("wires", `${go.wireId}'s ${go.id} wasn't sent: ${why}`);
     this.o.notify(go.to, "Not sent along a wire", why);
     this.next(go.wireId);
-    return { refused: why };
+    // what this send started stays started, its stage's trouble said with the refusal
+    return { refused: go.started ? `${why} ${go.started}` : why };
   }
 }

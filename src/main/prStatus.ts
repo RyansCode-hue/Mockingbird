@@ -1,7 +1,6 @@
 import { ADO_API } from "./ado";
-import { currentBranch, originRemote, parseRemote, publicUrl, remoteName, type RemoteRepo } from "./git";
-import { adoPrUrl, adoRepo, ghError, prError, runGh, type PrDeps } from "./pullRequests";
-import { guardedGit } from "./safeGit";
+import { currentBranch, publicUrl, remoteName, type RemoteRepo } from "./git";
+import { adoPrUrl, adoRepo, ghError, guardedOrigin, prError, runGh, type PrDeps } from "./pullRequests";
 import { quote } from "./shell";
 import type { PipelinePr, PrRepo, PrState, PrStatus } from "../shared/types";
 
@@ -91,7 +90,7 @@ async function findPr(remote: RemoteRepo, branch: string, deps: PrDeps): Promise
     const pick = list.find((p) => p.status === "active") ?? list.sort((a, b) => String(b.creationDate).localeCompare(String(a.creationDate)))[0];
     return pick ? adoPrState(pick, repo.webUrl) : null;
   }
-  const r = await runGh(deps, `gh pr view ${quote(branch)} --json ${GH_FIELDS}`);
+  const r = await runGh(deps, remote, `gh pr view ${quote(branch)} --json ${GH_FIELDS}`);
   if (r.code !== 0) {
     if (/no pull requests found/i.test(r.out)) return null;
     throw ghError(r);
@@ -104,7 +103,7 @@ export async function prStatusFor(cwd: string, deps: Omit<PrDeps, "cwd">): Promi
   const at = Date.now();
   const branch = await currentBranch(cwd);
   if (!branch) return { branch, pr: null, at };
-  const remote = await originRemote(cwd);
+  const remote = (await guardedOrigin(cwd))?.remote;
   if (!remote) return { branch, pr: null, at };
   try {
     return { branch, pr: await findPr(remote, branch, { ...deps, cwd }), at };
@@ -115,9 +114,9 @@ export async function prStatusFor(cwd: string, deps: Omit<PrDeps, "cwd">): Promi
 
 /** Where `cwd`'s origin lives, read through guardedGit, and its name as a pull request records it (`repo`). Throws saying why there's none. */
 export async function originRepoOf(cwd: string): Promise<{ remote: RemoteRepo; repo: PrRepo }> {
-  const url = await (await guardedGit(cwd)).run(["remote", "get-url", "origin"], { okCodes: [0, 2] }); // 2: no such remote
-  const remote = url ? parseRemote(url) : null;
-  if (!remote) throw new Error(url ? `origin (${publicUrl(url)}) isn't on Azure DevOps or GitHub` : `${cwd} has no origin remote`);
+  const origin = await guardedOrigin(cwd);
+  if (!origin?.remote) throw new Error(origin ? `origin (${publicUrl(origin.url)}) isn't on Azure DevOps or GitHub` : `${cwd} has no origin remote`);
+  const { remote } = origin;
   return { remote, repo: { provider: remote.provider, repo: remoteName(remote) } };
 }
 
@@ -142,7 +141,7 @@ export async function prStateById(pr: Pick<PipelinePr, "provider" | "id" | "repo
     if (!r || typeof r !== "object") throw new Error(`Azure DevOps returned nothing for pull request ${pr.id}`);
     st = adoPrState(r, repo.webUrl);
   } else {
-    const r = await runGh(deps, `gh pr view ${pr.id} --repo ${quote(remoteName(remote))} --json ${GH_FIELDS},mergeCommit,mergedAt,closedAt`);
+    const r = await runGh(deps, remote, `gh pr view ${pr.id} --json ${GH_FIELDS},mergeCommit,mergedAt,closedAt`);
     if (r.code !== 0) throw ghError(r);
     let out: unknown;
     try {

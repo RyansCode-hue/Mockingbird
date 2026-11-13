@@ -1,8 +1,10 @@
+import * as fs from "fs";
+import * as path from "path";
 import { ADO_API } from "./ado";
-import { BASE_NAMES, branchesOf, currentBranch, git, originRemote, remoteName, type RemoteRepo } from "./git";
+import { BASE_NAMES, branchesOf, currentBranch, git, parseRemote, remoteName, type RemoteRepo } from "./git";
 import { dirtyFileCount, scmRoomPushPlan } from "./scm";
-import { gitPinRefusal } from "./gitPins";
-import { guardedGit, roomFilters, withFiltersOff } from "./safeGit";
+import { guardedGit, roomFilters } from "./safeGit";
+import { MB_DIR } from "./store";
 import { listAllFiles } from "./find";
 import { quote, type ShellResult } from "./shell";
 import type { ShellRunner } from "./headless";
@@ -49,35 +51,62 @@ export function prCreateRefusal(pre: PrPreflight & { branch: string }, target: P
 /** An ADO API call with the configured PAT (ado.adoRequest), injected so tests can stub it. */
 export type AdoCall = (url: string, init?: RequestInit) => Promise<any>;
 
-/** What finding or opening a pull request needs: ADO's API, the user's shell for gh, and the repository it runs in. */
+/** What finding or opening a pull request needs: ADO's API, the user's shell for gh, and the repository it's for. */
 export interface PrDeps {
   ado: AdoCall;
   run: ShellRunner;
   cwd: string;
   env: Record<string, string>;
-  /** A team room's session works in `cwd` (or rooms haven't started): gh's gits there go by a room session's config check. */
+  /** A team room's session works in `cwd`, or may (none is found there): gh is refused for config its agent can write. */
   room?: boolean;
 }
 
+/** A GitHub repository, as gh is told it (`--repo`). */
+export type GithubRepo = Extract<RemoteRepo, { provider: "github" }>;
+
 /**
- * The user's gh, run in the repository, so its sign-in applies. gh runs git there itself (its remotes and branch, and
- * for `pr create` the index and working tree's status), outside git.ts, so it's refused, saying why, where git.ts
- * would refuse a git: a folder whose .git a room session's agent could have led to another folder's config
- * (gitPinRefusal, a stray commondir in any folder); and in a room session's folder, config from a file the room's
- * agent can write (roomFilters), its gits then running with the filters a room's git turns off.
+ * The folder gh runs in: Mockingbird's own, and empty. gh runs git in its folder for itself (its remotes, and for `pr
+ * create` the working tree's status, which goes into nested repositories with their own config), so in a repository's
+ * folder it would run what that config and the agent-written folders in its tree name. Here git finds no repository:
+ * nothing is in the folder, and GIT_CEILING_DIRECTORIES (ghEnv) keeps git from looking above it. Throws, saying why,
+ * when it can't be made or holds anything.
  */
-export async function runGh(deps: PrDeps, cmd: string, input = "", timeoutMs = 30_000): Promise<ShellResult> {
-  const pinned = gitPinRefusal(deps.cwd);
-  if (pinned) throw new Error(`gh wasn't run: ${pinned}`);
-  let env = deps.env;
+export function ghFolder(): string {
+  const dir = path.join(MB_DIR, "gh");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const inside = fs.readdirSync(dir);
+  if (inside.length) throw new Error(`gh wasn't run: ${dir}, the empty folder Mockingbird runs it in, holds ${inside.slice(0, 3).join(", ")}${inside.length > 3 ? ", …" : ""}. Remove what's there.`);
+  return dir;
+}
+
+/** gh's environment in ghFolder `dir`: the user's, with git kept from looking for a repository above it. */
+const ghEnv = (env: Record<string, string>, dir: string): Record<string, string> => ({ ...env, GIT_CEILING_DIRECTORIES: path.dirname(dir) });
+
+/**
+ * `cwd`'s origin URL, read through guardedGit, and where it lives (parseRemote; null on neither host); null when there's
+ * no origin. The repository gh is told to act on (`--repo`) is read here, never by gh from the folder.
+ */
+export async function guardedOrigin(cwd: string): Promise<{ url: string; remote: RemoteRepo | null } | null> {
+  const url = await (await guardedGit(cwd)).run(["remote", "get-url", "origin"], { okCodes: [0, 2] }); // 2: no such remote
+  return url ? { url, remote: parseRemote(url) } : null;
+}
+
+/**
+ * The user's gh (`cmd`, starting "gh "), so its sign-in applies, for GitHub repository `repo` (`--repo`), run in
+ * ghFolder rather than the repository, so none of the gits it runs for itself run there. In a room session's folder
+ * (`room`) it's refused, saying why, when that folder's config comes from a file the room's agent can write
+ * (roomFilters), as the repository gh is told is read from that config.
+ */
+export async function runGh(deps: PrDeps, repo: GithubRepo, cmd: string, input = "", timeoutMs = 30_000): Promise<ShellResult> {
   if (deps.room) {
     try {
-      env = withFiltersOff(env, await roomFilters(deps.cwd));
+      await roomFilters(deps.cwd);
     } catch (err) {
       throw new Error(`gh wasn't run: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
   }
-  return deps.run(cmd, input, { cwd: deps.cwd, env, timeoutMs });
+  const dir = ghFolder();
+  return deps.run(`${cmd} --repo ${quote(remoteName(repo))}`, input, { cwd: dir, env: ghEnv(deps.env, dir), timeoutMs });
 }
 
 /** A failed gh run's error: what it printed, else its exit code. */
@@ -108,7 +137,7 @@ export async function findOpenPr(
     const pr = (r?.value ?? [])[0];
     return pr ? { id: pr.pullRequestId, url: adoPrUrl(repo.webUrl, pr.pullRequestId) } : null;
   }
-  const r = await runGh(deps, `gh pr list --head ${quote(branch)} --base ${quote(base)} --state open --json number,url --limit 1`);
+  const r = await runGh(deps, remote, `gh pr list --head ${quote(branch)} --base ${quote(base)} --state open --json number,url --limit 1`);
   if (r.code !== 0) throw ghError(r);
   const list = JSON.parse(r.out || "[]");
   return list[0] ? { id: list[0].number, url: list[0].url } : null;
@@ -140,7 +169,8 @@ export async function openPr(
     if (!r?.pullRequestId) throw new Error("Azure DevOps didn't return the new pull request");
     return { id: r.pullRequestId, url: adoPrUrl(repo.webUrl, r.pullRequestId) };
   }
-  const r = await runGh(deps, `gh pr create --head ${quote(pr.branch)} --base ${quote(pr.base)} --title ${quote(pr.title)} --body-file -`, pr.description, 60_000);
+  // --head and --base named, as gh, outside the repository, can't read them from it; so it pushes nothing either
+  const r = await runGh(deps, remote, `gh pr create --head ${quote(pr.branch)} --base ${quote(pr.base)} --title ${quote(pr.title)} --body-file -`, pr.description, 60_000);
   const url = r.out.split("\n").map((l) => l.trim()).find((l) => /^https:\/\/github\.com\/.+\/pull\/\d+$/.test(l));
   if (r.code !== 0 || !url) throw ghError(r);
   return { id: Number(url.split("/").pop()), url };
@@ -175,7 +205,7 @@ export async function prPreflight(
   const base = pickBase(target, remoteBranches);
   const dirtyFiles = await dirtyFileCount(root);
   const commits = base ? Number(await git(root, ["rev-list", "--count", `origin/${base}..HEAD`])) : 0;
-  const remote = await originRemote(root);
+  const remote = (await guardedOrigin(root))?.remote ?? null;
   const { files } = await listAllFiles(root);
   const docs = files.find((f) => f.split("/").pop()?.toLowerCase() === `${ticketId}-description.md`.toLowerCase()) ?? null;
   let existing: { id: number; url: string } | null = null;

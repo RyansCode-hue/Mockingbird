@@ -1,3 +1,5 @@
+import * as os from "os";
+import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { adoPrState, githubPrState, prStateById, prStatusFor } from "../src/main/prStatus";
 import type { ShellRunner } from "../src/main/headless";
@@ -103,7 +105,8 @@ describe("one pull request by its id, for the merge watch", () => {
     };
     const st = await prStateById(GH_PR, { ado: async () => ({}), run, env: {}, cwd: repo });
     expect(st).toMatchObject({ id: 9, state: "merged", base: "main", mergeCommit: "0123456789abcdef0123456789abcdef01234567", mergedAt: Date.parse("2026-11-11T15:00:00Z") });
-    expect(cmds).toEqual([{ cmd: expect.stringMatching(/^gh pr view 9 --repo 'o\/r' --json \S*,mergeCommit,mergedAt,closedAt$/), cwd: repo }]);
+    // run in Mockingbird's own folder, not the repository's (runGh)
+    expect(cmds).toEqual([{ cmd: expect.stringMatching(/^gh pr view 9 --json \S*,mergeCommit,mergedAt,closedAt --repo 'o\/r'$/), cwd: path.join(os.homedir(), ".mockingbird", "gh") }]);
     const closed: ShellRunner = async () => ({ code: 0, out: JSON.stringify({ number: 9, url: "https://github.com/O/R/pull/9/", state: "CLOSED", closedAt: "2026-11-10T08:00:00Z" }) });
     expect(await prStateById(GH_PR, { ado: async () => ({}), run: closed, env: {}, cwd: repo })).toMatchObject({ state: "closed", closedAt: Date.parse("2026-11-10T08:00:00Z") });
   });

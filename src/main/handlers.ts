@@ -47,6 +47,16 @@ export function onDisk(p: string): string {
 }
 
 /**
+ * Whether Mockingbird's git and gh for `folder` go by a team room session's rules: when any session there, live or
+ * closed but resumable (`sessions`), is a room's (`isRoom`), or none is found there, as a forgotten one's agent may
+ * have written it all the same.
+ */
+export function roomRulesFor(folder: string, sessions: readonly Pick<SessionInfo, "id" | "cwd">[], isRoom: (id: string) => boolean): boolean {
+  const there = sessions.filter((s) => samePath(s.cwd, folder));
+  return !there.length || there.some((s) => isRoom(s.id));
+}
+
+/**
  * Why a session in a team room's group can't work in `cwd`, or be given `extraDirs`: the home folder, or a folder
  * holding it, all of which the room's sandbox would let its agent write across (bar the names it denies). Null when
  * it can. A plain terminal isn't asked: it runs no agent and no sandbox.

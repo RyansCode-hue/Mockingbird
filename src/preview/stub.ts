@@ -1541,8 +1541,14 @@ const api: Record<string, (...a: any[]) => any> = {
     const at = stepStart(p);
     return "refused" in at ? err(at.refused) : at.says;
   },
-  // main's sessions:startPlanned: started under its id, so its wires keep their ends; refused when it isn't one
+  // main's sessions:startPlanned: the step started (previewStartPlanned), and what couldn't be done to its ticket's stage
+  // (none here)
   startPlanned: async (id: string) => {
+    const r = await api.previewStartPlanned(id);
+    return "error" in r ? r : { info: r, stageWhy: null };
+  },
+  // started under its id, so its wires keep their ends; refused when it isn't one
+  previewStartPlanned: async (id: string) => {
     await startLag();
     const p = planned.find((x) => x.id === id);
     if (!p || byId(id)) return err("It has started already: reopen it instead");
@@ -9329,7 +9335,7 @@ Object.assign(api, {
     const notes = [...(plan.forced ? [roomAsked(plan.forced)] : []), ...plan.steps.flatMap((p) => (p.terminal && !p.terminal.laid ? [`“${p.step.name}” ${p.terminal.why.replace(/^It /, "")}`] : []))];
     if (!body.startFirst) return { steps, wires, started: null, notes } satisfies LayOutReply;
     const first = plan.steps[0].step;
-    const started = await api.startPlanned(idOf.get(first.key)!);
+    const started = await api.previewStartPlanned(idOf.get(first.key)!);
     if (started && typeof started === "object" && "error" in started) return { steps, wires, started: null, notes: [...notes, `“${first.name}” didn't start: ${started.error}.`] } satisfies LayOutReply;
     for (const p of plan.wires) {
       if (!p.afterStart || p.skipped) continue;
@@ -9504,7 +9510,7 @@ Object.assign(api, {
     for (const p of layout.steps) {
       if (!p.starts) continue;
       const sid = idOf.get(p.step.key)!;
-      const r = await api.startPlanned(sid);
+      const r = await api.previewStartPlanned(sid);
       if (r && typeof r === "object" && "error" in r) {
         notes.push(`“${p.step.name}” didn't start: ${r.error}.`);
         continue;
@@ -9565,7 +9571,7 @@ async function gateSend(id: string, pendingId: string, body: string, opts: { sta
   }
   // a step not started yet is started by the Send, with no cost to ask (main's startEnd)
   if (b?.where === "planned") {
-    const started = await api.startPlanned(w.to);
+    const started = await api.previewStartPlanned(w.to);
     if (started && typeof started === "object" && "error" in started) return { refused: `Couldn't start ${to}: ${started.error}` };
   }
   const sent = again ? `${pendingId}-sent` : pendingId;

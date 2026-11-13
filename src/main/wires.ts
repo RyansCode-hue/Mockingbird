@@ -5,7 +5,7 @@ import { canonical, companionRequest } from "./handlers";
 import { LandscapeShapeError, isObj, own, put, stackKeyOf } from "../shared/landscape";
 import { agentOf, layOutPlan, parseTemplateBody, roomAsked, startsAtOrchestrator, TemplateError, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type TemplateBody, type TemplateWire } from "../shared/pipelineTemplates";
 import { oneLine } from "../shared/team/agentText";
-import type { NewSessionRequest, PlanRequest, PrRepo, SessionInfo } from "../shared/types";
+import type { NewSessionRequest, PlanRequest, PrRepo, SessionInfo, StepStarted } from "../shared/types";
 import {
   createdAtAfter,
   emptyWireBook,
@@ -60,15 +60,6 @@ export interface LayOutDeps {
   addTerminal(agent: SessionInfo, as: { title: string; command: string }): Promise<SessionInfo>;
   /** The team room a top-level group is shared as, or null. */
   roomOfGroup(group: string): string | null;
-}
-
-/**
- * A step that started (index.ts' startStep). Its ticket's stage is moved once its pty runs, so a failure there doesn't
- * undo the start: `stageWhy` says what couldn't be done and why ("#5115 couldn't be moved to Coding (…)"), else null.
- */
-export interface StepStarted {
-  info: SessionInfo;
-  stageWhy: string | null;
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
