@@ -361,25 +361,59 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
   );
 }
 
-/** The model catalog, read once (models offered on this Mac); none while it's read or when it can't be. */
-function useCatalog(): ModelCatalog | null {
+/** The model catalog as read (models offered on this Mac): `catalog` none while it's read or when it can't be, `error` why not. */
+interface CatalogRead {
+  catalog: ModelCatalog | null;
+  error: string | null;
+  retry: () => void;
+}
+
+/** The model catalog, read as the dialog opens and again on `retry`; a failure is logged and kept to be said (CatalogNote). */
+function useCatalog(): CatalogRead {
   const [c, setC] = useState<ModelCatalog | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [n, setN] = useState(0);
   useEffect(() => {
     let live = true;
+    const failed = (why: string) => {
+      console.warn(`[mockingbird] the template picker's models: ${why}`);
+      if (live) setError(why);
+    };
     window.mb.modelCatalog().then(
       (r: ModelCatalog | { error: string }) => {
+        if (isErr(r)) return failed(r.error);
         if (!live) return;
-        if (isErr(r)) console.warn(`[mockingbird] the template picker's models: ${r.error}`);
-        else setC(r);
+        setC(r);
+        setError(null);
       },
-      (err: unknown) => console.warn("[mockingbird] the template picker's models:", err)
+      (err: unknown) => failed(err instanceof Error ? err.message : String(err))
     );
     return () => void (live = false);
-  }, []);
-  return c;
+  }, [n]);
+  return { catalog: c, error, retry: () => setN((x) => x + 1) };
+}
+
+/**
+ * The models offered on this Mac couldn't be read: said beside the steps' model choices, which still offer the default
+ * and each step's own model, so a template can be laid out or saved as it is.
+ */
+function CatalogNote({ read }: { read: CatalogRead }) {
+  if (!read.error) return null;
+  return (
+    <div className="tp-line amber" data-flag="models" role="status">
+      <span className="grow">The models offered on this Mac couldn't be read ({read.error}): each step can keep its own model or take the default.</span>
+      <button type="button" className="link" onClick={read.retry}>
+        Try again
+      </button>
+    </div>
+  );
 }
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+/** Why the picker's Lay out is off for want of a repo, or of an area to lay out in: on its button, and said under what's missing. */
+const NEEDS_REPO = "Its steps work in worktrees of their own: choose a repo";
+const NEEDS_AREA = "Choose a ticket, so its steps have an area";
 
 /** A body with step `key` changed. */
 const withStep = (b: TemplateBody, key: string, patch: Partial<TemplateStep>): TemplateBody => ({
@@ -422,7 +456,8 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const head = useRef<HTMLDivElement>(null);
   const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
   const shownHold = useHeldOff();
-  const catalog = useCatalog();
+  const modelRead = useCatalog();
+  const catalog = modelRead.catalog;
   const [list, setList] = useState<TemplateList | { error: string } | null>(null);
   const read = () =>
     window.mb.templatesList().then(
@@ -478,7 +513,8 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const room = !!area && where.inRoom(area);
   const plan = useMemo(() => (body ? layOutPlan(body, { room, ticket: !!ticket }) : null), [body, room, ticket]);
   const needsRepo = !!body && body.steps.some((s) => s.folder === "new") && !repo;
-  const blocked = !body ? "Choose a template" : plan!.problems[0] ?? (needsRepo ? "Its steps work in worktrees of their own: choose a repo" : !area ? "Choose a ticket, so its steps have an area" : null);
+  const needsArea = !!body && !area;
+  const blocked = !body ? "Choose a template" : plan!.problems[0] ?? (needsRepo ? NEEDS_REPO : needsArea ? NEEDS_AREA : null);
 
   const [busy, setBusy] = useState(false);
   const busyNow = useRef(false);
@@ -599,6 +635,11 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
         </div>
       </div>
       {ado.error && <div className="tp-note dim">Azure DevOps: {ado.error}</div>}
+      {needsArea && (
+        <div className="tp-note amber" data-flag="area">
+          {NEEDS_AREA}. Lay out is off until then.
+        </div>
+      )}
       {body?.steps.some((s) => s.agent !== "terminal" && s.prompt.includes("{ticket}")) && (
         <div className="tp-note dim" data-flag="ticket">
           {tLine ? `{ticket} in a prompt is “${tLine}”.` : "{ticket} in a prompt is empty: no ticket is chosen."}
@@ -619,6 +660,11 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
         </div>
       </div>
       {branchError && <div className="tp-note red">{branchError}</div>}
+      {needsRepo && (
+        <div className="tp-note amber" data-flag="repo">
+          {NEEDS_REPO}. Lay out is off until then.
+        </div>
+      )}
       <div className="tp-main">
         <div className="tp-list" role="listbox" aria-label="Templates">
           <div className="tp-k pad">Templates</div>
@@ -715,6 +761,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
           {body && plan ? (
             <>
               <ChainSketch body={body} plan={plan} width={354} />
+              <CatalogNote read={modelRead} />
               <StepRows
                 body={body}
                 plan={plan}
@@ -770,7 +817,8 @@ export interface SaveTemplateProps {
 export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: SaveTemplateProps) {
   const head = useRef<HTMLDivElement>(null);
   const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
-  const catalog = useCatalog();
+  const modelRead = useCatalog();
+  const catalog = modelRead.catalog;
   const [name, setName] = useState(draft.name);
   const [body, setBody] = useState<TemplateBody>(() => structuredClone(draft.body));
   const plan = useMemo(() => layOutPlan(body, { room: false, ticket: true }), [body]);
@@ -823,6 +871,7 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
       ))}
       <div className="tp-steps solo">
         <ChainSketch body={body} plan={plan} width={540} />
+        <CatalogNote read={modelRead} />
         <StepRows
           body={body}
           plan={plan}
@@ -947,7 +996,8 @@ export interface PlanPickerProps {
 export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut, onDismiss, home, onClose }: PlanPickerProps) {
   const head = useRef<HTMLDivElement>(null);
   const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
-  const catalog = useCatalog();
+  const modelRead = useCatalog();
+  const catalog = modelRead.catalog;
   // main holds a plan proposed while this one is open as waiting, so what the user is editing isn't replaced under them
   useEffect(() => {
     const say = (open: boolean) =>
@@ -1057,6 +1107,7 @@ export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut,
       ))}
       <div className="tp-steps solo">
         <ChainSketch body={sketch.body} plan={sketch.plan} width={560} />
+        <CatalogNote read={modelRead} />
         {body.steps.map((s, i) => {
           const p = layout?.steps[i] ?? null;
           const terminal = s.agent === "terminal";

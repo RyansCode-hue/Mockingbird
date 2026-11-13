@@ -9162,6 +9162,11 @@ Object.assign(api, {
 let tplStore: unknown = params.has("lsTemplates") ? boardTemplates(params.get("lsTemplates")) : [];
 /** ?lsLayOutFails=<n>: the first n lay-outs are refused, as main refuses one while the wires file is read-only. */
 let layOutFails = Number(params.get("lsLayOutFails") ?? 0);
+/**
+ * ?lsLayOutLeaves=<n>: the first n lay-outs make their steps, then fail on a wire and can't take the first step back,
+ * as main says when its forget fails ("… couldn't be taken back").
+ */
+let layOutLeaves = Number(params.get("lsLayOutLeaves") ?? 0);
 const tplWhy = (e: unknown) => (e instanceof Error ? e.message : String(e));
 Object.assign(api, {
   templatesList: async () => readTemplates(tplStore),
@@ -9325,6 +9330,13 @@ Object.assign(api, {
       ];
       steps.push({ key: st.key, id, title: st.name });
       idOf.set(st.key, id);
+    }
+    if (layOutLeaves > 0 && steps.length) {
+      layOutLeaves--;
+      const kept = steps[0];
+      planned = planned.filter((x) => x.id === kept.id || !steps.some((m) => m.id === x.id));
+      sessionsChanged();
+      return err(`Couldn't lay out “${req.name}”: a wire was refused. “${kept.title}” couldn't be taken back: forget it from its menu.`);
     }
     const wires: string[] = [];
     for (const p of plan.wires) {

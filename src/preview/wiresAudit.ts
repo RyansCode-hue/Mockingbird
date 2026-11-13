@@ -32,6 +32,8 @@
  *   conversation instead: Spike keeps its wires and its place.
  * - =template (with ?lsTemplates, at 100%): W9's picker and Save as template (templateAudit); =tpick, =tpickroom and
  *   =tsave leave the picker (its ticket's area new, or a team room's) and Save as template open for a screenshot;
+ *   =tplnotes (with &lsLayOutLeaves=1): what it says of unread models and No repo, and an area kept for a step left
+ *   (templateNotesAudit);
  * - =step (with ?lsPlanned, at 100%): W8's not-started Tester and Add next step, from a handle clicked and from one
  *   dragged into empty space, the dialog's guards against a burst's key and an early click, its ⋯ with Enter held, and
  *   Start now…'s confirm (stepAudit).
@@ -1515,6 +1517,51 @@ const spaceUnder = (): Pt => {
     }
   throw new Error("no empty spot of the landscape is in view");
 };
+/**
+ * W9/W17 follow-ups in the picker (?lsTemplates&lsLayOutLeaves=1; the preview reads no model catalog): that the models
+ * can't be read, said beside the steps, Try again reading them again, and a step's model still a choice; No repo chosen,
+ * what that keeps from Lay out said under Repo; then #5115 (a new area) laid out, refused with a step main couldn't take
+ * back: the area made for it kept, with that step's card in it.
+ */
+async function templateNotesAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const count = (mark: number, fn: string) => env.calls.slice(mark).filter((c) => c.fn === fn).length;
+  const flag = (f: string) => {
+    const el = picker()?.querySelector(`[data-flag="${f}"]`);
+    return (el?.querySelector(".grow") ?? el)?.textContent?.replace(/\s+/g, " ").trim() ?? null;
+  };
+  let mark = env.calls.length;
+  await openPicker(spaceUnder());
+  await sleep(800);
+  const models = { said: flag("models"), reads: count(mark, "modelCatalog") };
+  mark = env.calls.length;
+  await drive([{ mouse: { ...mid(picker()!.querySelector('[data-flag="models"] button')), clickCount: 1 } }]);
+  await sleep(400);
+  const again = { said: flag("models"), reads: count(mark, "modelCatalog") };
+  // the first step's model: still a choice of the default (and its own, had it one)
+  const model = picker()!.querySelector<HTMLButtonElement>(".tp-step .tp-model");
+  await drive([{ mouse: { ...mid(model), clickCount: 1 } }]);
+  await sleep(250);
+  const options = [...document.querySelectorAll<HTMLElement>(".mb-opt .mb-opt-label")].map((o) => o.textContent);
+  await drive([{ key: "Escape" }]);
+  await sleep(250);
+  out.models = { ...models, again, off: model?.disabled ?? null, options, open: !!picker() };
+  // No repo: its want said under Repo, as on Lay out
+  const repoWas = picker()?.querySelector(".tp-repo .mb-select-val")?.textContent ?? null;
+  await choose(".tp-repo", "No repo");
+  const noRepo = { said: flag("repo"), act: tpNow(picker())?.act ?? null };
+  await choose(".tp-repo", repoWas ?? "backoffice");
+  out.repo = { was: repoWas, noRepo, back: { said: flag("repo"), act: tpNow(picker())?.act ?? null } };
+  // #5115, a new area, laid out and refused with a step left: the area stays, with it
+  await choose(".tp-ticket", "#5115");
+  await sleep(700);
+  const area5115 = () => !!document.querySelector('.ls-world [data-area="5115"]');
+  mark = env.calls.length;
+  await drive([{ mouse: { ...mid(picker()!.querySelector("button[data-act]")), clickCount: 1 } }]);
+  await sleep(1500);
+  const cards = [...document.querySelectorAll<HTMLElement>('.ls-world .ls-ghost.planned[data-area="5115"]')].map((g) => g.querySelector(".lg-name .lg-title, .lg-name")?.firstChild?.textContent ?? null);
+  out.left = { calls: count(mark, "templatesLayOut"), open: !!picker(), error: tpNow(picker())?.error ?? null, area: area5115(), cards };
+}
+
 /** Pipeline from a ticket…, from a right-click at `at`, as a person picks it. */
 async function openPicker(at: Pt): Promise<void> {
   await drive([{ mouse: { ...at, clickCount: 1, button: "right" } }]);
@@ -1809,6 +1856,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "step") await stepAudit(env, out);
       else if (part === "steplist") await stepListAudit(env, out);
       else if (part === "template") await templateAudit(env, out);
+      else if (part === "tplnotes") await templateNotesAudit(env, out);
       else if (part === "tbroken") await brokenAudit(env, out);
       // which of 5120's workspaces carry a handle at this zoom: those big enough on screen for one
       else if (part === "handles") out.handles = ["shape", "builder", "reviewer", "dev", "tester", "fixtures"].filter((k) => !!handleOf(k));
