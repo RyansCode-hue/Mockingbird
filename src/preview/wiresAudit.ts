@@ -17,7 +17,9 @@
  * - =under: where each wire runs under an area's header or name, a pill or a ghost, and whether the mask holds it out;
  * - =collapse (zoomed out): 5102 collapsed from its toolbar, the wire to Pathways read as the pill comes, before a frame;
  * - =dotover (at 100%): Dev server dragged and held with its ⋯ on Reviewer → Builder's dot: where the dot goes and what's
- *   on top at the ⋯; then Esc, and a click on the dot.
+ *   on top at the ⋯; then Esc, and a click on the dot;
+ * - =dotacross (at 100%, with ?lsAcross): Shape export → Reviewer straight under Builder: its dot, and real clicks at the
+ *   wire's middle (on Builder's terminal) and on the dot.
  *
  * W4b's parts press the mouse and keys for real where the test's driver is there (needsYouAudit.ts' `drive`):
  * - =make (at the ?lsCamera's zoom): a wire dragged from Shape export's handle and dropped on Tester, the picker's ↵
@@ -149,6 +151,11 @@ export function gateBoardBook(book: WireBook, at: number, limit: boolean): WireB
 export function twinBook(book: WireBook, at: number): WireBook {
   const twin: Wire = { ...newWire(W("builder"), W("reviewer"), "handoff", at + 50), pending: { id: "pd-twin", body: "The export's tests, for a second look.", at, flags: [] } };
   return { ...book, links: { ...book.links, [W("twin")]: twin } };
+}
+/** `?lsAcross` (with `?lsWires`): a ready handoff from Shape export to Reviewer, its line straight under Builder between them. */
+export function acrossBook(book: WireBook, at: number): WireBook {
+  const across: Wire = { ...newWire(W("shape"), W("reviewer"), "handoff", at + 60), pending: { id: "pd-across", body: "The export's spec, for review.", at, flags: [] } };
+  return { ...book, links: { ...book.links, [W("across")]: across } };
 }
 /** `?lsHeldWaits` (with `?lsWires`): Reviewer → Tester, blocked till Reviewer approves, has something waiting at its gate. */
 export function heldWaitsBook(book: WireBook, at: number): WireBook {
@@ -2115,6 +2122,34 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
         await clickAt(back);
         await sleep(500);
         out.dotClick = { back: Math.hypot(back.x - was.x, back.y - was.y) < 1.5, pop: popNow() };
+      } else if (part === "dotacross") {
+        // ?lsAcross: Shape export → Reviewer runs straight under Builder, its middle on Builder's terminal: where its dot
+        // is, and a real click at that middle and on the dot
+        const across = W("across");
+        const path = document.querySelector<SVGPathElement>(`.ls-wires g[data-wire="${across}"] path.line`);
+        if (!path) throw new Error("no wire from Shape export to Reviewer (?lsAcross)");
+        const [x0, y0, x1, y1, x2, y2, x3, y3] = (path.getAttribute("d")?.match(/-?\d+(\.\d+)?(e-?\d+)?/g) ?? []).map(Number);
+        const p = new DOMPoint((x0 + 3 * x1 + 3 * x2 + x3) / 8, (y0 + 3 * y1 + 3 * y2 + y3) / 8).matrixTransform(path.getScreenCTM()!);
+        const middle = { x: Math.round(p.x), y: Math.round(p.y) };
+        const b = box(node(W("builder")))!;
+        const inBuilder = (q: Pt) => q.x >= b.l && q.x <= b.r && q.y >= b.t && q.y <= b.b;
+        const dot = dotMid(across);
+        const under = document.elementFromPoint(middle.x, middle.y);
+        out.across = {
+          middleInBuilder: inBuilder(middle),
+          middleOn: under?.matches("circle.dot") ? "dot" : under?.closest(".xterm") ? "terminal" : (under?.className?.toString() ?? null),
+          dotInBuilder: inBuilder(dot),
+          fit: document.querySelector<SVGElement>(`.ls-wire-dots circle.dot[data-wire="${across}"]`)?.dataset.fit ?? null,
+        };
+        await clickAt(middle);
+        await sleep(500);
+        const a = document.activeElement;
+        out.middleClick = { pop: popNow(), keyboard: a?.closest(".xterm") ? (a.closest<HTMLElement>("[data-front]")?.dataset.front ?? "?") : (a?.className?.toString() ?? null) };
+        await drive([{ key: "Escape" }]);
+        await sleep(300);
+        await clickAt(dotMid(across));
+        await sleep(500);
+        out.dotClick = { pop: popNow() };
       } else if (part === "drag") {
         const mark = env.calls.length;
         const head = node(W("builder"))?.querySelector<HTMLElement>(".ls-head .ls-spacer") ?? node(W("builder"))?.querySelector<HTMLElement>(".ls-head");

@@ -155,6 +155,19 @@ describe.skipIf(!local)("the landscape's wires", () => {
     for (const l of a.labelBoxes) for (const d of a.dotBoxes) expect([l.id, d.id, meet(l.box, d.box)]).toEqual([l.id, d.id, false]);
   });
 
+  it("keep a gate dot off a workspace its wire runs under: moved along the wire to where it's clear, and a click on the workspace there is the workspace's", async () => {
+    const a = (await audit("lsAcross&lsCamera=0,3040,1&landscapeWiresAudit=dotacross")) as unknown as {
+      across: { middleInBuilder: boolean; middleOn: string | null; dotInBuilder: boolean; fit: string | null };
+      middleClick: { pop: unknown; keyboard: string | null };
+      dotClick: { pop: { ends: string } | null };
+    };
+    // the wire's middle on Builder's terminal: the terminal there, the dot out between the workspaces
+    expect(a.across).toEqual({ middleInBuilder: true, middleOn: "terminal", dotInBuilder: false, fit: "clear" });
+    // a click there is the terminal's; the dot, where it went, opens its popover
+    expect(a.middleClick).toEqual({ pop: null, keyboard: "wb-builder" });
+    expect(a.dotClick.pop?.ends).toBe("Shape donor export → Reviewer");
+  });
+
   it("keep a gate dot off a workspace dragged over its wire's middle: moved along the wire, off the workspace's ⋯, and still pressed", async () => {
     const a = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=dotover")) as unknown as {
       dotOver: { before: { dotAtMiddle: boolean; fit: string | null }; moreOnMiddle: boolean; middleUnderDev: boolean; dotOnMore: boolean; dotInDev: boolean; top: string | null; fit: string | null; moved: number; offWire: number };

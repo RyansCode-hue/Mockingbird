@@ -50,7 +50,7 @@ import { runSwitchAudit } from "./switchAudit";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
 import { boardPlan, councilPlan, runPlanAudit } from "./planAudit";
-import { WIRE_AREA, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
+import { WIRE_AREA, acrossBook, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { openFinishShot } from "./wireNeedsAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
@@ -8984,6 +8984,8 @@ if (lsGatesQ !== null) {
 if (wireBoard && params.has("lsHeldWaits")) wireBook = heldWaitsBook(wireBook, now);
 // ?lsTwin (with ?lsWires): a second handoff from Builder to Reviewer, beside the one sending (wiresAudit.ts)
 if (wireBoard && params.has("lsTwin")) wireBook = twinBook(wireBook, now);
+// ?lsAcross (with ?lsWires): a ready handoff from Shape export to Reviewer, straight under Builder (wiresAudit.ts)
+if (wireBoard && params.has("lsAcross")) wireBook = acrossBook(wireBook, now);
 // W4a: ?landscapeWiresAudit=near|far|drag|area|pill works the wires drawn (wiresAudit.ts) for test/uiLandscapeWires.test.ts.
 // W4c's parts have a finish arrive at a gate while its popover is open (`finish`), as finish_step's would, or what waits
 // there sent from elsewhere (`sent`), as another window's Send would
