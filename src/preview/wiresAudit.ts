@@ -1667,14 +1667,15 @@ async function templateNotesAudit(env: WiresAuditEnv, out: Record<string, unknow
   const noRepo = { said: flag("repo"), act: tpNow(picker())?.act ?? null };
   await choose(".tp-repo", repoWas ?? "backoffice");
   out.repo = { was: repoWas, noRepo, back: { said: flag("repo"), act: tpNow(picker())?.act ?? null } };
-  // #5115, a new area, laid out and refused with a step left: the area stays, with it
+  // #5115, a new area, laid out and refused with a step left (main makes the area, and takes it back): what's said, the
+  // area, and where the step left is drawn
   await choose(".tp-ticket", "#5115");
   await sleep(700);
   const area5115 = () => !!document.querySelector('.ls-world [data-area="5115"]');
   mark = env.calls.length;
   await drive([{ mouse: { ...mid(picker()!.querySelector("button[data-act]")), clickCount: 1 } }]);
   await sleep(1500);
-  const cards = [...document.querySelectorAll<HTMLElement>('.ls-world .ls-ghost.planned[data-area="5115"]')].map((g) => g.querySelector(".lg-name .lg-title, .lg-name")?.firstChild?.textContent ?? null);
+  const cards = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-ghost.planned")].map((g) => ({ title: g.querySelector(".lg-name .lg-title, .lg-name")?.firstChild?.textContent ?? null, area: g.dataset.area ?? null }));
   out.left = { calls: count(mark, "templatesLayOut"), open: !!picker(), error: tpNow(picker())?.error ?? null, area: area5115(), cards };
 }
 

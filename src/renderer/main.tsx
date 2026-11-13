@@ -2206,6 +2206,8 @@ function App() {
     }
     if (isErr(r)) {
       console.warn(`[mockingbird] laying out ${req.name}: ${r.error}`);
+      // a step main couldn't take back is drawn, where the refusal says to forget it from
+      void readClosed();
       return r.error;
     }
     setTemplatePicker(null);

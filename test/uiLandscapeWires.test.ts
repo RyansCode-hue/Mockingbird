@@ -1046,7 +1046,7 @@ describe.skipIf(!local)("Pipeline templates", () => {
     expect(t.broken.after.empty).toMatch(/^No saved templates yet/);
   }, 120_000);
 
-  it("says in the dialog that the models can't be read (a step's model still a choice) and that a repo is wanted; a refused lay-out keeps the area made for a step it left", async () => {
+  it("says in the dialog that the models can't be read (a step's model still a choice) and that a repo is wanted; a refused lay-out's step left is drawn and said", async () => {
     type Act = { off: boolean; title: string | null } | null;
     const n = (await audit("lsTemplates&lsLayOutLeaves=1&lsModelsMs=700&lsCamera=0,3040,1&landscapeWiresAudit=tplnotes", "1600x1200", 120_000)) as unknown as {
       models: {
@@ -1058,7 +1058,7 @@ describe.skipIf(!local)("Pipeline templates", () => {
         open: boolean;
       };
       repo: { was: string | null; noRepo: { said: string | null; act: Act }; back: { said: string | null; act: Act } };
-      left: { calls: number; open: boolean; error: string | null; area: boolean; cards: string[] };
+      left: { calls: number; open: boolean; error: string | null; area: boolean; cards: { title: string | null; area: string | null }[] };
     };
     // the preview reads no model catalog: said beside the steps, read again by Try again, the default still a choice
     const unread = "The models offered on this Mac couldn't be read (UI preview: no model catalog): each step can keep its own model or take the default.";
@@ -1070,13 +1070,14 @@ describe.skipIf(!local)("Pipeline templates", () => {
     // No repo: what it keeps from Lay out said under Repo, not only on the button; gone once one is chosen again
     expect(n.repo.noRepo).toEqual({ said: "Its steps work in worktrees of their own: choose a repo. Lay out is off until then.", act: { off: true, title: "Its steps work in worktrees of their own: choose a repo" } });
     expect(n.repo.back).toEqual({ said: null, act: { off: false, title: null } });
-    // refused with a step main couldn't take back: the area made for it stays, with that step's card, and it's said
+    // refused with a step main couldn't take back: main takes back the area it made, as it made it; the step left is
+    // still drawn, loose, and said, so it can be forgotten from its menu
     expect(n.left).toEqual({
       calls: 1,
       open: true,
-      error: "Couldn't lay out “Build, review, test”: a wire was refused. “Builder” couldn't be taken back: forget it from its menu. Its area was kept for “Builder”.",
-      area: true,
-      cards: ["Builder"],
+      error: "Couldn't lay out “Build, review, test”: a wire was refused. “Builder” couldn't be taken back: forget it from its menu.",
+      area: false,
+      cards: [{ title: "Builder", area: "ungrouped" }],
     });
   }, 150_000);
 });
