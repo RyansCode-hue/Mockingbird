@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { isRepo } from "./git";
+import { FIND_BY_DOT_GIT, isRepo } from "./git";
 import { gitPinRefusal } from "./gitPins";
 import { guardedGit } from "./safeGit";
 import type { FileHit, FileList, FileSearch, FileSearchOptions } from "../shared/types";
@@ -94,7 +94,7 @@ export async function searchFiles(root: string, query: string, opts: FileSearchO
   const mode = opts.regex ? "-E" : "-F";
   const caseFlag = opts.matchCase ? [] : ["-i"];
   const [cmd, args] = repo
-    ? ["git", ["-C", root, "grep", "-n", "-I", "--untracked", "--no-color", "-z", ...caseFlag, mode, "-e", query]]
+    ? ["git", [...FIND_BY_DOT_GIT, "-C", root, "grep", "-n", "-I", "--untracked", "--no-color", "-z", ...caseFlag, mode, "-e", query]]
     : ["grep", ["-rnIs", "--null", ...caseFlag, mode, ...[".git", ...SKIP_DIRS].map((d) => `--exclude-dir=${d}`), "-e", query, "--", "."]];
   // started here, not through git.ts, so held to a room session's git folders here (gitPins.ts), as it starts
   const pinned = repo ? gitPinRefusal(root) : null;

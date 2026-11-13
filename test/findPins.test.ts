@@ -36,4 +36,16 @@ describe("Find's git grep in a room session's folder", () => {
     await expect(searchFiles(wt, "needle", { regex: false, matchCase: true })).rejects.toThrow(/^git grep: Mockingbird won't run git in .*its \.git now leads to .*copy/);
     expect(warned).toHaveBeenCalledTimes(1);
   });
+
+  it("finds its repository only by a .git, never in a folder made to look like a bare one", async () => {
+    const dir = fs.realpathSync(tempDir("findbare"));
+    const x = path.join(dir, "mono", "x");
+    fs.mkdirSync(x, { recursive: true });
+    fs.writeFileSync(path.join(x, "a.txt"), "needle\n");
+    sh(path.dirname(x), "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(x, "HEAD"), "ref: refs/heads/main\n");
+    for (const d of ["objects", "refs"]) fs.mkdirSync(path.join(x, d));
+    fs.writeFileSync(path.join(x, "config"), "[core]\n\tbare = true\n");
+    await expect(searchFiles(x, "needle", { regex: false, matchCase: true })).rejects.toThrow(`cannot use bare repository '${x}' (safe.bareRepository is 'explicit')`);
+  });
 });

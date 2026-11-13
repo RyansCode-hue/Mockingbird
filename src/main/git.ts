@@ -20,6 +20,14 @@ export interface GitOptions {
   timeoutMs?: number;
 }
 
+/**
+ * What every git Mockingbird runs is given first: a repository is found only by its `.git`, never in a folder that
+ * just looks like a bare one (HEAD, objects/, refs/ and a config). A room session's agent can make its own folder, or
+ * any folder below a repository's top that it writes, look so, and git would take that config as the repository's and
+ * run what it names. A bare repository Mockingbird means to use is named (--git-dir).
+ */
+export const FIND_BY_DOT_GIT = ["-c", "safe.bareRepository=explicit"] as const;
+
 function run(cwd: string, args: string[], opts: GitOptions, encoding: "utf8" | "buffer", maxBuffer: number): Promise<string | Buffer> {
   // a room session's folder runs git only while its .git leads where it did when the session started (gitPins.ts)
   const pinned = gitPinRefusal(cwd);
@@ -29,7 +37,7 @@ function run(cwd: string, args: string[], opts: GitOptions, encoding: "utf8" | "
   return new Promise((resolve, reject) => {
     const child = execFile(
       "git",
-      ["-C", cwd, ...args],
+      [...FIND_BY_DOT_GIT, "-C", cwd, ...args],
       { encoding, timeout, maxBuffer, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...(opts.env ?? {}) } },
       (err, stdout, stderr) => {
         const code = err ? (err as any).code : 0;
