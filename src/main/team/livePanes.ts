@@ -456,9 +456,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const gitDirs = async (who: string | null): Promise<RoomGitDirs | null> => {
       if (gitRead) return git;
       gitRead = true;
-      // what it starts on is what git in its folder is held to from here on (gitPins.ts): read afresh at each launch
+      // what it starts on is what git in its folder is held to from here on (gitPins.ts): read afresh at each launch,
+      // whatever was pinned at its folder (none there, last time) or its repository's top
       let top: string | null = null;
       try {
+        unpinGitDirs(target.cwd);
         top = gitTop(target.cwd);
         if (top) unpinGitDirs(top);
         git = await roomGitDirs(target.cwd);
@@ -488,6 +490,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         git: await gitDirs("Claude"),
         hooks,
         folders: [target.cwd, ...(target.extraDirs ?? [])],
+        cwd: target.cwd,
         ...(caches ? { caches } : {}),
         ...(sandboxMarker ? { marker: sandboxMarkerCommand(sandboxMarker, this.d.markerScript) } : {}),
       });

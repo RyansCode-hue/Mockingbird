@@ -4,7 +4,7 @@ import * as http from "http";
 import * as path from "path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { git } from "../src/main/git";
-import { clearGitPins, gitPinRefusal, onGitPinRefused, pinGitDirs, readGitPointer } from "../src/main/gitPins";
+import { clearGitPins, gitPinRefusal, onGitPinRefused, pinGitDirs, readGitPointer, unpinGitDirs } from "../src/main/gitPins";
 import { roomGitDirs } from "../src/main/codexRoomSandbox";
 import { worktreeState } from "../src/main/worktrees";
 import { guardedGit, logOwnGitFailuresTo, ownFetch, ownNetworkGit, OWN_WRITE_ENV, roomFilters, WRITE_ENV } from "../src/main/safeGit";
@@ -229,5 +229,114 @@ describe("git in a room session's folder", () => {
     t.rewrite();
     expect(gitPinRefusal(t.repo)).toBeNull();
     expect(await git(t.repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+  });
+});
+
+describe("git in a room session's folder that had no repository at launch", () => {
+  /** A folder with no repository, pinned as a room launch pins it, in `dir`, with a marker an agent's program writes. */
+  const launched = async () => {
+    const dir = fs.realpathSync(tempDir("norepo"));
+    const folder = path.join(dir, "notes");
+    fs.mkdirSync(folder);
+    const found = await roomGitDirs(folder);
+    expect(found).toBeNull();
+    expect(pinGitDirs(folder, found, null)).toBeNull();
+    return { dir, folder, ran: path.join(dir, "RAN") };
+  };
+
+  it("refuses a repository its agent made there after: its core.sshCommand never runs, a room push included", async () => {
+    const t = await launched();
+    // the agent, in a sandbox that let it write .git there: a repository with an ssh origin and a command of its own for it
+    sh(t.folder, "init", "-q", "-b", "main");
+    sh(t.folder, "commit", "-q", "--allow-empty", "-m", "a");
+    sh(t.folder, "remote", "add", "origin", "ssh://git@example.invalid/x/y.git");
+    sh(t.folder, "config", "core.sshCommand", `sh -c 'echo "$*" >> ${t.ran}; exit 1' --`);
+    const told: string[] = [];
+    const off = onGitPinRefused((_top, why) => told.push(why));
+    const refused = `Mockingbird won't run git in ${t.folder}: it had no repository when its room session started, and now git would find ${path.join(t.folder, ".git")}, which that session's agent could have made, config and all.`;
+    const before = logOwnGitFailuresTo(() => {});
+    try {
+      expect(gitPinRefusal(t.folder)).toContain(refused);
+      await expect(ownNetworkGit(t.folder, "push", ["origin", "main"], { roomPush: { lfs: { remote: "origin", refs: ["refs/heads/main"] } } })).rejects.toThrow(refused);
+      await expect(roomFilters(t.folder)).rejects.toThrow(refused);
+      await expect(git(path.join(t.folder), ["status", "--porcelain"])).rejects.toThrow(refused);
+    } finally {
+      logOwnGitFailuresTo(before);
+      off();
+    }
+    expect(told).toEqual([expect.stringContaining(refused)]);
+    expect(fs.existsSync(t.ran)).toBe(false);
+    // the session launched again reads the folder afresh, as livePanes does: its pin let go of first
+    unpinGitDirs(t.folder);
+    expect(pinGitDirs(t.folder, await roomGitDirs(t.folder), null)).toBeNull();
+    expect(await git(t.folder, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+  });
+
+  it("refuses a repository made above it, which git would find from it, till a launch pins the folder again", async () => {
+    const t = await launched();
+    sh(t.dir, "init", "-q", "-b", "main");
+    sh(t.dir, "commit", "-q", "--allow-empty", "-m", "a");
+    await expect(git(t.folder, ["status", "--porcelain"])).rejects.toThrow(`now git would find ${path.join(t.dir, ".git")}`);
+    // pinned again (git's own answer read here, as the old pin refuses Mockingbird's), it replaces what it had
+    const gitDir = path.join(t.dir, ".git");
+    expect(pinGitDirs(t.folder, { common: gitDir, own: gitDir }, null)).toBeNull();
+    expect(gitPinRefusal(t.folder)).toBeNull();
+    expect(await git(t.folder, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+  });
+
+  it("leaves a repository inside it as any other, and a room session pinned there to its own pin", async () => {
+    const t = await launched();
+    expect(gitPinRefusal(t.folder)).toBeNull();
+    const nested = path.join(t.folder, "app");
+    fs.mkdirSync(nested);
+    sh(nested, "init", "-q", "-b", "main");
+    sh(nested, "commit", "-q", "--allow-empty", "-m", "a");
+    expect(await git(nested, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+    expect(pinGitDirs(nested, await roomGitDirs(nested), null)).toBeNull();
+    expect(await git(path.join(nested), ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+    // the outer folder still has none, as git finds from it
+    await expect(git(t.folder, ["rev-parse", "--git-dir"])).rejects.toThrow(/not a git repository/);
+    // the nested one's own pin holds it: another .git folder put in its place is refused
+    fs.renameSync(path.join(nested, ".git"), path.join(t.dir, "old-git"));
+    fs.cpSync(path.join(t.dir, "old-git"), path.join(nested, ".git"), { recursive: true });
+    await expect(git(nested, ["status", "--porcelain"])).rejects.toThrow(/isn't the one its room session started with: another was put in its place/);
+  });
+});
+
+describe("a folder made to look like a bare repository", () => {
+  it("is never git's: in a folder below a repository's top, the config its agent wrote there runs nothing", async () => {
+    const dir = fs.realpathSync(tempDir("bare"));
+    const ran = path.join(dir, "RAN");
+    const evil = path.join(dir, "evil.sh");
+    fs.writeFileSync(evil, `#!/bin/sh\necho "$*" >> "${ran}"\nexit 1\n`, { mode: 0o755 });
+    const mono = path.join(dir, "mono");
+    const x = path.join(mono, "packages", "x");
+    fs.mkdirSync(x, { recursive: true });
+    fs.writeFileSync(path.join(x, "a"), "needle\n");
+    sh(mono, "init", "-q", "-b", "main");
+    sh(mono, "add", "-A");
+    sh(mono, "commit", "-q", "-m", "mono's");
+    // the agent, writing only packages/x: what makes a folder a git folder, with a config naming a gpg.program a
+    // signed commit's log runs
+    fs.writeFileSync(path.join(x, "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(path.join(x, "objects"));
+    fs.mkdirSync(path.join(x, "refs", "heads"), { recursive: true });
+    fs.writeFileSync(path.join(x, "config"), `[core]\n\tbare = true\n[log]\n\tshowSignature = true\n[gpg]\n\tprogram = ${evil}\n`);
+    const tree = execFileSync("git", ["mktree"], { cwd: x, input: "", encoding: "utf8" }).trim();
+    const signed = `tree ${tree}\nauthor t <t@t> 0 +0000\ncommitter t <t@t> 0 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n x\n -----END PGP SIGNATURE-----\n\nthe agent's\n`;
+    const commit = execFileSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], { cwd: x, input: signed, encoding: "utf8" }).trim();
+    fs.writeFileSync(path.join(x, "refs", "heads", "main"), `${commit}\n`);
+    // git as it is: the folder is a repository of its own, and a plain log runs the agent's program
+    execFileSync("git", ["log", "-1", "--format=%s"], { cwd: x, stdio: "ignore" });
+    expect(fs.readFileSync(ran, "utf8")).not.toBe("");
+    fs.rmSync(ran);
+
+    // Mockingbird's: refused by git, saying why
+    const refused = `cannot use bare repository '${x}' (safe.bareRepository is 'explicit')`;
+    await expect(git(x, ["log", "-1", "--format=%s"])).rejects.toThrow(refused);
+    await expect(searchFiles(x, "needle", { regex: false, matchCase: true })).rejects.toThrow(refused);
+    expect(fs.existsSync(ran)).toBe(false);
+    // the repository's top, and the folders with no such files, are git's as before
+    expect(await git(path.dirname(x), ["log", "-1", "--format=%s"])).toBe("mono's");
   });
 });

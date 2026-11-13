@@ -13,6 +13,7 @@ import { onTurnEnded, isRoomSession, originIdentity, roomOfSession, setRoomSessi
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
 import { CLAUDE_ROOM_SANDBOX_SINCE, CODEX_ROOM_GUARD_SINCE, decodePtyChunk, encodePtyChunk, remotePaneId, type RoomSessionRecord } from "../src/shared/team/livePanes";
 import { CODEX_ROOM_PROFILE } from "../src/main/codexRoomSandbox";
+import { clearGitPins, gitPinRefusal } from "../src/main/gitPins";
 import { HouseService } from "../src/main/team/houseService";
 import { claudeToolName } from "../src/main/messaging";
 import { ROOM_CONTEXT_ENV } from "../src/shared/team/claims";
@@ -55,6 +56,7 @@ afterEach(() => {
   for (const l of running.splice(0)) l.stop();
   // its panes are fakes that never end: nothing of a finished test's keeps watching Claude Code's settings
   for (const s of managers.splice(0)) s.killAll();
+  clearGitPins();
 });
 
 /** One member's Mockingbird: its sessions, live panes, and what reached its window, notifications and audit log. */
@@ -1120,6 +1122,34 @@ describe("room session launch", () => {
     expect(outside).not.toContain("sandbox");
     expect(outside).not.toContain("--setting-sources");
     expect(outside).toMatch(/--settings' '[^']*statusline-settings\.json'/);
+  });
+
+  it("holds a room session's folder with no repository at launch to having none: its agent can't make a .git there, and git refuses one made all the same", async () => {
+    const { ryan } = await pair();
+    const s = await ryan.start();
+    const folder = fs.realpathSync(s.cwd);
+    expect(fs.existsSync(path.join(folder, ".git"))).toBe(false);
+    const settings = JSON.parse(/--settings' '(\{.*?\})'/.exec(ptyOf(s.id).args.join(" "))![1]);
+    expect(settings.sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining([path.join(folder, ".git"), path.join(folder, ".git", "**")]));
+    ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
+    expect(ptyOf((await ryan.start({ agent: "codex" })).id).args.join(" ")).toContain(`".git"="read"`);
+    expect(gitPinRefusal(s.cwd)).toBeNull();
+    execFileSync("git", ["init", "-q", folder]);
+    try {
+      expect(gitPinRefusal(s.cwd)).toMatch(/won't run git in .*: it had no repository when its room session started, and now git would find /);
+    } finally {
+      fs.rmSync(path.join(folder, ".git"), { recursive: true, force: true });
+    }
+    // a repository made above it since: a launch there reads the folder afresh, held to that repository
+    const above = path.dirname(folder);
+    execFileSync("git", ["init", "-q", above]);
+    try {
+      expect(gitPinRefusal(s.cwd)).toMatch(/now git would find /);
+      await ryan.start();
+      expect(gitPinRefusal(s.cwd)).toBeNull();
+    } finally {
+      fs.rmSync(path.join(above, ".git"), { recursive: true, force: true });
+    }
   });
 
   it("points a room agent's package managers at the room's own caches, on its command and not its shell's startup", async () => {

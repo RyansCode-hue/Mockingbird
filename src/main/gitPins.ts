@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { onDisk as real } from "./handlers";
 
 /**
  * Room sessions' folders, held to the git data they started on. A room session's agent writes its folder; were the
@@ -9,6 +10,9 @@ import * as path from "path";
  * and git.ts asks gitPinRefusal before every git it runs: one in a pinned folder whose `.git` no longer leads where it
  * did, or with a new `.git` between it and the pinned top, is refused. Only the filesystem is read for this, never git,
  * which would follow the pointer it's checking.
+ *
+ * A folder with no repository at its room launch is pinned as having none: a `.git` git would find from it later is
+ * one its agent could have made, config and all, so git there is refused until its session is launched again.
  *
  * Any folder, pinned or not, whose `.git` is a folder holding a `commondir` is refused too (strayCommondir): git
  * follows that pointer from a main checkout as from a linked worktree's folder, and a room session's agent shares the
@@ -22,11 +26,11 @@ export interface GitFolders {
 }
 
 interface Pin {
-  /** The folder holding `.git`, as given and resolved. */
+  /** The folder holding `.git` (a folder with none: the session's own), as given and resolved. */
   top: string;
   real: string;
-  /** Its git folders, resolved; or why git is never run there. */
-  dirs: GitFolders | { bad: string };
+  /** Its git folders, resolved; that there were none; or why git is never run there. */
+  dirs: GitFolders | { none: true } | { bad: string };
   /** Those folders' device and inode (folderIds), so one swapped in under the same path is told apart. */
   ids?: string;
 }
@@ -52,15 +56,6 @@ export function onGitPinRefused(cb: (top: string, why: string) => void): () => v
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
-
-/** `p` as the disk has it, links resolved and each name in its own case, so a folder named in another case is the same. */
-const real = (p: string): string => {
-  try {
-    return fs.realpathSync.native(p);
-  } catch {
-    return path.resolve(p);
-  }
-};
 
 /**
  * The git folders `.git` in `top` leads to, read from the filesystem: a folder is the repository's own; a file names a
@@ -116,20 +111,26 @@ const same = (a: GitFolders, b: GitFolders) => a.common === b.common && a.own ==
  * Pin the git folders of the repository at `cwd`, as a room launch finds them (`found`: git's own answer, from
  * roomGitDirs). They're held only when the filesystem says the same, and, given `repoPath` (the repository the session
  * was opened on), when they're that repository's: its shared folder, and a worktree's own folder inside it. Otherwise
- * git is refused there, and why is returned; null when pinned.
+ * git is refused there, and why is returned; null when pinned. Outside a repository, `cwd` is pinned as having none.
+ * What an earlier launch pinned at `cwd` is replaced.
  */
 export function pinGitDirs(cwd: string, found: GitFolders | null, repoPath?: string | null): string | null {
+  const at = path.resolve(cwd);
+  for (const [k, p] of pins) if (k === at || p.real === real(at)) pins.delete(k);
   let top: string | null;
   try {
     top = gitTop(cwd);
   } catch (err) {
     const why = `its .git couldn't be read (${(err as Error).message})`;
-    top = path.resolve(cwd);
-    pins.set(top, { top, real: real(top), dirs: { bad: why } });
-    toldFor.add(top);
+    pins.set(at, { top: at, real: real(at), dirs: { bad: why } });
+    toldFor.add(at);
     return why;
   }
-  if (!top) return null; // no repository: nothing for git to be led away from
+  if (!top) {
+    pins.set(at, { top: at, real: real(at), dirs: { none: true } });
+    toldFor.delete(at);
+    return null;
+  }
   let why: string | null = null;
   let dirs: GitFolders | null = null;
   try {
@@ -166,27 +167,41 @@ export function unpinGitDirs(top: string): void {
   for (const [k, p] of pins) if (k === path.resolve(top) || p.real === real(top)) pins.delete(k);
 }
 
-/** The pin `cwd` is under, if any. */
+/** `dir` is `top` or a folder in it. */
+const within = (dir: string, top: string): boolean => dir === top || dir.startsWith(top + path.sep);
+
+/** The pin `cwd` is under, if any: the innermost, as a room session's in a repository nested in another's speaks for it. */
 function pinOf(cwd: string): Pin | null {
   if (!pins.size) return null;
   const at = path.resolve(cwd);
   const r = real(at);
+  let inner: Pin | null = null;
   for (const p of pins.values()) {
-    for (const [dir, top] of [[at, p.top], [r, p.real]]) if (dir === top || dir.startsWith(top + path.sep)) return p;
+    if ((within(at, p.top) || within(r, p.real)) && (!inner || p.real.length > inner.real.length)) inner = p;
   }
-  return null;
+  return inner;
 }
 
 /**
  * Why git mustn't run in `cwd` now, or null: it's in a pinned folder whose `.git` leads elsewhere than when its room
- * session started, or there's a `.git` between `cwd` and that folder's top that git would find first.
+ * session started, or there's a `.git` between `cwd` and that folder's top that git would find first; or in a folder
+ * pinned as having no repository, git would now find one at or above it.
  */
 export function gitPinRefusal(cwd: string): string | null {
   const p = pinOf(cwd);
   if (!p) return strayCommondir(cwd);
   let why: string | null = null;
   if ("bad" in p.dirs) why = p.dirs.bad;
-  else {
+  else if ("none" in p.dirs) {
+    try {
+      const top = gitTop(cwd);
+      // a repository inside the folder is another one, as unpinned as it would be anywhere else
+      if (top && within(real(top), p.real) && real(top) !== p.real) return strayCommondir(cwd);
+      if (top) why = `it had no repository when its room session started, and now git would find ${path.join(top, ".git")}, which that session's agent could have made, config and all`;
+    } catch (err) {
+      why = `its .git couldn't be looked for (${(err as Error).message})`;
+    }
+  } else {
     try {
       const top = gitTop(cwd);
       if (!top || real(top) !== p.real) why = `there's a .git in ${top ?? cwd} that git would find before ${p.top}'s`;
@@ -200,7 +215,7 @@ export function gitPinRefusal(cwd: string): string | null {
     }
   }
   if (!why) return null;
-  const refusal = `Mockingbird won't run git in ${p.top}: ${why}. A room session's agent can write that folder, and git would run what another git folder's config names. Check the folder; restarting its session reads it again.`;
+  const refusal = `Mockingbird won't run git in ${p.top}: ${why}. A room session's agent can write that folder, and git would run what a config it wrote names. Check the folder; restarting its session reads it again.`;
   if (!toldFor.has(p.top)) {
     toldFor.add(p.top);
     console.warn(`[git] ${refusal}`);

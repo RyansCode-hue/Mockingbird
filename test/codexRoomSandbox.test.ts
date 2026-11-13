@@ -164,11 +164,19 @@ describe("a Codex room session's permission profile", () => {
   });
 
   it("keeps the editors', agents' and shells' settings files read-only at the session folder's top and hidden below it, leaving .git to gitWrites", () => {
-    const profile = profileOf(codexRoomPermissions(places()).config);
+    const repo = makeRepo();
+    const profile = profileOf(codexRoomPermissions(places({ git: { common: path.join(repo, ".git"), own: path.join(repo, ".git") } })).config);
     const roots = /":workspace_roots"=\{([^}]*)\}/.exec(profile)![1];
     for (const f of [".envrc", ".mcp.json", ".zshrc", ".gitmodules"]) expect(roots).toContain(`"${f}"="read", "*/**/${f}"="deny"`);
     for (const d of [".codex", ".claude", ".vscode", ".idea", ".husky"]) expect(roots).toContain(`"${d}"="read", "*/**/${d}"="deny", "*/**/${d}/**"="deny"`);
     expect(roots).not.toContain(`.git"=`);
+  });
+
+  it("keeps a .git from being made in the session's folder when there was no repository there at launch", () => {
+    const roots = /":workspace_roots"=\{([^}]*)\}/.exec(profileOf(codexRoomPermissions(places()).config))![1];
+    expect(roots).toContain(`".git"="read"`);
+    // only at the top: a repository a command makes in a folder below is another one, which Mockingbird's git there leaves be
+    expect(roots).not.toMatch(/\*\*\/\.git"=/);
   });
 
   it("keeps a launch from what a repository commits or its agent picks to run outside the sandbox: each folder untrusted, notify, apps, plugins, computer and browser use", () => {

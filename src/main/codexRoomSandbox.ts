@@ -220,7 +220,9 @@ export function codexRoomPermissions(p: CodexRoomPlaces): { config: string[]; pr
   // keys are TOML strings; a JSON string is a valid one
   const entries = (access: string, paths: readonly string[]) => paths.map((x) => `${JSON.stringify(x)}="${access}"`);
   const filesystem = [
-    `":workspace_roots"=${inline([...entries("deny", SECRET_FILE_GLOBS.map((g) => `**/${g}`)), ...inFolderEntries()])}`,
+    // with no repository at launch, `.git` is named read-only, whether or not :workspace keeps a missing one so: one its
+    // agent made would be one Mockingbird's git trusted (gitPins.ts holds the folder to having none)
+    `":workspace_roots"=${inline([...entries("deny", SECRET_FILE_GLOBS.map((g) => `**/${g}`)), ...inFolderEntries(), ...(p.git ? [] : entries("read", [".git"]))])}`,
     ...entries("write", [...gitDirs.write, ...(p.caches ? [p.caches] : [])]),
     ...entries("read", [...gitDirs.read, ...p.hooks]),
     ...entries("deny", SECRET_FILE_GLOBS.filter((g) => !CERT_BUNDLE_GLOBS.has(g)).map((g) => `/**/${g}`)),
