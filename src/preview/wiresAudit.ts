@@ -1667,8 +1667,8 @@ async function templateNotesAudit(env: WiresAuditEnv, out: Record<string, unknow
   const noRepo = { said: flag("repo"), act: tpNow(picker())?.act ?? null };
   await choose(".tp-repo", repoWas ?? "backoffice");
   out.repo = { was: repoWas, noRepo, back: { said: flag("repo"), act: tpNow(picker())?.act ?? null } };
-  // #5115, a new area, laid out and refused with a step left (main makes the area, and takes it back): what's said, the
-  // area, and where the step left is drawn
+  // #5115, a new area, laid out and refused with a step left (main makes the area, and keeps it for that step): what's
+  // said, the area, and where the step left is drawn
   await choose(".tp-ticket", "#5115");
   await sleep(700);
   const area5115 = () => !!document.querySelector('.ls-world [data-area="5115"]');

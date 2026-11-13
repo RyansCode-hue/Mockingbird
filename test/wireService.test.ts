@@ -6,7 +6,7 @@ import { LandscapeStore } from "../src/main/landscape";
 import { Messaging, mcpLaunch, retireMcpLaunch } from "../src/main/messaging";
 import { WireService, type LayOutDeps } from "../src/main/wires";
 import type { StepStarted } from "../src/shared/types";
-import type { LayOutRequest, TemplateBody } from "../src/shared/pipelineTemplates";
+import { LayOutLeftError, type LayOutRequest, type TemplateBody } from "../src/shared/pipelineTemplates";
 import { freeWorktree } from "../src/main/handlers";
 import type { NewSessionRequest, PlanRequest, SessionInfo } from "../src/shared/types";
 import { MESSAGE_ROOM_LINE, newWire, ROOM_LINE, ROOMS_STARTING, type Wire, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
@@ -936,9 +936,12 @@ describe("laying a template out (W9)", () => {
       impl(id);
       return "landscape.json is read-only";
     })(t.forget.getMockImplementation()!));
-    await expect(t.service.layOut(request(), t.d)).rejects.toThrow(
+    const e = await t.service.layOut(request(), t.d).catch((x: unknown) => x);
+    expect((e as Error).message).toBe(
       "Couldn't lay out “Build, review, test”: “Reviewer” was refused: /code/backoffice isn't a git repo. Its wires couldn't be taken back (landscape.json is read-only): remove them from their right-click."
     );
+    // no step left: nothing for its area to be kept for
+    expect(e).not.toBeInstanceOf(LayOutLeftError);
   });
 
   it("takes back its steps and wires when a wire is refused once they're made, naming what couldn't be", async () => {
@@ -953,7 +956,11 @@ describe("laying a template out (W9)", () => {
       if (id === "p2") throw new Error("sessions.json is read-only");
       return impl(id);
     })(t.forget.getMockImplementation()!));
-    await expect(t.service.layOut(request(), t.d)).rejects.toThrow(/^Couldn't lay out “Build, review, test”: Reviewer → Tester was refused: .*team room.*\. “Reviewer” couldn't be taken back: forget it from its menu\.$/);
+    const e = await t.service.layOut(request(), t.d).catch((x: unknown) => x);
+    expect((e as Error).message).toMatch(/^Couldn't lay out “Build, review, test”: Reviewer → Tester was refused: .*team room.*\. “Reviewer” couldn't be taken back: forget it from its menu\.$/);
+    // the step left, by id, for its area to be kept for (TemplateLayOuts)
+    expect(e).toBeInstanceOf(LayOutLeftError);
+    expect((e as LayOutLeftError).left).toEqual(["p2"]);
     expect(t.forget.mock.calls.map((c) => c[0])).toEqual(["p3", "p2", "p1"]);
     expect(t.links().filter((w) => w.from !== "p2" && w.to !== "p2")).toEqual([]);
     expect(t.logged.some((l) => /step p2 couldn't be taken back: sessions.json is read-only/.test(l))).toBe(true);

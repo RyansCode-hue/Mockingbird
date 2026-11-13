@@ -1046,7 +1046,7 @@ describe.skipIf(!local)("Pipeline templates", () => {
     expect(t.broken.after.empty).toMatch(/^No saved templates yet/);
   }, 120_000);
 
-  it("says in the dialog that the models can't be read (a step's model still a choice) and that a repo is wanted; a refused lay-out's step left is drawn and said", async () => {
+  it("says in the dialog that the models can't be read (a step's model still a choice) and that a repo is wanted; a refused lay-out keeps the area made for a step it left", async () => {
     type Act = { off: boolean; title: string | null } | null;
     const n = (await audit("lsTemplates&lsLayOutLeaves=1&lsModelsMs=700&lsCamera=0,3040,1&landscapeWiresAudit=tplnotes", "1600x1200", 120_000)) as unknown as {
       models: {
@@ -1070,14 +1070,15 @@ describe.skipIf(!local)("Pipeline templates", () => {
     // No repo: what it keeps from Lay out said under Repo, not only on the button; gone once one is chosen again
     expect(n.repo.noRepo).toEqual({ said: "Its steps work in worktrees of their own: choose a repo. Lay out is off until then.", act: { off: true, title: "Its steps work in worktrees of their own: choose a repo" } });
     expect(n.repo.back).toEqual({ said: null, act: { off: false, title: null } });
-    // refused with a step main couldn't take back: main takes back the area it made, as it made it; the step left is
-    // still drawn, loose, and said, so it can be forgotten from its menu
+    // refused with a step main couldn't take back: main keeps the area it made for it, the step is drawn there, and both
+    // are said, so it can be forgotten from its menu and the area removed
     expect(n.left).toEqual({
       calls: 1,
       open: true,
-      error: "Couldn't lay out “Build, review, test”: a wire was refused. “Builder” couldn't be taken back: forget it from its menu.",
-      area: false,
-      cards: [{ title: "Builder", area: "ungrouped" }],
+      error:
+        "Couldn't lay out “Build, review, test”: a wire was refused. “Builder” couldn't be taken back: forget it from its menu. Its area is kept for the step left in it: forget that step from its ⋯, then remove the area.",
+      area: true,
+      cards: [{ title: "Builder", area: "5115" }],
     });
   }, 150_000);
 });

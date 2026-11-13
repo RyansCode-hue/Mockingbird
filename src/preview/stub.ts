@@ -9266,6 +9266,8 @@ Object.assign(api, {
     const as = made ? JSON.stringify(landscape.areas[made]) : null;
     const r = await api.previewLayOutNow(req);
     if (r && "error" in r) {
+      // kept for a step it couldn't take back, which is in it (main's TemplateLayOuts)
+      if (made && "left" in r && r.left.length) return err(`${r.error} Its area is kept for the step left in it: forget that step from its ⋯, then remove the area.`);
       if (made && JSON.stringify(landscape.areas[made]) === as) await api.landscapeUpdate({ areas: { [made]: null } });
       return r;
     }
@@ -9344,7 +9346,7 @@ Object.assign(api, {
       const kept = steps[0];
       planned = planned.filter((x) => x.id === kept.id || !steps.some((m) => m.id === x.id));
       sessionsChanged();
-      return err(`Couldn't lay out “${req.name}”: a wire was refused. “${kept.title}” couldn't be taken back: forget it from its menu.`);
+      return { ...err(`Couldn't lay out “${req.name}”: a wire was refused. “${kept.title}” couldn't be taken back: forget it from its menu.`), left: [kept.id] };
     }
     const wires: string[] = [];
     for (const p of plan.wires) {

@@ -544,9 +544,20 @@ export interface LayOutRequest {
   area: string;
   /**
    * Where to make `area` when it has none (the window works it out, as newAreaPatch does): main makes it under its
-   * lay-out lock, and takes it back only when this lay-out made it and is refused (main's TemplateLayOuts).
+   * lay-out lock, and takes it back only when this lay-out made it, is refused, and left nothing in it (main's
+   * TemplateLayOuts).
    */
   newArea?: Area | null;
+}
+/** A lay-out refused once it had made steps, some of which couldn't be taken back: `left`, their ids, stay in its area. */
+export class LayOutLeftError extends Error {
+  constructor(
+    message: string,
+    readonly left: readonly string[]
+  ) {
+    super(message);
+    this.name = "LayOutLeftError";
+  }
 }
 export interface LayOutReply {
   /** Each step made, by its key: its session's id and title. */

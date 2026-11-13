@@ -3,7 +3,7 @@ import type { LandscapeStore } from "./landscape";
 import type { Reply } from "./messaging";
 import { canonical, companionRequest } from "./handlers";
 import { LandscapeShapeError, isObj, own, put, stackKeyOf } from "../shared/landscape";
-import { agentOf, layOutPlan, parseTemplateBody, roomAsked, startsAtOrchestrator, TemplateError, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type TemplateBody, type TemplateWire } from "../shared/pipelineTemplates";
+import { agentOf, LayOutLeftError, layOutPlan, parseTemplateBody, roomAsked, startsAtOrchestrator, TemplateError, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type TemplateBody, type TemplateWire } from "../shared/pipelineTemplates";
 import { oneLine } from "../shared/team/agentText";
 import type { NewSessionRequest, PlanRequest, PrRepo, SessionInfo, StepStarted } from "../shared/types";
 import {
@@ -424,21 +424,24 @@ export class WireService {
     const made: LayOutReply["steps"] = [];
     const idOf = new Map<string, string>();
     const undo = (why: string): never => {
-      const left: string[] = [];
+      const left: typeof made = [];
       let wiresLeft: string | null = null;
       for (const m of [...made].reverse()) {
         try {
           wiresLeft = d.forget(m.id) ?? wiresLeft;
         } catch (err) {
           this.o.log(`wires: laying out ${name}, step ${m.id} couldn't be taken back`, err);
-          left.push(`“${m.title}”`);
+          left.push(m);
         }
       }
+      const titles = left.map((m) => `“${m.title}”`).join(", ");
       const said = [
-        ...(left.length ? [`${left.join(", ")} couldn't be taken back: forget ${left.length === 1 ? "it" : "them"} from ${left.length === 1 ? "its" : "their"} menu.`] : []),
+        ...(left.length ? [`${titles} couldn't be taken back: forget ${left.length === 1 ? "it" : "them"} from ${left.length === 1 ? "its" : "their"} menu.`] : []),
         ...(wiresLeft ? [`Its wires couldn't be taken back (${wiresLeft}): remove them from their right-click.`] : []),
       ];
-      throw new Error(`Couldn't lay out “${name}”: ${why}. ${said.length ? said.join(" ") : "Nothing was left."}`);
+      const message = `Couldn't lay out “${name}”: ${why}. ${said.length ? said.join(" ") : "Nothing was left."}`;
+      // the steps left stay in the area: one made for this lay-out is kept for them (TemplateLayOuts)
+      throw left.length ? new LayOutLeftError(message, left.map((m) => m.id)) : new Error(message);
     };
     const line = ticketLine(ticketId, ticketTitle);
     for (const p of plan.steps) {

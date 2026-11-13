@@ -11,6 +11,7 @@ import { isRemotePaneId } from "../shared/team/livePanes";
 import { isObj, LandscapeShapeError, own, type Area } from "../shared/landscape";
 import {
   kickoffAsTicket,
+  LayOutLeftError,
   ticketLine,
   parseTemplateBody,
   readTemplates,
@@ -399,8 +400,9 @@ export interface AreaStore {
  * templates:layOut, one at a time. The area its steps go in is made here, when the window sent one (`newArea`) for an
  * area that has none: under this lock, before anything is laid out, so a second lay-out can't make it too and then
  * take it back from under the first. A refused lay-out takes back only the area it made, and only as it made it (one
- * moved or changed since is left, and said). The reply says whether it made it (`madeArea`): only an area made for the
- * lay-out is tidied along its wires.
+ * moved or changed since is left, and said), and keeps it, saying so, while a step it couldn't take back is still in it
+ * (LayOutLeftError). The reply says whether it made it (`madeArea`): only an area made for the lay-out is tidied along
+ * its wires.
  */
 export class TemplateLayOuts {
   private running = false;
@@ -416,8 +418,10 @@ export class TemplateLayOuts {
       try {
         reply = await go(raw);
       } catch (err) {
-        const left = made ? this.takeBack(made) : null;
-        if (left) throw new Error(`${err instanceof Error ? err.message : String(err)} ${left}`, { cause: err });
+        if (!made) throw err;
+        const stepsLeft = err instanceof LayOutLeftError ? err.left : [];
+        const said = stepsLeft.length ? this.keptFor(made, stepsLeft, err) : this.takeBack(made);
+        if (said) throw new Error(`${err instanceof Error ? err.message : String(err)} ${said}`, { cause: err });
         throw err;
       }
       return { ...reply, madeArea: !!made };
@@ -442,6 +446,14 @@ export class TemplateLayOuts {
     const now = own(this.o.store.get().landscape.areas, key);
     if (!now) throw new Error(`Its area couldn't be made: ${key} has none after it was written.`);
     return { key, as: JSON.stringify(now) };
+  }
+
+  /** Area `made` kept after a refused lay-out for the steps it couldn't take back (`ids`), which are in it: said. */
+  private keptFor(made: { key: string }, ids: readonly string[], err: unknown): string {
+    this.o.log(`templates: area ${made.key}, made for a lay-out that was refused, is kept for ${ids.join(", ")} left in it`, err);
+    return ids.length === 1
+      ? "Its area is kept for the step left in it: forget that step from its ⋯, then remove the area."
+      : "Its area is kept for the steps left in it: forget those steps from their ⋯, then remove the area.";
   }
 
   /** Area `made` taken back after a refused lay-out, unless it has changed since. What couldn't be is said, or null. */

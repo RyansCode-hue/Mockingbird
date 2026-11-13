@@ -9448,6 +9448,11 @@ follow-ups).
   where the refusal says to forget it from its menu. The template notes test says so.
 - Open: whether main should keep an area that still holds a step it couldn't take back, as L12 did in the window. It's
   `templates.ts`'s `takeBack`, outside the screens' files.
+- Follow-up, decided: main keeps that area. A refusal with steps left throws `LayOutLeftError` (their ids) from
+  `WireService.layOut`'s undo. `TemplateLayOuts` then keeps the area it made, logs it, and adds "Its area is kept for
+  the step left in it: forget that step from its ⋯, then remove the area." It takes the area back only when nothing
+  was left. The window's re-read now draws the step in that area. Tests: `templates` and `wireService` (147 of 147),
+  `uiLandscapeWires`' template notes (1 of 1), `uiTemplatePicker` (8 of 8).
 
 ### Checked
 

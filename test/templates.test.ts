@@ -4,7 +4,7 @@ import * as path from "path";
 import { draftTemplate, FOLDER_MARK, removedTemplate, savedTemplates, setAsideTemplates, TemplateLayOuts, TEMPLATES_KEPT } from "../src/main/templates";
 import { LandscapeStore } from "../src/main/landscape";
 import { tempDir } from "./helpers";
-import { readTemplates, ticketKickoffPrompt, type LayOutReply, type TemplateBody } from "../src/shared/pipelineTemplates";
+import { LayOutLeftError, readTemplates, ticketKickoffPrompt, type LayOutReply, type TemplateBody } from "../src/shared/pipelineTemplates";
 import type { SessionInfo } from "../src/shared/types";
 import { emptyWireBook, newWire, type Wire, type WireBook } from "../src/shared/wires";
 
@@ -348,6 +348,29 @@ describe("a lay-out's area (TemplateLayOuts)", () => {
     await expect(t.layOuts.layOut({ area: "5115", newArea: AREA }, async () => Promise.reject(new Error("“Builder” was refused")))).rejects.toThrow(/^“Builder” was refused$/);
     expect(Object.hasOwn(t.areas(), "5115")).toBe(false);
     await expect(t.layOuts.layOut({ area: "5110", newArea: AREA }, async () => Promise.reject(new Error("refused")))).rejects.toThrow("refused");
+    expect(t.areas()["5110"]).toMatchObject({ x: 0, y: 0, w: 400, h: 300 });
+  });
+
+  it("keeps the area it made for a step the refused lay-out couldn't take back, saying so and logging it; with none left, takes it back", async () => {
+    const t = setup();
+    const refused = "Couldn't lay out “Build”: a wire was refused. “Builder” couldn't be taken back: forget it from its menu.";
+    await expect(t.layOuts.layOut({ area: "5115", newArea: AREA }, async () => Promise.reject(new LayOutLeftError(refused, ["p1"])))).rejects.toThrow(
+      `${refused} Its area is kept for the step left in it: forget that step from its ⋯, then remove the area.`
+    );
+    expect(t.areas()["5115"]).toMatchObject(AREA);
+    expect(t.logged).toContain(`templates: area 5115, made for a lay-out that was refused, is kept for p1 left in it: ${refused}`);
+    // two left: said for both
+    await expect(t.layOuts.layOut({ area: "5118", newArea: AREA }, async () => Promise.reject(new LayOutLeftError("refused.", ["p1", "p2"])))).rejects.toThrow(
+      "refused. Its area is kept for the steps left in it: forget those steps from their ⋯, then remove the area."
+    );
+    expect(Object.hasOwn(t.areas(), "5118")).toBe(true);
+    // nothing left: the area made for it goes, and the refusal is said as it was
+    await expect(t.layOuts.layOut({ area: "5119", newArea: AREA }, async () => Promise.reject(new Error("Couldn't lay out “Build”: a wire was refused. Nothing was left.")))).rejects.toThrow(
+      /^Couldn't lay out “Build”: a wire was refused\. Nothing was left\.$/
+    );
+    expect(Object.hasOwn(t.areas(), "5119")).toBe(false);
+    // into an area that was there already: kept as it was, and nothing more said
+    await expect(t.layOuts.layOut({ area: "5110", newArea: AREA }, async () => Promise.reject(new LayOutLeftError("refused.", ["p1"])))).rejects.toThrow(/^refused\.$/);
     expect(t.areas()["5110"]).toMatchObject({ x: 0, y: 0, w: 400, h: 300 });
   });
 
