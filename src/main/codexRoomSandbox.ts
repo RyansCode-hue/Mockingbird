@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { git } from "./git";
+import { onDisk } from "./handlers";
 import { HOME_PRIVATE_DATA, HOME_SECRETS, knownSecretFiles, notDeniedByPath, SECRET_FILE_GLOBS } from "./secrets";
 
 /**
@@ -193,6 +194,8 @@ export interface CodexRoomPlaces {
   codexHome?: string;
   /** The room's cache folder (roomCachesFolder), the one cache it writes; none when absent. */
   caches?: string;
+  /** Its folders held to having no repository (gitPins' pinNoRepo): a `.git` can't be made at their tops. */
+  noRepo?: string[];
 }
 
 /**
@@ -220,11 +223,11 @@ export function codexRoomPermissions(p: CodexRoomPlaces): { config: string[]; pr
   // keys are TOML strings; a JSON string is a valid one
   const entries = (access: string, paths: readonly string[]) => paths.map((x) => `${JSON.stringify(x)}="${access}"`);
   const filesystem = [
-    // with no repository at launch, `.git` is named read-only, whether or not :workspace keeps a missing one so: one its
-    // agent made would be one Mockingbird's git trusted (gitPins.ts holds the folder to having none)
-    `":workspace_roots"=${inline([...entries("deny", SECRET_FILE_GLOBS.map((g) => `**/${g}`)), ...inFolderEntries(), ...(p.git ? [] : entries("read", [".git"]))])}`,
+    `":workspace_roots"=${inline([...entries("deny", SECRET_FILE_GLOBS.map((g) => `**/${g}`)), ...inFolderEntries()])}`,
     ...entries("write", [...gitDirs.write, ...(p.caches ? [p.caches] : [])]),
-    ...entries("read", [...gitDirs.read, ...p.hooks]),
+    // a folder with no repository at launch has its .git named read-only, whether or not :workspace keeps a missing one
+    // so: one its agent made would be one git trusted (gitPins.ts holds the folder to having none)
+    ...entries("read", [...gitDirs.read, ...p.hooks, ...(p.noRepo ?? []).map((f) => path.join(onDisk(f), ".git"))]),
     ...entries("deny", SECRET_FILE_GLOBS.filter((g) => !CERT_BUNDLE_GLOBS.has(g)).map((g) => `/**/${g}`)),
     ...entries("deny", [...[...HOME_SECRETS, ...HOME_PRIVATE_DATA].map((x) => x.replace(/\/\*\*$/, "")), ...CREDENTIAL_STORES, ...codexAuth]),
     ...entries("deny", known.files.map((f) => path.resolve(f))),

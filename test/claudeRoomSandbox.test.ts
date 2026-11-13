@@ -61,17 +61,21 @@ describe("a Claude room session's settings", () => {
     expect(s.hooks).toEqual({ SessionStart: [{ hooks: [{ type: "command", command: "'/m/room-sandbox.sh' abc" }] }] });
   });
 
-  it("can't make a .git in its folder when there was no repository there at launch, named as the disk has the folder", () => {
+  it("can't make a .git in a folder held to having no repository, its cwd or an extra one, named as the disk has it", () => {
     const folder = fs.realpathSync(tempDir("notes"));
     const link = path.join(tempDir("links"), "notes");
     fs.symlinkSync(folder, link);
-    const s = settingsOf({ git: null, hooks: [], folders: [link], cwd: link });
-    expect(s.sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining([path.join(folder, ".git"), path.join(folder, ".git", "**")]));
-    expect(s.permissions.deny).toEqual(expect.arrayContaining([`Edit(/${path.join(folder, ".git")})`, `Edit(/${path.join(folder, ".git")}/**)`]));
+    const extra = fs.realpathSync(tempDir("docs"));
+    const s = settingsOf({ git: null, hooks: [], folders: [link, extra], noRepo: [link, extra] });
+    for (const f of [folder, extra]) {
+      expect(s.sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining([path.join(f, ".git"), path.join(f, ".git", "**")]));
+      expect(s.permissions.deny).toEqual(expect.arrayContaining([`Edit(/${path.join(f, ".git")})`, `Edit(/${path.join(f, ".git")}/**)`]));
+    }
     // in a repository, its .git is the git rules'
     const repo = makeRepo();
-    const inRepo = settingsOf({ git: { common: path.join(repo, ".git"), own: path.join(repo, ".git") }, hooks: [], folders: [repo], cwd: repo });
+    const inRepo = settingsOf({ git: { common: path.join(repo, ".git"), own: path.join(repo, ".git") }, hooks: [], folders: [repo, extra], noRepo: [extra] });
     expect(inRepo.sandbox.filesystem.denyWrite).not.toContain(path.join(fs.realpathSync(repo), ".git"));
+    expect(inRepo.sandbox.filesystem.denyWrite).toContain(path.join(extra, ".git"));
     expect(inRepo.sandbox.filesystem.allowWrite).toContain(path.join(repo, ".git"));
   });
 

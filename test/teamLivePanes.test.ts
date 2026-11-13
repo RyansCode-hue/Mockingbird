@@ -801,6 +801,52 @@ describe("room session launch", () => {
     await expect(ryan.live.roomLaunch({ ...target, extraDirs: [tempDir("extra")] })).resolves.toMatchObject({ guards: { secrets: true } });
   });
 
+  it("never starts a room agent in folders holding another repository, which its sandbox would let it rewrite; a plain terminal's isn't asked", async () => {
+    const { ryan } = await pair();
+    const clients = fs.realpathSync(tempDir("Clients"));
+    const app = makeRepo({ "a.txt": "a\n" }, "app", path.join(clients, "acme"));
+    const target = { id: "x2", group: "5110", agent: "claude" as const, agentVersion: CLAUDE_ROOM_SANDBOX_SINCE, cwd: clients, repoPath: null };
+    await expect(ryan.live.roomLaunch(target)).rejects.toThrow(`can't work in ${clients}: it holds another repository, at ${app} (its .git)`);
+    await expect(ryan.live.roomLaunch({ ...target, agent: "codex", agentVersion: CODEX_ROOM_GUARD_SINCE, cwd: tempDir("notes"), extraDirs: [clients] })).rejects.toThrow(`can't be given ${clients} as an extra folder: it holds another repository, at ${app}`);
+    await expect(ryan.live.roomLaunch({ ...target, agent: null })).resolves.toMatchObject({ guards: { secrets: false } });
+    // the repository's own folder is the place for it
+    await expect(ryan.live.roomLaunch({ ...target, cwd: app, repoPath: app })).resolves.toMatchObject({ guards: { secrets: true } });
+  });
+
+  it("holds an extra folder with no repository to having none, as its cwd: no .git made there, none trusted", async () => {
+    const { ryan } = await pair();
+    const work = fs.realpathSync(tempDir("work"));
+    const docs = fs.realpathSync(tempDir("docs"));
+    const r = (await ryan.live.roomLaunch({ id: "x3", group: "5110", agent: "claude", agentVersion: CLAUDE_ROOM_SANDBOX_SINCE, cwd: work, repoPath: null, extraDirs: [docs] }))!;
+    expect(r.noRepo).toEqual([work, docs]);
+    expect((r.claudeSettings as any).sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining([path.join(docs, ".git"), path.join(docs, ".git", "**")]));
+    const codex = (await ryan.live.roomLaunch({ id: "x4", group: "5110", agent: "codex", agentVersion: CODEX_ROOM_GUARD_SINCE, cwd: work, repoPath: null, extraDirs: [docs] }))!;
+    expect(codex.codexPermissions.join(" ")).toContain(`${JSON.stringify(path.join(docs, ".git"))}="read"`);
+    execFileSync("git", ["init", "-q", docs]);
+    expect(gitPinRefusal(docs)).toMatch(new RegExp(`won't run git in ${docs}: it had no repository when its room session started`));
+  });
+
+  it("keeps a folder with no repository at its first launch held through a relaunch: a .git there since refuses it, saying to delete it", async () => {
+    const { ryan } = await pair();
+    const s = await ryan.start();
+    const folder = fs.realpathSync(s.cwd);
+    expect(ryan.sessions.list().find((x) => x.id === s.id)!.noRepo).toEqual([folder]);
+    const target = { id: s.id, group: "5110", agent: "claude" as const, agentVersion: CLAUDE_ROOM_SANDBOX_SINCE, cwd: s.cwd, repoPath: null, noRepo: [folder] };
+    // still none there: held, and its .git can't be made
+    const again = (await ryan.live.roomLaunch(target))!;
+    expect(again.noRepo).toEqual([folder]);
+    expect((again.claudeSettings as any).sandbox.filesystem.denyWrite).toContain(path.join(folder, ".git"));
+    // one there since, the agent's or not: the relaunch is refused, and git there too, till it's deleted
+    execFileSync("git", ["init", "-q", folder]);
+    try {
+      await expect(ryan.live.roomLaunch(target)).rejects.toThrow(`can't work in ${s.cwd}: it had no repository when the session first started, and now has one (${path.join(folder, ".git")}), which its agent could have made, config and all. Delete it if you didn't make it`);
+      expect(gitPinRefusal(s.cwd)).toMatch(/it had no repository when its room session started, .* Delete it if you didn't make it/);
+    } finally {
+      fs.rmSync(path.join(folder, ".git"), { recursive: true, force: true });
+    }
+    await expect(ryan.live.roomLaunch(target)).resolves.toMatchObject({ noRepo: [folder] });
+  });
+
   it("denies reading secrets to Claude, and points git at the co-author hooks", async () => {
     const { ryan } = await pair();
     const s = await ryan.start();
@@ -1132,7 +1178,7 @@ describe("room session launch", () => {
     const settings = JSON.parse(/--settings' '(\{.*?\})'/.exec(ptyOf(s.id).args.join(" "))![1]);
     expect(settings.sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining([path.join(folder, ".git"), path.join(folder, ".git", "**")]));
     ryan.sessions.setAgentVersions({ codex: CODEX_ROOM_GUARD_SINCE });
-    expect(ptyOf((await ryan.start({ agent: "codex" })).id).args.join(" ")).toContain(`".git"="read"`);
+    expect(ptyOf((await ryan.start({ agent: "codex" })).id).args.join(" ")).toContain(`${JSON.stringify(path.join(folder, ".git"))}="read"`);
     expect(gitPinRefusal(s.cwd)).toBeNull();
     execFileSync("git", ["init", "-q", folder]);
     try {

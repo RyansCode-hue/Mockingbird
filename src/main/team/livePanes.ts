@@ -22,8 +22,8 @@ import {
 import { codexMcpNames } from "../codexMcpNames";
 import { CLAUDE_ROOM_SANDBOX_NOTE, claudeRoomSettings } from "../claudeRoomSandbox";
 import { sandboxMarkerCommand } from "../hooks";
-import { gitPinRefusal, gitTop, onGitPinRefused, pinGitDirs, unpinGitDirs } from "../gitPins";
-import { roomFolderRefusal } from "../handlers";
+import { gitPinRefusal, gitTop, nestedRepoRefusal, onGitPinRefused, pinGitDirs, pinNoRepo, unpinGitDirs } from "../gitPins";
+import { onDisk, roomFolderRefusal } from "../handlers";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
 import { isTermReply, isViewControl } from "../../shared/termInput";
 import { CLAUDE_INLINE_ENV, codexMcpOff } from "../agents";
@@ -452,12 +452,20 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const claudeSandboxed = runs === "claude" && claudeSandboxes(target.agentVersion);
     let git: RoomGitDirs | null = null;
     let gitRead = false;
+    // the folders held to having no repository: its record's (its first launch found none there), and any with none now
+    const held = new Set((target.noRepo ?? []).map(onDisk));
+    const noRepo: string[] = [];
     /** `who`: the sandboxed agent that couldn't commit without them; null where nothing depends on them but pollGit. */
     const gitDirs = async (who: string | null): Promise<RoomGitDirs | null> => {
       if (gitRead) return git;
       gitRead = true;
+      if (held.has(onDisk(target.cwd))) {
+        pinNoRepo(target.cwd);
+        noRepo.push(onDisk(target.cwd));
+        return git;
+      }
       // what it starts on is what git in its folder is held to from here on (gitPins.ts): read afresh at each launch,
-      // whatever was pinned at its folder (none there, last time) or its repository's top
+      // whatever was pinned at its folder or its repository's top
       let top: string | null = null;
       try {
         unpinGitDirs(target.cwd);
@@ -473,9 +481,31 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       if (moved) {
         git = null;
         this.problem(`Mockingbird won't run git in room session ${target.id}'s folder: ${moved}`);
-      }
+      } else if (!top) noRepo.push(onDisk(target.cwd));
       return git;
     };
+    await gitDirs(runs === "claude" ? "Claude" : codexGuarded ? "Codex" : null);
+    if (runs) {
+      const extras = target.extraDirs ?? [];
+      // a repository in its folders that isn't its own is one its agent could rewrite, outside Mockingbird's pins
+      const why = await nestedRepoRefusal(
+        [{ path: target.cwd, extra: false, held: held.has(onDisk(target.cwd)) }, ...extras.map((d) => ({ path: d, extra: true, held: held.has(onDisk(d)) }))],
+        git
+      );
+      if (why) throw new Error(why);
+      // an extra folder with no repository is held to having none, as its cwd is
+      for (const d of extras) {
+        let top: string | null;
+        try {
+          top = held.has(onDisk(d)) ? null : gitTop(d);
+        } catch (err) {
+          throw new Error(`A team room's session can't be given ${d} as an extra folder: whether it's in a repository couldn't be looked at (${errText(err)}).`, { cause: err });
+        }
+        if (top) continue;
+        pinNoRepo(d);
+        noRepo.push(onDisk(d));
+      }
+    }
     const hooks = [this.d.hooksDir ?? HOOKS_DIR, this.d.coauthorsDir ?? COAUTHORS_DIR];
     const caches = runs ? this.cachesFor(roomId) : null;
     if (runs === "claude") {
@@ -490,7 +520,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         git: await gitDirs("Claude"),
         hooks,
         folders: [target.cwd, ...(target.extraDirs ?? [])],
-        cwd: target.cwd,
+        noRepo,
         ...(caches ? { caches } : {}),
         ...(sandboxMarker ? { marker: sandboxMarkerCommand(sandboxMarker, this.d.markerScript) } : {}),
       });
@@ -506,6 +536,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         workTrackerPath: this.d.settings().workTrackerPath,
         git: await gitDirs("Codex"),
         hooks,
+        noRepo,
         codexHome: codexHomeOf(process.env),
         ...(caches ? { caches } : {}),
       });
@@ -559,6 +590,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       agentEnv: caches ? roomCacheEnv(caches) : {},
       // its folders are named untrusted (codexOutsideOff), so an interactive Codex opens on its folder notice
       codexFolderNotice: codexGuarded && codexFoldersKnown,
+      ...(noRepo.length ? { noRepo } : {}),
     };
   }
 

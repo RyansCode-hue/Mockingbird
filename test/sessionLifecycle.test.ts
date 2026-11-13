@@ -820,6 +820,27 @@ describe("what an agent is told of its wires as it launches", () => {
     expect(ptys.at(-1)!.args.join(" ")).toContain(`'developer_instructions="WIRES OF ${codex.id}"'`);
     expect(asked).toEqual([s.id, s.id, codex.id]);
   });
+  it("keeps the folders a room launch held to having no repository on the record, handing them to every relaunch", async () => {
+    const { m } = await manager();
+    const held: (string[] | undefined)[] = [];
+    m.roomLaunch = async (t) => (held.push(t.noRepo), { ...room, noRepo: ["/held/notes"] });
+    const s = await m.create(agentPane);
+    const record = () => m.list().find((x) => x.id === s.id)!.noRepo;
+    expect(record()).toEqual(["/held/notes"]);
+    m.kill(s.id, false);
+    // a launch that holds none adds nothing, and the record keeps what it had, in a room or out of one
+    m.roomLaunch = async (t) => (held.push(t.noRepo), room);
+    await m.relaunch(s.id);
+    expect(record()).toEqual(["/held/notes"]);
+    m.kill(s.id, false);
+    m.roomLaunch = null;
+    await m.relaunch(s.id);
+    expect(record()).toEqual(["/held/notes"]);
+    m.kill(s.id, false);
+    m.roomLaunch = async (t) => (held.push(t.noRepo), room);
+    await m.relaunch(s.id);
+    expect(held).toEqual([undefined, ["/held/notes"], ["/held/notes"]]);
+  });
   it("is given the launch's role and the ticket it's on, by its own or its group's, null for a Council's area", async () => {
     const { m } = await manager();
     const asked: [string | undefined, string | null | undefined][] = [];

@@ -8958,7 +8958,7 @@ Find are refused, nothing runs, the top still works), `findPins.test` (Find's ow
 - A repository nested in a room session's writable folder (not a submodule) has its git data written freely by that
   agent, and a session Mockingbird later runs there (a local one included) takes its config. This was so before this
   batch, for a folder with a repository at its top too; the no-repository pin leaves nested repositories as they
-  were. On the follow-up list.
+  were. Fixed in the verify's follow-up below.
 - `collab.test`'s Council lay-out read its wires in the object's key order, so a wire id that read as an integer (8
   hex digits, all of them digits) came first and the test failed now and then. It reads them with `wiresInOrder`.
 
@@ -8993,4 +8993,95 @@ can see (`remote get-url` runs nothing either way) and isn't counted.
   and the watch's reads through the stand-in gh with `--repo`, from `~/.mockingbird/gh`, and the push to its bare
   origin under `safe.bareRepository=explicit`.
 - `uiLandscapeWires`' Start now and Send tests alone in Chrome, without CI: 2 passed. The PR form wasn't touched.
+- No real claude, codex or gh ran.
+
+## 1.7.0 follow-ups 2 review: the verify's follow-up as built
+
+The verify confirmed H1, H2 and M1 (main 59921e6) and left one Medium and two Lows open, fixed here. The third Low,
+`roomRulesFor` failing closed for a local folder with no session, stays as it is: it says why.
+
+### Medium: repositories nested inside a room session's folder
+
+In a no-repository room folder the agent made `notes/inner`, a repository with its own core.sshCommand; the
+no-repository pin let it be ("a repository inside the folder is another one"), and a room push from there ran it
+(p6b case 5). Worse, a no-repository room folder holding real repositories (`~/Code/Clients`) let the agent rewrite
+every one's `.git/config` and hooks, which Ryan's own terminal git would run: neither sandbox denies `**/.git` below
+a folder's top.
+
+- **A launch refuses a folder holding another repository** (`nestedRepoRefusal`, `gitPins.ts`, from livePanes before
+  anything is launched): the cwd and every extra folder are looked through, the filesystem only (links not followed,
+  `.git` not entered). A `.git` below a folder's top, or at an extra folder's top, refuses the launch, naming it,
+  unless it's the session's own repository's: one leading into its shared git folder (a submodule's, under
+  `modules/`; a linked worktree's, Mockingbird's own `.claude/worktrees/` layout among them). "A team room's session
+  can't work in …: it holds another repository, at … (its .git), whose config and hooks the room's sandbox would let
+  its agent rewrite, and git, Mockingbird's and yours in a terminal, would run what they name. Open the session in
+  that repository, or move it out of …."
+  - Bounded: past 300,000 entries or 10 s it refuses, saying so (`NESTED_SCAN_LIMITS`); Mockingbird's own checkout,
+    node_modules and its worktrees included, is about 45,000. A folder that's gone holds nothing; one the user can't
+    read, the agent can't write either; any other error refuses.
+  - A plain terminal isn't looked through, as for the home-folder refusal: it runs no agent and no sandbox.
+  - Refusing was chosen over denying `**/.git` in the sandboxes: it holds whatever the sandbox does, and an agent
+    that clones into a folder below still can.
+- **The pins refuse nested repositories too.** A no-repository pin refuses a `.git` git would find inside the folder,
+  as a repository pin always has. And a repository that isn't a room session's own, inside its folder, is refused
+  even when another room session is pinned there (an outer pin speaks, not only the innermost). A repository pin
+  now lets its own repository's below its top through (a submodule, a linked worktree inside the main checkout),
+  whose git data the room keeps read-only; before, any `.git` between was refused, so a room session in a worktree
+  nested in a room session's main checkout couldn't read its git.
+
+### Lows
+
+- **A relaunch keeps "no repository at launch".** The session's record keeps the folders its first room launch
+  found none in (`SessionInfo.noRepo`, from `RoomLaunch.noRepo`; a launch outside a room keeps what the record has).
+  A relaunch pins them as having none (`pinNoRepo`) whatever is there now, so a `.git` that appeared isn't taken
+  for its repository: the launch is refused while one has a `.git` at its top ("…it had no repository when the
+  session first started, and now has one (…/.git), which its agent could have made, config and all. Delete it if you
+  didn't make it; to work in it as a repository, open a new session there."). The pins' refusal for a no-repository
+  folder now ends "Delete it if you didn't make it: restarting its session holds the folder to having none all the
+  same." in place of "restarting its session reads it again".
+- **Extra folders with no repository** get what the cwd gets: pinned as having none, and `<folder>/.git` named
+  read-only in both sandboxes. Codex's rule is now an absolute entry per held folder (as the disk spells it), the cwd's
+  included, in place of the `:workspace_roots` `.git` entry; Claude's sandbox and file tools deny it per held folder.
+
+Tests:
+- `gitPins.test`: p6b case 5 (`notes/inner` with its core.sshCommand: the room push and a status refused, a room
+  session pinned in it refused by the outer folder, nothing run); `vendor/x` in a pinned repository, refused even
+  pinned; the session's own linked worktree inside its main checkout, pinned and running; the relaunch's
+  `pinNoRepo` and the refusal's wording; the scan: a repository below `~/Code/Clients`, in a repository's
+  `vendor/x`, as an extra folder; a submodule, a nested linked worktree and an extra folder that's one of its
+  worktrees passing; a held folder with a `.git`; no link followed, a gone folder, both limits.
+- `teamLivePanes`: launches refused for `Clients` as cwd and as Codex's extra folder, a terminal not asked, the
+  repository's own folder launching; an extra folder held (Claude's deny, Codex's entry, the pin); a relaunch from
+  the record held, refused once a `.git` is there, launching again once it's gone.
+- `sessionLifecycle`: the record keeps what a launch held, through a relaunch that holds none and one outside a
+  room, and hands it to each room relaunch. `claudeRoomSandbox`, `codexRoomSandbox`: the per-folder rules.
+
+Mutation check (`mut/nested.json`): 22 of 22 caught. Pins: the no-repository pin letting a nested repository be,
+no outer pin speaking, an outer pin passing another repository, the session's own nested worktree refused, the old
+"reads it again" wording. Scan: a repository below a top passing, the session's own submodule and worktree refused, an
+extra folder that's another repository passing, no limits, links followed, every read error but a gone folder's
+refusing. Launch: no scan, extra folders not pinned, not denied. Relaunch: a held cwd read afresh, the scan not told
+what's held, a held `.git` passing, `sessions.ts` not handing the record's folders on, the record losing them to a
+launch that holds none, the record keeping nothing. Sandboxes: Claude's deny for the first held folder only, Codex's
+entries dropped.
+
+**Hand checks with real CLIs** (none run here):
+- A Claude and a Codex room session opened on a folder holding a repository (`~/Code/Clients`-shaped) is refused at
+  launch, naming it, before its pane starts; on the repository itself, it starts.
+- In each, with a no-repository extra folder: `git init`, `mkdir .git` and the Edit tool on `.git/config` there are
+  refused; `get_sandbox_dialog` (Claude) lists the extra folder's `.git` in `fs_deny_write`.
+- A room session on a repository with a submodule, and one in the main checkout of a repository whose linked
+  worktrees are inside it (`.claude/worktrees/`): both start, and a room session in one of those worktrees starts
+  and runs git.
+- A no-repository room session restarted after a `git init` there is refused with "Delete it if you didn't make
+  it"; with the `.git` removed it starts.
+- A large folder (a few hundred thousand files): the launch says it gave up, rather than hanging.
+
+### Checked
+
+- `npm run typecheck` and `npm run build` pass.
+- The touched test files (`gitPins`, `findPins`, `sessionLifecycle`, `teamLivePanes`, `claudeRoomSandbox`,
+  `codexRoomSandbox`, `handlers`) under CI: 7 files, 230 tests pass and 7 skip.
+  The neighbours that launch room sessions or run room git (`teamAgentReach`, `teamTakenOver`, `collab`, `scm`,
+  `snapshots`, `pipeline`, `wireDelivery`): 296 pass. Per the brief, no full run.
 - No real claude, codex or gh ran.

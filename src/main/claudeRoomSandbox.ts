@@ -11,7 +11,7 @@ import { HOME_PRIVATE_DATA, HOME_RUNS_CODE, HOME_SECRETS, knownSecretFiles, notD
  *   what git runs code from (gitWrites' read-only parts, the other worktrees' folders, and what git runs or follows in
  *   any worktree's, one made after the launch included), and the room's own caches.
  *   HOME_RUNS_CODE is denied by name as well, since the git data could otherwise sit above one of them, and so is
- *   IN_FOLDER_RUNS_CODE inside the session's folders. With no repository in its folder at launch, it can't make one there.
+ *   IN_FOLDER_RUNS_CODE inside the session's folders. In a folder with no repository at launch, it can't make one.
  * - It can't read HOME_SECRETS, HOME_PRIVATE_DATA, CREDENTIAL_STORES or the known secret files, but for Mockingbird's
  *   co-author hooks, which its commits run.
  * - It can't leave the sandbox: no unsandboxed retry, and Claude won't start a session without one. Set from
@@ -38,8 +38,8 @@ export interface ClaudeRoomPlaces {
   hooks: string[];
   /** The folders the session works in: its cwd and any --add-dir. */
   folders?: string[];
-  /** Its cwd, where Mockingbird runs its git: with no repository there (`git` null), its Bash can't make a `.git` in it. */
-  cwd?: string;
+  /** Its folders held to having no repository (gitPins' pinNoRepo): its Bash and file tools can't make a `.git` at their tops. */
+  noRepo?: string[];
   /** The room's cache folder (roomCachesFolder), the one cache it writes. */
   caches?: string;
   /** Unix sockets its commands may connect to (a Council seat's Docker daemon). */
@@ -139,9 +139,9 @@ export function claudeRoomSettings(p: ClaudeRoomPlaces): { settings: Record<stri
   const gitDenied = [...git.read.filter((r) => !git.write.some((w) => w.startsWith(r + path.sep))), ...siblings, ...worktreesNow];
   // what git would run code from or follow elsewhere: its config files and pointers (SHARED_GIT_FILES), and its hooks
   const gitRuns = p.git ? [...SHARED_GIT_FILES, "hooks"].map((f) => path.join(p.git!.common, f)) : [];
-  // with no repository in its folder at launch, a .git its agent made there would be one Mockingbird's git trusted
-  // (gitPins.ts holds the folder to having none): named as the disk has it, as the sandbox matches resolved paths
-  const noRepo = !p.git && p.cwd ? [path.join(onDisk(p.cwd), ".git"), path.join(onDisk(p.cwd), ".git", "**")] : [];
+  // a .git its agent made in a folder with no repository would be one git trusted (gitPins.ts holds the folder to
+  // having none): named as the disk has it, as the sandbox matches resolved paths
+  const noRepo = (p.noRepo ?? []).map((f) => path.join(onDisk(f), ".git"));
   return {
     settings: {
       sandbox: {
@@ -151,7 +151,7 @@ export function claudeRoomSettings(p: ClaudeRoomPlaces): { settings: Record<stri
         autoAllowBashIfSandboxed: !!p.autoAllowBash,
         filesystem: {
           allowWrite: [...git.write, ...(p.caches ? [p.caches] : [])],
-          denyWrite: [...HOME_RUNS_CODE.map(sandboxPath), ...gitDenied, ...noRepo, ...(p.folders ?? []).flatMap((d) => inFolderWriteDenies(path.resolve(d)))],
+          denyWrite: [...HOME_RUNS_CODE.map(sandboxPath), ...gitDenied, ...noRepo.flatMap((g) => [g, path.join(g, "**")]), ...(p.folders ?? []).flatMap((d) => inFolderWriteDenies(path.resolve(d)))],
           denyRead: [...[...HOME_SECRETS, ...HOME_PRIVATE_DATA].map(sandboxPath), ...CREDENTIAL_STORES, ...known.files.map((f) => path.resolve(f))],
           allowRead: p.hooks,
         },
@@ -162,7 +162,7 @@ export function claudeRoomSettings(p: ClaudeRoomPlaces): { settings: Record<stri
         deny: [
           ...HOME_RUNS_CODE.map((x) => `Edit(${x})`),
           ...gitRuns.flatMap((x) => editDeny(x, true)),
-          ...(noRepo.length ? editDeny(noRepo[0], true) : []),
+          ...noRepo.flatMap((g) => editDeny(g, true)),
           ...worktreesNow.map((x) => `Edit(/${x})`),
           ...(p.folders ?? []).flatMap((d) => inFolderDenies(path.resolve(d))),
         ],

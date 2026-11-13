@@ -58,6 +58,11 @@ export interface SessionInfo {
   role?: SessionRole;
   /** The agent conversation last seen running in this pane (from its hook events) — what a relaunch resumes. */
   conversation?: { agent: AgentKind; id: string };
+  /**
+   * Its folders (cwd, extra folders) that had no repository at its first team room launch, as the disk names them:
+   * every relaunch holds them to having none (gitPins.ts), so a `.git` its agent could have made there isn't trusted.
+   */
+  noRepo?: string[];
   /** Every conversation this pane has run (a /clear starts a new one), oldest first — what its token meter adds up. */
   conversations?: string[];
   /** The agent CLI's version when this pane started it; a newer install means it needs a restart. */

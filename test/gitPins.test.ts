@@ -4,13 +4,13 @@ import * as http from "http";
 import * as path from "path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { git } from "../src/main/git";
-import { clearGitPins, gitPinRefusal, onGitPinRefused, pinGitDirs, readGitPointer, unpinGitDirs } from "../src/main/gitPins";
+import { clearGitPins, gitPinRefusal, nestedRepoRefusal, onGitPinRefused, pinGitDirs, pinNoRepo, readGitPointer, unpinGitDirs } from "../src/main/gitPins";
 import { roomGitDirs } from "../src/main/codexRoomSandbox";
 import { worktreeState } from "../src/main/worktrees";
 import { guardedGit, logOwnGitFailuresTo, ownFetch, ownNetworkGit, OWN_WRITE_ENV, roomFilters, WRITE_ENV } from "../src/main/safeGit";
 import { takeSnapshot } from "../src/main/snapshots";
 import { searchFiles } from "../src/main/find";
-import { tempDir } from "./helpers";
+import { makeRepo, tempDir } from "./helpers";
 
 /** git in a room session's folder held to the git data it started on, whatever its agent writes there. */
 
@@ -265,8 +265,12 @@ describe("git in a room session's folder that had no repository at launch", () =
       off();
     }
     expect(told).toEqual([expect.stringContaining(refused)]);
+    expect(told[0]).toMatch(/Delete it if you didn't make it: restarting its session holds the folder to having none all the same\.$/);
     expect(fs.existsSync(t.ran)).toBe(false);
-    // the session launched again reads the folder afresh, as livePanes does: its pin let go of first
+    // its session relaunched holds the folder to having none (livePanes, from its record): still refused
+    pinNoRepo(t.folder);
+    expect(gitPinRefusal(t.folder)).toContain(refused);
+    // a new session opened there reads it afresh, as livePanes does: its pin let go of first
     unpinGitDirs(t.folder);
     expect(pinGitDirs(t.folder, await roomGitDirs(t.folder), null)).toBeNull();
     expect(await git(t.folder, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
@@ -284,22 +288,115 @@ describe("git in a room session's folder that had no repository at launch", () =
     expect(await git(t.folder, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
   });
 
-  it("leaves a repository inside it as any other, and a room session pinned there to its own pin", async () => {
+  it("refuses a repository its agent made inside it, a room session's there too: its core.sshCommand never runs", async () => {
     const t = await launched();
     expect(gitPinRefusal(t.folder)).toBeNull();
-    const nested = path.join(t.folder, "app");
-    fs.mkdirSync(nested);
-    sh(nested, "init", "-q", "-b", "main");
-    sh(nested, "commit", "-q", "--allow-empty", "-m", "a");
-    expect(await git(nested, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
-    expect(pinGitDirs(nested, await roomGitDirs(nested), null)).toBeNull();
-    expect(await git(path.join(nested), ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
-    // the outer folder still has none, as git finds from it
+    // the agent: notes/inner, a repository of its own with an ssh origin and a command for it
+    const inner = path.join(t.folder, "inner");
+    fs.mkdirSync(inner);
+    sh(inner, "init", "-q", "-b", "main");
+    sh(inner, "commit", "-q", "--allow-empty", "-m", "a");
+    sh(inner, "remote", "add", "origin", "ssh://git@example.invalid/x/y.git");
+    sh(inner, "config", "core.sshCommand", `sh -c 'echo "$*" >> ${t.ran}; exit 1' --`);
+    const refused = `Mockingbird won't run git in ${t.folder}: there's a .git in ${inner}, inside it, which had no repository when its room session started, so that session's agent could have made it, config and all.`;
+    const before = logOwnGitFailuresTo(() => {});
+    try {
+      await expect(ownNetworkGit(inner, "push", ["origin", "main"], { roomPush: { lfs: { remote: "origin", refs: ["refs/heads/main"] } } })).rejects.toThrow(refused);
+      await expect(git(inner, ["status", "--porcelain"])).rejects.toThrow(refused);
+      // a room session opened in it all the same is held by the folder it's in
+      expect(pinGitDirs(inner, await roomGitDirs(inner).catch(() => null), null)).not.toBeNull();
+      expect(pinGitDirs(inner, { common: path.join(inner, ".git"), own: path.join(inner, ".git") }, null)).toBeNull();
+      expect(gitPinRefusal(inner)).toMatch(/won't run git in .*notes: there's a \.git in .*inner, inside it, which had no repository/);
+    } finally {
+      logOwnGitFailuresTo(before);
+    }
+    expect(fs.existsSync(t.ran)).toBe(false);
+    // the outer folder itself still has none, as git finds from it
     await expect(git(t.folder, ["rev-parse", "--git-dir"])).rejects.toThrow(/not a git repository/);
-    // the nested one's own pin holds it: another .git folder put in its place is refused
-    fs.renameSync(path.join(nested, ".git"), path.join(t.dir, "old-git"));
-    fs.cpSync(path.join(t.dir, "old-git"), path.join(nested, ".git"), { recursive: true });
-    await expect(git(nested, ["status", "--porcelain"])).rejects.toThrow(/isn't the one its room session started with: another was put in its place/);
+  });
+});
+
+describe("git in a repository inside a room session's repository", () => {
+  it("is refused for another repository's, a room session's there too, and runs for the session's own worktree", async () => {
+    const t = setup();
+    expect(pinGitDirs(t.repo, (await roomGitDirs(t.repo))!, t.repo)).toBeNull();
+    // the room's agent: vendor/x, a repository of its own
+    const vendor = path.join(t.repo, "vendor", "x");
+    fs.mkdirSync(vendor, { recursive: true });
+    sh(vendor, "init", "-q", "-b", "main");
+    sh(vendor, "commit", "-q", "--allow-empty", "-m", "v");
+    expect(gitPinRefusal(vendor)).toMatch(/there's a \.git in .*vendor\/x that git would find before/);
+    expect(pinGitDirs(vendor, { common: path.join(vendor, ".git"), own: path.join(vendor, ".git") }, null)).toBeNull();
+    expect(gitPinRefusal(vendor)).toMatch(new RegExp(`won't run git in ${t.repo}: there's a \\.git in .*vendor/x, inside it, that isn't its room session's repository's`));
+    // a linked worktree of the session's own repository inside its folder, pinned by its own room session
+    const own = path.join(t.repo, ".claude", "worktrees", "w");
+    sh(t.repo, "worktree", "add", "-q", "-b", "w", own);
+    expect(pinGitDirs(own, (await roomGitDirs(own))!, t.repo)).toBeNull();
+    expect(gitPinRefusal(own)).toBeNull();
+    expect(await git(own, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("w");
+  });
+});
+
+describe("a room launch's look through its folders for other repositories", () => {
+  const folder = (p: string, o: { extra?: boolean; held?: boolean } = {}) => ({ path: p, extra: !!o.extra, held: !!o.held });
+  const dirsOf = async (repo: string) => (await roomGitDirs(repo))!;
+
+  it("refuses a folder holding another repository, anywhere below its top, naming it", async () => {
+    const dir = fs.realpathSync(tempDir("scan"));
+    const clients = path.join(dir, "Clients");
+    const a = path.join(clients, "acme", "app");
+    fs.mkdirSync(a, { recursive: true });
+    expect(await nestedRepoRefusal([folder(clients)], null)).toBeNull();
+    sh(a, "init", "-q");
+    expect(await nestedRepoRefusal([folder(clients)], null)).toBe(
+      `A team room's session can't work in ${clients}: it holds another repository, at ${a} (its .git), whose config and hooks the room's sandbox would let its agent rewrite, and git, Mockingbird's and yours in a terminal, would run what they name. Open the session in that repository, or move it out of ${clients}.`
+    );
+    // in a repository's folder, one nested in it
+    const t = setup();
+    expect(await nestedRepoRefusal([folder(t.repo)], await dirsOf(t.repo))).toBeNull();
+    const vendor = path.join(t.repo, "vendor", "x");
+    fs.mkdirSync(vendor, { recursive: true });
+    fs.writeFileSync(path.join(vendor, ".git"), `gitdir: ${path.join(dir, "elsewhere")}\n`);
+    expect(await nestedRepoRefusal([folder(t.repo)], await dirsOf(t.repo))).toMatch(/can't work in .*: it holds another repository, at .*vendor\/x \(its \.git\)/);
+    // as an extra folder
+    expect(await nestedRepoRefusal([folder(tempDir("cwd")), folder(clients, { extra: true })], null)).toMatch(/^A team room's session can't be given .*Clients as an extra folder: it holds another repository, at .*acme\/app .*Leave it out, or open a session in that repository\.$/);
+  });
+
+  it("takes the session's own repository's .git for its own: a submodule's, a linked worktree's, and an extra folder that's one of its worktrees", async () => {
+    const t = setup();
+    const sub = makeRepo({ "s.txt": "s\n" }, "sub", tempDir("subsrc"));
+    sh(t.repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "libs/sub");
+    expect(fs.statSync(path.join(t.repo, "libs", "sub", ".git")).isFile()).toBe(true);
+    const inside = path.join(t.repo, ".claude", "worktrees", "w");
+    sh(t.repo, "worktree", "add", "-q", "-b", "w", inside);
+    const own = await dirsOf(t.repo);
+    expect(await nestedRepoRefusal([folder(t.repo), folder(t.wt, { extra: true })], own)).toBeNull();
+    // another repository as an extra folder is refused at its top
+    const other = makeRepo();
+    expect(await nestedRepoRefusal([folder(t.repo), folder(other, { extra: true })], own)).toMatch(/can't be given .* as an extra folder: it holds another repository, at /);
+  });
+
+  it("refuses a folder held to having no repository that has one at its top now: delete it if you didn't make it", async () => {
+    const notes = fs.realpathSync(tempDir("held"));
+    expect(await nestedRepoRefusal([folder(notes, { held: true })], null)).toBeNull();
+    sh(notes, "init", "-q");
+    expect(await nestedRepoRefusal([folder(notes, { held: true })], null)).toBe(
+      `A team room's session can't work in ${notes}: it had no repository when the session first started, and now has one (${path.join(notes, ".git")}), which its agent could have made, config and all. Delete it if you didn't make it; to work in it as a repository, open a new session there.`
+    );
+    // not held, its cwd's own .git is its pin's to judge
+    expect(await nestedRepoRefusal([folder(notes)], await dirsOf(notes))).toBeNull();
+  });
+
+  it("follows no link, enters no .git, takes a folder that isn't there as holding nothing, and refuses past its limits", async () => {
+    const dir = fs.realpathSync(tempDir("scanlimits"));
+    const work = path.join(dir, "work");
+    fs.mkdirSync(path.join(work, "a", "b"), { recursive: true });
+    fs.symlinkSync(makeRepo(), path.join(work, "a", "link"));
+    expect(await nestedRepoRefusal([folder(work), folder(path.join(dir, "gone"), { extra: true })], null)).toBeNull();
+    expect(await nestedRepoRefusal([folder(work)], null, { entries: 2, ms: 10_000 })).toBe(
+      `A team room's session can't work in ${work}: Mockingbird looks through a room session's folders for other repositories its agent could rewrite, and gave up past 2 entries or 10 s, so what it didn't look at can't be vouched for. Choose a smaller folder for it.`
+    );
+    expect(await nestedRepoRefusal([folder(work)], null, { entries: 1_000, ms: -1 })).toMatch(/gave up past 1,000 entries or -0\.001 s/);
   });
 });
 

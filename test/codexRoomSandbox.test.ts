@@ -172,11 +172,18 @@ describe("a Codex room session's permission profile", () => {
     expect(roots).not.toContain(`.git"=`);
   });
 
-  it("keeps a .git from being made in the session's folder when there was no repository there at launch", () => {
-    const roots = /":workspace_roots"=\{([^}]*)\}/.exec(profileOf(codexRoomPermissions(places()).config))![1];
-    expect(roots).toContain(`".git"="read"`);
-    // only at the top: a repository a command makes in a folder below is another one, which Mockingbird's git there leaves be
-    expect(roots).not.toMatch(/\*\*\/\.git"=/);
+  it("keeps a .git from being made in a folder held to having no repository, its cwd or an extra one, named as the disk has it", () => {
+    const folder = fs.realpathSync(tempDir("notes"));
+    const link = path.join(tempDir("links"), "notes");
+    fs.symlinkSync(folder, link);
+    const extra = fs.realpathSync(tempDir("docs"));
+    const profile = profileOf(codexRoomPermissions(places({ noRepo: [link, extra] })).config);
+    for (const f of [folder, extra]) expect(profile).toContain(`${JSON.stringify(path.join(f, ".git"))}="read"`);
+    // in a repository, its own .git is gitWrites'
+    const repo = makeRepo();
+    const inRepo = profileOf(codexRoomPermissions(places({ git: { common: path.join(repo, ".git"), own: path.join(repo, ".git") }, noRepo: [extra] })).config);
+    expect(inRepo).toContain(`${JSON.stringify(path.join(repo, ".git"))}="write"`);
+    expect(inRepo).toContain(`${JSON.stringify(path.join(extra, ".git"))}="read"`);
   });
 
   it("keeps a launch from what a repository commits or its agent picks to run outside the sandbox: each folder untrusted, notify, apps, plugins, computer and browser use", () => {

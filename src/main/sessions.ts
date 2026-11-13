@@ -186,6 +186,8 @@ export interface RoomLaunch {
   agentEnv: Record<string, string>;
   /** A Codex that opens its folders untrusted, so with its folder notice to answer first (CodexFolderNotice). */
   codexFolderNotice: boolean;
+  /** Its folders held to having no repository, kept on its record for every relaunch (SessionInfo.noRepo). */
+  noRepo?: string[];
 }
 
 /** Where a session would run, for deciding its room launch. */
@@ -205,6 +207,8 @@ export interface LaunchTarget {
   repoPath?: string | null;
   /** More folders it works in (--add-dir). */
   extraDirs?: string[];
+  /** Its folders that had no repository at its first room launch, as its record keeps them (SessionInfo.noRepo). */
+  noRepo?: string[];
 }
 
 interface LiveSession {
@@ -669,7 +673,9 @@ export class SessionManager {
     // the file the link names now is the installed one: a pane started on it isn't behind it (updateNotices)
     if (pinned?.version && pinned.version !== this.agentVersions.claude) this.setAgentVersions({ claude: pinned.version });
     const binOf = (a: AgentAdapter) => (pinned && a.binSetting === "claudeBin" ? pinned.bin : this.resolveBin(a));
-    const room = req.debrief || tasks ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs })) ?? null);
+    // a relaunch keeps the folders its first room launch found no repository in, so a .git made there since isn't trusted
+    const noRepo = req.reuseId ? this.store.state.sessions.find((x) => x.id === req.reuseId)?.noRepo : undefined;
+    const room = req.debrief || tasks ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs, ...(noRepo?.length ? { noRepo } : {}) })) ?? null);
     const instructions = tasks ? HELPDESK_RULES : [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id, req.role, ticketOfSession({ ticketId: req.ticketId, taskGroup: group }))].filter(Boolean).join("\n\n");
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
@@ -791,6 +797,9 @@ export class SessionManager {
     const before = (req.reuseId ? this.store.state.sessions.find((x) => x.id === req.reuseId) : undefined) ?? {};
     const history = info.conversation ? withConversation(before, info.conversation.id) : conversationsOf(before);
     if (history.length) info.conversations = history;
+    // held across launches outside a room too, for when it's in one again
+    const held = room?.noRepo ?? noRepo;
+    if (held?.length) info.noRepo = held;
 
     // reuseId re-creates an existing id (relaunch): kill the old pty first or it
     // keeps running, unreachable, still pumping data under the same id

@@ -805,14 +805,29 @@ Member replace the single admin (creator, else longest-standing member).
     `git.ts`, and from `find.ts` for the grep it starts itself): a `.git`
     that now leads elsewhere, or a
     new `.git` between the folder and its top, refuses it, saying so once;
-    so does any folder whose `.git` holds a `commondir`. A folder with no
-    repository at its launch is pinned as having none: its agent can't make
-    a `.git` there (Claude's sandbox denies it by the folder's own path,
-    Codex's profile names `.git` read-only at its folders' tops), and a
-    `.git` git would find from it later, there or above, refuses every git
-    Mockingbird runs there all the same, as its agent could have written its
-    config; a repository inside the folder is another one, left as any
-    other. Restarting the session reads the folder afresh.
+    so does any folder whose `.git` holds a `commondir`. Restarting the
+    session reads the folder afresh.
+  - **A folder with no repository is held to having none**, its cwd or an
+    extra folder: its agent can't make a `.git` there (both sandboxes name
+    `<folder>/.git` read-only, as the disk spells the folder), and a `.git`
+    git would find from it later, in it, at it or above it, refuses every
+    git Mockingbird runs there all the same, as its agent could have
+    written its config: "Delete it if you didn't make it." The session's
+    record keeps the folders its first launch found none in
+    (`SessionInfo.noRepo`), so a relaunch holds them too, and is refused
+    while one has a `.git` at its top; a new session there reads it as a
+    repository.
+  - **No other repository in its folders.** A room launch looks through its
+    cwd and every extra folder (the filesystem only, no links followed, at
+    most 300,000 entries or 10 s, refusing past that) and refuses a folder
+    holding a repository that isn't the session's own, below its top or at
+    an extra folder's top, naming it: the sandboxes let its agent rewrite
+    that repository's config and hooks, which Mockingbird's git and the
+    user's own terminal git would run. A submodule's or a linked worktree's
+    `.git`, leading into the session's own shared git folder, is its own. A
+    repository that appears inside a room session's folder later, and isn't
+    its repository's, refuses every Mockingbird git in it, a room session's
+    there included.
   - **Every git Mockingbird runs finds a repository only by its `.git`**
     (`safe.bareRepository=explicit`): a folder an agent made look like a
     bare repository (`HEAD`, `objects/`, `refs/` and a `config`), its own or
