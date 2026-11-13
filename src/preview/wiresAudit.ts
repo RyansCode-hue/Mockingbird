@@ -16,8 +16,8 @@
  * - =tidy: 5120 tidied from its toolbar (W10), laid out along its wires, and what the note says;
  * - =under: where each wire runs under an area's header or name, a pill or a ghost, and whether the mask holds it out;
  * - =collapse (zoomed out): 5102 collapsed from its toolbar, the wire to Pathways read as the pill comes, before a frame;
- * - =dotover (at 100%): Dev server moved 16 px under Builder, over Reviewer → Builder's dot: what's on top at the dot, and
- *   a click there.
+ * - =dotover (at 100%): Dev server dragged and held with its ⋯ on Reviewer → Builder's dot: where the dot goes and what's
+ *   on top at the ⋯; then Esc, and a click on the dot.
  *
  * W4b's parts press the mouse and keys for real where the test's driver is there (needsYouAudit.ts' `drive`):
  * - =make (at the ?lsCamera's zoom): a wire dragged from Shape export's handle and dropped on Tester, the picker's ↵
@@ -39,6 +39,8 @@
  *   Start now…'s confirm (stepAudit).
  * - =steplist (with ?lsPlanned, the camera away from 5120): Tester in the area tree and ⌘K, shown and never started from
  *   there (stepListAudit).
+ * - =palettekeys (with ?lsPlanned at ?lsCamera=0,0,1): ⌘K from a terminal typed in, a row picked that moves the view
+ *   (Tester's card, an area) with Enter held, and the keys after; Enter's repeats alone in ⌘K (paletteKeysAudit).
  *
  * W4c's, the send popover (with ?lsGates for the gates `gateBoardBook` sets):
  * - =send, =gatekeys and =dbl (at 100%): Send and Not yet, and the clicks and keys they take or don't;
@@ -142,6 +144,11 @@ export function gateBoardBook(book: WireBook, at: number, limit: boolean): WireB
   links[W("sent")] = { ...shape, when: "pr-merged", since: at };
   if (limit) links[W("loop")] = { ...links[W("loop")], rounds: { limit: 3, used: 3 } };
   return { ...book, links };
+}
+/** `?lsTwin` (with `?lsWires`): a second handoff from Builder to Reviewer, ready, beside the one sending: two wires side by side, both labelled. */
+export function twinBook(book: WireBook, at: number): WireBook {
+  const twin: Wire = { ...newWire(W("builder"), W("reviewer"), "handoff", at + 50), pending: { id: "pd-twin", body: "The export's tests, for a second look.", at, flags: [] } };
+  return { ...book, links: { ...book.links, [W("twin")]: twin } };
 }
 /** `?lsHeldWaits` (with `?lsWires`): Reviewer → Tester, blocked till Reviewer approves, has something waiting at its gate. */
 export function heldWaitsBook(book: WireBook, at: number): WireBook {
@@ -1005,11 +1012,28 @@ async function growAudit(out: Record<string, unknown>): Promise<void> {
   await clickAt(at);
   await sleep(700);
   const opened = popNow();
+  // as it moves up (placed again as it grows), its controls look off until it has stayed put (ANSWER_SETTLE_MS)
+  const looks = (p: HTMLElement | null) => {
+    const b = [...(p?.querySelectorAll<HTMLButtonElement>(".wr-foot button:not(:disabled), .wg-acts button:not(:disabled)") ?? [])][0];
+    return { settling: !!p?.classList.contains("mb-settling"), opacity: b ? getComputedStyle(b).opacity : null };
+  };
+  const settled = looks(popEl());
   await clickAt(mid(popButton("Mark merged…")));
+  const moving = looks(popEl());
   await sleep(700);
   const grown = popNow();
-  const buttons = [...(popEl()?.querySelectorAll("button") ?? [])].map((b) => box(b)!);
-  out.grow = { dotBox, opened, grown, window: { w: innerWidth, h: innerHeight }, buttonsShown: buttons.every((b) => b.t >= 0 && b.b <= innerHeight && b.l >= 0 && b.r <= innerWidth), buttons: buttons.length };
+  const p = popEl();
+  const buttons = [...(p?.querySelectorAll("button") ?? [])].map((b) => box(b)!);
+  out.grow = {
+    dotBox,
+    opened,
+    grown,
+    window: { w: innerWidth, h: innerHeight },
+    buttonsShown: buttons.every((b) => b.t >= 0 && b.b <= innerHeight && b.l >= 0 && b.r <= innerWidth),
+    buttons: buttons.length,
+    scrolls: !!p && p.scrollHeight > p.clientHeight + 1,
+    looks: { settled, moving, after: looks(p) },
+  };
 }
 
 async function gatesAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
@@ -1243,6 +1267,14 @@ async function stepAudit(env: WiresAuditEnv, out: Record<string, unknown>): Prom
   out.cardMenu = menuNow();
   await drive([{ key: "Escape" }]);
   await sleep(300);
+  // Connect… from Shape export: how it names Tester
+  await drive([{ mouse: { ...mid(node(W("shape"))?.querySelector(".ls-head .ls-spacer")), clickCount: 1, button: "right" } }]);
+  await sleep(300);
+  await drive([{ mouse: { ...mid(menuRow("Connect…")), clickCount: 1 } }]);
+  await sleep(400);
+  out.connect = menuNow();
+  await drive([{ key: "Escape" }]);
+  await sleep(300);
   // Shape's handle dragged into the empty canvas under 5120 (before a step placed in 5120 grows it): the step goes in no
   // area, where it was let go
   let mark = env.calls.length;
@@ -1469,6 +1501,77 @@ async function stepListAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
   out.startNow = { ...asked, closed: !document.querySelector(".modal.start-step:not(.mb-ghost)"), starts: starts(mark), card: !!card() };
 }
 
+/**
+ * ⌘K opened from a terminal just typed in, and a row picked with Enter held that moves the view and places no keyboard
+ * (with ?lsPlanned at ?lsCamera=0,0,1: Tester's not-started card from s1's terminal, then Go to s1's area from Builder's):
+ * what any terminal got after, whether the one typed in is still on screen, where the keyboard is, and what a key typed
+ * then does. Then Enter's repeats alone in ⌘K, as from an Enter held since before it opened: no row picked till a fresh
+ * press.
+ */
+async function paletteKeysAudit(env: WiresAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const writes = (mark: number) => env.calls.slice(mark).filter((c) => c.fn === "sessionWrite").map((c) => `${c.args[0]}:${JSON.stringify(c.args[1])}`);
+  const onScreen = (el: Element | null) => {
+    const v = document.querySelector(".ls-viewport")!.getBoundingClientRect();
+    const r = el?.getBoundingClientRect();
+    return !!r && r.width > 0 && r.right > v.left && r.left < v.right && r.bottom > v.top && r.top < v.bottom;
+  };
+  const testerShown = () => onScreen(document.querySelector(`.ls-world .ls-ghost[data-front="${W("tester")}"]`));
+  const keyboardAt = () => {
+    const a = document.activeElement;
+    if (a?.classList.contains("ls-viewport")) return "landscape";
+    if (a?.closest(".xterm")) return `terminal:${a.closest<HTMLElement>("[data-front]")?.dataset.front ?? "?"}`;
+    if (a?.closest(".palette")) return "palette";
+    return a?.tagName ?? "none";
+  };
+  const query = async (q: string) => {
+    await drive([{ key: "k", meta: true }]);
+    await sleep(300);
+    const input = document.querySelector<HTMLInputElement>(".palette input");
+    if (!input) throw new Error("⌘K didn't open the palette");
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, q);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(300);
+  };
+  /** ↓ to the row `pick` finds: its label, lit. */
+  const toRow = async (pick: (lab: string, row: HTMLElement) => boolean) => {
+    const at = [...document.querySelectorAll<HTMLElement>(".palette .results .row")].findIndex((r) => pick(r.querySelector(".lab")?.textContent ?? "", r));
+    if (at < 0) return null;
+    await drive([...Array.from({ length: at }, (): Asked => ({ key: "ArrowDown" })), { pause: 200 }]);
+    return document.querySelector(".palette .results .row.sel .lab")?.textContent ?? null;
+  };
+  const held: Asked[] = [{ key: "Enter", hold: "down" }, ...Array.from({ length: 6 }, (): Asked[] => [{ pause: 35 }, { key: "Enter", hold: "down", repeat: true }]).flat(), { key: "Enter", hold: "up" }];
+  const pickFrom = async (ws: string, q: string, pick: (lab: string, row: HTMLElement) => boolean) => {
+    await drive([{ mouse: { ...mid(node(ws)?.querySelector(".xterm")), clickCount: 1 } }]);
+    await sleep(300);
+    const typedIn = keyboardAt();
+    await drive([{ key: "a" }, { key: "b" }]);
+    await sleep(200);
+    const mark = env.calls.length;
+    await query(q);
+    const lit = await toRow(pick);
+    await drive(held);
+    await sleep(300);
+    const after = { keyboard: keyboardAt(), open: !!document.querySelector(".palette") };
+    await drive([{ key: "y" }]);
+    await sleep(300);
+    return { typedIn, lit, ...after, writes: writes(mark), stillShown: onScreen(node(ws)), tester: testerShown(), note: noteNow() };
+  };
+  out.step = await pickFrom("s1", "Tester", (_l, r) => r.classList.contains("planned"));
+  await sleep(1100);
+  const area = document.querySelector<HTMLElement>(`.area-tree .lt-ws[data-sid="s1"]`)?.closest<HTMLElement>(".lt-area")?.dataset.area ?? "5101";
+  out.goTo = { area, ...(await pickFrom(W("builder"), "Go to", (l) => l.startsWith("Go to") && l.includes(area))) };
+  // Enter's repeats alone, then a fresh press
+  await sleep(1100);
+  await query("Tester");
+  const lit = await toRow((_l, r) => r.classList.contains("planned"));
+  await drive([...Array.from({ length: 4 }, (): Asked[] => [{ key: "Enter", hold: "down", repeat: true }, { pause: 35 }]).flat(), { key: "Enter", hold: "up" }]);
+  await sleep(300);
+  const repeats = { lit, open: !!document.querySelector(".palette"), tester: testerShown() };
+  await drive([{ key: "Enter" }]);
+  await sleep(500);
+  out.repeats = { ...repeats, fresh: { open: !!document.querySelector(".palette"), tester: testerShown() } };
+}
+
 /** The picker or a wire's settings left open, for a screenshot beside its board (synthetic events: no driver there). */
 // ---- W9: pipeline templates (?lsTemplates) ----------------------------------------------------
 
@@ -1533,10 +1636,16 @@ async function templateNotesAudit(env: WiresAuditEnv, out: Record<string, unknow
   await openPicker(spaceUnder());
   await sleep(800);
   const models = { said: flag("models"), reads: count(mark, "modelCatalog") };
+  // Try again, then pressed again while main answers (?lsModelsMs): busy, and one read
   mark = env.calls.length;
-  await drive([{ mouse: { ...mid(picker()!.querySelector('[data-flag="models"] button')), clickCount: 1 } }]);
-  await sleep(400);
-  const again = { said: flag("models"), reads: count(mark, "modelCatalog") };
+  const retry = () => picker()?.querySelector<HTMLButtonElement>('[data-flag="models"] button') ?? null;
+  const at = mid(retry());
+  await drive([{ mouse: { ...at, clickCount: 1 } }]);
+  const b = retry();
+  const busy = { off: b?.disabled ?? null, says: b?.textContent ?? null, busy: b?.getAttribute("aria-busy") ?? null };
+  await drive([{ mouse: { ...at, clickCount: 1 } }]);
+  await sleep(Number(new URLSearchParams(location.search).get("lsModelsMs") ?? 0) + 400);
+  const again = { said: flag("models"), reads: count(mark, "modelCatalog"), busy, after: { off: retry()?.disabled ?? null, says: retry()?.textContent ?? null } };
   // the first step's model: still a choice of the default (and its own, had it one)
   const model = picker()!.querySelector<HTMLButtonElement>(".tp-step .tp-model");
   await drive([{ mouse: { ...mid(model), clickCount: 1 } }]);
@@ -1855,6 +1964,7 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
       else if (part === "lost") await lostAudit(env, out);
       else if (part === "step") await stepAudit(env, out);
       else if (part === "steplist") await stepListAudit(env, out);
+      else if (part === "palettekeys") await paletteKeysAudit(env, out);
       else if (part === "template") await templateAudit(env, out);
       else if (part === "tplnotes") await templateNotesAudit(env, out);
       else if (part === "tbroken") await brokenAudit(env, out);
@@ -1889,6 +1999,10 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
         out.events = [getComputedStyle(document.querySelector(".ls-wires")!).pointerEvents, getComputedStyle(document.querySelector(".ls-wire-labels")!).pointerEvents];
         out.layers = [".ls-wires", ".ls-wire-labels", ".ls-wire-dots"].map((s) => getComputedStyle(document.querySelector(s)!).zIndex);
         out.dotEvents = [...document.querySelectorAll(".ls-wire-dots circle.dot")].map((c) => getComputedStyle(c).pointerEvents);
+        // the mid labels and dots drawn, on screen: side-by-side wires' labels kept off one another and the dots
+        const drawn = (el: Element) => getComputedStyle(el).display !== "none" && getComputedStyle(el).visibility !== "hidden" && el.getBoundingClientRect().width > 0;
+        out.labelBoxes = [...document.querySelectorAll<HTMLElement>(".ls-wire-labels .ls-wire-label[data-wire]")].filter(drawn).map((el) => ({ id: el.dataset.wire, hang: el.dataset.hang ?? null, box: box(el) }));
+        out.dotBoxes = [...document.querySelectorAll<SVGElement>(".ls-wire-dots circle.dot")].filter(drawn).map((c) => ({ id: c.dataset.wire, box: box(c) }));
         // the blocked label's ground: how much of the theme's red is mixed into the app's background (Inbox.dc.html's ~5%)
         const probe = (v: string) => {
           const el = document.createElement("i");
@@ -1951,23 +2065,56 @@ export function runWiresAudit(env: WiresAuditEnv, part: string): void {
         await sleep(800);
         out.settled = { pill: box(pillEl()), ends: endsOf(W("pill")) };
       } else if (part === "dotover") {
-        // Dev server moved to 16 px under Builder and across under Reviewer → Builder's loop (its translate, as a drag
-        // sets it), so it lies over the loop's dot
-        const dev = node(W("dev"))!;
-        const builderBox = box(node(W("builder")))!;
-        const was = dotMid(W("loop"));
-        dev.style.translate = `${was.x - 80 - box(dev)!.l}px ${builderBox.b + 16 - box(dev)!.t}px`;
-        await sleep(300);
-        const at = dotMid(W("loop"));
-        const devBox = box(dev)!;
+        // Dev server dragged by its header, as a person would, and held where its ⋯ lies on Reviewer → Builder's gate dot
+        // (the wire's middle): where the dot went and what's on top at the ⋯; then Esc, and a click on the dot. Let go
+        // there, it would be pushed off its neighbours, which a held drag isn't.
+        const loop = W("loop");
+        const more = () => [...(node(W("dev"))?.querySelectorAll<HTMLElement>(".ls-head button") ?? [])].pop() ?? null;
+        const head = node(W("dev"))?.querySelector<HTMLElement>(".ls-head .ls-spacer") ?? node(W("dev"))?.querySelector<HTMLElement>(".ls-head");
+        if (!head || !more()) throw new Error("Dev server has no header or ⋯ to drag by");
+        // the wire's own middle (its curve at t = ½: "M from C c1 c2 to"), where its dot is when that's clear
+        const path = () => document.querySelector<SVGPathElement>(`.ls-wires g[data-wire="${loop}"] path.line`)!;
+        const middle = () => {
+          const [x0, y0, x1, y1, x2, y2, x3, y3] = (path().getAttribute("d")?.match(/-?\d+(\.\d+)?(e-?\d+)?/g) ?? []).map(Number);
+          const p = new DOMPoint((x0 + 3 * x1 + 3 * x2 + x3) / 8, (y0 + 3 * y1 + 3 * y2 + y3) / 8).matrixTransform(path().getScreenCTM()!);
+          return { x: Math.round(p.x), y: Math.round(p.y) };
+        };
+        const dotEl = () => document.querySelector<SVGElement>(`.ls-wire-dots circle.dot[data-wire="${loop}"]`);
+        const was = middle();
+        const before = { dotAtMiddle: Math.hypot(dotMid(loop).x - was.x, dotMid(loop).y - was.y) < 1.5, fit: dotEl()?.dataset.fit ?? null };
+        const m = mid(more());
+        const h = mid(head);
+        const to = { x: h.x + was.x - m.x, y: h.y + was.y - m.y };
+        await drive([{ move: h }, { drag: { x0: h.x, y0: h.y, x1: to.x, y1: to.y, hold: "down" } }]);
+        await sleep(400);
+        const at = mid(more());
+        const dot = dotMid(loop);
+        const dotBox = box(dotEl());
+        const devBox = box(node(W("dev")))!;
+        const inDev = (p: Pt) => p.x >= devBox.l && p.x <= devBox.r && p.y >= devBox.t && p.y <= devBox.b;
         const top = document.elementFromPoint(at.x, at.y);
         out.dotOver = {
-          under: at.x >= devBox.l && at.x <= devBox.r && at.y >= devBox.t && at.y <= devBox.b,
-          top: top?.matches("circle.dot") ? `dot:${(top as SVGElement).dataset.wire}` : (top?.className?.toString() ?? null),
+          before,
+          moreOnMiddle: Math.hypot(at.x - was.x, at.y - was.y) < 3,
+          middleUnderDev: inDev(middle()),
+          dotOnMore: !!dotBox && at.x >= dotBox.l && at.x <= dotBox.r && at.y >= dotBox.t && at.y <= dotBox.b,
+          dotInDev: inDev(dot),
+          top: top?.matches("circle.dot") ? `dot:${(top as SVGElement).dataset.wire}` : top?.closest("button") === more() ? "⋯" : (top?.className?.toString() ?? null),
+          fit: dotEl()?.dataset.fit ?? null,
+          // how far it went from the middle, and from its wire
+          moved: Math.round(Math.hypot(dot.x - was.x, dot.y - was.y)),
+          offWire: Math.round(Math.min(...Array.from({ length: 401 }, (_, i) => {
+            const p = path().getPointAtLength((path().getTotalLength() * i) / 400).matrixTransform(path().getScreenCTM()!);
+            return Math.hypot(p.x - dot.x, p.y - dot.y);
+          })) * 10) / 10,
         };
-        await clickAt(at);
+        // Esc drops the drag: Dev server back, the dot back at the middle, and a click there opens its popover
+        await drive([{ key: "Escape" }, { drag: { x0: to.x, y0: to.y, x1: to.x, y1: to.y, hold: "up" } }]);
         await sleep(500);
-        out.dotClick = { pop: popNow(), selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-front") ?? null };
+        const back = dotMid(loop);
+        await clickAt(back);
+        await sleep(500);
+        out.dotClick = { back: Math.hypot(back.x - was.x, back.y - was.y) < 1.5, pop: popNow() };
       } else if (part === "drag") {
         const mark = env.calls.length;
         const head = node(W("builder"))?.querySelector<HTMLElement>(".ls-head .ls-spacer") ?? node(W("builder"))?.querySelector<HTMLElement>(".ls-head");

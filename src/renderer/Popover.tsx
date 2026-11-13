@@ -4,7 +4,7 @@ import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { placeMenu } from "./ContextMenu";
 import { useLiftOut } from "./lift";
-import { ANSWER_SETTLE_MS } from "./answerGuard";
+import { ANSWER_SETTLE_MS, useHeldOff } from "./answerGuard";
 
 /** A box on screen something hangs from (a wire's gate dot): what a point anchor opens under. */
 export interface AnchorBox {
@@ -27,7 +27,8 @@ export interface AnchorBox {
  * it again. A point can carry the `box` it hangs from: flipped, it goes above that box rather than over it, and a press
  * inside it isn't one outside. `refit` places it again whenever its size changes (a note or a question coming into
  * it), flipping as it must, so it never grows off the window's foot. Moved once it has opened, it takes no pointer's
- * click until it has stayed put ANSWER_SETTLE_MS: what's under the pointer now isn't what was aimed at.
+ * click until it has stayed put ANSWER_SETTLE_MS, its controls looking off meanwhile (`mb-settling`): what's under the
+ * pointer now isn't what was aimed at.
  */
 export function AnchoredPopover({
   anchor,
@@ -66,6 +67,8 @@ export function AnchoredPopover({
   const posNow = useRef(pos);
   /** When it was last moved once placed: a pointer's click is let go until it has stayed put ANSWER_SETTLE_MS. */
   const movedAt = useRef(-Infinity);
+  // ...and its controls look off meanwhile, as a held-off button does (useHeldOff)
+  const { holdOff, heldOff } = useHeldOff();
   const close = useRef(onClose);
   close.current = onClose;
   useLayoutEffect(() => {
@@ -81,13 +84,20 @@ export function AnchoredPopover({
       const view = { width: window.innerWidth, height: window.innerHeight };
       const height = below ? 0 : el.scrollHeight;
       let at = placeMenu({ x, y: r.bottom + 4 }, { width: el.offsetWidth, height }, view);
-      // flipped up from a point that hangs from a box: above the box, not over it
+      // flipped up from a point that hangs from a box: above the box, not over it, however short the window (it scrolls)
       const hung = typeof to === "function" || to instanceof HTMLElement ? undefined : to.box;
-      if (hung && !below && at.top < r.bottom + 4) at = { ...at, top: Math.max(8, hung.top - 4 - Math.min(height, at.maxHeight)) };
+      if (hung && !below && at.top < r.bottom + 4) {
+        const room = Math.max(0, hung.top - 12);
+        const tall = Math.min(height, at.maxHeight, room);
+        at = { ...at, top: Math.max(8, hung.top - 4 - tall), maxHeight: Math.min(at.maxHeight, room) };
+      }
       const next = below ? { left: at.left, top: r.bottom + 4, maxHeight: Math.max(0, view.height - r.bottom - 4 - 8) } : at;
       const p = posNow.current;
       if (p && p.left === next.left && p.top === next.top && p.maxHeight === next.maxHeight) return;
-      if (p && (p.left !== next.left || p.top !== next.top)) movedAt.current = Date.now();
+      if (p && (p.left !== next.left || p.top !== next.top)) {
+        movedAt.current = Date.now();
+        holdOff("moved", ANSWER_SETTLE_MS);
+      }
       posNow.current = next;
       setPos(next);
     };
@@ -126,7 +136,7 @@ export function AnchoredPopover({
   return createPortal(
     <div
       ref={presence}
-      className={`mb-menu ${className}`}
+      className={`mb-menu ${className}${heldOff("moved") ? " mb-settling" : ""}`}
       role="dialog"
       aria-label={label}
       tabIndex={-1}

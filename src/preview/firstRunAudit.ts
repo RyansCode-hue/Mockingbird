@@ -1663,9 +1663,9 @@ async function barPart(env: FirstRunEnv, out: Record<string, unknown>): Promise<
  *   double-click on its side bar row, while main is slow to bring it to the front; meanwhile s1's terminal clicked into
  *   and typed in (go, side), a join prompt coming up on its own (dialog, with ?joinRequest=later), and going on its own
  *   too (dialogGone), or nothing (idle);
- * - preset (&how=typed|idle, with ?lsCamera=500,0,0.75&needsMany): ⌘K's Start preset while main is slow to start it
- *   (it answers with s2, on screen; with &far, a workspace out of view); meanwhile s1's terminal clicked into and typed
- *   in, or nothing;
+ * - preset (&how=typed|idle|settings, with ?lsCamera=500,0,0.75&needsMany): ⌘K's Start preset while main is slow to
+ *   start it (it answers with s2, on screen; with &far, a workspace out of view); meanwhile s1's terminal clicked into
+ *   and typed in, the Settings tab clicked, or nothing;
  * - flight (&how=superseded|gone, with ?motion=full): a notification's jump to a workspace out of view, its flight
  *   under way, then a jump to one in view, or the first one's session closed;
  * - selfClose (with ?joinRequest=later&lsCamera=0,0,0.4): the landscape armed by a press, a join prompt coming up and
@@ -2304,6 +2304,16 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await sleep(150);
     await press("Enter");
     await sleep(300);
+    if (params.get("how") === "settings") {
+      // the Settings tab clicked while main is slow to start it: the jump, superseded, leaves Settings shown
+      const settings = q('.topbar .tab[data-tab="settings"]');
+      if (!settings) throw new Error("no Settings tab");
+      await clickOn(settings);
+      await sleep(1900);
+      out.afterLag = { tab: q(".topbar .tab.on")?.dataset.tab ?? null, landscape: !!q(".ls-viewport") };
+      w.mb = real;
+      return;
+    }
     const typedIn = params.get("how") !== "idle";
     if (typedIn) out.before = await intoTerm("s1");
     const mark = env.calls.length;

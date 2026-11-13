@@ -361,27 +361,44 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
   );
 }
 
-/** The model catalog as read (models offered on this Mac): `catalog` none while it's read or when it can't be, `error` why not. */
+/**
+ * The model catalog as read (models offered on this Mac): `catalog` none while it's read or when it can't be, `error`
+ * why not, `reading` while a read is under way.
+ */
 interface CatalogRead {
   catalog: ModelCatalog | null;
   error: string | null;
+  reading: boolean;
   retry: () => void;
 }
 
-/** The model catalog, read as the dialog opens and again on `retry`; a failure is logged and kept to be said (CatalogNote). */
+/**
+ * The model catalog, read as the dialog opens and again on `retry`, one read at a time; a failure is logged and kept to
+ * be said (CatalogNote).
+ */
 function useCatalog(): CatalogRead {
   const [c, setC] = useState<ModelCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [n, setN] = useState(0);
+  const [reading, setReading] = useState(true);
+  const readingNow = useRef(true);
   useEffect(() => {
     let live = true;
+    readingNow.current = true;
+    setReading(true);
+    const done = () => {
+      readingNow.current = false;
+      if (live) setReading(false);
+    };
     const failed = (why: string) => {
       console.warn(`[mockingbird] the template picker's models: ${why}`);
       if (live) setError(why);
+      done();
     };
     window.mb.modelCatalog().then(
       (r: ModelCatalog | { error: string }) => {
         if (isErr(r)) return failed(r.error);
+        done();
         if (!live) return;
         setC(r);
         setError(null);
@@ -390,7 +407,13 @@ function useCatalog(): CatalogRead {
     );
     return () => void (live = false);
   }, [n]);
-  return { catalog: c, error, retry: () => setN((x) => x + 1) };
+  const retry = () => {
+    // one read at a time: a second press while main answers asks nothing
+    if (readingNow.current) return;
+    readingNow.current = true;
+    setN((x) => x + 1);
+  };
+  return { catalog: c, error, reading, retry };
 }
 
 /**
@@ -402,8 +425,8 @@ function CatalogNote({ read }: { read: CatalogRead }) {
   return (
     <div className="tp-line amber" data-flag="models" role="status">
       <span className="grow">The models offered on this Mac couldn't be read ({read.error}): each step can keep its own model or take the default.</span>
-      <button type="button" className="link" onClick={read.retry}>
-        Try again
+      <button type="button" className="link" disabled={read.reading} aria-busy={read.reading} onClick={read.retry}>
+        {read.reading ? "Reading…" : "Try again"}
       </button>
     </div>
   );

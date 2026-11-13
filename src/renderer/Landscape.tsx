@@ -1022,7 +1022,10 @@ export function Landscape({
     const box = viewport.current?.getBoundingClientRect();
     return box && avoid ? clearRoom({ left: box.left, top: box.top, width: vpNow.current.w, height: vpNow.current.h }, avoid) : vpNow.current;
   };
-  const gaveUp = (p: PendingReveal) => console.warn(`[mockingbird] the landscape couldn't bring ${p.id} into view: no workspace holds it after ${REVEAL_WAIT_MS} ms`);
+  const gaveUp = (p: PendingReveal) => {
+    console.warn(`[mockingbird] the landscape couldn't bring ${p.id} into view: no workspace holds it after ${REVEAL_WAIT_MS} ms`);
+    say("That couldn't be shown: it isn't on the landscape");
+  };
   const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** The user's keys and presses as the pending reveal was asked for (keyArm.ts's `inputStamp`). */
   const revealStamp = useRef(0);
@@ -1097,7 +1100,13 @@ export function Landscape({
     // camera, not the keyboard, not focus. A dialog open now with nothing since (a notification's jump came while one was
     // up) keeps the keyboard and focus from it; it's still brought into view, unless that would move the view from under
     // a terminal or a field being typed in.
-    if (inputStamp() !== revealStamp.current) return;
+    if (inputStamp() !== revealStamp.current) {
+      if (seen) return;
+      const s = t.members.find((m) => m.id === p.id) ?? t.front;
+      const where = t.area === LOOSE_GROUP ? "loose on the landscape" : `in ${asks.current.areaTitle(t.area)}`;
+      console.info(`[mockingbird] bringing ${p.id} into view was superseded by input while it waited: the view stayed`);
+      return say(`${titleOf(s)} is ${where}: you'd moved on meanwhile, so the view stayed where it was`);
+    }
     if (document.querySelector(OVERLAYS)) {
       if (!seen && !ownsKeys(document.activeElement)) flyTo(centreOn(cam.current, t.rect, room), p.id);
       return;
@@ -2379,7 +2388,7 @@ export function Landscape({
             me.title,
             rows.map((r) => ({
               id: r.t.s.id,
-              title: r.t.closed || r.t.mate ? `${titleOf(r.t.s)} (${[r.t.closed && "closed", r.t.mate && "in this stack"].filter(Boolean).join(", ")})` : titleOf(r.t.s),
+              title: r.t.closed || r.t.mate ? `${titleOf(r.t.s)} (${[r.t.closed && (r.t.s.planned ? "not started" : "closed"), r.t.mate && "in this stack"].filter(Boolean).join(", ")})` : titleOf(r.t.s),
               area: r.t.area === LOOSE_GROUP ? "Loose" : areaTitle(r.t.area),
               refused: r.refused,
               pick: () => setWirePick({ from: me, to: { id: r.t.s.id, title: titleOf(r.t.s) }, at: { ...at }, choices: r.choices }),

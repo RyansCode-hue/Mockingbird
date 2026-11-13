@@ -144,11 +144,30 @@ describe.skipIf(!local)("the landscape's wires", () => {
     expect(a.first.ends).toEqual(a.settled.ends);
   });
 
-  it("keep a gate dot on top, and pressed, where a workspace lies over its loop", async () => {
-    const a = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=dotover")) as unknown as { dotOver: { under: boolean; top: string }; dotClick: { pop: { ends: string } | null; selected: string | null } };
-    expect(a.dotOver).toEqual({ under: true, top: "dot:wb-loop" });
+  it("hang the labels of two wires side by side to their outer sides, off each other and off every dot", async () => {
+    type Placed = { id: string; hang: string | null; box: Box };
+    const a = (await audit("lsTwin&lsCamera=0,3040,1&landscapeWiresAudit=near")) as unknown as { labelBoxes: Placed[]; dotBoxes: Placed[] };
+    const meet = (p: Box, q: Box) => p.l < q.r && q.l < p.r && p.t < q.b && q.t < p.b;
+    const pair = a.labelBoxes.filter((l) => l.id === "wb-sending" || l.id === "wb-twin");
+    expect(pair.map((l) => l.hang).sort()).toEqual(["above", "below"]);
+    for (let i = 0; i < a.labelBoxes.length; i++)
+      for (let j = i + 1; j < a.labelBoxes.length; j++) expect([a.labelBoxes[i].id, a.labelBoxes[j].id, meet(a.labelBoxes[i].box, a.labelBoxes[j].box)]).toEqual([a.labelBoxes[i].id, a.labelBoxes[j].id, false]);
+    for (const l of a.labelBoxes) for (const d of a.dotBoxes) expect([l.id, d.id, meet(l.box, d.box)]).toEqual([l.id, d.id, false]);
+  });
+
+  it("keep a gate dot off a workspace dragged over its wire's middle: moved along the wire, off the workspace's ⋯, and still pressed", async () => {
+    const a = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=dotover")) as unknown as {
+      dotOver: { before: { dotAtMiddle: boolean; fit: string | null }; moreOnMiddle: boolean; middleUnderDev: boolean; dotOnMore: boolean; dotInDev: boolean; top: string | null; fit: string | null; moved: number; offWire: number };
+      dotClick: { back: boolean; pop: { ends: string } | null };
+    };
+    expect(a.dotOver.before).toEqual({ dotAtMiddle: true, fit: "clear" });
+    // Dev server's ⋯ held on the wire's middle: the dot gone along its wire, off Dev server, and the ⋯ on top there
+    expect(a.dotOver).toMatchObject({ moreOnMiddle: true, middleUnderDev: true, dotOnMore: false, dotInDev: false, top: "⋯", fit: "clear" });
+    expect(a.dotOver.moved).toBeGreaterThan(8);
+    expect(a.dotOver.offWire).toBeLessThanOrEqual(1);
+    // Esc: back at the middle, and a click on it opens its popover
+    expect(a.dotClick.back).toBe(true);
     expect(a.dotClick.pop?.ends).toBe("Reviewer → Builder");
-    expect(a.dotClick.selected).not.toBe("wb-dev");
   });
 
   it("zoomed out to 13%: lines alone, at screen size, to the cards as they're drawn", async () => {
@@ -588,10 +607,10 @@ describe.skipIf(!local)("the send popover", () => {
     expect(d.after).toEqual({ sends: 1, pop: null, keys: "landscape" });
   }, 150_000);
 
-  it("is placed again as it grows near the window's foot, every button kept on screen and its dot uncovered", async () => {
-    const g = ((await audit("lsGates&lsCamera=0,3040,1&landscapeWiresAudit=grow", "1600x1000", 120_000)) as unknown as {
-      grow: { dotBox: { t: number }; opened: Pop; grown: Pop; window: { h: number }; buttonsShown: boolean; buttons: number };
-    }).grow;
+  type Looks = { settling: boolean; opacity: string | null };
+  type Grow = { dotBox: { t: number }; opened: Pop; grown: Pop; window: { h: number }; buttonsShown: boolean; buttons: number; scrolls: boolean; looks: Record<"settled" | "moving" | "after", Looks> };
+  it("is placed again as it grows near the window's foot, every button kept on screen and its dot uncovered, its controls looking off while it settles", async () => {
+    const g = ((await audit("lsGates&lsCamera=0,3040,1&landscapeWiresAudit=grow", "1600x1000", 120_000)) as unknown as { grow: Grow }).grow;
     expect(g.opened.buttons).toContain("Mark merged…");
     expect(g.grown.question).toMatch(/^Mark PR 11 to dev in backoffice merged\?/);
     const was = g.opened.box;
@@ -600,8 +619,23 @@ describe.skipIf(!local)("the send popover", () => {
     expect(now.b - now.t).toBeGreaterThan(was.b - was.t);
     expect(now.b).toBeLessThanOrEqual(g.dotBox.t);
     expect(now.t).toBeGreaterThanOrEqual(0);
+    expect(g.scrolls).toBe(false);
     expect(g.buttonsShown).toBe(true);
     expect(g.buttons).toBeGreaterThan(2);
+    // moved under a resting pointer, it takes no click until it has stayed put, and looks it
+    expect(g.looks.settled).toEqual({ settling: false, opacity: "1" });
+    expect(g.looks.moving).toEqual({ settling: true, opacity: "0.35" });
+    expect(g.looks.after).toEqual({ settling: false, opacity: "1" });
+  }, 150_000);
+
+  it("flipped above its dot in a window too short for it, stays above the dot and scrolls rather than cover it", async () => {
+    const g = ((await audit("lsGates&lsCamera=0,3040,1&landscapeWiresAudit=grow", "1600x430", 120_000)) as unknown as { grow: Grow }).grow;
+    expect(g.grown.question).toMatch(/^Mark PR 11 to dev in backoffice merged\?/);
+    for (const b of [g.opened.box, g.grown.box]) {
+      expect(b.b).toBeLessThanOrEqual(g.dotBox.t);
+      expect(b.t).toBeGreaterThanOrEqual(0);
+    }
+    expect(g.scrolls).toBe(true);
   }, 150_000);
 
   it("shows what waits behind a block such as needs approve, read-only, as what will go", async () => {
@@ -709,6 +743,7 @@ type Card = { rows: string[]; buttons: number; line: string | null; status: stri
 interface Step {
   card: Card;
   cardMenu: string[] | null;
+  connect: string[] | null;
   burst: { opened: { dialog: boolean; head: string | null; name: string | null; focused: boolean; works: string[] }; early: { on: number; dialog: boolean }; writes: unknown[] };
   added: { filled: { on: number; name: string | null; note: string | null }; plan: Call[]; dialog: boolean; made: string | null; card: Card; wires: string[][]; note: string | null };
   dropped: { space: boolean; drop: Pt; dialog: boolean; head: string | null; picker: Shown; plan: Call[]; made: string | null; at: Pt | null; area: string | null; card: Card; wires: string[][] };
@@ -729,6 +764,8 @@ describe.skipIf(!local)("Add next step", () => {
     expect(s.cardMenu).toContain("Start now…");
     expect(s.cardMenu).toContain("Forget it");
     expect(s.cardMenu!.some((r) => /Reopen/.test(r))).toBe(false);
+    // Connect… from Shape export names it so, not closed
+    expect(s.connect?.filter((r) => /\bTester\b/.test(r))).toEqual([expect.stringMatching(/^(off )?Tester \(not started\)/)]);
     // Reviewer's handle clicked mid-burst: the dialog opens for a step after Reviewer, the burst's key and an early click untaken
     expect(s.burst.opened).toMatchObject({ dialog: true, name: "", focused: true, works: ["Its own folder", "Reviewer's folder"] });
     expect(s.burst.opened.head).toMatch(/^Next step.*after Reviewer/);
@@ -799,6 +836,25 @@ describe.skipIf(!local)("Add next step", () => {
     // Start now… from the tree's menu asks first (W8's confirm), and Esc starts nothing
     expect(l.startNow).toEqual({ open: true, head: "Start Tester now?", calls: ["describeStart"], closed: true, starts: ["describeStart"], card: true });
   }, 150_000);
+
+  it("hands the keyboard to the landscape, unarmed, when a ⌘K pick moves the view but places none: no key, a held Enter's repeats among them, reaches the terminal ⌘K was opened from", async () => {
+    type Picked = { typedIn: string; lit: string | null; keyboard: string; open: boolean; writes: string[]; stillShown: boolean; tester: boolean; note: string | null };
+    const k = (await audit("lsCamera=0,0,1&lsPlanned&landscapeWiresAudit=palettekeys", "1600x1000", 150_000)) as unknown as {
+      step: Picked;
+      goTo: Picked & { area: string };
+      repeats: { lit: string | null; open: boolean; tester: boolean; fresh: { open: boolean; tester: boolean } };
+    };
+    const unarmed = /^Click the landscape to use its keys/;
+    // Tester's card, far from s1: brought into view, s1 left off screen, and nothing typed after reached it
+    expect(k.step).toMatchObject({ typedIn: "terminal:s1", lit: "Tester", keyboard: "landscape", open: false, writes: [], stillShown: false, tester: true });
+    expect(k.step.note).toMatch(unarmed);
+    // Go to s1's area from Builder's terminal: the same, nothing reaching Builder (the area fitted, Builder may stay in view)
+    expect(k.goTo).toMatchObject({ typedIn: "terminal:wb-builder", keyboard: "landscape", open: false, writes: [] });
+    expect(k.goTo.lit).toMatch(new RegExp(`^Go to .*${k.goTo.area}`));
+    expect(k.goTo.note).toMatch(unarmed);
+    // Enter's repeats alone pick nothing; a fresh press does
+    expect(k.repeats).toEqual({ lit: "Tester", open: true, tester: false, fresh: { open: false, tester: true } });
+  }, 200_000);
 });
 
 // ---- W9: pipeline templates (?landscapeWiresAudit=template, with ?lsTemplates) ----
@@ -979,14 +1035,24 @@ describe.skipIf(!local)("Pipeline templates", () => {
 
   it("says in the dialog that the models can't be read (a step's model still a choice) and that a repo is wanted; a refused lay-out keeps the area made for a step it left", async () => {
     type Act = { off: boolean; title: string | null } | null;
-    const n = (await audit("lsTemplates&lsLayOutLeaves=1&lsCamera=0,3040,1&landscapeWiresAudit=tplnotes", "1600x1200", 120_000)) as unknown as {
-      models: { said: string | null; reads: number; again: { said: string | null; reads: number }; off: boolean | null; options: string[]; open: boolean };
+    const n = (await audit("lsTemplates&lsLayOutLeaves=1&lsModelsMs=700&lsCamera=0,3040,1&landscapeWiresAudit=tplnotes", "1600x1200", 120_000)) as unknown as {
+      models: {
+        said: string | null;
+        reads: number;
+        again: { said: string | null; reads: number; busy: { off: boolean | null; says: string | null; busy: string | null }; after: { off: boolean | null; says: string | null } };
+        off: boolean | null;
+        options: string[];
+        open: boolean;
+      };
       repo: { was: string | null; noRepo: { said: string | null; act: Act }; back: { said: string | null; act: Act } };
       left: { calls: number; open: boolean; error: string | null; area: boolean; cards: string[] };
     };
     // the preview reads no model catalog: said beside the steps, read again by Try again, the default still a choice
     const unread = "The models offered on this Mac couldn't be read (UI preview: no model catalog): each step can keep its own model or take the default.";
     expect(n.models).toMatchObject({ said: unread, reads: 1, again: { said: unread, reads: 1 }, off: false, open: true });
+    // while it reads again: busy, off, and a second press asks nothing more; then Try again once more
+    expect(n.models.again.busy).toEqual({ off: true, says: "Reading…", busy: "true" });
+    expect(n.models.again.after).toEqual({ off: false, says: "Try again" });
     expect(n.models.options.map((o) => o.replace(/^✓/, ""))).toEqual(["Default model"]);
     // No repo: what it keeps from Lay out said under Repo, not only on the button; gone once one is chosen again
     expect(n.repo.noRepo).toEqual({ said: "Its steps work in worktrees of their own: choose a repo. Lay out is off until then.", act: { off: true, title: "Its steps work in worktrees of their own: choose a repo" } });

@@ -195,6 +195,8 @@ export interface WireCurve {
   /** Its control points: `d` is from, c1, c2, to. */
   c1: Point;
   c2: Point;
+  /** Drawn side by side with others (wireCurves): which set, its place in it from the first, and how many there are. */
+  lane?: { set: string; i: number; n: number };
 }
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -286,7 +288,98 @@ export function wireCurves(runs: readonly WireRun[], px = 1): Map<string, WireCu
     const k = c.bend === "v" ? [r.from, r.to].sort().join("\n") : `${r.from}\n${r.to}`;
     sets.set(k, [...(sets.get(k) ?? []), r]);
   }
-  for (const set of sets.values()) if (set.length > 1) set.forEach((r, i) => out.set(r.id, wireCurve(r.a, r.b, px, i - (set.length - 1) / 2)));
+  for (const [k, set] of sets)
+    if (set.length > 1)
+      set.forEach((r, i) => {
+        const c = wireCurve(r.a, r.b, px, i - (set.length - 1) / 2);
+        out.set(r.id, c && { ...c, lane: { set: k, i, n: set.length } });
+      });
+  return out;
+}
+
+/** The point `t` of the way along curve `c` by its parameter: `from` at 0, `mid` at ½, `to` at 1. */
+export function curveAt(c: Pick<WireCurve, "from" | "c1" | "c2" | "to">, t: number): Point {
+  const u = 1 - t;
+  return {
+    x: u * u * u * c.from.x + 3 * u * u * t * c.c1.x + 3 * u * t * t * c.c2.x + t * t * t * c.to.x,
+    y: u * u * u * c.from.y + 3 * u * u * t * c.c1.y + 3 * u * t * t * c.c2.y + t * t * t * c.to.y,
+  };
+}
+
+/**
+ * Where a wire's gate dot goes (W4a review): the point of its curve nearest its middle, searched outward along it,
+ * clear of every box in `keepOff` (areas' headers, names and pills, ghosts, workspaces), whose controls a dot over them
+ * would take the click from. `clear` when the whole dot, `r` round, misses them; `tight` when only its centre does (a
+ * narrow gap zoomed out), where it doesn't take the pointer, so what it overlaps still does; `under` when no point of
+ * the curve's middle 90% is clear, as for a wire running wholly beneath them, where it's drawn under them too (hidden).
+ */
+export function dotPlace(c: Pick<WireCurve, "from" | "c1" | "c2" | "to" | "mid">, r: number, keepOff: readonly Rect[]): { at: Point; fit: "clear" | "tight" | "under" } {
+  const misses = (p: Point, m: number) => keepOff.every((k) => p.x + m <= k.x || p.x - m >= k.x + k.w || p.y + m <= k.y || p.y - m >= k.y + k.h);
+  const along = [0.5, ...Array.from({ length: 36 }, (_, i) => [0.5 + (i + 1) / 80, 0.5 - (i + 1) / 80]).flat()];
+  const at = (t: number) => (t === 0.5 ? c.mid : curveAt(c, t));
+  for (const m of [r, 0]) {
+    const t = along.find((x) => misses(at(x), m));
+    if (t !== undefined) return { at: at(t), fit: m ? "clear" : "tight" };
+  }
+  return { at: c.mid, fit: "under" };
+}
+
+/** Which way a wire's label hangs from its dot. */
+export type Hang = "above" | "below" | "left" | "right";
+/** A label alone hangs above a side-to-side run, right of a top-to-bottom one, and under a loop. */
+const HANG: Record<Bend, Hang> = { h: "above", v: "right", u: "below" };
+/** In a lane set, the first half hang to the first side and the rest to the second: each to its own outer side. */
+const OUTER: Record<Bend, [Hang, Hang]> = { h: ["above", "below"], v: ["left", "right"], u: ["above", "below"] };
+/** A wire's mid label to place: its dot (where it hangs from), its curve's bend and lane, and its size in screen px. */
+export interface LabelPlace {
+  id: string;
+  at: Point;
+  bend: Bend;
+  lane?: { set: string; i: number; n: number };
+  w: number;
+  h: number;
+}
+/** The label's box, in landscape px, hung `hang` from `at` (styles.css' .ls-wire-label[data-hang]): `px` a screen px. */
+function labelBox(at: Point, hang: Hang, w: number, h: number, px: number): Rect {
+  const dx = hang === "right" ? 12 : hang === "left" ? -12 - w : -w / 2;
+  const dy = hang === "above" ? -10 - h : hang === "below" ? 12 : -h / 2;
+  return { x: at.x + dx * px, y: at.y + dy * px, w: w * px, h: h * px };
+}
+const overlaps = (a: Rect, b: Rect, gap: number) => a.x < b.x + b.w + gap && b.x < a.x + a.w + gap && a.y < b.y + b.h + gap && b.y < a.y + a.h + gap;
+
+/**
+ * Where each mid label goes (W4a review): which way it hangs from its dot, and how far it's moved on from there
+ * (landscape px). Alone it hangs by its bend. Wires drawn side by side (a lane set, LANE_PX apart) would put their labels
+ * on one another and over each other's dots: the set's first half hang to one outer side and the rest to the other,
+ * and any still on a label or a dot of their set (three or more) move on, away from their dots, until they're clear.
+ */
+export function labelHangs(items: readonly LabelPlace[], px: number): Map<string, { hang: Hang; shift: Point }> {
+  const out = new Map<string, { hang: Hang; shift: Point }>();
+  const sets = new Map<string, LabelPlace[]>();
+  for (const l of items) {
+    if (!l.lane || l.lane.n < 2) out.set(l.id, { hang: HANG[l.bend], shift: { x: 0, y: 0 } });
+    else sets.set(l.lane.set, [...(sets.get(l.lane.set) ?? []), l]);
+  }
+  const DOT = 7;
+  const GAP = 3 * px;
+  for (const set of sets.values()) {
+    const placed: Rect[] = [];
+    const dots = set.map((l) => ({ x: l.at.x - DOT * px, y: l.at.y - DOT * px, w: 2 * DOT * px, h: 2 * DOT * px }));
+    for (const l of [...set].sort((a, b) => a.lane!.i - b.lane!.i)) {
+      const { i, n } = l.lane!;
+      const hang = n % 2 && i === (n - 1) / 2 ? HANG[l.bend] : OUTER[l.bend][i < n / 2 ? 0 : 1];
+      const dir = hang === "above" ? -1 : 1;
+      let dy = 0;
+      for (let k = 0; k < 2 * set.length + 2; k++) {
+        const b = labelBox({ x: l.at.x, y: l.at.y + dy }, hang, l.w, l.h, px);
+        const hit = [...placed, ...dots.filter((_, j) => set[j] !== l)].find((o) => overlaps(b, o, GAP));
+        if (!hit) break;
+        dy += dir < 0 ? hit.y - GAP - (b.y + b.h) : hit.y + hit.h + GAP - b.y;
+      }
+      placed.push(labelBox({ x: l.at.x, y: l.at.y + dy }, hang, l.w, l.h, px));
+      out.set(l.id, { hang, shift: { x: 0, y: dy } });
+    }
+  }
   return out;
 }
 
@@ -294,11 +387,8 @@ export function wireCurves(runs: readonly WireRun[], px = 1): Map<string, WireCu
 export function curveDistance(c: Pick<WireCurve, "from" | "c1" | "c2" | "to">, p: Point): number {
   let best = Infinity;
   for (let i = 0; i <= 48; i++) {
-    const t = i / 48;
-    const u = 1 - t;
-    const x = u * u * u * c.from.x + 3 * u * u * t * c.c1.x + 3 * u * t * t * c.c2.x + t * t * t * c.to.x;
-    const y = u * u * u * c.from.y + 3 * u * u * t * c.c1.y + 3 * u * t * t * c.c2.y + t * t * t * c.to.y;
-    best = Math.min(best, Math.hypot(x - p.x, y - p.y));
+    const q = curveAt(c, i / 48);
+    best = Math.min(best, Math.hypot(q.x - p.x, q.y - p.y));
   }
   return best;
 }

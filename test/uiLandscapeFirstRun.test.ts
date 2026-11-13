@@ -570,6 +570,11 @@ describe.skipIf(!local)("a move of the keyboard that waited on main", () => {
     expect(a.after).toEqual({ others: [], s1Got: "abn\ry" });
   }, 120_000);
 
+  it("leaves the tab the user went to while main was slow to start a preset's session: the jump, superseded, pulls no one from Settings", async () => {
+    const a = await run("a", "case=preset&how=settings&lsCamera=500,0,0.75&needsMany");
+    expect(a.afterLag).toEqual({ tab: "settings", landscape: false });
+  }, 120_000);
+
   it("still gives a session started from a preset the keyboard when nothing happened meanwhile", async () => {
     const a = await run("a", "case=preset&how=idle&lsCamera=500,0,0.75&needsMany");
     expect(a.afterLag).toEqual({ keyboard: "terminal", in: "s2" });

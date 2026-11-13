@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { LANE_PX, anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, mateWireNote, finishLines, finishedLine, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireCurves, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
+import { LANE_PX, anchorOf, commonReason, curveDistance, defaultChoice, dotPlace, labelHangs, droppedNote, mateWireNote, finishLines, finishedLine, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireCurves, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { mergeViewOf } from "../src/main/prWatch";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
@@ -264,6 +264,60 @@ describe("a wire's curve", () => {
       expect(c!.from.y).toBeGreaterThanOrEqual(0);
       expect(c!.from.y).toBeLessThanOrEqual(20);
     }
+    // a set says which it is, where each is in it and how many; one alone says nothing
+    expect(side.get("h")!.lane).toMatchObject({ i: 0, n: 2 });
+    expect(side.get("c")!.lane).toMatchObject({ i: 1, n: 2, set: side.get("h")!.lane!.set });
+    expect(side.get("x")!.lane).toBeUndefined();
+  });
+
+  it("puts a gate dot at its wire's middle when that's clear, else along the wire to the nearest clear point, else beneath what covers it", () => {
+    const a = { x: 0, y: 0, w: 200, h: 100 };
+    const right = { x: 300, y: 0, w: 200, h: 100 };
+    const c = wireCurve(a, right)!;
+    expect(dotPlace(c, 8, [])).toEqual({ at: c.mid, fit: "clear" });
+    // a workspace dropped over the middle: the dot moves along the wire, off it, to the nearest clear point
+    const over = { x: c.mid.x - 20, y: c.mid.y - 30, w: 40, h: 60 };
+    const moved = dotPlace(c, 8, [over]);
+    expect(moved.fit).toBe("clear");
+    expect(moved.at.x <= over.x - 8 || moved.at.x >= over.x + over.w + 8).toBe(true);
+    expect(curveDistance(c, moved.at)).toBeLessThan(0.5);
+    expect(Math.abs(moved.at.x - c.mid.x)).toBeLessThan(40);
+    // a narrow gap (zoomed out): only its centre fits, so it's "tight", and takes no pointer
+    const narrow = wireCurve(a, { x: 212, y: 0, w: 200, h: 100 })!;
+    expect(dotPlace(narrow, 8, [a, { x: 212, y: 0, w: 200, h: 100 }]).fit).toBe("tight");
+    // the whole wire beneath something: beneath it too
+    expect(dotPlace(c, 8, [{ x: -50, y: -50, w: 600, h: 200 }])).toEqual({ at: c.mid, fit: "under" });
+  });
+
+  it("hangs a label by its bend alone, and side-by-side wires' labels to their outer sides, off each other's dots", () => {
+    const a = { x: 0, y: 0, w: 200, h: 100 };
+    const right = { x: 300, y: 0, w: 200, h: 100 };
+    const below = { x: 0, y: 300, w: 200, h: 100 };
+    const run = (id: string, rb: typeof a, from = "A", to = "B") => ({ id, from, to, a, b: rb });
+    const label = (id: string, c: ReturnType<typeof wireCurve>) => ({ id, at: c!.mid, bend: c!.bend, lane: c!.lane, w: 120, h: 20 });
+    const alone = wireCurve(a, right)!;
+    expect(labelHangs([label("x", alone)], 1).get("x")).toEqual({ hang: "above", shift: { x: 0, y: 0 } });
+    // side to side, a LANE_PX apart one above the other: the upper's label above it, the lower's below
+    const side = wireCurves([run("h", right), run("c", right)]);
+    const hs = labelHangs([label("h", side.get("h")!), label("c", side.get("c")!)], 1);
+    expect([hs.get("h")!.hang, hs.get("c")!.hang]).toEqual(["above", "below"]);
+    // top to bottom, side by side: the left one's label left of it, the right one's right
+    const down = wireCurves([run("d", below, "A", "C"), run("u", below, "C", "A")].map((r, i) => (i ? { ...r, a: below, b: a } : r)));
+    const hv = labelHangs([label("d", down.get("d")!), label("u", down.get("u")!)], 1);
+    expect([hv.get("d")!.hang, hv.get("u")!.hang]).toEqual(["left", "right"]);
+    // three side to side: the middle one's moved on until it's clear of the others' labels and dots
+    const three = wireCurves([run("t0", right), run("t1", right), run("t2", right)]);
+    const items = ["t0", "t1", "t2"].map((id) => label(id, three.get(id)!));
+    const h3 = labelHangs(items, 1);
+    const boxOf = (id: string) => {
+      const l = items.find((x) => x.id === id)!;
+      const h = h3.get(id)!;
+      const at = { x: l.at.x + h.shift.x, y: l.at.y + h.shift.y };
+      return h.hang === "above" ? { t: at.y - 30, b: at.y - 10 } : { t: at.y + 12, b: at.y + 32 };
+    };
+    const boxes = ["t0", "t1", "t2"].map(boxOf);
+    for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) expect(boxes[i].b <= boxes[j].t || boxes[j].b <= boxes[i].t).toBe(true);
+    for (const b of boxes) for (const l of items) expect(b.b <= l.at.y - 7 || b.t >= l.at.y + 7).toBe(true);
   });
 
   it("is found by a point near its line, the nearest of two, and not by one farther than it reaches", () => {

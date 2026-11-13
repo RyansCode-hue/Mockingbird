@@ -100,7 +100,8 @@ export function CommandPalette({
               if (onArrow(e)) return;
               if (e.key === "Enter") {
                 e.preventDefault();
-                runRow(sel);
+                // a held Enter's repeats run nothing: only a fresh press picks a row
+                if (!e.repeat) runRow(sel);
               }
             }}
           />

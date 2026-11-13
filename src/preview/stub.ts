@@ -50,7 +50,7 @@ import { runSwitchAudit } from "./switchAudit";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
 import { boardPlan, councilPlan, runPlanAudit } from "./planAudit";
-import { WIRE_AREA, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, wireBoardBook, wireBoardSessions } from "./wiresAudit";
+import { WIRE_AREA, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { openFinishShot } from "./wireNeedsAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
@@ -2248,7 +2248,11 @@ const api: Record<string, (...a: any[]) => any> = {
     ado: { connected: true, display: "You", detail: "acme / Backoffice" },
   },
   adoConfigGet: async () => ({ orgUrl: "https://dev.azure.com/acme", project: "Backoffice", patFile: "secrets/ado.pat" }),
-  modelCatalog: async () => err("UI preview: no model catalog"),
+  // ?lsModelsMs=<ms>: main takes that long to say so
+  modelCatalog: async () => {
+    await new Promise((r) => setTimeout(r, Number(new URLSearchParams(location.search).get("lsModelsMs") ?? 0)));
+    return err("UI preview: no model catalog");
+  },
 
   // team rooms: sharing, invites and joins are simulated; nothing connects
   teamStatus: async () => (teamFails ? err("~/.mockingbird/team.json: EACCES: permission denied") : JSON.parse(JSON.stringify(team))),
@@ -8978,6 +8982,8 @@ if (lsGatesQ !== null) {
 }
 // ?lsHeldWaits (with ?lsWires): something waits at Reviewer → Tester's gate, blocked till Reviewer approves (wiresAudit.ts)
 if (wireBoard && params.has("lsHeldWaits")) wireBook = heldWaitsBook(wireBook, now);
+// ?lsTwin (with ?lsWires): a second handoff from Builder to Reviewer, beside the one sending (wiresAudit.ts)
+if (wireBoard && params.has("lsTwin")) wireBook = twinBook(wireBook, now);
 // W4a: ?landscapeWiresAudit=near|far|drag|area|pill works the wires drawn (wiresAudit.ts) for test/uiLandscapeWires.test.ts.
 // W4c's parts have a finish arrive at a gate while its popover is open (`finish`), as finish_step's would, or what waits
 // there sent from elsewhere (`sent`), as another window's Send would

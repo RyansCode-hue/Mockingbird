@@ -1355,6 +1355,8 @@ button.link.danger { color: var(--red); }
 .ts-snip mark { background: var(--fill-waiting); color: var(--text-1); border-radius: 2px; padding: 0 1px; }
 /* floating menus (MenuButton): rendered on <body>, so nothing clips them */
 .mb-menu { position: fixed; z-index: 90; min-width: 170px; max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; padding: 4px; background: var(--bg-pane); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+/* moved under a resting pointer (AnchoredPopover): its controls look off while a click there is let go */
+.mb-menu.mb-settling :is(button, [role="button"], a[href]):not(:disabled) { opacity: .35; cursor: default; }
 .mb-menu button { text-align: left; border: none; padding: 6px 8px; border-radius: 4px; font: 400 12px var(--ui); color: var(--text-2); background: transparent; }
 .mb-menu button:hover { background: var(--fill-selected); color: var(--text-1); }
 .collab-inspector section > button.outline, .collab-inspector section > button.primary { align-self: flex-start; }
@@ -3406,6 +3408,8 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-wire-labels { width: 0; height: 0; z-index: 5; }
 .ls-wire-dots { z-index: 5; }
 .ls-wire-dots .dot { pointer-events: auto; cursor: pointer; }
+/* only its centre clear of a workspace or area chrome (a narrow gap zoomed out): what it overlaps keeps the pointer */
+.ls-wire-dots .dot[data-fit="tight"] { pointer-events: none; }
 .ls-wire path { fill: none; }
 .ls-wire .line { --sw: 1.5; stroke: var(--wire-idle); stroke-width: calc(var(--sw) * 1px * var(--ls-inv, 1)); }
 .ls-wire .glow { stroke: var(--amber); stroke-opacity: .18; stroke-width: calc(7px * var(--ls-inv, 1)); }
@@ -3428,9 +3432,11 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   position: absolute; box-sizing: border-box; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   transform-origin: 0 0; font: 400 11px/15px var(--ui);
 }
-.ls-wire-label[data-bend="h"] { transform: scale(var(--ls-inv, 1)) translate(-50%, calc(-100% - 10px)); }
-.ls-wire-label[data-bend="v"] { transform: scale(var(--ls-inv, 1)) translate(12px, -50%); }
-.ls-wire-label[data-bend="u"] { transform: scale(var(--ls-inv, 1)) translate(-50%, 12px); }
+/* hung from its dot (wiresModel's labelHangs: labelBox there must match these) */
+.ls-wire-label[data-hang="above"] { transform: scale(var(--ls-inv, 1)) translate(-50%, calc(-100% - 10px)); }
+.ls-wire-label[data-hang="right"] { transform: scale(var(--ls-inv, 1)) translate(12px, -50%); }
+.ls-wire-label[data-hang="below"] { transform: scale(var(--ls-inv, 1)) translate(-50%, 12px); }
+.ls-wire-label[data-hang="left"] { transform: scale(var(--ls-inv, 1)) translate(calc(-100% - 12px), -50%); }
 .ls-wire-label.t-ready { padding: 2px 9px; border-radius: 10px; background: var(--amber); color: var(--on-amber); font-weight: 500; }
 .ls-wire-label.t-blocked {
   padding: 1px 7px; border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); border-radius: 9px;

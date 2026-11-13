@@ -291,6 +291,13 @@ function App() {
   // actually exists — cancelling the dialog must leave the pane exactly as it was
   const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
   const [tab, setTab] = usePersisted<Tab>("mb.tab", "sessions");
+  /** The tab shown now, and the last few tabs with the user's input (inputStamp) as each came: a jump that waited reads them. */
+  const tabNow = useRef(tab);
+  tabNow.current = tab;
+  const tabLog = useRef<{ at: number; tab: Tab }[]>([]);
+  useEffect(() => void (tabLog.current = [...tabLog.current.slice(-15), { at: inputStamp(), tab }]), [tab]);
+  /** The tab shown as the user's input stood at `stamp`. */
+  const tabAt = (stamp: number): Tab | null => [...tabLog.current].reverse().find((e) => e.at <= stamp)?.tab ?? tabLog.current[0]?.tab ?? null;
   // a room to open, from a permission-request notification (the counter re-triggers the same room)
   const [focusRoom, setFocusRoom] = useState<{ id: string; n: number } | null>(null);
   useEffect(
@@ -707,15 +714,18 @@ function App() {
   /**
    * Show session `s` and give its terminal the keyboard. `since`: the user's input as they asked for it (`inputStamp`),
    * for a jump that waited on main (resuming, starting a preset, opening a search hit): if they typed, pressed or a
-   * dialog opened meanwhile, its tab is shown, but the view doesn't move to it and the keyboard stays where it is.
+   * dialog opened meanwhile, the view doesn't move to it and the keyboard stays where it is; its tab is shown only from
+   * the tab it was asked on, or the Dashboard.
    */
   const jumpToSession = (s: SessionInfo, since?: number) => {
     // A jump that waited on main (a resume, a preset started, a search hit opened) is superseded by anything the user did
-    // meanwhile: its tab is still shown, where what was started is, but the view flies nowhere, nothing is selected and
-    // the keyboard stays where it is. The note says it's there.
+    // meanwhile: the view flies nowhere, nothing is selected and the keyboard stays where it is. Its tab, where what was
+    // started is, is shown while the user is still on the tab they asked from (a Dashboard ticket's Start), or on the
+    // Dashboard; gone on to another (Settings, mid-typing), they stay there. The note says it's there.
     if (since !== undefined && inputStamp() !== since) {
-      console.info(`[mockingbird] the jump to ${s.id} was superseded by input while main answered: its tab shown, nothing else moved`);
-      setTab(s.debrief ? "worktracker" : "sessions");
+      const stayed = tabNow.current === tabAt(since) || tabNow.current === "dashboard";
+      console.info(`[mockingbird] the jump to ${s.id} was superseded by input while main answered: ${stayed ? "its tab shown" : "the tab left as it is"}, nothing else moved`);
+      if (stayed) setTab(s.debrief ? "worktracker" : "sessions");
       if (!s.debrief) lsSay(`${titleOf(s)} is ready: you'd moved on meanwhile, so the view stayed where it was`);
       return;
     }
@@ -916,6 +926,24 @@ function App() {
   const goToArea = (area: string, avoid: ScreenBox | null = null) => {
     setTab("sessions");
     setGoTo({ area, n: ++asked.current, avoid });
+  };
+  /**
+   * A palette row that moves the view and places no keyboard (a not-started step's card, an area). What had the keyboard
+   * as ⌘K opened, a terminal say, may be off screen once the view has moved, so the landscape takes it, unarmed, once the
+   * palette has gone, as for a jump whose terminal isn't there. Claimed at once (keyboardMoves): the closing palette
+   * gives none back, and a held Enter's repeats reach no terminal.
+   */
+  const viewOnlyPick = (move: () => void) => {
+    keyboardMoves();
+    move();
+    setTimeout(() => {
+      // a dialog the pick opened, or one already up, keeps it
+      if (document.querySelector(OVERLAYS)) return;
+      landscapeHome()?.focus({ preventScroll: true });
+      if (!keyboardNowhere()) return;
+      toNowhere();
+      console.warn("[mockingbird] the landscape wasn't there to take the keyboard after a palette pick moved the view: it waits on the holder");
+    }, 0);
   };
   /** An area selected as a whole (the selection bar shows its actions): the selected session is let go, as in Figma. */
   const selectArea = (key: string | null) => {
@@ -3500,8 +3528,9 @@ function App() {
       {paletteOpen && (
         <CommandPalette
           sessions={sessions}
-          steps={planned}
-          onStep={showStep}
+          // the steps the landscape draws, which a pick can bring into view
+          steps={landscapeLayout ? plannedIn(landscapeLayout, null) : []}
+          onStep={(s) => viewOnlyPick(() => showStep(s))}
           onClose={() => setPaletteOpen(false)}
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },
@@ -3515,7 +3544,7 @@ function App() {
             { label: "Landscape", run: () => setTab("sessions") },
             { label: "Shortcuts — every key on the landscape", kbd: "?", run: () => setKeysOpen(true) },
             // the landscape: each area to fly to
-            ...(landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => goToArea(a.key) })),
+            ...(landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => viewOnlyPick(() => goToArea(a.key)) })),
             { label: sideCollapsed ? "Show the area tree" : "Hide the area tree", kbd: "⌘\\", run: () => (sideCollapsed ? showView("sessions") : setSideCollapsed(true)) },
             // the landscape: every ghost at once (Reopen all), while there are any
             ...ghostsActions(ghostRows(null, "the landscape"))
