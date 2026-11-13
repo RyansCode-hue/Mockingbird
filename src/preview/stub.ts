@@ -9234,8 +9234,6 @@ Object.assign(api, {
     tplStore = [];
     return { file: "/Users/you/.mockingbird/pipelineTemplates-set-aside-2026-11-12T15-00-00-000Z.json", list: readTemplates([]) };
   },
-  // main's WireService.layOut: checked whole first, then the steps (not started), their wires, and the first step started
-  // when the template says so, with what waited for it; a refusal once steps are made takes them all back
   // as main's TemplateLayOuts: the area made (when the window sent one for an area that has none) before the lay-out,
   // and taken back, when it's as it was made, if the lay-out is refused
   templatesLayOut: async (req: LayOutRequest) => {
@@ -9252,7 +9250,9 @@ Object.assign(api, {
     }
     return { ...r, madeArea: !!made } satisfies LayOutReply;
   },
-  /** templatesLayOut's lay-out itself, once its area is made: the window never calls it. */
+  // templatesLayOut's lay-out itself, once its area is made (the window never calls it), as main's WireService.layOut:
+  // checked whole first, then the steps (not started), their wires, and the first step started when the template says
+  // so, with what waited for it; a refusal once steps are made takes them all back
   previewLayOutNow: async (req: LayOutRequest) => {
     await startLag();
     if (layOutFails > 0) {

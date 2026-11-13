@@ -10,7 +10,7 @@ const read = (root: string, rel: string) => fs.readFileSync(path.join(root, rel)
 const exists = (root: string, rel: string) => fs.existsSync(path.join(root, rel));
 
 describe("Mockingbird's own commits", () => {
-  it("are never signed, whatever commit.gpgSign says (commit-tree, as git's plumbing, ignores it): the config's gpg.program never runs for a turn's snapshot or a backup's commit, and still does for the user's own Commit", async () => {
+  it("are never signed, whatever commit.gpgSign says (commit-tree, git's plumbing, ignores it): the config's gpg.program never runs for a turn's snapshot or a backup's commit, and still does for the user's own Commit", async () => {
     const repo = makeRepo();
     const dir = tempDir("gpg");
     const ran = path.join(dir, "ran");

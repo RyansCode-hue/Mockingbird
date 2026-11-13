@@ -8687,3 +8687,167 @@ patterns under the shared folder instead; the by-name denies dropped; the pane's
 - The other fixes were each undone once to see their tests fail (`w16-other.json`, `w4c.json`: 12 of 12, after the
   restart test was added for L4's cleanup).
 - No UI test was run: only `wiresModel.ts` changed in the renderer.
+
+## 1.7.0 follow-ups 2 (main process) as built
+
+Deferred Lows from W8, W9/W17, W15, W20 and W18, built on main fa58451, one commit per area. Outside main, L13 touched
+`src/renderer/main.tsx` (`layOutTemplate` only) and `src/preview/stub.ts` (`templatesLayOut`), as the window no longer
+makes a lay-out's area itself.
+
+### W8 (not-started steps)
+
+- **L6: a status that fails doesn't stop a start.** `upstreamCommit` reads the step before's HEAD and branch, then
+  counts its uncommitted files. That count only informs the pane, so a status that fails or times out is logged with
+  the commit and said: "Started at “Builder”'s commit abc1234: its uncommitted files couldn't be counted (…), and none
+  are carried." The step starts there.
+- **L7: a step that can't be forgotten is said with the wire's refusal.** When Add next step's wire is refused once
+  the step exists and the step then can't be forgotten, it throws "<the refusal> “Tester” was made, and couldn't be
+  taken back, so it's there with no wire into it: forget it from its menu (<why>)", and logs it.
+
+Tests: `sessionLifecycle` (a corrupt index: HEAD reads, status fails), `wireService` (a forget that throws).
+
+### W9 / W17 (templates and lay-out)
+
+- **L5: a started step whose stage couldn't be moved is started.** `index.ts`' `startStep` starts the step, places
+  it, then moves its ticket on (`sessionOpened`). That last part can't undo the start, so its failure is logged and
+  given back as `StepStarted.stageWhy` ("#5115 couldn't be moved to Coding (…)"; "tracked at BA" for an Orchestrator).
+  - Lay out, and a plan's lay-out, say "“Builder” started, but #5115 couldn't be moved to Coding (…)." and still make
+    its terminal and its PR-merged wire. `LayOutDeps.start` and `PlanLayOutDeps.start` answer `StepStarted`.
+  - Start now and a Send's start (`startPlannedStep`) no longer fail for it. The step started, so the Send pastes. The
+    failure is logged and notified (`notifySession`, under the notification settings).
+- **L6: what's said after the steps are made is logged in main.** A step that didn't start, a terminal not made on
+  its tree and a wire refused once it started are logged under the session's id: "wires: laying out “<name>”,
+  session p1: …" and "plans: laying out <plan>'s plan, session p1: …".
+- **L9: saved templates are capped.** `TEMPLATES_KEPT`: 50 templates (entries this version can't read counted) and
+  512 KB as UTF-8 JSON. Save past either is refused saying which ("There are 50 saved templates, the most Mockingbird
+  keeps: remove one you don't use first." / "With this one the saved templates would take 530 KB, past the 512 KB…").
+  - *Left in state.json:* a file of their own would need its own unreadable and broken-list handling and set-aside
+    path, which the settings already give them. The cap bounds what each rewrite carries.
+- **L11: a second set-aside in the same millisecond** gets a name of its own: `…-<time>-2.json`, `-3`…, never
+  written over another (`wx`). After 100 it's refused saying so.
+- **L13: a lay-out's area is made in main, under its lock.** `TemplateLayOuts` (`templates.ts`) wraps
+  `templates:layOut`, both the steps' path and the Orchestrator's:
+  - one at a time, refused before anything is made or taken back;
+  - the window sends where the area goes (`LayOutRequest.newArea`, newAreaPatch's), and main makes it only when the
+    area has none, after the lock and before anything is laid out;
+  - a refused lay-out takes back only the area it made, and only as it made it. One moved or changed since is left
+    and said ("Its area, made for it, has changed since, so it's left…"), and a take-back that fails is said, both
+    logged;
+  - the reply's `madeArea` is what the window tidies along the wires by. The window no longer saves or takes back the
+    area itself.
+  - *Left:* plans:layOut makes no area (its steps go in its Orchestrator's), so it has none to take back. A template
+    laid out into an Orchestrator's group with no area of its own on the landscape, and refused, takes back the area
+    it made; the plan's steps there are then drawn in the area the layout makes for a group with none.
+
+Tests: `templates.test` (TemplateLayOuts ×6, the two caps, the set-aside), `wireService` (×3), `plans` (×2). The
+Chrome test "Pipeline templates" (`uiLandscapeWires`, run alone without CI: 2 passed) covers the window's half: a
+refused lay-out's area taken back, Lay out tidied along its wires.
+
+Mutation check (`mut/l13.json` with `mut/mutate.py`, in the session's scratchpad): 15 of 15 caught. L13: no lock;
+take-back of an area this lay-out didn't make; an existing area made over; one changed since taken back anyway;
+`madeArea` always said; the area made after the lay-out ran; a failed take-back unsaid. L9: each cap off; size counted
+in characters. L11: names not made unique. L5 and L6: each note dropped, each log dropped, in wires and in plans.
+
+### W15 (room git safety)
+
+- **remotes/, branches/ and info/exclude are read-only** in both sandboxes, beside the config (`SHARED_GIT_FILES`):
+  Codex's profile reads them, and Claude's sandbox and file tools deny writing them.
+  - Git reads `remotes/<name>` and `branches/<name>` as a remote's URL and refspecs for a name the config doesn't
+    define, so a fetch or pull of it goes wherever they say. `info/exclude` hides files from status, so from turn
+    snapshots and take-over's backups.
+  - Checked with real git (`claudeRoomSandbox.test`): a fetch of a remote from each legacy folder, status hiding
+    what's excluded, and with all three made read-only (chmod) a commit, branch, stash, fetch and gc go through.
+- **An include's `~name/` is followed as git follows it**, in the room's config check (`includeTarget`):
+  - this account's name: from the system's record of its home (`os.userInfo().homedir`, getpwnam's), not `$HOME`;
+  - another account's: refused, "…it includes "~bob/x", a file in the home folder of another account (bob), which
+    Mockingbird can't look up, so what it holds can't be checked".
+- **gh is checked as git is** (`pullRequests.ts`' `runGh`, for the PR form, the rail's PR status and the merge
+  watch):
+  - `gitPinRefusal` first: a pinned folder whose `.git` leads elsewhere, or any folder with a stray `commondir`, is
+    refused: "gh wasn't run: Mockingbird won't run git in …".
+  - In a room session's folder (`PrDeps.room`, from `index.ts`' `ghInRoom`: a session there, open or closed, is a
+    room's by `pushesOwnHooks`, rooms not started counting), `roomFilters` too: config from a file the room's agent
+    can write, or an include naming one, refuses it, and gh's own gits run with the filters a room's git turns off.
+  - Each caller says why: the form's lookup error, the rail's error, the merge watch's failure. A create in a folder
+    that's refused was refused at its push already, which runs the same checks.
+- **Mockingbird's own commits and gpg: not real.** Snapshots and take-over's backups are made with `git
+  commit-tree`, which, as git's plumbing, ignores `commit.gpgSign` (only `git commit` and its kin read it). Probed
+  with git 2.49: with `commit.gpgSign=true` and a `gpg.program` that records each run, a turn's snapshot, a backup
+  and a copy ran nothing and carry no `gpgsig`. So no override was added. A test (`snapshots.test`) holds it, and
+  that the user's own Commit still runs their `gpg.program`. Mockingbird's other commit, Close session's WIP commit,
+  is on the user's branch and signs as their config says.
+- **Documented in team-rooms.md:** the LFS endpoint isn't pinned for ssh remotes or URLs with credentials in them
+  (the host check only), and take-over writes a filter's files as they're stored (a git-crypt file's ciphertext).
+  Also the read-only list, gh's checks, and why Mockingbird's own commits aren't signed.
+
+Mutation check (`mut/w15.json`): 12 of 12 caught, the read-only list's three names (each), the list kept off
+Claude's file tools, `~name/` resolved as before, from `$HOME`, or another account's passed over, gh without the pin
+check, without the room check, with filters on, the room check for every folder, and `commit.gpgSign=false` given to
+the user's own Commit. A thirteenth, snapshots under `OWN_WRITE_ENV` without an override, was the gpg finding: it
+changed nothing.
+
+### W20 (room sandbox)
+
+- **Room panes are told what fails.** `git worktree add` and `git submodule update` fail in every room pane, a loud
+  sandbox denial, so a Claude sub-agent with worktree isolation can't start there (`ROOM_WORKTREE_NOTE`).
+  - Codex's sandbox note carries it.
+  - A Claude room pane in its sandbox gets a note of its own (`CLAUDE_ROOM_SANDBOX_NOTE`) in its
+    `--append-system-prompt`, beside the House board. So its launch has one with no board too.
+  - team-rooms.md says it under the room sessions' rules.
+- **Git folders as the disk has them.** `roomGitDirs` gives `realpathSync.native`'s paths: links resolved, each name
+  in its own case.
+  - *What was found:* git 2.49's `--path-format=absolute` gives canonical paths already ("absolute and canonical",
+    its docs say), links and case resolved. So no deny slipped through a symlinked or differently-cased repo path, and
+    this is hardening against a git that doesn't.
+  - *Found on the way, fixed:* `gitPins` read a folder's `.git` with `realpathSync`, which keeps the case it's given,
+    while git gives the disk's. A room session whose folder was named in another case (a repo root typed `~/code` for
+    `~/Code`) was refused at launch ("git found its data at …, but its .git leads to …"). A pin was found only by the
+    case it was made with. `readGitPointer` and `real` use `realpathSync.native` now.
+
+Tests: `codexRoomSandbox.test` (a repository, a worktree and a worktree's `gitdir` through links; a folder named in
+another case: its folders in the disk's case, pinned, and held by either case), `teamLivePanes` (each agent's note).
+
+Mutation check (`mut/w20.json`): 5 of 7 caught: each note dropped (Claude's, Codex's, Claude's isolation line), the
+pin's `.git` read in the case given, a pin found only by its own case. The two that pass are `roomGitDirs` without its
+realpath, or with case kept: a no-op with this git, as above. The tests hold the property against a git that changes.
+
+**Hand checks with real CLIs** (none run: no real claude or codex here):
+- In a Claude room pane, on a main checkout and on a linked worktree: `echo x >> .git/info/exclude`, a file written
+  under `.git/remotes/` and `.git/branches/` (through Bash and `node -e`), and the Edit tool on each: all refused. A
+  commit, stash, fetch and `git gc` still work. `get_sandbox_dialog` lists the three new paths in `fs_deny_write`
+  (checked by string, as the others are).
+- The same in a Codex room pane: the writes refused, a commit, stash, fetch and gc working.
+- Each agent says, asked, that `git worktree add` fails in its room pane, and a Claude sub-agent with
+  `isolation: "worktree"` started there fails with the sandbox's denial, not silently.
+- A room session on a repo reached through a symlink, and one whose folder is named in another case: it launches in
+  its sandbox (its chip doesn't say "outside the sandbox"), and a write to `.git/config` is refused.
+- The PR form in a room session whose repository's config includes a worktree file: "gh wasn't run: …"; on a plain
+  room repository, gh pr create opens the PR.
+
+### W18 (Councils)
+
+- **L5: a forgotten Orchestrator can be replaced.**
+  - Forgetting a session lets go of a Council's link to it (`collab.sessionForgotten`, from `sessions:kill`), so the
+    Council shows Implement again. Its note: "Its Orchestrator (session …) was forgotten: Implement starts another, on
+    branch collab-…, where its work stays."
+  - `implement` lets go of a link to a session this Mac no longer has itself (its record lost, or the save above
+    failed, which is logged), and its note says "Its earlier Orchestrator (session …) was forgotten, so this one
+    replaces it, on the same branch."
+  - Still refused while the Orchestrator is a session of this Mac's, running or closed, and when the sessions can't
+    be asked.
+
+Tests: `collab.test` (closed: refused; forgotten: link let go and said, implemented again on the same branch; a link
+to a session gone unsaid; a Council with no sessions to ask). Mutation check (`mut/w18.json`): 5 of 5.
+
+### Checked
+
+- `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test` exits 0, with the main checkout's `node_modules` linked in for `leakGuard`'s nested run (the
+  link was removed afterwards): 199 files pass and 36 skip; 3,688 tests pass and 359 skip. No team or peerCheck
+  timeout needed a rerun.
+- Mutation checks, all with `mut/mutate.py` in the session's scratchpad: W8 1 of 1; W9/W17 15 of 15 (L13's 7 among
+  them); W15 12 of 12; W20 5 of 7 (the two that pass are no-ops with git 2.49, above); W18 5 of 5.
+- `uiLandscapeWires`' "Pipeline templates" alone in Chrome, without CI: 2 passed, as `main.tsx`'s `layOutTemplate`
+  and the stub's `templatesLayOut` changed. No other renderer file changed.
+- No real claude or codex ran: the sandbox tests that start them skip under CI, and every sandbox test here ran
+  under it.

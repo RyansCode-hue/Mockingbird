@@ -815,9 +815,9 @@ Member replace the single admin (creator, else longest-standing member).
     in the form, the rail or the merge watch's failure.
   - **Mockingbird's own commits aren't signed.** A turn's snapshot and a
     take-over's backup are commits under Mockingbird's own refs, made with
-    `git commit-tree`, which (as git's plumbing, since 2.1) ignores
-    `commit.gpgSign`, so the user's `gpg.program` (or `ssh-keygen`) never runs
-    for them. The user's own Commit and Close session's WIP commit sign as
+    `git commit-tree`, which, as git's plumbing, ignores `commit.gpgSign`
+    (git 2.49 probed), so the user's `gpg.program` (or `ssh-keygen`) never
+    runs for them. The user's own Commit and Close session's WIP commit sign as
     their config says.
   - **Messages stay on its side of the line.** `send_message` and
     `list_sessions` reach only this Mac's sessions on the same side of the
