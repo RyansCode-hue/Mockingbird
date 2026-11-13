@@ -640,11 +640,14 @@ describe("list_links", () => {
   it("says there are none when there are none, in so many words", () => {
     expect(setup().service.linksFor(session("a"))).toEqual({ result: { you: { id: "a", title: "a" }, links: [], note: "This workspace has no wires." } });
   });
-  it("lists only the caller's wires, each with its direction, type and state", () => {
-    const { service } = setup();
+  it("lists only the caller's wires, each with its direction, type and state, in the order they were made", () => {
+    // the second id reads as an integer, which the book's own key order puts first
+    const ids = ["ab12cd34", "12345678", "cd34ef56"];
+    const { service } = setup({ newId: () => ids.shift()! });
     const out = made(service.add("a", "b", "handoff")).id;
     const inn = made(service.add("c", "a", "context")).id;
     made(service.add("b", "c", "handoff"));
+    expect(Object.keys(service.get().book!.links)[0]).toBe(inn);
     const r = service.linksFor(session("a")) as { result: any };
     expect(r.result.links).toEqual([
       { wire: out, direction: "out", type: "handoff", other: { id: "b", title: "b", where: "running" }, state: "idle" },
