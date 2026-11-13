@@ -5876,6 +5876,17 @@ draft takes them out, saying so.
   waited for. A third proposal replaces the waiting one, never the open one.
 - P6 stays: a not-started or closed workspace in the area can be named.
 
+**Checks** (rebased onto main 04256b5, W11): typecheck and build clean.
+`CI=true npm test`: 3,608 passed, 356 skipped; three team tests timed out at 20 s
+under load and pass alone (102). `test/plans.test.ts` 95. UI, one file at a time:
+`uiTemplatePicker` 7 (the room's gates sent asking, a room gone while open refused,
+a newer plan waiting), `uiLandscapeWires` 31, `uiLandscapeNeeds` 24. 22 mutations
+of M1 (both refusals, the strict read, the window's forced ask and shown room), M2
+(the quoting, each title cleaning, the fence's title and description), LM1 (each
+class, both refusals, checkPlan's call, W9's lay-out, save and draft), L3 and L5:
+all 22 fail a test. Literal invisible characters in this branch's sources and tests
+are written as escapes.
+
 **Not changed.** Any agent but an Orchestrator can still move a ticket back to
 Coding from past Ryan's approval (PR to main, AI testing in staging/prod, Patch
 notes), with a note; `stageRefusal` allows it and tells the user. Whether it should
