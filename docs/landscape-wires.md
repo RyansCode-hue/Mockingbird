@@ -9340,3 +9340,134 @@ text), `after-w4a-100.png`, `before-`/`after-w6-1440.png` (Attached and the fade
   - a step started from the tree's row, and from ⌘K's;
   - `OFF_TERMINALS` matching nothing.
 - W9/W17's L12 was also undone once (the area always taken back): its test failed.
+
+## 1.7.0 follow-ups (screens) review fixes as built
+
+The review's M1 and L1–L9, rebased onto main 59921e6 (the main-process follow-ups 2 and their review fixes).
+
+### M1: a ⌘K pick that moves the view (main.tsx, Palette.tsx)
+
+- **The keyboard goes to the landscape, unarmed.** A palette row that moves the view and places no keyboard (a
+  not-started step's card, Go to an area) runs through `viewOnlyPick`. It claims the keyboard at once
+  (`keyboardMoves`), so the closing palette gives none back to the terminal ⌘K was opened from. Once the palette has
+  gone, the landscape takes it, unarmed, as it does for a key typed after a jump whose terminal isn't there. A dialog
+  the pick opened, or one already up, keeps it. With no landscape to take it, it waits on the holder (logged).
+- **The palette's Enter ignores repeats.** Only a fresh press picks a row.
+- Tested from s1's terminal (Tester's card, far away: s1 goes off screen) and from Builder's (Go to #5101), each with
+  `ab` typed, Enter held, then `y`: no write reaches either terminal, the keyboard is on the landscape and `y` says
+  "Click the landscape to use its keys". Enter's repeats alone, in ⌘K, pick nothing; a fresh press does.
+  - Go to an area fits the area, so the terminal ⌘K came from can still be in view. Nothing reaches it either way.
+- Mutations, both caught:
+  - the keyboard hand-off gone: s1 got six `\r` and the `y`;
+  - the repeat guard gone: the repeats picked the row.
+
+### L1: a gate dot keeps off what it would take a click from (wiresModel.ts, WireLayer.tsx)
+
+- `dotPlace` puts a dot at its wire's middle when that's clear. Otherwise it goes along the wire to the nearest clear
+  point, searched both ways from the middle in 1/80 steps. Clear means off the areas' headers and names, pills and
+  ghosts (the mask's rects) and off every workspace (`KEEP_OFF`).
+  - Where only its centre fits (a narrow gap zoomed out), it's drawn but takes no pointer (`data-fit="tight"`).
+  - Where the whole wire is beneath them, the dot is hidden (`under`).
+  - `dotAt` and the popover's anchor use where it was put.
+- The dots stay over the workspaces, so one placed is always pressable. W4a's L6 had a dot drawn over the workspace
+  lying on it. It's now moved off that workspace instead, and the old dotover test (Dev server's `translate` set by
+  hand, then a click on the dot) is replaced by the two below.
+- **Tests:**
+  - `?lsAcross` lays a ready handoff from Shape export to Reviewer, straight under Builder. Its middle is on Builder's
+    terminal: the terminal is on top there, a real click there gives Builder's terminal the keyboard and opens no
+    popover, and the dot, out between the workspaces, opens "Shape donor export → Reviewer".
+  - `dotover`: Dev server dragged and held with its ⋯ on Reviewer → Builder's middle. The dot moves along the wire
+    (on it, more than 8 px) off Dev server. Esc puts Dev server back, the dot back at the middle, and a click opens
+    its popover.
+    - A dragged workspace is lifted over the dots (z-index 6), so "the ⋯ is on top" proves nothing alone there. The
+      test checks the dot's box against the ⋯ and Dev server instead.
+    - Let go there, Dev server would be pushed off its neighbours, and the wire with them. So the test holds the drag.
+  - Unit: `dotPlace` (clear, moved along, tight, under).
+- The review's p3 sets Dev server's `translate` by hand. Every real move calls the wires' `follow()` (a drag's moves,
+  its release), but setting it by hand doesn't, so no repaint follows. p3 as written still finds the dot over the ⋯,
+  at the place it was last painted. The tests above use real layouts and real drags instead.
+- Mutation (the dot always at the middle): caught by both tests.
+
+### L2: side-by-side wires' labels (wiresModel.ts, WireLayer.tsx, styles.css)
+
+- `labelHangs` hangs each label from its dot (or its middle).
+  - A wire alone keeps its bend's side: above a side-to-side run, right of a top-to-bottom one, below a loop.
+  - In a lane set, the first half hang to the outer side one way (above, or left), the rest the other way (below, or
+    right). The middle one of an odd set keeps its bend's side.
+  - Each is then moved (up for one hung above, down for the rest) until it's clear of the set's labels placed before it
+    and the set's other dots.
+- The CSS hangs by `data-hang`; `labelBox` mirrors it.
+- Tested with `?lsTwin`: a second handoff from Builder to Reviewer beside the one sending. Their labels hang above and
+  below, and no shown label meets another or any dot. Unit: `labelHangs` (alone, two side to side, two top to bottom,
+  three with no overlaps), and `wireCurves`' `lane`.
+
+### L3: a stale jump keeps the tab the user went to (main.tsx)
+
+- A superseded jump shows its tab only while the user is still on the tab it was asked from (a Dashboard ticket's
+  Start), or on the Dashboard. `tabAt(since)` reads that from a short log of tab changes, each with the input stamp
+  of when it came.
+- Tested: Start preset, then the Settings tab clicked while main is slow. Settings stays. The Dashboard case still
+  passes.
+
+### L4, L5: reveals that can't happen say so (Landscape.tsx, main.tsx)
+
+- A reveal dropped for input meanwhile says "“X” is in #… (or loose on the landscape): you'd moved on meanwhile, so
+  the view stayed where it was", unless it's already in view.
+- ⌘K lists the steps the landscape draws (`plannedIn(landscapeLayout)`, as the area tree does).
+- A reveal that gives up says "That couldn't be shown: it isn't on the landscape" as well as logging it.
+- Not tested directly. Every not-started step is drawn (it always has a place), so the preview has no way to ask for a
+  step the landscape doesn't draw. The palette's steps are now the tree's, which the step list test lists.
+
+### L6, L7: the anchored popover (Popover.tsx, styles.css)
+
+- **L6.** Moved once open, its controls look off (`mb-settling`, opacity .35, `useHeldOff`'s rule) for the
+  `ANSWER_SETTLE_MS` in which a click there is let go.
+- **L7.** Flipped above a box in a short window, its height is capped at the room above the box (`hung.top - 12`). It
+  scrolls rather than covering its dot.
+- Tested:
+  - growing: a button's look before the move, during the settle and after;
+  - a 1600×430 window: opened and grown, the popover is above the dot and scrolls.
+
+### L8: Connect… (Landscape.tsx)
+
+- A not-started step is "(not started)", not "(closed)". Tested in the step test's Connect… from Shape export.
+
+### L9: the model catalog's Try again (TemplatePicker.tsx)
+
+- While it reads again, it's off, says "Reading…" and is `aria-busy`. A second press asks nothing: `readingNow` is
+  set as it's pressed, not when the read starts.
+- Tested with `?lsModelsMs=700` (main slow to answer): busy while reading, two presses make one read, Try again after.
+
+### On main's lay-out areas (rebase)
+
+- Main now makes a lay-out's area and takes it back when refused (`TemplateLayOuts`, follow-ups 2). The window's own
+  keep-or-take-back from W9/W17's L12 conflicted with it and went in the rebase, with its `sessionsIn`.
+- Main takes the area back even when a step it couldn't take back is left in it. That step then had no card at all:
+  nothing read the steps again. A refused lay-out now reads them again (`readClosed`), so the step left is drawn loose,
+  where the refusal says to forget it from its menu. The template notes test says so.
+- Open: whether main should keep an area that still holds a step it couldn't take back, as L12 did in the window. It's
+  `templates.ts`'s `takeBack`, outside the screens' files.
+
+### Checked
+
+- On main 59921e6: `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test`, with the main checkout's `vitest` linked in for `leakGuard` (removed after): 198 files pass, 37
+  skip, 1 fails; 3,706 tests pass, 379 skip, 1 fails. The one is `peerCheck`'s "costs one ps and one lsof a call"
+  (2,040 ms against 2,000, with the machine's load average about 14). Rerun alone, 36 of 36 pass.
+- The affected UI files, one at a time:
+  - `uiLandscapeWires`: 40 of 44 in the full run. The other 4 were send popover tests that ran after the page stopped
+    answering (load average 10–14). Rerun alone, 4 of 4 pass.
+  - `uiLandscapeNeeds` 26 of 26;
+  - `uiLandscape` 12 of 12;
+  - `uiTemplatePicker` 8 of 8;
+  - `uiLandscapeFirstRun` with `-t "palette|jump|keyboard|flight|preset|Settings"`, 51 of 51;
+  - the files that cover ⌘K (`uiContextWarning`, `uiLandscapeSwitch`, `uiLandscapeGhosts`, `uiLandscapeClosed`), one
+    file at a time: 26 of 26.
+- Mutation checks, all caught:
+  - M1's keyboard hand-off gone;
+  - M1's repeat guard gone;
+  - L1's placement gone, against both dot tests.
+- L2–L9 weren't mutation-checked, as asked. A refused lay-out's re-read was: before it was added, the template notes
+  test found no card for the step left.
+- A headless Chrome of `?lsPlan&landscapePlanAudit=plan`, orphaned 12 hours before this round and not started by it,
+  was left running.
