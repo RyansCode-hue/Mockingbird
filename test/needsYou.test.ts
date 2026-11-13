@@ -15,6 +15,7 @@ import {
   needsByArea,
   needsItems,
   needsLabel,
+  planItems,
   selectionAfter,
   shownItems,
   stepItem,
@@ -27,6 +28,7 @@ import {
   type NeedsWires,
 } from "../src/renderer/needsYouModel";
 import { needsActions, TAKEN_BACK_WHY } from "../src/renderer/workspaceActions";
+import type { PlanView } from "../src/shared/plans";
 
 const MIN = 60_000;
 const NOW = 1_800_000_000_000;
@@ -676,5 +678,68 @@ describe("Finish step… on a finished step's item (W5)", () => {
     expect(needsActions({ go: vi.fn<() => void>(), goTitle: "", dismiss: vi.fn() }).map((r) => r.key)).toEqual(["go", "dismiss"]);
     const off = needsActions({ go: vi.fn<() => void>(), goTitle: "", dismiss: vi.fn(), finish: { no: "It's still working" } })[1];
     expect([off.disabled, off.title]).toEqual([true, "It's still working"]);
+  });
+});
+
+// ---- W17: an Orchestrator's held plan, under W5's row rules ----
+
+describe("an Orchestrator's plan's item (W17)", () => {
+  const orch = () => sess("orch", { title: "Orchestrator", ticketId: "5101", taskGroup: "5101", role: "orchestrator" });
+  const plan = (over: Partial<PlanView> = {}): PlanView => ({
+    id: "pl-1",
+    held: { from: "orch", ticket: "5101", at: NOW - 3 * MIN, plan: { summary: "Stream it.", steps: [{ key: "coder", name: "Coder", agent: "codex", folder: "orchestrator", prompt: "Implement {ticket}." }], wires: [] } },
+    me: { id: "orch", title: "Orchestrator", kind: "agent", agent: "claude", repo: "/r", branch: "b", ticket: "5101", refusal: null },
+    ticketTitle: "Stream the donor export",
+    area: "5101",
+    room: null,
+    existing: {},
+    installed: ["claude", "codex"],
+    repos: ["/r"],
+    problem: null,
+    newer: null,
+    ...over,
+  });
+
+  it("says in Mockingbird's words who proposes how many workspaces, in its Orchestrator's area", () => {
+    const [item] = planItems([plan()], [orch()], areaKeyOf);
+    expect(item).toMatchObject({ id: "plan:orch", kind: "plan", area: "5101", session: "orch", text: "Orchestrator proposes 1 workspace · #5101", plan: { id: "pl-1", face: "ready" } });
+    expect(item.label).toBeUndefined();
+  });
+
+  it("has its face in its state: a plan that can't be laid out as it stands is a row of its own, labelled so", () => {
+    const [ready] = planItems([plan()], [orch()], areaKeyOf);
+    const [blocked] = planItems([plan({ problem: "\u201cCoder\u201d works in a folder that has gone." })], [orch()], areaKeyOf);
+    expect([ready.sig, blocked.sig]).toEqual(["plan:pl-1|ready", "plan:pl-1|blocked"]);
+    expect([blocked.id, blocked.label, blocked.plan?.face]).toEqual(["plan:orch", "Plan blocked", "blocked"]);
+    // a state dismissed blocked doesn't hide it ready
+    expect(shownItems([ready], [{ sig: blocked.sig, at: NOW }])).toEqual([ready]);
+    // a newer plan is a new state too
+    expect(planItems([plan({ id: "pl-2" })], [orch()], areaKeyOf)[0].sig).toBe("plan:pl-2|ready");
+  });
+
+  it("ranks with the prompts and wires, beside them", () => {
+    const wires = wiresOf({ loop: link("reviewer", "builder", "feedback", { rounds: { limit: 3, used: 1 }, pending: pending("p", NOW - 30 * MIN) }) });
+    const got = needsItems([...fixture(), orch()], [], areaKeyOf, (x) => x.title, {}, wires, [plan()]);
+    // newest first within the rank: the plan, 3 minutes old, before the older prompt
+    expect(got.map((i) => i.kind)).toEqual(["question", "plan", "permission", "wire", "finished", "finished"]);
+  });
+
+  it("is Open and Dismiss…, each opening the dialog; off, saying why, once the plan isn't listed", () => {
+    const open = vi.fn();
+    const turnDown = vi.fn();
+    const acts = needsActions({ go: { no: "" }, goTitle: "", dismiss: vi.fn(), open: { can: open, title: "Open the plan" }, dismissRequest: turnDown, dismissTitle: "Turn the plan down, with a note for its Orchestrator: nothing is made" });
+    expect(acts.map((a) => [a.key, a.label, !!a.primary, !!a.disabled, a.title])).toEqual([
+      ["open", "Open", true, false, "Open the plan"],
+      ["dismissRequest", "Dismiss\u2026", false, false, "Turn the plan down, with a note for its Orchestrator: nothing is made"],
+    ]);
+    acts[0].onPick();
+    acts[1].onPick();
+    expect([open.mock.calls.length, turnDown.mock.calls.length]).toEqual([1, 1]);
+    const gone = { no: "That plan isn't held any more: it was laid out, dismissed or replaced." };
+    const off = needsActions({ go: { no: "" }, goTitle: "", dismiss: vi.fn(), open: { can: gone, title: "Open the plan" }, dismissRequest: gone, dismissTitle: "x" });
+    expect(off.map((a) => [a.key, !!a.disabled, a.title])).toEqual([
+      ["open", true, gone.no],
+      ["dismissRequest", true, gone.no],
+    ]);
   });
 });

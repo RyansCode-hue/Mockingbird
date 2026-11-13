@@ -2408,16 +2408,24 @@ function App() {
     const ask = item.typing;
     const pl = item.pipeline;
     // an Orchestrator's plan (W17): Open shows it in the template picker, Dismiss… there with a note to its agent
-    const plan = item.plan ? plansRead.plans.find((v) => v.id === item.plan!.id) : undefined;
-    if (plan)
+    if (item.plan) {
+      const plan = plansRead.plans.find((v) => v.id === item.plan!.id);
+      const openPlan = (dismissing: boolean) => (plan ? () => setPlanFor({ view: plan, dismissing }) : { no: "That plan isn't held any more: it was laid out, dismissed or replaced." });
       return needsActions({
-        open: { can: () => setPlanFor({ view: plan, dismissing: false }), title: "Open the plan in the template picker, all of it editable: nothing is made until you lay it out" },
-        dismissRequest: () => setPlanFor({ view: plan, dismissing: true }),
+        open: {
+          can: openPlan(false),
+          title:
+            item.plan.face === "blocked" && plan?.problem
+              ? `Open the plan in the template picker: as it stands it can't be laid out (${plan.problem}), so change it there, or dismiss it`
+              : "Open the plan in the template picker, all of it editable: nothing is made until you lay it out",
+        },
+        dismissRequest: openPlan(true),
         dismissTitle: "Turn the plan down, with a note for its Orchestrator: nothing is made",
         go: { no: "" },
         goTitle: "",
         dismiss: () => needs.dismiss(item),
       });
+    }
     return needsActions({
       ...wireNeeds.envOf(item),
       open: pl

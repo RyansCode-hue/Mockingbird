@@ -54,8 +54,11 @@ export interface NeedsItem {
   merge?: { ticket: string; url: string } | null;
   /** The tray's label for its kind, where it says more than KIND_LABEL's: a wire's says where its gate stands. */
   label?: string;
-  /** An Orchestrator's plan's item (W17): the held plan, which Open shows in the template picker. Nothing of it exists yet. */
-  plan?: { id: string };
+  /**
+   * An Orchestrator's plan's item (W17): the held plan, which Open shows in the template picker (nothing of it exists
+   * yet), and its face: whether it can be laid out as it stands.
+   */
+  plan?: { id: string; face: PlanFace };
   /** What it says: "API: last org per user wants to use Bash". */
   text: string;
   /** The code-like part of `text` to set apart (the tool), or null. */
@@ -330,18 +333,23 @@ export function namedSendRefusal(item: Pick<NeedsItem, "wire">, live: Wire | und
   return null;
 }
 
+/** A plan item's face: `ready` to lay out as it stands, or `blocked` (main's checks on the sessions now refuse it). */
+export type PlanFace = "ready" | "blocked";
+
 /**
  * Each held plan's item (W17): an Orchestrator's plan waiting for you to lay it out or dismiss it, in its Orchestrator's
  * area. What it says is Mockingbird's words and the Orchestrator's title: the plan's own text stays in the dialog that
- * Open shows, marked as its agent's. A newer plan (a new id) is a new state.
+ * Open shows, marked as its agent's. A newer plan (a new id) is a new state, and so is its face, which its label says:
+ * the row is a new one, settling again, when the plan becomes one that can or can't be laid out as it stands.
  */
 export function planItems(plans: readonly PlanView[], sessions: readonly SessionInfo[], areaOf: (s: SessionInfo) => string): NeedsItem[] {
   return plans.map((v) => {
     const s = sessions.find((x) => x.id === v.me.id && !notMine(x));
     const steps = v.held.plan.steps.length;
+    const face: PlanFace = v.problem ? "blocked" : "ready";
     return {
       id: `plan:${v.me.id}`,
-      sig: `plan:${v.id}`,
+      sig: `plan:${v.id}|${face}`,
       kind: "plan",
       at: v.held.at,
       area: s ? areaOf(s) : v.area,
@@ -349,7 +357,8 @@ export function planItems(plans: readonly PlanView[], sessions: readonly Session
       join: null,
       typing: null,
       pipeline: null,
-      plan: { id: v.id },
+      plan: { id: v.id, face },
+      ...(face === "blocked" ? { label: "Plan blocked" } : {}),
       text: `${v.me.title} proposes ${steps} ${steps === 1 ? "workspace" : "workspaces"}${v.held.ticket ? ` · #${v.held.ticket}` : ""}`,
       code: null,
     };
