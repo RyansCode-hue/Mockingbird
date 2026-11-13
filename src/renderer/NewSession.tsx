@@ -45,6 +45,7 @@ export function NewSessionModal({
   onJoinRoom,
   onClose,
   onCreated,
+  onMode,
   nextStep,
   onPlanned,
 }: {
@@ -73,9 +74,12 @@ export function NewSessionModal({
   onClose: () => void;
   /**
    * The session started. `since`: the user's input as they pressed Start (keyArm.ts's `inputStamp`), for the jump to
-   * it, which waited on main: typed past meanwhile, it leaves the keyboard where it is.
+   * it, which waited on main: typed past meanwhile, it leaves the keyboard where it is. `resumed`: it's a conversation
+   * resumed from Import, not a session started fresh.
    */
-  onCreated: (s: SessionInfo, since?: number) => void;
+  onCreated: (s: SessionInfo, since?: number, resumed?: boolean) => void;
+  /** New or Import chosen, as it opens and each time it changes. */
+  onMode?: (mode: "new" | "import") => void;
   /**
    * Add next step (W8): the dialog makes a step not started yet after `from`, joined to it by a handoff wire (main's
    * sessions:plan), rather than starting a session. It's named here, runs Claude or Codex, and works in a folder of its
@@ -93,6 +97,7 @@ export function NewSessionModal({
   // (a group, a room) is chosen here as for a new one
   const [mode, setMode] = useState<"new" | "import">(initialMode ?? "new");
   const importing = mode === "import" && !planning;
+  useEffect(() => onMode?.(importing ? "import" : "new"), [importing]);
   // Add next step's own fields: the step's name, what it's told as it starts, and whether it works in `from`'s folder
   const [stepName, setStepName] = useState("");
   const [stepPrompt, setStepPrompt] = useState("");
@@ -279,7 +284,7 @@ export function NewSessionModal({
   // reuses it, so one Start never shares the group twice
   const made = useRef<MadeRoom | null>(null);
   // a session started in a room made here: the room's invite code shows before the dialog closes
-  const [done, setDone] = useState<{ info: SessionInfo; room: MadeRoom } | null>(null);
+  const [done, setDone] = useState<{ info: SessionInfo; room: MadeRoom; resumed: boolean } | null>(null);
 
   /**
    * Start a session with `start`. For + New room the group is shared first,
@@ -288,6 +293,7 @@ export function NewSessionModal({
    */
   const startIn = async (what: string, start: () => Promise<SessionInfo | { error: string }>) => {
     const since = inputStamp();
+    const resumed = importing;
     const r = await run(what, async () => {
       let madeHere = intoNewRoom && plan.kind !== "unnamed" && made.current?.key === plan.key ? made.current : null;
       if (newRoom && !madeHere) {
@@ -300,8 +306,8 @@ export function NewSessionModal({
       return { info, room: madeHere };
     });
     if (isErr(r)) return;
-    if (r.room) setDone({ info: r.info, room: r.room });
-    else onCreated(r.info, since);
+    if (r.room) setDone({ info: r.info, room: r.room, resumed });
+    else onCreated(r.info, since, resumed);
   };
 
   // a closed Mockingbird session is restored as it was; any other conversation
@@ -482,12 +488,12 @@ export function NewSessionModal({
     return (
       <Modal
         className="modal ns"
-        onClose={() => onCreated(done.info)}
+        onClose={() => onCreated(done.info, undefined, done.resumed)}
         closeOnBackdrop={false}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            onCreated(done.info);
+            onCreated(done.info, undefined, done.resumed);
           }
         }}
       >
@@ -509,7 +515,7 @@ export function NewSessionModal({
           </section>
         </div>
         <div className="ns-foot end">
-          <button className="outline" onClick={() => onCreated(done.info)}>
+          <button className="outline" onClick={() => onCreated(done.info, undefined, done.resumed)}>
             Done <span className="kbd">⌘↵</span>
           </button>
         </div>

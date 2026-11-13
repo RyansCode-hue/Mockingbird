@@ -116,7 +116,7 @@ import { isRemote } from "./team/RoomLive";
 import { namedSendRefusal, typingAsksOf } from "./needsYouModel";
 import { cameraMoved } from "./answerGuard";
 import { WireLayer, rereadWires, useWires, wiresNow, type WireLayerHandle } from "./WireLayer";
-import { WIRE_TYPE_NAME, commonReason, finishLines, finishedLine, gateContextOf, gateView, noChoice, plannedLine, plannedShort, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
+import { WIRE_TYPE_NAME, commonReason, finishLines, finishedLine, gateContextOf, gateView, mateWireNote, noChoice, plannedLine, plannedShort, shiftedBox, wireBanners, wireChoices, wireCurve, wireTargets, wireViews, type WireChoice, type WireRoom } from "./wiresModel";
 import { WireSettingsPopover, WireTypePicker, type WirePick, type WireSettingsProps } from "./WireMaking";
 import { WirePopover } from "./WirePopover";
 import { FinishStepPopover, type WireActs } from "./FinishStep";
@@ -1777,7 +1777,8 @@ export function Landscape({
       // the release's click lands on nothing: not a button on the workspace it was dropped on
       swallowClick();
       const to = wireTargetAt(e);
-      if (!from || (to && to.key === from.key)) return;
+      // dropped on its own workspace: nothing, unless on another tab of its stack, which the rules take as any session
+      if (!from || (to && to.key === from.key && to.s.id === from.front.id)) return;
       if (to) return offerWire(from.front, to.s, { x: e.clientX, y: e.clientY });
       // dropped into the landscape's space (not on a window, a card, a pill or what floats over it): Add next step, there
       if (!spaceAt(e)) return;
@@ -2316,7 +2317,10 @@ export function Landscape({
   const makeWire = async (c: WireChoice) => {
     setWirePick(null);
     const no = await wireCall("make the wire", () => window.mb.wiresAdd(c.from, c.to, c.type));
-    if (no) say(no);
+    if (no) return say(no);
+    // between two tabs of one stack it has nowhere to run on the landscape (wireViews): where it shows is said
+    const holds = (t: Tile, id: string) => t.members.some((m) => m.id === id) || !!t.closed?.some((m) => m.id === id);
+    if (layoutNow.current.tiles.some((t) => holds(t, c.from) && holds(t, c.to))) say(mateWireNote(named(c.from), named(c.to), c.type));
   };
   const removeWire = async (id: string, title: string) => {
     const no = await wireCall("remove the wire", () => window.mb.wiresRemove(id));
@@ -2353,7 +2357,7 @@ export function Landscape({
             me.title,
             rows.map((r) => ({
               id: r.t.s.id,
-              title: r.t.closed ? `${titleOf(r.t.s)} (closed)` : titleOf(r.t.s),
+              title: r.t.closed || r.t.mate ? `${titleOf(r.t.s)} (${[r.t.closed && "closed", r.t.mate && "in this stack"].filter(Boolean).join(", ")})` : titleOf(r.t.s),
               area: r.t.area === LOOSE_GROUP ? "Loose" : areaTitle(r.t.area),
               refused: r.refused,
               pick: () => setWirePick({ from: me, to: { id: r.t.s.id, title: titleOf(r.t.s) }, at: { ...at }, choices: r.choices }),
@@ -2556,9 +2560,10 @@ export function Landscape({
     const z = cam.current.zoom;
     const inset = bandNow.current === "cards" ? GHOST_INSET / z : 0;
     const to = wireTargetAt(e);
-    const onto = to && to.key !== from.key ? to : null;
+    // another tab of its own stack is somewhere a wire can go: its stack is outlined, the line runs to the pointer
+    const onto = to && (to.key !== from.key || to.s.id !== from.front.id) ? to : null;
     const p = atPoint(e);
-    const c = wireCurve(shiftedBox(from.rect, undefined, inset), onto ? shiftedBox(onto.rect, undefined, inset) : { x: p.x, y: p.y, w: 0, h: 0 }, 1 / z);
+    const c = wireCurve(shiftedBox(from.rect, undefined, inset), onto && onto.key !== from.key ? shiftedBox(onto.rect, undefined, inset) : { x: p.x, y: p.y, w: 0, h: 0 }, 1 / z);
     svg.style.setProperty("--ls-inv", String(1 / z));
     svg.style.display = c ? "" : "none";
     if (c) svg.querySelector("path.draft")?.setAttribute("d", c.d);

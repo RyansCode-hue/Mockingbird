@@ -459,26 +459,40 @@ export function plannedShort(id: string, links: Readonly<Record<string, Wire>>, 
 
 const handoffInto = (id: string, links: Readonly<Record<string, Wire>>) => wiresInOrder(links).find(([, w]) => w.to === id && w.type === "handoff");
 
-/** A session a wire can be made to from the landscape: a workspace's (each tab of a stack), or a ghost's. */
+/**
+ * A session a wire can be made to from the landscape: a workspace's (each tab of a stack, a closed one's too), or a
+ * ghost's. `mate`: a tab of `from`'s own stack, where a wire has nowhere to run and isn't drawn (wireViews).
+ */
 export interface WireTarget {
   s: SessionInfo;
   area: string;
   closed: boolean;
+  mate: boolean;
 }
 
 /**
- * Every session drawn on the landscape but those in `from`'s own workspace: what Connect… lists, area by area, `from`'s
- * own area first, each area's running workspaces before its ghosts, in layout order.
+ * Every session on the landscape but `from` itself, as the rules take them (wireRefusal knows no stacks): each
+ * workspace's tabs, a stack's closed tabs and ghosts', `from`'s own stack-mates included (an agent stacked with its
+ * terminal shares its worktree), what's in a collapsed area left out. What Connect… lists, area by area: `from`'s own
+ * area first, its stack-mates at its head; then each area's running tabs, closed tabs and ghosts, in layout order.
  */
 export function wireTargets(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, from: string): WireTarget[] {
-  const own = layout.tiles.find((t) => t.members.some((m) => m.id === from));
+  const own = layout.tiles.find((t) => t.members.some((m) => m.id === from) || t.closed?.some((m) => m.id === from));
+  const others = layout.tiles.filter((t) => t !== own && !t.hidden);
+  const of = (list: readonly SessionInfo[], area: string, closed: boolean, mate: boolean): WireTarget[] => list.filter((s) => s.id !== from).map((s) => ({ s, area, closed, mate }));
   const all = [
-    ...layout.tiles.filter((t) => t !== own && !t.hidden).flatMap((t) => t.members.map((s) => ({ s, area: t.area, closed: false }))),
-    ...layout.ghosts.filter((g) => !g.hidden).flatMap((g) => g.members.map((s) => ({ s, area: g.area, closed: true }))),
+    ...(own && !own.hidden ? [...of(own.members, own.area, false, true), ...of(own.closed ?? [], own.area, true, true)] : []),
+    ...others.flatMap((t) => of(t.members, t.area, false, false)),
+    ...others.flatMap((t) => of(t.closed ?? [], t.area, true, false)),
+    ...layout.ghosts.filter((g) => !g.hidden).flatMap((g) => of(g.members, g.area, true, false)),
   ];
   const order = [...new Set([...(own ? [own.area] : []), ...all.map((t) => t.area)])];
   return order.flatMap((a) => all.filter((t) => t.area === a));
 }
+
+/** What the note says once a wire between two tabs of one stack is made: it isn't drawn, and where it shows. */
+export const mateWireNote = (from: string, to: string, type: WireType): string =>
+  `${from} → ${to} (${WIRE_TYPE_NAME[type].toLowerCase()}) is made. They're tabs of one stack, so it isn't drawn on the landscape: the pipeline strip shows it in focus`;
 
 // ---- wires that went with a session ----
 

@@ -28,7 +28,8 @@
  * - =menus (at 100%): Connect…'s rows, a wire's right-click, its settings changed, and its Remove and Undo;
  * - =pick and =settings: the picker, and Reviewer → Tester's settings, left open for a screenshot (synthetic events);
  * - =fresh (with ?lsSpikeGone): Start fresh from Spike's ghost, its handoff from Fixtures moved to the fresh session, or
- *   with `&freshAs=terminal` refused, gone with Spike and said.
+ *   with `&freshAs=terminal` refused, gone with Spike and said; with `&freshAs=import`, the dialog's Import resuming a
+ *   conversation instead: Spike keeps its wires and its place.
  * - =template (with ?lsTemplates, at 100%): W9's picker and Save as template (templateAudit); =tpick, =tpickroom and
  *   =tsave leave the picker (its ticket's area new, or a team room's) and Save as template open for a screenshot;
  * - =step (with ?lsPlanned, at 100%): W8's not-started Tester and Add next step, from a handle clicked and from one
@@ -624,6 +625,23 @@ async function menusAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
   await drive([{ mouse: { ...mid(document.querySelector(".ls-note .ls-note-act")), clickCount: 1 } }]);
   await sleep(400);
   out.remove = { removed, restore: since(mark, "wiresRestore"), drawn: !!document.querySelector(`.ls-wires g[data-wire="${W("held")}"]`) };
+  // Connect… from the docs stack's front tab, Fixtures: Docs, its stack-mate, is there to wire to, said as in this stack;
+  // a context link made to it (its picker's ↓ and ↵) isn't drawn, and the note says where it shows
+  await sleep(600);
+  const stackHead = stackEl()?.querySelector(".ls-head .ls-spacer") ?? stackEl()?.querySelector(".ls-head");
+  await drive([{ mouse: { ...mid(stackHead), clickCount: 1, button: "right" } }]);
+  await sleep(200);
+  await drive([{ mouse: { ...mid(menuRow("Connect…")), clickCount: 1 } }]);
+  await sleep(300);
+  const rows = menuNow();
+  mark = env.calls.length;
+  const mate = menuRow("Docs (in this stack)");
+  if (mate) await drive([{ mouse: { ...mid(mate), clickCount: 1 } }]);
+  await sleep(800);
+  const picker = pickerNow();
+  await drive([{ key: "ArrowDown" }, { pause: 1200 }, { key: "Enter" }]);
+  await sleep(800);
+  out.stackConnect = { rows, picker, made: since(mark, "wiresAdd"), drawn: document.querySelectorAll(".ls-wires g.ls-wire").length, note: noteNow() };
 }
 
 /** A point `f` of the way along wire `id`'s line, on screen. */
@@ -779,8 +797,18 @@ async function freshAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
   ghost()?.querySelector<HTMLButtonElement>('[data-act="fresh"]')?.click();
   await sleep(600);
   const dlg = document.querySelector<HTMLElement>(".modal.ns");
-  if (new URLSearchParams(location.search).get("freshAs") === "terminal") {
+  const as = new URLSearchParams(location.search).get("freshAs");
+  if (as === "terminal") {
     [...(dlg?.querySelectorAll<HTMLButtonElement>(".ns-launch button") ?? [])].find((b) => b.textContent === "Terminal")?.click();
+    await sleep(300);
+  }
+  let shownWhileImporting: boolean | null = null;
+  if (as === "import") {
+    [...(dlg?.querySelectorAll<HTMLButtonElement>(".ns-mode button") ?? [])].find((b) => b.textContent?.trim() === "Import")?.click();
+    await sleep(500);
+    // on Import, the ghost is drawn again: a resumed conversation won't take its place
+    shownWhileImporting = !!ghost();
+    dlg?.querySelector<HTMLElement>(".ns-list .item:not(.blocked)")?.click();
     await sleep(300);
   }
   dlg?.querySelector<HTMLButtonElement>("button.primary.cta")?.click();
@@ -791,6 +819,7 @@ async function freshAudit(env: WiresAuditEnv, out: Record<string, unknown>): Pro
   out.fresh = {
     dialog: !!dlg,
     made: fronts().find((id) => !before.has(id)) ?? null,
+    shownWhileImporting,
     ghost: !!ghost(),
     wire: w ? { from: w.from, to: w.to } : null,
     onSpike: Object.values(links).filter((x) => x.from === W("spike") || x.to === W("spike")).length,

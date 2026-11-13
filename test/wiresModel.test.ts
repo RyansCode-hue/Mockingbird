@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PILL_SIZE, resolveLayout } from "../src/renderer/landscapeModel";
-import { LANE_PX, anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, finishLines, finishedLine, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireCurves, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
+import { LANE_PX, anchorOf, commonReason, curveDistance, defaultChoice, droppedNote, mateWireNote, finishLines, finishedLine, gateContextOf, gateView, mergePrsOf, noChoice, pillBox, plannedLine, plannedShort, shiftedBox, togglePart, translateOf, whose, wireBanners, wireChoices, wireCurve, wireCurves, wireNear, unmovedNote, wireTargets, wireViews, worktreeLine, type WireView } from "../src/renderer/wiresModel";
 import { chainOf, stepEnds, stepNote } from "../src/renderer/pipelineChain";
 import { mergeViewOf } from "../src/main/prWatch";
 import { emptyLandscape, type Landscape } from "../src/shared/landscape";
@@ -337,19 +337,27 @@ describe("making a wire", () => {
     expect(noChoice(wireChoices(end("builder"), end("notes"), ctxOf()))).toBeNull();
   });
 
-  it("lists, for Connect…, every other workspace drawn, its own area's first, each area's ghosts after its workspaces", () => {
+  it("lists, for Connect…, every other session the rules take, its own area's first, each area's closed tabs and ghosts after its workspaces", () => {
     const t = wireTargets(layout, "tester");
-    expect(t.map((x) => [x.s.id, x.area, x.closed])).toEqual([
-      ["builder", "a", false],
-      ["reviewer", "a", false],
-      ["docs", "a", false],
-      ["notes", "a", false],
-      ["dev", "a", false],
-      ["spike", "a", true],
-      ["pathways", "b", false],
+    expect(t.map((x) => [x.s.id, x.area, x.closed, x.mate])).toEqual([
+      ["builder", "a", false, false],
+      ["reviewer", "a", false, false],
+      ["docs", "a", false, false],
+      ["notes", "a", false, false],
+      ["dev", "a", false, false],
+      ["spike", "a", true, false],
+      ["pathways", "b", false, false],
     ]);
-    // a stack's tab lists neither itself nor its own stack's other tab; a collapsed area's aren't drawn
-    expect(wireTargets(layout, "docs").map((x) => x.s.id)).not.toContain("notes");
+    // a stack's tab lists its own stack-mates first, as the rules take them (an agent stacked with its terminal shares
+    // its worktree), but never itself; a collapsed area's aren't drawn
+    expect(wireTargets(layout, "docs").slice(0, 1).map((x) => [x.s.id, x.mate])).toEqual([["notes", true]]);
+    expect(wireTargets(layout, "docs").map((x) => x.s.id)).not.toContain("docs");
+    expect(noChoice(wireChoices(end("docs"), end("notes"), ctxOf()))).toBeNull();
+    // a stack's closed tab, which a drag can drop on, is listed too: a closed tab of its own stack among its mates
+    const withClosed = resolveLayout(stored(), running.filter((s) => s.id !== "notes"), undefined, [], null, [...closed, session("notes", { taskGroup: "a/st", status: "dead" })]);
+    expect(wireTargets(withClosed, "tester").filter((x) => x.s.id === "notes").map((x) => [x.closed, x.mate])).toEqual([[true, false]]);
+    expect(wireTargets(withClosed, "docs").map((x) => [x.s.id, x.closed, x.mate]).slice(0, 1)).toEqual([["notes", true, true]]);
+    expect(mateWireNote("Builder", "Dev server", "worktree")).toBe("Builder → Dev server (shared worktree) is made. They're tabs of one stack, so it isn't drawn on the landscape: the pipeline strip shows it in focus");
     expect(wireTargets(layoutOf(["b"]), "tester").map((x) => x.s.id)).not.toContain("pathways");
     expect(wireTargets(layoutOf(["b"]), "pathways")[0].area).toBe("a");
   });

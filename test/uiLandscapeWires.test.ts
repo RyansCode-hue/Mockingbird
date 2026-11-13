@@ -280,6 +280,7 @@ interface Menus {
   treeMenu: string[];
   settingsBurst: { shown: { open: boolean; keyboard: string }; open: boolean; keyboard: boolean; set: Call[]; removed: Call[]; closed: boolean };
   remove: { removed: { calls: Call[]; note: string; drawn: boolean }; restore: Call[]; drawn: boolean };
+  stackConnect: { rows: string[]; picker: Shown; made: Call[]; drawn: number; note: string | null };
 }
 const TEAMMATE = "That's a teammate's session: wires across Macs come later.";
 
@@ -392,6 +393,13 @@ describe.skipIf(!local)("making wires", () => {
     expect(m.remove.removed).toEqual({ calls: [["wb-held"]], note: "Removed the wire Reviewer → Tester", drawn: false });
     expect(m.remove.restore).toEqual([["wb-held"]]);
     expect(m.remove.drawn).toBe(true);
+    // from a stack's tab, its stack-mate is listed first, as the rules take it; a wire made to it isn't drawn, and the
+    // note says where it shows
+    expect(m.stackConnect.rows.slice(0, 3)).toEqual(["# Connect “Fixtures” to", "# #5120", "Docs (in this stack)"]);
+    expect(m.stackConnect.picker).toMatchObject({ ends: "Fixtures → Docs", keyboard: true });
+    expect(m.stackConnect.made).toEqual([["wb-fixtures", "wb-docs", "context"]]);
+    expect(m.stackConnect.drawn).toBe(8);
+    expect(m.stackConnect.note).toBe("Fixtures → Docs (context link) is made. They're tabs of one stack, so it isn't drawn on the landscape: the pipeline strip shows it in focus");
   }, 150_000);
 });
 
@@ -450,7 +458,7 @@ describe.skipIf(!local)("what wasn't aimed at a wire's popovers or its drag", ()
 });
 
 interface Fresh {
-  fresh: { dialog: boolean; made: string | null; ghost: boolean; wire: { from: string; to: string } | null; onSpike: number; rekey: Call[]; kill: Call[]; note: string | null };
+  fresh: { dialog: boolean; made: string | null; shownWhileImporting: boolean | null; ghost: boolean; wire: { from: string; to: string } | null; onSpike: number; rekey: Call[]; kill: Call[]; note: string | null };
 }
 
 describe.skipIf(!local)("Start fresh", () => {
@@ -473,6 +481,13 @@ describe.skipIf(!local)("Start fresh", () => {
     expect(f.note).toBe(
       "“Spike: streaming”'s wires couldn't move to the fresh session: “new session” isn't the same kind of workspace as “Spike: streaming”, so its wires can't move there. Its wire went with it: Fixtures → Spike: streaming (handoff)."
     );
+  }, 150_000);
+
+  it("leaves the old session its wires and its place when the dialog's Import resumes a conversation instead", async () => {
+    const f = await run("&freshAs=import");
+    expect(f).toMatchObject({ dialog: true, shownWhileImporting: true, ghost: true, wire: { from: "wb-fixtures", to: "wb-spike" }, rekey: [], kill: [] });
+    expect(f.made).toBeTruthy();
+    expect(f.note).toBe("“Why does the org picker reset on save?” was resumed, not started fresh: “Spike: streaming” keeps its wires and its place");
   }, 150_000);
 });
 

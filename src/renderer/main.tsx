@@ -274,6 +274,9 @@ function App() {
   // where the workspace a right-click's New workspace makes goes (resolveLayout); `took` names the session placed
   // there, and it's let go once that session's place is saved, or `until` passes without one
   const [placeHint, setPlaceHint] = useState<(PlaceHint & { created?: boolean; until?: number }) | null>(null);
+  /** New session's dialog is on Import: a conversation resumed there is no fresh start, so it takes no ghost's place. */
+  const [newImporting, setNewImporting] = useState(false);
+  const layoutHint = placeHint?.replaces && !placeHint.took && newImporting ? null : placeHint;
   // several workspaces' Close…: asked once (closeMany), then each closed as its own Close would, one dialog at a time
   const [closeMany, setCloseMany] = useState<SessionInfo[] | null>(null);
   const [closeQueue, setCloseQueue] = useState<string[]>([]);
@@ -826,8 +829,8 @@ function App() {
   );
   const lsPlaced = useMemo(() => (landscapeState ? withoutGone(landscapeState.landscape, knownSessions, lsRenames) : null), [landscapeState, knownSessions, lsRenames]);
   const landscapeLayout = useMemo(
-    () => (landscapeShown && lsPlaced ? resolveLayout(lsPlaced, workSessions, undefined, lsRenames, placeHint, lsClosed) : null),
-    [landscapeShown, lsPlaced, workSessions, lsRenames, placeHint, lsClosed]
+    () => (landscapeShown && lsPlaced ? resolveLayout(lsPlaced, workSessions, undefined, lsRenames, layoutHint, lsClosed) : null),
+    [landscapeShown, lsPlaced, workSessions, lsRenames, layoutHint, lsClosed]
   );
   /** The Closed sessions list: the closed sessions with no ghost on the landscape; all of them until it's laid out. */
   const closedList = useMemo(() => closedListOf(closedSessions, landscapeLayout), [closedSessions, landscapeLayout]);
@@ -2675,6 +2678,7 @@ function App() {
     setNewLaunch("claude");
     setNewSeed({});
     setNextFrom(null);
+    setNewImporting(false);
     freshFrom.current = null;
     // a right-click's place lasts until its session is placed; closed without one, it's let go
     setPlaceHint((h) => (h?.created ? h : null));
@@ -2689,18 +2693,24 @@ function App() {
     lsSay(`Added ${titleOf(s)}${after ? ` after ${titleOf(after)}` : ""}: it starts when ${after ? `${titleOf(after)}'s` : "its"} handoff is sent, or with Start now in its menu`);
   };
 
-  const onCreated = async (s: SessionInfo, since?: number) => {
+  const onCreated = async (s: SessionInfo, since?: number, resumed = false) => {
     // Start fresh: the old session's wires come to this one, before the hint below lets its ghost go. One in its ghost's
     // place: those that can't come go with the ghost, and that's said as it goes; otherwise the old one stays closed and
-    // keeps them, which is said here.
+    // keeps them, which is said here. A conversation resumed from the dialog's Import is no fresh start of it: the old
+    // session keeps its wires and its ghost's place, and the resumed one goes where new workspaces go.
     const was = freshFrom.current;
-    if (was) {
-      const done = moveWires(was, s.id);
-      freshMove.current = { from: was.id, done };
-      const replacing = placeHint?.replaces === was.id && areaKeyOf(s) === placeHint.area;
-      void done.then((why) => why && !replacing && lsSay(`${unmovedNote(titleOf(was), why)}. They stay with it.`));
+    if (was && resumed) {
+      lsSay(`“${titleOf(s)}” was resumed, not started fresh: “${titleOf(was)}” keeps its wires and its place`);
+      setPlaceHint((h) => (h?.replaces === was.id ? null : h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS }));
+    } else {
+      if (was) {
+        const done = moveWires(was, s.id);
+        freshMove.current = { from: was.id, done };
+        const replacing = placeHint?.replaces === was.id && areaKeyOf(s) === placeHint.area;
+        void done.then((why) => why && !replacing && lsSay(`${unmovedNote(titleOf(was), why)}. They stay with it.`));
+      }
+      setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
     }
-    setPlaceHint((h) => h && { ...h, created: true, until: Date.now() + PLACE_HINT_MS });
     // the lone pane joins its new workspace — unless the dialog put the session elsewhere
     const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
     if (lone && pendingWs) {
@@ -3829,6 +3839,7 @@ function App() {
           }}
           onClose={() => setModal(null)}
           onCreated={onCreated}
+          onMode={(m) => setNewImporting(m === "import")}
           nextStep={nextFrom ? { from: nextFrom } : undefined}
           onPlanned={(s) => void onPlanned(s)}
         />
