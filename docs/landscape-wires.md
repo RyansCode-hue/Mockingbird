@@ -9343,7 +9343,8 @@ text), `after-w4a-100.png`, `before-`/`after-w6-1440.png` (Attached and the fade
 
 ## 1.7.0 follow-ups (screens) review fixes as built
 
-The review's M1 and L1–L9, rebased onto main 59921e6 (the main-process follow-ups 2 and their review fixes).
+The review's M1 and L1–L9, rebased onto main dfd76b2 (the main-process follow-ups 2, their review fixes and verify
+follow-ups).
 
 ### M1: a ⌘K pick that moves the view (main.tsx, Palette.tsx)
 
@@ -9450,11 +9451,15 @@ The review's M1 and L1–L9, rebased onto main 59921e6 (the main-process follow-
 
 ### Checked
 
-- On main 59921e6: `npm run typecheck` and `npm run build` pass.
-- `CI=true npm test`, with the main checkout's `vitest` linked in for `leakGuard` (removed after): 198 files pass, 37
-  skip, 1 fails; 3,706 tests pass, 379 skip, 1 fails. The one is `peerCheck`'s "costs one ps and one lsof a call"
-  (2,040 ms against 2,000, with the machine's load average about 14). Rerun alone, 36 of 36 pass.
-- The affected UI files, one at a time:
+- On main dfd76b2: `npm run typecheck` and `npm run build` pass.
+- `CI=true npm test`, with the main checkout's `vitest` linked in for `leakGuard` (removed after):
+  - On dfd76b2: 197 files pass, 37 skip, 2 fail; 3,718 tests pass, 379 skip, 3 fail. The three:
+    - two of `messaging`'s MCP server script tests (a reply that didn't come);
+    - `teamTakeover`'s Codex take-over (a 20 s timeout).
+    The machine's load average was 16–20. Rerun alone, both files pass, 113 of 113.
+  - Before, on 59921e6: one failure, `peerCheck`'s "costs one ps and one lsof a call" (2,040 ms against 2,000). Rerun
+    alone, 36 of 36.
+- The affected UI files, one at a time, on 59921e6. Main's commits since touch no renderer or preview file:
   - `uiLandscapeWires`: 40 of 44 in the full run. The other 4 were send popover tests that ran after the page stopped
     answering (load average 10–14). Rerun alone, 4 of 4 pass.
   - `uiLandscapeNeeds` 26 of 26;
