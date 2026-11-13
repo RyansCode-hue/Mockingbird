@@ -45,9 +45,9 @@ export const CHANGELOG: Release[] = [
     version: "1.8.0",
     date: "2026-11-13",
     items: [
-      n("Settings → Team can switch a room's sandbox off on your Mac: its sessions then push, use gh, your MCP servers and memory like your own"),
-      f("A session that leaves a team room, or whose room's sandbox was switched off, says it keeps the sandbox and offers a restart to lift it"),
-      f("Switching a room's sandbox back on cuts the room off from sessions started without it, Codex's included, until they restart"),
+      n("Settings → Team can run a room's sessions without its sandbox on your Mac: push, gh, MCP and memory work"),
+      f("A session still in a room sandbox it no longer needs says so and offers a restart to lift it"),
+      f("Switching a room's sandbox back on cuts off sessions started without it, Codex too, until they restart"),
     ],
   },
   {
