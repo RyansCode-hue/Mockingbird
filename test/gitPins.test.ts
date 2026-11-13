@@ -10,7 +10,7 @@ import { worktreeState } from "../src/main/worktrees";
 import { guardedGit, logOwnGitFailuresTo, ownFetch, ownNetworkGit, OWN_WRITE_ENV, roomFilters, WRITE_ENV } from "../src/main/safeGit";
 import { takeSnapshot } from "../src/main/snapshots";
 import { searchFiles } from "../src/main/find";
-import { makeRepo, tempDir } from "./helpers";
+import { makeRepo, noAutoMaintenance, tempDir } from "./helpers";
 
 /** git in a room session's folder held to the git data it started on, whatever its agent writes there. */
 
@@ -24,6 +24,7 @@ function setup() {
   const repo = path.join(dir, "repo");
   fs.mkdirSync(repo);
   sh(repo, "init", "-q", "-b", "main");
+  noAutoMaintenance(repo);
   sh(repo, "commit", "-q", "--allow-empty", "-m", "init");
   const wt = path.join(dir, "wt");
   sh(repo, "worktree", "add", "-q", "-b", "5110", wt);

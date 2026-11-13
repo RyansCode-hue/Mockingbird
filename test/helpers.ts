@@ -21,11 +21,21 @@ export function scratchDir(name: string): string {
   return dir;
 }
 
+/**
+ * Turns off the `git maintenance run --auto` a commit starts in `repo` (and a merge, a fetch…). It detaches, holding
+ * .git/objects/maintenance.lock for a moment after the commit returns, so a copy of .git made then can list the lock
+ * and fail when it's gone (cpSync: ENOENT, syscall cp), and it can still be running when the test file ends.
+ */
+export function noAutoMaintenance(repo: string): void {
+  git(repo, "config", "maintenance.auto", "false");
+}
+
 /** A git repo on `main` with the given files committed, in `parent` (a fresh temp folder by default). */
 export function makeRepo(files: Record<string, string> = { "README.md": "hello\n" }, name = "repo", parent = tempDir("code")): string {
   const dir = path.join(parent, name);
   fs.mkdirSync(dir, { recursive: true });
   execFileSync("git", ["-c", "init.defaultBranch=main", "init", "-q", dir]);
+  noAutoMaintenance(dir);
   write(dir, files);
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "initial");

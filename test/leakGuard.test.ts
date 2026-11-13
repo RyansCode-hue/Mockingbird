@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { alive } from "./e2e/processes";
-import { tempDir } from "./helpers";
+import { git, makeRepo, tempDir } from "./helpers";
 import { checkRun, findStrays, killStrays, record } from "./leaks";
 
 const root = path.resolve(__dirname, "..");
@@ -121,4 +121,15 @@ describe("the run's last check", () => {
     expect(pids.filter(alive)).toEqual([]);
     expect([home, scratch].filter((d) => fs.existsSync(d))).toEqual([]);
   }, 60_000);
+});
+
+describe("a fixture repo", () => {
+  it("starts no detached git maintenance when it commits, which would hold a lock in .git/objects as it's copied and could outlive the file", () => {
+    const repo = makeRepo();
+    expect(git(repo, "config", "--get", "maintenance.auto")).toBe("false");
+    const commit = spawnSync("git", ["-C", repo, "commit", "-q", "--allow-empty", "-m", "again"], { encoding: "utf8", env: { ...process.env, GIT_TRACE: "1" } });
+    expect(commit.status).toBe(0);
+    expect(commit.stderr).toContain("built-in: git commit");
+    expect(commit.stderr).not.toContain("maintenance");
+  });
 });
