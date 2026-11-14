@@ -17,7 +17,7 @@ import { WhatsNew } from "./WhatsNew";
 import { LAST_SEEN_KEY, justUpdated, seenNow } from "./whatsNewModel";
 import { DragLabel, installDragListeners } from "./drag";
 import { resumeExited } from "./resumeFlow";
-import { OVERLAYS, inEditor } from "./keys";
+import { OVERLAYS, inEditor, ownsKeys } from "./keys";
 import { closeStep, closeWaits, groupChoices, queueClose, sessionHolding, sessionOutline, startedSince, titleOf, worktreeGone } from "./appModel";
 import { FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, UpdateIcon, NoteIcon } from "./Icons";
 import { ActionBar, pickActions, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
@@ -711,6 +711,8 @@ function App() {
     return !failed("Couldn't move the session", await window.mb.setGroup(id, group));
   };
 
+  /** Jumps so far: a jump still waiting to give its terminal the keyboard yields to a newer one. */
+  const jumpGen = useRef(0);
   /**
    * Show session `s` and give its terminal the keyboard. `since`: the user's input as they asked for it (`inputStamp`),
    * for a jump that waited on main (resuming, starting a preset, opening a search hit): if they typed, pressed or a
@@ -742,14 +744,26 @@ function App() {
     // A palette or menu closing as it's picked gives none back to what had it meanwhile, or a key typed straight after
     // would land in the session left.
     keyboardMoves();
-    // its terminal gets the keyboard as soon as it's there, which can take as long as the view waits for it
+    // Its terminal gets the keyboard as soon as it's there, which can take as long as the view waits for it
     // (REVEAL_WAIT_MS): a stack's tab behind another comes to the front once main has saved that, and a session just
-    // started joins its stack once the session list has it. Past the first retry anything the user does ends it.
+    // started joins its stack once the session list has it. Past the first retry it yields to a newer jump (a
+    // notification's comes with no input here), to anything the user does or a dialog, and to a terminal or a field
+    // that took the keyboard since the jump.
+    const gen = ++jumpGen.current;
     const asked = inputStamp();
+    const held = document.activeElement;
     const until = performance.now() + REVEAL_WAIT_MS;
+    // it ended without its terminal: said once, when that leaves the keyboard on the holder
+    const leftNowhere = () => {
+      if (!s.debrief && keyboardNowhere()) console.warn(`[mockingbird] ${s.id}'s terminal couldn't take the keyboard as it was gone to: it waits on the holder until a click or ⌘E`);
+    };
     const give = (tries = 0) => {
-      if (tries > 0 && stale()) return;
-      if (tries > 1 && inputStamp() !== asked) return;
+      if (jumpGen.current !== gen) return;
+      if (tries > 0) {
+        const a = document.activeElement;
+        if (a !== held && ownsKeys(a) && !termHasKeys(s.id)) return;
+        if (stale() || (tries > 1 && inputStamp() !== asked) || document.querySelector(OVERLAYS)) return leftNowhere();
+      }
       focusTerm(s.id);
       if (termHasKeys(s.id)) return;
       if (tries === 1) {
@@ -757,12 +771,10 @@ function App() {
         // its terminal isn't there to take it yet (the landscape zoomed out past it, or its tab not in front yet): with
         // nothing else holding it, the keyboard waits on the holder (keyArm.ts), where typed keys do nothing and say
         // why, not on the page, where Tab would walk on from the palette
-        if (keyboardNowhere()) {
-          toNowhere();
-          console.warn(`[mockingbird] ${s.id}'s terminal couldn't take the keyboard as it was gone to: it waits on the holder until a click or ⌘E`);
-        }
+        if (keyboardNowhere()) toNowhere();
       }
-      if (tries === 0 || performance.now() < until) setTimeout(() => give(tries + 1), 50);
+      if (tries === 0 || performance.now() < until) return void setTimeout(() => give(tries + 1), 50);
+      leftNowhere();
     };
     // At once, unless something is open over the app (OVERLAYS). A palette or a menu row picked is closing as this runs:
     // looked at again the task after, once it has gone. A dialog still open then (a notification's jump came while one

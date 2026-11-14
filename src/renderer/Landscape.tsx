@@ -108,7 +108,7 @@ import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
 import { OVERLAYS, OVER_TOUR, escapeLeavesFullscreen, ownsKeys } from "./keys";
 import { keyboardClaimed, useKeyboardHome } from "./Modal";
-import { HOLDS_KEYS, KEYS_SWALLOWED, QUIET_KEYS, TYPING_MS, afterPause, armFocus, armOnPress, holdNowhere, inputStamp, isArmed, isNowhere, keyboardNowhere, keyboardSpell, sinceKey, swallowedNote, tabPast, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
+import { DIALOG_OPENED, HOLDS_KEYS, KEYS_SWALLOWED, QUIET_KEYS, TYPING_MS, afterPause, armFocus, armOnPress, holdNowhere, inputStamp, isArmed, isNowhere, keyboardNowhere, keyboardSpell, sinceKey, swallowedNote, tabPast, takeTabChoice, toNowhere, typed, untouched } from "./keyArm";
 import { LandscapeEmpty } from "./LandscapeEmpty";
 import { LandscapeTour } from "./LandscapeTour";
 import { PROBLEM_TITLE, nothingDrawn, sameCamera, tourAreaOf, tourCamera, tourCameraFrom, tourHandleOf, tourSteps, tourWiresTarget, type Box, type EmptyState, type TourTarget } from "./landscapeFirstRun";
@@ -473,9 +473,22 @@ export function Landscape({
   const sel = tileOf(selected);
   const selKey = useRef<string | null>(null);
   selKey.current = sel?.key ?? null;
-  const focusTile = focusKey ? layout.tiles.find((t) => t.key === focusKey) : undefined;
+  /**
+   * The sessions of the workspace in focus, its front first. A workspace whose key changes under focus (a lone one that
+   * + stacks with its new tab, a stack unstacked) stays in focus as the one holding the first of them still open.
+   */
+  const focusHeld = useRef<string[]>([]);
+  const heldBy = (ids: readonly string[]): Tile | undefined => {
+    for (const id of ids) {
+      const t = tileOf(id);
+      if (t) return t;
+    }
+    return undefined;
+  };
+  const focusTile = focusKey ? (layout.tiles.find((t) => t.key === focusKey) ?? heldBy(focusHeld.current)) : undefined;
+  if (focusTile) focusHeld.current = [focusTile.front.id, ...focusTile.members.filter((m) => m !== focusTile.front).map((m) => m.id)];
   const focusNow = useRef<string | null>(null);
-  focusNow.current = focusTile ? focusKey : null;
+  focusNow.current = focusTile?.key ?? null;
   const layoutNow = useRef(layout);
   layoutNow.current = layout;
   const storedNow = useRef(stored);
@@ -940,15 +953,18 @@ export function Landscape({
     if (keys) setTimeout(() => void (frontTakesKeys(t) || armFocus(overlay.current)), 50);
   };
   /**
-   * A tab of the workspace in focus the user brought to the front: its tab chosen, or × on the tab in front, whose next
-   * tab comes forward once it has closed (after the close's own dialog, if it asks). `ready` says when the layout has it
-   * there. Its terminal then gets the keyboard (`keysToFront`), so the holder never takes it from the terminal that
-   * went (keyArm.ts). A key, or a press anywhere but in a dialog or on focus's tabs (a tab chosen asks anew), drops it,
-   * as do focus ending and a newer ask; so does REVEAL_WAIT_MS passing without it there, counted from the last key or
-   * press in a dialog (a close's dialog cancelled leaves its ask to lapse).
+   * What the keyboard does once a tab the user acted on in focus's header has gone or come: a tab chosen, or × on the
+   * tab in front, whose next tab comes forward once it has closed (`ready` says when the layout has it there), its
+   * terminal then taking the keyboard (`keysToFront`); or × on the last live tab (`last`), whose close ends focus, the
+   * landscape then taking it armed, as leaving focus gives it (`keysToLandscape`). Either way the holder never takes it
+   * from the terminal that went (keyArm.ts). A key, a press anywhere but in a dialog or on focus's tabs (a tab chosen
+   * asks anew), or a dialog opening beyond the close's own (`dialogs`) drops it, as do focus ending and a newer ask; so
+   * does REVEAL_WAIT_MS passing without it, counted from the last key or press in a dialog (a close's dialog cancelled
+   * leaves its ask to lapse).
    */
-  const frontAsk = useRef<{ tile: string; ready: (t: Tile) => boolean; until: number } | null>(null);
-  const askFront = (tile: string, ready: (t: Tile) => boolean) => void (frontAsk.current = { tile, ready, until: performance.now() + REVEAL_WAIT_MS });
+  const frontAsk = useRef<({ tile: string; until: number; dialogs: number } & ({ ready: (t: Tile) => boolean } | { last: string })) | null>(null);
+  const askFront = (tile: string, what: { ready: (t: Tile) => boolean } | { last: string }, dialogs: number) =>
+    void (frontAsk.current = { tile, until: performance.now() + REVEAL_WAIT_MS, dialogs, ...what });
   useEffect(() => {
     const drop = (e: Event) => {
       const ask = frontAsk.current;
@@ -957,11 +973,18 @@ export function Landscape({
       if (at?.closest?.(OVERLAYS)) ask.until = performance.now() + REVEAL_WAIT_MS;
       else frontAsk.current = null;
     };
+    const dialog = () => {
+      const ask = frontAsk.current;
+      if (ask && ask.dialogs > 0) ask.dialogs--;
+      else frontAsk.current = null;
+    };
     window.addEventListener("keydown", drop, true);
     window.addEventListener("pointerdown", drop, true);
+    document.addEventListener(DIALOG_OPENED, dialog);
     return () => {
       window.removeEventListener("keydown", drop, true);
       window.removeEventListener("pointerdown", drop, true);
+      document.removeEventListener(DIALOG_OPENED, dialog);
     };
   }, []);
   /**
@@ -985,10 +1008,28 @@ export function Landscape({
     };
     attempt();
   };
+  /** The keyboard to the landscape, armed, once focus has ended with its last tab and the close's dialog has gone; dropped as keysToFront is. */
+  const keysToLandscape = () => {
+    const since = inputStamp();
+    const until = performance.now() + FRONT_KEYS_MS;
+    const attempt = () => {
+      if (focusNow.current || inputStamp() !== since) return;
+      if (document.querySelector(OVERLAYS)) return void (performance.now() < until && setTimeout(attempt, 50));
+      armFocus(viewport.current);
+    };
+    attempt();
+  };
   useEffect(() => {
     const ask = frontAsk.current;
     if (!ask) return;
-    if (focusTile?.key !== ask.tile || performance.now() > ask.until) return void (frontAsk.current = null);
+    if (performance.now() > ask.until) return void (frontAsk.current = null);
+    if ("last" in ask) {
+      if (focusTile?.members.some((m) => m.id === ask.last)) return;
+      frontAsk.current = null;
+      if (!focusTile) keysToLandscape();
+      return;
+    }
+    if (focusTile?.key !== ask.tile) return void (frontAsk.current = null);
     if (!ask.ready(focusTile)) return;
     frontAsk.current = null;
     keysToFront(focusTile);
@@ -1037,9 +1078,10 @@ export function Landscape({
     );
   };
   const strip = usePipelineStrip({ here: focusTile && !isRemote(focusTile.front) ? focusTile.front : null, layout, rooms, closed, frame: overlay, onGo: goAlong, say });
-  // a workspace that leaves (closed, or merged into a stack) ends its focus, and its peek
+  // a workspace none of whose sessions is open any more ends its focus, and its peek; one whose key changed is focused by
+  // its new key
   useEffect(() => {
-    if (focusKey && !focusTile) setFocusKey(null);
+    if (focusKey && focusTile?.key !== focusKey) setFocusKey(focusTile?.key ?? null);
   }, [focusKey, focusTile]);
   const peekTile = peek ? layout.tiles.find((t) => t.key === peek.key) : undefined;
   // its workspace left or exited, its stack brought another tab to the front, its session got a new terminal, or a
@@ -2867,7 +2909,7 @@ export function Landscape({
       onFocus={(tile, doubled) => (!doubled || pairOn(tile.key)) && enterFocus(tile)}
       onBack={leaveFocus}
       onTab={(tile, id) => {
-        if (mode === "focus") askFront(tile.key, (x) => x.front.id === id);
+        if (mode === "focus") askFront(tile.key, { ready: (x) => x.front.id === id }, 0);
         onTab(tile, id);
       }}
       actions={tileActions(t)}
@@ -2882,11 +2924,12 @@ export function Landscape({
       tabClose={(s) => {
         const close = usable(actionsFor(t, s), "close");
         if (!close || s.id !== t.front.id) return close;
-        // the tab in front closing: whichever comes forward once it has gone gets the keyboard
+        // the tab in front closing: whichever comes forward once it has gone gets the keyboard, or, with no live tab
+        // left, the landscape as focus ends
         return {
           ...close,
           onPick: () => {
-            askFront(t.key, (x) => !x.members.some((m) => m.id === s.id));
+            askFront(t.key, t.members.length > 1 ? { ready: (x) => !x.members.some((m) => m.id === s.id) } : { last: s.id }, 1);
             close.onPick();
           },
         };

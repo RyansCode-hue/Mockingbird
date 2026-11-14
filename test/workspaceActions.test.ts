@@ -300,14 +300,13 @@ describe("the focused header's ⋯", () => {
     expect(rows(menuOf(focusMenuActions(acts))).slice(-3)).toEqual(["-", "resumeAgent", "close"]);
   });
 
-  it("leaves the model, and so the card's ⋯ and every right-click, whole", () => {
-    const acts = everything();
-    const before = keys(acts);
-    focusMenuActions(acts);
-    expect(keys(acts)).toEqual(before);
-    expect(before).toEqual(expect.arrayContaining(["size:S", "size:M", "size:L", "newTab", "tool:files", "tool:artifacts", "diff", "connect", "finish", "saveTemplate", "send"]));
-    expect(rows(menuOf(acts))).toContain("# Tools");
-    expect(rows(menuOf(acts))).toContain("# Wires");
+  it("of a teammate's live session in a stack: Mute notifications, the stack's and terminal's rows and Take over; no Rename, Move, hand-on or Close, theirs to do", () => {
+    const takeOver: Action = { key: "takeover", label: "Take over", onPick: vi.fn() };
+    const acts = workspaceActions(
+      sess(),
+      env({ owner: "Nick Smith", stack, room: [takeOver], undo: { no: "theirs" }, handoff: { no: "theirs" }, brief: { no: "theirs" }, secondOpinion: { no: "theirs" }, addTerminal: { no: "theirs" } })
+    );
+    expect(rows(menuOf(focusMenuActions(acts)))).toEqual(["# Session", "notify", "-", "# Stack", "renameStack", "unstack", "-", "# Terminal", "repaint", "diff", "-", "# Team room", "takeover"]);
   });
 });
 
