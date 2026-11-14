@@ -120,7 +120,7 @@ describe.skipIf(!local)("the room sandbox switch, in the window", () => {
       '[data-front="s8"] .ls-chips',
       `
       await sleep(300);
-      const title = $('[data-front="s8"] .ls-title');
+      const title = $('[data-front="s8"] .ls-head .ls-tab');
       const at = title.getBoundingClientRect();
       title.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: at.left + 5, clientY: at.top + 5 }));
       for (let i = 0; i < 20 && ![...document.querySelectorAll("[role=menuitem]")].some((b) => b.textContent.startsWith("Move to area…")); i++) await sleep(100);

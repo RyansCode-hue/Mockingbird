@@ -5,7 +5,7 @@ import { WORKSPACE_CHROME, WORKSPACE_FOOT, WORKSPACE_HEAD, type Size } from "../
 import { HANDLE_ROOM, type Tile } from "./landscapeModel";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
-import { BackIcon, ExpandIcon, MoreIcon } from "./Icons";
+import { BackIcon, CloseIcon, ExpandIcon, MoreIcon, PlusIcon } from "./Icons";
 import { WorkspaceCard, kindLabel } from "./WorkspaceCard";
 import { PaneChips, PaneRail, holdSize, usePaneGit, usePanePr, type PaneChipProps, type PaneRailProps } from "./TerminalPane";
 import { isRemote } from "./team/RoomLive";
@@ -42,9 +42,10 @@ export interface WorkspaceChrome {
 /**
  * One workspace on the landscape (designs B and N): a header bar (status dot, title, agent, the pane's chips, ⋯) over
  * its live terminal, and a footer with the pane rail's cells. A stack shows its front member, with a tab for each. In
- * `focus` it fills the window and its header leads back; as a `placeholder` it keeps the workspace's place while it's
- * in focus. Zoomed out it's C's compact card. Whenever nothing attaches its terminal, the terminal is kept at the
- * workspace's size (holdSize), so attaching it again resizes nothing.
+ * `focus` it fills the window and its header leads back, with browser-style tabs (a lone workspace is one tab): a × on
+ * each, + after them; as a `placeholder` it keeps the workspace's place while it's in focus. Zoomed out it's C's
+ * compact card. Whenever nothing attaches its terminal, the terminal is kept at the workspace's size (holdSize), so
+ * attaching it again resizes nothing.
  *
  * Its actions are its owner's model (workspaceActions.tsx): the chips open what they name through it, ⋯ opens its
  * menu (`onMore`), and right-click opens the same anywhere on it (Landscape.tsx).
@@ -69,6 +70,7 @@ export function WorkspaceNode({
   onTab,
   onMore,
   onClosedTab,
+  tabClose,
   onFinish,
   body,
 }: {
@@ -107,6 +109,8 @@ export function WorkspaceNode({
   onMore: (tile: Tile, from: HTMLElement) => void;
   /** A stack's closed tab pressed: its ghost's menu, under it. */
   onClosedTab?: (s: SessionInfo, from: HTMLElement) => void;
+  /** In focus, tab `s`'s ×: its session's Close, or undefined where it can't be closed from here (a teammate's). */
+  tabClose?: (s: SessionInfo) => ModelAction | undefined;
   /** Finish step pressed in its focus header (W5): the popover, under the button. */
   onFinish?: (tile: Tile, from: HTMLElement) => void;
   /** The terminal of the session in front, at this size. */
@@ -131,6 +135,47 @@ export function WorkspaceNode({
           { left: `calc(${tile.rect.x}px + var(--ci))`, top: `calc(${tile.rect.y}px + var(--ci))`, width: `calc(${size.w}px - 2 * var(--ci))`, height: `calc(${size.h}px - 2 * var(--ci))` }
         : { left: tile.rect.x, top: tile.rect.y, width: size.w, height: size.h };
   const card = mode === "card";
+  // in focus the tabs are a browser's: a × on each that can be closed here, and + after the last
+  const focus = mode === "focus";
+  const newTab = focus ? actionOf(actions, "newTab") : undefined;
+  const withClose = (m: SessionInfo, tab: React.ReactElement) => {
+    if (!focus) return tab;
+    const close = tabClose?.(m);
+    return (
+      <span key={m.id} className={`ls-tabw${m.id === s.id ? " on" : ""}`}>
+        {tab}
+        {close && (
+          <button
+            type="button"
+            className="ls-tab-x"
+            aria-label={`Close ${titleOf(m)}`}
+            data-tip={close.menuLabel ?? close.label}
+            onClick={(e) => {
+              e.stopPropagation();
+              close.onPick();
+            }}
+          >
+            <CloseIcon />
+          </button>
+        )}
+      </span>
+    );
+  };
+  const plus = newTab && (
+    <button
+      type="button"
+      className="ls-tab-new"
+      aria-label={tile.stack ? `New tab in ${name ?? "the stack"}` : `New tab beside ${titleOf(s)}`}
+      data-tip={newTab.title}
+      disabled={newTab.disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        newTab.onPick();
+      }}
+    >
+      <PlusIcon />
+    </button>
+  );
   const more = (
     <button
       type="button"
@@ -194,7 +239,8 @@ export function WorkspaceNode({
                 {tile.members.map((m) => {
                   // a teammate's ask to type in a tab behind: the front one's is on its strip
                   const ask = m.id !== s.id ? askBadge(m) : null;
-                  return (
+                  return withClose(
+                    m,
                     <button
                       key={m.id}
                       role="tab"
@@ -226,6 +272,16 @@ export function WorkspaceNode({
                   </button>
                 ))}
               </span>
+            ) : focus ? (
+              <span className="ls-tabs" role="tablist" aria-label={titleOf(s)}>
+                {withClose(
+                  s,
+                  <button type="button" role="tab" aria-selected className="ls-tab on" data-sid={s.id} title={titleOf(s)}>
+                    <StatusDot status={s.status} className="sm" />
+                    <span className="t">{titleOf(s)}</span>
+                  </button>
+                )}
+              </span>
             ) : (
               <>
                 <StatusDot status={s.status} />
@@ -234,6 +290,7 @@ export function WorkspaceNode({
                 </span>
               </>
             )}
+            {plus}
             <span className="chip ls-kind">{kindLabel(s)}</span>
             {mode !== "placeholder" && (
               <span className="ls-chips">

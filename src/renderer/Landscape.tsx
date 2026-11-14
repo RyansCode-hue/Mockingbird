@@ -93,7 +93,7 @@ import {
 import { WorkspaceNode, edgesOf, ownTermHasKeys, type NodeMode, type ResizeEdge, type WorkspaceChrome } from "./WorkspaceNode";
 import { ToolWindow } from "./ToolWindow";
 import { LiftOut } from "./lift";
-import { actionOf, connectMenu, menuOf, severalActions, severalMenu, wireMenu, type Can, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { actionOf, connectMenu, focusMenuActions, menuOf, severalActions, severalMenu, usable, wireMenu, type Can, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { GhostCard } from "./GhostCard";
 import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
@@ -2816,9 +2816,10 @@ export function Landscape({
         select(tile);
         const r = from.getBoundingClientRect();
         menuAt.current = { x: r.left, y: r.bottom + 2 };
-        ctx.openAt(menuAt.current, menuOf(menuActions(tile)));
+        ctx.openAt(menuAt.current, menuOf(mode === "focus" ? focusMenuActions(menuActions(tile)) : menuActions(tile)));
       }}
       onClosedTab={(s, from) => ctx.openBelow(from, menuOf(ghostActions(s)))}
+      tabClose={(s) => usable(actionsFor(t, s), "close")}
       onFinish={(tile, from) => {
         // the header's button is at its right end: the popover hangs from there, flipped left to stay in the window
         const r = from.getBoundingClientRect();
