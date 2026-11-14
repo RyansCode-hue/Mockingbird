@@ -836,6 +836,7 @@ async function startStep(id: string, from?: string | null, ticketTitle?: string 
 }
 handle("sessions:resume", (id) => sessions.resume(String(id)));
 handle("sessions:resumeAgent", (id) => sessions.resumeAgent(String(id)));
+handle("sessions:openTerminal", (id) => sessions.openTerminal(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {
   // a pane closed to resume isn't live any more, but forgetting it later must still find it
@@ -2050,12 +2051,16 @@ const MESSAGE_OVERDUE_MS = 15 * 60_000;
 /** Tell a message's sender (its agent, and its user) that the message is still waiting, and why. */
 function tellOverdue(o: OverdueMessage): void {
   const mins = Math.round(o.waitedMs / 60_000);
-  const state = o.toStatus === "waiting" ? "waiting on its user" : o.toStatus;
-  const why = o.hooksSilent ? `, but Mockingbird has heard nothing from its agent's hooks since it started, so that status may be wrong` : "";
+  // a session whose agent quit is a terminal now: the message waits for that agent's next launch, not a turn's end
+  const state = o.quit ? `a terminal now: its ${agentLabel(o.quit)} quit` : o.toStatus === "waiting" ? "waiting on its user" : o.toStatus;
+  const why = o.hooksSilent && !o.quit ? `, but Mockingbird has heard nothing from its agent's hooks since it started, so that status may be wrong` : "";
+  const when = o.quit ? `It is delivered if that session's ${agentLabel(o.quit)} is resumed, and it is ${state}` : `It is delivered when that session's turn ends, and it is still ${state}${why}`;
   logLine(`messaging: a message from ${o.from} to ${o.to} ("${o.toTitle}") is still queued after ${mins} min; that session is ${state}${why}`);
   const sender = sessions.list().find((s) => s.id === o.from && s.status !== "dead");
   if (!sender) return;
-  notifySession(o.from, "Message not delivered yet", `To ${o.toTitle}: waiting ${mins} min — that session is ${state}${o.hooksSilent ? " (its status may be wrong)" : ""}`);
+  notifySession(o.from, "Message not delivered yet", `To ${o.toTitle}: waiting ${mins} min — that session is ${state}${o.hooksSilent && !o.quit ? " (its status may be wrong)" : ""}`);
+  // a sender that's a terminal now has no agent to tell
+  if (sender.shell) return;
   try {
     // Mockingbird's own notice, under its own key: it isn't a prompt the agent was given (an automatic wire sends once per
     // prompt), and a newer one replaces it while it waits
@@ -2063,7 +2068,7 @@ function tellOverdue(o: OverdueMessage): void {
       o.from,
       "overdue",
       `[Mockingbird: your message to session "${o.toTitle}" (id ${o.to}) hasn't been delivered after ${mins} minutes. ` +
-        `It is delivered when that session's turn ends, and it is still ${state}${why}. If it's urgent, ask your user to look at that session.]`,
+        `${when}. If it's urgent, ask your user to look at that session.]`,
       submitsAgentMessages(sender)
     );
   } catch (err) {

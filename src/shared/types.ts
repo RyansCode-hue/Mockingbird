@@ -60,9 +60,14 @@ export interface SessionInfo {
   conversation?: { agent: AgentKind; id: string };
   /**
    * A terminal that was this agent's pane until the agent quit on its own (/exit): it reopens as a plain terminal, and
-   * Resume <agent> (sessions:resumeAgent) makes it that agent pane again, on `conversation`.
+   * Resume <agent> (sessions:resumeAgent) makes it that agent pane again, on the conversation it quit from (AgentQuit).
    */
-  agentQuit?: AgentKind;
+  agentQuit?: AgentQuit;
+  /**
+   * An agent pane whose agent quit on its own while it ran in its team room's sandbox: it's left exited, as no shell
+   * starts there but on its owner's click (Open a terminal here, sessions:openTerminal), or Resume brings the agent back.
+   */
+  quitInSandbox?: true;
   /**
    * Its folders (cwd, extra folders) that had no repository at its first team room launch, as the disk names them:
    * every relaunch holds them to having none (gitPins.ts), so a `.git` its agent could have made there isn't trusted.
@@ -156,11 +161,20 @@ export interface PlanRequest {
 /** Every agent, in the order the app lists them. */
 export const AGENT_KINDS: AgentKind[] = ["claude", "codex"];
 
+/**
+ * The agent a terminal's pane ran until it quit, and the conversation it quit from: what Resume <agent> brings back,
+ * whatever an agent started in the terminal by hand runs since (SessionInfo.conversation follows that).
+ */
+export interface AgentQuit {
+  agent: AgentKind;
+  conversation?: string;
+}
+
 /** Terminal `s` as the agent pane it was until its agent quit (SessionInfo.agentQuit), as Resume <agent> starts it; otherwise `s`. */
-export function asQuitAgent<T extends Pick<SessionInfo, "shell" | "agent" | "agentQuit">>(s: T): T {
+export function asQuitAgent<T extends Pick<SessionInfo, "shell" | "agent" | "agentQuit" | "conversation">>(s: T): T {
   if (!s.shell || !s.agentQuit) return s;
-  const { shell: _shell, agentQuit, ...rest } = s;
-  return { ...rest, agent: agentQuit } as T;
+  const { shell: _shell, agentQuit: quit, conversation: _conversation, ...rest } = s;
+  return { ...rest, agent: quit.agent, ...(quit.conversation ? { conversation: { agent: quit.agent, id: quit.conversation } } : {}) } as T;
 }
 
 /** The agent a session hands over to, or asks for a second opinion; a session without one runs Claude. */

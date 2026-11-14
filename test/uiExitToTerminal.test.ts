@@ -82,4 +82,40 @@ describe.skipIf(!local)("a pane whose agent quit into a terminal, in the window"
     expect(r.after).toEqual({ kind: "Terminal", note: "Claude exited · this is a terminal now", button: "Resume Claude" });
     expect(r.buffer).toContain("Claude exited — this is now a terminal in ~/Code/worktrees/backoffice/5102-quickViewFreeze.");
   });
+
+  it("says how many messages wait for its agent", async () => {
+    const r = await drive<Pane>("agentQuit=messages&lsFocus=s5", '[data-front="s5"] .team-pane-note.agent-quit', `await sleep(200); return pane("s5");`);
+    expect(r).toEqual({ kind: "Terminal", note: "Claude exited · this is a terminal now · 2 messages wait for Claude", button: "Resume Claude" });
+  });
+
+  it("leaves a pane whose agent quit in its room's sandbox exited, with Open a terminal here and Resume Claude; Open a terminal here makes it the terminal", async () => {
+    const r = await drive<{ why: string; buttons: string[]; opened: unknown[]; resumed: string[]; after: Pane }>(
+      "agentQuit=room&lsFocus=s8",
+      '[data-front="s8"] .dead-body .dead-why',
+      `
+      await sleep(200);
+      const body = $('[data-front="s8"] .dead-body');
+      const why = body.querySelector(".dead-why").textContent;
+      const buttons = [...body.querySelectorAll("button")].map((b) => b.textContent);
+      [...body.querySelectorAll("button")].find((b) => b.textContent === "Open a terminal here").click();
+      for (let i = 0; i < 40 && !pane("s8").note; i++) await sleep(100);
+      return {
+        why,
+        buttons,
+        opened: calls().filter((c) => c.fn === "openTerminal").map((c) => c.args),
+        resumed: calls().filter((c) => c.fn === "resumeSession" || c.fn === "resumeAgent").map((c) => c.fn),
+        after: pane("s8"),
+      };`
+    );
+    expect(r.why).toBe("Claude exited. It ran in the room's sandbox, so no terminal opened by itself: a terminal here is a shell on your Mac, outside that sandbox.");
+    expect(r.buttons).toEqual(["Resume Claude", "Open a terminal here", "Close & clean up"]);
+    expect(r.opened).toEqual([["s8"]]);
+    expect(r.resumed).toEqual([]);
+    expect(r.after).toEqual({ kind: "Terminal", note: "Claude exited · this is a terminal now", button: "Resume Claude" });
+  });
+
+  it("says a room terminal is one in a teammate's ask to type into it", async () => {
+    const r = await drive<string>("typingAskTerminal&lsFocus=s4", '[data-front="s4"] .typing-ask', `await sleep(200); return $('[data-front="s4"] .typing-ask .reason').textContent;`);
+    expect(r).toBe("Nick wants to type in “test runner”, a terminal: a shell on your Mac, outside the room's sandbox");
+  });
 });

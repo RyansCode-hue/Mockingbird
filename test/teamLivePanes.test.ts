@@ -11,7 +11,7 @@ import { SessionManager } from "../src/main/sessions";
 import { LivePanes, windowSettingsPatch, type LivePanesDeps } from "../src/main/team/livePanes";
 import { onTurnEnded, isRoomSession, originIdentity, roomOfSession, setRoomSessionLookup, validateRecord, type TurnEnded } from "../src/main/team/roomSessions";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
-import { CLAUDE_ROOM_SANDBOX_SINCE, CODEX_ROOM_GUARD_SINCE, decodePtyChunk, encodePtyChunk, remotePaneId, ROOM_SANDBOX_REFUSAL, roomMessageRefusal, roomSandboxOff, type RoomSessionRecord } from "../src/shared/team/livePanes";
+import { CLAUDE_ROOM_SANDBOX_SINCE, CODEX_ROOM_GUARD_SINCE, decodePtyChunk, encodePtyChunk, remotePaneId, ROOM_SANDBOX_REFUSAL, roomMessageRefusal, roomSandboxOff, TERMINAL_TYPING, type RoomSessionRecord } from "../src/shared/team/livePanes";
 import { CODEX_ROOM_PROFILE, roomCachesFolder } from "../src/main/codexRoomSandbox";
 import { clearGitPins, gitPinRefusal } from "../src/main/gitPins";
 import { HouseService } from "../src/main/team/houseService";
@@ -649,30 +649,66 @@ describe("typing needs the owner's consent", () => {
     expect(ryan.remoteAudit.recent().map((e) => e.kind)).toContain("typing.ended");
   });
 
-  it("ends when its agent quits into a terminal, before the shell starts: a teammate never types into a shell on the owner's Mac, and the room sees a terminal", async () => {
-    const { ryan, nick } = await pair();
+  it("ends when its agent quits in the room's sandbox: no shell starts, the teammate waits out a no's cooldown, and Open a terminal here makes the terminal the room sees", async () => {
+    const { ryan, nick, roomId } = await pair();
     const s = await ryan.start();
     await allowTyping(ryan, nick, s.id);
     const agent = ptyOf(s.id);
     agent.exit(0);
-    // at once, with no shell started yet
+    // at once: the allowance is gone, and the pane is left exited, holding no shell
     expect(ryan.live.state().own[s.id]?.typists ?? []).toEqual([]);
+    expect(ryan.sessions.list().find((x) => x.id === s.id)).toMatchObject({ status: "dead", exitCode: 0, agent: "claude", quitInSandbox: true });
+    await until(() => remoteOf(nick, s.id)?.room?.typing?.refused?.why === 'the agent in "donors" quit, which ends typing into it', "Nick told why");
+    expect(remoteOf(nick, s.id)!.room!.typing!.state).toBe("denied");
     expect(ptyOf(s.id)).toBe(agent);
-    await until(() => ptyOf(s.id) !== agent, "the terminal");
-    expect(ptyOf(s.id).args).toEqual(["-il"]);
-    expect(ryan.sessions.list().find((x) => x.id === s.id)).toMatchObject({ shell: true, agentQuit: "claude" });
-    // a terminal runs outside any sandbox, as every room terminal does
-    expect(ryan.sessions.guardsOf(s.id)).toMatchObject({ secrets: false });
-    expect(await raw(nick, ryan, s.id, "ls\r", 2).catch((e) => String(e))).not.toEqual({ ok: true });
-    await until(() => remoteOf(nick, s.id)?.room?.typing?.refused?.why === 'the agent in "donors" quit: it\'s a terminal now', "Nick told why");
-    expect(remoteOf(nick, s.id)!.room!.typing!.state).toBe("view-only");
-    expect(ptyOf(s.id).writes).toEqual([]);
     ryan.remoteAudit.flush();
-    expect(ryan.remoteAudit.recent().find((e) => e.kind === "typing.ended")).toMatchObject({ member: "Nick", session: s.id, reason: "its agent quit, so it's a terminal now" });
+    expect(ryan.remoteAudit.recent().find((e) => e.kind === "typing.ended")).toMatchObject({ member: "Nick", session: s.id, reason: "its agent quit" });
+    // its owner opens a terminal there: a shell outside any sandbox, as every room terminal is
+    expect(await ryan.sessions.openTerminal(s.id)).toMatchObject({ id: s.id, shell: true, agentQuit: { agent: "claude" } });
+    expect(ptyOf(s.id).args).toEqual(["-il"]);
+    expect(ryan.sessions.guardsOf(s.id)).toMatchObject({ secrets: false });
+    // an ask sent again at once waits out the cooldown, saying why; keys are refused and never reach the shell
+    const again = await nick.m.team.request<any>(ryan.m.id, "pty.typingAsk", { session: s.id, ask: true }, { roomId });
+    expect(again).toMatchObject({ state: "denied", why: 'the agent in "donors" quit a moment ago: ask again in a minute' });
+    expect(ryan.live.state().own[s.id]?.typingAsks ?? []).toEqual([]);
+    expect(await raw(nick, ryan, s.id, "ls\r", 2).catch((e) => String(e))).not.toEqual({ ok: true });
+    expect(ptyOf(s.id).writes).toEqual([]);
     // its published record says terminal: a teammate's Mockingbird refuses agent messages to it
     await until(() => remoteOf(nick, s.id)?.shell === true, "the record as a terminal");
     expect(remoteOf(nick, s.id)!.agent).toBeUndefined();
     expect(roomMessageRefusal({ agent: null, status: "idle", live: true, guards: null }, "Ryan")).toMatch(/^it's a terminal on Ryan's Mac/);
+  });
+
+  it("ends before the shell starts when an unsandboxed room session's agent quits into a terminal at once: keys arriving meanwhile reach nothing", async () => {
+    const { ryan, nick, roomId } = await pair();
+    const before = { ...ryan.settings };
+    ryan.settings.roomsUnsandboxed = [roomId];
+    ryan.live.settingsChanged(before, ryan.settings);
+    const s = await ryan.start();
+    expect(ryan.sessions.guardsOf(s.id)).toMatchObject({ unsandboxed: true });
+    await allowTyping(ryan, nick, s.id);
+    const agent = ptyOf(s.id);
+    agent.exit(0);
+    expect(ryan.live.state().own[s.id]?.typists ?? []).toEqual([]);
+    expect(ryan.sessions.list().find((x) => x.id === s.id)).toMatchObject({ shell: true, status: "idle" });
+    // keys that passed the check a moment before the quit, and keys sent as it happens
+    ryan.sessions.writeFromTeammate(s.id, "rm -rf ~\r");
+    const late = raw(nick, ryan, s.id, "ls\r", 2).catch((e) => String(e));
+    await until(() => ptyOf(s.id) !== agent, "the terminal");
+    expect(await late).not.toEqual({ ok: true });
+    expect(ptyOf(s.id).args).toEqual(["-il"]);
+    expect(agent.writes).toEqual([]);
+    expect(ptyOf(s.id).writes).toEqual([]);
+    expect(ryan.sessions.list().find((x) => x.id === s.id)!.quitInSandbox).toBeUndefined();
+  });
+
+  it("says a room terminal is one when a teammate asks to type into it: a shell on your Mac, outside the room's sandbox", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start({ shell: true, agent: undefined, title: "shared shell" });
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    nick.sessions.write(remotePaneId(ryan.m.id, s.id), "ls\r");
+    await until(() => ryan.notes.length === 1, "the notification");
+    expect(ryan.notes[0]).toEqual({ title: "Nick wants to type", body: `In "shared shell", ${TERMINAL_TYPING}: allow it or not in Needs you, or on its workspace`, paneId: s.id });
   });
 
   it("with an owner on a Mockingbird from before typing consent, typing goes through as it did", async () => {

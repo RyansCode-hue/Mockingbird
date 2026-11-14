@@ -2,7 +2,7 @@ import { latestPr, prAskedState, prNeedsYou, ticketOfSession, type SessionInfo, 
 import { ROOMS_STARTING, carriesWork, gateOf, isSending, wiresInOrder, type GateContext, type Wire } from "../shared/wires";
 import type { PlanView } from "../shared/plans";
 import type { JoinRequestSummary, TeamRoomSummary } from "../shared/team/types";
-import type { TypingAsk } from "../shared/team/livePanes";
+import { TERMINAL_TYPING, type TypingAsk } from "../shared/team/livePanes";
 import { permissionTool, shortReason } from "../shared/phoneAlerts";
 import { takenOverWhy, type Can } from "./workspaceActions";
 import { firstName } from "./team/connectedModel";
@@ -112,7 +112,7 @@ export function typingItems(s: SessionInfo, area: string, title: string): NeedsI
     join: null,
     typing: { member: a.member, name: a.name },
     pipeline: null,
-    text: `${firstName(a.name)} wants to type in ${title}`,
+    text: `${firstName(a.name)} wants to type in ${title}${s.shell ? `, ${TERMINAL_TYPING}` : ""}`,
     code: null,
   }));
 }

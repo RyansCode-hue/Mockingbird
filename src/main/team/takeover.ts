@@ -443,6 +443,9 @@ onMemberRemoved("takeover", (state, member, e) => {
   }
 });
 
+/** Why an owner's session isn't handed over: its agent quit, and what's there is a terminal, the owner's shell. */
+const TERMINAL_KEPT = "its agent quit, so it's a terminal now: a terminal isn't handed over — ask them to resume its agent first";
+
 // ---- the seams ------------------------------------------------------------------------------
 
 /**
@@ -1626,7 +1629,9 @@ export class TakeoverService {
    */
   private leave(roomId: RoomId, sessionId: string): void {
     try {
-      this.d.host.stop(sessionId);
+      // a terminal its agent quit into runs no agent to stop: it's the owner's shell, and stays (its agent doesn't
+      // resume here, relaunchRefusal says why)
+      if (!this.d.host.session(sessionId)?.shell) this.d.host.stop(sessionId);
     } catch (err) {
       this.d.log(`team: stopping session ${sessionId}, which a teammate continues`, err);
     }
@@ -1937,6 +1942,7 @@ export class TakeoverService {
     if (entry.takenOver) throw new PeerError(`${this.nameOf(roomId, entry.takenOver.by)} already continues it`);
     if (entry.dropped) throw new PeerError("its backup was deleted");
     if (!this.d.host.session(sessionId) || this.d.host.roomOf(sessionId) !== roomId) throw new PeerError("that session isn't on this Mac any more");
+    if (this.d.host.session(sessionId)?.shell) throw new PeerError(TERMINAL_KEPT);
     if (this.incoming.has(askId)) throw new PeerError("that request is being answered already");
     const busy = [...this.incoming.values()].find((a) => a.sessionId === sessionId && a.state === "handing-over");
     if (busy) throw new PeerError(`it's being handed over to ${busy.fromName}`);
@@ -1985,6 +1991,8 @@ export class TakeoverService {
       if (Date.now() > deadline) throw new PeerError(`its turn didn't finish within ${Math.round(this.handoverTurnMs / 60_000)} minutes, so it carries on here`);
       await new Promise((r) => setTimeout(r, 250));
     }
+    // its agent quit meanwhile: what's there is a terminal, whose last backup is its agent's, and it isn't stopped
+    if (this.d.host.session(sessionId)?.shell) throw new PeerError(TERMINAL_KEPT);
     await this.turnEnded(sessionId);
     const unbacked = this.unbacked.get(sessionId);
     if (unbacked) {
@@ -2004,6 +2012,7 @@ export class TakeoverService {
     // the owner's consent, for this teammate and exactly this snapshot: what lets the take-over count on every member
     const now = Date.now(); // checked against the take-over event's time: wall-clock
     const grant = signGrant(this.d.team, { kind: "handover", roomId, sessions: [sessionId], to, sha: rec.sha, issuedAt: now, expiresAt: now + HANDOVER_GRANT_MS });
+    if (this.d.host.session(sessionId)?.shell) throw new PeerError(TERMINAL_KEPT);
     // TODO(audit-log): this install handed a session over (to whom, which snapshot)
     this.d.host.stop(sessionId);
     return { answer: "handed-over", sha: rec.sha, takenAt: rec.takenAt, grant };

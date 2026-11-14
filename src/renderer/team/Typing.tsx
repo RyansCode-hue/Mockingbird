@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { isErr, type SessionInfo } from "../../shared/types";
-import type { RoomSessionTag, TypingAsk, TypingGrant } from "../../shared/team/livePanes";
+import { TERMINAL_TYPING, type RoomSessionTag, type TypingAsk, type TypingGrant } from "../../shared/team/livePanes";
 import { initialsOf } from "../Team";
 import { firstName } from "./connectedModel";
 import { settled } from "../settled";
@@ -78,12 +78,16 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
           className="typing-ask"
           data-ask={askId(a)}
           role="alert"
-          title={`${a.name} would type into this session on your Mac, as you. A \`!\` command typed at its prompt runs in your shell, outside the room's sandbox, as anything typed into a terminal does. Even then, only you can answer your agent's permission prompts: their keys wait while it asks.`}
+          title={
+            session.shell
+              ? `${a.name} would type into this terminal on your Mac, as you: it's a shell, outside the room's sandbox, and runs whatever they type.`
+              : `${a.name} would type into this session on your Mac, as you. A \`!\` command typed at its prompt runs in your shell, outside the room's sandbox, as anything typed into a terminal does. Even then, only you can answer your agent's permission prompts: their keys wait while it asks.`
+          }
           onMouseDown={(e) => e.stopPropagation()}
         >
           <span className="team-initials">{initialsOf(a.name)}</span>
           <span className="reason">
-            {firstName(a.name)} wants to type in “{title}”
+            {firstName(a.name)} wants to type in “{title}”{session.shell ? `, ${TERMINAL_TYPING}` : ""}
           </span>
           <button className="outline" tabIndex={-1} disabled={busy === a.member || heldOff(`${askId(a)}:session`)} aria-label={`Allow ${a.name} to type in “${title}” for this session`} onClick={(e) => answer(e, a, "session")}>
             Allow for this session

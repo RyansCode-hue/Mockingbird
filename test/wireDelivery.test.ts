@@ -615,7 +615,7 @@ describe("receipts: every way a queued message ends is told, never left as queue
     agent.exit(0);
     expect(t.wireOf(t.w).delivery).toMatchObject({ state: "failed", why: "“Reviewer”'s Claude quit before this reached it: it's a terminal now" });
     await vi.waitFor(() => expect(t.ptyOf(t.b.id)).not.toBe(agent));
-    expect(t.m.list().find((s) => s.id === t.b.id)).toMatchObject({ shell: true, agentQuit: "claude" });
+    expect(t.m.list().find((s) => s.id === t.b.id)).toMatchObject({ shell: true, agentQuit: { agent: "claude" } });
     expect(t.gate(t.w).why).toBe("“Reviewer” is a terminal: only a shared worktree wire can reach one.");
     vi.advanceTimersByTime(500);
     expect(t.ptyOf(t.b.id).writes).toEqual([]);

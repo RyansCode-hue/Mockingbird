@@ -193,16 +193,23 @@ const buffers: Record<string, string> = {
   s7: `${C.bold}> What's on my plate today?${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Two tickets in progress (#5101, #5102) and one PR waiting on review.\r\n`,
 };
 
-/** Agent pane `s` as main makes it when its agent quits on its own (SessionManager.quitToTerminal): a terminal under its id, in its folder, its conversation kept, its pane's line and a prompt below what the agent showed. */
+/** Agent pane `s` as main makes it when its agent quits on its own (SessionManager.toTerminal): a terminal under its id, in its folder, its conversation kept, its pane's line and a prompt below what the agent showed. */
 const quitToTerminal = (s: SessionInfo): SessionInfo => {
   const agent = s.agent ?? "claude";
   const where = s.cwd.replace(/^\/Users\/you(?=\/|$)/, "~");
-  buffers[s.id] = `${buffers[s.id] ?? ""}\r\n\x1b[?25h${C.reset}${C.dim}── restarted · earlier output above ──${C.reset}\r\n\r\n\x1b[33m${AGENT_NAME[agent]} exited — this is now a terminal in ${where}.${C.reset}\r\n\r\nyou@mac ${s.cwd.split("/").pop()} % `;
-  const { agent: _agent, agentVersion: _version, ...rest } = s;
-  return { ...rest, shell: true, agentQuit: agent, conversation: s.conversation ?? { agent, id: `conv-${s.id}` }, status: "idle", createdAt: Date.now(), finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null };
+  const conversation = s.conversation ?? { agent, id: `conv-${s.id}` };
+  buffers[s.id] = `${buffers[s.id] ?? ""}\r\n\x1b[?25h${C.reset}${C.dim}── ${AGENT_NAME[agent]} exited · earlier output above ──${C.reset}\r\n\r\n\x1b[33m${AGENT_NAME[agent]} exited — this is now a terminal in ${where}.${C.reset}\r\n\r\nyou@mac ${s.cwd.split("/").pop()} % `;
+  const { agent: _agent, agentVersion: _version, quitInSandbox: _held, exitCode: _code, ...rest } = s;
+  return { ...rest, shell: true, agentQuit: { agent, conversation: conversation.id }, conversation, status: "idle", createdAt: Date.now(), finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null };
 };
-// ?agentQuit: s5's Claude quit (/exit), so it's a terminal in its folder now, its conversation kept for Resume Claude
-if (new URLSearchParams(location.search).has("agentQuit")) sessions = sessions.map((s) => (s.id === "s5" ? quitToTerminal(s) : s));
+/** Agent pane `s` as main leaves it when its agent quits in its room's sandbox (SessionManager.agentQuit): exited, a terminal there only on a click. */
+const quitInSandbox = (s: SessionInfo): SessionInfo => ({ ...s, status: "dead", exitCode: 0, quitInSandbox: true, finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null });
+// ?agentQuit: s5's Claude quit (/exit), so it's a terminal in its folder now, its conversation kept for Resume Claude;
+// =room: s8's quit too, in 5101's room sandbox, so it's left exited with Open a terminal here and Resume Claude;
+// =messages: two messages from other agents wait for s5's Claude
+const agentQuitQ = new URLSearchParams(location.search).get("agentQuit");
+if (agentQuitQ !== null)
+  sessions = sessions.map((s) => (s.id === "s5" ? { ...quitToTerminal(s), ...(agentQuitQ === "messages" ? { queuedCount: 2 } : {}) } : s.id === "s8" && agentQuitQ === "room" ? quitInSandbox(s) : s));
 
 const files: Record<string, string> = {
   "README.md": "# backoffice\n\nThe admin site.\n",
@@ -1089,7 +1096,8 @@ const live: LivePanesState = {
     s1: roomTag({ sessionId: "s1", lookers: [{ id: NICK, name: "Nick Smith", focused: true }], typists: [{ member: NICK, name: "Nick Smith", until: now + 12 * min, at: now - 3 * min }] }),
     s2: roomTag({ sessionId: "s2", ...(teamTypingQ.has("typingAsk2") ? { typingAsks: [{ member: NICK, name: "Nick Smith", at: now - 21_000 }] } : {}) }),
     s3: roomTag({ sessionId: "s3", guards: { secrets: false, coauthors: true } }),
-    s4: roomTag({ sessionId: "s4", guards: { secrets: false, coauthors: true } }),
+    // ?typingAskTerminal: Nick asks to type in s4, a terminal
+    s4: roomTag({ sessionId: "s4", guards: { secrets: false, coauthors: true }, ...(teamTypingQ.has("typingAskTerminal") ? { typingAsks: [{ member: NICK, name: "Nick Smith", at: now - 20_000 }] } : {}) }),
     s8: roomTag({ sessionId: "s8", ...(teamTypingQ.has("typingAsk") ? { typingAsks: [{ member: NICK, name: "Nick Smith", at: now - 20_000 }] } : {}) }),
     y1: roomTag({ roomId: ROOM_5110, sessionId: "y1", live: true, takenOver: { by: NICK, byName: "Nick Smith", at: now - 12 * min } }),
   },
@@ -1643,7 +1651,10 @@ const api: Record<string, (...a: any[]) => any> = {
       setTimeout(() => {
         const still = byId(id);
         if (!still || still.shell || still.status === "dead") return;
-        sessions = sessions.map((x) => (x.id === id ? quitToTerminal(x) : x));
+        // a room session started in its room's sandbox is left exited; any other becomes a terminal
+        const tag = live.own[id];
+        const held = !!tag && !tag.guards?.unsandboxed;
+        sessions = sessions.map((x) => (x.id === id ? (held ? quitInSandbox(x) : quitToTerminal(x)) : x));
         sessionsChanged();
       }, 150);
       return;
@@ -1740,6 +1751,19 @@ const api: Record<string, (...a: any[]) => any> = {
     const r = await api.relaunchSession(id);
     return r ?? err("Its saved record is gone, so there's nothing to resume: close the pane");
   },
+  // main's openTerminal: a pane whose agent quit in its room's sandbox becomes the terminal, on its owner's click
+  openTerminal: async (id: string) => {
+    const taken = takenOverRefusal(id);
+    if (taken) return { refused: taken };
+    const s = byId(id);
+    if (!s) return { refused: "It isn't open here" };
+    if (!s.quitInSandbox || s.status !== "dead" || s.shell) return { refused: "Only a pane whose agent quit in its room's sandbox opens a terminal this way" };
+    await startLag();
+    const next = quitToTerminal(s);
+    sessions = sessions.map((x) => (x.id === id ? next : x));
+    sessionsChanged();
+    return next;
+  },
   // main's resumeAgent: a terminal its agent quit into goes back to that agent pane under its id, its conversation resumed
   resumeAgent: async (id: string) => {
     const taken = takenOverRefusal(id);
@@ -1774,7 +1798,7 @@ const api: Record<string, (...a: any[]) => any> = {
     const p = previous.find((x) => x.id === id) ?? byId(id);
     if (!p) return null;
     // what main's create() starts it with: nothing of how its record last stood
-    const next: SessionInfo = { ...p, status: "idle", exitCode: undefined, createdAt: Date.now(), finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null };
+    const next: SessionInfo = { ...p, status: "idle", exitCode: undefined, quitInSandbox: undefined, createdAt: Date.now(), finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null };
     sessions = [...sessions.filter((s) => s.id !== id), next];
     sessionsChanged();
     // main's LandscapeStore.sessionReopened: a place outside its own area goes

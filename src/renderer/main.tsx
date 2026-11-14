@@ -1131,6 +1131,14 @@ function App() {
     setTimeout(() => inputStamp() === since && focusTerm(next.id), 50);
   };
 
+  /** Open a terminal in exited pane `s`, whose agent quit in its room's sandbox (sessions:openTerminal): refused or failed, said. */
+  const openTerminal = async (s: SessionInfo) => {
+    const r = await settled(window.mb.openTerminal(s.id));
+    if ("refused" in r) return alert(`Couldn't open a terminal in ${titleOf(s)}: ${r.refused}`);
+    if (failed(`Couldn't open a terminal in ${titleOf(s)}`, r)) return void (await refresh());
+    await refresh();
+  };
+
   /** `toAgent`: a terminal its agent quit into goes back to that agent pane, on its conversation (sessions:resumeAgent). */
   const resumeDead = async (s: SessionInfo, toAgent = false) => {
     const since = inputStamp();
@@ -1267,6 +1275,7 @@ function App() {
       teamNotice={<ReceivedNotice received={receivedFor(s)} onReview={setReviewing} />}
       onRestart={() => void restartSession(s)}
       onResumeAgent={() => void resumeDead(s, true)}
+      onOpenTerminal={() => void openTerminal(s)}
     />
   );
   // ---- tool windows and the workspace's actions (S5) ----

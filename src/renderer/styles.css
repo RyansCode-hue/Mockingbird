@@ -428,6 +428,8 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
   font: 400 10.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; text-align: left;
 }
 .dead-tail-none { color: var(--text-3); font-style: italic; }
+/* why an exited pane offers what it does (an agent that quit in its room's sandbox) */
+.dead-why { max-width: min(92%, 620px); text-align: center; font: 400 11px/1.5 var(--ui); color: var(--text-2); }
 
 /* assistant pane */
 .pane.kind-assistant { border-color: rgba(79, 179, 165, .28); }

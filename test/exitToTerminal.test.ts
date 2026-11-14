@@ -43,10 +43,13 @@ const ptyOf = (id: string) => ptys.filter((p) => p.env.MOCKINGBIRD_SESSION === i
 /** A session manager over `saved` (a store's records), as main builds one; a second over the same records is the app started again. */
 async function manager(saved: SessionInfo[] = []) {
   const { SessionManager } = await import("../src/main/sessions");
+  /** A save that fails: `refuse` says which (the record being saved, and how many saves came before it). */
+  const faults = { refuse: (_i: SessionInfo, _n: number): boolean => false, saves: 0 };
   const store = {
     settings: { claudeBin: "/bin/echo", codexBin: "/bin/echo", workTrackerPath: tempDir("worktracker") },
     state: { sessions: saved },
     upsertSession(i: SessionInfo) {
+      if (faults.refuse(i, faults.saves++)) throw new Error("ENOSPC: no space left on device");
       const k = saved.findIndex((x) => x.id === i.id);
       if (k >= 0) saved[k] = i;
       else saved.push(i);
@@ -61,7 +64,7 @@ async function manager(saved: SessionInfo[] = []) {
   m.scrollbackDir = scrollback;
   const statuses: SessionStatus[] = [];
   m.onStatusChanged((info) => statuses.push(info.status));
-  return { m, saved, statuses };
+  return { m, saved, statuses, faults };
 }
 const scrollback = path.join(tempDir("sb"), "scrollback");
 
@@ -98,19 +101,122 @@ describe("an agent quitting on its own (exit code 0)", () => {
     const agent = ptyOf(s.id);
     agent.exit(0);
     // what tells a terminal from an agent pane changes at once, before any shell starts
-    expect(info(t.m, s.id)).toMatchObject({ id: s.id, shell: true, agentQuit: "claude", status: "idle", conversation: { agent: "claude", id: "conv-1" } });
+    expect(info(t.m, s.id)).toMatchObject({ id: s.id, shell: true, agentQuit: { agent: "claude" }, status: "idle", conversation: { agent: "claude", id: "conv-1" } });
     expect(info(t.m, s.id)!.agent).toBeUndefined();
     await nextPty(s.id, agent);
     const shell = ptyOf(s.id);
     expect(shell.args).toEqual(["-il"]);
     expect(shell.cwd).toBe(folder);
-    expect(info(t.m, s.id)).toMatchObject({ id: s.id, shell: true, agentQuit: "claude", status: "idle", cwd: folder, title: "builder", model: "opus", conversation: { agent: "claude", id: "conv-1" } });
-    expect(t.saved.find((x) => x.id === s.id)).toMatchObject({ shell: true, agentQuit: "claude", conversation: { agent: "claude", id: "conv-1" } });
+    expect(info(t.m, s.id)).toMatchObject({ id: s.id, shell: true, agentQuit: { agent: "claude" }, status: "idle", cwd: folder, title: "builder", model: "opus", conversation: { agent: "claude", id: "conv-1" } });
+    expect(t.saved.find((x) => x.id === s.id)).toMatchObject({ shell: true, agentQuit: { agent: "claude" }, conversation: { agent: "claude", id: "conv-1" } });
     const buffer = t.m.buffer(s.id);
     expect(buffer).toContain("The org picker remembers the last org now.");
     expect(buffer).toContain(`Claude exited — this is now a terminal in ${tildePath(folder)}.`);
     expect(buffer.indexOf("remembers the last org")).toBeLessThan(buffer.indexOf("Claude exited"));
+    expect(buffer).toContain("── Claude exited · earlier output above ──");
+    expect(buffer).not.toContain("restarted");
     expect(t.statuses).not.toContain("dead");
+  });
+
+  it("tells its turn's end with it still the agent pane, as an exit would (a room session's backup follows it)", async () => {
+    const t = await manager();
+    const s = await running(t.m);
+    t.m.statusFromHook({ paneId: s.id, status: "working", prompted: true });
+    const seen: { before: string; status: string; shell: boolean }[] = [];
+    t.m.onStatusChanged((i, before) => seen.push({ before, status: i.status, shell: !!i.shell }));
+    const agent = ptyOf(s.id);
+    agent.exit(0); // Ctrl-C twice mid-turn
+    expect(seen[0]).toEqual({ before: "working", status: "idle", shell: false });
+    await nextPty(s.id, agent);
+  });
+
+  it("is left exited when what ends with its agent can't be ended, saying so in the pane: no shell starts", async () => {
+    const t = await manager();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    t.m.onAgentQuit(() => {
+      throw new Error("the room's typing grants couldn't be read");
+    });
+    const s = await running(t.m);
+    const n = ptys.length;
+    ptyOf(s.id).exit(0);
+    expect(info(t.m, s.id)).toMatchObject({ status: "dead", exitCode: 0, agent: "claude" });
+    expect(info(t.m, s.id)!.shell).toBeUndefined();
+    expect(t.m.buffer(s.id)).toContain("Claude exited, and no terminal opened here: what ends with it couldn't be ended (the room's typing grants couldn't be read)");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ptys.length).toBe(n);
+  });
+
+  it("puts its record back and leaves it exited when its record as a terminal can't be saved: nothing escapes the pty's exit", async () => {
+    const t = await manager();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    t.m.setAgentVersions({ claude: "2.1.400" });
+    const s = await running(t.m);
+    t.faults.refuse = (i) => !!i.shell;
+    const n = ptys.length;
+    expect(() => ptyOf(s.id).exit(0)).not.toThrow();
+    expect(info(t.m, s.id)).toMatchObject({ status: "dead", exitCode: 0, agent: "claude", agentVersion: "2.1.400" });
+    expect(info(t.m, s.id)!.shell).toBeUndefined();
+    expect(info(t.m, s.id)!.agentQuit).toBeUndefined();
+    expect(t.m.buffer(s.id)).toContain("Claude exited, and a terminal couldn't open here: it couldn't be saved (ENOSPC: no space left on device)");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ptys.length).toBe(n);
+  });
+
+  it("brings the pane back, exited and saying why, when the terminal's launch can't be saved once its shell took its place", async () => {
+    const t = await manager();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    t.m.setAgentVersions({ claude: "2.1.400" });
+    const s = await running(t.m);
+    const agent = ptyOf(s.id);
+    const from = t.faults.saves;
+    // the flip's save goes through; the launch's own save, its shell started, doesn't
+    t.faults.refuse = (i, n) => n === from + 1;
+    agent.exit(0);
+    await vi.waitFor(() => expect(info(t.m, s.id)?.status).toBe("dead"));
+    const shell = ptyOf(s.id);
+    expect(shell).not.toBe(agent);
+    expect(shell.killed).toBe(true);
+    expect(info(t.m, s.id)).toMatchObject({ agent: "claude", agentVersion: "2.1.400", exitCode: 0 });
+    expect(info(t.m, s.id)!.shell).toBeUndefined();
+    expect(t.m.buffer(s.id)).toContain("Claude exited, and a terminal couldn't open here: The terminal couldn't be saved (ENOSPC: no space left on device), so it was stopped");
+  });
+
+  it("says it was stopped, not that it couldn't start, when Stop comes during the switch-over", async () => {
+    const t = await manager();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    t.m.setAgentVersions({ claude: "2.1.400" });
+    const s = await running(t.m);
+    const n = ptys.length;
+    ptyOf(s.id).exit(0);
+    t.m.stop(s.id);
+    await vi.waitFor(() => expect(info(t.m, s.id)?.agent).toBe("claude"));
+    expect(info(t.m, s.id)).toMatchObject({ status: "dead", agentVersion: "2.1.400", exitCode: 0 });
+    expect(info(t.m, s.id)!.shell).toBeUndefined();
+    expect(t.m.buffer(s.id)).toContain("Claude exited, and it was stopped before its terminal opened.");
+    expect(t.m.buffer(s.id)).not.toContain("couldn't open");
+    expect(errors).not.toHaveBeenCalled();
+    expect(ptys.length).toBe(n);
+  });
+
+  it("does the same for Codex: a terminal that says so, and Resume Codex brings back its conversation", async () => {
+    const t = await manager();
+    const day = path.join(os.homedir(), ".codex", "sessions", "2026", "11", "13");
+    fs.mkdirSync(day, { recursive: true });
+    fs.writeFileSync(path.join(day, "rollout-2026-11-13T10-00-00-cx-conv-1.jsonl"), "{}\n");
+    const s = await t.m.create({ ...agentPane, agent: "codex", model: undefined, title: "tests" });
+    t.m.statusFromHook({ paneId: s.id, conversationId: "cx-conv-1", agent: "codex", status: "idle", started: true });
+    const agent = ptyOf(s.id);
+    agent.emit("• Added tests/api/test_last_org.py\r\n› /quit\r\n");
+    agent.exit(0);
+    await nextPty(s.id, agent);
+    expect(info(t.m, s.id)).toMatchObject({ shell: true, agentQuit: { agent: "codex", conversation: "cx-conv-1" } });
+    expect(t.m.buffer(s.id)).toContain(`Codex exited — this is now a terminal in ${tildePath(folder)}.`);
+    expect(t.m.buffer(s.id)).toContain("── Codex exited · earlier output above ──");
+    expect(await t.m.resumeAgent(s.id)).toMatchObject({ id: s.id, agent: "codex", conversation: { agent: "codex", id: "cx-conv-1" } });
+    expect(ptyOf(s.id).args[1]).toContain("'resume' 'cx-conv-1'");
   });
 
   it("isn't a crash: a non-zero exit, or one ended by a signal, leaves it exited as before", async () => {
@@ -226,6 +332,84 @@ describe("an agent quitting on its own (exit code 0)", () => {
   });
 });
 
+/** What a team room launch is given, for a pane in a room's shared group: here only its guards matter. */
+const roomLaunch = (unsandboxed: boolean) => async () => ({
+  env: {},
+  denyReads: [],
+  codexPermissions: [],
+  claudeSettings: null,
+  instructions: null,
+  allowTools: [],
+  inline: false,
+  guards: { secrets: true, coauthors: true, ...(unsandboxed ? { unsandboxed: true as const } : {}) },
+  sandboxMarker: null,
+  agentEnv: {},
+  codexFolderNotice: false,
+});
+
+describe("an agent quitting in its team room's sandbox", () => {
+  it("leaves the pane exited, no shell started, until its owner opens a terminal there", async () => {
+    const t = await manager();
+    t.m.roomLaunch = roomLaunch(false);
+    const told: string[] = [];
+    t.m.onAgentQuit((i) => told.push(i.id));
+    const s = await running(t.m);
+    const n = ptys.length;
+    ptyOf(s.id).exit(0);
+    expect(told).toEqual([s.id]);
+    expect(info(t.m, s.id)).toMatchObject({ status: "dead", exitCode: 0, agent: "claude", quitInSandbox: true });
+    expect(info(t.m, s.id)!.shell).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ptys.length).toBe(n);
+    // Open a terminal here: what ends with its agent is ended again, then it's the terminal any quit makes
+    const r = await t.m.openTerminal(s.id);
+    expect(r).toMatchObject({ id: s.id, shell: true, agentQuit: { agent: "claude", conversation: "conv-1" }, status: "idle" });
+    expect(told).toEqual([s.id, s.id]);
+    expect(ptyOf(s.id).args).toEqual(["-il"]);
+    expect(info(t.m, s.id)!.quitInSandbox).toBeUndefined();
+    expect(t.m.buffer(s.id)).toContain(`Claude exited — this is now a terminal in ${tildePath(folder)}.`);
+    expect(await t.m.openTerminal(s.id)).toEqual({ refused: "Only a pane whose agent quit in its room's sandbox opens a terminal this way" });
+  });
+
+  it("brings the agent back with its Resume instead", async () => {
+    const t = await manager();
+    t.m.roomLaunch = roomLaunch(false);
+    const s = await running(t.m);
+    ptyOf(s.id).exit(0);
+    expect(await t.m.resume(s.id)).toMatchObject({ id: s.id, agent: "claude" });
+    expect(info(t.m, s.id)!.quitInSandbox).toBeUndefined();
+    expect(ptyOf(s.id).args[1]).toContain("'--resume' 'conv-1'");
+  });
+
+  it("refuses Open a terminal here for any other pane, and while what ends with its agent can't be ended", async () => {
+    const t = await manager();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    t.m.roomLaunch = roomLaunch(false);
+    const crashed = await running(t.m, "conv-2");
+    ptyOf(crashed.id).exit(1);
+    expect(await t.m.openTerminal(crashed.id)).toEqual({ refused: "Only a pane whose agent quit in its room's sandbox opens a terminal this way" });
+    const s = await running(t.m);
+    ptyOf(s.id).exit(0);
+    t.m.onAgentQuit(() => {
+      throw new Error("no grants file");
+    });
+    const n = ptys.length;
+    expect(await t.m.openTerminal(s.id)).toEqual({ refused: "What ends with its agent couldn't be ended (no grants file), so no terminal opened" });
+    expect(ptys.length).toBe(n);
+  });
+
+  it("isn't held for a room session started with its room's sandbox switched off on this Mac: it becomes a terminal at once", async () => {
+    const t = await manager();
+    t.m.roomLaunch = roomLaunch(true);
+    const s = await running(t.m);
+    const agent = ptyOf(s.id);
+    agent.exit(0);
+    await nextPty(s.id, agent);
+    expect(info(t.m, s.id)).toMatchObject({ shell: true, agentQuit: { agent: "claude" } });
+    expect(info(t.m, s.id)!.quitInSandbox).toBeUndefined();
+  });
+});
+
 describe("a terminal its agent quit into", () => {
   async function quit(m: Awaited<ReturnType<typeof manager>>["m"], conv = "conv-1") {
     const s = await running(m, conv);
@@ -269,7 +453,9 @@ describe("a terminal its agent quit into", () => {
     agent.exit(0);
     expect(heard).toEqual([["failed", "“builder”'s Claude quit before this reached it: it's a terminal now"]]);
     await nextPty(s.id, agent);
-    expect(info(t.m, s.id)!.queuedCount).toBe(0);
+    // still counted, and still overdue in time, as on an exited pane
+    expect(info(t.m, s.id)!.queuedCount).toBe(1);
+    expect(t.m.overdueMessages(Date.now() + 16 * 60_000, 15 * 60_000)).toEqual([expect.objectContaining({ from: "rv000001", to: s.id, quit: "claude" })]);
     await new Promise((r) => setTimeout(r, 200));
     expect(ptyOf(s.id).writes).toEqual([]);
     // Resume Claude: the agent pane gets what waited for it, once it's at its prompt
@@ -299,18 +485,33 @@ describe("a terminal its agent quit into", () => {
     expect(t.m.buffer(s.id)).toContain("git status");
     // an agent pane again: quitting it makes it a terminal again
     back.exit(0);
-    expect(info(t.m, s.id)).toMatchObject({ shell: true, agentQuit: "claude" });
+    expect(info(t.m, s.id)).toMatchObject({ shell: true, agentQuit: { agent: "claude" } });
   });
 
   it("goes back to its agent from its exited shell too, while its own Resume reopens the terminal", async () => {
     const t = await manager();
     const s = await quit(t.m);
     ptyOf(s.id).exit(0); // `exit` typed in the shell: a terminal's exit is any pane's
-    expect(info(t.m, s.id)).toMatchObject({ status: "dead", shell: true, agentQuit: "claude" });
-    expect(await t.m.resume(s.id)).toMatchObject({ id: s.id, shell: true, agentQuit: "claude" });
+    expect(info(t.m, s.id)).toMatchObject({ status: "dead", shell: true, agentQuit: { agent: "claude" } });
+    expect(await t.m.resume(s.id)).toMatchObject({ id: s.id, shell: true, agentQuit: { agent: "claude" } });
     expect(ptyOf(s.id).args).toEqual(["-il"]);
     ptyOf(s.id).exit(0);
     expect(await t.m.resumeAgent(s.id)).toMatchObject({ id: s.id, agent: "claude" });
+    expect(ptyOf(s.id).args[1]).toContain("'--resume' 'conv-1'");
+  });
+
+  it("resumes the conversation its agent quit from, whatever runs in it since; that conversation running elsewhere isn't its news", async () => {
+    const t = await manager();
+    const s = await quit(t.m);
+    const started = Math.floor(info(t.m, s.id)!.createdAt / 1000);
+    // conv-1 resumed outside Mockingbird: its untagged events aren't this terminal's
+    expect(t.m.statusFromHook({ conversationId: "conv-1", cwd: folder, agent: "claude", status: "working", at: started + 5 })).toBeNull();
+    expect(info(t.m, s.id)!.status).toBe("idle");
+    // claude run by hand in the terminal, on a conversation of its own
+    transcript("conv-hand");
+    expect(t.m.statusFromHook({ paneId: s.id, conversationId: "conv-hand", agent: "claude", status: "idle", started: true, at: started + 5 })).toMatchObject({ conversation: { agent: "claude", id: "conv-hand" } });
+    expect(info(t.m, s.id)!.agentQuit).toEqual({ agent: "claude", conversation: "conv-1" });
+    expect(await t.m.resumeAgent(s.id)).toMatchObject({ id: s.id, agent: "claude", conversation: { agent: "claude", id: "conv-1" } });
     expect(ptyOf(s.id).args[1]).toContain("'--resume' 'conv-1'");
   });
 
@@ -333,14 +534,14 @@ describe("a terminal its agent quit into", () => {
     await before.m.shutdown(10);
     // the app started again over the same records
     const after = await manager(before.saved);
-    expect(after.m.resumable().find((x) => x.id === s.id)).toMatchObject({ shell: true, agentQuit: "claude", conversation: { agent: "claude", id: "conv-1" } });
+    expect(after.m.resumable().find((x) => x.id === s.id)).toMatchObject({ shell: true, agentQuit: { agent: "claude" }, conversation: { agent: "claude", id: "conv-1" } });
     const freed: unknown[] = [];
     after.m.freeConversation = async (c) => {
       freed.push(c);
       return null;
     };
     const reopened = await after.m.relaunch(s.id);
-    expect(reopened).toMatchObject({ id: s.id, shell: true, agentQuit: "claude", conversation: { agent: "claude", id: "conv-1" } });
+    expect(reopened).toMatchObject({ id: s.id, shell: true, agentQuit: { agent: "claude" }, conversation: { agent: "claude", id: "conv-1" } });
     // a plain shell: its agent isn't run again, and the conversation isn't taken from wherever else it's open
     expect(ptyOf(s.id).args).toEqual(["-il"]);
     expect(freed).toEqual([]);

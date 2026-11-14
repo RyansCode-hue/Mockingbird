@@ -355,6 +355,9 @@ export interface TypingAnswer {
   prompt?: boolean;
 }
 
+/** What a teammate's ask to type into a terminal says it is, wherever the owner is asked (strip, Needs you, notification). */
+export const TERMINAL_TYPING = "a terminal: a shell on your Mac, outside the room's sandbox";
+
 /** A teammate allowed to type into one of this install's sessions. */
 export interface TypingGrant {
   member: MemberId;

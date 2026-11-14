@@ -1303,6 +1303,53 @@ describe("take-over: the owner's hand-over when they're online, none when they'r
   const caughtUp = (t: Awaited<ReturnType<typeof setup>>) =>
     until(() => (t.ryanM.team.room(t.roomId)?.events ?? 0) === t.nickM.team.room(t.roomId)!.events, "both to hold the same events");
 
+  /** Ryan's session as it is once its agent quit into a terminal (SessionManager.toTerminal). */
+  const asTerminal = (s: SessionInfo): SessionInfo => {
+    const { agent: _agent, ...rest } = s;
+    return { ...rest, shell: true, agentQuit: { agent: "claude", conversation: CONV } };
+  };
+
+  it("isn't handed over once its agent quit into a terminal: the taker hears why, and the owner's shell isn't stopped", async () => {
+    const t = await setup(["Ryan", "Nick"]);
+    await t.ryan.svc.turnEnded("s1");
+    await caughtUp(t);
+    t.ryan.sessions.set("s1", asTerminal(t.ryan.sessions.get("s1")!));
+    await expect(t.nick.svc.takeOver(t.roomId, "s1")).rejects.toThrow("Ryan's Mockingbird couldn't hand “Donor entities” over: its agent quit, so it's a terminal now: a terminal isn't handed over — ask them to resume its agent first");
+    expect(t.ryan.asks).toEqual([]);
+    expect(t.ryan.stopped).toEqual([]);
+    expect(backupIn(t.nickM, t.roomId)!.takenOver).toBeNull();
+  });
+
+  it("isn't handed over when its agent quits into a terminal while the owner is asked: no snapshot goes, and the shell isn't stopped", async () => {
+    const t = await setup(["Ryan", "Nick"]);
+    await t.ryan.svc.turnEnded("s1");
+    await caughtUp(t);
+    const asked = t.nick.svc.takeOver(t.roomId, "s1");
+    await until(() => t.ryan.asks.length === 1, "Ryan to be asked");
+    t.ryan.sessions.set("s1", asTerminal(t.ryan.sessions.get("s1")!));
+    t.ryan.svc.answerAsk(t.ryan.asks[0].askId, "handover");
+    await expect(asked).rejects.toThrow(/couldn't hand “Donor entities” over: its agent quit, so it's a terminal now/);
+    expect(t.ryan.stopped).toEqual([]);
+    expect(backupIn(t.nickM, t.roomId)!.takenOver).toBeNull();
+  });
+
+  it("leaves the owner's shell running when a session whose agent quit into a terminal is taken over while they're away; its agent doesn't resume there", async () => {
+    const t = await setup(["Ryan", "Nick", "Sam"]);
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    await until(() => !!refIn(t.nickClone, roomBackupRef(t.roomId, "s1")), "Nick's copy");
+    t.ryan.sessions.set("s1", asTerminal(t.ryan.sessions.get("s1")!));
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => !t.nickM.team.presence(t.roomId).includes(t.ryanM.id), "Ryan to drop");
+    const r = await t.nick.svc.takeOver(t.roomId, "s1");
+    await until(() => backupIn(t.samM!, t.roomId)?.takenOver?.newSessionId === r.sessionId, "Sam to hear of it");
+    t.net.setOnline(t.ryanM.id, true);
+    await until(() => backupIn(t.ryanM, t.roomId)?.takenOver?.newSessionId === r.sessionId, "Ryan's Mac to hear of it");
+    await until(() => !!t.ryan.svc.relaunchRefusal("s1"), "Ryan's Mac to honour it");
+    expect(t.ryan.svc.relaunchRefusal("s1")).toMatch(/continues on Nick's laptop/);
+    expect(t.ryan.stopped).toEqual([]);
+  }, 30_000);
+
   it("with the owner offline, any member takes it over with no grant, and every log agrees on who holds it", async () => {
     const t = await setup(["Ryan", "Nick", "Sam"]);
     await t.ryan.svc.turnEnded("s1");

@@ -56,6 +56,7 @@ import {
   type TypingState,
   type ViewMessage,
   TYPING_MINUTES,
+  TERMINAL_TYPING,
   outsideRoomSandbox,
   roomSandboxOff,
   roomsUnsandboxedOf,
@@ -237,6 +238,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   private asks = new Map<string, Map<MemberId, TypingAsk & { roomId: RoomId }>>();
   /** When this install's person last said no to a teammate typing, per `${sessionId}\n${member}`. */
   private denied = new Map<string, number>();
+  /** Why one of `denied`'s holds that wasn't a no: the session became a terminal (agentQuit). */
+  private deniedWhy = new Map<string, string>();
   /** Teammates whose Mockingbird can't hear typing answers (older), said once each. */
   private oldViewers = new Set<MemberId>();
 
@@ -932,7 +935,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     if ((params as { ask?: unknown }).ask === true && !this.grantOf(s.id, from) && !this.asks.get(s.id)?.has(from)) {
       const no = this.denied.get(`${s.id}\n${from}`);
       if (no !== undefined && now - no < ASK_AGAIN_MS) {
-        return { session: s.id, state: "denied", why: `${this.selfNameIn(roomId!)} said no a moment ago: ask again in a minute` };
+        return { session: s.id, state: "denied", why: this.deniedWhy.get(`${s.id}\n${from}`) ?? `${this.selfNameIn(roomId!)} said no a moment ago: ask again in a minute` };
       }
       const team = this.d.team();
       const room = team?.room(roomId!);
@@ -942,7 +945,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       this.asks.set(s.id, asks);
       this.d.remoteAudit?.record("typing.asked", { roomId, member: from, session: s.id, title: s.ticketTitle ?? s.title });
       if (shouldNotify({ settings: this.d.settings(), kind: "other", now: new Date(now) })) {
-        this.d.notify(`${name} wants to type`, `In ${quoted(s.ticketTitle ?? s.title, 80)}: allow it or not in Needs you, or on its workspace`, s.id);
+        const where = s.shell ? `In ${quoted(s.ticketTitle ?? s.title, 80)}, ${TERMINAL_TYPING}` : `In ${quoted(s.ticketTitle ?? s.title, 80)}`;
+        this.d.notify(`${name} wants to type`, `${where}: allow it or not in Needs you, or on its workspace`, s.id);
       }
       this.changed();
     }
@@ -970,6 +974,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       throw new Error(`${memberName(room.members, member)} isn't asking to type in ${quoted(s.ticketTitle ?? s.title, 80)}: there's nothing to allow`);
     }
     this.asks.get(sessionId)?.delete(member);
+    this.deniedWhy.delete(`${sessionId}\n${member}`);
     if (choice === "session" || choice === "minutes") {
       const until = choice === "minutes" ? now + TYPING_MINUTES * 60_000 : null;
       const grants = this.grants.get(sessionId) ?? new Map();
@@ -1003,22 +1008,26 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   }
 
   /**
-   * One of this install's agent panes is becoming a terminal, its agent having quit (SessionManager.onAgentQuit): every
-   * allowance and ask to type into it ends now, before its shell starts, each teammate told. Typing into a sandboxed
-   * agent never carries over to a shell on this Mac, outside any sandbox: the owner allows that terminal anew, if at all.
+   * One of this install's agent panes' agent quit on its own (SessionManager.onAgentQuit), before any shell can start
+   * in it: every allowance and ask to type into it ends now, each teammate told, and each waits out the cooldown a no
+   * starts (an ask sent again at once lands on nothing). Typing allowed into a sandboxed agent never carries over to a
+   * shell on this Mac, outside any sandbox: the owner allows a terminal there anew, if at all.
    */
   private agentQuit(info: SessionInfo): void {
-    const grants = this.grants.get(info.id);
-    const asks = this.asks.get(info.id);
+    const grants = [...(this.grants.get(info.id)?.values() ?? [])];
+    const asks = [...(this.asks.get(info.id)?.values() ?? [])];
     this.grants.delete(info.id);
     this.asks.delete(info.id);
-    if (!grants?.size && !asks?.size) return;
-    const title = info.ticketTitle ?? info.title;
-    for (const g of grants?.values() ?? []) {
-      this.d.remoteAudit?.record("typing.ended", { roomId: g.roomId, member: g.member, session: info.id, title }, { reason: "its agent quit, so it's a terminal now" });
-      this.tellTyping(g.roomId, g.member, { session: info.id, state: "view-only", why: `the agent in ${quoted(title, 80)} quit: it's a terminal now` });
+    if (!grants.length && !asks.length) return;
+    const title = quoted(info.ticketTitle ?? info.title, 80);
+    const now = this.now();
+    for (const g of grants) this.d.remoteAudit?.record("typing.ended", { roomId: g.roomId, member: g.member, session: info.id, title: info.ticketTitle ?? info.title }, { reason: "its agent quit" });
+    for (const x of [...grants, ...asks]) {
+      const key = `${info.id}\n${x.member}`;
+      this.denied.set(key, now);
+      this.deniedWhy.set(key, `the agent in ${title} quit a moment ago: ask again in a minute`);
+      this.tellTyping(x.roomId, x.member, { session: info.id, state: "denied", why: `the agent in ${title} quit, which ends typing into it` });
     }
-    for (const a of asks?.values() ?? []) this.tellTyping(a.roomId, a.member, { session: info.id, state: "view-only", why: `the agent in ${quoted(title, 80)} quit: it's a terminal now` });
     this.changed();
   }
 
@@ -1060,7 +1069,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       }
       if (!asks.size) this.asks.delete(sessionId);
     }
-    for (const [k, at] of this.denied) if (now - at >= ASK_TTL_MS) this.denied.delete(k);
+    for (const [k, at] of this.denied) {
+      if (now - at < ASK_TTL_MS) continue;
+      this.denied.delete(k);
+      this.deniedWhy.delete(k);
+    }
     if (changed) this.changed();
   }
 

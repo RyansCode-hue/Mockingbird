@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, type AgentQuit, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
 import { dirtyFileCount } from "./scm";
@@ -63,11 +63,12 @@ export function finishedAtAfter(prev: Pick<SessionInfo, "status" | "finishedAt">
   return prev.finishedAt ?? null;
 }
 
-export function restartDivider(at: Date, earlier: string): string {
+/** `what`: what happened to the earlier output's program, said on the divider; when it restarted otherwise. */
+export function restartDivider(at: Date, earlier: string, what?: string): string {
   const entered = Math.max(earlier.lastIndexOf("\x1b[?1049h"), earlier.lastIndexOf("\x1b[?1047h"), earlier.lastIndexOf("\x1b[?47h"));
   const left = Math.max(earlier.lastIndexOf("\x1b[?1049l"), earlier.lastIndexOf("\x1b[?1047l"), earlier.lastIndexOf("\x1b[?47l"));
   const when = at.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  return `${entered > left ? "\x1b[?1049l" : ""}\r\n\x1b[?25h\x1b[0m\x1b[2m── restarted ${when} · earlier output above ──\x1b[0m\r\n\r\n`;
+  return `${entered > left ? "\x1b[?1049l" : ""}\r\n\x1b[?25h\x1b[0m\x1b[2m── ${what ?? `restarted ${when}`} · earlier output above ──\x1b[0m\r\n\r\n`;
 }
 
 /** Something Mockingbird did while starting a pane that its user should know about, as the pane shows it above the agent's output. */
@@ -147,6 +148,8 @@ export interface OverdueMessage {
   /** The target's status can't be trusted: its agent's hooks never reported (SessionInfo.hooksSilent). */
   hooksSilent: boolean;
   waitedMs: number;
+  /** The target is a terminal now, this agent having quit: the message waits for that agent's next launch. */
+  quit?: AgentKind;
 }
 
 /**
@@ -245,7 +248,7 @@ interface LiveSession {
   prompts: number; // prompts its agent has taken this launch (UserPromptSubmit), Mockingbird's own notices not counted
   ownPrompts: number; // notices submitted whose UserPromptSubmit hasn't come yet: those prompts aren't counted
   promptAt: number | null; // when the latest of those prompts came (SessionInfo.promptAt)
-  toTerminal: boolean; // its agent quit and the terminal it becomes is starting (quitToTerminal): its pty has exited
+  toTerminal: boolean; // its agent quit and the terminal it becomes is starting (toTerminal): its pty has exited
 }
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
@@ -300,9 +303,24 @@ export async function folderGone(s: Pick<SessionInfo, "cwd" | "repoPath" | "bran
 type CreateOptions = {
   notice?: string;
   beforeSpawn?: () => void;
-  /** A terminal started for agent pane `agent` that quit (SessionInfo.agentQuit), remembering its conversation. */
-  agentQuit?: { agent: AgentKind; conversation: { agent: AgentKind; id: string } | null };
+  /** A terminal started where agent pane `agent` quit (SessionInfo.agentQuit), for Resume <agent>. */
+  agentQuit?: AgentQuit;
+  /** A terminal's SessionInfo.conversation, carried from the pane it was before. */
+  conversation?: { agent: AgentKind; id: string };
+  /** What the divider above the earlier output says happened (restartDivider). */
+  divider?: string;
 };
+
+/** What SessionManager.toTerminal changes on a pane's record besides its status, put back when it can't become a terminal. */
+const QUIT_FLIP = ["shell", "agent", "agentVersion", "agentQuit", "quitInSandbox", "exitCode", "finishedAt", "waitingReason", "waitingSince", "waitingAt", "stalledSince", "hooksSilent"] as const;
+type BeforeFlip = Pick<SessionInfo, (typeof QUIT_FLIP)[number]>;
+/** Put `was`'s fields back on `i`; one that wasn't set is taken off again. */
+function putBack(i: SessionInfo, was: BeforeFlip): void {
+  for (const k of QUIT_FLIP) {
+    if (was[k] === undefined) delete (i as Partial<SessionInfo>)[k];
+    else (i as unknown as Record<string, unknown>)[k] = was[k];
+  }
+}
 
 /** Where a persisted session runs again (SessionManager.whereAgain), and what to tell it when its folder has moved to another branch. */
 type PlaceAgain = { where: Pick<NewSessionRequest, "cwd" | "branchName" | "useWorktree">; moved?: string; warnings?: string[] };
@@ -439,8 +457,9 @@ export class SessionManager {
   private quitListeners = new Set<(info: SessionInfo) => void>();
 
   /**
-   * An agent pane's agent quit on its own, and the pane is to become a terminal (quitToTerminal): told with it still
-   * the agent pane, before any shell starts. One that throws keeps it from becoming one: it's left exited instead.
+   * An agent pane's agent quit on its own (agentQuit), or its owner opens a terminal where one quit in its room's
+   * sandbox (openTerminal): told with it still the agent pane, before any shell starts. One that throws keeps it from
+   * becoming a terminal: it's left exited instead.
    */
   onAgentQuit(cb: (info: SessionInfo) => void): () => void {
     this.quitListeners.add(cb);
@@ -540,7 +559,8 @@ export class SessionManager {
   }
 
   list(): SessionInfo[] {
-    return [...this.live.values()].map((s) => ({ ...s.info, queuedCount: s.queued.length, promptAt: s.promptAt }));
+    // a terminal's count is what waits for its agent's next launch (toTerminal)
+    return [...this.live.values()].map((s) => ({ ...s.info, queuedCount: s.queued.length + (this.undelivered.get(s.info.id)?.length ?? 0), promptAt: s.promptAt }));
   }
 
   /**
@@ -793,7 +813,7 @@ export class SessionManager {
       }
       if (this.quitting || !started || this.live.get(started.info.id) !== started) return;
       // node-pty reports a process ended by a signal with exit code 0: only one that exited by itself has quit
-      if (exitCode === 0 && !signal && this.quitToTerminal(started)) return;
+      if (exitCode === 0 && !signal && this.agentQuit(started)) return;
       started.info.exitCode = exitCode;
       this.setStatus(started.info.id, "dead");
     });
@@ -823,8 +843,8 @@ export class SessionManager {
       model: req.model || undefined,
       effort: req.effort || undefined,
       agent: req.shell ? undefined : req.agent ?? "claude",
-      conversation: req.shellResume ?? (req.shell ? opts.agentQuit?.conversation ?? undefined : undefined) ?? (req.resumeSessionId ? { agent: req.agent ?? "claude", id: req.resumeSessionId } : undefined),
-      agentQuit: (req.shell && !req.shellResume && opts.agentQuit?.agent) || undefined,
+      conversation: req.shellResume ?? (req.shell ? opts.conversation : undefined) ?? (req.resumeSessionId ? { agent: req.agent ?? "claude", id: req.resumeSessionId } : undefined),
+      agentQuit: req.shell && !req.shellResume ? opts.agentQuit : undefined,
     };
     // a relaunched pane keeps its history of conversations (its token meter adds them up)
     const before = (req.reuseId ? this.store.state.sessions.find((x) => x.id === req.reuseId) : undefined) ?? {};
@@ -855,7 +875,7 @@ export class SessionManager {
     // session's next agent launch (Resume <agent>)
     if (req.shell && owed.length) this.undelivered.set(info.id, owed.splice(0));
     const notice = [opts.notice, ...warnings].filter(Boolean).join("\n");
-    const lead = (earlier ? earlier + restartDivider(new Date(), earlier) : "") + (notice ? paneNotice(notice) : "");
+    const lead = (earlier ? earlier + restartDivider(new Date(), earlier, opts.divider) : "") + (notice ? paneNotice(notice) : "");
     const sess: LiveSession = {
       info,
       proc,
@@ -1161,24 +1181,112 @@ export class SessionManager {
   /**
    * Agent pane `s`'s agent quit on its own (/exit, Ctrl-D: its pty ended with code 0, and nothing of Mockingbird's
    * stopped it, which would have closed it, marked it exited or replaced its pty first). It becomes a terminal in its
-   * folder under its id (becomeTerminal), its place, scrollback and conversation kept for Resume <agent>. Debriefs and
-   * the Helpdesk tasks workspace don't: they exit as any pane does. False when it doesn't, for its exit to leave it dead.
+   * folder under its id (toTerminal), its place, scrollback and conversation kept for Resume <agent>. One that ran in
+   * its team room's sandbox is left exited instead (quitInSandbox): a teammate allowed to type could /exit it, and a
+   * login shell starting by itself would run this Mac's shell profile on a folder its sandboxed agent could write to; its
+   * owner opens a terminal there with a click (openTerminal), or resumes the agent. Debriefs and the Helpdesk tasks
+   * workspace exit as any pane does. False when it isn't one of these, for its exit to leave it dead.
    *
-   * Everything that tells a terminal from an agent pane changes here, before anything awaits: its record says terminal
-   * (shell, no agent), what waited for its agent is taken off it, and what had to end with its agent has (onAgentQuit:
-   * every teammate's typing grant). No shell starts, so none reads a key, until all of that is done.
+   * Its turn's end is told first, with it still the agent pane, as an exit tells it (a room session's backup follows).
+   * Then what ends with its agent does (onAgentQuit: every teammate's typing grant); one that can't leaves it exited.
    */
-  private quitToTerminal(s: LiveSession): boolean {
+  private agentQuit(s: LiveSession): boolean {
     const i = s.info;
     if (i.shell || i.debrief || i.role === "tasks" || i.status === "dead") return false;
     const agent = i.agent ?? "claude";
+    if (i.status !== "idle") {
+      try {
+        this.setStatus(i.id, "idle", undefined, null);
+      } catch (err) {
+        console.error(`[sessions] ${i.id}: its turn's end, as its ${agentLabel(agent)} quit, couldn't be saved:`, err);
+      }
+    }
+    const ended = this.endWithAgent(i);
+    if (ended) {
+      this.exited(s, 0, `${agentLabel(agent)} exited, and no terminal opened here: what ends with it couldn't be ended (${ended})`);
+      return true;
+    }
+    if (s.guards && !s.guards.unsandboxed) {
+      i.quitInSandbox = true;
+      this.exited(s, 0);
+      return true;
+    }
+    void this.toTerminal(s, agent);
+    return true;
+  }
+
+  /** Tell onAgentQuit's listeners that agent pane `i`'s agent quit: why one of them failed, or null when none did. */
+  private endWithAgent(i: SessionInfo): string | null {
     for (const l of this.quitListeners) {
       try {
         l(i);
       } catch (err) {
-        console.error(`[sessions] ${i.id}'s ${agentLabel(agent)} quit, and what ends with it couldn't be ended, so it's left exited rather than becoming a terminal:`, err);
-        return false;
+        console.error(`[sessions] ${i.id}'s agent quit, and what ends with it couldn't be ended:`, err);
+        return err instanceof Error ? err.message : String(err);
       }
+    }
+    return null;
+  }
+
+  /** Show `text` in pane `s`, after what it shows, as Mockingbird's own line (paneNotice). */
+  private say(s: LiveSession, text: string): void {
+    const note = paneNotice(text);
+    s.buffer = (s.buffer + note).slice(-BUFFER_MAX);
+    s.total += note.length;
+    s.outputs++;
+    this.wc?.send("session:data", s.info.id, note);
+    this.tell("output", this.outputListeners, s.info.id, note, s.total, s.epoch);
+  }
+
+  /** Leave pane `s` exited with `exitCode`, saying `note` in it. Never throws (a pty's exit calls it): a save that fails is logged. */
+  private exited(s: LiveSession, exitCode: number, note?: string): void {
+    if (note) this.say(s, note);
+    s.info.exitCode = exitCode;
+    try {
+      if (s.info.status !== "dead") return this.setStatus(s.info.id, "dead");
+      this.store.upsertSession(s.info);
+      this.emitChanged();
+    } catch (err) {
+      console.error(`[sessions] ${s.info.id} is exited, and that couldn't be saved:`, err);
+      s.info.status = "dead";
+      this.emitChanged();
+    }
+  }
+
+  /**
+   * Agent pane `s`, whose agent quit, becomes a terminal: its record says so (shell, no agent, the agent and the
+   * conversation it quit from kept as agentQuit) and is saved, and what waited for its agent is taken off it, all
+   * before anything awaits; then becomeTerminal starts its shell. A record that can't be saved is put back and the pane
+   * left exited, saying why. Resolves to the terminal, or why there's none (which the pane says too).
+   */
+  private toTerminal(s: LiveSession, agent: AgentKind): Promise<{ info: SessionInfo } | { why: string }> {
+    const i = s.info;
+    const was = Object.fromEntries(QUIT_FLIP.map((k) => [k, i[k]])) as BeforeFlip;
+    const before = i.status;
+    delete i.agent;
+    delete i.agentVersion;
+    delete i.quitInSandbox;
+    delete i.exitCode;
+    Object.assign(i, {
+      shell: true,
+      agentQuit: { agent, ...(i.conversation?.agent === agent ? { conversation: i.conversation.id } : {}) },
+      status: "idle",
+      finishedAt: null,
+      waitingReason: null,
+      waitingSince: null,
+      waitingAt: null,
+      stalledSince: null,
+      hooksSilent: false,
+    });
+    try {
+      this.store.upsertSession(i);
+    } catch (err) {
+      putBack(i, was);
+      i.status = before;
+      const why = err instanceof Error ? err.message : String(err);
+      console.error(`[sessions] ${i.id}'s ${agentLabel(agent)} quit, and its record as a terminal couldn't be saved, so it's left exited:`, err);
+      this.exited(s, 0, `${agentLabel(agent)} exited, and a terminal couldn't open here: it couldn't be saved (${why})`);
+      return Promise.resolve({ why });
     }
     s.toTerminal = true;
     if (s.flushTimer) clearTimeout(s.flushTimer);
@@ -1187,31 +1295,29 @@ export class SessionManager {
     const kept = this.withoutReceipts(s.queued, `${paneName(i)}'s ${agentLabel(agent)} quit before this reached it: it's a terminal now`);
     s.queued = [];
     if (kept.length) {
+      // still owed, and still counted (queuedCount, overdueMessages): its agent's next launch delivers them
       this.undelivered.set(i.id, [...(this.undelivered.get(i.id) ?? []), ...kept]);
       console.warn(`[sessions] ${i.id}'s ${agentLabel(agent)} quit with ${kept.length} message(s) waiting for it: they're delivered if it's resumed as an agent`);
     }
-    const before = i.status;
-    delete i.agent;
-    delete i.agentVersion;
-    i.shell = true;
-    i.agentQuit = agent;
-    Object.assign(i, { status: "idle", finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null, stalledSince: null, hooksSilent: false });
-    this.store.upsertSession(i);
     this.emitChanged();
     if (before !== "idle") this.tell("status", this.statusListeners, i, before);
-    void this.becomeTerminal(s, agent);
-    return true;
+    return this.becomeTerminal(s, agent, was);
   }
 
   /**
-   * Start the terminal agent pane `s` becomes (quitToTerminal): a login shell in its folder under its id, what the agent
-   * showed kept above its prompt with a line saying so. It doesn't start once the pane has been closed, stopped or
-   * started again meanwhile. One that can't start leaves the pane the agent pane it was, exited, saying why in it.
+   * Start the terminal pane `s` becomes (toTerminal): a login shell in its folder under its id, what its agent showed
+   * kept above the prompt with a line saying so. It doesn't start once the pane has been closed or stopped meanwhile.
+   * One that can't start (or can't be saved once it has) leaves the pane the agent pane it was (`was`), exited, saying
+   * why in it.
    */
-  private async becomeTerminal(s: LiveSession, agent: AgentKind): Promise<void> {
+  private async becomeTerminal(s: LiveSession, agent: AgentKind, was: BeforeFlip): Promise<{ info: SessionInfo } | { why: string }> {
     const i = s.info;
     const id = i.id;
+    const name = agentLabel(agent);
     this.relaunching.add(id);
+    // what ended the switch-over before its shell started, and whether its shell did start
+    let cut = null as "stopped" | "closed" | null;
+    let spawned = false as boolean;
     try {
       try {
         this.writeScrollback(s);
@@ -1236,10 +1342,14 @@ export class SessionManager {
           reuseId: id,
         },
         {
-          notice: [`${agentLabel(agent)} exited — this is now a terminal in ${tildePath(i.cwd)}.`, place.moved].filter(Boolean).join("\n"),
-          agentQuit: { agent, conversation: i.conversation ?? null },
+          notice: [`${name} exited — this is now a terminal in ${tildePath(i.cwd)}.`, place.moved].filter(Boolean).join("\n"),
+          divider: `${name} exited`,
+          agentQuit: i.agentQuit,
+          conversation: i.conversation,
           beforeSpawn: () => {
-            if (this.live.get(id) !== s || i.status === "dead") throw new Error("it was closed, stopped or started again first");
+            cut = this.live.get(id) !== s ? "closed" : i.status === "dead" ? "stopped" : null;
+            if (cut) throw new Error(`it was ${cut} first`);
+            spawned = true;
           },
         }
       );
@@ -1248,29 +1358,57 @@ export class SessionManager {
         this.store.upsertSession(info);
         this.emitChanged();
       }
+      return { info };
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
-      // closed or started again meanwhile (or a launch that failed after taking its place, which says so itself), or the
-      // app quitting, which leaves its record as it was: a terminal that reopens as one
-      if (this.live.get(id) !== s || this.quitting) return void console.warn(`[sessions] ${id}: the terminal its ${agentLabel(agent)} quit into didn't start: ${why}`);
-      console.error(`[sessions] ${id}'s ${agentLabel(agent)} quit, and the terminal it was to become couldn't start, so it's left exited:`, err);
-      delete i.shell;
-      delete i.agentQuit;
-      i.agent = agent;
-      i.exitCode = 0;
+      if (this.quitting) {
+        // the app quitting leaves its record as it was: a terminal that reopens as one
+        console.warn(`[sessions] ${id}: the terminal its ${name} quit into didn't start, as Mockingbird is quitting: ${why}`);
+        return { why };
+      }
+      // its shell started and took its place, then the launch couldn't be saved, which stopped the shell and took the pane
+      // out: the pane comes back, exited, saying so
+      if (spawned && !this.live.has(id)) this.live.set(id, s);
+      if (this.live.get(id) !== s) {
+        console.warn(`[sessions] ${id} was closed before the terminal its ${name} quit into started`);
+        return { why };
+      }
+      putBack(i, was);
       s.toTerminal = false;
-      const note = paneNotice(`${agentLabel(agent)} exited, and a terminal couldn't open here: ${why}`);
-      s.buffer = (s.buffer + note).slice(-BUFFER_MAX);
-      s.total += note.length;
-      this.wc?.send("session:data", id, note);
-      this.tell("output", this.outputListeners, id, note, s.total, s.epoch);
-      if (i.status === "dead") {
-        this.store.upsertSession(i);
-        this.emitChanged();
-      } else this.setStatus(id, "dead");
+      if (cut === "stopped") {
+        console.log(`[sessions] ${id} was stopped before the terminal its ${name} quit into started`);
+        this.exited(s, 0, `${name} exited, and it was stopped before its terminal opened.`);
+      } else {
+        console.error(`[sessions] ${id}'s ${name} quit, and the terminal it was to become couldn't start, so it's left exited:`, err);
+        this.exited(s, 0, `${name} exited, and a terminal couldn't open here: ${why}`);
+      }
+      return { why };
     } finally {
       this.relaunching.delete(id);
     }
+  }
+
+  /**
+   * Open a terminal in agent pane `id`, whose agent quit in its team room's sandbox (SessionInfo.quitInSandbox): it
+   * becomes the terminal an agent quitting outside a room's sandbox becomes at once (toTerminal), on its owner's click.
+   * Refused, saying why, for any other pane, while it's being reopened, or when a teammate continues it. What ends with
+   * its agent is ended again first (a typing grant given since), and one that can't be refuses it too.
+   */
+  async openTerminal(id: string): Promise<SessionInfo | { refused: string }> {
+    if (isRemotePaneId(id)) return { refused: "That's a teammate's session: only its owner can open a terminal in it" };
+    if (this.resuming.has(id)) return { refused: BEING_RESUMED };
+    if (this.relaunching.has(id)) return { refused: BEING_RELAUNCHED };
+    const pane = this.live.get(id);
+    if (!pane) return { refused: "It isn't open here" };
+    if (!pane.info.quitInSandbox || pane.info.status !== "dead" || pane.info.shell) return { refused: "Only a pane whose agent quit in its room's sandbox opens a terminal this way" };
+    const guard = this.relaunchGuard?.(id);
+    if (guard) return { refused: guard };
+    this.refuseWhileQuitting();
+    const ended = this.endWithAgent(pane.info);
+    if (ended) return { refused: `What ends with its agent couldn't be ended (${ended}), so no terminal opened` };
+    const r = await this.toTerminal(pane, pane.info.agent ?? "claude");
+    if ("why" in r) throw new Error(`A terminal couldn't open in ${paneName(pane.info)}: ${r.why}`);
+    return r.info;
   }
 
   /** Restart one pane in place: same id, its conversation resumed. */
@@ -1898,7 +2036,7 @@ export class SessionManager {
       model: old.model ?? undefined,
       effort: old.effort ?? undefined,
       agent: old.agent,
-    }, { notice, ...(old.shell && old.agentQuit ? { agentQuit: { agent: old.agentQuit, conversation: old.conversation ?? null } } : {}) });
+    }, { notice, ...(old.shell && old.agentQuit ? { agentQuit: old.agentQuit, conversation: old.conversation } : {}) });
     // a muted pane stays muted through restarts
     if (old.muted) {
       info.muted = true;
@@ -2538,6 +2676,9 @@ export class SessionManager {
     // so must one its agent wrote before quitting into a terminal: that terminal's status is its own, until an agent
     // started in it reports (an event written after its shell started; `at` is whole seconds)
     if (s.toTerminal || (s.info.agentQuit && ev.at !== undefined && ev.at <= Math.floor(s.info.createdAt / 1000))) return null;
+    // nor one from the conversation it quit from running elsewhere (resumed in another terminal), as an exited pane hears
+    // none: an agent running in this pane reports under its own id
+    if (s.info.agentQuit?.conversation && ev.paneId !== s.info.id && ev.conversationId === s.info.agentQuit.conversation) return null;
     s.hookEvents++;
     // only the pane's own events speak for its launch's sandbox: one matched by folder may be another agent's
     if (s.sandbox && ev.paneId === s.info.id) {
@@ -2589,10 +2730,12 @@ export class SessionManager {
   overdueMessages(now: number, ms: number): OverdueMessage[] {
     const out: OverdueMessage[] = [];
     for (const s of this.live.values()) {
-      for (const m of s.queued) {
+      // a terminal's messages wait for its agent's next launch (toTerminal)
+      for (const m of [...s.queued, ...(this.undelivered.get(s.info.id) ?? [])]) {
         if (!m.from || m.overdueTold || now - m.at < ms) continue;
         m.overdueTold = true;
-        out.push({ from: m.from, to: s.info.id, toTitle: s.info.ticketTitle ?? s.info.title, toStatus: s.info.status, hooksSilent: !!s.info.hooksSilent, waitedMs: now - m.at });
+        const quit = s.info.shell ? s.info.agentQuit?.agent : undefined;
+        out.push({ from: m.from, to: s.info.id, toTitle: s.info.ticketTitle ?? s.info.title, toStatus: s.info.status, hooksSilent: !!s.info.hooksSilent, waitedMs: now - m.at, ...(quit ? { quit } : {}) });
       }
     }
     return out;

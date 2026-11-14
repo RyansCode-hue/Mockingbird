@@ -161,6 +161,11 @@ describe("what needs you", () => {
     const again = items(sessions.map((s) => (s.id === "shared" ? { ...s, room: roomTag({ typingAsks: [ask("nick", "Nick Smith", NOW)] }) } : s)));
     expect(again.find((i) => i.id === "type:shared:nick")!.sig).not.toBe(got.find((i) => i.id === "type:shared:nick")!.sig);
   });
+
+  it("says an ask to type into a terminal is one: a shell on your Mac, outside the room's sandbox", () => {
+    const sessions = [sess("term", { status: "idle", shell: true, agent: undefined, title: "shared shell", room: roomTag({ typingAsks: [{ member: "nick", name: "Nick Smith", at: NOW }] }) })];
+    expect(items(sessions).find((i) => i.id === "type:term:nick")).toMatchObject({ text: "Nick wants to type in shared shell, a terminal: a shell on your Mac, outside the room's sandbox" });
+  });
 });
 
 describe("N and ⇧N", () => {

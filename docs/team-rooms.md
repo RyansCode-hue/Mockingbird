@@ -969,10 +969,19 @@ terminals, `!` commands, the agent's permission prompts.
   once. Chosen by Ryan, 2026-10-23, from three mocked options (an in-pane
   banner, this strip and outline, a dialog). "This session" lasts while the session runs: closing it, its
   agent exiting, moving it out of the room, a take-over or Nick leaving the
-  room ends it. So does its agent quitting into a terminal (/exit leaves the
-  pane a terminal in its folder), and before that terminal's shell starts:
-  typing allowed into a sandboxed agent never carries over to a shell on your
-  Mac, and his asks end with it too. Every change reaches Nick at once (`pty.typingState`); his
+  room ends it. So does its agent quitting on its own (/exit), at once, with
+  his asks, and each waits out the 30 s a no starts. A room session that ran in
+  the room's sandbox is then left exited, no shell started: anyone allowed to
+  type could /exit it, and a login shell would run your shell profile on a
+  folder the sandboxed agent could write to. Its pane offers **Open a terminal
+  here** (your click: a shell in its folder, outside the sandbox, which nobody
+  types into until you allow it anew) and **Resume Claude**. One started with
+  the room's sandbox switched off on your Mac becomes a terminal at once, as
+  outside rooms. A teammate's ask to type into any room terminal says it's a
+  terminal, a shell on your Mac outside the room's sandbox: on the strip, in
+  Needs you and in its notification. A session whose agent quit into a
+  terminal isn't handed over (the taker hears why), and a take-over heard
+  while it's a terminal leaves that shell running. Every change reaches Nick at once (`pty.typingState`); his
   header says **You can type**, **Asked Ryan…** or **View only**.
 - **Never at a permission prompt.** Even allowed, a teammate's keys are
   refused while your agent is asking for permission (the pane's status is

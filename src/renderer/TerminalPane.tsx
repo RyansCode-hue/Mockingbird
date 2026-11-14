@@ -821,6 +821,7 @@ export function TerminalPane({
   teamNotice,
   onRestart,
   onResumeAgent,
+  onOpenTerminal,
   landscape,
 }: {
   session: SessionInfo;
@@ -846,6 +847,8 @@ export function TerminalPane({
   onRestart?: () => void;
   /** Make this terminal the agent pane it was until its agent quit (SessionInfo.agentQuit), on its conversation. */
   onResumeAgent?: () => void;
+  /** Open a terminal in this exited pane, whose agent quit in its room's sandbox (SessionInfo.quitInSandbox). */
+  onOpenTerminal?: () => void;
   /**
    * The terminal of a landscape workspace (WorkspaceNode), which draws the header: no header or rail here. The
    * workspace is `w` × `h` at 100%, and its terminal as many cells of the measured cell at `font` as that holds
@@ -862,7 +865,9 @@ export function TerminalPane({
   const room = session.room ?? null;
   const remote = room?.remote ? room : null;
   // a terminal of this Mac's that its agent quit into: it can go back to that agent
-  const quitAgent = session.shell && !remote ? session.agentQuit ?? null : null;
+  const quitAgent = session.shell && !remote ? session.agentQuit?.agent ?? null : null;
+  // an agent pane of this Mac's whose agent quit in its room's sandbox: a terminal opens there only on a click
+  const quitHeld = dead && !session.shell && !remote && session.quitInSandbox ? AGENT_NAME[session.agent ?? "claude"] : null;
   // a session that just changed hands — handed over to a teammate, or taken over here — marks its pane once
   const paneEl = useRef<HTMLDivElement>(null);
   useHandover(paneEl, room?.takenOver?.at ?? tookOverAt);
@@ -1235,6 +1240,11 @@ export function TerminalPane({
             process exited
             {typeof session.exitCode === "number" ? ` · code ${session.exitCode}` : ""} · history preserved
           </div>
+          {quitHeld && (
+            <div className="dead-why">
+              {quitHeld} exited. It ran in the room's sandbox, so no terminal opened by itself: a terminal here is a shell on your Mac, outside that sandbox.
+            </div>
+          )}
           {exitTail ? (
             <pre className="dead-tail" title="the last lines the process wrote before exiting">
               {exitTail}
@@ -1243,7 +1253,12 @@ export function TerminalPane({
             <div className="dead-tail-none">no output captured before it exited</div>
           )}
           <div className="row">
-            <button className="outline strong" onClick={onResume}>Resume</button>
+            <button className="outline strong" onClick={onResume}>{quitHeld ? `Resume ${quitHeld}` : "Resume"}</button>
+            {quitHeld && onOpenTerminal && (
+              <button className="outline" title="Opens a login shell in its folder, on your Mac and outside the room's sandbox. Teammates can't type into it unless you allow them again." onClick={onOpenTerminal}>
+                Open a terminal here
+              </button>
+            )}
             {quitAgent && onResumeAgent && (
               <button className="outline" title={`Ends this terminal and resumes its conversation in ${AGENT_NAME[quitAgent]}, in this pane`} onClick={onResumeAgent}>
                 Resume {AGENT_NAME[quitAgent]}
@@ -1301,7 +1316,10 @@ export function TerminalPane({
             {teamNotice}
             {quitAgent && onResumeAgent && (
               <div className="team-pane-note agent-quit" title={`${AGENT_NAME[quitAgent]} exited, and this pane became a terminal in its folder. Resume ${AGENT_NAME[quitAgent]} ends the terminal and resumes the conversation in it.`}>
-                <span className="reason">{AGENT_NAME[quitAgent]} exited · this is a terminal now</span>
+                <span className="reason">
+                  {AGENT_NAME[quitAgent]} exited · this is a terminal now
+                  {session.queuedCount ? ` · ${plural(session.queuedCount, "message")} wait${session.queuedCount === 1 ? "s" : ""} for ${AGENT_NAME[quitAgent]}` : ""}
+                </span>
                 <button
                   className="outline"
                   onClick={(e) => {
