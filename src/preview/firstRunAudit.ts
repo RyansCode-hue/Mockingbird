@@ -2461,8 +2461,7 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
       await press("Enter");
       await sleep(400);
     }
-    out.gone = { focus: !!q(".ls-focus"), keyboard: keyboard(), warned: warned.filter((w) => /keyboard/.test(w)) };
-    console.warn = warn;
+    const gone = { focus: !!q(".ls-focus"), keyboard: keyboard() };
     const reached: string[] = [];
     const onFocus = (e: FocusEvent) => {
       const t = e.target as Element | null;
@@ -2478,6 +2477,9 @@ async function armingPart(env: FirstRunEnv, out: Record<string, unknown>): Promi
     await sleep(400);
     document.removeEventListener("focusin", onFocus, true);
     out.after = { reached: [...new Set(reached)], writes: writesSince(mark), acts: actsSince(mark), ...opened() };
+    // a jump's wait for its terminal says it left the keyboard on the holder once it ends, here at the keys above
+    out.gone = { ...gone, warned: warned.filter((w) => /keyboard/.test(w)) };
+    console.warn = warn;
   } else if (which === "menuEsc") {
     // the menu gives the keyboard back a frame after it closes: armed, since the user's Esc closed it
     const at = barePoint();

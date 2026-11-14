@@ -138,6 +138,12 @@ export function WorkspaceNode({
   // in focus the tabs are a browser's: a × on each that can be closed here, and + after the last
   const focus = mode === "focus";
   const newTab = focus ? actionOf(actions, "newTab") : undefined;
+  // A tablist holds only tabs. In focus, where each tab has its ×, the strip is a group holding the × buttons, and an
+  // empty tablist owns its tabs by aria-owns.
+  const stripLabel = tile.stack ? (name ?? "Stack") : titleOf(s);
+  const tabId = (m: SessionInfo) => (focus ? `ls-tab-${m.id}` : undefined);
+  const stripRole = focus ? "group" : "tablist";
+  const tablist = focus && <span className="ls-tablist" role="tablist" aria-label={stripLabel} aria-owns={(tile.stack ? tile.members : [s]).map(tabId).join(" ")} />;
   const withClose = (m: SessionInfo, tab: React.ReactElement) => {
     if (!focus) return tab;
     const close = tabClose?.(m);
@@ -221,7 +227,8 @@ export function WorkspaceNode({
               </button>
             )}
             {tile.stack ? (
-              <span className="ls-tabs" role="tablist" aria-label={name ?? "Stack"}>
+              <span className="ls-tabs" role={stripRole} aria-label={stripLabel}>
+                {tablist}
                 {name && (
                   <span
                     className="ls-stack-name"
@@ -243,6 +250,7 @@ export function WorkspaceNode({
                     m,
                     <button
                       key={m.id}
+                      id={tabId(m)}
                       role="tab"
                       aria-selected={m.id === s.id}
                       className={`ls-tab${m.id === s.id ? " on" : ""}${ask ? " ask" : ""}`}
@@ -273,10 +281,12 @@ export function WorkspaceNode({
                 ))}
               </span>
             ) : focus ? (
-              <span className="ls-tabs" role="tablist" aria-label={titleOf(s)}>
+              <span className="ls-tabs" role={stripRole} aria-label={stripLabel}>
+                {tablist}
                 {withClose(
                   s,
-                  <button type="button" role="tab" aria-selected className="ls-tab on" data-sid={s.id} title={titleOf(s)}>
+                  // the only tab: nothing to switch to, so no Tab stop and no hand cursor; its × still takes the keyboard
+                  <button type="button" id={tabId(s)} role="tab" aria-selected tabIndex={-1} className="ls-tab on lone" data-sid={s.id} title={titleOf(s)}>
                     <StatusDot status={s.status} className="sm" />
                     <span className="t">{titleOf(s)}</span>
                   </button>

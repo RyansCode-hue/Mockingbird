@@ -3226,6 +3226,9 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-tabw > .ls-tab, .ls-tabw > .ls-tab:hover, .ls-tabw > .ls-tab.on { flex: 1 1 auto; max-width: none; background: transparent; }
 .ls-tabw:hover > .ls-tab { color: var(--text-1); }
 .ls-tabw:has(.ls-tab-x) > .ls-tab { padding-right: 3px; }
+.ls-tab.lone { cursor: default; }
+/* the tablist that owns focus's tabs (WorkspaceNode): empty, taking no room */
+.ls-tablist { position: absolute; width: 0; height: 0; overflow: hidden; }
 .ls-tab-x, .ls-tab-new {
   flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; padding: 0;
   border: none; background: none; color: var(--text-3); cursor: pointer;
