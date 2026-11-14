@@ -15,6 +15,11 @@ const local = !process.env.CI && fs.existsSync(chrome);
  * querySelector, `sleep`, `calls()` for window.__mbCalls, `tabs()` for the focused header's tabs as
  * [sid, title, ×'s label or null, ×'s opacity or null] and `menu()` for the open menu's rows: "# heading", "-", or a
  * row's label) once, and return what it returns.
+ *
+ * For the keyboard: `press(...keys)` presses for real (scripts/ui-preview.mjs's window.__mbKeys), `click(el)` presses
+ * the mouse on an element's middle, `where()` names what has the keyboard ("term:<id>" for a session's terminal,
+ * "holder" for keyArm's, else tag.class), `termIn(id)` waits for session `id`'s terminal to have it, `typed(mark)` is
+ * what reached a session's pty since call `mark` ("<id>:<data>"), and `swallowed` the keys the holder swallowed.
  */
 async function drive<T>(query: string, ready: string, steps: string): Promise<T> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
@@ -32,6 +37,30 @@ async function drive<T>(query: string, ready: string, steps: string): Promise<T>
       });
       const menu = () => [...(document.querySelector(".mb-ctx:not(.mb-ghost)")?.children ?? [])].map((c) =>
         c.classList.contains("mb-ctx-sep") ? "-" : c.classList.contains("mb-ctx-h") ? "# " + c.textContent : (c.querySelector(".mb-ctx-t")?.textContent ?? c.textContent) + (c.disabled ? " (off)" : ""));
+      const press = async (...ks) => {
+        const done = (w.__mbKeysDone || 0) + ks.length;
+        (w.__mbKeys ||= []).push(...ks);
+        for (let i = 0; i < 200 && (w.__mbKeysDone || 0) < done; i++) await sleep(25);
+      };
+      const click = (el) => {
+        const r = el.getBoundingClientRect();
+        return press({ mouse: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), clickCount: 1 } });
+      };
+      const where = () => {
+        const a = document.activeElement;
+        if (!a || a === document.body) return "body";
+        if (a.classList.contains("mb-keys-nowhere")) return "holder";
+        if (a.closest(".xterm")) return "term:" + (a.closest(".ls-node")?.dataset.front ?? "?");
+        return a.tagName.toLowerCase() + "." + [...a.classList].join(".");
+      };
+      const termIn = async (id, ms = 4000) => {
+        for (let i = 0; i < ms / 50 && where() !== "term:" + id; i++) await sleep(50);
+        return where();
+      };
+      const typed = (mark) => w.__mbCalls.slice(mark).filter((c) => c.fn === "sessionWrite").map((c) => c.args[0] + ":" + c.args[1]);
+      const swallowed = [];
+      document.addEventListener("mb-keys-swallowed", (e) => swallowed.push(e.detail));
+      const note = () => [...document.querySelectorAll(".ls-note")].map((n) => n.textContent).join(" | ");
       w.__ftRun = (async () => { ${steps} })().then((v) => (w.__ftOut = JSON.stringify(v ?? null)), (e) => (w.__ftOut = JSON.stringify({ failed: String(e && e.stack || e) })));
     }
     return w.__ftOut ?? null;
@@ -151,5 +180,142 @@ describe.skipIf(!local)("the focused header's ⋯", () => {
     expect(rows).toEqual(expect.arrayContaining(["# Tools", "Files", "Artifacts", "New tab in “api”…", "# Wires", "Connect…", "Close…"]));
     expect(rows.some((r) => r.startsWith("Size M"))).toBe(true);
     expect(rows).toContain("Hide the agent's diff panel (off)");
+  }, 120_000);
+});
+
+// What's typed after a tab comes to the front of the focused stack reaches that tab's terminal, never keyArm's holder
+// (whose swallowed keys say "Click the landscape to use its keys…"). ?lsSaveMs makes main slow to save the stack's front
+// tab, so the new front's terminal is shown, and mounted, a while after the choice.
+interface Step {
+  id: string;
+  at: string;
+  typed: string[];
+}
+const KEYS_NOTE = /Click the landscape/;
+
+describe.skipIf(!local)("the keyboard as the focused stack's tab in front changes", () => {
+  /** Real clicks on these tabs in turn, `gap` ms apart, an x typed after each once its tab is in front; returns where the keyboard was and what the x reached. */
+  const clicks = (ids: string[], gap: number) => `
+      const start = await termIn("s2");
+      const steps = [];
+      for (const id of ${JSON.stringify(ids)}) {
+        await click($('.ls-focus .ls-tab[data-sid="' + id + '"]'));
+        await sleep(${gap});
+        for (let i = 0; i < 60 && $(".ls-focus .ls-tab.on")?.dataset.sid !== id; i++) await sleep(50);
+        const at = await termIn(id, 2000);
+        const mark = w.__mbCalls.length;
+        await press({ key: "x" });
+        await sleep(150);
+        steps.push({ id, at, typed: typed(mark) });
+      }
+      return { start, steps, swallowed, note: note() };`;
+  const each = (ids: string[]) => ids.map((id): Step => ({ id, at: `term:${id}`, typed: [`${id}:x`] }));
+
+  it("goes to the chosen tab's terminal every time, chosen slowly or fast", async () => {
+    const slow = await drive<{ start: string; steps: Step[]; swallowed: string[]; note: string }>("lsFocus=s2", FOCUSED_STACK, clicks(["s3", "s2", "s3", "s2"], 300));
+    expect(slow.start).toBe("term:s2");
+    expect(slow.steps).toEqual(each(["s3", "s2", "s3", "s2"]));
+    expect(slow.swallowed).toEqual([]);
+    expect(slow.note).not.toMatch(KEYS_NOTE);
+    const fast = await drive<{ start: string; steps: Step[]; swallowed: string[]; note: string }>("lsFocus=s2", FOCUSED_STACK, clicks(["s3", "s2", "s3"], 0));
+    expect(fast.steps).toEqual(each(["s3", "s2", "s3"]));
+    expect(fast.swallowed).toEqual([]);
+    expect(fast.note).not.toMatch(KEYS_NOTE);
+  }, 180_000);
+
+  it("waits for a terminal shown late: main slow to save the tab in front", async () => {
+    const r = await drive<{ start: string; steps: Step[]; swallowed: string[]; note: string }>("lsFocus=s2&lsSaveMs=600", FOCUSED_STACK, clicks(["s3", "s2"], 0));
+    expect(r.steps).toEqual(each(["s3", "s2"]));
+    expect(r.swallowed).toEqual([]);
+    expect(r.note).not.toMatch(KEYS_NOTE);
+    // two tabs pressed back to back, before main has the first in front: the keyboard follows whichever ends in front
+    const burst = await drive<{ at: boolean; typed: boolean[]; swallowed: string[] }>(
+      "lsFocus=s2&lsSaveMs=600",
+      FOCUSED_STACK,
+      `
+      await termIn("s2");
+      await click($('.ls-focus .ls-tab[data-sid="s3"]'));
+      await click($('.ls-focus .ls-tab[data-sid="s2"]'));
+      await sleep(2000);
+      const front = $(".ls-focus .ls-tab.on")?.dataset.sid;
+      const at = await termIn(front, 2000);
+      const mark = w.__mbCalls.length;
+      await press({ key: "x" });
+      await sleep(150);
+      return { at: at === "term:" + front, typed: typed(mark).map((t) => t === front + ":x"), swallowed };`
+    );
+    expect(burst).toEqual({ at: true, typed: [true], swallowed: [] });
+  }, 120_000);
+
+  it("goes to the tab that comes forward when × closes the one in front, once its dialog is confirmed", async () => {
+    const r = await drive<{ dialog: boolean; front: string | null; at: string; typed: string[]; swallowed: string[]; note: string }>(
+      "lsFocus=s2",
+      FOCUSED_STACK,
+      `
+      await termIn("s2");
+      await click($(".ls-focus .ls-tabw.on .ls-tab-x"));
+      for (let i = 0; i < 40 && !$(".modal.close-dlg"); i++) await sleep(50);
+      const dialog = !!$(".modal.close-dlg");
+      await sleep(200);
+      await click([...document.querySelectorAll(".modal.close-dlg button.primary")].find((b) => b.textContent === "Close session"));
+      for (let i = 0; i < 60 && $('.ls-focus .ls-tab[data-sid="s2"]'); i++) await sleep(50);
+      const front = $(".ls-focus .ls-tab.on")?.dataset.sid ?? null;
+      const at = await termIn(front, 2000);
+      const mark = w.__mbCalls.length;
+      await press({ key: "x" });
+      await sleep(150);
+      return { dialog, front, at, typed: typed(mark), swallowed, note: note() };`
+    );
+    expect(r.dialog).toBe(true);
+    expect(r.front).toBe("s3");
+    expect(r.at).toBe("term:s3");
+    expect(r.typed).toEqual(["s3:x"]);
+    expect(r.swallowed).toEqual([]);
+    expect(r.note).not.toMatch(KEYS_NOTE);
+  }, 120_000);
+
+  it("goes to the tab + makes, also when it comes forward late", async () => {
+    const plus = `
+      await termIn("s2");
+      await click($(".ls-focus .ls-tab-new"));
+      for (let i = 0; i < 40 && !$(".modal.ns"); i++) await sleep(50);
+      await sleep(300);
+      await click($(".modal.ns button.primary.cta"));
+      for (let i = 0; i < 60 && $(".modal.ns"); i++) await sleep(50);
+      const before = ["s2", "s3"];
+      for (let i = 0; i < 60 && before.includes($(".ls-focus .ls-tab.on")?.dataset.sid); i++) await sleep(50);
+      const front = $(".ls-focus .ls-tab.on")?.dataset.sid ?? null;
+      const at = await termIn(front, 3000);
+      const mark = w.__mbCalls.length;
+      await press({ key: "x" });
+      await sleep(150);
+      return { fresh: !before.includes(front) && !front.startsWith("team:"), at: at === "term:" + front, typed: typed(mark).map((t) => t === front + ":x"), swallowed, note: note() };`;
+    for (const query of ["lsFocus=s2", "lsFocus=s2&lsSaveMs=600"]) {
+      const r = await drive<{ fresh: boolean; at: boolean; typed: boolean[]; swallowed: string[]; note: string }>(query, FOCUSED_STACK, plus);
+      expect(r, query).toEqual({ fresh: true, at: true, typed: [true], swallowed: [], note: expect.not.stringMatching(KEYS_NOTE) });
+    }
+  }, 180_000);
+
+  it("stays where the user put it meanwhile, and on focus's frame for a teammate's tab", async () => {
+    const r = await drive<{ moved: string; front: string | null; sam: string }>(
+      "lsFocus=s2&lsSaveMs=600",
+      FOCUSED_STACK,
+      `
+      await termIn("s2");
+      await click($('.ls-focus .ls-tab[data-sid="s3"]'));
+      // before main has the tab in front, a click in the area tree's filter
+      await click($('input[aria-label="Find a workspace"]'));
+      for (let i = 0; i < 60 && $(".ls-focus .ls-tab.on")?.dataset.sid !== "s3"; i++) await sleep(50);
+      await sleep(800);
+      const moved = where();
+      const front = $(".ls-focus .ls-tab.on")?.dataset.sid ?? null;
+      await click([...document.querySelectorAll(".ls-focus .ls-tab[data-sid]")].find((t) => t.textContent.includes("Last-org API tests")));
+      for (let i = 0; i < 60 && !$(".ls-focus .ls-tab.on")?.textContent.includes("Last-org API tests"); i++) await sleep(50);
+      await sleep(300);
+      return { moved, front, sam: where() };`
+    );
+    expect(r.front).toBe("s3");
+    expect(r.moved).toBe("input.filter");
+    expect(r.sam).toBe("div.ls-focus");
   }, 120_000);
 });

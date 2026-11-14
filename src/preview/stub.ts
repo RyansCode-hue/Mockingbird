@@ -1275,6 +1275,8 @@ const readAgain = (pending: number) => {
   emit("onLandscapeChanged", clone({ rev: landscapeRev, patch: null, landscape, problems: landscapeProblems }));
 };
 const lsHold = new URLSearchParams(location.search).has("lsHold");
+/** ?lsSaveMs=<ms>: main takes this long to save a landscape change (landscapeUpdate), as a slow disk does. */
+const lsSaveMs = Number(new URLSearchParams(location.search).get("lsSaveMs")) || 0;
 // ?lsRelaunchFails=<id,…>: each one's first relaunch answers an error, as main's does when its launch fails, and its
 // second throws (a broken call); later ones go through
 const relaunchFails = new Map((new URLSearchParams(location.search).get("lsRelaunchFails")?.split(",") ?? []).map((id) => [id, 0]));
@@ -2054,6 +2056,7 @@ const api: Record<string, (...a: any[]) => any> = {
   // read as main reads it: IPC hands main a structured clone, which keeps NaN and undefined where JSON wouldn't,
   // so a patch main refuses answers { error } here too, and one that changes nothing isn't a revision
   landscapeUpdate: async (raw: unknown): Promise<LandscapeState | { error: string }> => {
+    if (lsSaveMs) await new Promise((r) => setTimeout(r, lsSaveMs));
     // ?lsReadInFails (with ?landscape=fresh): the first read-in of the grid's layout can't be saved, as a full disk would
     if (lsReadInFails && !readInRefused && raw && typeof raw === "object" && "migratedAt" in raw) {
       readInRefused = true;

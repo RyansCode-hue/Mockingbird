@@ -89,7 +89,7 @@ import { wiresInOrder } from "../shared/wires";
 import { wiresNow } from "./WireLayer";
 import { droppedNote, unmovedNote } from "./wiresModel";
 import { chainOf } from "./pipelineChain";
-import { newAreaPatch } from "./landscapeModel";
+import { REVEAL_WAIT_MS, newAreaPatch } from "./landscapeModel";
 import { PlanPicker, SaveTemplateDialog, TemplatePicker } from "./TemplatePicker";
 import { usePlans } from "./usePlans";
 import { toldLine } from "./ticketPipelineModel";
@@ -742,19 +742,27 @@ function App() {
     // A palette or menu closing as it's picked gives none back to what had it meanwhile, or a key typed straight after
     // would land in the session left.
     keyboardMoves();
-    // its terminal gets the keyboard, or 50 ms later once it's there
-    const give = () => {
+    // its terminal gets the keyboard as soon as it's there, which can take as long as the view waits for it
+    // (REVEAL_WAIT_MS): a stack's tab behind another comes to the front once main has saved that, and a session just
+    // started joins its stack once the session list has it. Past the first retry anything the user does ends it.
+    const asked = inputStamp();
+    const until = performance.now() + REVEAL_WAIT_MS;
+    const give = (tries = 0) => {
+      if (tries > 0 && stale()) return;
+      if (tries > 1 && inputStamp() !== asked) return;
       focusTerm(s.id);
       if (termHasKeys(s.id)) return;
-      setTimeout(() => {
-        if (stale()) return;
-        focusTerm(s.id);
-        if (termHasKeys(s.id) || !keyboardNowhere() || s.debrief) return;
-        // its terminal isn't there to take it (the landscape zoomed out past it): the keyboard waits on the holder
-        // (keyArm.ts), where typed keys do nothing and say why, not on the page, where Tab would walk on from the palette
-        toNowhere();
-        console.warn(`[mockingbird] ${s.id}'s terminal couldn't take the keyboard as it was gone to: it waits on the holder until a click or ⌘E`);
-      }, 50);
+      if (tries === 1) {
+        if (s.debrief) return;
+        // its terminal isn't there to take it yet (the landscape zoomed out past it, or its tab not in front yet): with
+        // nothing else holding it, the keyboard waits on the holder (keyArm.ts), where typed keys do nothing and say
+        // why, not on the page, where Tab would walk on from the palette
+        if (keyboardNowhere()) {
+          toNowhere();
+          console.warn(`[mockingbird] ${s.id}'s terminal couldn't take the keyboard as it was gone to: it waits on the holder until a click or ⌘E`);
+        }
+      }
+      if (tries === 0 || performance.now() < until) setTimeout(() => give(tries + 1), 50);
     };
     // At once, unless something is open over the app (OVERLAYS). A palette or a menu row picked is closing as this runs:
     // looked at again the task after, once it has gone. A dialog still open then (a notification's jump came while one

@@ -293,6 +293,8 @@ interface Peeked {
  */
 /** A tool window's key among what's on screen (`seen`), apart from the workspaces'. */
 const WIN_SEEN = "win:";
+/** How long a tab brought to the front in focus waits for its terminal to be there to take the keyboard (keysToFront). */
+const FRONT_KEYS_MS = 1500;
 const NO_SESSIONS: readonly SessionInfo[] = [];
 
 export function Landscape({
@@ -920,6 +922,12 @@ export function Landscape({
   }, []);
   /** Both presses of the double-click just made were on workspace `key`. */
   const pairOn = (key: string) => pressedOn.current[0] === key && pressedOn.current[1] === key;
+  /** Workspace `t`'s front tab takes the keyboard if it's your own live terminal (a teammate's waits for a click): whether it did. */
+  const frontTakesKeys = (t: Tile): boolean => {
+    if (isRemote(t.front) || t.front.status === "dead") return false;
+    focusTerm(t.front.id);
+    return termHasKeys(t.front.id);
+  };
   // focus, its own terminal and leaving it, are always the user's commands (Enter, ⌘E, ⌘Esc, a double-click, Focus)
   /** `keys` false: the keyboard stays where it is (focus's frame, moving along the pipeline strip with ⌥ arrows). */
   const enterFocus = (t: Tile, keys = true) => {
@@ -927,15 +935,64 @@ export function Landscape({
     setPeek(null);
     setFocusKey(t.key);
     select(t);
-    // your own terminal takes the keyboard; a teammate's waits for a click. A terminal not there to take it leaves it
-    // with focus's frame, never with one out of sight (a menu just closed gives it back to what had it before)
-    if (keys)
-      setTimeout(() => {
-        const own = !isRemote(t.front) && t.front.status !== "dead";
-        if (own) focusTerm(t.front.id);
-        if (!own || !termHasKeys(t.front.id)) armFocus(overlay.current);
-      }, 50);
+    // a terminal not there to take it leaves it with focus's frame, never with one out of sight (a menu just closed
+    // gives it back to what had it before)
+    if (keys) setTimeout(() => void (frontTakesKeys(t) || armFocus(overlay.current)), 50);
   };
+  /**
+   * A tab of the workspace in focus the user brought to the front: its tab chosen, or × on the tab in front, whose next
+   * tab comes forward once it has closed (after the close's own dialog, if it asks). `ready` says when the layout has it
+   * there. Its terminal then gets the keyboard (`keysToFront`), so the holder never takes it from the terminal that
+   * went (keyArm.ts). A key, or a press anywhere but in a dialog or on focus's tabs (a tab chosen asks anew), drops it,
+   * as do focus ending and a newer ask; so does REVEAL_WAIT_MS passing without it there, counted from the last key or
+   * press in a dialog (a close's dialog cancelled leaves its ask to lapse).
+   */
+  const frontAsk = useRef<{ tile: string; ready: (t: Tile) => boolean; until: number } | null>(null);
+  const askFront = (tile: string, ready: (t: Tile) => boolean) => void (frontAsk.current = { tile, ready, until: performance.now() + REVEAL_WAIT_MS });
+  useEffect(() => {
+    const drop = (e: Event) => {
+      const ask = frontAsk.current;
+      const at = e.target as Element | null;
+      if (!ask || (e.type === "pointerdown" && at?.closest?.(".ls-focus .ls-tabs"))) return;
+      if (at?.closest?.(OVERLAYS)) ask.until = performance.now() + REVEAL_WAIT_MS;
+      else frontAsk.current = null;
+    };
+    window.addEventListener("keydown", drop, true);
+    window.addEventListener("pointerdown", drop, true);
+    return () => {
+      window.removeEventListener("keydown", drop, true);
+      window.removeEventListener("pointerdown", drop, true);
+    };
+  }, []);
+  /**
+   * The keyboard to the front tab of workspace `t` in focus, once its terminal is there to take it: tried now and every
+   * 50 ms for FRONT_KEYS_MS, and while a dialog that was already up (the close's own) goes. Not there in time, or not
+   * yours to type in, it goes to focus's frame, armed, as entering focus has it. Dropped if the user did anything
+   * meanwhile or a dialog opened (inputStamp), focus ended, or another tab came forward.
+   */
+  const keysToFront = (t: Tile) => {
+    const id = t.front.id;
+    const since = inputStamp();
+    const until = performance.now() + FRONT_KEYS_MS;
+    const attempt = () => {
+      const now = focusNow.current === t.key ? layoutNow.current.tiles.find((x) => x.key === t.key) : undefined;
+      if (!now || now.front.id !== id || inputStamp() !== since) return;
+      const wait = performance.now() < until;
+      if (document.querySelector(OVERLAYS)) return void (wait && setTimeout(attempt, 50));
+      if (frontTakesKeys(now)) return;
+      if (wait && !isRemote(now.front) && now.front.status !== "dead") return void setTimeout(attempt, 50);
+      armFocus(overlay.current);
+    };
+    attempt();
+  };
+  useEffect(() => {
+    const ask = frontAsk.current;
+    if (!ask) return;
+    if (focusTile?.key !== ask.tile || performance.now() > ask.until) return void (frontAsk.current = null);
+    if (!ask.ready(focusTile)) return;
+    frontAsk.current = null;
+    keysToFront(focusTile);
+  });
   const leaveFocus = () => {
     setFocusKey(null);
     // the terminal's element moves back into its workspace on the next render; the keyboard comes back here
@@ -2809,7 +2866,10 @@ export function Landscape({
       onSelect={pick}
       onFocus={(tile, doubled) => (!doubled || pairOn(tile.key)) && enterFocus(tile)}
       onBack={leaveFocus}
-      onTab={onTab}
+      onTab={(tile, id) => {
+        if (mode === "focus") askFront(tile.key, (x) => x.front.id === id);
+        onTab(tile, id);
+      }}
       actions={tileActions(t)}
       chrome={chromeFor(t.front)}
       onMore={(tile, from) => {
@@ -2819,7 +2879,18 @@ export function Landscape({
         ctx.openAt(menuAt.current, menuOf(mode === "focus" ? focusMenuActions(menuActions(tile)) : menuActions(tile)));
       }}
       onClosedTab={(s, from) => ctx.openBelow(from, menuOf(ghostActions(s)))}
-      tabClose={(s) => usable(actionsFor(t, s), "close")}
+      tabClose={(s) => {
+        const close = usable(actionsFor(t, s), "close");
+        if (!close || s.id !== t.front.id) return close;
+        // the tab in front closing: whichever comes forward once it has gone gets the keyboard
+        return {
+          ...close,
+          onPick: () => {
+            askFront(t.key, (x) => !x.members.some((m) => m.id === s.id));
+            close.onPick();
+          },
+        };
+      }}
       onFinish={(tile, from) => {
         // the header's button is at its right end: the popover hangs from there, flipped left to stay in the window
         const r = from.getBoundingClientRect();
