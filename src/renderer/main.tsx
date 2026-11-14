@@ -34,7 +34,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, HELPDESK_PRESET, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult, type AgentTold, type StepStarted } from "../shared/types";
+import { AGENT_NAME, HELPDESK_PRESET, asQuitAgent, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult, type AgentTold, type StepStarted } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -1131,14 +1131,15 @@ function App() {
     setTimeout(() => inputStamp() === since && focusTerm(next.id), 50);
   };
 
-  const resumeDead = async (s: SessionInfo) => {
+  /** `toAgent`: a terminal its agent quit into goes back to that agent pane, on its conversation (sessions:resumeAgent). */
+  const resumeDead = async (s: SessionInfo, toAgent = false) => {
     const since = inputStamp();
     // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed); main
     // checks too, for a take-over this window hasn't heard of, before it lets the pty go
     const info = await resumeExited(titleOf(s), {
       refusal: takenOverWhy(s, "rather than resuming this copy"),
-      costOk: () => costGate.resume(s),
-      resume: () => window.mb.resumeSession(s.id),
+      costOk: () => costGate.resume(toAgent ? asQuitAgent(s) : s),
+      resume: () => (toAgent ? window.mb.resumeAgent(s.id) : window.mb.resumeSession(s.id)),
       dispose: () => disposeTerm(s.id),
       refresh,
       say: alert,
@@ -1265,6 +1266,7 @@ function App() {
       })()}
       teamNotice={<ReceivedNotice received={receivedFor(s)} onReview={setReviewing} />}
       onRestart={() => void restartSession(s)}
+      onResumeAgent={() => void resumeDead(s, true)}
     />
   );
   // ---- tool windows and the workspace's actions (S5) ----

@@ -334,7 +334,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         this.changed();
       }),
       s.onOutput((id, data, end, epoch) => this.output(id, data, end, epoch)),
-      s.onStatusChanged((info, before) => this.statusChanged(info, before))
+      s.onStatusChanged((info, before) => this.statusChanged(info, before)),
+      s.onAgentQuit((info) => this.agentQuit(info))
     );
     this.timers.push(setInterval(() => this.tick(), this.t.heartbeatMs), setInterval(() => this.pollGit(), this.t.gitMs));
     for (const t of this.timers) t.unref?.();
@@ -999,6 +1000,26 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       }
       this.d.log(`team: telling ${memberNameIn(team, roomId, member)} about typing in session ${answer.session}`, err);
     });
+  }
+
+  /**
+   * One of this install's agent panes is becoming a terminal, its agent having quit (SessionManager.onAgentQuit): every
+   * allowance and ask to type into it ends now, before its shell starts, each teammate told. Typing into a sandboxed
+   * agent never carries over to a shell on this Mac, outside any sandbox: the owner allows that terminal anew, if at all.
+   */
+  private agentQuit(info: SessionInfo): void {
+    const grants = this.grants.get(info.id);
+    const asks = this.asks.get(info.id);
+    this.grants.delete(info.id);
+    this.asks.delete(info.id);
+    if (!grants?.size && !asks?.size) return;
+    const title = info.ticketTitle ?? info.title;
+    for (const g of grants?.values() ?? []) {
+      this.d.remoteAudit?.record("typing.ended", { roomId: g.roomId, member: g.member, session: info.id, title }, { reason: "its agent quit, so it's a terminal now" });
+      this.tellTyping(g.roomId, g.member, { session: info.id, state: "view-only", why: `the agent in ${quoted(title, 80)} quit: it's a terminal now` });
+    }
+    for (const a of asks?.values() ?? []) this.tellTyping(a.roomId, a.member, { session: info.id, state: "view-only", why: `the agent in ${quoted(title, 80)} quit: it's a terminal now` });
+    this.changed();
   }
 
   /** Allowances that ran out, and allowances and asks for sessions that closed, left the room or whose teammate left: gone, and said so. */

@@ -6,7 +6,7 @@ import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { tokenBreakdown } from "./usageFormat";
-import { formatShare, formatTokens, isErr, totalTokens, ticketIdOf, type AgentKind, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type WorktreeStateInfo, type IpcResult } from "../shared/types";
+import { AGENT_NAME, formatShare, formatTokens, isErr, totalTokens, ticketIdOf, type AgentKind, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
 import { agentSelection, trackPrintWidths } from "./agentWraps";
@@ -682,8 +682,9 @@ function termFor(session: SessionInfo, fontSize: number): TermEntry {
     entry = undefined;
   }
   if (!entry) {
-    // a session id keeps its agent and shell flag through restarts, and a
-    // resumed pane gets a fresh entry, so the policy is fixed per entry
+    // a session's agent and shell flag change only with a new process (a pane
+    // whose agent quit becomes a terminal), which gets a fresh entry, so the
+    // policy is fixed per entry
     const mousePolicy = mousePolicyFor(session, remoteEntry);
     // a teammate's session prints for its owner's terminal, from its first byte: parsed at another width, its
     // redraws land in the wrong cells for good (followOwners keeps it there)
@@ -819,6 +820,7 @@ export function TerminalPane({
   leftCopy,
   teamNotice,
   onRestart,
+  onResumeAgent,
   landscape,
 }: {
   session: SessionInfo;
@@ -842,6 +844,8 @@ export function TerminalPane({
   teamNotice?: React.ReactNode;
   /** Restart this pane, resuming its conversation (for a stuck one). */
   onRestart?: () => void;
+  /** Make this terminal the agent pane it was until its agent quit (SessionInfo.agentQuit), on its conversation. */
+  onResumeAgent?: () => void;
   /**
    * The terminal of a landscape workspace (WorkspaceNode), which draws the header: no header or rail here. The
    * workspace is `w` × `h` at 100%, and its terminal as many cells of the measured cell at `font` as that holds
@@ -857,6 +861,8 @@ export function TerminalPane({
   // team rooms: a teammate's session runs on their Mockingbird; this pane is its copy, at its owner's size
   const room = session.room ?? null;
   const remote = room?.remote ? room : null;
+  // a terminal of this Mac's that its agent quit into: it can go back to that agent
+  const quitAgent = session.shell && !remote ? session.agentQuit ?? null : null;
   // a session that just changed hands — handed over to a teammate, or taken over here — marks its pane once
   const paneEl = useRef<HTMLDivElement>(null);
   useHandover(paneEl, room?.takenOver?.at ?? tookOverAt);
@@ -1238,6 +1244,11 @@ export function TerminalPane({
           )}
           <div className="row">
             <button className="outline strong" onClick={onResume}>Resume</button>
+            {quitAgent && onResumeAgent && (
+              <button className="outline" title={`Ends this terminal and resumes its conversation in ${AGENT_NAME[quitAgent]}, in this pane`} onClick={onResumeAgent}>
+                Resume {AGENT_NAME[quitAgent]}
+              </button>
+            )}
             <button className="outline" onClick={onCleanup}>Close &amp; clean up</button>
           </div>
         </div>
@@ -1288,6 +1299,20 @@ export function TerminalPane({
               </div>
             )}
             {teamNotice}
+            {quitAgent && onResumeAgent && (
+              <div className="team-pane-note agent-quit" title={`${AGENT_NAME[quitAgent]} exited, and this pane became a terminal in its folder. Resume ${AGENT_NAME[quitAgent]} ends the terminal and resumes the conversation in it.`}>
+                <span className="reason">{AGENT_NAME[quitAgent]} exited · this is a terminal now</span>
+                <button
+                  className="outline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onResumeAgent();
+                  }}
+                >
+                  Resume {AGENT_NAME[quitAgent]}
+                </button>
+              </div>
+            )}
             {session.phoneNote && !remote && (
               <div className="team-pane-note phone-note" title="A reply to a phone alert (Settings → Notifications → Phone alerts). Each one is in Settings → Team → Recent remote activity.">
                 <span className="reason">

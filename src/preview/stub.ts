@@ -12,7 +12,7 @@
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, PipelineRequest, PlanRequest, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
-import { DEFAULT_SETTINGS, HELPDESK_GROUP, HELPDESK_PRESET, HELPDESK_STARTING, HELPDESK_START_IN_ROOM, clearGateTicks, clearsGates, helpdeskOpenAlready, prAskedState, prNeedsYou, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
+import { AGENT_NAME, DEFAULT_SETTINGS, HELPDESK_GROUP, asQuitAgent, HELPDESK_PRESET, HELPDESK_STARTING, HELPDESK_START_IN_ROOM, clearGateTicks, clearsGates, helpdeskOpenAlready, prAskedState, prNeedsYou, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
 import { tildePath } from "../shared/paths";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, followsBottom, measuredCell } from "../renderer/cachedTerm";
@@ -192,6 +192,17 @@ const buffers: Record<string, string> = {
   y1: `${C.bold}> Model the donor entity and its gifts${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Added Donor and Gift with a one-to-many relation.\r\n`,
   s7: `${C.bold}> What's on my plate today?${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Two tickets in progress (#5101, #5102) and one PR waiting on review.\r\n`,
 };
+
+/** Agent pane `s` as main makes it when its agent quits on its own (SessionManager.quitToTerminal): a terminal under its id, in its folder, its conversation kept, its pane's line and a prompt below what the agent showed. */
+const quitToTerminal = (s: SessionInfo): SessionInfo => {
+  const agent = s.agent ?? "claude";
+  const where = s.cwd.replace(/^\/Users\/you(?=\/|$)/, "~");
+  buffers[s.id] = `${buffers[s.id] ?? ""}\r\n\x1b[?25h${C.reset}${C.dim}── restarted · earlier output above ──${C.reset}\r\n\r\n\x1b[33m${AGENT_NAME[agent]} exited — this is now a terminal in ${where}.${C.reset}\r\n\r\nyou@mac ${s.cwd.split("/").pop()} % `;
+  const { agent: _agent, agentVersion: _version, ...rest } = s;
+  return { ...rest, shell: true, agentQuit: agent, conversation: s.conversation ?? { agent, id: `conv-${s.id}` }, status: "idle", createdAt: Date.now(), finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null };
+};
+// ?agentQuit: s5's Claude quit (/exit), so it's a terminal in its folder now, its conversation kept for Resume Claude
+if (new URLSearchParams(location.search).has("agentQuit")) sessions = sessions.map((s) => (s.id === "s5" ? quitToTerminal(s) : s));
 
 const files: Record<string, string> = {
   "README.md": "# backoffice\n\nThe admin site.\n",
@@ -1444,6 +1455,8 @@ const teamNow = (): TeamStatus => {
 const teamChanged = () => emit("onTeamChanged", teamNow());
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const byId = (id: string) => sessions.find((s) => s.id === id);
+/** What's been typed into each pane since its last Enter (sessionWrite: /exit quits an agent into a terminal). */
+const typedLines: Record<string, string> = {};
 /**
  * Where not-started step `p` starts and on which branch, as main's stepPlace says it (the preview has no commits:
  * 3f9c2a1 stands in for one), or why it can't.
@@ -1620,7 +1633,21 @@ const api: Record<string, (...a: any[]) => any> = {
   ],
   sessionBuffer: async (id: string) => buffers[id] ?? "",
   sessionWrite: async (id: string, text: string) => {
-    // typing is echoed; nothing runs
+    // typing is echoed; nothing runs, but /exit or /quit sent at an agent's prompt quits it into a terminal, as main's does
+    const line = (typedLines[id] ?? "") + text;
+    const enter = line.lastIndexOf("\r");
+    typedLines[id] = enter >= 0 ? line.slice(enter + 1) : line;
+    const sent = enter >= 0 ? line.slice(0, enter).split("\r").pop()!.trim() : null;
+    const s = byId(id);
+    if (s && (sent === "/exit" || sent === "/quit") && !s.shell && !s.debrief && s.role !== "tasks" && s.status !== "dead") {
+      setTimeout(() => {
+        const still = byId(id);
+        if (!still || still.shell || still.status === "dead") return;
+        sessions = sessions.map((x) => (x.id === id ? quitToTerminal(x) : x));
+        sessionsChanged();
+      }, 150);
+      return;
+    }
     const out = text.replace(/\r/g, `\r\n${C.dim}(UI preview: nothing runs here)${C.reset}\r\n> `);
     buffers[id] = (buffers[id] ?? "") + out;
     emit("onSessionData", id, out);
@@ -1712,6 +1739,20 @@ const api: Record<string, (...a: any[]) => any> = {
     if (s && s.status !== "dead") return { refused: "It's running already" };
     const r = await api.relaunchSession(id);
     return r ?? err("Its saved record is gone, so there's nothing to resume: close the pane");
+  },
+  // main's resumeAgent: a terminal its agent quit into goes back to that agent pane under its id, its conversation resumed
+  resumeAgent: async (id: string) => {
+    const taken = takenOverRefusal(id);
+    if (taken) return { refused: taken };
+    const s = byId(id);
+    if (!s) return { refused: "It isn't open here: reopen it from its ghost card or Closed sessions first" };
+    if (!s.shell || !s.agentQuit) return { refused: "It isn't a terminal an agent quit into" };
+    await startLag();
+    const next: SessionInfo = { ...asQuitAgent(s), status: "idle", exitCode: undefined, createdAt: Date.now(), finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null };
+    buffers[id] = `${buffers[id] ?? ""}\r\n${C.dim}── restarted · earlier output above ──${C.reset}\r\n\r\n${C.dim}(UI preview: ${AGENT_NAME[next.agent ?? "claude"]} would resume its conversation here)${C.reset}\r\n> `;
+    sessions = sessions.map((x) => (x.id === id ? next : x));
+    sessionsChanged();
+    return next;
   },
   // a relaunch starts a new process under the same id, stamped with a new createdAt, as main's create() does; refused,
   // as main's is, for a copy a teammate continues (relaunchGuard) and for one that's running

@@ -147,7 +147,7 @@ describe("a pane's launch", () => {
     const second = ptys.at(-1)!;
     const two = tokenIn(second);
     expect((await calledWith(two)).result.you.id).toBe(s.id);
-    second.exit(0);
+    second.exit(1);
     await new Promise((r) => setImmediate(r));
     expect((await calledWith(two)).error).toMatch(REFUSED);
     const r = await sessions.resume(s.id);

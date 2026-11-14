@@ -381,7 +381,7 @@ describe("a queued message's receipt", () => {
     expect(m.promptCount(s.id)!.seq).toBe(0);
     expect(promptAt()).toBeNull();
     expect(m.promptCount(s.id)!.epoch).not.toBe(first.epoch);
-    ptys.at(-1)!.exit(0);
+    ptys.at(-1)!.exit(1);
     expect(m.promptCount(s.id)).toBeNull();
   });
 });
@@ -687,7 +687,7 @@ describe("Claude Code's background sessions", () => {
     const s = await m.create(agentPane);
     m.statusFromHook({ paneId: s.id, conversationId: "resume-conv", agent: "claude", status: "idle" });
     transcript("resume-conv");
-    ptys.at(-1)!.exit(0);
+    ptys.at(-1)!.exit(1);
     let release!: (notice: string | null) => void;
     m.freeConversation = () => new Promise((r) => (release = r));
     const resumed = m.resume(s.id);

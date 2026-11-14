@@ -15,7 +15,7 @@ export type AuditKind =
   /** This Mac's person took it back. */
   | "typing.revoked"
   | "typing.expired"
-  /** The session closed, left the room or was taken over, which ends every grant. */
+  /** The session closed, left the room, was taken over or became a terminal (its agent quit), which ends every grant. */
   | "typing.ended"
   /** A teammate's keys written into a session: `n` writes, `bytes` in all, from `since` to `at`. */
   | "input"

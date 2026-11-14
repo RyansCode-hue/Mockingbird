@@ -59,6 +59,11 @@ export interface SessionInfo {
   /** The agent conversation last seen running in this pane (from its hook events) — what a relaunch resumes. */
   conversation?: { agent: AgentKind; id: string };
   /**
+   * A terminal that was this agent's pane until the agent quit on its own (/exit): it reopens as a plain terminal, and
+   * Resume <agent> (sessions:resumeAgent) makes it that agent pane again, on `conversation`.
+   */
+  agentQuit?: AgentKind;
+  /**
    * Its folders (cwd, extra folders) that had no repository at its first team room launch, as the disk names them:
    * every relaunch holds them to having none (gitPins.ts), so a `.git` its agent could have made there isn't trusted.
    */
@@ -150,6 +155,13 @@ export interface PlanRequest {
 
 /** Every agent, in the order the app lists them. */
 export const AGENT_KINDS: AgentKind[] = ["claude", "codex"];
+
+/** Terminal `s` as the agent pane it was until its agent quit (SessionInfo.agentQuit), as Resume <agent> starts it; otherwise `s`. */
+export function asQuitAgent<T extends Pick<SessionInfo, "shell" | "agent" | "agentQuit">>(s: T): T {
+  if (!s.shell || !s.agentQuit) return s;
+  const { shell: _shell, agentQuit, ...rest } = s;
+  return { ...rest, agent: agentQuit } as T;
+}
 
 /** The agent a session hands over to, or asks for a second opinion; a session without one runs Claude. */
 export const otherAgent = (a: AgentKind | null | undefined): AgentKind => (a === "codex" ? "claude" : "codex");

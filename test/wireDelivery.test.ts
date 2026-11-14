@@ -334,7 +334,7 @@ describe("a person's Send, by where the other end is", () => {
 
   it("exited: resumed in its pane first, then sent once its prompt is drawn", async () => {
     const t = await ready();
-    t.ptyOf(t.b.id).exit(0);
+    t.ptyOf(t.b.id).exit(1);
     expect(t.m.list().find((s) => s.id === t.b.id)!.status).toBe("dead");
     expect(t.gate(t.w).state).toBe("ready");
     const before = ptys.length;
@@ -605,6 +605,20 @@ describe("receipts: every way a queued message ends is told, never left as queue
     t.ptyOf(t.b.id).exit(1);
     expect(t.wireOf(t.w).delivery).toMatchObject({ state: "failed", why: "“Reviewer” stopped running before this reached it" });
     expect(t.gate(t.w).state).toBe("ready");
+  });
+
+  it("its agent quitting into a terminal with it queued: failed, saying so; the wire is refused while it's a terminal, and nothing reaches its shell", async () => {
+    const t = await ready();
+    t.m.statusFromHook({ paneId: t.b.id, status: "working" });
+    await t.d.send(t.w, t.p, "the summary");
+    const agent = t.ptyOf(t.b.id);
+    agent.exit(0);
+    expect(t.wireOf(t.w).delivery).toMatchObject({ state: "failed", why: "“Reviewer”'s Claude quit before this reached it: it's a terminal now" });
+    await vi.waitFor(() => expect(t.ptyOf(t.b.id)).not.toBe(agent));
+    expect(t.m.list().find((s) => s.id === t.b.id)).toMatchObject({ shell: true, agentQuit: "claude" });
+    expect(t.gate(t.w).why).toBe("“Reviewer” is a terminal: only a shared worktree wire can reach one.");
+    vi.advanceTimersByTime(500);
+    expect(t.ptyOf(t.b.id).writes).toEqual([]);
   });
 
   it("its pane forgotten with it queued: failed, then the wire goes with it", async () => {
@@ -922,7 +936,7 @@ describe("an automatic gate", () => {
 
   it("never reopens a stopped workspace: exited or closed, it waits for a person, saying why", async () => {
     const t = await chain(3);
-    t.ptyOf(t.ids[1]).exit(0);
+    t.ptyOf(t.ids[1]).exit(1);
     await t.offer(t.wires[0]);
     expect(t.wireOf(t.wires[0]).delivery).toMatchObject({ state: "held", why: expect.stringMatching(/“Step 1” isn't running: an automatic gate never reopens a workspace/) });
     t.m.kill(t.ids[2], false);
@@ -1391,7 +1405,7 @@ describe("finishing a step, through the one writer", () => {
     t.add(a.id, b.id, "handoff", { gate: "automatic" });
     t.add(a.id, c.id, "handoff", { gate: "automatic" });
     t.add(a.id, e.id, "handoff");
-    t.ptyOf(c.id).exit(0); // Tester has exited: an automatic gate never resumes it
+    t.ptyOf(c.id).exit(1); // Tester has exited: an automatic gate never resumes it
     t.m.statusFromHook({ paneId: a.id, status: "working", prompted: true });
     const reply = (await t.tools.call(t.m.list().find((s) => s.id === a.id)!, "finish_step", { summary: "Built it." })) as { result: string };
     expect(reply.result.split("\n")).toEqual([

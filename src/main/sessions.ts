@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
 import { dirtyFileCount } from "./scm";
@@ -245,6 +245,7 @@ interface LiveSession {
   prompts: number; // prompts its agent has taken this launch (UserPromptSubmit), Mockingbird's own notices not counted
   ownPrompts: number; // notices submitted whose UserPromptSubmit hasn't come yet: those prompts aren't counted
   promptAt: number | null; // when the latest of those prompts came (SessionInfo.promptAt)
+  toTerminal: boolean; // its agent quit and the terminal it becomes is starting (quitToTerminal): its pty has exited
 }
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
@@ -295,6 +296,14 @@ export async function folderGone(s: Pick<SessionInfo, "cwd" | "repoPath" | "bran
   return { reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" };
 }
 
+/** What SessionManager.create is told besides the request, by main's own callers only. */
+type CreateOptions = {
+  notice?: string;
+  beforeSpawn?: () => void;
+  /** A terminal started for agent pane `agent` that quit (SessionInfo.agentQuit), remembering its conversation. */
+  agentQuit?: { agent: AgentKind; conversation: { agent: AgentKind; id: string } | null };
+};
+
 /** Where a persisted session runs again (SessionManager.whereAgain), and what to tell it when its folder has moved to another branch. */
 type PlaceAgain = { where: Pick<NewSessionRequest, "cwd" | "branchName" | "useWorktree">; moved?: string; warnings?: string[] };
 
@@ -314,9 +323,10 @@ type RelaunchPlan = {
  * What relaunching `old` resumes: the exact conversation it last ran when that's still on disk; otherwise its
  * folder's most recent, which is ambiguous when several chats started in one folder (home, WorkTracker), and none
  * when the folder has no conversation yet (a session that died at startup relaunches fresh, as --continue would exit).
+ * A terminal its agent quit into resumes nothing: its conversation waits for Resume <agent> (asQuitAgent).
  */
 function relaunchPlan(old: SessionInfo): RelaunchPlan {
-  const conv = old.conversation && agentFor(old.conversation.agent).conversationExists(old.conversation.id) ? old.conversation : null;
+  const conv = old.conversation && !old.agentQuit && agentFor(old.conversation.agent).conversationExists(old.conversation.id) ? old.conversation : null;
   const sameAgent = !!conv && conv.agent === (old.agent ?? "claude");
   return {
     conv,
@@ -426,6 +436,16 @@ export class SessionManager {
   private watchers = new Set<() => void>();
   private outputListeners = new Set<(id: string, data: string, end: number, epoch: string) => void>();
   private statusListeners = new Set<(info: SessionInfo, before: SessionStatus) => void>();
+  private quitListeners = new Set<(info: SessionInfo) => void>();
+
+  /**
+   * An agent pane's agent quit on its own, and the pane is to become a terminal (quitToTerminal): told with it still
+   * the agent pane, before any shell starts. One that throws keeps it from becoming one: it's left exited instead.
+   */
+  onAgentQuit(cb: (info: SessionInfo) => void): () => void {
+    this.quitListeners.add(cb);
+    return () => this.quitListeners.delete(cb);
+  }
 
   /** Told whenever a session is added, removed or changed (status, title, group, terminal size). */
   watch(cb: () => void): () => void {
@@ -588,8 +608,9 @@ export class SessionManager {
   /**
    * Start a pane. `notice` is shown in it above the agent's output (see paneNotice). `beforeSpawn` runs as the pty is
    * about to start, after every await in preparing it: what it throws is the launch's failure, nothing having started.
+   * `agentQuit`: a terminal that an agent pane became when its agent quit (SessionInfo.agentQuit).
    */
-  async create(req: NewSessionRequest, opts: { notice?: string; beforeSpawn?: () => void } = {}): Promise<SessionInfo> {
+  async create(req: NewSessionRequest, opts: CreateOptions = {}): Promise<SessionInfo> {
     if (req.role !== "tasks") return this.createPane(req, opts);
     // One Helpdesk tasks workspace on this Mac: another start while one is open or starting (a double click, the menu
     // and Settings' Start at once) is refused; its own relaunch, under its id, isn't.
@@ -604,7 +625,7 @@ export class SessionManager {
     }
   }
 
-  private async createPane(req: NewSessionRequest, opts: { notice?: string; beforeSpawn?: () => void }): Promise<SessionInfo> {
+  private async createPane(req: NewSessionRequest, opts: CreateOptions): Promise<SessionInfo> {
     this.refuseWhileQuitting();
     const tasks = req.role === "tasks";
     if (tasks) await this.mayStartTasks(req);
@@ -755,7 +776,7 @@ export class SessionManager {
     // its end is handled from the moment it runs, whatever happens below: the pty, and its token, always go with it.
     // Once it's no longer the live session for its id, its end touches nothing else (its replacement's).
     let started: LiveSession | undefined;
-    proc.onExit(({ exitCode }) => {
+    proc.onExit(({ exitCode, signal }) => {
       this.running.delete(proc);
       exited();
       retireMcpLaunch(mcp);
@@ -771,6 +792,8 @@ export class SessionManager {
         started.heldInput = [];
       }
       if (this.quitting || !started || this.live.get(started.info.id) !== started) return;
+      // node-pty reports a process ended by a signal with exit code 0: only one that exited by itself has quit
+      if (exitCode === 0 && !signal && this.quitToTerminal(started)) return;
       started.info.exitCode = exitCode;
       this.setStatus(started.info.id, "dead");
     });
@@ -800,7 +823,8 @@ export class SessionManager {
       model: req.model || undefined,
       effort: req.effort || undefined,
       agent: req.shell ? undefined : req.agent ?? "claude",
-      conversation: req.shellResume ?? (req.resumeSessionId ? { agent: req.agent ?? "claude", id: req.resumeSessionId } : undefined),
+      conversation: req.shellResume ?? (req.shell ? opts.agentQuit?.conversation ?? undefined : undefined) ?? (req.resumeSessionId ? { agent: req.agent ?? "claude", id: req.resumeSessionId } : undefined),
+      agentQuit: (req.shell && !req.shellResume && opts.agentQuit?.agent) || undefined,
     };
     // a relaunched pane keeps its history of conversations (its token meter adds them up)
     const before = (req.reuseId ? this.store.state.sessions.find((x) => x.id === req.reuseId) : undefined) ?? {};
@@ -827,6 +851,9 @@ export class SessionManager {
     const earlier = req.reuseId ? this.readScrollback(req.reuseId) : "";
     const owed = [...this.withoutReceipts(prior?.queued ?? [], `${paneName(info)} was started again before this reached it`), ...(this.undelivered.get(info.id) ?? [])];
     this.undelivered.delete(info.id);
+    // a terminal is never given an agent's messages, where one typed would run as a command: they wait for the
+    // session's next agent launch (Resume <agent>)
+    if (req.shell && owed.length) this.undelivered.set(info.id, owed.splice(0));
     const notice = [opts.notice, ...warnings].filter(Boolean).join("\n");
     const lead = (earlier ? earlier + restartDivider(new Date(), earlier) : "") + (notice ? paneNotice(notice) : "");
     const sess: LiveSession = {
@@ -858,6 +885,7 @@ export class SessionManager {
       prompts: 0,
       ownPrompts: 0,
       promptAt: null,
+      toTerminal: false,
       mcp,
     };
     sess.total = sess.buffer.length;
@@ -1130,6 +1158,121 @@ export class SessionManager {
     return true;
   }
 
+  /**
+   * Agent pane `s`'s agent quit on its own (/exit, Ctrl-D: its pty ended with code 0, and nothing of Mockingbird's
+   * stopped it, which would have closed it, marked it exited or replaced its pty first). It becomes a terminal in its
+   * folder under its id (becomeTerminal), its place, scrollback and conversation kept for Resume <agent>. Debriefs and
+   * the Helpdesk tasks workspace don't: they exit as any pane does. False when it doesn't, for its exit to leave it dead.
+   *
+   * Everything that tells a terminal from an agent pane changes here, before anything awaits: its record says terminal
+   * (shell, no agent), what waited for its agent is taken off it, and what had to end with its agent has (onAgentQuit:
+   * every teammate's typing grant). No shell starts, so none reads a key, until all of that is done.
+   */
+  private quitToTerminal(s: LiveSession): boolean {
+    const i = s.info;
+    if (i.shell || i.debrief || i.role === "tasks" || i.status === "dead") return false;
+    const agent = i.agent ?? "claude";
+    for (const l of this.quitListeners) {
+      try {
+        l(i);
+      } catch (err) {
+        console.error(`[sessions] ${i.id}'s ${agentLabel(agent)} quit, and what ends with it couldn't be ended, so it's left exited rather than becoming a terminal:`, err);
+        return false;
+      }
+    }
+    s.toTerminal = true;
+    if (s.flushTimer) clearTimeout(s.flushTimer);
+    if (s.startTimer) clearTimeout(s.startTimer);
+    s.flushTimer = s.startTimer = null;
+    const kept = this.withoutReceipts(s.queued, `${paneName(i)}'s ${agentLabel(agent)} quit before this reached it: it's a terminal now`);
+    s.queued = [];
+    if (kept.length) {
+      this.undelivered.set(i.id, [...(this.undelivered.get(i.id) ?? []), ...kept]);
+      console.warn(`[sessions] ${i.id}'s ${agentLabel(agent)} quit with ${kept.length} message(s) waiting for it: they're delivered if it's resumed as an agent`);
+    }
+    const before = i.status;
+    delete i.agent;
+    delete i.agentVersion;
+    i.shell = true;
+    i.agentQuit = agent;
+    Object.assign(i, { status: "idle", finishedAt: null, waitingReason: null, waitingSince: null, waitingAt: null, stalledSince: null, hooksSilent: false });
+    this.store.upsertSession(i);
+    this.emitChanged();
+    if (before !== "idle") this.tell("status", this.statusListeners, i, before);
+    void this.becomeTerminal(s, agent);
+    return true;
+  }
+
+  /**
+   * Start the terminal agent pane `s` becomes (quitToTerminal): a login shell in its folder under its id, what the agent
+   * showed kept above its prompt with a line saying so. It doesn't start once the pane has been closed, stopped or
+   * started again meanwhile. One that can't start leaves the pane the agent pane it was, exited, saying why in it.
+   */
+  private async becomeTerminal(s: LiveSession, agent: AgentKind): Promise<void> {
+    const i = s.info;
+    const id = i.id;
+    this.relaunching.add(id);
+    try {
+      try {
+        this.writeScrollback(s);
+      } catch (err) {
+        console.error(`[sessions] ${id}: couldn't save its scrollback, so its terminal starts without what its agent showed:`, err);
+      }
+      if (!fs.existsSync(i.cwd)) throw new Error(`its folder, ${i.cwd}, isn't there any more`);
+      const place = await this.whereAgain(i);
+      const info = await this.create(
+        {
+          repoPath: i.repoPath,
+          ...place.where,
+          ticketId: i.ticketId ?? undefined,
+          ticketTitle: i.ticketTitle ?? undefined,
+          taskGroup: i.taskGroup ?? undefined,
+          extraDirs: i.extraDirs,
+          title: i.title,
+          shell: true,
+          role: i.role,
+          model: i.model ?? undefined,
+          effort: i.effort ?? undefined,
+          reuseId: id,
+        },
+        {
+          notice: [`${agentLabel(agent)} exited — this is now a terminal in ${tildePath(i.cwd)}.`, place.moved].filter(Boolean).join("\n"),
+          agentQuit: { agent, conversation: i.conversation ?? null },
+          beforeSpawn: () => {
+            if (this.live.get(id) !== s || i.status === "dead") throw new Error("it was closed, stopped or started again first");
+          },
+        }
+      );
+      if (i.muted) {
+        info.muted = true;
+        this.store.upsertSession(info);
+        this.emitChanged();
+      }
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      // closed or started again meanwhile (or a launch that failed after taking its place, which says so itself), or the
+      // app quitting, which leaves its record as it was: a terminal that reopens as one
+      if (this.live.get(id) !== s || this.quitting) return void console.warn(`[sessions] ${id}: the terminal its ${agentLabel(agent)} quit into didn't start: ${why}`);
+      console.error(`[sessions] ${id}'s ${agentLabel(agent)} quit, and the terminal it was to become couldn't start, so it's left exited:`, err);
+      delete i.shell;
+      delete i.agentQuit;
+      i.agent = agent;
+      i.exitCode = 0;
+      s.toTerminal = false;
+      const note = paneNotice(`${agentLabel(agent)} exited, and a terminal couldn't open here: ${why}`);
+      s.buffer = (s.buffer + note).slice(-BUFFER_MAX);
+      s.total += note.length;
+      this.wc?.send("session:data", id, note);
+      this.tell("output", this.outputListeners, id, note, s.total, s.epoch);
+      if (i.status === "dead") {
+        this.store.upsertSession(i);
+        this.emitChanged();
+      } else this.setStatus(id, "dead");
+    } finally {
+      this.relaunching.delete(id);
+    }
+  }
+
   /** Restart one pane in place: same id, its conversation resumed. */
   async restart(id: string): Promise<SessionInfo> {
     this.ownOnly(id, "restart it");
@@ -1255,9 +1398,10 @@ export class SessionManager {
   /**
    * Why exited pane `id` can't be resumed now, or null: it's a teammate's, isn't an exited pane here, is being resumed
    * already (but by the resume asking: `asking`), is running, may not run again (a teammate continues it:
-   * relaunchGuard), or its record is gone. Checks only: nothing is waited on.
+   * relaunchGuard), or its record is gone. Checks only: nothing is waited on. `toAgent`: pane `id` is to go back to the
+   * agent that quit into it (resumeAgent), so it's a terminal of this Mac's that one quit into, running or exited.
    */
-  private resumeRefusal(id: string, asking = false): string | null {
+  private resumeRefusal(id: string, asking = false, toAgent = false): string | null {
     if (isRemotePaneId(id)) return "That's a teammate's session: only its owner can resume it";
     if (!asking && this.resuming.has(id)) return BEING_RESUMED;
     if (this.relaunching.has(id)) return BEING_RELAUNCHED;
@@ -1265,8 +1409,11 @@ export class SessionManager {
     const pane = this.live.get(id);
     const planned = !pane && this.recordOf(id)?.planned ? this.recordOf(id) : undefined;
     if (planned) return notStartedWhy(planned);
-    if (!pane) return "It isn't an exited pane here: reopen it from its ghost card or Closed sessions";
-    if (pane.info.status !== "dead") return "It's running already";
+    if (toAgent) {
+      if (!pane) return "It isn't open here: reopen it from its ghost card or Closed sessions first";
+      if (!pane.info.shell || !pane.info.agentQuit) return "It isn't a terminal an agent quit into";
+    } else if (!pane) return "It isn't an exited pane here: reopen it from its ghost card or Closed sessions";
+    else if (pane.info.status !== "dead") return "It's running already";
     const refusal = this.relaunchGuard?.(id);
     if (refusal) return refusal;
     if (!this.recordOf(id)) return "Its saved record is gone, so there's nothing to resume: close the pane";
@@ -1281,9 +1428,23 @@ export class SessionManager {
    * come between them. A relaunch that fails after that throws, the session resumable (Previous).
    */
   async resume(id: string): Promise<SessionInfo | { refused: string }> {
-    const refusal = this.resumeRefusal(id);
+    return this.resumeAs(id, false);
+  }
+
+  /**
+   * Make terminal `id`, which an agent pane became when its agent quit (SessionInfo.agentQuit), that agent pane again
+   * under its id: its conversation resumed as an exited pane's Resume resumes it, and refused as that is, saying why.
+   * Its shell, running or exited, is ended for it.
+   */
+  async resumeAgent(id: string): Promise<SessionInfo | { refused: string }> {
+    return this.resumeAs(id, true);
+  }
+
+  private async resumeAs(id: string, toAgent: boolean): Promise<SessionInfo | { refused: string }> {
+    const refusal = this.resumeRefusal(id, false, toAgent);
     if (refusal) return { refused: refusal };
-    const record = this.recordOf(id)!;
+    const as = (r: SessionInfo) => (toAgent ? asQuitAgent(r) : r);
+    const record = as(this.recordOf(id)!);
     const plan = relaunchPlan(record);
     this.resuming.add(id);
     try {
@@ -1305,7 +1466,7 @@ export class SessionManager {
           console.warn(`[sessions] ${id}: not resumed, its conversation couldn't be let go: ${why}`);
           return { refused: why };
         }
-        const again = this.resumeRefusal(id, true);
+        const again = this.resumeRefusal(id, true, toAgent);
         if (again) {
           // what letting it go did (a background session stopped) is said with the refusal, not lost
           if (notice) console.warn(`[sessions] ${id}: not resumed after its conversation was let go: ${notice}`);
@@ -1313,8 +1474,9 @@ export class SessionManager {
         }
       }
       this.kill(id, false);
-      const old = this.recordOf(id);
-      if (!old) throw new Error("its saved record went while it was being resumed");
+      const saved = this.recordOf(id);
+      if (!saved) throw new Error("its saved record went while it was being resumed");
+      const old = as(saved);
       return await this.launchAgain(old, plan, place ?? (await this.whereAgain(old)), notice);
     } finally {
       this.resuming.delete(id);
@@ -1736,7 +1898,7 @@ export class SessionManager {
       model: old.model ?? undefined,
       effort: old.effort ?? undefined,
       agent: old.agent,
-    }, { notice });
+    }, { notice, ...(old.shell && old.agentQuit ? { agentQuit: { agent: old.agentQuit, conversation: old.conversation ?? null } } : {}) });
     // a muted pane stays muted through restarts
     if (old.muted) {
       info.muted = true;
@@ -1840,6 +2002,8 @@ export class SessionManager {
       if (this.remote?.has(id)) this.remote.write(id, data);
       return;
     }
+    // between its agent's exit and its terminal's start, nothing runs in it to take a key
+    if (s.toTerminal) return;
     s.lastInput = Date.now();
     // a room launch's sandbox report already written is read before an Enter could start its first turn
     if (s.sandbox?.state === "starting" && data.includes("\r")) this.catchUpHooks();
@@ -2098,6 +2262,12 @@ export class SessionManager {
       this.settle(receipt, "failed", "its pane isn't running");
       return false;
     }
+    // a terminal runs what's typed: a message meant for an agent (a kickoff due after its agent quit) never goes in
+    if (s.info.shell || s.toTerminal) {
+      console.warn(`[sessions] ${id} is a terminal now: a message for its agent wasn't typed into it`);
+      this.settle(receipt, "failed", `${paneName(s.info)} is a terminal now, so this wasn't typed into it`);
+      return false;
+    }
     if (receipt && !this.mayPaste(receipt, id)) return false;
     // bracketed paste so multi-line messages arrive as one prompt
     s.proc.write(`\x1b[200~${pasteText(message)}\x1b[201~`);
@@ -2115,7 +2285,7 @@ export class SessionManager {
         this.settle(receipt, "failed", `Mockingbird quit after this was pasted into ${paneName(s.info)} and before its Enter, so it wasn't submitted`);
         return;
       }
-      if (this.live.get(id) !== s || s.info.status === "dead") {
+      if (this.live.get(id) !== s || s.info.status === "dead" || s.toTerminal) {
         this.settle(receipt, "failed", `${paneName(s.info)} stopped after this was pasted and before its Enter, so it wasn't submitted`);
         return;
       }
@@ -2232,6 +2402,8 @@ export class SessionManager {
   private enqueue(id: string, m: Queued): string {
     const s = this.live.get(id);
     if (!s) throw new Error(`session ${id} is not running`);
+    // typed into a shell, a message would run as a command (an agent pane whose agent quit is one now)
+    if (s.info.shell) throw new Error(`${paneName(s.info)} is a terminal: agent messages are never typed into terminals`);
     if (s.info.status === "dead" && m.receipt) throw new Error(`${paneName(s.info)} has exited`);
     s.queued.push(m);
     if (s.info.status === "dead") {
@@ -2363,6 +2535,9 @@ export class SessionManager {
     // events arrive up to a poll late: one written just before the agent exited
     // must not bring its dead pane back to life
     if (!s || s.info.status === "dead") return null;
+    // so must one its agent wrote before quitting into a terminal: that terminal's status is its own, until an agent
+    // started in it reports (an event written after its shell started; `at` is whole seconds)
+    if (s.toTerminal || (s.info.agentQuit && ev.at !== undefined && ev.at <= Math.floor(s.info.createdAt / 1000))) return null;
     s.hookEvents++;
     // only the pane's own events speak for its launch's sandbox: one matched by folder may be another agent's
     if (s.sandbox && ev.paneId === s.info.id) {

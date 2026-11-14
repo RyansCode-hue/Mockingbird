@@ -69,7 +69,7 @@ import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, StepStarted, UpdateOutcome, WorktreeCleanupSay } from "../shared/types";
-import { AGENT_KINDS, BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
+import { AGENT_KINDS, asQuitAgent, BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { QuitSequence } from "./quit";
@@ -835,6 +835,7 @@ async function startStep(id: string, from?: string | null, ticketTitle?: string 
   }
 }
 handle("sessions:resume", (id) => sessions.resume(String(id)));
+handle("sessions:resumeAgent", (id) => sessions.resumeAgent(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {
   // a pane closed to resume isn't live any more, but forgetting it later must still find it
@@ -1100,7 +1101,9 @@ function planRate(agent: AgentKind): number | null {
   return planRateOf(transcripts.usage({ since: w.start }).filter((r) => r.agent === agent), w.usedPct);
 }
 handle("usage:resumeCost", (id: string): ResumeEstimate | null => {
-  const s = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id);
+  const found = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id);
+  // a terminal its agent quit into resumes that agent's conversation (Resume <agent>)
+  const s = found && asQuitAgent(found);
   if (!s || s.shell) return null;
   const cw = readContextWindow(s);
   return cw.state === "reading" ? resumeEstimate(cw, planRate(cw.agent), Date.now()) : null;

@@ -641,12 +641,38 @@ describe("typing needs the owner's consent", () => {
     const { ryan, nick } = await pair();
     const s = await ryan.start();
     await allowTyping(ryan, nick, s.id);
-    ptyOf(s.id).exit(0);
+    ptyOf(s.id).exit(1);
     await until(() => ryan.sessions.list().find((x) => x.id === s.id)?.status === "dead", "the exit");
     await until(() => !ryan.live.state().own[s.id]?.typists?.length, "the allowance gone");
     expect(await raw(nick, ryan, s.id, "x", 2).catch((e) => String(e))).not.toEqual({ ok: true });
     ryan.remoteAudit.flush();
     expect(ryan.remoteAudit.recent().map((e) => e.kind)).toContain("typing.ended");
+  });
+
+  it("ends when its agent quits into a terminal, before the shell starts: a teammate never types into a shell on the owner's Mac, and the room sees a terminal", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await allowTyping(ryan, nick, s.id);
+    const agent = ptyOf(s.id);
+    agent.exit(0);
+    // at once, with no shell started yet
+    expect(ryan.live.state().own[s.id]?.typists ?? []).toEqual([]);
+    expect(ptyOf(s.id)).toBe(agent);
+    await until(() => ptyOf(s.id) !== agent, "the terminal");
+    expect(ptyOf(s.id).args).toEqual(["-il"]);
+    expect(ryan.sessions.list().find((x) => x.id === s.id)).toMatchObject({ shell: true, agentQuit: "claude" });
+    // a terminal runs outside any sandbox, as every room terminal does
+    expect(ryan.sessions.guardsOf(s.id)).toMatchObject({ secrets: false });
+    expect(await raw(nick, ryan, s.id, "ls\r", 2).catch((e) => String(e))).not.toEqual({ ok: true });
+    await until(() => remoteOf(nick, s.id)?.room?.typing?.refused?.why === 'the agent in "donors" quit: it\'s a terminal now', "Nick told why");
+    expect(remoteOf(nick, s.id)!.room!.typing!.state).toBe("view-only");
+    expect(ptyOf(s.id).writes).toEqual([]);
+    ryan.remoteAudit.flush();
+    expect(ryan.remoteAudit.recent().find((e) => e.kind === "typing.ended")).toMatchObject({ member: "Nick", session: s.id, reason: "its agent quit, so it's a terminal now" });
+    // its published record says terminal: a teammate's Mockingbird refuses agent messages to it
+    await until(() => remoteOf(nick, s.id)?.shell === true, "the record as a terminal");
+    expect(remoteOf(nick, s.id)!.agent).toBeUndefined();
+    expect(roomMessageRefusal({ agent: null, status: "idle", live: true, guards: null }, "Ryan")).toMatch(/^it's a terminal on Ryan's Mac/);
   });
 
   it("with an owner on a Mockingbird from before typing consent, typing goes through as it did", async () => {

@@ -48,6 +48,8 @@ const api = {
   plansViewing: (id: string | null): Promise<IpcResult<void>> => ipcRenderer.invoke("plans:viewing", id),
   /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */
   resumeSession: (id: string): Promise<SessionInfo | { refused: string } | { error: string }> => ipcRenderer.invoke("sessions:resume", id),
+  /** Make terminal `id`, which its agent quit into, that agent pane again (SessionManager.resumeAgent): answered as resumeSession is. */
+  resumeAgent: (id: string): Promise<SessionInfo | { refused: string } | { error: string }> => ipcRenderer.invoke("sessions:resumeAgent", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),
   restartAllSessions: (includeBusy: boolean) => ipcRenderer.invoke("sessions:restartAll", includeBusy),
   sessionWrite: (id: string, data: string) => ipcRenderer.send("session:write", id, data),
