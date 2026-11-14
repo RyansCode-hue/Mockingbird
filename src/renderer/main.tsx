@@ -1809,6 +1809,8 @@ function App() {
       close: () => requestClose(s),
       // a copy a teammate took over is taken back, not resumed or worked on: the model refuses those (workspaceActions)
       resume: () => resumeDead(s),
+      resumeAgent: () => void resumeDead(s, true),
+      openTerminal: () => void openTerminal(s),
       saveTemplate: saveTemplateOf(s),
     };
   };

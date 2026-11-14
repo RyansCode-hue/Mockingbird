@@ -119,6 +119,34 @@ describe("a workspace's actions", () => {
     expect(usable(acts, "notify")).toBeDefined();
   });
 
+  it("of a terminal its agent quit into: Resume <agent> before Close, running its own handler; none for a plain terminal", () => {
+    const e = env({ resumeAgent: vi.fn<() => void>() });
+    const quit = sess({ shell: true, agentQuit: { agent: "codex", conversation: "c1" }, status: "idle" });
+    const acts = workspaceActions(quit, e);
+    expect(actionOf(acts, "resumeAgent")).toMatchObject({ section: "end", label: "Resume Codex" });
+    expect(keys(acts).slice(-2)).toEqual(["resumeAgent", "close"]);
+    usable(acts, "resumeAgent")!.onPick();
+    expect(e.resumeAgent).toHaveBeenCalledOnce();
+    expect(actionOf(workspaceActions(sess({ shell: true, status: "idle" }), e), "resumeAgent")).toBeUndefined();
+    // a teammate's copy is theirs; one a teammate took over is taken back first
+    expect(actionOf(workspaceActions(quit, env({ ...e, owner: "Nick Smith" })), "resumeAgent")).toBeUndefined();
+    const taken = sess({ ...quit, room: { roomId: "r1", remote: false, takenOver: { at: 1, by: "m2", byName: "Nick" } } as SessionInfo["room"] });
+    expect(actionOf(workspaceActions(taken, e), "resumeAgent")).toMatchObject({ disabled: true, title: expect.stringMatching(/take it back/) });
+  });
+
+  it("of a pane whose agent quit in its room's sandbox: Resume <agent>, then Open a terminal here, each running its own handler", () => {
+    const e = env({ openTerminal: vi.fn<() => void>() });
+    const acts = workspaceActions(sess({ status: "dead", quitInSandbox: true }), e);
+    expect(keys(acts).slice(-3)).toEqual(["resume", "openTerminal", "close"]);
+    expect(actionOf(acts, "resume")).toMatchObject({ label: "Resume Claude", primary: true });
+    usable(acts, "openTerminal")!.onPick();
+    expect(e.openTerminal).toHaveBeenCalledOnce();
+    // any other exited pane keeps plain Resume and has no terminal to open
+    const plain = workspaceActions(sess({ status: "dead" }), e);
+    expect(actionOf(plain, "resume")?.label).toBe("Resume");
+    expect(actionOf(plain, "openTerminal")).toBeUndefined();
+  });
+
   it("carry the team room's actions in their own section", () => {
     const takeOver: Action = { key: "takeover", label: "Take over", onPick: vi.fn() };
     const acts = workspaceActions(sess(), env({ room: [takeOver] }));
@@ -265,6 +293,11 @@ describe("the focused header's ⋯", () => {
       "-", "# Hand on", "handoff", "brief", "review",
       "-", "resume", "close",
     ]);
+  });
+
+  it("keeps Resume <agent> on a terminal its agent quit into", () => {
+    const acts = workspaceActions(sess({ shell: true, agentQuit: { agent: "claude" }, status: "idle" }), env({ resumeAgent: vi.fn<() => void>(), diffPanel: false }));
+    expect(rows(menuOf(focusMenuActions(acts))).slice(-3)).toEqual(["-", "resumeAgent", "close"]);
   });
 
   it("leaves the model, and so the card's ⋯ and every right-click, whole", () => {

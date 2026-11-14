@@ -85,6 +85,10 @@ export interface WorkspaceEnv {
   addTerminal?: Can;
   close: () => void;
   resume: Can;
+  /** Resume <agent> for a terminal its agent quit into (SessionInfo.agentQuit): back to that agent pane, on its conversation. */
+  resumeAgent?: Can;
+  /** Open a terminal here, for an exited pane whose agent quit in its room's sandbox (SessionInfo.quitInSandbox). */
+  openTerminal?: Can;
   /**
    * Connect…: a menu of the workspaces a wire can be made to, as Move to area lists areas (the landscape's; left out
    * where wires aren't made, as in ⌘K), or why none can be.
@@ -229,7 +233,19 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
   if (env.saveTemplate && s.role !== "tasks")
     out.push({ section: "wires", key: "saveTemplate", label: "Save as template", menuLabel: "Save as template…", title: "Keep the chain of wires through it as a pipeline template, to lay out again from a ticket", ...can(env.saveTemplate) });
   out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
-  if (dead && local) out.push({ section: "end", key: "resume", label: "Resume", menuLabel: "Resume", primary: true, title: "Start it again, resuming its conversation", ...can(tookIt(env.resume, "rather than resuming this copy")) });
+  const agentName = AGENT_NAME[s.agent ?? "claude"];
+  if (dead && local) {
+    // an agent that quit in its room's sandbox leaves its pane exited: a terminal opens there only when asked
+    const held = !s.shell && !!s.quitInSandbox;
+    const resume = held ? `Resume ${agentName}` : "Resume";
+    out.push({ section: "end", key: "resume", label: resume, menuLabel: resume, primary: true, title: "Start it again, resuming its conversation", ...can(tookIt(env.resume, "rather than resuming this copy")) });
+    if (held && env.openTerminal)
+      out.push({ section: "end", key: "openTerminal", label: "Open a terminal here", title: "A login shell in its folder, on your Mac and outside the room's sandbox", ...can(tookIt(env.openTerminal, "before opening a terminal in it")) });
+  }
+  if (!dead && local && s.shell && s.agentQuit && env.resumeAgent) {
+    const name = AGENT_NAME[s.agentQuit.agent];
+    out.push({ section: "end", key: "resumeAgent", label: `Resume ${name}`, title: `Ends this terminal and resumes its conversation in ${name}, in this workspace`, ...can(tookIt(env.resumeAgent, `rather than resuming ${name} in this copy`)) });
+  }
   out.push({ section: "end", key: "close", label: "Close", menuLabel: dead ? "Close & clean up…" : "Close…", icon: <CloseIcon />, danger: true, onPick: env.close, ...theirs("close") });
   return out;
 }

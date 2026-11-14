@@ -3466,8 +3466,8 @@ if (lsTools) {
 const lsMenu = params.get("lsMenu");
 if (lsMenu === "members") waitFor(".ls-ah .ls-ah-btn[aria-haspopup]", (el) => setTimeout(() => el.click(), 300));
 if (lsMenu === "more") waitFor(".ls-ah .ls-ah-more", (el) => setTimeout(() => el.click(), 300));
-// ?lsMenu=ws: s1's ⋯ (its workspace's actions); =focus (with ?lsFocus): the focused header's ⋯
-if (lsMenu === "ws") waitFor('.ls-world [data-front="s1"] .ls-more', (el) => setTimeout(() => el.click(), 300));
+// ?lsMenu=ws: s1's ⋯ (its workspace's actions), =ws:<id> that session's; =focus (with ?lsFocus): the focused header's ⋯
+if (lsMenu === "ws" || lsMenu?.startsWith("ws:")) waitFor(`.ls-world [data-front="${lsMenu.slice(3) || "s1"}"] .ls-more`, (el) => setTimeout(() => el.click(), 300));
 if (lsMenu === "focus") waitFor(".ls-focus .ls-more", (el) => setTimeout(() => el.click(), 300));
 const lsPick = params.get("lsPick")?.split(",");
 if (lsPick)

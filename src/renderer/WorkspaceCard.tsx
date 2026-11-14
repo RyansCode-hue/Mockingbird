@@ -141,8 +141,8 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
       {s.status === "dead" && (resume || close) && (
         <div className="ls-card-acts">
           {resume && (
-            <button type="button" className="outline strong" title={resume.title || "Resume"} onClick={(e) => (e.stopPropagation(), resume.onPick())}>
-              Resume
+            <button type="button" className="outline strong" title={resume.title || resume.label} onClick={(e) => (e.stopPropagation(), resume.onPick())}>
+              {resume.label}
             </button>
           )}
           {close && (

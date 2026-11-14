@@ -46,6 +46,10 @@ export const CHANGELOG: Release[] = [
     date: "2026-11-13",
     items: [
       n("Settings → Team can run a room's sessions without its sandbox on your Mac: push, gh, MCP and memory work"),
+      n("Quitting Claude or Codex (/exit) leaves a terminal in its folder; Resume Claude brings the agent back"),
+      n("A focused workspace shows its tabs like a browser: × closes one, + adds one"),
+      u("A focused workspace's ⋯ menu lists only what you can do there now"),
+      f("Switching tabs in a focused workspace no longer asks you to click the landscape before typing"),
       f("A session still in a room sandbox it no longer needs says so and offers a restart to lift it"),
       f("Switching a room's sandbox back on cuts off sessions started without it, Codex too, until they restart"),
     ],
