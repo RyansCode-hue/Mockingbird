@@ -234,6 +234,17 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
   return out;
 }
 
+/** What the focused header's ⋯ leaves to the rest of the window: the activity bar has the tools, the landscape sizes and wires. */
+const NOT_IN_FOCUS_MENU: ReadonlySet<ActionSection> = new Set(["tools", "wires"]);
+
+/**
+ * The focused header's ⋯: a workspace's actions less sizes, tools, wires and New tab (its tabs' + adds one), and only
+ * those that can be done now, a row that's off left out rather than greyed. menuOf drops a heading with no rows left.
+ * The card's ⋯ and every right-click keep the whole model.
+ */
+export const focusMenuActions = (actions: readonly ModelAction[]): ModelAction[] =>
+  actions.filter((a) => !a.disabled && !NOT_IN_FOCUS_MENU.has(a.section) && a.key !== "newTab" && !a.key.startsWith("size:"));
+
 /** Why Helpdesk tasks… is off: it's being opened (started, or its ghost reopened) already. */
 export const HELPDESK_BUSY = "Opening the Helpdesk tasks workspace…";
 

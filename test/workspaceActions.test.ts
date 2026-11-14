@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, connectMenu, createActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, PLANNED_BUSY_WHY, plannedActions, plannedWhere, usable, wireActions, wireMenu, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, connectMenu, createActions, focusMenuActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, PLANNED_BUSY_WHY, plannedActions, plannedWhere, usable, wireActions, wireMenu, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -226,6 +226,55 @@ describe("a workspace's actions as a menu", () => {
     const area = inSection("area", [{ key: "rename", label: "Rename", onPick: vi.fn() }, "-", { key: "lock", label: "Lock", onPick: vi.fn() }]);
     expect(area.map((a) => [a.key, a.section])).toEqual([["rename", "area"], ["lock", "area"]]);
     expect(rows(menuOf(area))).toEqual(["# Area", "rename", "lock"]);
+  });
+});
+
+describe("the focused header's ⋯", () => {
+  const stack = { name: "api", rename: vi.fn(), unstack: vi.fn() };
+  const room: Action[] = [
+    { key: "takeover", label: "Take over", onPick: vi.fn() },
+    { key: "send", label: "Send changes", onPick: vi.fn(), disabled: true, title: "Nothing to send" },
+  ];
+  const everything = () =>
+    workspaceActions(sess(), env({ stack, diffPanel: false, room, addTerminal: vi.fn<() => void>(), connect: vi.fn<() => void>(), finish: vi.fn<() => void>(), saveTemplate: vi.fn<() => void>() }));
+
+  it("keeps Session, Stack, Terminal, Hand on, the room's rows and Close: no sizes, tools, wires or New tab, and nothing that's off now", () => {
+    expect(rows(menuOf(focusMenuActions(everything())))).toEqual([
+      "# Session", "rename", "notify", "move",
+      "-", "# Stack", "renameStack", "unstack",
+      "-", "# Terminal", "repaint", "undo", "addTerminal",
+      "-", "# Hand on", "handoff", "brief", "review",
+      "-", "# Team room", "takeover",
+      "-", "close",
+    ]);
+  });
+
+  it("drops a section's heading when every row under it is off: a teammate's exited session has only Mute notifications", () => {
+    const acts = workspaceActions(
+      sess({ status: "dead" }),
+      env({ owner: "Nick Smith", diffPanel: false, undo: { no: "Nick Smith's session: theirs to undo" }, handoff: { no: "theirs" }, brief: { no: "theirs" }, secondOpinion: { no: "theirs" }, addTerminal: { no: "theirs" } })
+    );
+    expect(rows(menuOf(acts))).toContain("# Terminal");
+    expect(rows(menuOf(focusMenuActions(acts)))).toEqual(["# Session", "notify"]);
+  });
+
+  it("offers Resume and Close & clean up on an exited session of yours", () => {
+    expect(rows(menuOf(focusMenuActions(workspaceActions(sess({ status: "dead" }), env({ diffPanel: false })))))).toEqual([
+      "# Session", "rename", "notify", "move",
+      "-", "# Terminal", "undo",
+      "-", "# Hand on", "handoff", "brief", "review",
+      "-", "resume", "close",
+    ]);
+  });
+
+  it("leaves the model, and so the card's ⋯ and every right-click, whole", () => {
+    const acts = everything();
+    const before = keys(acts);
+    focusMenuActions(acts);
+    expect(keys(acts)).toEqual(before);
+    expect(before).toEqual(expect.arrayContaining(["size:S", "size:M", "size:L", "newTab", "tool:files", "tool:artifacts", "diff", "connect", "finish", "saveTemplate", "send"]));
+    expect(rows(menuOf(acts))).toContain("# Tools");
+    expect(rows(menuOf(acts))).toContain("# Wires");
   });
 });
 
