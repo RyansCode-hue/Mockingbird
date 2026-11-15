@@ -192,7 +192,11 @@ async function pressAsked(ask) {
     if (!d) throw new Error(`the page asked for a key this driver doesn't press: ${k.key}`);
     const modifiers = mods(k);
     const typed = d.text && !k.meta && !k.ctrl && !k.alt;
-    const base = { modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, nativeVirtualKeyCode: d.keyCode, ...(k.repeat ? { autoRepeat: true } : {}) };
+    // No native key code: given one, Chrome builds an OS key event and hands the browser any key the page didn't
+    // consume, and on macOS AppKit answers a typed key nothing takes (a letter or Enter on no field) with the alert
+    // sound. Without one, the key reaches the page just the same and ends there (DevTools' skip_if_unhandled).
+    // test/uiNoAlertSound.test.ts holds every driver to this.
+    const base = { modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, ...(k.repeat ? { autoRepeat: true } : {}) };
     if (k.hold !== "up") await ask("Input.dispatchKeyEvent", { type: typed ? "keyDown" : "rawKeyDown", ...base, ...(typed ? { text: d.text, unmodifiedText: d.text } : {}) });
     if (k.hold !== "down") await ask("Input.dispatchKeyEvent", { type: "keyUp", ...base });
   }
@@ -202,8 +206,8 @@ async function pressAsked(ask) {
 /** How long one DevTools call gets before the run fails naming it. */
 const ASK_MS = 20_000;
 
-/** `limitMs`: how long Chrome gets to have the result (an audit that drives a lot, longer). */
-export async function pageResult({ size = "1400x900", query = "", outDir, read, scale = null, limitMs = 60_000 }) {
+/** `limitMs`: how long Chrome gets to have the result (an audit that drives a lot, longer). `onChrome`: told Chrome's pid once it's started. */
+export async function pageResult({ size = "1400x900", query = "", outDir, read, scale = null, limitMs = 60_000, onChrome }) {
   let devtools = null;
   let result = null;
   let ws = null;
@@ -244,7 +248,7 @@ export async function pageResult({ size = "1400x900", query = "", outDir, read, 
   // when the page was first reached: the stall report below runs from about when inChrome's time-out does
   let started = Infinity;
   try {
-    await inChrome({ size, query, outDir, budget: null, limitMs, args: ["--remote-debugging-port=0", ...(scale ? [`--force-device-scale-factor=${scale}`] : [])], what: "the page's result", onStderr: (text) => (devtools ??= text.match(/DevTools listening on (ws:\/\/\S+)/)?.[1] ?? null) }, async () => {
+    await inChrome({ size, query, outDir, budget: null, limitMs, onChrome, args: ["--remote-debugging-port=0", ...(scale ? [`--force-device-scale-factor=${scale}`] : [])], what: "the page's result", onStderr: (text) => (devtools ??= text.match(/DevTools listening on (ws:\/\/\S+)/)?.[1] ?? null) }, async () => {
       if (!devtools) return false;
       if (!ws) {
         const pages = await (await fetch(`http://127.0.0.1:${new URL(devtools).port}/json`)).json();
@@ -290,7 +294,7 @@ export async function pageResult({ size = "1400x900", query = "", outDir, read, 
  * the result is there (`closed`: Chrome has exited and its output is read). `budget` is the virtual time the
  * page gets (null: real time).
  */
-async function inChrome({ size, query, outDir, args, what, onStdout, onStderr, budget = 4000, limitMs = 60_000 }, done) {
+async function inChrome({ size, query, outDir, args, what, onStdout, onStderr, onChrome, budget = 4000, limitMs = 60_000 }, done) {
   if (!fs.existsSync(CHROME)) throw new Error(`Chrome isn't at ${CHROME} — set CHROME to its binary`);
   const [w, h] = size.split("x").map(Number);
   if (!w || !h) throw new Error(`--size wants WIDTHxHEIGHT, not "${size}"`);
@@ -317,6 +321,7 @@ async function inChrome({ size, query, outDir, args, what, onStdout, onStderr, b
     ],
     { stdio: ["ignore", onStdout ? "pipe" : "ignore", "pipe"] }
   );
+  onChrome?.(chrome.pid);
   if (onStdout) chrome.stdout.on("data", (d) => onStdout(String(d)));
   // closed: exited, and its output read to the end
   let closed = false;
