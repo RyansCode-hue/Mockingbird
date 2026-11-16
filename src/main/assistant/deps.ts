@@ -1,6 +1,7 @@
 import type { AssistantWindowAction } from "../../shared/assistant";
 import type { PermissionMode } from "../../shared/permissionModes";
 import type { AgentKind, SessionStatus } from "../../shared/types";
+import type { RulesApi } from "./rules";
 
 /**
  * What the Assistant's tools reach the app through (index.ts makes it; tests fake it). Each group takes the part it
@@ -75,4 +76,8 @@ export interface AssistantDeps {
   relaunchRefusal(id: string): string | null;
   /** Restart session `id` in place: its agent stopped and started again on the same conversation. Throws why not. */
   relaunch(id: string): Promise<void>;
+
+  // ---- standing rules (rules.ts, ruleEngine.ts, tools/rules.ts) ----
+  /** The standing rules, as the rule tools list, make, change, switch and remove them. */
+  rules: RulesApi;
 }

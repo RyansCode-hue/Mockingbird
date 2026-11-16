@@ -5,7 +5,7 @@ import type { AssistantDeps, AssistantSession } from "../src/main/assistant/deps
 import { buildRegistry, Registry, validateArgs, type AssistantTool } from "../src/main/assistant/registry";
 import * as groups from "../src/main/assistant/tools";
 import { worldGroups, worldRooms, worldSessions } from "../src/main/assistant/world";
-import { fakeTool } from "./assistantHarness";
+import { fakeTool, rulesFor } from "./assistantHarness";
 
 const mine = (id: string, over: Partial<AssistantSession> = {}): AssistantSession => ({
   id,
@@ -38,6 +38,7 @@ function tools(sessions: AssistantSession[], over: Partial<AssistantDeps> = {}) 
     },
     relaunchRefusal: () => null,
     relaunch: async (id) => void did.push(`relaunch ${id}`),
+    rules: rulesFor({ sessions: () => sessions, groups: () => [] }).engine,
     ...over,
   };
   const r = buildRegistry(d, Object.values(groups));
@@ -53,6 +54,11 @@ describe("the Assistant's first tools", () => {
       list_groups: "read",
       focus_session: "direct",
       rename_session: "direct",
+      list_rules: "read",
+      propose_rule: "confirm",
+      change_rule: "confirm",
+      set_rule_on: "direct",
+      remove_rule: "direct",
     });
     for (const t of registry.mcpTools()) expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
   });

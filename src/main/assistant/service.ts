@@ -5,7 +5,7 @@ import { plainLine } from "../../shared/team/agentText";
 import { CardBook, type HeldCard } from "./cards";
 import type { AssistantDeps } from "./deps";
 import { validateArgs, type AssistantTool, type Registry, type ToolCard, type ToolResult } from "./registry";
-import { noRules, type RulesStore } from "./rules";
+import { noRules, ruleDenied, type RulesStore } from "./rules";
 import { TurnRunner, UNAVAILABLE, type AssistantLimits, type SpawnRequest } from "./turns";
 import { UndoBook } from "./undo";
 
@@ -42,6 +42,8 @@ export interface AssistantServiceDeps {
   emit(): void;
   log(context: string, err: unknown): void;
   rules?: RulesStore;
+  /** Actions only a standing rule takes (ruleEngine.ts: notify, text_me): never a turn's tools, so not in the registry. */
+  ruleOnly?: readonly AssistantTool[];
   now?: () => number;
   limits?: Partial<AssistantLimits>;
   spawnGraceMs?: number;
@@ -57,6 +59,7 @@ export class AssistantService {
   private readonly cards: CardBook;
   private readonly undos: UndoBook;
   private readonly rules: RulesStore;
+  private readonly ruleOnly: Map<string, AssistantTool>;
   private readonly now: () => number;
   private unavailable: string | undefined;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -79,6 +82,8 @@ export class AssistantService {
     this.cards = new CardBook({ now: this.now, cardMs: this.runner.limits.cardMs });
     this.undos = new UndoBook({ now: this.now, log: d.log });
     this.rules = d.rules ?? noRules();
+    this.ruleOnly = new Map((d.ruleOnly ?? []).map((t) => [t.name, t]));
+    for (const name of this.ruleOnly.keys()) if (this.registry.has(name)) throw new Error(`${name} is both an Assistant tool and a rule-only action`);
     this.rules.onChanged?.(() => this.changed());
   }
 
@@ -104,6 +109,7 @@ export class AssistantService {
   async view(): Promise<AssistantView> {
     await this.checkAvailable();
     this.sweep();
+    const rulesProblem = this.rules.problem?.() ?? null;
     return {
       turns: structuredClone(this.runner.list()),
       cards: this.cards.view(),
@@ -111,6 +117,7 @@ export class AssistantService {
       runs: this.rules.runs(),
       busy: this.runner.busy(),
       ...(this.unavailable ? { unavailable: this.unavailable } : {}),
+      ...(rulesProblem ? { rulesProblem } : {}),
     };
   }
 
@@ -186,7 +193,13 @@ export class AssistantService {
   ruleOn(ruleId: unknown, on: unknown): AssistantRule | { error: string } {
     if (typeof ruleId !== "string" || !ID_RE.test(ruleId)) return { error: "No such rule" };
     if (typeof on !== "boolean") return { error: "A rule is turned on or off" };
-    const rule = this.rules.setOn(ruleId, on);
+    let rule: AssistantRule | null;
+    try {
+      rule = this.rules.setOn(ruleId, on);
+    } catch (err) {
+      this.d.log(`assistant: turning rule ${ruleId} ${on ? "on" : "off"}`, err);
+      return { error: `It couldn't be saved: ${message(err)}` };
+    }
     if (!rule) return { error: "No such rule" };
     this.changed();
     return rule;
@@ -194,7 +207,14 @@ export class AssistantService {
 
   ruleRemove(ruleId: unknown): { ok: true } | { error: string } {
     if (typeof ruleId !== "string" || !ID_RE.test(ruleId)) return { error: "No such rule" };
-    if (!this.rules.remove(ruleId)) return { error: "No such rule" };
+    let removed: boolean;
+    try {
+      removed = this.rules.remove(ruleId);
+    } catch (err) {
+      this.d.log(`assistant: removing rule ${ruleId}`, err);
+      return { error: `It couldn't be saved: ${message(err)}` };
+    }
+    if (!removed) return { error: "No such rule" };
     this.changed();
     return { ok: true };
   }
@@ -245,12 +265,12 @@ export class AssistantService {
   // ---- standing rules' actions ---------------------------------------------------------------
 
   /**
-   * A standing rule's action, run as the rule's (RulesStore's runner): only a tool marked `rule`, its arguments checked
-   * against its schema and its guards checked now, and recorded in the activity log as the rule's. No card: the rule
-   * was made through one.
+   * A standing rule's action, run as the rule's (ruleEngine.ts): only a tool marked `rule` that the deny list doesn't
+   * name (rules.ts RULE_DENY_LIST), or a rule-only action, its arguments checked against its schema and its guards
+   * checked now, and recorded in the activity log as rule `rule`'s (its label). No card: the rule was made through one.
    */
-  async runAction(a: RuleAction): Promise<{ ok: boolean; text: string; step: AssistantStep }> {
-    const tool = this.registry.get(a.tool);
+  async runAction(a: RuleAction, rule?: string): Promise<{ ok: boolean; text: string; step: AssistantStep }> {
+    const tool = this.ruleTool(a.tool);
     const step: AssistantStep = { id: `st-${randomUUID()}`, tool: a.tool, tier: tool?.tier ?? "confirm", label: plainLine(a.label, 160) || a.tool, state: "running" };
     const fail = (why: string) => {
       step.state = "failed";
@@ -261,10 +281,22 @@ export class AssistantService {
     if (!tool.rule) return fail(`${tool.name} can't be a standing rule's action`);
     const bad = validateArgs(tool.inputSchema, a.args);
     if (bad) return fail(`The rule's ${bad}`);
-    const r = await this.perform(tool, a.args, "rule");
+    const denied = ruleDenied(tool.name, a.args);
+    if (denied) return fail(denied);
+    const r = await this.perform(tool, a.args, "rule", rule ? `Rule “${plainLine(rule, 80)}”: ` : "");
     if (!r.ok) return fail(r.why);
     step.state = "done";
     return { ok: true, text: r.result.text, step };
+  }
+
+  /** The tool a standing rule's action names: a registry tool, or an action only rules take. */
+  ruleTool(name: string): AssistantTool | undefined {
+    return this.registry.get(name) ?? this.ruleOnly.get(name);
+  }
+
+  /** Every tool a standing rule may use: those marked `rule` that the deny list doesn't name, and the rule-only actions. */
+  ruleTools(): AssistantTool[] {
+    return [...this.registry.list(), ...this.ruleOnly.values()].filter((t) => t.rule && !ruleDenied(t.name, {}));
   }
 
   // ---- inside --------------------------------------------------------------------------------
@@ -301,8 +333,11 @@ export class AssistantService {
     return { result: blocked ? `Card shown, though it can't be done now: ${blocked}. The user decides. Don't propose it again.` : CARD_SHOWN };
   }
 
-  /** Check, then run, one call. Recorded in the activity log as from `source` once it runs (a read, `source` null, isn't). */
-  private async perform(tool: AssistantTool, args: Record<string, unknown>, source: AssistantSource | null): Promise<Performed> {
+  /**
+   * Check, then run, one call. Recorded in the activity log as from `source` once it runs (a read, `source` null, isn't),
+   * its outcome after `prefix` (a rule's name).
+   */
+  private async perform(tool: AssistantTool, args: Record<string, unknown>, source: AssistantSource | null, prefix = ""): Promise<Performed> {
     let why: string | null;
     try {
       why = (await tool.check?.(args)) ?? null;
@@ -316,11 +351,11 @@ export class AssistantService {
     try {
       const result = await tool.run(args);
       if (typeof result?.text !== "string") throw new Error(`${tool.name} answered without saying what it did`);
-      if (source) this.record(tool.name, target, source, `${label}: done`);
+      if (source) this.record(tool.name, target, source, `${prefix}${label}: done`);
       return { ok: true, result };
     } catch (err) {
       this.d.log(`assistant: running ${tool.name}`, err);
-      if (source) this.record(tool.name, target, source, `${label}: failed: ${message(err)}`);
+      if (source) this.record(tool.name, target, source, `${prefix}${label}: failed: ${message(err)}`);
       return { ok: false, why: message(err), refused: false };
     }
   }

@@ -13,6 +13,7 @@
  * - ?assistantMs=<ms>: each simulated step takes this long (else 300): an ask goes queued → thinking → answered, Do it
  *   and Cancel answer after one step, and a card Do it ran is done one step later.
  * - ?assistantAsk=error: asking answers { error }, as main does when it refuses one.
+ * - ?assistantRulesProblem: the rules file couldn't be read, and was kept aside: the Rules section says so.
  */
 import { ASSISTANT_LIMITS, type AssistantCard, type AssistantRule, type AssistantStep, type AssistantTurn, type AssistantView, type RuleRun } from "../shared/assistant";
 
@@ -87,7 +88,7 @@ export function assistantFixtures(mode: string | null, now: number, undoMs: numb
       id: "rule2",
       label: "At 9:00 on weekdays, text me what's waiting",
       trigger: { kind: "daily", at: "09:00", days: [1, 2, 3, 4, 5] },
-      actions: [{ tool: "text_me", args: {}, label: "Text me what's waiting" }],
+      actions: [{ tool: "text_me", args: { text: "Check what's waiting" }, label: "Text me: “Check what's waiting”" }],
       on: true,
       createdAt: now - 2 * 24 * 60 * min,
       paused: "3 runs failed in a row: Messages isn't allowed to send",
@@ -103,6 +104,9 @@ export function assistantApi(emit: Emit, params: URLSearchParams): Record<string
   const mode = params.get("assistant");
   const stepMs = Number(params.get("assistantMs")) || 300;
   const view = assistantFixtures(mode, Date.now(), Number(params.get("assistantUndoMs")) || 4 * min);
+  if (params.has("assistantRulesProblem")) {
+    view.rulesProblem = "Your rules file couldn't be read: it isn't valid JSON (Unexpected end of JSON input). It's kept as ~/.mockingbird/assistant-rules.json.corrupt-1763300000000. The 2 rules that could be read are kept.";
+  }
   const later = <T,>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), Math.min(stepMs, 120)));
   const wait = () => new Promise<void>((r) => setTimeout(r, stepMs));
   const changed = () => emit("onAssistantChanged");

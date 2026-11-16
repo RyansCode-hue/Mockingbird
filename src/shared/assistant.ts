@@ -115,6 +115,8 @@ export interface AssistantView {
   busy: boolean;
   /** Why asking can't work on this Mac (Claude Code isn't installed); absent when it can. */
   unavailable?: string;
+  /** The rules file couldn't be read as it was: why, and where it was kept. Absent when it could. */
+  rulesProblem?: string;
 }
 
 /** A step only the window can carry out. */
