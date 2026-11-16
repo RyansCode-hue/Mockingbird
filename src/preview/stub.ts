@@ -3436,6 +3436,10 @@ if (lsFocus) {
     setTimeout(() => document.querySelector<HTMLElement>(".ls-viewport")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })), 100);
   });
 }
+// ?focusTool=explorer|scm|run (with ?lsFocus): that rail icon pressed once focus is up, docking its tool beside the
+// focused workspace
+const focusTool = params.get("focusTool");
+if (focusTool) waitFor(".ls-focus", () => setTimeout(() => click(`.activitybar .ab-btn[data-view="${CSS.escape(focusTool)}"]`), 200));
 // ?lsHover=<id>: the pointer over that session's terminal, so a screenshot away from 100% shows the hint
 const lsHover = params.get("lsHover");
 if (lsHover) waitFor(`.ls-world [data-front="${CSS.escape(lsHover)}"] .term-holder`, (el) => el.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })));

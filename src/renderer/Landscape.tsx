@@ -186,6 +186,11 @@ export interface LandscapeNote {
   n: number;
   action?: NoteAction;
 }
+/** What the window around the landscape asks of focus (main.tsx's side bar, whose panels dock beside it). */
+export interface FocusActs {
+  /** The keyboard to the focused workspace's front terminal; to focus's frame, armed, when that isn't yours and live. */
+  keysToTerminal: () => void;
+}
 
 /** How far a press moves before it's a drag (a marquee, a workspace or an area moving) rather than a click. */
 const DRAG_PX = 4;
@@ -345,6 +350,8 @@ export function Landscape({
   resumeOk,
   wireActsRef,
   nextStep,
+  focusRef,
+  onFocusFront,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -449,6 +456,10 @@ export function Landscape({
    * not-started step after `from`, placed `at` (the drop, in landscape px, in the area under it) or, from a click, beside it.
    */
   nextStep?: (from: SessionInfo, at: { area: string | null; point: Point } | null) => void;
+  /** Filled with what the side bar's panels ask of focus while the landscape is up; emptied once it isn't. */
+  focusRef?: React.MutableRefObject<FocusActs | null>;
+  /** The session in front of the workspace in focus, each time that changes (a tab chosen, a move along the strip); null once focus ends. */
+  onFocusFront?: (id: string | null) => void;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -1034,6 +1045,24 @@ export function Landscape({
     frontAsk.current = null;
     keysToFront(focusTile);
   });
+  /** The keyboard to the focused workspace's front terminal, or to focus's frame, armed, as entering focus leaves it. */
+  const keysToFocused = () => {
+    const t = focusNow.current ? layoutNow.current.tiles.find((x) => x.key === focusNow.current) : undefined;
+    if (t && !frontTakesKeys(t)) armFocus(overlay.current);
+  };
+  if (focusRef) focusRef.current = { keysToTerminal: keysToFocused };
+  useEffect(
+    () => () => {
+      if (focusRef) focusRef.current = null;
+    },
+    []
+  );
+  // the side bar's panels follow the session in front of the workspace in focus; the landscape going away ends focus
+  const focusFront = focusTile?.front.id ?? null;
+  const onFocusFrontNow = useRef(onFocusFront);
+  onFocusFrontNow.current = onFocusFront;
+  useEffect(() => onFocusFrontNow.current?.(focusFront), [focusFront]);
+  useEffect(() => () => onFocusFrontNow.current?.(null), []);
   const leaveFocus = () => {
     setFocusKey(null);
     // the terminal's element moves back into its workspace on the next render; the keyboard comes back here

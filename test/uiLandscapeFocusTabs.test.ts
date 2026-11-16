@@ -450,3 +450,249 @@ describe.skipIf(!local)("the focused header's tabs, to assistive tech", () => {
     expect(lone).toEqual({ lists: 1, inList: 0, owned: ["tab:s5"], buttonsInLists: 0, closes: [0], tabs: [["s5", -1, "default"]] });
   }, 120_000);
 });
+
+// In focus the rail is the area tree and the tools that dock beside the workspace (FocusPanel.tsx): one at a time in
+// the side bar's slot, on the left between the rail and the focused workspace, on the session in front of it.
+const WHOLE_RAIL = ["Sessions", "Files", "Changes", "Search", "Run & debug", "Chat", "Artifacts"];
+const FOCUS_RAIL = ["Sessions", "Files", "Changes", "Run & debug"];
+/** Each docking view, the tool it docks and the call to main that shows which session it reads. */
+const DOCKS = [
+  { view: "explorer", tool: "files", fn: "filesList" },
+  { view: "scm", tool: "changes", fn: "scmStatus" },
+  { view: "run", tool: "run", fn: "runProfile" },
+];
+/** Steps' helpers for the side bar: its panel's tool and session, the rail's pressed views, a rail button, its width, whether the tree shows. */
+const SIDE = `
+      const panel = () => $(".sidebar .side-tool");
+      const info = () => { const p = panel(); return p ? { tool: p.dataset.tool, session: p.dataset.session ?? null } : null; };
+      const pressed = () => [...document.querySelectorAll(".activitybar .ab-btn")].filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.dataset.view);
+      const btn = (v) => $('.activitybar .ab-btn[data-view="' + v + '"]');
+      const sideW = () => Math.round($(".sidebar").getBoundingClientRect().width);
+      const treeShown = () => sideW() > 0 && ($(".sidebar .area-tree")?.getClientRects().length ?? 0) > 0;
+      const until = async (ok, ms = 3000) => { for (let i = 0; i < ms / 50 && !ok(); i++) await sleep(50); return ok(); };
+      const docks = ${JSON.stringify(DOCKS)};`;
+
+describe.skipIf(!local)("the rail while a workspace is in focus", () => {
+  it("offers only Sessions, Files, Changes and Run & debug; unfocused, and once focus ends, the whole rail", async () => {
+    const labels = `[...document.querySelectorAll(".activitybar .ab-btn")].map((b) => b.getAttribute("aria-label"))`;
+    const r = await drive<{ focused: string[]; after: string[] }>(
+      "lsFocus=s5",
+      FOCUSED_S5,
+      `
+      await sleep(300);
+      const focused = ${labels};
+      $(".ls-focus .ls-back").click();
+      for (let i = 0; i < 40 && $(".ls-focus"); i++) await sleep(50);
+      await sleep(100);
+      return { focused, after: ${labels} };`
+    );
+    expect(r).toEqual({ focused: FOCUS_RAIL, after: WHOLE_RAIL });
+    expect(await drive<string[]>("", ".ls-world .ls-node", `await sleep(300); return ${labels};`)).toEqual(WHOLE_RAIL);
+  }, 120_000);
+
+  it("Sessions opens the area tree in the slot beside the workspace, in place of a docked tool, and pressed again hides it; focus stays throughout", async () => {
+    interface State { focus: boolean; tree: boolean; left: boolean; tool: { tool: string; session: string | null } | null; pressed: string[] }
+    const r = await drive<Record<"start" | "opened" | "files" | "back" | "shut", State>>(
+      "side=closed&lsFocus=s5",
+      FOCUSED_S5,
+      `${SIDE}
+      await sleep(300);
+      const state = () => {
+        const tree = $(".sidebar .area-tree")?.getBoundingClientRect();
+        const node = $(".ls-focus .ls-node.focus")?.getBoundingClientRect();
+        return { focus: !!$(".ls-focus"), tree: treeShown(), left: !!tree && !!node && tree.right <= node.left + 1, tool: info(), pressed: pressed() };
+      };
+      const start = state();
+      await click(btn("sessions"));
+      await until(treeShown);
+      const opened = state();
+      await click(btn("explorer"));
+      await until(() => !!panel());
+      const files = state();
+      await click(btn("sessions"));
+      await until(() => !panel());
+      const back = state();
+      await click(btn("sessions"));
+      await until(() => sideW() === 0);
+      return { start, opened, files, back, shut: state() };`
+    );
+    expect(r.start).toMatchObject({ focus: true, tree: false, tool: null, pressed: [] });
+    expect(r.opened).toEqual({ focus: true, tree: true, left: true, tool: null, pressed: ["sessions"] });
+    expect(r.files).toMatchObject({ focus: true, tree: false, tool: { tool: "files", session: "s5" }, pressed: ["explorer"] });
+    expect(r.back).toEqual({ focus: true, tree: true, left: true, tool: null, pressed: ["sessions"] });
+    expect(r.shut).toMatchObject({ focus: true, tree: false, tool: null, pressed: [] });
+  }, 120_000);
+
+  it("docks Files, Changes and Run & debug on the left, between the rail and the workspace, on the focused session; one at a time", async () => {
+    const r = await drive<{ view: string; tool: unknown; pressed: string[]; place: Record<string, boolean>; asked: string[]; focus: boolean; right: boolean }[]>(
+      "lsFocus=s5",
+      FOCUSED_S5,
+      `${SIDE}
+      await sleep(300);
+      const out = [];
+      for (const d of docks) {
+        const mark = calls().length;
+        await click(btn(d.view));
+        await until(() => panel()?.dataset.tool === d.tool);
+        await until(() => calls().slice(mark).some((c) => c.fn === d.fn));
+        await sleep(200);
+        const p = panel().getBoundingClientRect();
+        const node = $(".ls-focus .ls-node.focus").getBoundingClientRect();
+        const bar = $(".activitybar").getBoundingClientRect();
+        out.push({
+          view: d.view,
+          tool: info(),
+          pressed: pressed(),
+          place: { afterRail: p.left >= bar.right - 1, beforeWorkspace: p.right <= node.left + 1, wide: p.width >= 150, tall: p.height >= node.height - 2 },
+          asked: [...new Set(calls().slice(mark).filter((c) => c.fn === d.fn).map((c) => c.args[0]))],
+          focus: !!$(".ls-focus"),
+          // nothing of the side bar's or a tool's sits to the workspace's right
+          right: [...document.querySelectorAll(".side-tool, .ls-dock")].some((el) => el.getBoundingClientRect().left >= node.right - 1),
+        });
+      }
+      return out;`
+    );
+    expect(r).toEqual(
+      DOCKS.map((d) => ({
+        view: d.view,
+        tool: { tool: d.tool, session: "s5" },
+        pressed: [d.view],
+        place: { afterRail: true, beforeWorkspace: true, wide: true, tall: true },
+        asked: ["s5"],
+        focus: true,
+        right: false,
+      }))
+    );
+  }, 120_000);
+
+  it("re-scopes the docked tool to the tab that comes to the front, and says why it can't show a teammate's", async () => {
+    const r = await drive<{ steps: { view: string; first: string | null; second: string | null; asked: string[]; back: string | null }[]; teammate: { session: string | null; note: string | null } }>(
+      "lsFocus=s2",
+      FOCUSED_STACK,
+      `${SIDE}
+      await sleep(300);
+      const front = () => $(".ls-focus .ls-tab.on")?.dataset.sid ?? null;
+      const tab = (id) => $('.ls-focus .ls-tab[data-sid="' + id + '"]');
+      const steps = [];
+      for (const d of docks) {
+        await click(btn(d.view));
+        await until(() => panel()?.dataset.tool === d.tool);
+        const first = info()?.session ?? null;
+        const mark = calls().length;
+        await click(tab("s3"));
+        await until(() => front() === "s3" && info()?.session === "s3");
+        await until(() => calls().slice(mark).some((c) => c.fn === d.fn && c.args[0] === "s3"));
+        const second = info()?.session ?? null;
+        const asked = [...new Set(calls().slice(mark).filter((c) => c.fn === d.fn).map((c) => c.args[0]))];
+        await click(tab("s2"));
+        await until(() => front() === "s2" && info()?.session === "s2");
+        steps.push({ view: d.view, first, second, asked, back: info()?.session ?? null });
+      }
+      await click([...document.querySelectorAll(".ls-focus .ls-tab[data-sid]")].find((t) => t.textContent.includes("Last-org API tests")));
+      await until(() => !!front()?.startsWith("r~") && !panel()?.dataset.session);
+      return { steps, teammate: { session: info()?.session ?? null, note: panel()?.querySelector(".fp-note")?.textContent ?? null } };`
+    );
+    expect(r.steps).toEqual(DOCKS.map((d) => ({ view: d.view, first: "s2", second: "s3", asked: ["s3"], back: "s2" })));
+    expect(r.teammate.session).toBeNull();
+    expect(r.teammate.note).toMatch(/doesn't open on|teammate|Sam/);
+  }, 120_000);
+
+  it("closes a docked tool when its icon is pressed again, or its ×, putting the slot away; focus stays", async () => {
+    const r = await drive<{ again: Record<string, unknown>; x: Record<string, unknown> }>(
+      "lsFocus=s5",
+      FOCUSED_S5,
+      `${SIDE}
+      await sleep(300);
+      const state = () => ({ panel: !!panel(), side: sideW(), focus: !!$(".ls-focus"), pressed: pressed() });
+      await click(btn("scm"));
+      await until(() => !!panel());
+      await click(btn("scm"));
+      await until(() => !panel() && sideW() === 0);
+      const again = state();
+      await click(btn("run"));
+      await until(() => !!panel());
+      await click($(".sidebar .side-tool .side-close"));
+      await until(() => !panel() && sideW() === 0);
+      return { again, x: state() };`
+    );
+    expect(r.again).toEqual({ panel: false, side: 0, focus: true, pressed: [] });
+    expect(r.x).toEqual({ panel: false, side: 0, focus: true, pressed: [] });
+  }, 120_000);
+});
+
+describe.skipIf(!local)("the keyboard with a tool docked in focus", () => {
+  it("stays with the focused terminal when a tool is opened, clicked in, swapped or closed, also from a field in it", async () => {
+    const r = await drive<{ steps: Step[]; field: string; swallowed: string[]; note: string }>(
+      "lsFocus=s5",
+      FOCUSED_S5,
+      `${SIDE}
+      const steps = [];
+      const typeX = async (id) => {
+        await sleep(150);
+        const at = where();
+        const mark = w.__mbCalls.length;
+        await press({ key: "x" });
+        await sleep(150);
+        steps.push({ id, at, typed: typed(mark) });
+      };
+      await termIn("s5");
+      await click(btn("explorer"));
+      await until(() => !!panel()?.querySelector(".fp-row .fp-folder"));
+      await typeX("s5");
+      // a folder's row (it expands), and the panel's own head
+      await click(panel().querySelector(".fp-row .fp-folder").closest(".fp-row"));
+      await typeX("s5");
+      await click(panel().querySelector(".side-title"));
+      await typeX("s5");
+      // swapped for Changes, its commit message clicked into, then closed from the keyboard
+      await click(btn("scm"));
+      await until(() => !!panel()?.querySelector("textarea"));
+      await typeX("s5");
+      await click(panel().querySelector("textarea"));
+      await sleep(150);
+      const field = where();
+      await press({ key: "G", ctrl: true, shift: true });
+      await until(() => !panel());
+      await typeX("s5");
+      // opened and closed again from the rail
+      await click(btn("run"));
+      await until(() => !!panel());
+      await click(btn("run"));
+      await until(() => !panel());
+      await typeX("s5");
+      return { steps, field, swallowed, note: note() };`
+    );
+    expect(r.field).toMatch(/^textarea/);
+    expect(r.steps).toEqual(Array.from({ length: 6 }, () => ({ id: "s5", at: "term:s5", typed: ["s5:x"] })));
+    expect(r.swallowed).toEqual([]);
+    expect(r.note).not.toMatch(KEYS_NOTE);
+  }, 120_000);
+
+  it("goes back to the focused terminal on Esc in a docked tool, from a field or a button, and focus stays; Esc in the terminal is the terminal's, as before", async () => {
+    const r = await drive<Record<"field" | "button", { from: string; at: string; focus: boolean; panel: boolean }> & { term: { at: string; focus: boolean; typed: string[] } }>(
+      "lsFocus=s5",
+      FOCUSED_S5,
+      `${SIDE}
+      await termIn("s5");
+      await click(btn("scm"));
+      await until(() => !!panel()?.querySelector("textarea"));
+      const esc = async (from) => {
+        await press({ key: "Escape" });
+        await sleep(200);
+        return { from, at: where(), focus: !!$(".ls-focus"), panel: !!panel() };
+      };
+      await click(panel().querySelector("textarea"));
+      await sleep(150);
+      const field = await esc(where());
+      panel().querySelector(".side-close").focus();
+      const button = await esc(where());
+      const mark = w.__mbCalls.length;
+      await press({ key: "Escape" });
+      await sleep(200);
+      return { field, button, term: { at: where(), focus: !!$(".ls-focus"), typed: typed(mark) } };`
+    );
+    expect(r.field).toEqual({ from: expect.stringMatching(/^textarea/), at: "term:s5", focus: true, panel: true });
+    expect(r.button).toEqual({ from: expect.stringMatching(/^button\..*side-close/), at: "term:s5", focus: true, panel: true });
+    expect(r.term).toEqual({ at: "term:s5", focus: true, typed: ["s5:\u001b"] });
+  }, 120_000);
+});
