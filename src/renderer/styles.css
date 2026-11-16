@@ -3752,11 +3752,13 @@ pre.wg-body { margin: 0; resize: none; white-space: pre-wrap; overflow-wrap: any
   position: absolute; top: 0; right: 0; bottom: 0; width: var(--as-w); display: flex; flex-direction: column; min-height: 0;
   background: var(--bg-sidebar); border-left: 1px solid var(--line-med); box-shadow: -10px 0 28px rgba(0, 0, 0, .16); outline: none;
 }
-/* the landscape's camera controls stay in the part the sheet leaves uncovered */
-.ls-row:has(> .as-anchor > .as-sheet:not(.mb-ghost)) .ls-minimap { right: calc(var(--as-w) + 12px); }
-.ls-row:has(> .as-anchor > .as-sheet:not(.mb-ghost)) .ls-hud { left: calc(50% - var(--as-w) / 2); }
+/* the landscape's camera controls stay in the part the sheet leaves uncovered. The row says the sheet is open by a
+   class, never by :has(): a :has() on the row is checked again on every change inside it, the landscape's terminals
+   included, and that held up the landscape's own timers (the peek opened late) */
+.ls-row.with-sheet .ls-minimap { right: calc(var(--as-w) + 12px); }
+.ls-row.with-sheet .ls-hud { left: calc(50% - var(--as-w) / 2); }
 /* a workspace in focus fills the part of the view the sheet leaves uncovered, as the camera keeps workspaces clear of it */
-.ls-row:has(> .as-anchor > .as-sheet:not(.mb-ghost)) .ls-focus { right: var(--as-w); }
+.ls-row.with-sheet .ls-focus { right: var(--as-w); }
 .as-head { display: flex; align-items: center; gap: 7px; flex-shrink: 0; height: 36px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--line-soft); }
 .as-head-ico { display: inline-flex; color: var(--text-3); }
 .as-head-ico svg { width: 14px; height: 14px; }

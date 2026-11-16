@@ -2768,7 +2768,7 @@ function App() {
         migration={migration}
       />
       {landscapeLayout && landscapeState ? (
-        <div className="ls-row">
+        <div className={assistantOpen ? "ls-row with-sheet" : "ls-row"}>
         <BadgeContext.Provider value={badgeEnv}>
         <Landscape
           connectRef={connectRef}

@@ -51,6 +51,8 @@ export function useAssistant() {
   const [failures, setFailures] = useState<AskFailure[]>([]);
   const reads = useRef(0);
   const failId = useRef(0);
+  /** The view last shown, as main sent it: a read that brings nothing new renders nothing (App, the landscape in it). */
+  const shown = useRef("");
   const reload = useCallback(async () => {
     const n = ++reads.current;
     const r = await settle("view read", () => window.mb.assistantView());
@@ -58,6 +60,9 @@ export function useAssistant() {
     if (n !== reads.current) return;
     if (isErr(r)) return setReadError(r.error);
     setReadError(null);
+    const json = JSON.stringify(r);
+    if (json === shown.current) return;
+    shown.current = json;
     setView(r);
   }, []);
   useEffect(() => {

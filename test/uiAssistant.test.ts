@@ -89,6 +89,12 @@ async function drive<T>(query: string, ready: string, steps: string, { size = "1
 }
 
 describe("the Assistant's window-side rules", () => {
+  it("moves the landscape's controls for the open sheet by the row's class, with no :has() on the row, which every change in the landscape would check again", () => {
+    const css = fs.readFileSync(path.join(__dirname, "../src/renderer/styles.css"), "utf8");
+    expect(css).toMatch(/\.ls-row\.with-sheet \.ls-minimap/);
+    expect(css.match(/\.ls-row:has\(/g) ?? []).toEqual([]);
+  });
+
   it("places ⌘K's Ask row: nowhere for nothing, first for no match or a sentence, last otherwise and for a row's own words", () => {
     expect(askPlace("   ", ["Landscape"])).toBe("none");
     expect(askPlace("zzqx", [])).toBe("first");
