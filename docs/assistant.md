@@ -133,8 +133,10 @@ kept through every relaunch like its model and effort.
 
 - ⌘K: once you've typed something, an **Ask Assistant** row joins the list.
   It comes first and selected when nothing matches or what you typed reads
-  as a sentence (3+ words), and last otherwise. ⌘⏎ always asks. Asking
-  closes the palette and opens the sheet.
+  as a sentence (3+ words), and last otherwise. Words that all begin words
+  of one row's label ("go to 5102", "Toggle the log panel") are that row's
+  command, so ⏎ still runs it. ⌘⏎ always asks. Asking closes the palette,
+  shows the landscape and opens the sheet.
 - **The sheet** docks at the right edge, over the landscape, and stays until
   you close it. It holds the thread (your words, its reply, step rows with
   state, Undo on direct steps), open cards (Do it / Cancel), recent rule runs,

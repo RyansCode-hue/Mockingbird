@@ -38,6 +38,8 @@ import { AGENT_NAME, HELPDESK_PRESET, asQuitAgent, otherAgent, isErr, sanitizeSe
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
+import { AssistantSheet, useAssistant } from "./AssistantSheet";
+import type { AssistantWindowAction } from "../shared/assistant";
 import { UsageMeter } from "./UsageMeter";
 import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog, CloseManyDialog, StartStepDialog } from "./Dialogs";
@@ -1321,6 +1323,26 @@ function App() {
     document.addEventListener(KEYS_SWALLOWED, on);
     return () => document.removeEventListener(KEYS_SWALLOWED, on);
   }, []);
+  // ---- the app Assistant (docs/assistant.md): asked in ⌘K, working in a sheet docked over the landscape ----
+  const assistant = useAssistant();
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  /** Ask from ⌘K: the sheet, which lives on the landscape, opens to show the work. */
+  const askAssistant = (text: string) => {
+    setTab("sessions");
+    setAssistantOpen(true);
+    void assistant.ask(text);
+  };
+  // steps only the window can carry out: opening the sheet, and going to a session
+  const assistantWindow = useRef((_a: AssistantWindowAction) => {});
+  assistantWindow.current = (a) => {
+    if (a.kind === "openSheet") return setAssistantOpen(true);
+    if (!sessions.some((s) => s.id === a.sessionId)) {
+      console.warn(`[mockingbird] the Assistant asked to go to ${a.sessionId}, which isn't a session here`);
+      return lsSay("The Assistant asked to go to a session that isn't here any more");
+    }
+    jumpTo(a.sessionId);
+  };
+  useEffect(() => window.mb.onAssistantWindow((a) => assistantWindow.current(a)), []);
   /** A change to the landscape; what stopped it is said over the landscape. */
   const lsChange = async (patch: LandscapePatch | null, what: string) => {
     if (!patch) return;
@@ -2694,6 +2716,7 @@ function App() {
           nextStep={addNextStep}
         />
         </BadgeContext.Provider>
+        <AssistantSheet open={assistantOpen} assistant={assistant} home={landscapeHome} onClose={() => setAssistantOpen(false)} />
         {dockColumn()}
         </div>
       ) : (
@@ -3649,6 +3672,7 @@ function App() {
             { label: "How to use Mockingbird", kbd: "⌘/", run: () => setModal("help") },
           ]}
           onJump={jumpTo}
+          ask={{ run: askAssistant, off: assistant.view?.unavailable }}
         />
       )}
 

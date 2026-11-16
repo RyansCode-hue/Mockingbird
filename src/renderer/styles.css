@@ -491,6 +491,11 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 .palette .row.sel .lab { color: var(--text-1); }
 .palette .row.off .lab { color: var(--text-4); }
 .palette .row.off { cursor: default; }
+/* Ask Assistant: the query beside it, cut short as a session's state is */
+.palette .row.ask .ask-ico { display: inline-flex; flex-shrink: 0; color: var(--text-3); }
+.palette .row.ask .ask-ico svg { width: 12px; height: 12px; }
+.palette .row.ask .state { min-width: 0; font-family: var(--ui); font-size: 11px; }
+.palette .row.ask.off .ask-ico { opacity: .55; }
 .palette .pfoot {
   display: flex; gap: 14px; padding: 9px 14px; background: var(--bg-chrome);
   border-top: 1px solid var(--line-med); font: 400 9.5px var(--mono); color: var(--text-4);
@@ -3730,6 +3735,111 @@ pre.wg-body { margin: 0; resize: none; white-space: pre-wrap; overflow-wrap: any
 .ls-band-cards .ls-acard { min-height: var(--ls-ch, calc(52 * var(--u))); }
 .ls-dock { flex: 0 0 auto; width: 320px; display: flex; flex-direction: column; gap: 1px; min-height: 0; background: var(--line-soft); border-left: 1px solid var(--line-soft); }
 .ls-dock .ls-window { position: static; flex: 1 1 0; min-height: 0; border-radius: 0; box-shadow: none; }
+
+/* ---- the app Assistant's sheet (AssistantSheet.tsx, docs/assistant.md): docked at the landscape's right edge, over
+   it and left of the docked tools. Its anchor takes no room in the row; the minimap moves clear of it ---- */
+:root { --as-w: 304px; }
+.as-anchor { position: relative; flex: 0 0 0; width: 0; z-index: 40; }
+.as-sheet {
+  position: absolute; top: 0; right: 0; bottom: 0; width: var(--as-w); display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-sidebar); border-left: 1px solid var(--line-med); box-shadow: -10px 0 28px rgba(0, 0, 0, .16); outline: none;
+}
+/* the landscape's camera controls stay in the part the sheet leaves uncovered */
+.ls-row:has(> .as-anchor > .as-sheet:not(.mb-ghost)) .ls-minimap { right: calc(var(--as-w) + 12px); }
+.ls-row:has(> .as-anchor > .as-sheet:not(.mb-ghost)) .ls-hud { left: calc(50% - var(--as-w) / 2); }
+.as-head { display: flex; align-items: center; gap: 7px; flex-shrink: 0; height: 36px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--line-soft); }
+.as-head-ico { display: inline-flex; color: var(--text-3); }
+.as-head-ico svg { width: 14px; height: 14px; }
+.as-head-t { font: 600 12px var(--ui); color: var(--text-1); }
+.as-spacer { flex: 1; }
+.as-hbtn { padding: 3px 7px; border: none; font: 500 11px var(--ui); color: var(--text-3); }
+.as-hbtn.icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; }
+.as-hbtn.icon svg { width: 13px; height: 13px; margin: 0; }
+.as-err { flex-shrink: 0; padding: 6px 12px; font: 400 11px/1.45 var(--ui); color: var(--red); border-bottom: 1px solid var(--line-soft); }
+.as-unavail { flex-shrink: 0; padding: 7px 12px; font: 400 11px/1.45 var(--ui); color: var(--text-3); background: var(--fill-subtle); border-bottom: 1px solid var(--line-soft); }
+.as-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding: 12px 12px 14px; }
+.as-quiet { font: 400 11.5px/1.5 var(--ui); color: var(--text-4); }
+.as-link {
+  padding: 0; border: none; border-radius: 0; background: none; font: inherit; color: var(--teal-text);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.as-link:hover { background: none; color: var(--text-1); }
+/* the thread: your words on the right, its steps and reply under them */
+.as-turn { display: flex; flex-direction: column; gap: 7px; }
+.as-text { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.as-text code { font: 400 11px var(--mono); background: var(--fill-subtle); border-radius: 3px; padding: 0 3px; }
+.as-text pre { font: 400 11px/1.45 var(--mono); background: var(--fill-subtle); border: 1px solid var(--line-soft); border-radius: 5px; padding: 6px 8px; margin: 3px 0; overflow-x: auto; white-space: pre; }
+.as-text a { color: var(--teal-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.as-you { align-self: flex-end; max-width: 92%; padding: 6px 9px; border-radius: 8px; background: var(--fill-selected); font: 400 12px/1.45 var(--ui); color: var(--text-1); }
+.as-reply { font: 400 12px/1.5 var(--ui); color: var(--text-2); }
+.as-reply.error { color: var(--red); }
+.as-wait { display: flex; align-items: center; gap: 7px; font: 400 11.5px var(--ui); color: var(--text-4); }
+/* a step: a mark for its state, its line, Undo while it lasts */
+.as-step { display: flex; align-items: flex-start; gap: 7px; font: 400 11.5px/1.45 var(--ui); color: var(--text-2); }
+.as-step-l { min-width: 0; overflow-wrap: anywhere; }
+.as-step-note { color: var(--text-4); }
+.as-step-err { display: block; color: var(--red); font-size: 11px; }
+.as-step-res { display: block; color: var(--text-4); font-size: 11px; }
+.as-step-res.failed { color: var(--red); }
+.as-mark { flex-shrink: 0; width: 12px; text-align: center; font: 500 10px/16.5px var(--mono); color: var(--text-4); }
+.as-mark::before { content: "·"; }
+.st-running > .as-mark::before { content: "●"; color: var(--teal); }
+.st-done > .as-mark::before { content: "✓"; color: var(--text-3); }
+.st-failed > .as-mark::before, .st-expired > .as-mark::before, .as-run.failed > .as-run-h > .as-mark::before { content: "✕"; color: var(--red); }
+.st-proposed > .as-mark::before { content: "○"; }
+.st-undone > .as-mark::before, .st-cancelled > .as-mark::before { content: "↺"; }
+.as-run.ok > .as-run-h > .as-mark::before { content: "✓"; color: var(--text-3); }
+.as-step.st-undone .as-step-l { color: var(--text-3); }
+/* a card: what it would do, what to know, Do it and Cancel */
+.as-card { display: flex; flex-direction: column; gap: 5px; padding: 9px 10px 10px; border-radius: 7px; background: var(--bg-pane); border: 1px solid var(--line-med); }
+.as-card-t { font: 600 12px/1.4 var(--ui); color: var(--text-1); overflow-wrap: anywhere; }
+.as-card-d { font: 400 11.5px/1.45 var(--ui); color: var(--text-3); }
+.as-card-warn { list-style: none; display: flex; flex-direction: column; gap: 2px; font: 400 11px/1.4 var(--ui); color: var(--text-2); }
+.as-card-warn li { padding-left: 12px; text-indent: -12px; }
+.as-card-warn li::before { content: "!"; display: inline-block; width: 12px; text-indent: 0; font-weight: 700; color: var(--text-3); }
+.as-card.danger { border-color: color-mix(in srgb, var(--red) 50%, transparent); box-shadow: inset 2px 0 0 var(--red); }
+.as-card.danger .as-card-t, .as-card.danger .as-card-warn li, .as-card.danger .as-card-warn li::before { color: var(--red); }
+.as-card-blocked { padding: 4px 7px; border-radius: 5px; background: var(--fill-subtle); font: 400 11px/1.4 var(--ui); color: var(--text-2); }
+.as-card-acts { display: flex; gap: 6px; margin-top: 3px; }
+.as-card-acts button { padding: 4px 11px; font-size: 11px; }
+button.as-do.danger { border-color: var(--red); color: var(--red); background: transparent; font-weight: 600; }
+button.as-do.danger:hover { background: color-mix(in srgb, var(--red) 10%, transparent); color: var(--red); }
+button.as-do.danger[aria-disabled="true"], button.as-do.danger[aria-disabled="true"]:hover { opacity: 1; background: transparent; border-color: var(--line-soft); color: var(--text-4); }
+.as-card-err { font: 400 11px/1.4 var(--ui); color: var(--red); }
+.as-card.settled { flex-direction: row; align-items: flex-start; gap: 7px; padding: 0; border: none; border-radius: 0; background: none; box-shadow: none; }
+.as-card.settled .as-card-main { min-width: 0; }
+.as-card.settled .as-card-t { font-weight: 400; font-size: 11.5px; color: var(--text-2); }
+.as-card-res { font: 400 11px/1.4 var(--ui); color: var(--text-4); }
+.as-card.settled.st-failed .as-card-res { color: var(--red); }
+/* cards no turn holds, and rule runs */
+.as-sec { display: flex; flex-direction: column; gap: 8px; }
+.as-sec-h { font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); }
+.as-run { display: flex; flex-direction: column; gap: 3px; }
+.as-run-h { display: flex; align-items: flex-start; gap: 7px; font: 400 11.5px/1.45 var(--ui); color: var(--text-2); }
+.as-run-t { flex: 1; min-width: 0; }
+.as-run-at { flex-shrink: 0; font: 400 10px/16.5px var(--mono); color: var(--text-4); }
+.as-run-rule { padding-left: 19px; font: 400 11px var(--ui); color: var(--text-4); }
+.as-run .as-step { padding-left: 19px; }
+/* the standing rules: one line folded, each rule with its switch unfolded */
+.as-rules { flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; max-height: 45%; border-top: 1px solid var(--line-soft); }
+.as-rules-h {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0; width: 100%; padding: 8px 12px; border: none; border-radius: 0;
+  font: 500 11.5px var(--ui); color: var(--text-2); text-align: left;
+}
+.as-rules-h:hover { background: var(--fill-subtle); }
+.as-rules-h .ico { margin: 0; color: var(--text-4); }
+.as-rules-n { font-weight: 400; color: var(--text-4); }
+.as-rules-list { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 2px 12px 12px; }
+.as-rule { display: flex; align-items: flex-start; gap: 9px; }
+.as-rule .toggle { flex-shrink: 0; margin-top: 1px; }
+.as-rule-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.as-rule-l { font: 400 11.5px/1.4 var(--ui); color: var(--text-1); }
+.as-rule:not(.on) .as-rule-l { color: var(--text-3); }
+.as-rule-paused { font: 400 11px/1.4 var(--ui); color: var(--red); }
+.as-rule-last { font: 400 10px/1.4 var(--mono); color: var(--text-4); }
+button.as-remove { flex-shrink: 0; font-size: 11px; line-height: 20px; color: var(--text-4); text-decoration: none; }
+button.as-remove:hover { color: var(--red); text-decoration: underline; }
+.as-hint { flex-shrink: 0; padding: 7px 12px 9px; border-top: 1px solid var(--line-soft); font: 400 10px var(--mono); color: var(--text-4); }
 
 /* S5: an artifact's card (design O), placed from its area's Artifacts window */
 .ls-acard { position: absolute; }

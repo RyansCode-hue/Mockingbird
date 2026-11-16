@@ -152,9 +152,10 @@ export function play(el: Element, frames: Keyframe[], o: KeyframeAnimationOption
 /** The spring's timing, for el.animate. */
 const springTiming = (fill: FillMode = "none"): KeyframeAnimationOptions => ({ duration: SPRING.duration, easing: SPRING.easing, fill });
 
-/** Things that enter and leave: dialogs (the backdrop, its box the first child), menus, toasts, and badges
- * (a small label whose content changes: the old one fades out on a copy as the new one fades in). */
-export type Presence = "dialog" | "menu" | "toast" | "badge";
+/** Things that enter and leave: dialogs (the backdrop, its box the first child), menus, toasts, badges
+ * (a small label whose content changes: the old one fades out on a copy as the new one fades in), and sheets docked
+ * at the right edge (they come in from it and leave toward it). */
+export type Presence = "dialog" | "menu" | "toast" | "badge" | "sheet";
 
 function enterFrames(kind: Presence, el: HTMLElement): Animation[] {
   const out: (Animation | null)[] = [];
@@ -168,6 +169,9 @@ function enterFrames(kind: Presence, el: HTMLElement): Animation[] {
   } else if (kind === "badge") {
     out.push(play(el, [{ opacity: 0 }, { opacity: 1 }], { duration: D.m, easing: "linear" }));
     out.push(play(el, [{ transform: "scale(0.8)" }, { transform: "none" }], springTiming()));
+  } else if (kind === "sheet") {
+    out.push(play(el, [{ transform: "translateX(16px)" }, { transform: "none" }], springTiming()));
+    out.push(play(el, [{ opacity: 0 }, { opacity: 1 }], { duration: D.s, easing: "linear" }));
   } else {
     out.push(play(el, [{ transform: "translateY(16px)" }, { transform: "none" }], springTiming()));
     out.push(play(el, [{ opacity: 0 }, { opacity: 1 }], { duration: D.s, easing: "linear" }));
@@ -186,6 +190,7 @@ function exitFrames(kind: Presence, el: HTMLElement): Animation[] {
   } else if (kind === "badge") {
     out.push(play(el, [{ opacity: 1 }, { opacity: 0 }], { duration: D.s, easing: "linear", fill: "forwards" }));
   } else {
+    // a toast and a sheet both leave toward the right edge
     out.push(play(el, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateX(14px)" }], { duration: D.s, easing: EASE.exit, fill: "forwards" }));
   }
   return out.filter((a): a is Animation => !!a);
