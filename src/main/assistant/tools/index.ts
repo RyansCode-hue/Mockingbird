@@ -2,3 +2,7 @@
 export { sessionTools } from "./sessions";
 export { layoutTools } from "./layout";
 export { ruleTools } from "./rules";
+export { startTools } from "./start";
+export { triageTools } from "./triage";
+export { gitTools } from "./git";
+export { diagnoseTools } from "./diagnose";

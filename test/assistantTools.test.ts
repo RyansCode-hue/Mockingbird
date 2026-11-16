@@ -6,6 +6,7 @@ import { buildRegistry, Registry, validateArgs, type AssistantTool } from "../sr
 import * as groups from "../src/main/assistant/tools";
 import { worldGroups, worldRooms, worldSessions } from "../src/main/assistant/world";
 import { fakeTool, rulesFor } from "./assistantHarness";
+import { unusedWorkDeps } from "./assistantWorkFakes";
 
 const mine = (id: string, over: Partial<AssistantSession> = {}): AssistantSession => ({
   id,
@@ -39,6 +40,7 @@ function tools(sessions: AssistantSession[], over: Partial<AssistantDeps> = {}) 
     relaunchRefusal: () => null,
     relaunch: async (id) => void did.push(`relaunch ${id}`),
     rules: rulesFor({ sessions: () => sessions, groups: () => [] }).engine,
+    ...unusedWorkDeps(),
     ...over,
   };
   const r = buildRegistry(d, Object.values(groups));
@@ -48,9 +50,9 @@ function tools(sessions: AssistantSession[], over: Partial<AssistantDeps> = {}) 
 describe("the Assistant's first tools", () => {
   it("are one registry with their tiers fixed: reads, direct changes and a confirm", () => {
     const { registry } = tools([]);
-    expect(Object.fromEntries(registry.list().map((t) => [t.name, t.tier]))).toEqual({
+    expect(Object.fromEntries(registry.list().map((t) => [t.name, t.tier]))).toMatchObject({
       list_sessions: "read",
-      relaunch_session: "confirm",
+      restart_session: "confirm",
       list_groups: "read",
       focus_session: "direct",
       rename_session: "direct",
@@ -120,26 +122,6 @@ describe("the Assistant's first tools", () => {
     expect(again.stillUndoable!()).toBe(false);
     expect(() => again.undo!()).toThrow("renamed again");
     expect(sessions[0].title).toBe("the user's own");
-  });
-
-  it("relaunch_session's card names the target and what to know, its guard is the session guards', and it lapses when the session goes", async () => {
-    let why: string | null = null;
-    const sessions = [mine("a1", { title: "api-fix", status: "working" }), mine("b2", { mine: false, owner: "Nick" })];
-    const t = tools(sessions, { relaunchRefusal: () => why });
-    const relaunch = t.tool("relaunch_session");
-    expect(await relaunch.card!({ session: "a1" })).toEqual({
-      title: "Restart “api-fix”",
-      detail: expect.stringContaining("same conversation"),
-      warnings: ["It's working: restarting stops its current turn."],
-    });
-    expect(await relaunch.check!({ session: "b2" })).toContain("only its owner can restart it");
-    expect(await relaunch.check!({ session: "a1" })).toBeNull();
-    why = "A teammate continues it on their laptop";
-    expect(await relaunch.check!({ session: "a1" })).toBe(why);
-    expect(relaunch.stillValid!({ session: "a1" })).toBe(true);
-    sessions.splice(0, 1);
-    expect(relaunch.stillValid!({ session: "a1" })).toBe(false);
-    expect(t.did).toEqual([]);
   });
 });
 

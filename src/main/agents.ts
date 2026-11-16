@@ -116,6 +116,13 @@ export function permissionModeRefusal(agent: AgentKind, mode: PermissionMode | n
   return null;
 }
 
+/** What a confirm card says of a mode wider than the default (WIDER_MODES): what its agent then does without asking. */
+export function widerModeWarning(mode: PermissionMode, agent: AgentKind): string {
+  if (mode === "acceptEdits") return "Accept edits: it changes files without asking you first";
+  if (mode === "auto") return agent === "codex" ? "Auto: Codex's automatic review answers its approval requests, not you" : "Auto: it decides for itself which actions to take without asking you";
+  return agent === "codex" ? "Bypass permissions: Codex runs every command without asking, and outside its sandbox" : "Bypass permissions: it runs every tool without asking you first";
+}
+
 /** Claude Code's effort levels (its `--effort`), what a relaunch with changes takes. */
 export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 /** The levels of CLAUDE_EFFORTS Codex has as its `model_reasoning_effort`, by the same names. */
