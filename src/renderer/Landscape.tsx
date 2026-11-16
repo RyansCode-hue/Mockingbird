@@ -190,6 +190,8 @@ export interface LandscapeNote {
 export interface FocusActs {
   /** The keyboard to the focused workspace's front terminal; to focus's frame, armed, when that isn't yours and live. */
   keysToTerminal: () => void;
+  /** Focus ended as esc and the header's ‹ end it, the landscape taking the keyboard. */
+  leave: () => void;
 }
 
 /** How far a press moves before it's a drag (a marquee, a workspace or an area moving) rather than a click. */
@@ -1050,7 +1052,7 @@ export function Landscape({
     const t = focusNow.current ? layoutNow.current.tiles.find((x) => x.key === focusNow.current) : undefined;
     if (t && !frontTakesKeys(t)) armFocus(overlay.current);
   };
-  if (focusRef) focusRef.current = { keysToTerminal: keysToFocused };
+  if (focusRef) focusRef.current = { keysToTerminal: keysToFocused, leave: () => leaveFocus() };
   useEffect(
     () => () => {
       if (focusRef) focusRef.current = null;

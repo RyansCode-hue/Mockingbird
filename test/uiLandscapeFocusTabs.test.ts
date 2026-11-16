@@ -618,6 +618,75 @@ describe.skipIf(!local)("the rail while a workspace is in focus", () => {
     expect(r.again).toEqual({ panel: false, side: 0, focus: true, pressed: [] });
     expect(r.x).toEqual({ panel: false, side: 0, focus: true, pressed: [] });
   }, 120_000);
+
+  it("leaves the landscape's side bar as it was before focus, whatever the slot held in focus", async () => {
+    const leave = `
+      $(".ls-focus .ls-back").click();
+      await until(() => !$(".ls-focus"));
+      await sleep(200);`;
+    // the tree shown on the landscape: Files opened and closed (by its icon), Changes by its ×, then focus left
+    const shown = await drive<{ before: boolean; inFocus: number; after: boolean; pref: string | null }>(
+      "lsFocus=s5",
+      FOCUSED_S5,
+      `${SIDE}
+      await sleep(300);
+      const before = treeShown();
+      await click(btn("explorer"));
+      await until(() => !!panel());
+      await click(btn("explorer"));
+      await until(() => !panel());
+      await click(btn("scm"));
+      await until(() => !!panel());
+      await click($(".sidebar .side-tool .side-close"));
+      await until(() => !panel());
+      const inFocus = sideW();
+      ${leave}
+      return { before, inFocus, after: treeShown(), pref: localStorage.getItem("mb.side") };`
+    );
+    expect(shown).toEqual({ before: true, inFocus: 0, after: true, pref: expect.not.stringMatching(/true/) });
+    // the tree hidden on the landscape: shown in focus by Sessions, then a tool docked there and closed
+    const hidden = await drive<{ before: boolean; tree: boolean; after: boolean; side: number }>(
+      "side=closed&lsFocus=s5",
+      FOCUSED_S5,
+      `${SIDE}
+      await sleep(300);
+      const before = treeShown();
+      await click(btn("sessions"));
+      await until(treeShown);
+      const tree = treeShown();
+      await click(btn("run"));
+      await until(() => !!panel());
+      await click(btn("run"));
+      await until(() => !panel());
+      ${leave}
+      return { before, tree, after: treeShown(), side: sideW() };`
+    );
+    expect(hidden).toEqual({ before: false, tree: true, after: false, side: 0 });
+  }, 180_000);
+
+  it("ends focus for ⇧⌘F, Search opening beside the workspace on the landscape: its field takes the keyboard where the zoom draws it, else the landscape does", async () => {
+    type Out = { focus: boolean; windows: number; onScreen: boolean; at: string };
+    const steps = `
+      await termIn("s5");
+      await press({ key: "F", meta: true, shift: true });
+      const win = () => $('.ls-world .ls-window[data-tool="search"]');
+      for (let i = 0; i < 80 && ($(".ls-focus") || !win()); i++) await sleep(50);
+      for (let i = 0; i < 40 && !document.activeElement?.closest('.ls-window[data-tool="search"]'); i++) await sleep(50);
+      await sleep(300);
+      const v = $(".ls-viewport").getBoundingClientRect();
+      const b = win()?.getBoundingClientRect();
+      const inSearch = !!document.activeElement?.closest('.ls-window[data-tool="search"]');
+      return {
+        focus: !!$(".ls-focus"),
+        windows: document.querySelectorAll('.ls-world .ls-window[data-tool="search"]').length,
+        onScreen: !!b && b.right > v.left && b.left < v.right && b.bottom > v.top && b.top < v.bottom,
+        at: inSearch ? "search:" + document.activeElement.tagName.toLowerCase() : where(),
+      };`;
+    // at 100% the window is drawn whole, its field taking the keyboard
+    expect(await drive<Out>("lsCamera=0,0,1&lsFocus=s5", FOCUSED_S5, steps)).toEqual({ focus: false, windows: 1, onScreen: true, at: "search:input" });
+    // fitted, zoomed out to cards, it's its head alone, as a window opened from the landscape is: the landscape keeps the keyboard
+    expect(await drive<Out>("lsFocus=s5", FOCUSED_S5, steps)).toEqual({ focus: false, windows: 1, onScreen: true, at: expect.stringMatching(/^div\.ls-viewport/) });
+  }, 180_000);
 });
 
 describe.skipIf(!local)("the keyboard with a tool docked in focus", () => {
