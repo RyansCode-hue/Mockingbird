@@ -7,6 +7,7 @@ import * as groups from "../src/main/assistant/tools";
 import { worldGroups, worldRooms, worldSessions } from "../src/main/assistant/world";
 import { fakeTool, rulesFor } from "./assistantHarness";
 import { unusedWorkDeps } from "./assistantWorkFakes";
+import { unusedToolDeps } from "./assistantWorld";
 
 const mine = (id: string, over: Partial<AssistantSession> = {}): AssistantSession => ({
   id,
@@ -41,6 +42,7 @@ function tools(sessions: AssistantSession[], over: Partial<AssistantDeps> = {}) 
     relaunch: async (id) => void did.push(`relaunch ${id}`),
     rules: rulesFor({ sessions: () => sessions, groups: () => [] }).engine,
     ...unusedWorkDeps(),
+    ...unusedToolDeps(),
     ...over,
   };
   const r = buildRegistry(d, Object.values(groups));
@@ -54,6 +56,7 @@ describe("the Assistant's first tools", () => {
       list_sessions: "read",
       restart_session: "confirm",
       list_groups: "read",
+      landscape: "read",
       focus_session: "direct",
       rename_session: "direct",
       list_rules: "read",
@@ -61,6 +64,30 @@ describe("the Assistant's first tools", () => {
       change_rule: "confirm",
       set_rule_on: "direct",
       remove_rule: "direct",
+      move_workspace: "direct",
+      stack_workspaces: "direct",
+      unstack: "direct",
+      size_workspace: "direct",
+      tidy_area: "direct",
+      set_group: "direct",
+      create_group: "direct",
+      rename_group: "direct",
+      mute_session: "direct",
+      unmute: "direct",
+      list_wires: "read",
+      add_wire: "direct",
+      remove_wire: "direct",
+      send_handoff: "confirm",
+      approve_gate: "confirm",
+      house_board: "read",
+      share_group: "confirm",
+      leave_room: "confirm",
+      take_over: "confirm",
+      set_room_sandbox: "confirm",
+      claim_ticket: "confirm",
+      release_ticket: "confirm",
+      get_settings: "read",
+      set_setting: "direct",
     });
     for (const t of registry.mcpTools()) expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
   });

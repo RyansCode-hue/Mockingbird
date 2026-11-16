@@ -2,16 +2,17 @@ import * as os from "os";
 import * as path from "path";
 import type { SessionInfo, WorktreeStateInfo } from "../src/shared/types";
 import { isRemotePaneId } from "../src/shared/team/livePanes";
-import type { AssistantDeps } from "../src/main/assistant/deps";
+import type { AssistantDeps, AssistantWorkDeps } from "../src/main/assistant/deps";
 import { buildRegistry, type AssistantTool } from "../src/main/assistant/registry";
 import * as groups from "../src/main/assistant/tools";
 import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "../src/main/assistant/world";
 import { SessionGuards } from "../src/main/sessionGuards";
 import { takenOverWhy, UNTAKEN_CALLS } from "../src/main/takenOverGuard";
 import { rulesFor } from "./assistantHarness";
+import { unusedToolDeps } from "./assistantWorld";
 
 /** The deps the sessions, start work, triage, git and diagnose tools add (deps.ts' last block). */
-export type WorkDeps = Omit<AssistantDeps, "sessions" | "groups" | "rooms" | "toWindow" | "rename" | "relaunchRefusal" | "relaunch" | "rules">;
+export type WorkDeps = AssistantWorkDeps;
 
 /** Each of those deps throwing when called: for tests of other tools, which never reach them. */
 export function unusedWorkDeps(): WorkDeps {
@@ -128,6 +129,7 @@ export function fakeMac() {
     groups: () => worldGroups({ own, remote, areas, stacks: [], rooms }),
     rooms: () => worldRooms(rooms),
     rules: rulesFor({ sessions: () => worldSessions({ own, remote, rooms }), groups: () => worldGroups({ own, remote, areas, stacks: [], rooms }) }).engine,
+    ...unusedToolDeps(),
     toWindow: (a) => void did.push(`window ${JSON.stringify(a)}`),
     rename: (id, title) => {
       did.push(`rename ${id} ${title}`);

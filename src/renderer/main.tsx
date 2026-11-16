@@ -38,7 +38,7 @@ import { AGENT_NAME, HELPDESK_PRESET, asQuitAgent, otherAgent, isErr, sanitizeSe
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
-import { AssistantSheet, useAssistant } from "./AssistantSheet";
+import { AssistantSheet, sheetBox, useAssistant } from "./AssistantSheet";
 import type { AssistantWindowAction } from "../shared/assistant";
 import { UsageMeter } from "./UsageMeter";
 import { DashboardBoard } from "./Dashboard";
@@ -2823,6 +2823,7 @@ function App() {
           nextStep={addNextStep}
           focusRef={focusActs}
           onFocusFront={onFocusFront}
+          clearOf={sheetBox}
         />
         </BadgeContext.Provider>
         <AssistantSheet open={assistantOpen} assistant={assistant} home={landscapeHome} onClose={() => setAssistantOpen(false)} />

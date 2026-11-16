@@ -13,6 +13,7 @@ import type { ShellRunner } from "../src/main/headless";
 import { askAs, askRaw, startServer, testLaunch } from "./mcpClient";
 import { rulesFor } from "./assistantHarness";
 import { unusedWorkDeps } from "./assistantWorkFakes";
+import { unusedToolDeps } from "./assistantWorld";
 
 /** This Mac's panes, as messaging sees them. */
 const panes = [{ id: "front", title: "front", ticketTitle: null, repoPath: "/code/front", branch: "b", taskGroup: "5038", status: "idle", agent: "claude", cwd: "/w/front", kind: "work" } as SessionInfo];
@@ -37,6 +38,7 @@ const deps: AssistantDeps = {
   relaunch: async (id) => void did.push(`relaunch ${id}`),
   rules: rulesFor({ sessions: () => world, groups: () => [] }).engine,
   ...unusedWorkDeps(),
+  ...unusedToolDeps(),
   guards: { whyNot: () => null, closeWarnings: async () => ({ uncommitted: 0, unpushed: 0, busy: false, unread: null }), answerPrompt: () => ({ refused: "not in this test" }) },
   record: (id) => (id === "a1b2c3d4" ? { info: { id, title: "api-fix", status: "working" } as SessionInfo, open: true } : null),
   describeRelaunch: () => ({ blocked: null, warnings: [] }),

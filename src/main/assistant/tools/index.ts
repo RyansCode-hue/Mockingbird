@@ -6,3 +6,6 @@ export { startTools } from "./start";
 export { triageTools } from "./triage";
 export { gitTools } from "./git";
 export { diagnoseTools } from "./diagnose";
+export { wireTools } from "./wires";
+export { roomTools } from "./rooms";
+export { settingTools } from "./settings";

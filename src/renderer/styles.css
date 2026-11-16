@@ -3755,6 +3755,8 @@ pre.wg-body { margin: 0; resize: none; white-space: pre-wrap; overflow-wrap: any
 /* the landscape's camera controls stay in the part the sheet leaves uncovered */
 .ls-row:has(> .as-anchor > .as-sheet:not(.mb-ghost)) .ls-minimap { right: calc(var(--as-w) + 12px); }
 .ls-row:has(> .as-anchor > .as-sheet:not(.mb-ghost)) .ls-hud { left: calc(50% - var(--as-w) / 2); }
+/* a workspace in focus fills the part of the view the sheet leaves uncovered, as the camera keeps workspaces clear of it */
+.ls-row:has(> .as-anchor > .as-sheet:not(.mb-ghost)) .ls-focus { right: var(--as-w); }
 .as-head { display: flex; align-items: center; gap: 7px; flex-shrink: 0; height: 36px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--line-soft); }
 .as-head-ico { display: inline-flex; color: var(--text-3); }
 .as-head-ico svg { width: 14px; height: 14px; }
