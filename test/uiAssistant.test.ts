@@ -346,6 +346,21 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
     expect(r.rulesHead).toBe("Rules· none");
   }, 120_000);
 
+  it("says when the rules file couldn't be read and where it was kept, with Rules folded too", async () => {
+    const r = await drive<{ text: string; role: string | null; folded: string | null; rules: number }>(
+      "assistant=open&assistantRulesProblem",
+      ".as-sheet .as-rules-problem",
+      `
+      await sleep(300);
+      const p = $(".as-rules .as-rules-problem");
+      return { text: p.textContent, role: p.getAttribute("role"), folded: $(".as-rules-h").getAttribute("aria-expanded"), rules: $$(".as-rule").length };`
+    );
+    expect(r.text).toMatch(/^Your rules file couldn't be read: it isn't valid JSON .* It's kept as ~\/\.mockingbird\/assistant-rules\.json\.corrupt-\d+\./);
+    expect(r.role).toBe("alert");
+    expect(r.folded).toBe("false");
+    expect(r.rules).toBe(0);
+  }, 120_000);
+
   it("calls main for Undo, Do it, Cancel, the rule switches, Remove and Clear; Do it and Cancel are off while one runs, and an { error } shows on its card", async () => {
     const r = await drive<Record<string, unknown>>(
       "assistant=open&assistantRules&assistantMs=600",

@@ -3830,6 +3830,7 @@ button.as-do.danger[aria-disabled="true"], button.as-do.danger[aria-disabled="tr
 .as-rules-h .ico { margin: 0; color: var(--text-4); }
 .as-rules-n { font-weight: 400; color: var(--text-4); }
 .as-rules-list { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 2px 12px 12px; }
+.as-rules-problem { border-bottom: none; overflow-wrap: anywhere; }
 .as-rule { display: flex; align-items: flex-start; gap: 9px; }
 .as-rule .toggle { flex-shrink: 0; margin-top: 1px; }
 .as-rule-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }

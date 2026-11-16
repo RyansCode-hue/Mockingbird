@@ -142,8 +142,22 @@ kept through every relaunch like its model and effort.
   itself and says why. Guards are checked on every run.
 - Rules run in main whenever Mockingbird is running. A time missed while the
   Mac slept or the app was closed is skipped, not caught up.
+- **One event, one run**: a Stop, a spell of waiting (counted from when it
+  began), an exit (its agent quitting and its pty ending are one), a day's
+  time. Main's 30 s tick reads waiting and the time of day; a time is caught
+  within 90 s of it. Rules run one at a time, each action through the
+  service's `runAction` (`ruleEngine.ts`). A target gone for a minute (a
+  session closed and forgotten, a group that's gone) pauses the rule.
+- **notify** follows the notification settings and quiet hours, as team
+  chat's notices do. **text_me** needs phone alerts set up and on, sends
+  nothing in quiet hours, and in a development build only logs.
+- The deny list is explicit (`rules.ts` RULE_DENY_LIST), matched by tool name
+  and by arguments (bypass, forget), and checked when a rule is made and
+  again on every run, whatever a tool's `rule` says.
 - Kept in `~/.mockingbird/assistant-rules.json`. The thread and cards are
-  memory only.
+  memory only. A rules file that can't be read is never overwritten: it's
+  kept aside as `assistant-rules.json.corrupt-<time>`, logged, and the
+  sheet's Rules section says so; the rules that could be read are kept.
 
 ## The sheet and ⌘K
 

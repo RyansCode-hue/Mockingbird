@@ -1,8 +1,13 @@
+import * as path from "path";
 import type { AssistantTurn } from "../src/shared/assistant";
 import type { AuditEntry } from "../src/shared/team/audit";
+import { DEFAULT_SETTINGS, type Settings } from "../src/shared/types";
 import type { AssistantDeps } from "../src/main/assistant/deps";
+import type { AlertSender } from "../src/main/phone/sender";
 import { Registry, type AssistantTool } from "../src/main/assistant/registry";
-import type { RulesStore } from "../src/main/assistant/rules";
+import { RuleEngine, type RuleLimits } from "../src/main/assistant/ruleEngine";
+import { RuleBook, type RulesStore } from "../src/main/assistant/rules";
+import { tempDir } from "./helpers";
 import { AssistantService, type AssistantServiceDeps, type McpReply } from "../src/main/assistant/service";
 import type { AssistantLimits, SpawnRequest } from "../src/main/assistant/turns";
 
@@ -14,6 +19,8 @@ export interface HarnessOptions {
   bin?: string | null;
   world?: Pick<AssistantDeps, "sessions" | "groups" | "rooms">;
   rules?: RulesStore;
+  /** Actions only rules take (the rules engine's notify and text_me). */
+  ruleOnly?: readonly AssistantTool[];
   limits?: Partial<AssistantLimits>;
   spawnGraceMs?: number;
   /** Replaces the fake spawn, which runs the current `model`. */
@@ -45,6 +52,7 @@ export function harness(tools: AssistantTool[], o: HarnessOptions = {}) {
     emit: () => void emits++,
     log: (context, err) => void log.push(`${context}: ${err instanceof Error ? err.message : String(err)}`),
     rules: o.rules,
+    ruleOnly: o.ruleOnly,
     now: () => clock,
     limits: o.limits,
     spawnGraceMs: o.spawnGraceMs,
@@ -98,4 +106,29 @@ export function fakeTool(over: Partial<AssistantTool> & Pick<AssistantTool, "nam
     ...over,
     runs,
   } as AssistantTool & { runs: Record<string, unknown>[] };
+}
+
+/**
+ * Standing rules over a rules file in this test file's HOME, watching `world`: what's notified and texted, and what's
+ * logged, the test reads. No sender is a development build's; tick() and the clock are the test's.
+ */
+export function rulesFor(world: Pick<AssistantDeps, "sessions" | "groups">, o: { file?: string; sender?: AlertSender | null; settings?: () => Settings; kept?: (id: string) => boolean; limits?: Partial<RuleLimits> } = {}) {
+  const notified: { title: string; body: string }[] = [];
+  const log: string[] = [];
+  let clock = 1_000_000;
+  const file = o.file ?? path.join(tempDir("rules"), "assistant-rules.json");
+  const book = new RuleBook({ file, log: (c, e) => void log.push(`${c}: ${e instanceof Error ? e.message : String(e)}`), now: () => clock });
+  const engine = new RuleEngine({
+    book,
+    world,
+    sessionKept: o.kept ?? ((id) => world.sessions().some((s) => s.id === id)),
+    settings: o.settings ?? (() => DEFAULT_SETTINGS),
+    notify: (title, body) => void notified.push({ title, body }),
+    sender: o.sender ?? null,
+    log: (c, e) => void log.push(`${c}: ${e instanceof Error ? e.message : String(e)}`),
+    info: (line) => void log.push(line),
+    now: () => clock,
+    limits: o.limits,
+  });
+  return { file, book, engine, notified, log, now: () => clock, setNow: (t: number) => void (clock = t), tick: (ms: number) => void (clock += ms) };
 }

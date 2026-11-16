@@ -109,6 +109,10 @@ import * as assistantGroups from "./assistant/tools";
 import { cliSpawner } from "./assistant/launch";
 import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "./assistant/world";
 import type { AssistantDeps } from "./assistant/deps";
+// the app Assistant's standing rules
+import { RuleBook, rulesFile } from "./assistant/rules";
+import { RuleEngine } from "./assistant/ruleEngine";
+import { MessagesSender } from "./phone/sender";
 import { guardNavigation } from "./navigation";
 import { externalUrlAllowed } from "../shared/links";
 import { PRIVACY_PANES, startPhoneService, type PhoneService } from "./phone/service";
@@ -720,6 +724,8 @@ app.whenReady().then(() => {
       status === "waiting" ? "waiting" : "finished"
     );
     if (status === "waiting" || status === "idle") phone?.alerts.sessionStatus(info, status);
+    // the app Assistant's standing rules: a Stop is a finished turn
+    if (status === "idle") ruleEngine.finished(info.id, info.finishedAt);
   }, (info, prompt) => {
     // the files before this turn, so it can be undone (agent panes in a repository only)
     if (info.shell || !info.repoPath) return;
@@ -753,6 +759,8 @@ const quit = new QuitSequence({
     });
   },
   steps: [
+    // before the panes' ptys end: their exits mustn't fire standing rules
+    { name: "stopping standing rules", run: () => ruleEngine.stop() },
     { name: "saving scrollback", run: () => sessions.saveScrollback(true) },
     { name: "saving the landscape", run: () => landscape.flush() },
     { name: "removing tool tokens", run: () => removeMcpTokenFiles() },
@@ -1453,6 +1461,23 @@ handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 const assistantToWindow = (action: AssistantWindowAction) => toWindow(ASSISTANT_IPC.window, action);
 const worldRoomList = (): WorldRoom[] =>
   team.status().rooms.map((r) => ({ id: r.id, name: r.name, groupKey: r.groupKey, members: r.members, online: r.online }));
+// The standing rules (docs/assistant.md → Standing rules), kept in ~/.mockingbird/assistant-rules.json. Each action runs
+// through the service below (runAction), so its guards are checked when it runs and it's in the activity log as the rule's.
+const ruleEngine = new RuleEngine({
+  book: new RuleBook({ file: rulesFile(), log: logError }),
+  world: { sessions: () => assistantDeps.sessions(), groups: () => assistantDeps.groups() },
+  sessionKept: (id) => sessions.list().some((s) => s.id === id) || sessions.resumable().some((s) => s.id === id),
+  settings: () => store.settings,
+  notify: (title, body) => {
+    const n = new Notification({ title, body });
+    n.on("click", () => focusPane());
+    n.show();
+  },
+  // only the installed app sends iMessages, as phone alerts do (phone/service.ts); a development build logs instead
+  sender: app.isPackaged ? new MessagesSender() : null,
+  log: logError,
+  info: (line) => console.log(line),
+});
 const assistantDeps: AssistantDeps = {
   sessions: () => worldSessions({ own: sessions.list(), remote: livePanes.state().remote, rooms: worldRoomList() }),
   groups: () => {
@@ -1464,6 +1489,9 @@ const assistantDeps: AssistantDeps = {
   rename: (id, title) => sessions.rename(id, title),
   relaunchRefusal: (id) => sessionGuards.whyNot("relaunch", id),
   relaunch: async (id) => void (await sessions.restart(id)),
+
+  // ---- standing rules (rules.ts, ruleEngine.ts, tools/rules.ts) ----
+  rules: ruleEngine,
 };
 const assistant = new AssistantService({
   registry: buildRegistry(assistantDeps, Object.values(assistantGroups)),
@@ -1473,6 +1501,9 @@ const assistant = new AssistantService({
   audit: remoteAudit,
   emit: () => toWindow(ASSISTANT_IPC.changed),
   log: logError,
+  // ---- standing rules ----
+  rules: ruleEngine,
+  ruleOnly: ruleEngine.ruleOnly,
 });
 handle(ASSISTANT_IPC.view, () => assistant.view());
 handle(ASSISTANT_IPC.ask, (text) => assistant.ask(text));
@@ -1482,6 +1513,13 @@ handle(ASSISTANT_IPC.undo, (stepId) => assistant.undo(stepId));
 handle(ASSISTANT_IPC.ruleOn, (ruleId, on) => assistant.ruleOn(ruleId, on));
 handle(ASSISTANT_IPC.ruleRemove, (ruleId) => assistant.ruleRemove(ruleId));
 handle(ASSISTANT_IPC.clear, () => assistant.clear());
+// ---- the app Assistant's standing rules: their actions run through the service; their triggers ----
+ruleEngine.attach(assistant);
+// a turn's end is the Stop hook's (watchEvents); a process's end is its pty's exit or its agent quitting
+sessions.onStatusChanged((info, before) => {
+  if (info.status === "dead" && before !== "dead") ruleEngine.exited(info.id);
+});
+sessions.onAgentQuit((info) => ruleEngine.exited(info.id));
 
 // ---- Azure DevOps dashboard (reads WorkTracker config; PAT stays in main) ----
 handle("ado:list", () => listWorkItems(store));
@@ -2179,6 +2217,8 @@ app.whenReady().then(() => {
   prWatch.start();
   setInterval(() => {
     sessions.checkStalls(Date.now(), STALL_MS);
+    // the app Assistant's standing rules: waiting and time-of-day triggers, and targets that are gone
+    ruleEngine.tick();
     for (const o of sessions.overdueMessages(Date.now(), MESSAGE_OVERDUE_MS)) tellOverdue(o);
     healthChanged();
     settleWires();

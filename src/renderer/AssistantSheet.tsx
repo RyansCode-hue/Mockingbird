@@ -280,6 +280,11 @@ export function AssistantSheet({ open, assistant, home, onClose }: { open: boole
               <span>Rules</span>
               <span className="as-rules-n">· {rules.length ? `${onCount} on${pausedCount ? ` · ${pausedCount} paused` : ""}` : "none"}</span>
             </button>
+            {view?.rulesProblem && (
+              <div className="as-err as-rules-problem" role="alert">
+                {view.rulesProblem}
+              </div>
+            )}
             {rulesOpen && (
               <div className="as-rules-list">
                 {!rules.length && <div className="as-quiet">None yet. Ask for one: "when tests finishes, start the review".</div>}
