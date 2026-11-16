@@ -123,6 +123,10 @@ kept through every relaunch like its model and effort.
 | Diagnose | stuck/exited detail, closed output tail (never Helpdesk's), usage and meters, which session touched a file (overlaps, turn changes, transcript search without Helpdesk) | — | — |
 | Standing rules | list rules | turn a rule on/off, remove one | create or change a rule |
 
+Typing into a session (and a broadcast) refuses, or skips, a session waiting
+on a permission prompt: keys typed there would answer it, past answer_prompt's
+one-prompt check and the rules' ban on answering prompts.
+
 ## Standing rules
 
 - **Made only through a card.** The card shows the trigger and each action,
@@ -136,7 +140,8 @@ kept through every relaunch like its model and effort.
   your own handle; a development build only logs it).
 - **Not allowed in a rule**: allowing or denying prompts (that would be a
   standing yes to every prompt), bypass mode, closing with forget, worktree
-  cleanup, push or PR, leaving a room, take-over.
+  cleanup, push or PR, leaving a room, take-over, and starting from a House
+  ticket (it claims the ticket on the room's shared board).
 - **Limits**: at most 20 rules, 5 actions each. A rule runs at most once per
   trigger event and 6 times an hour. After 3 failed runs in a row it pauses
   itself and says why. Guards are checked on every run.

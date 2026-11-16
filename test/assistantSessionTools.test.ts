@@ -20,7 +20,7 @@ const TIERS: Record<string, [tier: string, rule: boolean]> = {
   start_session: ["confirm", true],
   start_preset: ["confirm", true],
   lay_out_template: ["confirm", true],
-  start_from_ticket: ["confirm", true],
+  start_from_ticket: ["confirm", false],
   review_branch: ["confirm", true],
   needs_you: ["read", false],
   answer_prompt: ["confirm", false],

@@ -503,7 +503,8 @@ export function startTools(d: Deps): AssistantTool[] {
         if (isTicketFailure(r)) throw new Error(r.error);
         return { text: `${plainLine(r.message, 200)} (${r.session.id}).` };
       },
-      rule: true,
+      // it claims the ticket on the room's shared House board: a write teammates see, made only on a Do it
+      rule: false,
     }),
 
     defineTool<{ session: string }>({
