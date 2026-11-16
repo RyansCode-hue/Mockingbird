@@ -3,6 +3,7 @@ import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
 import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
+import { ASSISTANT_IPC, type AssistantCard, type AssistantRule, type AssistantStep, type AssistantView, type AssistantWindowAction } from "../shared/assistant";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api = {
@@ -456,6 +457,25 @@ const api = {
     const h = (_e: unknown, n: unknown) => cb(n);
     ipcRenderer.on("house:warning", h);
     return () => ipcRenderer.removeListener("house:warning", h);
+  },
+  // the app Assistant (docs/assistant.md)
+  assistantView: (): Promise<IpcResult<AssistantView>> => ipcRenderer.invoke(ASSISTANT_IPC.view),
+  assistantAsk: (text: string): Promise<IpcResult<{ turnId: string }>> => ipcRenderer.invoke(ASSISTANT_IPC.ask, text),
+  assistantConfirm: (cardId: string): Promise<IpcResult<AssistantCard>> => ipcRenderer.invoke(ASSISTANT_IPC.confirm, cardId),
+  assistantCancel: (cardId: string): Promise<IpcResult<AssistantCard>> => ipcRenderer.invoke(ASSISTANT_IPC.cancel, cardId),
+  assistantUndo: (stepId: string): Promise<IpcResult<AssistantStep>> => ipcRenderer.invoke(ASSISTANT_IPC.undo, stepId),
+  assistantRuleOn: (ruleId: string, on: boolean): Promise<IpcResult<AssistantRule>> => ipcRenderer.invoke(ASSISTANT_IPC.ruleOn, ruleId, on),
+  assistantRuleRemove: (ruleId: string): Promise<IpcResult<{ ok: true }>> => ipcRenderer.invoke(ASSISTANT_IPC.ruleRemove, ruleId),
+  assistantClear: (): Promise<IpcResult<{ ok: true }>> => ipcRenderer.invoke(ASSISTANT_IPC.clear),
+  onAssistantChanged: (cb: () => void) => {
+    const h = () => cb();
+    ipcRenderer.on(ASSISTANT_IPC.changed, h);
+    return () => ipcRenderer.removeListener(ASSISTANT_IPC.changed, h);
+  },
+  onAssistantWindow: (cb: (action: AssistantWindowAction) => void) => {
+    const h = (_e: unknown, action: AssistantWindowAction) => cb(action);
+    ipcRenderer.on(ASSISTANT_IPC.window, h);
+    return () => ipcRenderer.removeListener(ASSISTANT_IPC.window, h);
   },
   // team rooms: team chat
   teamChatView: (roomId: string) => ipcRenderer.invoke("teamChat:view", roomId),
