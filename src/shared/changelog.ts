@@ -45,13 +45,14 @@ export const CHANGELOG: Release[] = [
     version: "1.8.0",
     date: "2026-11-13",
     items: [
+      n("Ask the Assistant in ⌘K: it restarts, starts, moves and checks sessions, with Undo or a card to confirm"),
+      n("Standing rules: the Assistant can act when a session finishes, waits on you, exits, or at a set time"),
+      n("Sessions can restart in plan, accept-edits, auto or bypass mode, and the workspace shows its mode"),
       n("Settings → Team can run a room's sessions without its sandbox on your Mac: push, gh, MCP and memory work"),
       n("Quitting Claude or Codex (/exit) leaves a terminal in its folder; Resume Claude brings the agent back"),
-      n("A focused workspace shows its tabs like a browser: × closes one, + adds one"),
-      u("A focused workspace's ⋯ menu lists only what you can do there now"),
+      n("A focused workspace has browser-style tabs, a shorter ⋯, and Files, Changes and Run docked on its left"),
       f("Switching tabs in a focused workspace no longer asks you to click the landscape before typing"),
-      f("A session still in a room sandbox it no longer needs says so and offers a restart to lift it"),
-      f("Switching a room's sandbox back on cuts off sessions started without it, Codex too, until they restart"),
+      f("Switching a room's sandbox off or on now reaches running sessions: they say so and offer a restart"),
     ],
   },
   {
