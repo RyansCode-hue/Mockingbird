@@ -8,6 +8,8 @@ import { useEscape } from "./useEscape";
 import { rankMatches } from "./fuzzy";
 import { useListNav } from "./listNav";
 import { HelpGuide } from "./HelpGuide";
+import { SparkleIcon } from "./Icons";
+import { askPlace } from "./assistantModel";
 
 /** The command palette (⌘K) and the how-to-use popup (⌘/). */
 
@@ -20,6 +22,12 @@ interface PaletteAction {
   off?: string;
 }
 
+/** The app Assistant's row (docs/assistant.md): asks it what was typed. `off`: why it can't, dimmed as an action's is. */
+export interface PaletteAsk {
+  run: (text: string) => void;
+  off?: string;
+}
+
 export function CommandPalette({
   sessions,
   steps = [],
@@ -27,6 +35,7 @@ export function CommandPalette({
   onJump,
   onStep,
   onClose,
+  ask,
 }: {
   sessions: SessionInfo[];
   /** Steps not started yet (W8): listed apart, and picking one shows its card. It never starts one. */
@@ -35,6 +44,8 @@ export function CommandPalette({
   onJump: (id: string) => void;
   onStep?: (s: SessionInfo) => void;
   onClose: () => void;
+  /** Ask Assistant, offered once something is typed. */
+  ask?: PaletteAsk;
 }) {
   const [q, setQ] = useState("");
   useEscape(onClose);
@@ -64,8 +75,13 @@ export function CommandPalette({
       state: "not started",
       run: () => onStep?.(s),
     }));
-    return { acts, sess, planned, flat: [...acts, ...sess, ...planned] };
-  }, [q, sessions, steps, actions]);
+    const found = [...acts, ...sess, ...planned];
+    const text = q.trim();
+    const place = ask ? askPlace(q, found.map((r) => r.label)) : "none";
+    const askRow = { kind: "ask" as const, label: "Ask Assistant", kbd: "⌘⏎", text, off: ask?.off, run: () => ask?.run(text) };
+    const flat = place === "first" ? [askRow, ...found] : place === "last" ? [...found, askRow] : found;
+    return { acts, sess, planned, place, askRow, flat, anyFound: found.length > 0 };
+  }, [q, sessions, steps, actions, ask]);
 
   const { sel, onArrow } = useListNav(rows.flat.length, [q]);
 
@@ -75,8 +91,29 @@ export function CommandPalette({
     onClose();
     r.run();
   };
+  /** ⌘⏎ asks, whichever row is selected, while something is typed. */
+  const askNow = () => {
+    if (rows.place === "none" || rows.askRow.off) return;
+    onClose();
+    rows.askRow.run();
+  };
 
   let flatIndex = -1;
+  const askRowEl = () => {
+    flatIndex++;
+    const i = flatIndex;
+    const r = rows.askRow;
+    return (
+      <div key="ask" className={`row ask ${i === sel ? "sel" : ""} ${r.off ? "off" : ""}`} title={r.off ?? "The Assistant works in a sheet at the landscape's right edge"} onMouseDown={() => runRow(i)}>
+        <span className="ask-ico">
+          <SparkleIcon />
+        </span>
+        <span className="lab">{r.label}</span>
+        <span className="state">{r.off ?? r.text}</span>
+        {!r.off && <span className="kbd">{r.kbd}</span>}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -101,13 +138,17 @@ export function CommandPalette({
               if (e.key === "Enter") {
                 e.preventDefault();
                 // a held Enter's repeats run nothing: only a fresh press picks a row
-                if (!e.repeat) runRow(sel);
+                if (e.repeat) return;
+                if (e.metaKey) askNow();
+                else runRow(sel);
               }
             }}
           />
           <span className="kbd">esc to close</span>
         </div>
         <div className="results">
+          {rows.place === "first" && askRowEl()}
+          {rows.place === "first" && rows.anyFound && <div className="grp-div" />}
           {rows.acts.length > 0 && <div className="grp">Actions</div>}
           {rows.acts.map((r) => {
             flatIndex++;
@@ -147,10 +188,13 @@ export function CommandPalette({
               </div>
             );
           })}
+          {rows.place === "last" && <div className="grp-div" />}
+          {rows.place === "last" && askRowEl()}
         </div>
         <div className="pfoot">
           <span>↑↓ move</span>
           <span>⏎ run</span>
+          {ask && <span>⌘⏎ ask Assistant</span>}
           <span className="right">⌘K close</span>
         </div>
       </div>

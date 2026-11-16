@@ -842,8 +842,8 @@ describe.skipIf(!local)("Add next step", () => {
     expect(l.entered).toEqual(shown);
     // its right-click is its card's: Start now… and Forget, nothing else
     expect(l.menu).toEqual(["Start now…", "Forget it"]);
-    // ⌘K lists it apart from the sessions to jump to; Enter on it shows its card, the same
-    expect(l.palette.groups.slice(-2)).toEqual(["# Steps not started: show the card", "Tester · not started"]);
+    // ⌘K lists it apart from the sessions to jump to, with only Ask Assistant after it; Enter on it shows its card, the same
+    expect(l.palette.groups.slice(-3)).toEqual(["# Steps not started: show the card", "Tester · not started", "Ask Assistant · Tester"]);
     expect(l.palette.groups.filter((g) => g.startsWith("Tester"))).toEqual(["Tester · not started"]);
     expect(l.palette).toMatchObject({ ...shown, lit: "Tester", open: false });
     // Start now… from the tree's menu asks first (W8's confirm), and Esc starts nothing

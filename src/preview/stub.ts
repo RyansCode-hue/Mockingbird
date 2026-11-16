@@ -47,6 +47,7 @@ import { runFirstRunAudit } from "./firstRunAudit";
 // the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
 import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
+import { assistantApi, openAssistantSheet } from "./assistantStub";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
 import { boardPlan, councilPlan, runPlanAudit } from "./planAudit";
@@ -2964,6 +2965,8 @@ const api: Record<string, (...a: any[]) => any> = {
     sessionsChanged();
   },
   teamPaneResync: async (id: string) => emit("onSessionData", id, `\x1bc${buffers[id] ?? ""}`),
+  // the app Assistant (assistantStub.ts)
+  ...assistantApi(emit, new URLSearchParams(location.search)),
 };
 
 w.mb = new Proxy(api, {
@@ -3322,6 +3325,8 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
     if (el) then(el);
   }, 100);
 };
+// ?assistant=open|empty|unavailable: the Assistant's sheet open over the landscape (assistantStub.ts)
+openAssistantSheet(emit, params);
 // ?roomSandboxAsk (with ?section=team): the first room's Sandbox this room's sessions switch turned off, which asks first
 if (params.has("roomSandboxAsk")) waitFor('.team-room [aria-label^="Sandbox this room\'s sessions"]', (el) => el.click());
 {
