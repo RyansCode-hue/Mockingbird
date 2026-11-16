@@ -11,6 +11,7 @@ import { cliSpawner } from "../src/main/assistant/launch";
 import { ASSISTANT_RULES } from "../src/main/assistant/turns";
 import type { ShellRunner } from "../src/main/headless";
 import { askAs, askRaw, startServer, testLaunch } from "./mcpClient";
+import { unusedWorkDeps } from "./assistantWorkFakes";
 
 /** This Mac's panes, as messaging sees them. */
 const panes = [{ id: "front", title: "front", ticketTitle: null, repoPath: "/code/front", branch: "b", taskGroup: "5038", status: "idle", agent: "claude", cwd: "/w/front", kind: "work" } as SessionInfo];
@@ -33,6 +34,11 @@ const deps: AssistantDeps = {
   },
   relaunchRefusal: () => null,
   relaunch: async (id) => void did.push(`relaunch ${id}`),
+  ...unusedWorkDeps(),
+  guards: { whyNot: () => null, closeWarnings: async () => ({ uncommitted: 0, unpushed: 0, busy: false, unread: null }), answerPrompt: () => ({ refused: "not in this test" }) },
+  record: (id) => (id === "a1b2c3d4" ? { info: { id, title: "api-fix", status: "working" } as SessionInfo, open: true } : null),
+  describeRelaunch: () => ({ blocked: null, warnings: [] }),
+  relaunchWith: async (id) => void did.push(`relaunch ${id}`),
 };
 
 /** What the fake claude saw: its command, environment and token, and what its MCP server answered. */
@@ -106,7 +112,7 @@ describe("the Assistant as its own MCP caller", () => {
     const t = await turn([
       ["list_sessions", {}],
       ["rename_session", { session: "a1b2c3d4", title: "api" }],
-      ["relaunch_session", { session: "a1b2c3d4" }],
+      ["restart_session", { session: "a1b2c3d4" }],
       ["send_message", { to: "front", message: "hello" }],
     ]);
     expect(t).toMatchObject({ state: "done", reply: "Done." });
@@ -118,7 +124,7 @@ describe("the Assistant as its own MCP caller", () => {
     expect(listed.you).toBeUndefined();
     expect(listed.sessions[0]).toMatchObject({ id: "a1b2c3d4", mine: true, permissionMode: "default" });
     expect(seen!.answers.rename_session.isError).toBe(false);
-    expect(seen!.answers.relaunch_session).toMatchObject({ isError: false, content: [{ text: CARD_SHOWN }] });
+    expect(seen!.answers.restart_session).toMatchObject({ isError: false, content: [{ text: CARD_SHOWN }] });
     // a pane's tool, from the Assistant: refused, and nothing delivered
     expect(seen!.answers.send_message.isError).toBe(true);
     expect(seen!.answers.send_message.content[0].text).toBe("\"send_message\" isn't one of the Assistant's tools.");
@@ -126,7 +132,7 @@ describe("the Assistant as its own MCP caller", () => {
     expect(did).toEqual(["rename a1b2c3d4 api"]);
 
     // the card ran nothing; Do it does
-    const card = (await svc.view()).cards.find((c) => c.tool === "relaunch_session")!;
+    const card = (await svc.view()).cards.find((c) => c.tool === "restart_session")!;
     expect(await svc.confirm(card.id)).toMatchObject({ state: "done" });
     expect(did).toEqual(["rename a1b2c3d4 api", "relaunch a1b2c3d4"]);
   });
@@ -170,7 +176,7 @@ describe("the Assistant as its own MCP caller", () => {
 
   it("a pane's or a Council seat's token can't use the Assistant's tools, and keeps its own", async () => {
     expect(await askAs(sock, { from: "front", op: "rename_session", args: { session: "a1b2c3d4", title: "x" } })).toEqual({ error: ASSISTANT_ONLY });
-    expect(await askAs(sock, { from: "front", op: "relaunch_session", args: { session: "a1b2c3d4" } })).toEqual({ error: ASSISTANT_ONLY });
+    expect(await askAs(sock, { from: "front", op: "restart_session", args: { session: "a1b2c3d4" } })).toEqual({ error: ASSISTANT_ONLY });
     expect(await askAs(sock, { from: "collab-room1.seat1", op: "focus_session", args: { session: "a1b2c3d4" } })).toEqual({ error: ASSISTANT_ONLY });
     expect(did).toEqual([]);
     // list_sessions is the pane's own tool too: it gets its own
@@ -180,7 +186,7 @@ describe("the Assistant as its own MCP caller", () => {
     try {
       await server.request("initialize", {});
       const names = (await server.request("tools/list")).result.tools.map((t: { name: string }) => t.name);
-      for (const n of ["rename_session", "relaunch_session", "focus_session", "list_groups"]) expect(names).not.toContain(n);
+      for (const n of ["rename_session", "restart_session", "focus_session", "list_groups"]) expect(names).not.toContain(n);
     } finally {
       await server.stop();
     }

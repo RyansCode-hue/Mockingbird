@@ -352,9 +352,17 @@ describe("what relies on the index's sync", () => {
     expect(at).toBeGreaterThan(-1);
     return source.slice(at, at + 700);
   };
+  /** Function `name` in index.ts, which a handler (and the app Assistant's tools) call. */
+  const fn = (name: string) => {
+    const at = source.indexOf(`async function ${name}(`);
+    expect(at).toBeGreaterThan(-1);
+    return source.slice(at, at + 700);
+  };
   it("goes on when it's reading a conversation's own files, and fails with it when it's worked out from the index", () => {
-    expect(handler("usage:brief")).toContain("await syncForFiles(transcripts)");
-    expect(handler("handoff:draft")).toContain("await syncForFiles(transcripts)");
+    expect(handler("usage:brief")).toContain("briefOf(");
+    expect(fn("briefOf")).toContain("await syncForFiles(transcripts)");
+    expect(handler("handoff:draft")).toContain("draftHandoff(");
+    expect(fn("draftHandoff")).toContain("await syncForFiles(transcripts)");
     expect(handler("rollup:write")).toContain("await syncTranscripts(transcripts)");
   });
 });

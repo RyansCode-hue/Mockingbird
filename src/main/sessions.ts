@@ -12,7 +12,7 @@ import { BASE_NAMES, branchesOf, currentBranch, git } from "./git";
 import { uniqueBranch } from "./presets";
 import { roomFolderRefusal, samePath } from "./handlers";
 import { adoEnv } from "./ado";
-import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, permissionModeRefusal, readRelaunchChange, type LaunchContext } from "./agents";
+import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, permissionModeRefusal, readRelaunchChange, widerModeWarning, type LaunchContext } from "./agents";
 import { isPermissionMode, WIDER_MODES, type PermissionMode } from "../shared/permissionModes";
 import { HELPDESK_FOLDER_ONLY, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
 import { which, whichSync, quote } from "./shell";
@@ -271,13 +271,6 @@ type StepWhere = Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "us
 type StepUse = { id: string; what: string };
 /** The commit a not-started step starts at, from the step before it (SessionManager.upstreamCommit), or why there's none. */
 type UpstreamCommit = { sha: string; branch: string | null; of: string; dirty: number | { unread: string }; gone: boolean } | { why: string };
-
-/** What a confirm card says of a mode wider than the default (WIDER_MODES): what its agent then does without asking. */
-export function widerModeWarning(mode: PermissionMode, agent: AgentKind): string {
-  if (mode === "acceptEdits") return "Accept edits: it changes files without asking you first";
-  if (mode === "auto") return agent === "codex" ? "Auto: Codex's automatic review answers its approval requests, not you" : "Auto: it decides for itself which actions to take without asking you";
-  return agent === "codex" ? "Bypass permissions: Codex runs every command without asking, and outside its sandbox" : "Bypass permissions: it runs every tool without asking you first";
-}
 
 /** Why not-started step `s` can't be reopened, resumed or restarted: it has no conversation or folder to go back to. */
 export const notStartedWhy = (s: Pick<SessionInfo, "title" | "ticketTitle">): string =>

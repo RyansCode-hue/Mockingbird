@@ -109,6 +109,11 @@ import * as assistantGroups from "./assistant/tools";
 import { cliSpawner } from "./assistant/launch";
 import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "./assistant/world";
 import type { AssistantDeps } from "./assistant/deps";
+// the app Assistant: sessions, start work, triage, git and diagnose
+import { roomPushAsk } from "./scm";
+import { BUILT_IN_TEMPLATE, type LayOutReply } from "../shared/pipelineTemplates";
+import { takenOverWhy, UNTAKEN_CALLS } from "./takenOverGuard";
+import type { PrPreflight } from "../shared/types";
 import { guardNavigation } from "./navigation";
 import { externalUrlAllowed } from "../shared/links";
 import { PRIVACY_PANES, startPhoneService, type PhoneService } from "./phone/service";
@@ -1125,7 +1130,8 @@ handle("usage:resumeCost", (id: string): ResumeEstimate | null => {
   const cw = readContextWindow(s);
   return cw.state === "reading" ? resumeEstimate(cw, planRate(cw.agent), Date.now()) : null;
 });
-handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
+/** A brief of session `id`'s conversation for a fresh session to start from (usage:brief): never the Helpdesk workspace's. */
+async function briefOf(id: string): Promise<RefreshBrief> {
   const s = sessionOf(String(id));
   if (s.shell) throw new Error("A terminal has no conversation to brief from");
   if (s.role === "tasks") throw new Error(HELPDESK_KEEPS_ITS_CONVERSATION);
@@ -1139,19 +1145,21 @@ handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
   } catch (err) {
     throw new Error(`Couldn't read the conversation: ${(err as Error).message}`);
   }
-});
+}
+handle("usage:brief", (id: string) => briefOf(String(id)));
 // a landscape card's "what it did": the first line of its agent's latest message, from its conversation's transcript.
 // The file is found now (the one its hooks named, its project folder's, the newest rollout), not when the index next
 // syncs. Nothing said yet (no conversation seen, its transcript not written yet, a terminal) is `{ line: null }`; a
 // file that can't be read is an error, which the card shows as one
-handle("transcripts:lastReply", async (id): Promise<LastReply> => {
+async function lastReplyOf(id: unknown): Promise<LastReply> {
   const s = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id);
   if (!s) throw new Error(isRemotePaneId(String(id)) ? "That's a teammate's session: its conversation is on their Mac" : "Session is no longer running");
   const conv = s.shell ? undefined : (s.conversation?.id ?? conversationsOf(s).at(-1));
   if (!conv) return { line: null, at: null };
   const { agent, lookup } = conversationLookup(s, conv);
   return replyOfConversation(agent, conv, lookup);
-});
+}
+handle("transcripts:lastReply", (id) => lastReplyOf(id));
 /** Where session `s`'s conversation `conv` is read from now, and whose agent wrote it. */
 function conversationLookup(s: SessionInfo, conv: string): { agent: AgentKind; lookup: ConversationLookup } {
   const agent: AgentKind = s.conversation?.id === conv ? s.conversation.agent : (s.agent ?? "claude");
@@ -1166,14 +1174,16 @@ function conversationLookup(s: SessionInfo, conv: string): { agent: AgentKind; l
     },
   };
 }
+/** A session of `s`'s agent in its folder and group, started from `brief` (usage:briefStart). */
+function startFromBrief(s: SessionInfo, brief: unknown): Promise<SessionInfo> {
+  const text = String(brief ?? "").trim();
+  if (!text) throw new Error("The brief is empty");
+  return companionSession(s, s.agent ?? "claude", `${s.ticketTitle ?? s.title} · fresh`, text);
+}
 // a session of the same agent in the same folder and group, started from the brief
 handle(
   "usage:briefStart",
-  untakenHandler("usage:briefStart", untaken, (s, brief: unknown) => {
-    const text = String(brief ?? "").trim();
-    if (!text) throw new Error("The brief is empty");
-    return companionSession(s, s.agent ?? "claude", `${s.ticketTitle ?? s.title} · fresh`, text);
-  })
+  untakenHandler("usage:briefStart", untaken, (s, brief: unknown) => startFromBrief(s, brief))
 );
 handle("hooks:installed", async () => hooksInstalled(await installedBin("codex")));
 handle("hooks:install", async () => installHooks(await installedBin("codex")));
@@ -1464,6 +1474,98 @@ const assistantDeps: AssistantDeps = {
   rename: (id, title) => sessions.rename(id, title),
   relaunchRefusal: (id) => sessionGuards.whyNot("relaunch", id),
   relaunch: async (id) => void (await sessions.restart(id)),
+
+  // ---- sessions, start work, triage, git and diagnose: each the window's own path, guards included ----
+  guards: sessionGuards,
+  takenOver: (id, call) => takenOverWhy(id, UNTAKEN_CALLS[call], untaken.refusal()),
+  record: (id) => {
+    const open = sessions.list().find((s) => s.id === id);
+    if (open) return { info: open, open: true };
+    const closed = sessions.resumable().find((s) => s.id === id);
+    return closed ? { info: closed, open: false } : null;
+  },
+  describeRelaunch: (id, change) => sessions.describeRelaunch(id, change),
+  relaunchWith: async (id, change) => void (await untakenHandler("sessions:relaunchWith", untaken, (s, c: unknown) => sessions.relaunchWith(s.id, c))(id, change)),
+  close: (id) => sessions.kill(id, false),
+  resume: async (id) => {
+    const r = await sessions.resume(id);
+    if ("refused" in r) throw new Error(r.refused);
+  },
+  reopen: async (id) => {
+    if (!(await reopenSession(id))) throw new Error("Its saved record is gone, so there's nothing to reopen");
+  },
+  briefStart: async (id) => untakenHandler("usage:briefStart", untaken, startFromBrief)(id, (await briefOf(id)).brief),
+  handoffStart: async (id) => untakenHandler("handoff:start", untaken, startFromHandoff)(id, (await draftHandoff(id)).handoff),
+  presets: () => [HELPDESK_PRESET, ...(store.settings.presets ?? [])],
+  startPreset: (id) => startPreset(id),
+  templates: () => {
+    const l = readTemplates(store.settings.pipelineTemplates);
+    return {
+      templates: [BUILT_IN_TEMPLATE, ...l.templates.map((t) => t.template)],
+      refused: [...l.refused.map((r) => `${r.name ?? `Template ${r.index + 1}`}: ${r.why}`), ...(l.broken ? [l.broken] : [])],
+    };
+  },
+  layOut: (req) => layOutTemplate(req),
+  repos: () => indexRepos(store.settings.repoRoots),
+  createSession: async (req) => sessionOpened(await sessions.create(req), req.ticketId, req.ticketTitle),
+  houseBoards: () =>
+    team.status().rooms.flatMap((r) => {
+      try {
+        return [teamHouse.view(r.id)];
+      } catch (err) {
+        logError(`assistant: reading room ${r.id}'s House board`, err);
+        return [];
+      }
+    }),
+  adoItems: () => listWorkItems(store),
+  ticketPlan: (roomId, n) => ticketSessions.plan(roomId, n),
+  startTicket: (roomId, req) => ticketSessions.start(roomId, req),
+  startReview: (id) => untakenHandler("review:start", untaken, startReview)(id),
+  broadcast: (text, ids) => sessions.broadcast(text, ids, true, { skipHelpdesk: true }),
+  lastReply: (id) => lastReplyOf(id),
+  worktreeState: (folder) => worktreeState(folder),
+  worktrees: () => listWorktrees(indexRepos(store.settings.repoRoots), sessions.list().map((s) => s.cwd)),
+  removeWorktree: async (repo, folder) => {
+    assertWorktreeFree(folder);
+    await removeWorktree(repo, folder);
+  },
+  branchStat: (id) => branchStat(sessionRoot(id), null),
+  prStatus: (id) => prStatusOf(sessionRoot(id), false),
+  pushAsk: async (id) => {
+    const { root, own, s } = scmIn(id);
+    return own ? roomPushAsk(root, s.branch) : { branch: s.branch, why: null };
+  },
+  // Source Control's push, pinned to the branch the card named; a room session's that asks is refused, as the card is
+  push: async (id, branch) => {
+    const { root, own, s } = scmIn(id);
+    if (own) {
+      const ask = await roomPushAsk(root, s.branch);
+      if (ask.why) throw new Error(`${ask.why}: push it from Source Control, which asks you to name the branch`);
+    }
+    return scmPush(root, { own, branch });
+  },
+  prPreflight: (id, ticketId, target) => prPreflightOf(id, ticketId, target),
+  openPr: async (id, ticketId, req) => {
+    const p = await untakenHandler("pipeline:pr:create", untaken, createPipelinePr)(id, ticketId, req);
+    const pr = p.prs.at(-1);
+    if (!pr) throw new Error(`#${ticketId}'s pull request was opened, but its pipeline doesn't list it`);
+    return { url: pr.url };
+  },
+  output: (id) => (sessions.list().some((s) => s.id === id) ? sessions.bufferFromLine(id) : sessions.closedOutput(id)),
+  usage: () => readUsage(),
+  meters: () => metersNow(),
+  overlaps: () => overlapState,
+  turnFiles: async (id, since) => {
+    const s = sessionOf(id);
+    const snaps = await listSnapshots(s.cwd, s.id); // newest first
+    if (!snaps.length) return [];
+    const n = since === "first" ? snaps[snaps.length - 1].n : snaps[0].n;
+    return (await changesSince(s.cwd, s.id, n, { room: pushesOwnHooks(s.id) })).map((c) => c.path);
+  },
+  searchTranscripts: (q) => {
+    if (!transcripts) throw new Error(transcriptsProblem ?? "The transcript index isn't open yet.");
+    return linkHits(transcripts.search(q), sessions.list(), sessions.resumable(), collab.list());
+  },
 };
 const assistant = new AssistantService({
   registry: buildRegistry(assistantDeps, Object.values(assistantGroups)),
@@ -1642,7 +1744,7 @@ handle("templates:setAside", () => {
 const atOrchestrator = (req: unknown): boolean => isObj(req) && isObj(req.template) && Array.isArray(req.template.steps) && isObj(req.template.steps[0]) && req.template.steps[0].role === "orchestrator";
 // one lay-out at a time, the area it goes in made under that lock and taken back only by the lay-out that made it
 const templateLayOuts = new TemplateLayOuts({ store: landscape, log: logError });
-handle("templates:layOut", (raw) =>
+const layOutTemplate = (raw: unknown): Promise<LayOutReply> =>
   templateLayOuts.layOut(raw, (req) =>
     atOrchestrator(req)
       ? plans.startOrchestrator(req, { create: (q) => sessions.create(q), opened: (info, title) => void sessionOpened(info, info.ticketId, title) })
@@ -1656,8 +1758,8 @@ handle("templates:layOut", (raw) =>
           addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
           roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
         })
-  )
-);
+  );
+handle("templates:layOut", (raw) => layOutTemplate(raw));
 // the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an
 // agent is told of its wires as it launches
 const wireTools: WireTools = new WireTools({
@@ -1840,12 +1942,14 @@ handle("pipeline:draft:post", (id, draftId) =>
     return pipeline.dropDraft(tid, d.id);
   })
 );
-handle("pipeline:pr:preflight", async (sessionId, ticketId, target) => {
+/** What opening a pull request from session `sessionId` for ticket `ticketId` would meet (pipeline:pr:preflight). */
+async function prPreflightOf(sessionId: unknown, ticketId: unknown, target: unknown): Promise<PrPreflight> {
   const s = sessionOf(String(sessionId));
   const pre = await prPreflight(s.cwd, String(ticketId), target === "main" ? "main" : "dev", prDeps(s.cwd), { own: pushesOwnHooks(s.id) });
   // the branch the session was made on, when the worktree is on another: pushing that takes the user's say-so
   return pre.branch && pre.branch !== s.branch ? { ...pre, recordedBranch: s.branch } : pre;
-});
+}
+handle("pipeline:pr:preflight", (sessionId, ticketId, target) => prPreflightOf(sessionId, ticketId, target));
 handle("pipeline:pr:describe", async (sessionId, ticketId, title, base) => {
   const s = sessionOf(String(sessionId));
   const { agent, bin } = await askingAgent(s.agent ?? "claude");
@@ -1853,41 +1957,44 @@ handle("pipeline:pr:describe", async (sessionId, ticketId, title, base) => {
   const description = await askFor(prompt, { agent, bin }, { tag: "pr-description", label: /^(description)\s*:\s*/i, timeoutMs: 180_000, what: "description" });
   return { description, agent };
 });
-// pushes the branch and opens the pull request — run only from the PR form's button, never from a copy a teammate took over
+/**
+ * Push `s`'s branch and open its pull request for ticket `ticketId` (pipeline:pr:create): run only from the PR form's
+ * button or an Assistant card the user confirmed, never from a copy a teammate took over (untakenHandler).
+ */
+const createPipelinePr = (s: SessionInfo, ticketId: unknown, req: any) =>
+  pipelineDo(async () => {
+    const target = req?.target === "main" ? "main" : "dev";
+    const base = String(req?.base ?? "");
+    const title = String(req?.title ?? "").trim();
+    if (!base) throw new Error("Pick the branch to merge into");
+    if (!title) throw new Error("The pull request needs a title");
+    const own = pushesOwnHooks(s.id);
+    const pre = await prPreflight(s.cwd, String(ticketId), target, prDeps(s.cwd), { own });
+    if (!pre.branch) throw new Error("The worktree isn't on a branch");
+    // checked here, not trusted from the form: the PR is recorded under `target`, and pushed under the branch's name
+    const refused = prCreateRefusal({ ...pre, branch: pre.branch }, target, base, { recorded: s.branch, confirmed: req?.confirmBranch ? String(req.confirmBranch) : undefined });
+    if (refused) throw new Error(refused);
+    const origin = await guardedOrigin(s.cwd);
+    const remote = origin?.remote;
+    if (!remote) throw new Error(origin ? `origin (${publicUrl(origin.url)}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
+    await scmPush(s.cwd, { own, branch: pre.branch });
+    let made: { id: number; url: string };
+    try {
+      made = await openPr(remote, { branch: pre.branch, base, title, description: String(req?.description ?? ""), workItemId: String(ticketId) }, prDeps(s.cwd));
+    } catch (err) {
+      throw new Error(`The branch was pushed, but the pull request wasn't opened: ${prError(err)}`);
+    }
+    const description = String(req?.description ?? "");
+    return pipeline.addPr(
+      String(ticketId),
+      { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined, by: s.id, root: s.cwd },
+      req?.ticketTitle ? String(req.ticketTitle) : undefined,
+      BY_YOU
+    );
+  });
 handle(
   "pipeline:pr:create",
-  untakenHandler("pipeline:pr:create", untaken, (s, ticketId: unknown, req: any) =>
-    pipelineDo(async () => {
-      const target = req?.target === "main" ? "main" : "dev";
-      const base = String(req?.base ?? "");
-      const title = String(req?.title ?? "").trim();
-      if (!base) throw new Error("Pick the branch to merge into");
-      if (!title) throw new Error("The pull request needs a title");
-      const own = pushesOwnHooks(s.id);
-      const pre = await prPreflight(s.cwd, String(ticketId), target, prDeps(s.cwd), { own });
-      if (!pre.branch) throw new Error("The worktree isn't on a branch");
-      // checked here, not trusted from the form: the PR is recorded under `target`, and pushed under the branch's name
-      const refused = prCreateRefusal({ ...pre, branch: pre.branch }, target, base, { recorded: s.branch, confirmed: req?.confirmBranch ? String(req.confirmBranch) : undefined });
-      if (refused) throw new Error(refused);
-      const origin = await guardedOrigin(s.cwd);
-      const remote = origin?.remote;
-      if (!remote) throw new Error(origin ? `origin (${publicUrl(origin.url)}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
-      await scmPush(s.cwd, { own, branch: pre.branch });
-      let made: { id: number; url: string };
-      try {
-        made = await openPr(remote, { branch: pre.branch, base, title, description: String(req?.description ?? ""), workItemId: String(ticketId) }, prDeps(s.cwd));
-      } catch (err) {
-        throw new Error(`The branch was pushed, but the pull request wasn't opened: ${prError(err)}`);
-      }
-      const description = String(req?.description ?? "");
-      return pipeline.addPr(
-        String(ticketId),
-        { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined, by: s.id, root: s.cwd },
-        req?.ticketTitle ? String(req.ticketTitle) : undefined,
-        BY_YOU
-      );
-    })
-  )
+  untakenHandler("pipeline:pr:create", untaken, (s, ticketId: unknown, req: any) => createPipelinePr(s, ticketId, req))
 );
 // ---- continue in the other agent: a handoff written from the session's conversation ----
 /** A session of `agent` in `s`'s folder and group, on its branch as it stands (no worktree of its own), started with `initialPrompt`. */
@@ -1895,7 +2002,8 @@ function companionSession(s: SessionInfo, agent: AgentKind, title: string, initi
   return sessions.create(companionRequest(s, { agent, title, initialPrompt }));
 }
 // the agent taking over writes the handoff: the one handing over may be out of usage
-handle("handoff:draft", async (id) => {
+/** The handoff the other agent writes from session `id`'s conversation (handoff:draft): never the Helpdesk workspace's. */
+async function draftHandoff(id: unknown): Promise<{ handoff: string; from: AgentKind; to: AgentKind }> {
   const s = sessionOf(String(id));
   if (s.shell) throw new Error("A terminal has no agent conversation to hand over");
   if (s.role === "tasks") throw new Error(HELPDESK_KEEPS_ITS_CONVERSATION);
@@ -1918,17 +2026,20 @@ handle("handoff:draft", async (id) => {
   const prompt = handoffPrompt({ from, to, cwd: s.cwd, title: s.ticketTitle ?? s.title, digest, repo: await repoState(s.cwd) });
   const handoff = await askFor(prompt, { agent: to, bin }, { tag: "handoff", label: /^(handoff)\s*:\s*/i, timeoutMs: 240_000, what: "handoff" });
   return { handoff, from, to };
-});
+}
+handle("handoff:draft", (id) => draftHandoff(id));
+/** A session of the other agent in `s`'s folder and group, started with `handoff` (handoff:start). */
+function startFromHandoff(s: SessionInfo, handoff: unknown): Promise<SessionInfo> {
+  const text = String(handoff ?? "").trim();
+  if (!text) throw new Error("The handoff is empty");
+  const from: AgentKind = s.agent ?? "claude";
+  const to = otherAgent(from);
+  return companionSession(s, to, `${s.ticketTitle ?? s.title} · ${to}`, handoffKickoff(from, text));
+}
 // a session of the other agent in the same folder and group, started with the handoff
 handle(
   "handoff:start",
-  untakenHandler("handoff:start", untaken, (s, handoff: unknown) => {
-    const text = String(handoff ?? "").trim();
-    if (!text) throw new Error("The handoff is empty");
-    const from: AgentKind = s.agent ?? "claude";
-    const to = otherAgent(from);
-    return companionSession(s, to, `${s.ticketTitle ?? s.title} · ${to}`, handoffKickoff(from, text));
-  })
+  untakenHandler("handoff:start", untaken, (s, handoff: unknown) => startFromHandoff(s, handoff))
 );
 
 // ---- editor intelligence: language servers per session folder ----
@@ -1991,8 +2102,8 @@ handle("lsp:applyEdits", (id, rel, edits) => applyFileEdits(sessionRoot(String(i
 // ---- PR status in the pane rail: the branch's pull request, looked up at most every 2 minutes per folder ----
 const prCache = new Map<string, PrStatus>();
 const prInFlight = new Map<string, Promise<PrStatus>>();
-handle("pr:status", async (cwd, fresh) => {
-  const root = String(cwd);
+/** Folder `root`'s branch's pull request (pr:status): looked up at most every PR_TTL_MS unless `fresh`. */
+async function prStatusOf(root: string, fresh: boolean): Promise<PrStatus> {
   if (!sessions.list().some((s) => s.cwd === root)) throw new Error("No session runs in that folder");
   const hit = prCache.get(root);
   if (hit && !fresh && Date.now() - hit.at < PR_TTL_MS) {
@@ -2007,16 +2118,18 @@ handle("pr:status", async (cwd, fresh) => {
   const st = await p;
   prCache.set(root, st);
   return st;
-});
+}
+handle("pr:status", (cwd, fresh) => prStatusOf(String(cwd), !!fresh));
 
 // ---- session presets: one-click recurring setups ----
-handle("presets:start", async (id) => {
+async function startPreset(id: unknown): Promise<SessionInfo> {
   const p = id === HELPDESK_PRESET.id ? HELPDESK_PRESET : (store.settings.presets ?? []).find((x) => x.id === id);
   if (!p) throw new Error("That preset no longer exists");
   const repo = p.repoPath ? expandHome(p.repoPath) : null;
   const branches = repo && p.branch.mode === "new" ? (await listBranches(repo)).branches : [];
   return sessions.create(presetRequest({ ...p, repoPath: repo }, branches, new Date()));
-});
+}
+handle("presets:start", (id) => startPreset(id));
 
 // ---- agent messaging: the log, per-group delivery, and asking a group for status ----
 const messageLog = new MessageLog(path.join(MB_DIR, "messages.json"));
@@ -2235,18 +2348,20 @@ handle(
 );
 
 // ---- cross-agent review: the other agent reviews this session's branch and reports back ----
+/** The other agent reviewing `s`'s branch in its folder, reporting back to it (review:start). */
+async function startReview(s: SessionInfo): Promise<SessionInfo> {
+  if (s.shell) throw new Error("A terminal has no agent's work to review");
+  if (!s.repoPath) throw new Error("This session isn't in a repository");
+  const author: AgentKind = s.agent ?? "claude";
+  const reviewer = otherAgent(author);
+  if (!(await installedBin(reviewer))) throw new Error(`${agentLabel(reviewer)} isn't installed — set it up in Settings → Agents`);
+  const base = await baseRef(s.cwd);
+  const prompt = reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base });
+  return companionSession(s, reviewer, `Review · ${s.ticketTitle ?? s.title}`, prompt);
+}
 handle(
   "review:start",
-  untakenHandler("review:start", untaken, async (s) => {
-    if (s.shell) throw new Error("A terminal has no agent's work to review");
-    if (!s.repoPath) throw new Error("This session isn't in a repository");
-    const author: AgentKind = s.agent ?? "claude";
-    const reviewer = otherAgent(author);
-    if (!(await installedBin(reviewer))) throw new Error(`${agentLabel(reviewer)} isn't installed — set it up in Settings → Agents`);
-    const base = await baseRef(s.cwd);
-    const prompt = reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base });
-    return companionSession(s, reviewer, `Review · ${s.ticketTitle ?? s.title}`, prompt);
-  })
+  untakenHandler("review:start", untaken, (s) => startReview(s))
 );
 
 // a short announcement for the people who use the system, from the ticket and its PRs

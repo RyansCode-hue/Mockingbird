@@ -339,7 +339,8 @@ describe("which snapshots are a team room session's", () => {
     expect(applies).toHaveLength(2);
     for (const call of applies) expect(call).toMatch(/\{ input: patch, env \}\)$/);
     const main = callsIn("src/main/index.ts", ["snapshotTurn", "changesSince", "restoreSnapshot"]);
-    expect(main).toHaveLength(3);
+    // a turn's snapshot, turns:changes, turns:restore, and the app Assistant's turn changes (who_touched, recent_activity)
+    expect(main).toHaveLength(4);
     for (const call of main) expect(call).toContain("{ room: pushesOwnHooks(");
   });
 });
