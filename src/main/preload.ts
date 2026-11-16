@@ -1,4 +1,4 @@
-import type { AgentTold, IpcResult, MissingFolder, PlanRequest, SessionInfo, StepStarted, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
+import type { AgentTold, IpcResult, MissingFolder, PlanRequest, RelaunchChange, SessionInfo, StepStarted, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
@@ -268,6 +268,7 @@ const api = {
     return () => ipcRenderer.removeListener("health:updates", h);
   },
   sessionRestart: (id: string) => ipcRenderer.invoke("sessions:restart", id),
+  relaunchWith: (id: string, change: RelaunchChange): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("sessions:relaunchWith", id, change),
   sessionMute: (id: string, muted: boolean) => ipcRenderer.invoke("sessions:mute", id, muted),
   overlapsGet: () => ipcRenderer.invoke("overlaps:get"),
   onOverlapsChanged: (cb: (o: unknown) => void) => {

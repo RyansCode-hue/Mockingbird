@@ -82,14 +82,30 @@ kept through every relaunch like its model and effort.
 | Ask as usual (`default`) | no flag | no flag |
 | Plan (`plan`) | `--permission-mode plan` | `-s read-only` |
 | Accept edits (`acceptEdits`) | `--permission-mode acceptEdits` | `-s workspace-write -a on-request` |
-| Auto (`auto`) | `--permission-mode auto` | `--full-auto` |
+| Auto (`auto`) | `--permission-mode auto` | `--approve-for-me` |
 | Bypass (`bypass`) | `--permission-mode bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` |
 
-- A room-sandboxed session (claudeRoomSandbox.ts / codexRoomSandbox.ts) can
-  only be given a mode that leaves the room's sandbox in force. Bypass isn't
-  offered there, and no mode may replace the sandbox's own flags.
-- Relaunching with a new mode, model or effort goes through the same
-  `relaunchGuard` and `ownOnly` checks as a plain relaunch.
+- Codex's flags are the ones codex-cli 0.156.1 lists for both `codex` and
+  `codex resume`. It has no `--full-auto` any more (an unknown flag stops it
+  starting); `--approve-for-me` is its auto mode: workspace-write, with
+  approval requests sent to its automatic review.
+- A room-sandboxed session (claudeRoomSandbox.ts / codexRoomSandbox.ts) is
+  only given a mode that tightens the room's sandbox, never one that replaces
+  or loosens it. Claude there takes Ask as usual or Plan: accept edits and
+  auto would approve what the room has it ask about (its House writes among
+  them), and bypass would leave it. Codex there takes only Ask as usual:
+  every other mode picks Codex's own sandbox (`-s`, `--approve-for-me`, the
+  bypass), which would replace the room's permission profile. Main refuses
+  the rest, saying why.
+- The Helpdesk tasks workspace takes nothing wider than the default (Ask as
+  usual or Plan), refused in main.
+- Relaunching with a new mode, model or effort (`sessions:relaunchWith`)
+  goes through the same `relaunchGuard`, `ownOnly` and take-over checks as a
+  restart. A model is at most 80 of `[\w.\-[\]]`, starting with a letter,
+  digit or `_`; an effort is Claude's low, medium, high, xhigh or max, and
+  Codex takes the same names as its reasoning effort but has no max.
+  `describeRelaunch` gives a card why it's blocked and its warnings (mid-turn,
+  a wider mode).
 - The workspace's info shows its mode whenever it isn't the default.
 
 ## Ability groups (v1)

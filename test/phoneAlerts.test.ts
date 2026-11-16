@@ -564,6 +564,16 @@ describe("replies to phone alerts", () => {
     expect(t.audit.recent(1)[0]).toMatchObject({ kind: "phone.reply", session: "s1", outcome: "refused: that prompt was answered or changed since the alert" });
   });
 
+  it("holds a reply to when its prompt began and what it says, nothing more: the check it shares with the Assistant's answers", async () => {
+    const s1 = sess("s1", { waitingAt: Date.now() });
+    const t = await withAlert({ sessions: [s1] });
+    // the Assistant's answers are also held to waitingAt (sessionGuards.test.ts); a phone reply names no such thing
+    s1.waitingAt = Date.now() + 500;
+    t.db.message(t.self, { text: "K4 1", fromMe: true, at: Date.now() + 1_000 });
+    await poll(t);
+    expect(t.writes).toEqual([{ id: "s1", data: ANSWER_KEYS.allow.claude }]);
+  });
+
   it("puts a short message into a finished session's prompt — read from attributedBody too — and refuses commands", async () => {
     const s1 = sess("s1", { status: "idle", waitingReason: null, waitingSince: null });
     const t = await withAlert({ sessions: [s1], kinds: ["idle"] });

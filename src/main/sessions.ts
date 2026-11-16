@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, type AgentQuit, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, type AgentQuit, type RelaunchChange, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
 import { dirtyFileCount } from "./scm";
@@ -12,7 +12,8 @@ import { BASE_NAMES, branchesOf, currentBranch, git } from "./git";
 import { uniqueBranch } from "./presets";
 import { roomFolderRefusal, samePath } from "./handlers";
 import { adoEnv } from "./ado";
-import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, type LaunchContext } from "./agents";
+import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, permissionModeRefusal, readRelaunchChange, type LaunchContext } from "./agents";
+import { isPermissionMode, WIDER_MODES, type PermissionMode } from "../shared/permissionModes";
 import { HELPDESK_FOLDER_ONLY, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
 import { which, whichSync, quote } from "./shell";
 import { bindMcpLaunch, mcpLaunch, retireMcpLaunch, type McpLaunch } from "./messaging";
@@ -270,6 +271,13 @@ type StepWhere = Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "us
 type StepUse = { id: string; what: string };
 /** The commit a not-started step starts at, from the step before it (SessionManager.upstreamCommit), or why there's none. */
 type UpstreamCommit = { sha: string; branch: string | null; of: string; dirty: number | { unread: string }; gone: boolean } | { why: string };
+
+/** What a confirm card says of a mode wider than the default (WIDER_MODES): what its agent then does without asking. */
+export function widerModeWarning(mode: PermissionMode, agent: AgentKind): string {
+  if (mode === "acceptEdits") return "Accept edits: it changes files without asking you first";
+  if (mode === "auto") return agent === "codex" ? "Auto: Codex's automatic review answers its approval requests, not you" : "Auto: it decides for itself which actions to take without asking you";
+  return agent === "codex" ? "Bypass permissions: Codex runs every command without asking, and outside its sandbox" : "Bypass permissions: it runs every tool without asking you first";
+}
 
 /** Why not-started step `s` can't be reopened, resumed or restarted: it has no conversation or folder to go back to. */
 export const notStartedWhy = (s: Pick<SessionInfo, "title" | "ticketTitle">): string =>
@@ -648,6 +656,11 @@ export class SessionManager {
   private async createPane(req: NewSessionRequest, opts: CreateOptions): Promise<SessionInfo> {
     this.refuseWhileQuitting();
     const tasks = req.role === "tasks";
+    if (req.permissionMode !== undefined && !isPermissionMode(req.permissionMode)) throw new Error(`“${String(req.permissionMode).slice(0, 40)}” isn't a permission mode`);
+    // refused before a worktree's made: by its role, and by its room's sandbox when the room's switch has it on
+    const roomGroup = req.taskGroup ?? req.ticketId ?? null;
+    const modeFirst = req.shell && !req.shellResume ? null : permissionModeRefusal(req.shell ? req.shellResume!.agent : req.agent ?? "claude", req.permissionMode, { role: req.role, roomSandboxed: !req.debrief && !tasks && !!roomGroup && this.roomSandboxOff?.(roomGroup) === false });
+    if (modeFirst) throw new Error(modeFirst);
     if (tasks) await this.mayStartTasks(req);
     const settings = this.store.settings;
     let cwd: string;
@@ -726,6 +739,9 @@ export class SessionManager {
     // a relaunch keeps the folders its first room launch found no repository in, so a .git made there since isn't trusted
     const noRepo = req.reuseId ? this.store.state.sessions.find((x) => x.id === req.reuseId)?.noRepo : undefined;
     const room = req.debrief || tasks ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, resumes, agentVersion, cwd, repoPath, extraDirs, ...(noRepo?.length ? { noRepo } : {}) })) ?? null);
+    // the launch's own room settings decide: a mode may only tighten a room's sandbox (permissionModeRefusal)
+    const modeWhy = runsAgent ? permissionModeRefusal(versioned ?? "claude", req.permissionMode, { role: req.role, roomSandboxed: !!room?.claudeSettings || !!room?.codexPermissions.length }) : null;
+    if (modeWhy) throw new Error(modeWhy);
     const instructions = tasks ? HELPDESK_RULES : [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id, req.role, ticketOfSession({ ticketId: req.ticketId, taskGroup: group }))].filter(Boolean).join("\n\n");
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
@@ -842,6 +858,7 @@ export class SessionManager {
       role: req.role || undefined,
       model: req.model || undefined,
       effort: req.effort || undefined,
+      permissionMode: req.permissionMode && req.permissionMode !== "default" ? req.permissionMode : undefined,
       agent: req.shell ? undefined : req.agent ?? "claude",
       conversation: req.shellResume ?? (req.shell ? opts.conversation : undefined) ?? (req.resumeSessionId ? { agent: req.agent ?? "claude", id: req.resumeSessionId } : undefined),
       agentQuit: req.shell && !req.shellResume ? opts.agentQuit : undefined,
@@ -1144,9 +1161,14 @@ export class SessionManager {
     this.emitChanged();
   }
 
-  /** A teammate's session runs on their Mockingbird: only its owner can do `what` to it. */
+  /** A teammate's session runs on their Mockingbird: why only its owner can do `what` to it, or null for this Mac's. */
+  ownRefusal(id: string, what: string): string | null {
+    return isRemotePaneId(id) ? `That's a teammate's session: only its owner can ${what}` : null;
+  }
+
   private ownOnly(id: string, what: string): void {
-    if (isRemotePaneId(id)) throw new Error(`That's a teammate's session: only its owner can ${what}`);
+    const why = this.ownRefusal(id, what);
+    if (why) throw new Error(why);
   }
 
   private mayRun(id: string): void {
@@ -1155,9 +1177,16 @@ export class SessionManager {
   }
 
   private notResuming(id: string): void {
-    if (this.resuming.has(id)) throw new Error(BEING_RESUMED);
-    if (this.relaunching.has(id)) throw new Error(BEING_RELAUNCHED);
-    if (this.starting.has(id)) throw new Error(BEING_STARTED);
+    const why = this.reopeningRefusal(id);
+    if (why) throw new Error(why);
+  }
+
+  /** Why `id` can't be reopened now: it's being resumed, relaunched or started already. */
+  private reopeningRefusal(id: string): string | null {
+    if (this.resuming.has(id)) return BEING_RESUMED;
+    if (this.relaunching.has(id)) return BEING_RELAUNCHED;
+    if (this.starting.has(id)) return BEING_STARTED;
+    return null;
   }
 
   /**
@@ -1339,6 +1368,7 @@ export class SessionManager {
           role: i.role,
           model: i.model ?? undefined,
           effort: i.effort ?? undefined,
+          permissionMode: i.permissionMode ?? undefined,
           reuseId: id,
         },
         {
@@ -1413,15 +1443,87 @@ export class SessionManager {
 
   /** Restart one pane in place: same id, its conversation resumed. */
   async restart(id: string): Promise<SessionInfo> {
-    this.ownOnly(id, "restart it");
-    this.notResuming(id);
+    return this.restartWith(id, undefined);
+  }
+
+  /**
+   * Why `id` can't be restarted now, or null: it's a teammate's, it's being reopened already, it hasn't started, or it
+   * mayn't run again here (relaunchGuard). Checks only, as restart makes them.
+   */
+  restartRefusal(id: string): string | null {
+    const own = this.ownRefusal(id, "restart it");
+    if (own) return own;
+    const reopening = this.reopeningRefusal(id);
+    if (reopening) return reopening;
     const planned = !this.live.has(id) && this.recordOf(id)?.planned ? this.recordOf(id) : undefined;
-    if (planned) throw new Error(notStartedWhy(planned));
-    this.mayRun(id);
+    if (planned) return notStartedWhy(planned);
+    return this.relaunchGuard?.(id) ?? null;
+  }
+
+  private async restartWith(id: string, change: RelaunchChange | undefined): Promise<SessionInfo> {
+    const why = this.restartRefusal(id);
+    if (why) throw new Error(why);
     this.kill(id, false); // keep the store entry so relaunch can resume it
-    const info = await this.relaunch(id);
+    const info = await this.relaunch(id, change);
     if (!info) throw new Error("no persisted session to resume");
     return info;
+  }
+
+  /**
+   * Restart pane `id` in place with `raw`'s changes (RelaunchChange: its permission mode, model or effort), resuming
+   * its conversation as a restart does. Refused, saying why with nothing stopped, as restart is (restartRefusal), for a
+   * pane that isn't open here or is a terminal, for changes that aren't valid for its agent (readRelaunchChange), and
+   * for a mode its role or its room's sandbox doesn't take (relaunchChangeRefusal). The new values are its record's
+   * once it runs with them: a launch that fails after it was stopped leaves it closed with the ones it had.
+   */
+  async relaunchWith(id: string, raw: unknown): Promise<SessionInfo> {
+    const { change, blocked } = this.readChange(id, raw);
+    if (blocked) throw new Error(blocked);
+    return this.restartWith(id, change);
+  }
+
+  /**
+   * What relaunchWith(id, raw) would meet now: why it's refused (`blocked`, null when it would run), and what to know
+   * before it runs (`warnings`): it's mid-turn or waiting on a prompt, or its mode lets its agent do more without
+   * asking. A confirm card's account of it: nothing is changed.
+   */
+  describeRelaunch(id: string, raw: unknown): { blocked: string | null; warnings: string[] } {
+    const { change, blocked } = this.readChange(id, raw);
+    const s = this.live.get(id)?.info;
+    if (blocked || !s) return { blocked: blocked ?? "It isn't open here", warnings: [] };
+    const warnings: string[] = [];
+    if (s.status === "working") warnings.push("It's mid-turn: restarting stops the turn it's on");
+    if (s.status === "waiting") warnings.push("It's waiting on you: restarting drops the prompt it's showing");
+    const mode = change.permissionMode ?? s.permissionMode ?? "default";
+    if (WIDER_MODES.has(mode)) warnings.push(widerModeWarning(mode, s.agent ?? "claude"));
+    return { blocked: null, warnings };
+  }
+
+  /** `raw` read for pane `id`'s agent, and why relaunchWith refuses it now: its checks, but for what the launch makes. */
+  private readChange(id: string, raw: unknown): { change: RelaunchChange; blocked: string | null } {
+    const refused = this.restartRefusal(id);
+    if (refused) return { change: {}, blocked: refused };
+    const pane = this.live.get(id);
+    if (!pane) return { change: {}, blocked: "It isn't open here: reopen it first, then restart it with changes" };
+    if (pane.info.shell) return { change: {}, blocked: "It's a terminal: it has no agent to restart with a permission mode, model or effort" };
+    let change: RelaunchChange;
+    try {
+      change = readRelaunchChange(raw, pane.info.agent ?? "claude");
+    } catch (err) {
+      return { change: {}, blocked: err instanceof Error ? err.message : String(err) };
+    }
+    return { change, blocked: this.relaunchChangeRefusal(pane, change) };
+  }
+
+  /**
+   * Why `pane` can't run in `change`'s mode (permissionModeRefusal): by its role, and by its room's sandbox, as it runs
+   * in it now or would at its next launch (the room's switch on). create() asks again with the launch's own room
+   * settings, before anything starts.
+   */
+  private relaunchChangeRefusal(pane: LiveSession, change: RelaunchChange): string | null {
+    const i = pane.info;
+    const roomSandboxed = pane.roomSandboxed || (!!i.taskGroup && this.roomSandboxOff?.(i.taskGroup) === false);
+    return permissionModeRefusal(i.agent ?? "claude", change.permissionMode ?? i.permissionMode, { role: i.role, roomSandboxed });
   }
 
   /**
@@ -1558,6 +1660,11 @@ export class SessionManager {
     return null;
   }
 
+  /** Why exited pane `id` can't be resumed now (resumeRefusal), or null: checks only. */
+  whyNotResume(id: string): string | null {
+    return this.resumeRefusal(id);
+  }
+
   /**
    * Resume an exited pane: refused, saying why, before anything is undone (resumeRefusal). A conversation it resumes
    * by id that something outside the pane holds (freeConversation) is let go first, the pane kept, and refused with
@@ -1625,7 +1732,7 @@ export class SessionManager {
    * Relaunch a persisted session in its old cwd, resuming the conversation. Refused while it's being resumed or
    * relaunched already, and while it runs: create() would kill the running agent to take its id.
    */
-  async relaunch(id: string): Promise<SessionInfo | null> {
+  async relaunch(id: string, change?: RelaunchChange): Promise<SessionInfo | null> {
     this.ownOnly(id, "relaunch it");
     this.notResuming(id);
     const pane = this.live.get(id);
@@ -1641,7 +1748,7 @@ export class SessionManager {
       // its folder first: a conversation isn't let go for a session that has nowhere to run
       const place = await this.whereAgain(old);
       const notice = (plan.freeing && (await this.freeConversation?.(plan.freeing))) || undefined;
-      return await this.launchAgain(old, plan, place, notice);
+      return await this.launchAgain(old, plan, place, notice, change);
     } finally {
       this.relaunching.delete(id);
     }
@@ -1787,6 +1894,7 @@ export class SessionManager {
             agent: rec.agent ?? "claude",
             model: rec.model ?? undefined,
             effort: rec.effort ?? undefined,
+            permissionMode: rec.permissionMode ?? undefined,
             ...(rec.planned!.prompt ? { initialPrompt: rec.planned!.prompt } : {}),
             reuseId: id,
           },
@@ -2012,8 +2120,11 @@ export class SessionManager {
     return { where: { ...where, branchName: out ?? undefined }, moved };
   }
 
-  /** Start persisted session `old` again under its id, resuming what `plan` says, where `place` says; `freed` and where it's moved are shown in its pane. */
-  private async launchAgain(old: SessionInfo, plan: RelaunchPlan, place: PlaceAgain, freed: string | undefined): Promise<SessionInfo> {
+  /**
+   * Start persisted session `old` again under its id, resuming what `plan` says, where `place` says; `freed` and where
+   * it's moved are shown in its pane. `change` (relaunchWith) replaces what it names of its mode, model and effort.
+   */
+  private async launchAgain(old: SessionInfo, plan: RelaunchPlan, place: PlaceAgain, freed: string | undefined, change: RelaunchChange = {}): Promise<SessionInfo> {
     const notice = [freed, place.moved, ...(place.warnings ?? [])].filter(Boolean).join("\n") || undefined;
     if (notice) console.warn(`[sessions] ${old.id}: ${notice}`);
     const { conv, sameAgent, resume } = plan;
@@ -2033,8 +2144,9 @@ export class SessionManager {
       debrief: old.debrief,
       shell: old.shell,
       role: old.role,
-      model: old.model ?? undefined,
-      effort: old.effort ?? undefined,
+      model: (change.model !== undefined ? change.model : old.model) ?? undefined,
+      effort: (change.effort !== undefined ? change.effort : old.effort) ?? undefined,
+      permissionMode: change.permissionMode ?? old.permissionMode ?? undefined,
       agent: old.agent,
     }, { notice, ...(old.shell && old.agentQuit ? { agentQuit: old.agentQuit, conversation: old.conversation } : {}) });
     // a muted pane stays muted through restarts
@@ -2594,8 +2706,10 @@ export class SessionManager {
 
   /** Broadcast to sessions; queue for busy ones (delivered on the next idle).
    *  Shell sessions are always skipped — a broadcast typed into a shell would
-   *  execute as commands — and so are debriefs, which are mid-interview. */
-  broadcast(message: string, sessionIds: string[], whenIdle: boolean): BroadcastOutcome[] {
+   *  execute as commands — and so are debriefs, which are mid-interview.
+   *  `skipHelpdesk` (the app Assistant's): the Helpdesk tasks workspace is skipped too, as nothing the Assistant
+   *  sends reaches its conversation. */
+  broadcast(message: string, sessionIds: string[], whenIdle: boolean, opts: { skipHelpdesk?: boolean } = {}): BroadcastOutcome[] {
     const targets = sessionIds.length
       ? sessionIds
       : [...this.live.values()]
@@ -2604,7 +2718,7 @@ export class SessionManager {
     const outcomes: BroadcastOutcome[] = [];
     for (const id of targets) {
       const s = this.live.get(id);
-      if (!s || s.info.status === "dead" || s.info.shell || s.info.debrief) {
+      if (!s || s.info.status === "dead" || s.info.shell || s.info.debrief || (opts.skipHelpdesk && s.info.role === "tasks")) {
         outcomes.push({ id, outcome: "skipped" });
         continue;
       }

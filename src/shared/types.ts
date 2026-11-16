@@ -3,6 +3,7 @@ import type { LspRange, LspTextEdit } from "./textEdits";
 import type { RoomSandboxChange, RoomSessionTag } from "./team/livePanes";
 import type { CouncilHouseTicket, CouncilTicketDrafts } from "./collabTickets";
 import type { PhoneAlertSettings } from "./phoneAlerts";
+import type { PermissionMode } from "./permissionModes";
 
 /** Which coding-agent CLI a session runs. */
 export type AgentKind = "claude" | "codex";
@@ -36,6 +37,8 @@ export interface SessionInfo {
   title: string;
   model?: string | null; // persisted so relaunch resumes on the same model
   effort?: string | null;
+  /** Its permission mode (permissionModes.ts), kept through every relaunch as its model and effort are; absent is `default`. */
+  permissionMode?: PermissionMode | null;
   exitCode?: number | null; // set when the process ends; shown on the dead pane
   repoPath: string | null; // null for assistant/free sessions
   cwd: string; // where claude runs (worktree path, repo path, or WorkTracker)
@@ -413,8 +416,20 @@ export interface NewSessionRequest {
   shellResume?: { agent: AgentKind; id: string };
   model?: string; // claude --model (alias like "opus" or a full model id)
   effort?: string; // claude --effort (low | medium | high | xhigh | max)
+  /** Its agent's permission mode (agents.ts modeArgs); absent or `default` passes nothing. */
+  permissionMode?: PermissionMode;
   /** A session with a standing job (SessionRole): `tasks` runs in ~/Helpdesk, on no repository. */
   role?: SessionRole;
+}
+
+/**
+ * What a restart with changes changes (sessions:relaunchWith, agents.ts readRelaunchChange). Absent: as it is. A null
+ * model or effort: the agent's own default.
+ */
+export interface RelaunchChange {
+  permissionMode?: PermissionMode;
+  model?: string | null;
+  effort?: string | null;
 }
 
 export interface RepoBranches {

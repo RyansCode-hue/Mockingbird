@@ -23,6 +23,9 @@ import { ChatDbError } from "./chatDb";
 import type { AlertSender } from "./sender";
 import { SendError } from "./sender";
 import type { AuditKind } from "../../shared/team/audit";
+import { ANSWER_KEYS, answerSamePrompt } from "../sessionGuards";
+
+export { ANSWER_KEYS };
 
 /**
  * Phone alerts: an iMessage to the user's own handle when a session starts
@@ -50,13 +53,6 @@ const POLL_MS = 10_000;
 const OPEN_MS = 3 * 3_600_000;
 /** Devices' clocks differ: a reply this much older than its alert still counts as after it (rows say the order). */
 const SKEW_MS = 60_000;
-
-/** The keys that answer a permission prompt once, by agent. Never Claude's 2 or Codex's a: those allow for good. */
-export const ANSWER_KEYS = {
-  allow: { claude: "1", codex: "y" },
-  // Esc declines in both, whatever the options are numbered
-  deny: { claude: "\x1b", codex: "\x1b" },
-} as const;
 
 export interface PhoneSessions {
   list(): SessionInfo[];
@@ -432,10 +428,9 @@ export class PhoneAlerts {
       return { ok: true, close: true, words: `message sent (${how})` };
     }
     if (a.kind !== "permission") return refused("it isn't asking for permission", false);
-    const same = s.status === "waiting" && s.waitingSince === a.waitingSince && s.waitingReason === a.reason;
-    if (!same) return refused("that prompt was answered or changed since the alert", true);
-    const agent = s.agent === "codex" ? "codex" : "claude";
-    this.d.sessions.write(s.id, ANSWER_KEYS[r.action][agent]);
+    // held to the prompt the alert was about, as the Assistant's answers are (sessionGuards.ts)
+    const answered = answerSamePrompt(s, r.action, { waitingSince: a.waitingSince, reason: a.reason }, (id, keys) => this.d.sessions.write(id, keys));
+    if (!answered) return refused("that prompt was answered or changed since the alert", true);
     return { ok: true, close: true, words: r.action === "allow" ? "allow once" : "deny" };
   }
 

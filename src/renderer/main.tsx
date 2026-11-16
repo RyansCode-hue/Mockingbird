@@ -18,7 +18,7 @@ import { LAST_SEEN_KEY, justUpdated, seenNow } from "./whatsNewModel";
 import { DragLabel, installDragListeners } from "./drag";
 import { resumeExited } from "./resumeFlow";
 import { OVERLAYS, inEditor, ownsKeys } from "./keys";
-import { closeStep, closeWaits, groupChoices, queueClose, sessionHolding, sessionOutline, startedSince, titleOf, worktreeGone } from "./appModel";
+import { closeAsks, closeStep, closeWaits, groupChoices, ownWorktree, queueClose, sessionHolding, sessionOutline, startedSince, titleOf, worktreeGone } from "./appModel";
 import { FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, UpdateIcon, NoteIcon } from "./Icons";
 import { ActionBar, pickActions, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
@@ -1097,14 +1097,13 @@ function App() {
   /** Close a session; dirty or unpushed worktrees get the dialog, clean ones close silently. */
   // A closed session stays resumable, its ghost where it was (docs/landscape.md, Ghost cards).
   const requestClose = async (s: SessionInfo) => {
-    const hasWorktree = s.repoPath && s.branch && s.cwd !== s.repoPath;
-    if (!hasWorktree) return closeNow(s, false);
+    if (!ownWorktree(s)) return closeNow(s, false);
     const st: WorktreeStateInfo | { error: string } = await window.mb.worktreeState(s.cwd);
     if ("error" in st) {
       if (worktreeGone(st.error)) return closeNow(s, false);
       return askClose(s, st); // unknown state: the dialog says why and only keeps
     }
-    if (!st.dirty && st.ahead === 0) return closeNow(s, false);
+    if (!closeAsks(st)) return closeNow(s, false);
     askClose(s, st);
   };
   // several closed at once (the selection bar's Close…): one at a time, each as it is now (one closed meanwhile is

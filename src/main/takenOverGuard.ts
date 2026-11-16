@@ -12,6 +12,7 @@ export const UNTAKEN_CALLS = {
   "wires:finish": "finishing this copy's step",
   "wires:addTerminal": "adding a terminal on this copy's tree",
   "pipeline:pr:create": "opening a pull request from this copy",
+  "sessions:relaunchWith": "restarting this copy with changes",
 } as const;
 
 export type UntakenCall = keyof typeof UNTAKEN_CALLS;
@@ -55,6 +56,11 @@ export function untakenHandler<S extends { id: string }, A extends unknown[], R>
  * refused isn't taken over: it's this install's own, and may.
  */
 export function refuseTakenOver(id: string, call: UntakenCall | UntakenWireCall, refusal: ((id: string, doing: string) => string | null) | null): void {
-  const why = refusal?.(id, call in UNTAKEN_CALLS ? UNTAKEN_CALLS[call as UntakenCall] : UNTAKEN_WIRE_CALLS[call as UntakenWireCall]);
+  const why = takenOverWhy(id, call in UNTAKEN_CALLS ? UNTAKEN_CALLS[call as UntakenCall] : UNTAKEN_WIRE_CALLS[call as UntakenWireCall], refusal);
   if (why) throw new Error(why);
+}
+
+/** Why session `id` can't be `doing` because a teammate took it over (refuseTakenOver's check, unthrown), or null. */
+export function takenOverWhy(id: string, doing: string, refusal: ((id: string, doing: string) => string | null) | null): string | null {
+  return refusal?.(id, doing) ?? null;
 }

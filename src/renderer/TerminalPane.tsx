@@ -26,6 +26,7 @@ import { CODEX_ROOM_GUARD_SINCE, claudeSandboxes, claudeTooOld, codexGuardsSecre
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
 import { ago, fmtElapsed, plural } from "../shared/format";
+import { PERMISSION_MODE_LABEL } from "../shared/permissionModes";
 import { baseName } from "../shared/paths";
 import { settled } from "./settled";
 import { StatusDot } from "./StatusDot";
@@ -545,7 +546,7 @@ export interface PaneRailProps {
   afterGit?: React.ReactNode;
 }
 
-/** A pane's rail (design 1b): elapsed, git, its PR, messages, repo, folder (opens Files), queued messages and tokens. */
+/** A pane's rail (design 1b): elapsed, its permission mode (unless the default), git, its PR, messages, repo, folder (opens Files), queued messages and tokens. */
 export function PaneRail({ session, git, gitErr, pr, readPr, messages, onShowMessages, meter, onOpenChanges, onOpenFiles, className = "rail", afterGit }: PaneRailProps) {
   const remote = session.room?.remote ? session.room : null;
   const gitStr = git ? `${git.upstream ? `↑${git.ahead} ↓${git.behind}` : "not on origin"} · ${git.dirty ? `${git.dirtyFiles} uncommitted` : "clean"}` : null;
@@ -564,6 +565,12 @@ export function PaneRail({ session, git, gitErr, pr, readPr, messages, onShowMes
         <span className="k">Elapsed</span>
         <span className="v">{fmtElapsed(session.createdAt, true)}</span>
       </div>
+      {session.permissionMode && session.permissionMode !== "default" && (
+        <div className="cell" title="Its permission mode: it runs in it until it's restarted in another">
+          <span className="k">Mode</span>
+          <span className="v">{PERMISSION_MODE_LABEL[session.permissionMode]}</span>
+        </div>
+      )}
       {gitStr && (
         <div className={`cell ${onOpenChanges && !remote ? "click" : ""}`} title={remote ? `On ${remote.ownerName}'s laptop, as they last published it.\n${gitTitle}` : gitTitle} onClick={remote ? undefined : onOpenChanges}>
           <span className="k">Git</span>

@@ -28,6 +28,14 @@ export const HELPDESK_RULES = [
 export const HELPDESK_KEEPS_ITS_CONVERSATION =
   "The Helpdesk tasks workspace's conversation holds what you saw on admin sites, so it isn't handed on to another session or agent";
 
+/** Why the Helpdesk tasks workspace isn't given a permission mode wider than the default (agents.ts permissionModeRefusal). */
+export const HELPDESK_MODE_WHY =
+  "The Helpdesk tasks workspace shows you every change before it makes it in an admin console, so it isn't given a permission mode wider than Ask as usual";
+
+/** Why the Helpdesk tasks workspace's conversation isn't typed into, sent to or read from on anyone's behalf (sessionGuards.ts). */
+export const HELPDESK_CONVERSATION_WHY =
+  "The Helpdesk tasks workspace's conversation holds what you saw on admin sites: only you type into it or read it";
+
 /** Why nothing but the Helpdesk tasks workspace runs an agent in ~/Helpdesk, where its conversations are. */
 export const HELPDESK_FOLDER_ONLY =
   "~/Helpdesk holds the Helpdesk tasks workspace's conversations, which hold what you saw on admin sites, so they open only there: New workspace → Helpdesk tasks…";

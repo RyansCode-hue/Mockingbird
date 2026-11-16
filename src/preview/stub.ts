@@ -1821,6 +1821,8 @@ const api: Record<string, (...a: any[]) => any> = {
     restartedUnderSwitch(id);
     return r;
   },
+  // as main's relaunchWith: a restart that runs with the changes, which then are its record's
+  relaunchWith: async (id: string, change: Pick<SessionInfo, "permissionMode" | "model" | "effort">) => { const r = await api.sessionRestart(id); if (!r || "error" in r) return r; sessions = sessions.map((x) => (x.id === id ? { ...x, ...change } : x)); sessionsChanged(); return byId(id); },
   // as main's: each agent session relaunched in place (a new createdAt) unless it's busy, then the list sent once
   restartAllSessions: async (includeBusy: boolean) => {
     const restarted: string[] = [];

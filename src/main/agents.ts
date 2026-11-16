@@ -1,7 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
-import { AGENT_NAME, type AgentKind, type NewSessionRequest, type Settings } from "../shared/types";
+import { AGENT_NAME, type AgentKind, type NewSessionRequest, type RelaunchChange, type SessionRole, type Settings } from "../shared/types";
+import { isPermissionMode, PERMISSION_MODE_LABEL, WIDER_MODES, type PermissionMode } from "../shared/permissionModes";
 import { expandHome } from "./store";
+import { HELPDESK_MODE_WHY } from "./helpdesk";
 import { usageReporterArgs, usageReporterSettings } from "./usage";
 import { MCP_SERVER, MCP_TOOL, claudeToolName, type McpLaunch } from "./messaging";
 import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
@@ -74,6 +76,85 @@ export const CLAUDE_NO_BACKGROUND_ENV = { CLAUDE_CODE_DISABLE_AGENT_VIEW: "1" } 
  */
 export const CODEX_INLINE_SETTING = 'tui.alternate_screen="never"';
 
+/** Claude Code's `--permission-mode` for each mode but the default, which passes nothing. */
+const CLAUDE_MODE: Record<Exclude<PermissionMode, "default">, string> = { plan: "plan", acceptEdits: "acceptEdits", auto: "auto", bypass: "bypassPermissions" };
+
+/**
+ * Codex's flags for each mode but the default, as codex-cli 0.156.1 lists them for both `codex` and `codex resume`.
+ * Every one of them picks Codex's sandbox: `-s` names it, `--approve-for-me` runs workspace-write with approvals sent
+ * to its automatic review (Codex's counterpart of Claude's auto), and the bypass drops it. It has no `--full-auto` any
+ * more, and an unknown flag stops it starting.
+ */
+const CODEX_MODE: Record<Exclude<PermissionMode, "default">, string[]> = {
+  plan: ["-s", "read-only"],
+  acceptEdits: ["-s", "workspace-write", "-a", "on-request"],
+  auto: ["--approve-for-me"],
+  bypass: ["--dangerously-bypass-approvals-and-sandbox"],
+};
+
+/** An agent's command-line flags for permission mode `mode`; none for the default. */
+export function modeArgs(agent: AgentKind, mode: PermissionMode | null | undefined): string[] {
+  if (!mode || mode === "default") return [];
+  if (!isPermissionMode(mode)) throw new Error(`“${String(mode)}” isn't a permission mode`);
+  return agent === "codex" ? [...CODEX_MODE[mode]] : ["--permission-mode", CLAUDE_MODE[mode]];
+}
+
+/**
+ * Why `agent` can't launch in permission mode `mode`, or null when it can. The Helpdesk tasks workspace (role `tasks`)
+ * takes nothing wider than the default. A launch in its team room's sandbox (`roomSandboxed`) takes only a mode that
+ * tightens it: bypass would leave it, Claude's accept edits and auto approve what the room has it ask about (its House
+ * writes among them), and every Codex mode picks Codex's own sandbox, which would replace the room's permission profile.
+ */
+export function permissionModeRefusal(agent: AgentKind, mode: PermissionMode | null | undefined, where: { role?: SessionRole | null; roomSandboxed: boolean }): string | null {
+  if (!mode || mode === "default") return null;
+  if (!isPermissionMode(mode)) return `“${String(mode)}” isn't a permission mode`;
+  if (where.role === "tasks" && WIDER_MODES.has(mode)) return HELPDESK_MODE_WHY;
+  if (!where.roomSandboxed) return null;
+  const label = PERMISSION_MODE_LABEL[mode];
+  if (agent === "codex") return `Codex's ${label} picks its own sandbox (${CODEX_MODE[mode].join(" ")}), which would replace the team room's: a Codex session in the room's sandbox runs Ask as usual`;
+  if (WIDER_MODES.has(mode)) return `${label} would loosen the team room's sandbox, where a mode may only tighten it: Ask as usual or Plan mode`;
+  return null;
+}
+
+/** Claude Code's effort levels (its `--effort`), what a relaunch with changes takes. */
+export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+/** The levels of CLAUDE_EFFORTS Codex has as its `model_reasoning_effort`, by the same names. */
+export const CODEX_EFFORTS: readonly string[] = ["low", "medium", "high", "xhigh"];
+/**
+ * What a model id or alias is made of: Claude's "opus" or "claude-opus-4-7[1m]", Codex's "gpt-5.1-codex". It starts
+ * with a letter, digit or _, so it can't be read as a flag of its own.
+ */
+const MODEL_ID = /^\w[\w.\-[\]]{0,79}$/;
+
+/** `raw` as a RelaunchChange for an `agent` session, or throws saying what's wrong with it. Nothing else on it is kept. */
+export function readRelaunchChange(raw: unknown, agent: AgentKind): RelaunchChange {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("A relaunch's changes are a permission mode, a model and an effort");
+  const r = raw as Record<string, unknown>;
+  const out: RelaunchChange = {};
+  if (r.permissionMode !== undefined) {
+    if (!isPermissionMode(r.permissionMode)) throw new Error(`“${String(r.permissionMode).slice(0, 40)}” isn't a permission mode: ${Object.values(PERMISSION_MODE_LABEL).join(", ")}`);
+    out.permissionMode = r.permissionMode;
+  }
+  if (r.model !== undefined) {
+    if (r.model !== null && (typeof r.model !== "string" || !MODEL_ID.test(r.model))) throw new Error("A model is a name of at most 80 letters, digits and . _ - [ ]");
+    out.model = r.model;
+  }
+  if (r.effort !== undefined) {
+    if (r.effort !== null && (typeof r.effort !== "string" || !(CLAUDE_EFFORTS as readonly string[]).includes(r.effort))) throw new Error(`An effort is one of ${CLAUDE_EFFORTS.join(", ")}`);
+    if (agent === "codex" && typeof r.effort === "string" && !CODEX_EFFORTS.includes(r.effort)) throw new Error(`Codex has no ${r.effort} reasoning effort: ${CODEX_EFFORTS.join(", ")}`);
+    out.effort = r.effort;
+  }
+  return out;
+}
+
+/** A launch's mode flags, refused (permissionModeRefusal) where they'd widen the Helpdesk or leave a room's sandbox. */
+function launchMode(agent: AgentKind, req: NewSessionRequest, roomSandboxed: boolean): string[] {
+  const why = permissionModeRefusal(agent, req.permissionMode, { role: req.role, roomSandboxed });
+  if (why) throw new Error(why);
+  return modeArgs(agent, req.permissionMode);
+}
+
 /** Everything that differs between the coding-agent CLIs a session can run. */
 export interface AgentAdapter {
   /** The Settings field holding this agent's binary name or path. */
@@ -102,6 +183,7 @@ const claude: AgentAdapter = {
     else if (req.resume) args.push("--continue");
     if (req.model) args.push("--model", req.model);
     if (req.effort) args.push("--effort", req.effort);
+    args.push(...launchMode("claude", req, !!ctx.claudeSettings));
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
     // one --settings: the room's sandbox carries the status line with it. Hooks from every settings file run, and
     // outside the sandbox, as do the MCP servers a project's .mcp.json starts: a room launch reads only the user's
@@ -191,6 +273,7 @@ const codex: AgentAdapter = {
     if (req.model) args.push("--model", req.model);
     // -c values are parsed as TOML, so the string needs its quotes
     if (req.effort) args.push("-c", `model_reasoning_effort="${req.effort}"`);
+    args.push(...launchMode("codex", req, !!ctx.codexPermissions?.length));
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
     // before Mockingbird's server's settings: the room's switch off the user's servers with one table (codexMcpOff),
     // which would replace the dotted keys given before it

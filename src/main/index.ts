@@ -87,6 +87,7 @@ import { forgetViewsWith } from "./team/chat";
 // team rooms: take-over
 import { liveRoomHost, TakeoverService } from "./team/takeover";
 import { untakenHandler, type UntakenDeps } from "./takenOverGuard";
+import { SessionGuards } from "./sessionGuards";
 import type { TakeoverView } from "../shared/team/takeover";
 import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
@@ -935,6 +936,8 @@ function sessionOf(id: string): SessionInfo {
 }
 /** What the handlers that refuse a copy a teammate took over look sessions up with (takenOverGuard.ts). */
 const untaken: UntakenDeps<SessionInfo> = { sessionOf, refusal: () => (takeover ? (sid, doing) => takeover!.takenOverRefusal(sid, doing) : null) };
+/** What may be done to a session on someone's behalf (the app Assistant's tools): main's own checks, asked in one place. */
+const sessionGuards = new SessionGuards({ sessions, takenOver: untaken.refusal, worktreeState });
 // The explorer addresses files by session id + relative path, so the renderer
 // can only reach into folders a live session actually runs in.
 const sessionRoot = (sessionId: string) => sessionOf(sessionId).cwd;
@@ -2107,6 +2110,8 @@ function healthChanged(): void {
 }
 handle("health:updates", () => sessions.updateNotices());
 handle("sessions:restart", (id) => sessions.restart(String(id)));
+// a restart with a new permission mode, model or effort: refused as a restart is, and for a copy a teammate took over
+handle("sessions:relaunchWith", untakenHandler("sessions:relaunchWith", untaken, (s, change: unknown) => sessions.relaunchWith(s.id, change)));
 app.whenReady().then(() => {
   if (!isPrimary) return;
   const versions = () => refreshAgentVersions().catch((err) => logError("agent versions", err));

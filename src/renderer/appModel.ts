@@ -22,14 +22,8 @@ export function sessionHolding(sessions: SessionInfo[], path: string, prefer?: S
   return prefer && inside(prefer) ? prefer : sessions.find(inside) ?? null;
 }
 
-/**
- * Reading a worktree's state failed because its folder is gone (git can't even
- * change into it). Any other failure — a held index.lock, a timeout — says
- * nothing about the work in it, so it must not be treated as nothing to lose.
- */
-export function worktreeGone(error: string): boolean {
-  return /cannot change to .*No such file or directory/i.test(error);
-}
+// what Close session asks about is main's rule too (sessionGuards.ts closeWarnings)
+export { closeAsks, ownWorktree, worktreeGone } from "../shared/closing";
 
 /**
  * Whether a broadcast can reach a session, as SessionManager.broadcast decides
