@@ -36,7 +36,15 @@ export type AuditKind =
   /** Phone alerts: an iMessage to the user's own handle about `n` sessions (`session`/`title`: the first), `outcome` sent or why not. */
   | "phone.alert"
   /** Phone alerts: a reply from the user's phone, and what Mockingbird did with it (`outcome`; `bytes` of text for a message). */
-  | "phone.reply";
+  | "phone.reply"
+  /**
+   * The app Assistant (docs/assistant.md) did something: `tool`, on `session`/`title` when it names one, from `source`
+   * (a turn's direct step, a card the user confirmed, an Undo, a standing rule); `outcome` is the step's line and result.
+   */
+  | "assistant.action";
+
+/** What made the Assistant act: a direct step of a turn, a card's Do it, an Undo, or a standing rule. */
+export type AssistantSource = "step" | "card" | "undo" | "rule";
 
 export interface AuditEntry {
   /** When (for an aggregate: the last of it). */
@@ -61,6 +69,9 @@ export interface AuditEntry {
   until?: number | null;
   /** What came of it, in Mockingbird's words (never the teammate's). */
   outcome?: string;
+  /** assistant.action: the Assistant's tool, and what made it act. */
+  tool?: string;
+  source?: AssistantSource;
   reason?: string;
 }
 
@@ -72,6 +83,8 @@ const size = (bytes: number | undefined): string => {
 };
 
 const times = (n: number | undefined, one: string, many = `${one}s`) => `${n ?? 0} ${(n ?? 0) === 1 ? one : many}`;
+
+const ASSISTANT_SOURCE_WORDS: Record<AssistantSource, string> = { step: "asked", card: "you confirmed", undo: "Undo", rule: "a standing rule" };
 
 const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -113,5 +126,7 @@ export function auditWords(e: AuditEntry): string {
       return `Phone alert about ${what}${(e.n ?? 1) > 1 ? ` and ${times((e.n ?? 1) - 1, "more session")}` : ""}: ${e.outcome ?? "sent"}`;
     case "phone.reply":
       return `From your phone, ${what}: ${e.outcome ?? "no outcome"}${e.bytes ? ` (${size(e.bytes)})` : ""}`;
+    case "assistant.action":
+      return `Assistant${e.source ? ` (${ASSISTANT_SOURCE_WORDS[e.source]})` : ""}: ${e.outcome ?? e.tool ?? "an action"}`;
   }
 }

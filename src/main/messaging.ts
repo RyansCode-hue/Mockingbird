@@ -17,6 +17,7 @@ import { McpTokens } from "./mcpTokens";
 import { isTicketTool, TICKET_TOOL_SCHEMAS } from "./ticketToolSchemas";
 import { isWireTool, WIRE_TOOL_SCHEMAS } from "./wireToolSchemas";
 import { systemPeerCheck, type PeerCheck } from "./peerCheck";
+import { ASSISTANT_CALLER_PREFIX, ASSISTANT_LIST_OP, isAssistantCaller } from "./assistant/caller";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
@@ -80,6 +81,15 @@ export const MCP_TOOL = {
   approvePermission: "approve_permission",
 } as const;
 
+/**
+ * Every tool a pane or a Council seat has. A name the Assistant shares with one of these (list_sessions) is, for that
+ * caller, its own tool; dispatch refuses it the Assistant's others.
+ */
+const CALLER_TOOLS: ReadonlySet<string> = new Set([
+  ...Object.values(MCP_TOOL),
+  ...[...WIRE_TOOL_SCHEMAS, ...TICKET_TOOL_SCHEMAS, ...HOUSE_TOOL_SCHEMAS, ...ARTIFACT_TOOL_SCHEMAS, ...TEAM_CHANGES_TOOL_SCHEMAS].map((t) => t.name),
+]);
+
 /** A Mockingbird tool as Claude Code names it (--allowedTools, --permission-prompt-tool). */
 export const claudeToolName = (tool: string): string => `mcp__${MCP_SERVER}__${tool}`;
 
@@ -102,6 +112,8 @@ const readline = require("readline");
 const SOCK = process.env.MOCKINGBIRD_SOCK;
 // Picks which tools are listed. It says nothing to the app about who's calling: only the token does.
 const FROM = process.env.MOCKINGBIRD_SESSION;
+// The app Assistant's turns: their tools are main's registry's, so tools/list asks the app for them.
+const ASSISTANT = !!FROM && FROM.startsWith(${JSON.stringify(ASSISTANT_CALLER_PREFIX)});
 
 // The token is read here, from a file Mockingbird keeps for as long as this server's launch runs: every server the
 // agent starts from that launch (a sub-agent's, a reconnect) reads the same one. The file goes when the launch ends.
@@ -249,8 +261,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       });
     case "ping":
       return ok({});
-    case "tools/list":
-      return ok({ tools: FROM && FROM.startsWith("collab-") ? ROOM_TOOLS.filter((t) => ROOM_TOOL_NAMES.includes(t.name)) : SESSION_TOOLS });
+    case "tools/list": {
+      if (!ASSISTANT) return ok({ tools: FROM && FROM.startsWith("collab-") ? ROOM_TOOLS.filter((t) => ROOM_TOOL_NAMES.includes(t.name)) : SESSION_TOOLS });
+      const r = await ask({ op: ${JSON.stringify(ASSISTANT_LIST_OP)}, args: {} });
+      const tools = r.result && Array.isArray(r.result.tools) ? r.result.tools : null;
+      if (tools) return ok({ tools });
+      return send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: r.error || "Mockingbird didn't list the Assistant's tools." } });
+    }
     case "tools/call": {
       const name = msg.params && msg.params.name;
       const r = await ask({ op: name, args: (msg.params && msg.params.arguments) || {} });
@@ -389,6 +406,18 @@ export interface TicketToolCalls {
   call(me: SessionInfo, op: string, args: Record<string, unknown>): Promise<Reply>;
 }
 
+/** The app Assistant's turns, the MCP caller its tokens name (src/main/assistant/service.ts). */
+export interface AssistantCalls {
+  /** tools/list for the turn caller `identity` is. */
+  mcpList(identity: string): Reply;
+  mcpCall(identity: string, op: string, args: Record<string, unknown>): Promise<Reply>;
+  /** Whether `op` is one of the Assistant's tools, which every other caller is refused. */
+  owns(op: string): boolean;
+}
+
+/** What a pane or a Council seat that asks for one of the Assistant's own tools is told. */
+export const ASSISTANT_ONLY = "That tool is Mockingbird's Assistant's: only the Assistant can use it, never a workspace's agent.";
+
 /** Teammates' room sessions, reached through the team room (src/main/team/agentBridge.ts). */
 export interface RemoteAgents {
   /** The team room a local session is in, or null: only room sessions see and message teammates' sessions. */
@@ -418,6 +447,7 @@ export class Messaging {
   private wires: WireLinks | null = null;
   private wireTools: WireToolCalls | null = null;
   private ticketTools: TicketToolCalls | null = null;
+  private assistant: AssistantCalls | null = null;
   /**
    * When refusals were last logged: per running launch whose server lost its token, per pane for the rest that name one,
    * and once for all that name none. And the launches (by token file) whose loss the user has been told of.
@@ -445,6 +475,11 @@ export class Messaging {
   /** The ticket tools register here; until then they say they aren't ready. */
   setTicketTools(t: TicketToolCalls): void {
     this.ticketTools = t;
+  }
+
+  /** The app Assistant registers here; until then its turns' calls say it isn't ready. */
+  setAssistant(a: AssistantCalls): void {
+    this.assistant = a;
   }
 
   /** Team rooms register here; until then only this laptop's sessions are listed and reachable. */
@@ -522,8 +557,9 @@ export class Messaging {
 
   /**
    * Who's calling is the token's alone: anything a request says about its sender (`from`, or in its args) is ignored,
-   * and a request without a token that's live gets no answer. Room models (tagged collab-<room>.<seat>) go to
-   * Collaborate; everything else is a session.
+   * and a request without a token that's live gets no answer. The app Assistant's turns (assistant-<turn>) go to the
+   * Assistant, and only there: none of their calls reaches a pane's tools. Room models (tagged collab-<room>.<seat>) go
+   * to Collaborate; everything else is a session. Neither of those is let use the Assistant's own tools.
    */
   private async dispatch(req: Record<string, unknown>, conn: net.Socket): Promise<Reply> {
     const op = String(req.op ?? "");
@@ -532,6 +568,11 @@ export class Messaging {
     if (!identity) return this.noToken(op, req);
     const notCaller = await this.callerRefusal(op, identity, req, conn);
     if (notCaller) return notCaller;
+    if (isAssistantCaller(identity)) {
+      if (!this.assistant) return { error: "Mockingbird's Assistant isn't ready yet — try again in a moment." };
+      return op === ASSISTANT_LIST_OP ? this.assistant.mcpList(identity) : this.assistant.mcpCall(identity, op, args);
+    }
+    if (!CALLER_TOOLS.has(op) && this.assistant?.owns(op)) return { error: ASSISTANT_ONLY };
     const m = /^collab-([^.]+)\.(.+)$/.exec(identity);
     if (!m) return this.handle({ op, from: identity, args });
     if (!this.roomHandler) return { error: "Council isn't ready yet — try again in a moment." };
