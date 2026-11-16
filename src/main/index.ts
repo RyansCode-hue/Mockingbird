@@ -100,6 +100,14 @@ import { assistantArtifacts } from "./team/artifactTools";
 import { AreaArtifacts, artifactShelves } from "./areaArtifacts";
 import { artifactViewer } from "./team/artifactViewer";
 import { isRemotePaneId } from "../shared/team/livePanes";
+// the app Assistant (docs/assistant.md)
+import { ASSISTANT_IPC, type AssistantWindowAction } from "../shared/assistant";
+import { AssistantService } from "./assistant/service";
+import { buildRegistry } from "./assistant/registry";
+import * as assistantGroups from "./assistant/tools";
+import { cliSpawner } from "./assistant/launch";
+import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "./assistant/world";
+import type { AssistantDeps } from "./assistant/deps";
 import { guardNavigation } from "./navigation";
 import { externalUrlAllowed } from "../shared/links";
 import { PRIVACY_PANES, startPhoneService, type PhoneService } from "./phone/service";
@@ -672,12 +680,17 @@ app.whenReady().then(() => {
   messaging.setWires(wires);
   messaging.setWireTools(wireTools);
   messaging.setTicketTools(ticketTools);
+  // the app Assistant's turns call its tools as their own kind of caller
+  messaging.setAssistant(assistant);
+  assistant.start();
   // team rooms: team chat
   teamRoom.start(team.transport, messaging);
   const beforeTeamRoom = sessions.onChanged;
   sessions.onChanged = () => {
     beforeTeamRoom?.();
     teamRoom.sessionsChanged();
+    // a card whose session changed may no longer apply, and an Undo may no longer fit
+    assistant.stateChanged();
   };
   // the plan name isn't in Claude's statusline payload; `claude auth status` has it
   void (async () => {
@@ -1431,6 +1444,41 @@ handle("team:auditRecent", (n) => remoteAudit.recent(Math.min(500, Math.max(1, N
 handle("team:liveView", (view) => livePanes.setView(view));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
+
+// ---- the app Assistant (docs/assistant.md): ask in ⌘K, its sheet docked at the landscape's right edge ----
+/** A step only the window can take. */
+const assistantToWindow = (action: AssistantWindowAction) => toWindow(ASSISTANT_IPC.window, action);
+const worldRoomList = (): WorldRoom[] =>
+  team.status().rooms.map((r) => ({ id: r.id, name: r.name, groupKey: r.groupKey, members: r.members, online: r.online }));
+const assistantDeps: AssistantDeps = {
+  sessions: () => worldSessions({ own: sessions.list(), remote: livePanes.state().remote, rooms: worldRoomList() }),
+  groups: () => {
+    const l = landscape.get().landscape;
+    return worldGroups({ own: sessions.list(), remote: livePanes.state().remote, areas: Object.keys(l.areas), stacks: Object.keys(l.stacks), rooms: worldRoomList() });
+  },
+  rooms: () => worldRooms(worldRoomList()),
+  toWindow: assistantToWindow,
+  rename: (id, title) => sessions.rename(id, title),
+  relaunchRefusal: (id) => sessions.relaunchGuard?.(id) ?? null,
+  relaunch: async (id) => void (await sessions.restart(id)),
+};
+const assistant = new AssistantService({
+  registry: buildRegistry(assistantDeps, Object.values(assistantGroups)),
+  claudeBin: () => installedBin("claude"),
+  spawn: cliSpawner({ run: userShellWithInput, env: paneEnv }),
+  world: assistantDeps,
+  audit: remoteAudit,
+  emit: () => toWindow(ASSISTANT_IPC.changed),
+  log: logError,
+});
+handle(ASSISTANT_IPC.view, () => assistant.view());
+handle(ASSISTANT_IPC.ask, (text) => assistant.ask(text));
+handle(ASSISTANT_IPC.confirm, (cardId) => assistant.confirm(cardId));
+handle(ASSISTANT_IPC.cancel, (cardId) => assistant.cancel(cardId));
+handle(ASSISTANT_IPC.undo, (stepId) => assistant.undo(stepId));
+handle(ASSISTANT_IPC.ruleOn, (ruleId, on) => assistant.ruleOn(ruleId, on));
+handle(ASSISTANT_IPC.ruleRemove, (ruleId) => assistant.ruleRemove(ruleId));
+handle(ASSISTANT_IPC.clear, () => assistant.clear());
 
 // ---- Azure DevOps dashboard (reads WorkTracker config; PAT stays in main) ----
 handle("ado:list", () => listWorkItems(store));

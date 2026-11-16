@@ -3,17 +3,36 @@ import * as os from "os";
 import * as path from "path";
 import { quote, type ShellResult } from "./shell";
 import type { AgentKind } from "../shared/types";
-import { agentLabel, isInstalledBin } from "./agents";
+import { agentLabel, claudeMcpConfig, isInstalledBin } from "./agents";
+import type { McpLaunch } from "./messaging";
 
 const TIMEOUT_MS = 120_000;
 
+/** Mockingbird's MCP server for one Claude run, and the only tools of it the run may call, as Claude names them. */
+export interface AskMcp {
+  launch: McpLaunch;
+  allowedTools: string[];
+}
+
 /**
- * One headless turn with no tools, no MCP servers and nothing saved: what the
- * model needs is in the prompt, so it only writes. Claude runs a fast model;
- * Codex runs the user's default model at low effort, read-only.
+ * One headless turn with no built-in tools and nothing saved: what the model needs is in the prompt, so it only
+ * writes. Its only MCP server is `o.mcp`'s when given, with only `o.mcp.allowedTools` allowed; without it, none.
+ * `o.system` is added to Claude's own system prompt. Claude runs a fast model unless told otherwise; Codex runs the
+ * user's default model at low effort, read-only.
  */
-function claudeAskCommand(bin: string, model = "haiku"): string {
-  return [quote(bin), "-p", "--model", model, "--output-format", "json", "--tools", quote(""), "--strict-mcp-config", "--no-session-persistence"].join(" ");
+export function claudeAskCommand(bin: string, model = "haiku", o: { mcp?: AskMcp; system?: string } = {}): string {
+  if (o.mcp && !o.mcp.allowedTools.length) throw new Error("A headless run's MCP server needs the tools it may call");
+  return [
+    quote(bin),
+    "-p",
+    "--model", quote(model),
+    "--output-format", "json",
+    "--tools", quote(""),
+    "--strict-mcp-config",
+    ...(o.mcp ? ["--mcp-config", quote(claudeMcpConfig(o.mcp.launch)), "--allowedTools", quote(o.mcp.allowedTools.join(","))] : []),
+    ...(o.system ? ["--append-system-prompt", quote(o.system)] : []),
+    "--no-session-persistence",
+  ].join(" ");
 }
 
 function codexAskCommand(bin: string, lastFile: string): string {
@@ -32,7 +51,7 @@ function codexAskCommand(bin: string, lastFile: string): string {
   ].join(" ");
 }
 
-export type ShellRunner = (cmd: string, input: string, opts: { cwd: string; env: Record<string, string>; timeoutMs: number }) => Promise<ShellResult>;
+export type ShellRunner = (cmd: string, input: string, opts: { cwd: string; env: Record<string, string>; timeoutMs: number; onSpawn?: (pid: number) => void }) => Promise<ShellResult>;
 
 export interface AskOptions {
   agent: AgentKind;
@@ -44,6 +63,12 @@ export interface AskOptions {
   /** Claude's model; defaults to the fast one. */
   model?: string;
   timeoutMs?: number;
+  /** Claude only: Mockingbird's MCP server for this run, and which of its tools it may call (claudeAskCommand). */
+  mcp?: AskMcp;
+  /** Claude only: added to its system prompt. */
+  system?: string;
+  /** The run's shell, as soon as it's spawned: what an MCP launch's token is bound to (bindMcpLaunch). */
+  onSpawn?: (pid: number) => void;
 }
 
 /**
@@ -84,10 +109,11 @@ export async function readCodexReply(lastFile: string, r: ShellResult, maxError 
  */
 export async function askAgent(prompt: string, o: AskOptions): Promise<string> {
   if (!isInstalledBin(o.bin)) throw new Error(`${agentLabel(o.agent)} isn't installed`);
+  if (o.agent !== "claude" && (o.mcp || o.system)) throw new Error("Only a Claude run takes an MCP server or a system prompt");
   const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), `mb-${o.tag}-`));
-  const opts = { cwd: tmp, env: { ...o.env, MOCKINGBIRD_SESSION: `${o.tag}-${path.basename(tmp)}` }, timeoutMs: o.timeoutMs ?? TIMEOUT_MS };
+  const opts = { cwd: tmp, env: { ...o.env, MOCKINGBIRD_SESSION: `${o.tag}-${path.basename(tmp)}` }, timeoutMs: o.timeoutMs ?? TIMEOUT_MS, ...(o.onSpawn ? { onSpawn: o.onSpawn } : {}) };
   try {
-    if (o.agent === "claude") return parseClaudeJson(await o.run(claudeAskCommand(o.bin, o.model), prompt, opts)).text;
+    if (o.agent === "claude") return parseClaudeJson(await o.run(claudeAskCommand(o.bin, o.model, { mcp: o.mcp, system: o.system }), prompt, opts)).text;
     const last = path.join(tmp, "reply.txt");
     return await readCodexReply(last, await o.run(codexAskCommand(o.bin, last), prompt, opts));
   } finally {
