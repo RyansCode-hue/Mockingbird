@@ -11,6 +11,7 @@ import { ownsKeys } from "./keys";
 import { usePresence } from "./motion";
 import { usePersisted } from "./prefs";
 import { cardState, nextChange, undoLive } from "./assistantModel";
+import type { ScreenBox } from "./landscapeModel";
 
 /**
  * The app Assistant's window side (docs/assistant.md → The sheet and ⌘K): what main says it's doing, in a slim sheet
@@ -85,6 +86,19 @@ const SELECTABLE = ".as-text";
 function Words({ text, className }: { text: string; className: string }) {
   const segs = useMemo(() => chatSegments(text, [], ""), [text]);
   return <div className={`as-text ${className}`}>{segs.map((s, i) => renderSegment(s, i))}</div>;
+}
+
+/**
+ * Where the open sheet sits on screen, for the landscape to keep what it brings into view clear of (Landscape's
+ * clearOf); null while it's closed (a closing one's copy, mb-ghost, isn't it). Read off its anchor at the landscape's
+ * right edge and its own size, so its sliding in (a transform) doesn't count.
+ */
+export function sheetBox(): ScreenBox | null {
+  const el = document.querySelector<HTMLElement>(".as-anchor > .as-sheet:not(.mb-ghost)");
+  const anchor = el?.parentElement?.getBoundingClientRect();
+  if (!el || !anchor) return null;
+  const top = anchor.top + el.offsetTop;
+  return { left: anchor.right - el.offsetWidth, right: anchor.right, top, bottom: top + el.offsetHeight };
 }
 
 type ThreadItem = { kind: "turn"; at: number; turn: AssistantTurn } | { kind: "failure"; at: number; failure: AskFailure };

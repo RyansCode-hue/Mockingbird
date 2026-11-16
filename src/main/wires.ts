@@ -246,6 +246,11 @@ export class WireService {
     return { ...reply, id };
   }
 
+  /** Whether wire `id` was removed and is still held for `restore` (the most recent RESTORABLE removals are). */
+  restorable(idRaw: unknown): boolean {
+    return this.removed.has(String(idRaw ?? ""));
+  }
+
   /**
    * Put a removed wire back as it was, counters included, unless the rules on making one now refuse it. One removed
    * while its message was queued comes back failed, that message out of the other end's queue since the removal; one

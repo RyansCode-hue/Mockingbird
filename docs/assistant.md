@@ -123,6 +123,22 @@ kept through every relaunch like its model and effort.
 | Diagnose | stuck/exited detail, closed output tail (never Helpdesk's), usage and meters, which session touched a file (overlaps, turn changes, transcript search without Helpdesk) | — | — |
 | Standing rules | list rules | turn a rule on/off, remove one | create or change a rule |
 
+- Layout's tools: `landscape`, `list_groups`, `focus_session`, `rename_session`,
+  `move_workspace` (into an area, or next to another workspace), `stack_workspaces`,
+  `unstack` (one tab out, beside its stack), `size_workspace` (S/M/L), `tidy_area`,
+  `set_group`, `create_group`, `rename_group`, `mute_session`, `unmute`. Each
+  layout change's Undo is the window's: offered while the landscape's revision
+  is the one the change made.
+- Wires: `approve_gate` is the ticket pipeline's stakeholder-testing gate
+  (`pipeline:approve`); `send_handoff` sends what waits at a wire's gate, by its
+  pending's id, as it was readied (`wires:send`; a stopped other end isn't
+  started). `remove_wire`'s Undo lasts while the wire service still holds it.
+- Rooms: `share_group` never gives the invite code (the Team view has it);
+  `take_over` reads the take-over plan for its card.
+- Settings: only notifications, finished alerts, quiet hours and phone alerts
+  on/off; phone alerts only once a handle is set up, which is never read.
+- Rule-able among these: `set_group`, `mute_session`, `unmute`, `set_setting`.
+
 ## Standing rules
 
 - **Made only through a card.** The card shows the trigger and each action,
@@ -159,6 +175,10 @@ kept through every relaunch like its model and effort.
   and a **Rules** section (on/off, remove). It never takes the keyboard from
   a session: clicking its buttons hands the keys back the way the landscape's
   tab and × buttons do (keyArm.ts).
+- While the sheet is open, the landscape keeps what it brings into view clear
+  of it: Fit, going to a workspace (`focus_session` too) or an area, and the
+  arrow keys center in the part it leaves uncovered, and a workspace in focus
+  fills only that part.
 - Replies show as plain text with light markdown, never HTML.
 
 ## Plumbing
@@ -175,6 +195,9 @@ kept through every relaunch like its model and effort.
   registry.
 - **Window-only steps** (focus, camera) go to the window as
   `assistant:window` events. Landscape moves are planned in main with the
-  same planners the window uses, so main refuses what the window would.
+  same planners the window uses (`src/shared/landscapeModel.ts`, which
+  `renderer/landscapeModel.ts` re-exports; `assistant/layoutPlan.ts` carries
+  a plan out as the window's carryPlan does), so main refuses what the window
+  would.
 - **Contract:** `src/shared/assistant.ts` (the view, IPC channels,
   rules), `src/shared/permissionModes.ts`.

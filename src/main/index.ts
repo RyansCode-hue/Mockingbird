@@ -109,6 +109,11 @@ import * as assistantGroups from "./assistant/tools";
 import { cliSpawner } from "./assistant/launch";
 import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "./assistant/world";
 import type { AssistantDeps } from "./assistant/deps";
+import { wireDeps } from "./assistant/tools/wires";
+import { readProblem } from "../shared/landscapeModel";
+import { normalizeHandle, phoneSettings } from "../shared/phoneAlerts";
+import { roomsUnsandboxedOf } from "../shared/team/livePanes";
+import { isShareableGroup, type Settings } from "../shared/types";
 import { guardNavigation } from "./navigation";
 import { externalUrlAllowed } from "../shared/links";
 import { PRIVACY_PANES, startPhoneService, type PhoneService } from "./phone/service";
@@ -1259,7 +1264,8 @@ handle("collab:openTicket", async (id, n) => {
 });
 handle("setup:status", () => setupStatus(store, { binFor: (kind) => sessions.binFor(kind), refresh: () => lookUpBins(true) }));
 handle("settings:get", () => store.settings);
-handle("settings:set", (s) => {
+/** A settings change, from the window or the app Assistant: saved, and every part that reads settings told. */
+const changeSettings = (s: Partial<Settings>): Settings => {
   // templates are saved through templates:save, which checks and redacts what's kept
   if (s && typeof s === "object" && Object.hasOwn(s, "pipelineTemplates")) throw new Error("Pipeline templates are saved with Save as template, not as a setting");
   const { patch, dropped } = windowSettingsPatch(s);
@@ -1272,14 +1278,16 @@ handle("settings:set", (s) => {
   livePanes.settingsChanged(before, store.settings);
   phone?.alerts.settingsChanged();
   return store.settings;
-});
-// a room's sandbox switch on this Mac (Settings → Team): main's own list, for a room this Mac is in now
-handle("team:setRoomSandbox", (roomId, sandboxed) => {
+};
+handle("settings:set", changeSettings);
+/** A room's sandbox switch on this Mac (Settings → Team): main's own list, for a room this Mac is in now. */
+const setRoomSandbox = (roomId: unknown, sandboxed: unknown): void => {
   if (typeof sandboxed !== "boolean") throw new Error("Whether to sandbox the room's sessions wasn't given as on or off");
   const before = store.settings;
   livePanes.setRoomSandbox(String(roomId), sandboxed);
   team.settingsChanged(before, store.settings);
-});
+};
+handle("team:setRoomSandbox", setRoomSandbox);
 
 // ---- Phone alerts ----
 const needPhone = (): PhoneService => {
@@ -1297,13 +1305,14 @@ handle("debrief:run", (kind) => runDebrief(kind, sessions, store));
 // the Helpdesk tasks workspace's conversations open only as it (HELPDESK_FOLDER_ONLY), so they aren't listed
 handle("import:list", () => importable(transcripts?.recentConversations() ?? listClaudeConversations(), sessions.list(), collab.list()).filter((c) => !inHelpdeskFolder(c.cwd)));
 handle("sessions:rename", (id, title) => sessions.rename(id, title));
-handle("sessions:renameGroup", (oldKey, newKey) => {
+/** Rename a group, from the window or the app Assistant: its sessions, its room, its area and its artifacts follow. */
+const renameGroup = (oldKey: unknown, newKey: unknown): void => {
   const [from, to] = [String(oldKey), String(newKey)];
   const members = sessions.list().filter((s) => areaKeyOf(s) === from).map((s) => s.id);
   // every group's: a ghost lying inside the area is in it, whatever its own group. Read before the rename, which changes
   // the records' groups in place
   const closed = [...sessions.resumable(), ...sessions.planned()].map((s) => ({ id: s.id, taskGroup: s.taskGroup }));
-  sessions.renameGroup(oldKey, newKey);
+  sessions.renameGroup(from, to);
   team.groupRenamed(from, to); // a shared group stays its room
   // its area on the landscape follows; the rename itself is done, so a failure here is logged rather than refused
   try {
@@ -1322,15 +1331,20 @@ handle("sessions:renameGroup", (oldKey, newKey) => {
   } catch (err) {
     logError(`area artifacts: moving ${from}'s to ${to}`, err);
   }
-});
+};
+handle("sessions:renameGroup", renameGroup);
 
 // ---- Team rooms ----
 handle("team:status", () => team.status());
-handle("team:share", (groupKey, title) => {
-  const refused = helpdeskShareRefusal(String(groupKey ?? ""), [...sessions.list(), ...sessions.resumable()]);
+/** Why group `groupKey` can't be shared as a room for the Helpdesk tasks workspace in it, or null. */
+const shareRefusal = (groupKey: string): string | null => helpdeskShareRefusal(groupKey, [...sessions.list(), ...sessions.resumable()]);
+/** Share a group as a team room, from the window or the app Assistant. */
+const shareGroup = (groupKey: unknown, title: unknown) => {
+  const refused = shareRefusal(String(groupKey ?? ""));
   if (refused) throw new Error(refused);
   return team.shareGroup(String(groupKey ?? ""), String(title ?? ""));
-});
+};
+handle("team:share", shareGroup);
 handle("team:invite", (roomId) => ({ invite: team.createInvite(String(roomId)) }));
 handle("team:join", (code) => team.join(String(code ?? "")));
 handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
@@ -1464,6 +1478,90 @@ const assistantDeps: AssistantDeps = {
   rename: (id, title) => sessions.rename(id, title),
   relaunchRefusal: (id) => sessionGuards.whyNot("relaunch", id),
   relaunch: async (id) => void (await sessions.restart(id)),
+
+  // ---- layout, groups, wires, rooms and settings (tools/layout.ts, wires.ts, rooms.ts, settings.ts) ----
+  guard: (op, id) => sessionGuards.whyNot(op, id),
+  landscapeState: () => {
+    const st = landscape.get();
+    return { landscape: st.landscape, rev: st.rev, problem: readProblem(st)?.message ?? null };
+  },
+  layoutSessions: () => {
+    // as the window lays it out: its own sessions with teammates' room sessions after them (mergeRoomSessions)
+    const own = sessions.list();
+    const ownIds = new Set(own.map((s) => s.id));
+    const remote = livePanes.state().remote.filter((r) => !ownIds.has(r.id));
+    const closed = [...sessions.resumable(), ...sessions.planned()];
+    return { shown: [...own.filter((s) => !s.debrief), ...remote], closed, known: [...own, ...remote, ...closed] };
+  },
+  patchLandscape: (patch) => landscape.update(patch).rev,
+  setGroup: (id, group) => sessions.setGroup(id, group),
+  renameGroup: (from, to) => renameGroup(from, to),
+  setMuted: (id, muted) => sessions.setMuted(id, muted),
+  muted: (id) => {
+    const s = sessions.list().find((x) => x.id === id);
+    return s ? !!s.muted : null;
+  },
+  // the wire service and delivery are made further down: read when a tool runs
+  ...wireDeps({ store: () => landscape, service: () => wires, send: (id, pendingId, body) => delivery.send(id, pendingId, body) }),
+  ticketStage: (id) => {
+    const p = pipeline.get(id);
+    return p ? { stage: p.stage, title: p.title ?? null } : null;
+  },
+  approveTicket: async (id) => {
+    const { told } = await pipelineDo(() => ticketTools.approve(id));
+    return "notTold" in told ? told.notTold : `“${told.title}” was told to prepare the pull request to main.`;
+  },
+  houseBoard: (roomId) => teamHouse.boardSummary(roomId),
+  shareRefusal: (group) => (isShareableGroup(group) ? shareRefusal(group) : "Only a named group can be shared: name it first"),
+  shareGroup: async (group, title) => {
+    // the invite stays with the window's Team view: it lets whoever holds it ask to join
+    const r = await shareGroup(group, title);
+    return { roomId: r.roomId, created: r.created, ...(r.warning ? { warning: r.warning } : {}) };
+  },
+  leaveRoom: async (roomId) => {
+    const o = await team.leaveRoom(roomId);
+    const told = o.told.length ? ` ${o.told.join(", ")} heard.` : "";
+    const later = o.notTold.length ? ` ${o.notTold.join(", ")} will hear when they're next online.` : "";
+    const left = o.problems.length || o.worker ? " Some of what the room kept here couldn't be cleaned up: the Team view says what." : "";
+    return `Left ${o.roomName}.${told}${later}${left}`;
+  },
+  takeoverTarget: (id) => {
+    const s = livePanes.state().remote.find((r) => r.id === id);
+    return s?.room ? { roomId: s.room.roomId, sessionId: s.room.sessionId, title: s.ticketTitle ?? s.title, owner: s.room.ownerName } : null;
+  },
+  takeoverPlan: (roomId, sessionId) => needTakeover().plan(roomId, sessionId, null),
+  takeOver: async (roomId, sessionId) => (await needTakeover().takeOver(roomId, sessionId, null)).sessionId,
+  roomSandboxed: (roomId) => (team.status().rooms.some((r) => r.id === roomId) ? !roomsUnsandboxedOf(store.settings).includes(roomId) : null),
+  setRoomSandbox: (roomId, on) => setRoomSandbox(roomId, on),
+  houseWrite: async (roomId, w) => (await teamHouse.write(roomId, w)).message,
+  settingsSeen: () => {
+    const s = store.settings;
+    const p = phoneSettings(s.phoneAlerts);
+    return {
+      notifications: s.notifications,
+      notifyFinished: s.notifyFinished !== false,
+      quietHours: s.quietHours ? { enabled: s.quietHours.enabled, from: s.quietHours.from, to: s.quietHours.to } : null,
+      phoneAlerts: { setUp: normalizeHandle(p.handle) !== null, enabled: p.enabled },
+    };
+  },
+  changeSetting: (c) => {
+    switch (c.key) {
+      case "notifications":
+        return void changeSettings({ notifications: c.on });
+      case "notifyFinished":
+        return void changeSettings({ notifyFinished: c.on });
+      case "quietHours":
+        return void changeSettings({ quietHours: { enabled: c.value.enabled, from: c.value.from, to: c.value.to } });
+      case "phoneAlerts": {
+        // on or off only: the handle and the rest stay as Settings has them
+        const p = phoneSettings(store.settings.phoneAlerts);
+        if (c.on && normalizeHandle(p.handle) === null) throw new Error("Phone alerts aren't set up: set them up in Settings → Phone alerts first");
+        return void changeSettings({ phoneAlerts: { ...p, enabled: c.on } });
+      }
+      default:
+        throw new Error(`The Assistant can't change ${JSON.stringify((c as { key?: unknown }).key)}`);
+    }
+  },
 };
 const assistant = new AssistantService({
   registry: buildRegistry(assistantDeps, Object.values(assistantGroups)),

@@ -345,6 +345,7 @@ export function Landscape({
   resumeOk,
   wireActsRef,
   nextStep,
+  clearOf,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -449,6 +450,11 @@ export function Landscape({
    * not-started step after `from`, placed `at` (the drop, in landscape px, in the area under it) or, from a click, beside it.
    */
   nextStep?: (from: SessionInfo, at: { area: string | null; point: Point } | null) => void;
+  /**
+   * A box on screen docked over the view (the Assistant's sheet, while it's open), or null: fitting, going to a
+   * workspace or an area, and the arrow keys bring things into view clear of it, as they do of a reveal's `avoid`.
+   */
+  clearOf?: () => ScreenBox | null;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -459,6 +465,22 @@ export function Landscape({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [vp, setVp] = useState<Size | null>(null);
   const vpNow = useRef<Size>({ w: 0, h: 0 });
+  const clearOfNow = useRef(clearOf);
+  clearOfNow.current = clearOf;
+  /**
+   * The view's size to bring something into view in: the part of it left of `avoid` and of what's docked over it
+   * (clearOf), the narrower of the two, when each leaves room enough (clearRoom); else all of it.
+   */
+  const roomClearOf = (avoid: ScreenBox | null): Size => {
+    const box = viewport.current?.getBoundingClientRect();
+    const docked = clearOfNow.current?.() ?? null;
+    if (!box || (!avoid && !docked)) return vpNow.current;
+    const at = { left: box.left, top: box.top, width: vpNow.current.w, height: vpNow.current.h };
+    return [avoid, docked].reduce<Size>((room, b) => {
+      const r = b ? clearRoom(at, b) : room;
+      return r.w < room.w ? r : room;
+    }, vpNow.current);
+  };
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const overlay = useRef<HTMLDivElement>(null);
   const space = useRef(false);
@@ -843,7 +865,7 @@ export function Landscape({
   const fit = useCallback(() => {
     stopFlyRef.current();
     const rects = fitRects(layoutNow.current);
-    if (rects.length && vpNow.current.w) apply(fitBelow(rects, vpNow.current, topNow.current));
+    if (rects.length && vpNow.current.w) apply(fitBelow(rects, roomClearOf(null), topNow.current));
   }, []);
   // a window that has never shown the landscape starts with everything in view
   const anythingToFit = fitRects(layout).length > 0;
@@ -1065,7 +1087,7 @@ export function Landscape({
     const ghost = l.ghosts.find((g) => g.members.some((m) => m.id === id)) ?? l.tiles.find((t) => t.closed?.some((m) => m.id === id));
     if (ghost && !ghost.hidden) {
       leaveFocus();
-      return flyTo(centreOn(cam.current, ghost.rect, vpNow.current));
+      return flyTo(centreOn(cam.current, ghost.rect, roomClearOf(null)));
     }
     const s = ghost?.members.find((m) => m.id === id) ?? ghost?.closed?.find((m) => m.id === id) ?? closed.find((m) => m.id === id);
     const name = s ? `“${s.ticketTitle ?? s.title}”` : null;
@@ -1116,11 +1138,6 @@ export function Landscape({
   const revealOpts = useRef<{ keys: boolean; avoid: ScreenBox | null; answer: boolean }>({ keys: false, avoid: null, answer: false });
   /** The reveal whose stack tab was asked to the front, waiting for the layout to have it there. */
   const fronting = useRef<PendingReveal | null>(null);
-  /** The view's size to bring something into view in: the part of it clear of `avoid`. */
-  const roomClearOf = (avoid: ScreenBox | null) => {
-    const box = viewport.current?.getBoundingClientRect();
-    return box && avoid ? clearRoom({ left: box.left, top: box.top, width: vpNow.current.w, height: vpNow.current.h }, avoid) : vpNow.current;
-  };
   const gaveUp = (p: PendingReveal) => {
     console.warn(`[mockingbird] the landscape couldn't bring ${p.id} into view: no workspace holds it after ${REVEAL_WAIT_MS} ms`);
     say("That couldn't be shown: it isn't on the landscape");
@@ -1277,7 +1294,7 @@ export function Landscape({
     if (!t) return;
     select(t);
     stopFly();
-    apply(centreOn(cam.current, t.rect, v));
+    apply(centreOn(cam.current, t.rect, roomClearOf(null)));
   };
 
   // ---- areas: collapse and lock, the marquee's Make area…, and carrying out a gesture's plan ----

@@ -293,7 +293,7 @@ describe("areas' rectangles", () => {
     const p = renameAreaPatch(l, "A", "B", [], [session("other", { taskGroup: "G", status: "dead" })])!;
     expect(p.workspaces?.other).toEqual({ x: 2124, y: 48, w: 800, h: 600 });
     // and main asks with every closed session, of any group, and every step not started yet
-    const handler = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8").split('handle("sessions:renameGroup"')[1];
+    const handler = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8").split("const renameGroup = ")[1].split('handle("sessions:renameGroup"')[0];
     expect(handler).toMatch(/const closed = \[\.\.\.sessions\.resumable\(\), \.\.\.sessions\.planned\(\)\]\.map\(/);
   });
 

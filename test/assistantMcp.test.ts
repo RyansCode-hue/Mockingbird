@@ -11,6 +11,7 @@ import { cliSpawner } from "../src/main/assistant/launch";
 import { ASSISTANT_RULES } from "../src/main/assistant/turns";
 import type { ShellRunner } from "../src/main/headless";
 import { askAs, askRaw, startServer, testLaunch } from "./mcpClient";
+import { unusedToolDeps } from "./assistantWorld";
 
 /** This Mac's panes, as messaging sees them. */
 const panes = [{ id: "front", title: "front", ticketTitle: null, repoPath: "/code/front", branch: "b", taskGroup: "5038", status: "idle", agent: "claude", cwd: "/w/front", kind: "work" } as SessionInfo];
@@ -33,6 +34,7 @@ const deps: AssistantDeps = {
   },
   relaunchRefusal: () => null,
   relaunch: async (id) => void did.push(`relaunch ${id}`),
+  ...unusedToolDeps(),
 };
 
 /** What the fake claude saw: its command, environment and token, and what its MCP server answered. */
