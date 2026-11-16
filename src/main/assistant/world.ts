@@ -18,10 +18,8 @@ export interface WorldRoom {
   online: string[];
 }
 
-const modeOf = (s: SessionInfo): PermissionMode => {
-  const m = (s as { permissionMode?: unknown }).permissionMode;
-  return isPermissionMode(m) ? m : "default";
-};
+// a record written before permission modes, or by a newer Mockingbird, reads as the default
+const modeOf = (s: SessionInfo): PermissionMode => (isPermissionMode(s.permissionMode) ? s.permissionMode : "default");
 
 const groupOf = (s: SessionInfo): string | null => (s.taskGroup && topOfKey(s.taskGroup) !== LOOSE_GROUP ? s.taskGroup : null);
 

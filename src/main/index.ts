@@ -1462,7 +1462,7 @@ const assistantDeps: AssistantDeps = {
   rooms: () => worldRooms(worldRoomList()),
   toWindow: assistantToWindow,
   rename: (id, title) => sessions.rename(id, title),
-  relaunchRefusal: (id) => sessions.relaunchGuard?.(id) ?? null,
+  relaunchRefusal: (id) => sessionGuards.whyNot("relaunch", id),
   relaunch: async (id) => void (await sessions.restart(id)),
 };
 const assistant = new AssistantService({
