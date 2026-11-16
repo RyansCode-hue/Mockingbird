@@ -83,7 +83,8 @@ import { StatusDot } from "./StatusDot";
 // the landscape
 import { emptyStateOf, nothingToTour } from "./landscapeFirstRun";
 import { LandscapeTopBar, type TopTab } from "./TopBar";
-import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type LandscapeNote, type NoteAction } from "./Landscape";
+import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type FocusActs, type LandscapeNote, type NoteAction } from "./Landscape";
+import { FocusPanel, isFocusTool, type FocusTool } from "./FocusPanel";
 import { useLandscape, useLandscapeMigration, type LandscapeSave } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
 import { viewOnlyPatch, accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, plannedIn, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
@@ -130,6 +131,8 @@ const SIDE_VIEWS: { id: SideView; label: string; keys?: string; Icon: () => Reac
   // team rooms: team chat (the icon carries its own unread badge)
   { id: "room", label: "Team room", Icon: TeamRoomIcon },
 ];
+/** The rail while a workspace is in focus: the area tree, and the tools that dock beside the workspace (FocusPanel). */
+const FOCUS_VIEWS: ReadonlySet<SideView> = new Set<SideView>(["sessions", "explorer", "scm", "run"]);
 
 /** Overlaps before main's first answer: none known, and none unread. */
 const NO_OVERLAPS: OverlapReport = { bySession: {}, unread: {} };
@@ -327,14 +330,29 @@ function App() {
   // a session title being edited inline in its sidebar row
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [sideCollapsed, setSideCollapsed] = usePersisted<boolean>("mb.side", false);
+  // the session in front of the landscape's workspace in focus (null: none is)
+  const [focusFront, setFocusFront] = useState<string | null>(null);
+  /**
+   * What the side bar's slot holds in focus once it was changed there: the area tree, a tool docked beside the
+   * workspace, or nothing; undefined, as the landscape has it (mb.side). Focus's own, until focus ends, so the
+   * landscape's side bar is as it was; only hiding the tree (Sessions, ⌘\, ⇤) hides it on the landscape too, as it does
+   * from there.
+   */
+  const [focusSlot, setFocusSlot] = useState<"tree" | FocusTool | null | undefined>(undefined);
+  const focusActs = useRef<FocusActs | null>(null);
+  const slot = focusFront && focusSlot !== undefined ? focusSlot : sideCollapsed ? null : "tree";
+  const sidePanel = slot === "tree" ? null : slot;
+  const sideHidden = slot === null;
+  /** The side bar shows the area tree (or the Team view's room list in its place). */
+  const treeShown = slot === "tree";
   // the side bar's width snaps (the landscape re-fits once); shown again, its contents slide in from the rail
   const sideInner = useRef<HTMLDivElement>(null);
-  const sideWasCollapsed = useRef(sideCollapsed);
+  const sideWasHidden = useRef(sideHidden);
   useLayoutEffect(() => {
-    if (sideWasCollapsed.current && !sideCollapsed && sideInner.current)
+    if (sideWasHidden.current && !sideHidden && sideInner.current)
       play(sideInner.current, [{ opacity: 0, transform: "translateX(-12px)" }, { opacity: 1, transform: "none" }], { duration: D.s, easing: EASE.enter });
-    sideWasCollapsed.current = sideCollapsed;
-  }, [sideCollapsed]);
+    sideWasHidden.current = sideHidden;
+  }, [sideHidden]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [closeDlg, setCloseDlg] = useState<{ session: SessionInfo; wt: WorktreeStateInfo | { error: string } } | null>(null);
   const [groupDlg, setGroupDlg] = useState<SessionInfo | null>(null);
@@ -526,11 +544,25 @@ function App() {
   /** Show a side bar view, from anywhere: the side bar lives on the Sessions tab. */
   const showView = (v: SideView) => {
     setTab("sessions");
-    // the side bar is the area tree, and the other views are tool windows
+    // the side bar is the area tree, and the other views are tool windows; in focus Files, Git and Run & debug dock
+    // beside the workspace in the tree's slot
     const tool = toolOfView(v);
+    if (focusFront && isFocusTool(tool)) {
+      if (sidePanel !== tool) keysOutOfSide();
+      return setFocusSlot(tool);
+    }
+    // Search isn't one of focus's: focus ends for it
+    if (focusFront && tool === "search") return searchFromFocus();
     if (tool) return showTool(tool, sessions.find((s) => s.id === focused) ?? null);
     setLsTeam(false);
-    setSideCollapsed(false);
+    if (!focusFront) return setSideCollapsed(false);
+    if (sidePanel) keysOutOfSide();
+    setFocusSlot("tree");
+  };
+  /** The area tree put away: in focus its slot, and on the landscape too, as hiding it from there does. */
+  const hideTree = () => {
+    if (focusFront) setFocusSlot(null);
+    setSideCollapsed(true);
   };
   // on the landscape the side bar shows the Team view's room list in place of the area tree (the Connected line)
   const [lsTeam, setLsTeam] = useState(false);
@@ -560,7 +592,8 @@ function App() {
   const teamViewOn = (roomId: string | null) => {
     openTeamView(roomId);
     setLsTeam(true);
-    setSideCollapsed(false);
+    if (focusFront) setFocusSlot("tree");
+    else setSideCollapsed(false);
   };
   const [roomChatAfterOpen, setRoomChatAfterOpen] = useState<{ key: string; roomId: string | null } | null>(null);
   useRoomChatOpen(openRoom);
@@ -1221,14 +1254,15 @@ function App() {
     if (cmd && !e.shiftKey && !e.ctrlKey && e.key === "b" && tab === "sessions") {
       handled();
       // the landscape's side bar is the area tree (⌘\): ⌘B is Files, as the rail's
-      toggleTool("files");
+      if (focusFront) toggleFocusTool("files");
+      else toggleTool("files");
       return;
     }
     // the landscape's area tree to the rail and back (design M); the area switcher stands in for it meanwhile
     if (cmd && !e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "\\" && tab === "sessions") {
       handled();
-      if (sideCollapsed) showView("sessions");
-      else setSideCollapsed(true);
+      if (treeShown) hideTree();
+      else showView("sessions");
       return;
     }
     if (cmd && !e.ctrlKey && e.key.toLowerCase() === "p" && !modal) {
@@ -1240,11 +1274,14 @@ function App() {
       }
       return;
     }
-    // on the landscape these open or close their tool's window
+    // on the landscape these open or close their tool's window; in focus, the tool docked beside the workspace, and
+    // Search, which isn't one of focus's, ends focus for its window
     const viewKey = (v: SideView) => {
       handled();
       const tool = tab === "sessions" ? toolOfView(v) : null;
-      if (tool) toggleTool(tool);
+      if (focusFront && isFocusTool(tool)) toggleFocusTool(tool);
+      else if (focusFront && tool === "search") searchFromFocus();
+      else if (tool) toggleTool(tool);
       else showView(v);
     };
     if (cmd && e.shiftKey && e.key.toLowerCase() === "f") return viewKey("search");
@@ -1503,6 +1540,77 @@ function App() {
   const toolOpen = (tool: ToolKind) => Object.values(landscapeState?.landscape.tools ?? {}).some((w) => openOn(w, tool, selScope(tool)));
   /** The rail's views and the tools they are on the landscape. */
   const toolOfView = (v: SideView): ToolKind | null => ({ explorer: "files", scm: "changes", search: "search", run: "run", room: "chat", sessions: null } as const)[v];
+
+  // ---- in focus: the side bar's slot holds the area tree or one tool docked beside the workspace (FocusPanel) ----
+  /** The session in front of the workspace in focus, one of this Mac's or a teammate's; null with none in focus. */
+  const focusSession = focusFront ? sessions.find((s) => s.id === focusFront) ?? null : null;
+  /** Focus ended or moved on: once it ends, the side bar is the landscape's again, as it was. */
+  const onFocusFront = (id: string | null) => {
+    setFocusFront(id);
+    if (!id) setFocusSlot(undefined);
+  };
+  /**
+   * The side bar's slot is about to change in focus: the keyboard, if it's in there or nowhere, goes to the focused
+   * workspace's terminal first. Left in a panel that goes (a field hidden or removed), it would fall to keyArm's
+   * holder, whose swallowed keys ask for a click on the landscape.
+   */
+  const keysOutOfSide = () => {
+    if (keyboardNowhere() || document.activeElement?.closest(".sidebar")) focusActs.current?.keysToTerminal();
+  };
+  /** The rail's Files, Git or Run & debug in focus: docked beside the workspace in the side bar's slot, or closed if it's there. */
+  const toggleFocusTool = (tool: FocusTool) => {
+    keysOutOfSide();
+    // the slot is one side bar, the tree's included: pressed again, its icon puts it away (in focus only)
+    setFocusSlot(sidePanel === tool ? null : tool);
+  };
+  /**
+   * ⇧⌘F, or Search from the palette, in focus: Search isn't one of focus's tools, so focus ends as esc ends it, and
+   * Search opens beside the workspace on the landscape. Placed after leaving focus has given the landscape the
+   * keyboard, so Search's field, wherever the zoom draws it whole, takes it from there.
+   */
+  const searchFromFocus = () => {
+    const s = selectedAny;
+    focusActs.current?.leave();
+    setTimeout(() => showTool("search", s), 0);
+  };
+  /**
+   * In focus, a click on the rail or in a docked tool leaves the keyboard with the focused workspace's terminal: what
+   * the press focused (a button, or nothing) hands it back once the click is done. A field clicked into keeps it, as do
+   * text selected there, a click made from the keyboard (Enter or Space on a button: `detail` 0), and whatever the
+   * click opened that took it (a menu, a dialog, the editor).
+   */
+  const keysBackAfterClick = (e: React.MouseEvent<HTMLElement>) => {
+    if (!focusFront || e.detail === 0) return;
+    const within = e.currentTarget;
+    setTimeout(() => {
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && within.contains(sel.anchorNode)) return;
+      const a = document.activeElement;
+      if (keyboardNowhere() || (a && within.contains(a) && !ownsKeys(a))) focusActs.current?.keysToTerminal();
+    }, 0);
+  };
+  /** The tool docked beside the focused workspace, on the session in front of it; null when the slot holds the tree. */
+  const focusPanel = () => {
+    if (!sidePanel) return null;
+    const s = focusSession;
+    const area = s && areaKeyOf(s) !== LOOSE_GROUP ? areaKeyOf(s) : null;
+    const no = s ? toolGate(sidePanel, s, area) : "The workspace in focus has no session in front";
+    const own = s && !isRemote(s) ? s : null;
+    return (
+      <FocusPanel
+        key={sidePanel}
+        tool={sidePanel}
+        scope={s ? s.branch ?? titleOf(s) : null}
+        scopeTip={s ? [area && areaTitle(area), titleOf(s), s.branch].filter(Boolean).join(" · ") : undefined}
+        session={own?.id ?? null}
+        onClose={() => toggleFocusTool(sidePanel)}
+        onEscape={() => focusActs.current?.keysToTerminal()}
+        onClick={keysBackAfterClick}
+      >
+        {no ? <div className="fp-note">{no}</div> : toolBody(sidePanel, own, area, `focus:${sidePanel}`)}
+      </FocusPanel>
+    );
+  };
 
   // a Search window keeps its own query; the options it last set (scope, regex, case) are the next one's (mb.search)
   const [winSearch, setWinSearch] = useState<Record<string, SearchState>>({});
@@ -2713,10 +2821,13 @@ function App() {
           tour={{ due: tourDue, onEnd: endTour }}
           closed={closedSessions}
           nextStep={addNextStep}
+          focusRef={focusActs}
+          onFocusFront={onFocusFront}
         />
         </BadgeContext.Provider>
         <AssistantSheet open={assistantOpen} assistant={assistant} home={landscapeHome} onClose={() => setAssistantOpen(false)} />
-        {dockColumn()}
+        {/* in focus, tools dock on the left, in the side bar's slot (FocusPanel); the right edge's are the landscape's */}
+        {!focusFront && dockColumn()}
         </div>
       ) : (
         <div className="empty ls-loading">
@@ -3328,27 +3439,30 @@ function App() {
         )}
         {tab === "sessions" && (
         <>
-        <nav className="activitybar" aria-label="Side bar views">
-          {[...SIDE_VIEWS, ARTIFACTS_VIEW].map(({ id, label: viewLabel, keys, Icon }) => {
+        <nav className="activitybar" aria-label="Side bar views" onClick={focusFront ? keysBackAfterClick : undefined}>
+          {(focusFront ? SIDE_VIEWS.filter((v) => FOCUS_VIEWS.has(v.id)) : [...SIDE_VIEWS, ARTIFACTS_VIEW]).map(({ id, label: viewLabel, keys, Icon }) => {
             // on the landscape the views are tool windows, named as their windows are: lit while one is open on the
-            // selection (or docked). Artifacts and Chat open on the selection's area
+            // selection (or docked). Artifacts and Chat open on the selection's area. In focus the rail is the tree and
+            // the tools that dock beside the workspace, on the session in front of it, in the tree's slot
             const tool = id === "artifacts" ? "artifacts" : toolOfView(id);
+            const docks = focusFront && isFocusTool(tool) ? tool : null;
             const label = tool ? TOOL_NAME[tool] : viewLabel;
-            const where = tool === "artifacts" || tool === "chat" ? "a window in the selected workspace's area" : "a window beside the selected workspace";
-            const on = tool ? toolOpen(tool) : id === "sessions" && !lsTeam && !sideCollapsed;
+            const where = docks ? "docked beside the workspace in focus" : tool === "artifacts" || tool === "chat" ? "a window in the selected workspace's area" : "a window beside the selected workspace";
+            const on = docks ? sidePanel === docks : tool ? toolOpen(tool) : id === "sessions" && treeShown && !lsTeam;
             // what the selection's menu has off is off here too (a click says why)
-            const no = tool && !on ? toolGate(tool, selectedAny, selArea) : null;
+            const no = tool && !on ? (docks ? toolGate(tool, focusSession) : toolGate(tool, selectedAny, selArea)) : null;
             const badge =
               id === "sessions" ? counts.waiting : id === "scm" ? scmCount : id === "run" ? runStates.filter((s) => s.status === "running" || s.status === "starting").length : 0;
             return (
               <button
                 key={id}
                 className={`ab-btn ${on ? "on" : ""} ${no ? "off" : ""}`}
-                title={tool ? `${label}${keys ? ` (${keys})` : ""} — ${on ? "close its window" : no ?? where}` : `${label}${keys ? ` (${keys})` : ""}${on ? " — click to hide the side bar (⌘\\)" : ""}`}
+                data-view={id}
+                title={tool ? `${label}${keys ? ` (${keys})` : ""} — ${on ? (docks ? "close it" : "close its window") : no ?? where}` : `${label}${keys ? ` (${keys})` : ""}${on ? " — click to hide the side bar (⌘\\)" : ""}`}
                 aria-label={label}
                 aria-pressed={on}
                 aria-disabled={no ? true : undefined}
-                onClick={() => (tool ? toggleTool(tool) : on ? setSideCollapsed(true) : showView(id as SideView))}
+                onClick={() => (docks ? (no ? lsSay(no) : toggleFocusTool(docks)) : tool ? toggleTool(tool) : on ? hideTree() : showView("sessions"))}
               >
                 <Icon />
                 {id === "scm" && scmCountError ? (
@@ -3365,8 +3479,11 @@ function App() {
             );
           })}
         </nav>
-        <div className={`sidebar ${sideCollapsed ? "collapsed" : ""}`} style={{ width: sideCollapsed ? 0 : sideW }}>
+        <div className={`sidebar ${sideHidden ? "collapsed" : ""}`} style={{ width: sideHidden ? 0 : sideW }}>
           <div className="side-inner" ref={sideInner} style={{ width: sideW }}>
+          {focusPanel()}
+          {/* kept while a tool is docked in its slot, so the tree and the room's chat keep what they had */}
+          <div className={`side-view ${sidePanel ? "off" : ""}`}>
           <div className="side-head">
             {/* the side bar is the area tree (designs B and L) */}
             <span className="side-title">{lsTeam ? "Team rooms" : "Landscape"}</span>
@@ -3379,7 +3496,7 @@ function App() {
           {lsTeam && (
             <RoomChatPanel
               status={teamStatus}
-              visible={!sideCollapsed}
+              visible={treeShown}
               hooks={teamHooks}
               sessions={ownSessions}
               focusedSessionId={focusedSession?.id ?? null}
@@ -3407,7 +3524,7 @@ function App() {
                 revealWorkspace(s.id, true);
               }}
               onStep={showStep}
-              onHide={() => setSideCollapsed(true)}
+              onHide={hideTree}
               menuFor={sessionActions}
               stepMenu={(s) => menuOf(ghostActionsFor(s))}
               areaMenu={(key) => (key === LOOSE_GROUP ? ((rows) => (rows.length ? menuOf(rows) : null))(looseGhostRows()) : areaMenu(key))}
@@ -3427,6 +3544,7 @@ function App() {
               }
             />
           )}
+          </div>
           </div>
           <div className="side-grip" onPointerDown={startSideResize} />
         </div>
@@ -3602,7 +3720,7 @@ function App() {
             { label: "Shortcuts — every key on the landscape", kbd: "?", run: () => setKeysOpen(true) },
             // the landscape: each area to fly to
             ...(landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => viewOnlyPick(() => goToArea(a.key)) })),
-            { label: sideCollapsed ? "Show the area tree" : "Hide the area tree", kbd: "⌘\\", run: () => (sideCollapsed ? showView("sessions") : setSideCollapsed(true)) },
+            { label: treeShown ? "Hide the area tree" : "Show the area tree", kbd: "⌘\\", run: () => (treeShown ? hideTree() : showView("sessions")) },
             // the landscape: every ghost at once (Reopen all), while there are any
             ...ghostsActions(ghostRows(null, "the landscape"))
               .filter((a) => !a.disabled)
