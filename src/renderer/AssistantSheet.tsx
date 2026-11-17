@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import type { AssistantCard, AssistantRule, AssistantStep, AssistantTurn, AssistantView, RuleRun } from "../shared/assistant";
+import type { ActionDetail, AssistantCard, AssistantRule, AssistantStep, AssistantTurn, AssistantView, RuleRun } from "../shared/assistant";
 import { isErr, type IpcResult } from "../shared/types";
 import { ago } from "../shared/format";
 import { chatSegments } from "./team/chatText";
@@ -84,13 +84,39 @@ export type AssistantState = ReturnType<typeof useAssistant>;
 
 /** What a press may land on in the sheet and act: its buttons, switches and links. */
 const CONTROLS = "button, [role=button], [role=switch], a[href]";
-/** Text a press may start selecting (the thread's words). */
-const SELECTABLE = ".as-text";
+/** Text a press may start selecting (the thread's words, and what a card or a rule types). */
+const SELECTABLE = ".as-text, .as-payload";
 
 /** Light markdown, as team chat shows it: parsed into elements, never HTML. */
 function Words({ text, className }: { text: string; className: string }) {
   const segs = useMemo(() => chatSegments(text, [], ""), [text]);
   return <div className={`as-text ${className}`}>{segs.map((s, i) => renderSegment(s, i))}</div>;
+}
+
+/** The text a card or a rule's action types, sends or publishes, whole: plain text in a scrolling block, never HTML. */
+function Payload({ text }: { text: string }) {
+  return <pre className="as-payload">{text}</pre>;
+}
+
+/** A rule's actions as main spells them out: each line, what it types whole, and what to know about it. */
+function Actions({ actions }: { actions: ActionDetail[] }) {
+  return (
+    <ol className="as-acts">
+      {actions.map((a, i) => (
+        <li key={i} className={`as-act${a.danger ? " danger" : ""}`}>
+          <div className="as-act-l">{a.line}</div>
+          {a.body !== undefined && <Payload text={a.body} />}
+          {a.warnings.length > 0 && (
+            <ul className="as-card-warn">
+              {a.warnings.map((w, j) => (
+                <li key={j}>{w}</li>
+              ))}
+            </ul>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 /**
@@ -408,6 +434,8 @@ function Card({ card, now, busy, act, error }: { card: AssistantCard; now: numbe
     <div className={`as-card${card.danger ? " danger" : ""}${card.blocked ? " blocked" : ""}`} data-card={card.id} data-state="open">
       <div className="as-card-t">{card.title}</div>
       {card.detail && <div className="as-card-d">{card.detail}</div>}
+      {card.body !== undefined && <Payload text={card.body} />}
+      {card.actions && card.actions.length > 0 && <Actions actions={card.actions} />}
       {card.warnings.length > 0 && (
         <ul className="as-card-warn">
           {card.warnings.map((w, i) => (
@@ -467,6 +495,9 @@ function Rule({ rule, now, busy, act, error }: { rule: AssistantRule; now: numbe
       <div className="as-rule-main">
         <div className="as-rule-l">{rule.label}</div>
         {rule.paused && <div className="as-rule-paused">Paused: {rule.paused}</div>}
+        {rule.unsaved && <div className="as-rule-unsaved">{rule.unsaved}</div>}
+        {/* the label is the model's words: what the rule does is main's account of each action */}
+        <Actions actions={rule.actions.map((a) => a.detail ?? { line: a.label, warnings: [] })} />
         {lastRun}
         {error && (
           <div className="as-card-err" role="alert">

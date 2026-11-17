@@ -1,4 +1,4 @@
-import type { AssistantTier } from "../../shared/assistant";
+import type { ActionDetail, AssistantTier } from "../../shared/assistant";
 import type { AssistantDeps } from "./deps";
 
 /**
@@ -35,6 +35,21 @@ export interface ToolCard {
   warnings: string[];
   /** Shown in the danger color: bypass permissions, deleting a worktree. */
   danger?: boolean;
+  /** The text it types, sends or publishes, whole (AssistantCard.body). */
+  body?: string;
+  /** A standing rule's card: each of its actions (AssistantCard.actions). */
+  actions?: ActionDetail[];
+}
+
+/** What a call does with exactly its arguments, every payload whole (ActionDetail, its warnings optional). */
+export type ToolDetail = Omit<ActionDetail, "warnings"> & { warnings?: string[] };
+
+/**
+ * Who a call runs for. A standing rule's run acts with no one looking, so a tool may refuse more for it (typing into a
+ * session in a wider permission mode).
+ */
+export interface CallContext {
+  rule: boolean;
 }
 
 /** What a tool's run did. */
@@ -70,11 +85,16 @@ export interface AssistantTool<A = Record<string, unknown>> {
   inputSchema: JsonSchema & { type: "object" };
   /** The step's plain line: "Rename “api-fix” to “api”". */
   label(args: A): string;
-  /** Why it can't be done now, or null when it can. */
-  check?(args: A): string | null | Promise<string | null>;
+  /**
+   * Rule-able tools: what this call does, with every payload whole and the sessions it names by id, for a rule's card
+   * and the sheet's Rules list. Reads state, changes nothing. Without one, the label and its target say it.
+   */
+  describe?(args: A, ctx: CallContext): ToolDetail;
+  /** Why it can't be done now, or null when it can. The service passes `ctx` (rule: a standing rule runs it). */
+  check?(args: A, ctx?: CallContext): string | null | Promise<string | null>;
   /** Confirm tools: the card; without one, the card's title and detail are the label. */
   card?(args: A): ToolCard | Promise<ToolCard>;
-  run(args: A): ToolResult | Promise<ToolResult>;
+  run(args: A, ctx?: CallContext): ToolResult | Promise<ToolResult>;
   /** Confirm tools: false once the card's target has changed, which expires the card. */
   stillValid?(args: A): boolean;
   /** The session it acts on, for the activity log. */

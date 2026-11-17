@@ -5,8 +5,9 @@
  *
  * The query picks what it shows:
  * - ?assistant=open: the sheet open on a thread with a done direct step and a live Undo, an undone and a failed step, a
- *   running step, a proposed card, a danger card, a blocked card and a settled one, two rules (one on, one paused) and
- *   a rule run. Without ?assistant the same fixtures stand behind a closed sheet.
+ *   running step, a proposed card showing its prompt's pane lines, a danger card, a blocked card, a settled one and a
+ *   message card with its text whole and its warnings, two rules (one on, one paused) each with its actions spelled out,
+ *   and a rule run. Without ?assistant the same fixtures stand behind a closed sheet.
  * - ?assistant=empty: the sheet open on nothing yet. ?assistant=unavailable: the sheet open, and asking can't work on
  *   this Mac (the Ask row dimmed with the reason).
  * - ?assistantUndoMs=<ms>: the live Undo's window closes that long after load (else 4 minutes).
@@ -14,6 +15,7 @@
  *   and Cancel answer after one step, and a card Do it ran is done one step later.
  * - ?assistantAsk=error: asking answers { error }, as main does when it refuses one.
  * - ?assistantRulesProblem: the rules file couldn't be read, and was kept aside: the Rules section says so.
+ * - ?assistantRulesUnsaved: rule1 was turned off, but that couldn't be saved: it says it holds only until Mockingbird quits.
  */
 import { ASSISTANT_LIMITS, type AssistantCard, type AssistantRule, type AssistantStep, type AssistantTurn, type AssistantView, type RuleRun } from "../shared/assistant";
 
@@ -52,12 +54,34 @@ export function assistantFixtures(mode: string | null, now: number, undoMs: numb
       { id: "st6", tool: "worktree_cleanup", tier: "confirm", label: "Delete old-spike's worktree", state: "proposed", cardId: "c3" },
       { id: "st7", tool: "push", tier: "confirm", label: "Push 5101-orgDropdowns", state: "proposed", cardId: "c4" },
       { id: "st8", tool: "close", tier: "confirm", label: "Close test runner", state: "done", cardId: "c5" },
+      { id: "st9", tool: "send_to_session", tier: "confirm", label: "Send “API tests” a message", state: "proposed", cardId: "c6" },
     ],
   };
   const expires = now + ASSISTANT_LIMITS.cardMs;
   const cards: AssistantCard[] = [
     { id: "c1", turnId: "t2", tool: "restart", title: "Restart api-fix in plan mode", detail: "Stops its current turn and resumes the same conversation in plan mode.", warnings: [], state: "running", expiresAt: expires },
-    { id: "c2", turnId: "t2", tool: "answer_prompt", title: "Allow codex-review's Bash once?", detail: "Answers the prompt showing now: Bash runs npm test in 5101-orgDropdowns, this once.", warnings: [], state: "open", blocked: null, expiresAt: expires },
+    {
+      id: "c2",
+      turnId: "t2",
+      tool: "answer_prompt",
+      title: "Allow the prompt of “API: last org per user” · s2 · 5101/api, once",
+      detail: "Answers yes to “Claude needs your permission to use Bash”, this once: not “always allow”. Its next prompt asks again. Its pane shows now:",
+      body: [
+        " Bash command",
+        "",
+        "   npm test -- --run src/orgs",
+        "   Run the org dropdown tests",
+        "",
+        " Do you want to proceed?",
+        " ❯ 1. Yes",
+        "   2. Yes, and don't ask again for npm test commands in 5101-orgDropdowns",
+        "   3. No, and tell Claude what to do differently (esc)",
+      ].join("\n"),
+      warnings: [],
+      state: "open",
+      blocked: null,
+      expiresAt: expires,
+    },
     {
       id: "c3",
       turnId: "t2",
@@ -72,13 +96,38 @@ export function assistantFixtures(mode: string | null, now: number, undoMs: numb
     },
     { id: "c4", turnId: "t2", tool: "push", title: "Push 5101-orgDropdowns", detail: "Pushes the branch to origin.", warnings: [], state: "open", blocked: "Nothing to push: it's up to date with origin", expiresAt: expires },
     { id: "c5", turnId: "t2", tool: "close", title: "Close test runner", detail: "Ends the terminal.", warnings: [], state: "done", result: "Done: its terminal ended", expiresAt: expires },
+    {
+      id: "c6",
+      turnId: "t2",
+      tool: "send_to_session",
+      title: "Send “API tests” · s3 · 5101/api a message",
+      detail: "Types this into its prompt and sends it, as you would:",
+      body: "!npm run lint -- --fix && git add -A\n\nThen rerun the org dropdown tests and tell me which still fail in <OrgDropdown />.",
+      warnings: ["“API tests” · s3 · 5101/api runs in Auto mode: its agent acts on this without asking you first", "It starts with “!”: Codex may run it as a shell command rather than read it"],
+      state: "open",
+      blocked: null,
+      expiresAt: expires,
+    },
   ];
   const rules: AssistantRule[] = [
     {
       id: "rule1",
       label: "When tests finishes, start the review",
       trigger: { kind: "finished", target: { session: "s4" } },
-      actions: [{ tool: "start_review", args: { branch: "5101-orgDropdowns" }, label: "Start the review session" }],
+      actions: [
+        {
+          tool: "review_branch",
+          args: { session: "s1" },
+          label: "Have “#5101 — Org dropdowns remember the last org”'s branch reviewed",
+          detail: { line: "Have the other agent review the branch of “#5101 — Org dropdowns remember the last org” · s1 · 5101, in its folder, and report back to it", warnings: [] },
+        },
+        {
+          tool: "send_to_session",
+          args: { session: "s3", text: "The review is up: read its notes, fix what it found, and run the org dropdown tests again." },
+          label: "Send “API tests” a message",
+          detail: { line: "Type this into the prompt of “API tests” · s3 · 5101/api and send it", body: "The review is up: read its notes, fix what it found, and run the org dropdown tests again.", warnings: [] },
+        },
+      ],
       on: true,
       createdAt: now - 3 * 60 * min,
       paused: null,
@@ -88,7 +137,7 @@ export function assistantFixtures(mode: string | null, now: number, undoMs: numb
       id: "rule2",
       label: "At 9:00 on weekdays, text me what's waiting",
       trigger: { kind: "daily", at: "09:00", days: [1, 2, 3, 4, 5] },
-      actions: [{ tool: "text_me", args: { text: "Check what's waiting" }, label: "Text me: “Check what's waiting”" }],
+      actions: [{ tool: "text_me", args: { text: "Check what's waiting" }, label: "Text me: “Check what's waiting”", detail: { line: "Text me: “Check what's waiting”", warnings: [] } }],
       on: true,
       createdAt: now - 2 * 24 * 60 * min,
       paused: "3 runs failed in a row: Messages isn't allowed to send",
@@ -106,6 +155,11 @@ export function assistantApi(emit: Emit, params: URLSearchParams): Record<string
   const view = assistantFixtures(mode, Date.now(), Number(params.get("assistantUndoMs")) || 4 * min);
   if (params.has("assistantRulesProblem")) {
     view.rulesProblem = "Your rules file couldn't be read: it isn't valid JSON (Unexpected end of JSON input). It's kept as ~/.mockingbird/assistant-rules.json.corrupt-1763300000000. The 2 rules that could be read are kept.";
+  }
+  const rule1 = view.rules.find((r) => r.id === "rule1");
+  if (params.has("assistantRulesUnsaved") && rule1) {
+    rule1.on = false;
+    rule1.unsaved = "Off only until Mockingbird quits: it couldn't be saved (the rules file can't be saved over)";
   }
   const later = <T,>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), Math.min(stepMs, 120)));
   const wait = () => new Promise<void>((r) => setTimeout(r, stepMs));
@@ -190,6 +244,7 @@ export function assistantApi(emit: Emit, params: URLSearchParams): Record<string
       if (!rule) return err("That rule is gone");
       rule.on = on === true;
       if (rule.on) rule.paused = null;
+      if (rule.on) delete rule.unsaved;
       changed();
       return later(clone(rule));
     },

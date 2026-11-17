@@ -1,9 +1,12 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { AssistantRule, RuleAction, RuleRun, RuleTarget, RuleTrigger } from "../../shared/assistant";
+import type { ActionDetail, AssistantRule, RuleAction, RuleRun, RuleTarget, RuleTrigger } from "../../shared/assistant";
+import { plainLine } from "../../shared/team/agentText";
 import { isMissing, writeFileAtomic } from "../fileOps";
-import type { JsonSchema } from "./registry";
+import type { AssistantDeps } from "./deps";
+import { validateArgs, type AssistantTool, type JsonSchema } from "./registry";
+import { sessionRef } from "./tools/lookup";
 
 /**
  * The Assistant's standing rules (docs/assistant.md → Standing rules): what the service reads and changes (RulesStore),
@@ -15,9 +18,12 @@ export interface RulesStore {
   list(): AssistantRule[];
   /** The last runs, oldest first. */
   runs(): RuleRun[];
-  /** Turn rule `id` on or off: the rule as it is now, or null when there's no such rule. Throws when it can't be saved. */
+  /**
+   * Turn rule `id` on or off: the rule as it is now, or null when there's no such rule. Off holds even when it can't
+   * be saved (RuleBook.relax: the rule says so); on throws when it can't be saved.
+   */
   setOn(id: string, on: boolean): AssistantRule | null;
-  /** Remove rule `id`: false when there's no such rule. Throws when it can't be saved. */
+  /** Remove rule `id`: false when there's no such rule. Holds even when it can't be saved, as turning it off does. */
   remove(id: string): boolean;
   /** Called whenever list() or runs() changes, so the sheet hears of it. */
   onChanged?(cb: () => void): void;
@@ -49,6 +55,8 @@ export interface RulesApi {
   describe(trigger: RuleTrigger): string;
   /** The draft's actions as the rule keeps them: each with its tool's label (an unknown tool's is its name). */
   actions(draft: RuleDraft): RuleAction[];
+  /** The draft's actions as its card shows them (describeAction): every payload whole, sessions by id. */
+  details(draft: RuleDraft): ActionDetail[];
   /** Save `draft` as a new rule, on. Throws why not. */
   add(draft: RuleDraft): AssistantRule;
   /** Replace rule `id`'s label, trigger and actions with the draft's; it stays on or off as it was, and unpaused. Throws why not. */
@@ -57,7 +65,7 @@ export interface RulesApi {
   setOn(id: string, on: boolean): AssistantRule | null;
   /** Rule `id` on or off and paused as `state` says: an Undo of setOn. Throws why not. */
   putBack(id: string, state: { on: boolean; paused: string | null }): AssistantRule;
-  /** Remove rule `id`: it and where it was, or null when there's no such rule. Throws when it can't be saved. */
+  /** Remove rule `id`: it and where it was, or null when there's no such rule. Holds even when it can't be saved. */
   take(id: string): { rule: AssistantRule; index: number } | null;
   /** Put a removed rule back where it was: an Undo of take. Throws why not. */
   restore(rule: AssistantRule, index: number): void;
@@ -68,6 +76,12 @@ export interface RulesApi {
 // ---- never a rule's action ---------------------------------------------------------------------
 
 /**
+ * The permission modes a rule's action may never give a session: every one wider than the default (permissionModes.ts
+ * WIDER_MODES), and Claude's own name for bypass. Plan and the default are fine.
+ */
+const RULE_DENIED_MODES: readonly string[] = ["acceptEdits", "auto", "bypass", "bypassPermissions"];
+
+/**
  * What a standing rule may never do, whatever a tool's `rule` says (docs/assistant.md → Standing rules). A rule acts
  * without asking each time, so nothing here may be one of its actions: each is either a standing yes to whatever a
  * session asks next, or can't be taken back. Matched by tool name (each family's names, so a tool named a little
@@ -75,7 +89,10 @@ export interface RulesApi {
  */
 export const RULE_DENY_LIST: readonly { what: string; tool?: RegExp; args?: (args: Record<string, unknown>) => boolean }[] = [
   { what: "answering prompts (that would be a standing yes to every prompt)", tool: /^(answer|allow|deny|approve)_(a_)?(prompt|permission)s?$/ },
-  { what: "restarting or starting a session in bypass mode", args: (a) => [a.mode, a.permissionMode].some((m) => m === "bypass" || m === "bypassPermissions") },
+  {
+    what: "restarting or starting a session in a permission mode wider than the default (accept edits, auto or bypass mode)",
+    args: (a) => [a.mode, a.permissionMode].some((m) => typeof m === "string" && RULE_DENIED_MODES.includes(m)),
+  },
   { what: "closing a session with forget", args: (a) => a.forget === true },
   { what: "cleaning up a worktree", tool: /^(clean_?up|remove|delete)_worktrees?$/ },
   { what: "pushing", tool: /(^|_)push(_|$)/ },
@@ -90,6 +107,35 @@ export function ruleDenied(tool: string, args: Record<string, unknown>): string 
     if ((d.tool && d.tool.test(tool)) || (d.args && d.args(args))) return `A standing rule can't do this (${d.what})`;
   }
   return null;
+}
+
+/**
+ * Action `a` as a rule's card and the sheet's Rules list show it, built by main from arguments its tool's schema
+ * takes, never from the model's words: the tool's describe, else its label and the session it acts on by id. A call
+ * whose arguments don't fit, or a tool that's gone, says so instead.
+ */
+export function describeAction(tool: AssistantTool | undefined, a: { tool: string; args: Record<string, unknown> }, d: Pick<AssistantDeps, "sessions">, log: (context: string, err: unknown) => void): ActionDetail {
+  if (!tool) return { line: `${plainLine(a.tool, 64) || "an action"}: Mockingbird has no such tool`, warnings: [] };
+  const args = a.args && typeof a.args === "object" && !Array.isArray(a.args) ? a.args : {};
+  const bad = validateArgs(tool.inputSchema, args, "args");
+  if (bad) return { line: `${tool.name}: its ${bad}`, warnings: [] };
+  try {
+    if (tool.describe) {
+      const t = tool.describe(args, { rule: true });
+      return {
+        line: plainLine(t.line, 2_000) || tool.name,
+        ...(t.body !== undefined ? { body: t.body } : {}),
+        warnings: (t.warnings ?? []).map((w) => plainLine(w, 400)),
+        ...(t.danger ? { danger: true } : {}),
+      };
+    }
+    const label = plainLine(tool.label(args), 160) || tool.name;
+    const target = tool.target?.(args);
+    return { line: target ? `${label} (${sessionRef(d, target.session)})` : label, warnings: [] };
+  } catch (err) {
+    log(`assistant rules: describing a ${tool.name} action`, err);
+    return { line: `${tool.name}: it couldn't be described (${message(err)})`, warnings: [] };
+  }
 }
 
 // ---- shape -------------------------------------------------------------------------------------
@@ -189,29 +235,34 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
  * The rules as `~/.mockingbird/assistant-rules.json` keeps them, written whole and atomically on every change. A file
  * that can't be read, isn't JSON, or holds a rule that isn't one is never overwritten: it's renamed aside
  * (`<file>.corrupt-<time>`), logged, and named in the sheet (problem()); whatever rules in it could be read are kept.
- * A file that can't even be moved aside leaves the rules unchangeable, so no save can replace it.
+ * A file that can't even be moved aside is never saved over: rules can't be made, changed or turned on, but turning
+ * one off, removing one and pausing one hold in memory (relax), so a rule the user stopped never runs again here.
  */
 export class RuleBook {
   private rules: AssistantRule[] = [];
   private trouble: string | null = null;
   private stuck = false;
+  /** Rules turned off or paused here since the last save that worked, and why it didn't. */
+  private readonly held = new Map<string, string>();
+  /** Why the last save failed, while something here holds only in memory; null once a save works. */
+  private saveTrouble: string | null = null;
 
   constructor(private readonly o: { file: string; log: (context: string, err: unknown) => void; now?: () => number }) {
     this.load();
   }
 
-  /** Why the file couldn't be read as it was, and where it went; null when it could. */
+  /** Why the file couldn't be read as it was and where it went, or that what's changed since couldn't be saved; null when neither. */
   problem(): string | null {
-    return this.trouble;
+    return [this.trouble, this.saveTrouble].filter(Boolean).join(" ") || null;
   }
 
   list(): AssistantRule[] {
-    return structuredClone(this.rules);
+    return this.rules.map((r) => this.shown(r));
   }
 
   get(id: string): AssistantRule | null {
     const r = this.rules.find((x) => x.id === id);
-    return r ? structuredClone(r) : null;
+    return r ? this.shown(r) : null;
   }
 
   /** Change the rules with `edit` (on a copy), then save: the change is kept only once it's saved. Throws why not. */
@@ -224,6 +275,18 @@ export class RuleBook {
   }
 
   /**
+   * A change that only stops rules (turning `ids` off, removing them): kept here whether or not it can be saved, so a
+   * rule the user stopped never runs again while Mockingbird does. Saved when it can be; else logged, and the rules
+   * it left (list()) and problem() say it holds only until Mockingbird quits.
+   */
+  relax(ids: string[], edit: (rules: AssistantRule[]) => void): void {
+    const next = structuredClone(this.rules);
+    edit(next);
+    this.rules = next;
+    this.saveOrHold(ids, `turning off or removing ${ids.join(", ")}`);
+  }
+
+  /**
    * Rule `id`'s run record or pause, which Mockingbird writes as rules run: kept in memory even when it can't be saved
    * (the sheet shows it), and the failed save logged; the next save that works writes it.
    */
@@ -231,17 +294,39 @@ export class RuleBook {
     const r = this.rules.find((x) => x.id === id);
     if (!r) return null;
     Object.assign(r, structuredClone(patch));
-    if (this.stuck) return structuredClone(r);
+    this.saveOrHold(patch.paused ? [id] : [], `rule ${id}'s ${patch.paused ? "pause" : "last run"}`);
+    return this.shown(r);
+  }
+
+  /** Save what's here; when it can't be, `ids` hold in memory only, saying why. */
+  private saveOrHold(ids: string[], what: string): void {
+    if (this.stuck) {
+      for (const id of ids) this.held.set(id, "the rules file can't be saved over");
+      return;
+    }
     try {
       this.save(this.rules);
     } catch (err) {
-      this.o.log(`assistant rules: saving rule ${id}'s last run in ${this.o.file}`, err);
+      this.o.log(`assistant rules: saving ${what} in ${this.o.file}`, err);
+      if (!ids.length) return;
+      for (const id of ids) this.held.set(id, message(err));
+      this.saveTrouble = `Rules couldn't be saved to ${tilde(this.o.file)} (${message(err)}): what's been turned off, paused or removed since holds only until Mockingbird quits.`;
     }
-    return structuredClone(r);
   }
 
+  /** Every save writes the rules whole, so what was held in memory only is in the file once one works. */
   private save(rules: AssistantRule[]): void {
     writeFileAtomic(this.o.file, `${JSON.stringify({ version: FILE_VERSION, rules }, null, 2)}\n`, 0o600);
+    this.held.clear();
+    this.saveTrouble = null;
+  }
+
+  /** Rule `r` as the sheet and the tools read it: a copy, saying when its off or pause holds only in memory. */
+  private shown(r: AssistantRule): AssistantRule {
+    const c = structuredClone(r);
+    const why = this.held.get(r.id);
+    if (why && (!r.on || r.paused)) c.unsaved = `${r.on ? "Paused" : "Off"} only until Mockingbird quits: it couldn't be saved (${why})`;
+    return c;
   }
 
   private load(): void {
@@ -282,7 +367,9 @@ export class RuleBook {
       fs.renameSync(this.o.file, aside);
     } catch (err) {
       this.stuck = true;
-      this.trouble = `Your rules file (${tilde(this.o.file)}) couldn't be read: ${why}. It couldn't be moved aside either (${message(err)}), so rules can't be changed until it's fixed or removed.`;
+      this.trouble =
+        `Your rules file (${tilde(this.o.file)}) couldn't be read: ${why}. It couldn't be moved aside either (${message(err)}), so nothing is saved over it until it's fixed or removed: ` +
+        "rules can't be made, changed or turned on, and turning one off or removing it holds only until Mockingbird quits.";
       this.o.log("assistant rules", new Error(this.trouble));
       return;
     }

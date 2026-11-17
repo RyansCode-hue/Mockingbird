@@ -40,17 +40,35 @@ Every tool has a tier, fixed in main's registry. The model can't change it.
 |---|---|---|
 | **read** | Runs and returns data | list sessions, what's waiting, usage, git status, why it's stuck |
 | **direct** | Runs, and its step shows **Undo** while what it changed is unchanged since (10 min, in memory) | focus, move/stack/size/arrange, move to a group, create/rename a group, rename, mute, settings toggles, draw or remove a wire |
-| **confirm** | Nothing happens: a **card** appears in the sheet, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, create or change a standing rule |
+| **confirm** | Nothing happens: a **card** appears in the sheet, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, create, change or turn on a standing rule |
 
-- A card names the exact target and effect ("Restart api-fix in plan mode:
-  stops its current turn and resumes the same conversation"), and lists its
-  warnings: uncommitted changes, unpushed commits, mid-turn, and the
-  danger color for bypass permissions or deleting a worktree.
+- A card names the exact target and effect ("Restart “api-fix” · s5 ·
+  atticus in Plan mode: stops its agent and starts it again on the same
+  conversation"), and lists its warnings: uncommitted changes, unpushed
+  commits, mid-turn, and the danger color for bypass permissions or deleting
+  a worktree.
+- **Sessions by id**: every card names a session as its title, its id and
+  its group, else its folder (`lookup.ts` sessionRef). Titles are changed by
+  the model, agents and teammates, and two sessions may share one.
+- **The payload whole**: what a card types, sends or publishes is in its
+  body, every character of it, shown as plain text in a scrolling monospace
+  block (never HTML): a message or broadcast (up to 4,000), a first prompt
+  (8,000), a preset's kickoff, a pull request's description (4,000). It
+  warns when the target runs in a mode wider than the default (bypass in the
+  danger color), and when the text starts with "!" or "/", which Claude and
+  Codex may run as a shell or slash command.
+- An allow/deny card shows what the prompt asks: the pane's last lines as
+  displayed (ANSI taken out, through the same output read as session_detail,
+  guarded by whyNot("readOutput"), so never the Helpdesk workspace's). When
+  they can't be read, the card says so and to answer it in the pane.
 - **Guards are checked twice**: when the card is made, so it says why it
   can't be done, and again on Do it, against the state then. A card expires
   after 30 minutes, or sooner when its target changes. An allow/deny card
   expires as soon as the prompt it was about is no longer the one showing,
-  the same check phone replies make.
+  the same check phone replies make. A Do it that plans again (open_pr,
+  start_from_ticket, cleanup_worktree, turning a rule on) compares the plan
+  with what the card showed and refuses what differs: "It changed since the
+  card: ask again".
 - Every action that runs, from a card, a direct step, an Undo or a rule,
   goes into the activity log (`assistant.action`, remoteAudit.ts) with its
   tool, target, outcome and source.
@@ -123,7 +141,7 @@ kept through every relaunch like its model and effort.
 | Rooms | rooms, House board | — | share, leave, take over, room sandbox switch, claim/release a ticket |
 | Settings | settings | notifications, finished alerts, quiet hours, phone alerts on/off (once set up) | — |
 | Diagnose | stuck/exited detail, closed output tail (never Helpdesk's), usage and meters, which session touched a file (overlaps, turn changes, transcript search without Helpdesk) | — | — |
-| Standing rules | list rules | turn a rule on/off, remove one | create or change a rule |
+| Standing rules | list rules | turn a rule off, remove one | create, change or turn on a rule |
 
 Typing into a session (and a broadcast) refuses, or skips, a session waiting
 on a permission prompt: keys typed there would answer it, past answer_prompt's
@@ -173,8 +191,15 @@ one-prompt check and the rules' ban on answering prompts.
 
 ## Standing rules
 
-- **Made only through a card.** The card shows the trigger and each action,
-  and says that once it's on, it runs them without asking each time.
+- **Made, changed and turned on only through a card.** The card shows the
+  trigger and each action as main spells it out from its arguments
+  (`describe`, rules.ts describeAction), never the model's label: the full
+  text it types, a first prompt whole, the mode, model and group, the
+  sessions it names by id, the warnings each would carry, and the danger
+  color. It says that once it's on, it runs them without asking each time.
+  The sheet's Rules list shows each rule's actions the same way, built again
+  by main each time it's read. Turning a rule off (`turn_rule_off`) is direct
+  with Undo; turning one on (`turn_rule_on`, which clears a pause) is a card.
 - **Triggers are app state, never text**: a session's turn finished, it has
   waited on you N minutes, it exited, or a time of day (`HH:MM`, chosen
   weekdays). The target is a session, a group, or any session.
@@ -183,11 +208,15 @@ one-prompt check and the rules' ban on answering prompts.
   have: a desktop notification, and texting you (phone alerts' sender to
   your own handle; a development build only logs it).
 - **Not allowed in a rule**: allowing or denying prompts (that would be a
-  standing yes to every prompt), bypass mode, closing with forget, worktree
-  cleanup, push or PR, leaving a room, take-over, starting from a House
-  ticket (it claims the ticket on the room's shared board), and moving a
-  session across a team room's boundary (`move_across_room` isn't rule-able,
-  and a rule's `set_group` is refused there on every run).
+  standing yes to every prompt), any permission mode wider than the default
+  (accept edits, auto, bypass; plan and the default are fine), closing with
+  forget, worktree cleanup, push or PR, leaving a room, take-over, starting
+  from a House ticket (it claims the ticket on the room's shared board), and
+  moving a session across a team room's boundary (`move_across_room` isn't
+  rule-able, and a rule's `set_group` is refused there on every run).
+- When a rule runs, it types nothing into a session that runs in a wider
+  mode then: send_to_session is refused, and a broadcast leaves it out,
+  saying so in the run.
 - **Limits**: at most 20 rules, 5 actions each. A rule runs at most once per
   trigger event and 6 times an hour. After 3 failed runs in a row it pauses
   itself and says why. Guards are checked on every run.
@@ -209,6 +238,13 @@ one-prompt check and the rules' ban on answering prompts.
   memory only. A rules file that can't be read is never overwritten: it's
   kept aside as `assistant-rules.json.corrupt-<time>`, logged, and the
   sheet's Rules section says so; the rules that could be read are kept.
+- Turning a rule off, removing it and pausing it hold in memory even when
+  they can't be saved (a file that couldn't be moved aside, a failed write),
+  so a rule the user stopped never runs again while Mockingbird does; the
+  rule and the Rules section say it holds only until Mockingbird quits.
+  Making, changing or turning on a rule must be saved, or it's refused.
+- Who wrote the rules file isn't checked: a process of the user's that
+  could write it could already run anything as the user.
 
 ## The sheet and ⌘K
 
@@ -221,7 +257,9 @@ one-prompt check and the rules' ban on answering prompts.
 - **The sheet** docks at the right edge, over the landscape, and stays until
   you close it. It holds the thread (your words, its reply, step rows with
   state, Undo on direct steps), open cards (Do it / Cancel), recent rule runs,
-  and a **Rules** section (on/off, remove). It never takes the keyboard from
+  and a **Rules** section (on/off, remove, each rule's actions spelled out by
+  main). The user's own switch there is direct; only the Assistant's turning
+  one on is a card. It never takes the keyboard from
   a session: clicking its buttons hands the keys back the way the landscape's
   tab and × buttons do (keyArm.ts).
 - While the sheet is open, the landscape keeps what it brings into view clear
@@ -238,8 +276,10 @@ one-prompt check and the rules' ban on answering prompts.
   gives it only the Assistant's tools. `dispatch` refuses Assistant tools
   from any other caller, and pane tools from the Assistant.
 - **Registry:** `src/main/assistant/` — `registry.ts` (the tool type: name,
-  tier, schema, `label(args)`, `check(args)` → why not, `run(args)` → result
-  plus undo for direct tools, `rule?: boolean`), and one file per group
+  tier, schema, `label(args)`, `describe?(args)` → the call whole for a
+  rule's card, `check(args, ctx)` → why not, `run(args, ctx)` → result plus
+  undo for direct tools, `ctx.rule` when a standing rule runs it,
+  `rule?: boolean`), and one file per group
   under `tools/`. The cards, undo, rules and turn runner use only the
   registry.
 - **Window-only steps** (focus, camera) go to the window as

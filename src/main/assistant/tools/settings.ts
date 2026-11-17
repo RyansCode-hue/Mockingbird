@@ -92,6 +92,11 @@ export function settingTools(d: Deps): AssistantTool[] {
         additionalProperties: false,
       },
       label: (a) => (isSettingKey(a.setting) ? `Turn ${WORDS[a.setting]} ${a.on ? "on" : "off"}` : `Change ${String(a.setting).slice(0, 40)}`),
+      describe: (a) => ({
+        line: isSettingKey(a.setting)
+          ? `Turn ${WORDS[a.setting]} ${a.on ? "on" : "off"}${a.from || a.to ? `, ${a.from ?? "as set"} to ${a.to ?? "as set"}` : ""}`
+          : `Change ${String(a.setting).slice(0, 40)}`,
+      }),
       check: (a) => {
         const w = wanted(a, d.settingsSeen());
         return "refused" in w ? w.refused : null;

@@ -118,7 +118,7 @@ describe("the Assistant's wire tools", () => {
     const t = await h.turn("send the handoff", async (call) => (await call("send_handoff", { wire: id, pending: `p-${id}` }), "Card up."));
     expect(w.sent).toEqual([]);
     const card = await h.card(t.steps[0].cardId!);
-    expect(card).toMatchObject({ title: "Send what waits on the handoff from “Builder” to “Reviewer”", detail: expect.stringContaining("11 characters"), state: "open", blocked: null });
+    expect(card).toMatchObject({ title: "Send what waits on the handoff from “Builder” · a1 · atticus to “Reviewer” · a2 · atticus", detail: expect.stringContaining("11 characters"), state: "open", blocked: null });
     expect(await h.svc.confirm(card.id)).toMatchObject({ state: "done" });
     expect(w.sent).toEqual([{ id, pending: `p-${id}`, body: "the summary" }]);
   });

@@ -3,7 +3,7 @@ import { BRANCH_RE, isTicketNumber } from "../../../shared/team/house";
 import type { TakeoverPlan } from "../../../shared/team/takeover";
 import type { AssistantDeps, AssistantRoom } from "../deps";
 import { defineTool, type AssistantTool, type JsonSchema, type ToolCard } from "../registry";
-import { SESSION_ARG } from "./lookup";
+import { SESSION_ARG, sessionRef } from "./lookup";
 
 /**
  * Rooms (docs/assistant.md → Ability groups; docs/team-rooms.md): the House board to read, and every room action as a
@@ -35,6 +35,8 @@ const TICKET_ARG: JsonSchema = { type: "integer", minimum: 1, maximum: 1_000_000
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err)) || "it failed without saying why";
 
 export function roomTools(d: Deps): AssistantTool[] {
+  /** A session as a card names it (lookup.ts sessionRef), from the landscape's sessions: these tools read no records. */
+  const ref = (id: string) => sessionRef({ sessions: () => d.sessions() }, id);
   /** The room `arg` names (by id, name or group key), or why none does. */
   const roomOf = (arg: string): AssistantRoom | { refused: string } => {
     const hits = d.rooms().filter((r) => r.id === arg || r.name === arg || r.group === arg);
@@ -164,7 +166,7 @@ export function roomTools(d: Deps): AssistantTool[] {
       },
       card: async (a): Promise<ToolCard> => {
         const p = await plan(a.session);
-        if ("refused" in p) return { title: `Take over ${a.session}`, detail: p.refused, warnings: [] };
+        if ("refused" in p) return { title: `Take over ${ref(a.session)}`, detail: p.refused, warnings: [] };
         const x = p.plan;
         const warnings: string[] = [];
         if (x.grant.kind === "offline") warnings.push(`${x.ownerName} is offline: it goes ahead without asking them.`);
@@ -173,7 +175,7 @@ export function roomTools(d: Deps): AssistantTool[] {
         if (x.conversation.kind === "partial") warnings.push(`Only part of the conversation reached this Mac (${x.conversation.have} of ${x.conversation.of}).`);
         if (x.conversation.kind === "none") warnings.push("None of the conversation reached this Mac: it starts from a brief of the snapshot.");
         return {
-          title: `Take over “${x.title}” from ${x.ownerName}`,
+          title: `Take over ${ref(a.session)} from ${x.ownerName}`,
           detail:
             `Continues it on this Mac in a worktree${x.branch ? ` on ${x.branch}` : ""} of ${x.clone}, from ${x.snapshot ? `the snapshot of ${ago(x.snapshot.takenAt)}` : "its newest snapshot"}, ` +
             `under your account.${x.grant.kind === "ask" ? ` ${x.ownerName} is online: they're asked first, and their agent stops when they hand it over.` : ""}`,

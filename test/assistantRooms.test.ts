@@ -138,7 +138,8 @@ describe("the Assistant's room tools", () => {
     expect(await take.check!({ session: "a1" })).toContain("isn't a teammate's room session");
     const { card, done } = await confirmed(w, "take_over", { session: "r~nick~x" });
     expect(card).toMatchObject({
-      title: "Take over “Nick's api” from Nick",
+      // named as every card names a session: its landscape title, its id and its group
+      title: "Take over “r~nick~x” · r~nick~x · atticus from Nick",
       detail: expect.stringContaining("on feature/143-api of /code/atticus, from the snapshot of 5m ago"),
       warnings: ["A newer snapshot was announced than any that reached this Mac.", "Only part of the conversation reached this Mac (3 of 4)."],
     });

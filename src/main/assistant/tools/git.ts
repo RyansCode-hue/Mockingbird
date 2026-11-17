@@ -2,7 +2,7 @@ import { plainLine } from "../../../shared/team/agentText";
 import { ticketOfSession, type PrPreflight, type PrTarget, type SessionInfo, type WorktreeEntry, type WorktreeStateInfo } from "../../../shared/types";
 import type { AssistantDeps } from "../deps";
 import { defineTool, type AssistantTool } from "../registry";
-import { noSession, SESSION_ARG, sessionById, teammates } from "./lookup";
+import { CHANGED_SINCE_CARD, noSession, SESSION_ARG, sessionById, sessionRef, teammates } from "./lookup";
 import { cardSaw, nameOf, openRecord } from "./sessions";
 
 /**
@@ -33,6 +33,9 @@ const worktreeListed = (w: WorktreeEntry) =>
     ? { repo: w.repoName, path: w.path, error: plainLine(w.error, 200) }
     : { repo: w.repoName, path: w.path, branch: w.branch, dirtyFiles: w.dirtyFiles, ahead: w.ahead, behind: w.behind, ageDays: w.ageDays, ...(w.inUse ? { inUse: true } : {}) };
 
+/** What open_pr would push and open, as its card says it: a plan read again since that differs is another card's. */
+const prShape = (p: { ticket: string; pre: PrPreflight }) => JSON.stringify([p.ticket, p.pre.branch, p.pre.base, p.pre.commits, p.pre.remote?.provider ?? null, p.pre.remote?.repo ?? null]);
+
 /** A cleanup's worktree as its card saw it: what removing it would lose then. */
 type SeenTree = { branch: string; dirtyFiles: number; ahead: number };
 
@@ -41,6 +44,8 @@ export function gitTools(d: Deps): AssistantTool[] {
   const treeSaw = cardSaw<SeenTree>();
   const pushSaw = cardSaw<string>();
   const prSaw = cardSaw<{ ticket: string; pre: PrPreflight }>();
+  /** The plan open_pr's card showed; null when it showed none (it couldn't be planned then). */
+  const prShown = cardSaw<{ ticket: string; pre: PrPreflight } | null>();
 
   /** This Mac's open session `id` in a repository, or why not. */
   const inRepo = (id: string, what: string): SessionInfo | { why: string } => {
@@ -238,11 +243,11 @@ export function gitTools(d: Deps): AssistantTool[] {
       },
       card: async (a) => {
         const p = await pushPlan(a.session);
-        if ("why" in p) return { title: `Push ${nameOf(d, a.session)}'s branch`, detail: p.why, warnings: [] };
+        if ("why" in p) return { title: `Push the branch of ${sessionRef(d, a.session)}`, detail: p.why, warnings: [] };
         pushSaw.set(a, p.branch);
         const dirty = p.st.dirty ? Math.max(1, p.st.dirtyFiles) : 0;
         return {
-          title: `Push ${p.branch} from ${nameOf(d, a.session)}`,
+          title: `Push ${p.branch} from ${sessionRef(d, a.session)}`,
           detail: `Pushes ${p.branch}'s commits to origin, a plain push that's never forced.`,
           warnings: [
             ...(dirty ? [`${plural(dirty, "file has", "files have")} uncommitted changes, which aren't pushed`] : []),
@@ -287,17 +292,26 @@ export function gitTools(d: Deps): AssistantTool[] {
       check: async (a) => {
         const p = await prPlan(a.session, a.target ?? "dev");
         if ("why" in p) return p.why;
+        // Do it plans again: what's pushed and opened must be what the card showed, or nothing is
+        if (prShown.has(a)) {
+          const shown = prShown.get(a);
+          if (!shown || prShape(shown) !== prShape(p)) return CHANGED_SINCE_CARD;
+        }
         prSaw.set(a, p);
         return null;
       },
       card: (a) => {
         const p = prSaw.get(a);
-        if (!p) return { title: `Open a pull request from ${nameOf(d, a.session)}`, detail: "It can't be opened now.", warnings: [] };
+        prShown.set(a, p ?? null);
+        if (!p) return { title: `Open a pull request from ${sessionRef(d, a.session)}`, detail: "It can't be opened now.", warnings: [] };
         const where = p.pre.remote!.provider === "ado" ? "Azure DevOps" : "GitHub";
         return {
-          title: `Open a pull request for #${p.ticket} from ${nameOf(d, a.session)}`,
-          detail: `Pushes ${p.pre.branch} to origin (never forced), then opens a pull request from it into ${p.pre.base} on ${where} (${plainLine(p.pre.remote!.repo, 120)}), linked to #${p.ticket}: “${plainLine(a.title, 200)}”.`,
-          warnings: [`${plural(p.pre.commits, "commit", "commits")} go in it`, ...(a.description ? [`Its description: “${plainLine(a.description, 200)}${a.description.length > 200 ? "…" : ""}”`] : ["It has no description"])],
+          title: `Open a pull request for #${p.ticket} from ${sessionRef(d, a.session)}`,
+          detail:
+            `Pushes ${p.pre.branch} to origin (never forced), then opens a pull request from it into ${p.pre.base} on ${where} (${plainLine(p.pre.remote!.repo, 120)}), linked to #${p.ticket}: “${plainLine(a.title, 200)}”.` +
+            (a.description ? " Its description, below, is published with it." : ""),
+          ...(a.description ? { body: a.description } : {}),
+          warnings: [`${plural(p.pre.commits, "commit", "commits")} go in it`, ...(a.description ? [] : ["It has no description"])],
         };
       },
       stillValid: (a) => !!openRecord(d, a.session),

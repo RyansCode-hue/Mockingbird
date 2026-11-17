@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { ASSISTANT_LIMITS, type AssistantRule, type RuleTrigger } from "../src/shared/assistant";
+import { WIDER_MODES } from "../src/shared/permissionModes";
 import { DEFAULT_SETTINGS, type Settings } from "../src/shared/types";
 import type { AssistantGroup, AssistantSession } from "../src/main/assistant/deps";
 import type { AssistantTool } from "../src/main/assistant/registry";
@@ -114,25 +115,77 @@ describe("the rules file", () => {
     fs.chmodSync(dir, 0o500);
     onTestFinished(() => fs.chmodSync(dir, 0o700));
     const t = setup({ file, sessions: [sess("s1"), sess("s2")], tools: [focusTool()] });
-    expect(t.engine.problem()).toMatch(/couldn't be moved aside either .*rules can't be changed until it's fixed or removed/);
+    expect(t.engine.problem()).toMatch(/couldn't be moved aside either .*nothing is saved over it until it's fixed or removed: rules can't be made, changed or turned on/);
     expect(() => t.engine.add(draft())).toThrow(/Rules can't be changed now/);
     fs.chmodSync(dir, 0o700);
     expect(fs.readFileSync(file, "utf8")).toBe("not json");
   });
 
-  it("turning a paused rule on clears its pause, from the sheet; a rule that's gone, or a save that fails, says so", async () => {
+  it("a stuck file's readable rules can still be turned off and removed, in memory: a rule turned off never runs, and says it holds only until Mockingbird quits", async () => {
+    const dir = tempDir("rules");
+    const file = path.join(dir, "assistant-rules.json");
+    const rule = (id: string) => ({ id, label: `Rule ${id}`, trigger: finishedOf("s1"), actions: [{ tool: "focus_it", args: { session: "s2" }, label: "Focus s2" }], on: true, createdAt: 5, paused: null, lastRun: null });
+    const raw = JSON.stringify({ version: 1, rules: [rule("r1"), rule("r2"), { id: "bad", label: "Bad", trigger: { kind: "whenever" }, actions: [], on: true, createdAt: 5 }] });
+    fs.writeFileSync(file, raw);
+    fs.chmodSync(dir, 0o500);
+    onTestFinished(() => fs.chmodSync(dir, 0o700));
+    const focus = focusTool();
+    const t = setup({ file, sessions: [sess("s1"), sess("s2")], tools: [focus] });
+    expect(t.engine.list().map((r) => r.id)).toEqual(["r1", "r2"]);
+    expect(t.engine.problem()).toMatch(/couldn't be moved aside either/);
+
+    // from the sheet: off holds, though nothing is saved
+    expect(t.h.svc.ruleOn("r1", false)).toMatchObject({ id: "r1", on: false, unsaved: "Off only until Mockingbird quits: it couldn't be saved (the rules file can't be saved over)" });
+    // from a turn: turn_rule_off holds the same way
+    const off = await t.h.turn("turn r2 off", async (call) => (await call("turn_rule_off", { rule: "r2" }), "Off."));
+    expect(off.steps[0]).toMatchObject({ state: "done" });
+    t.engine.finished("s1", 1);
+    await t.engine.settled();
+    expect(focus.runs).toEqual([]);
+    expect(t.engine.runs()).toEqual([]);
+    const view = await t.h.svc.view();
+    expect(view.rules.map((r) => [r.id, r.on, r.unsaved])).toEqual([
+      ["r1", false, expect.stringMatching(/^Off only until Mockingbird quits/)],
+      ["r2", false, expect.stringMatching(/^Off only until Mockingbird quits/)],
+    ]);
+    // turning one on again must be saved, so it's refused; removing one holds
+    expect(t.h.svc.ruleOn("r1", true)).toEqual({ error: expect.stringContaining("Rules can't be changed now") });
+    expect(t.engine.get("r1")!.on).toBe(false);
+    expect(t.h.svc.ruleRemove("r2")).toEqual({ ok: true });
+    expect(t.engine.list().map((r) => r.id)).toEqual(["r1"]);
+    fs.chmodSync(dir, 0o700);
+    expect(fs.readFileSync(file, "utf8")).toBe(raw);
+  });
+
+  it("turning a paused rule on clears its pause, from the sheet; turning one on that can't be saved says so, while off and remove hold unsaved", async () => {
     const t = setup({ sessions: [sess("s1"), sess("s2")], tools: [focusTool()] });
     const r = t.engine.add(draft());
+    const other = t.engine.add(draft({ label: "Other" }));
     t.book.note(r.id, { paused: "3 runs failed in a row: Focus s2: it's gone" });
     expect(t.h.svc.ruleOn(r.id, true)).toMatchObject({ id: r.id, on: true, paused: null });
     expect(new RuleBook({ file: t.file, log: () => {} }).get(r.id)).toMatchObject({ on: true, paused: null });
     expect(t.h.svc.ruleOn("nope", true)).toEqual({ error: "No such rule" });
+    t.engine.setOn(other.id, false);
     fs.chmodSync(path.dirname(t.file), 0o500);
     onTestFinished(() => fs.chmodSync(path.dirname(t.file), 0o700));
-    expect(t.h.svc.ruleOn(r.id, false)).toEqual({ error: expect.stringContaining("It couldn't be saved") });
-    expect(t.engine.get(r.id)!.on).toBe(true);
-    expect(t.h.svc.ruleRemove(r.id)).toEqual({ error: expect.stringContaining("It couldn't be saved") });
-    expect(t.engine.get(r.id)).not.toBeNull();
+    expect(t.h.svc.ruleOn(other.id, true)).toEqual({ error: expect.stringContaining("It couldn't be saved") });
+    expect(t.engine.get(other.id)!.on).toBe(false);
+    // off and remove stop a rule: they hold here, saying so, and the failed save is logged and shown
+    expect(t.h.svc.ruleOn(r.id, false)).toMatchObject({ on: false, unsaved: expect.stringMatching(/^Off only until Mockingbird quits: it couldn't be saved \(.+\)$/) });
+    expect(t.engine.problem()).toMatch(/^Rules couldn't be saved to .*: what's been turned off, paused or removed since holds only until Mockingbird quits\.$/);
+    expect(t.log.some((l) => l.includes(`saving turning off or removing ${r.id}`))).toBe(true);
+    expect(t.h.svc.ruleRemove(other.id)).toEqual({ ok: true });
+    expect(t.engine.list().map((x) => x.id)).toEqual([r.id]);
+    expect(new RuleBook({ file: t.file, log: () => {} }).list().map((x) => [x.id, x.on])).toEqual([
+      [r.id, true],
+      [other.id, false],
+    ]);
+    // the next save that works writes what was held
+    fs.chmodSync(path.dirname(t.file), 0o700);
+    t.book.note(r.id, { lastRun: { at: 1, ok: true, text: "x" } });
+    expect(new RuleBook({ file: t.file, log: () => {} }).list().map((x) => [x.id, x.on])).toEqual([[r.id, false]]);
+    expect(t.engine.get(r.id)!.unsaved).toBeUndefined();
+    expect(t.engine.problem()).toBeNull();
   });
 });
 
@@ -292,9 +345,15 @@ describe("what a rule may never do", () => {
     expect(ruleDenied("relaunch_session", { session: "s1", mode: "bypass" })).toMatch(/bypass mode/);
     expect(ruleDenied("start_session", { permissionMode: "bypassPermissions" })).toMatch(/bypass mode/);
     expect(ruleDenied("close_session", { session: "s1", forget: true })).toMatch(/forget/);
+    // every mode wider than the default, by either argument's name
+    for (const mode of WIDER_MODES) {
+      for (const key of ["mode", "permissionMode"]) expect(ruleDenied("restart_session", { session: "s1", [key]: mode }), `${key} ${mode}`).toMatch(/permission mode wider than the default/);
+    }
     for (const [name, args] of [
       ["focus_session", { session: "s1" }],
       ["relaunch_session", { session: "s1", mode: "plan" }],
+      ["restart_session", { session: "s1", permissionMode: "plan" }],
+      ["start_session", { agent: "claude", permissionMode: "default" }],
       ["close_session", { session: "s1", forget: false }],
       ["pr_status", {}],
       ["notify", { text: "push it, then open a PR" }],
@@ -332,7 +391,7 @@ describe("what a rule may never do", () => {
     await t.engine.settled();
     expect(restart.runs).toEqual([]);
     expect(answer.runs).toEqual([]);
-    expect(t.engine.runs()[0]).toMatchObject({ ok: false, text: expect.stringMatching(/^Restart in bypass: A standing rule can't do this \(restarting or starting a session in bypass mode\)/) });
+    expect(t.engine.runs()[0]).toMatchObject({ ok: false, text: expect.stringMatching(/^Restart in bypass: A standing rule can't do this \(restarting or starting a session in a permission mode wider than the default \(accept edits, auto or bypass mode\)\)/) });
     expect(t.engine.runs()[0].steps.map((s) => [s.state, s.error])).toEqual([
       ["failed", expect.stringContaining("bypass mode")],
       ["failed", "Not run: the action before it failed"],
@@ -531,11 +590,16 @@ describe("the rule tools", () => {
     const card = await t.h.card(turn.steps[0].cardId!);
     expect(card).toMatchObject({
       title: "Make the rule “When tests finishes, focus review”",
-      detail: "When “tests” finishes a turn: Focus s2; then Notify me: “Tests done”.",
+      detail: "When “tests” · s1 finishes a turn, it does these 2, in order:",
+      actions: [
+        { line: "Focus s2", warnings: [] },
+        { line: "Notify me: “Tests done”", warnings: [] },
+      ],
       warnings: ["Once it's on, it does these each time without asking you."],
       blocked: null,
       state: "open",
     });
+    expect(card.danger).toBeUndefined();
     expect(await t.h.svc.confirm(card.id)).toMatchObject({ state: "done", result: expect.stringMatching(/^Made the rule “When tests finishes, focus review” \(r-.*\): it's on\.$/) });
     const [rule] = t.engine.list();
     expect(rule).toMatchObject({
@@ -595,7 +659,8 @@ describe("the rule tools", () => {
     const card = await t.h.card(turn.steps[0].cardId!);
     expect(card).toMatchObject({
       title: "Change the rule “When tests finishes, focus review”",
-      detail: "From now on: When “tests” exits: Focus s2.",
+      detail: "From now on: When “tests” · s1 exits, it does this:",
+      actions: [{ line: "Focus s2", warnings: [] }],
       warnings: ["Once it's on, it does these each time without asking you.", "It's off, and stays off until you turn it on."],
       blocked: null,
     });
@@ -612,26 +677,59 @@ describe("the rule tools", () => {
     expect(await t.h.card(gone.steps[0].cardId!)).toMatchObject({ state: "expired" });
   });
 
-  it("set_rule_on and remove_rule act at once, with an Undo that puts back what was", async () => {
+  it("turning a rule on is a card showing its trigger and every action: nothing changes, a paused one's pause stays, until Do it", async () => {
+    const t = setup({ sessions: people(), tools: [focusTool()] });
+    const a = t.engine.add(draft({ label: "A", actions: [{ tool: "focus_it", args: { session: "s2" } }, { tool: "notify", args: { text: "Tests\ndone" } }] }));
+    t.book.note(a.id, { paused: "3 runs failed in a row: x" });
+    let answer: unknown;
+    const on = await t.h.turn("turn A back on", async (call) => ((answer = await call("turn_rule_on", { rule: a.id })), "Card up."));
+    expect(answer).toEqual({ result: CARD_SHOWN });
+    expect(on.steps[0]).toMatchObject({ tier: "confirm", state: "proposed", label: "Turn “A” on" });
+    expect(t.engine.get(a.id)).toMatchObject({ on: true, paused: "3 runs failed in a row: x" });
+    const card = await t.h.card(on.steps[0].cardId!);
+    expect(card).toMatchObject({
+      title: "Turn on the rule “A”",
+      detail: "When “tests” · s1 finishes a turn, it does these 2, in order:",
+      actions: [
+        { line: "Focus s2", warnings: [] },
+        { line: "Notify me: “Tests done”", body: "Tests\ndone", warnings: [] },
+      ],
+      warnings: ["Once it's on, it does these each time without asking you.", "Mockingbird paused it (3 runs failed in a row: x): turning it on clears that."],
+      blocked: null,
+    });
+    expect(await t.h.svc.confirm(card.id)).toMatchObject({ state: "done", result: "Turned “A” on." });
+    expect(t.engine.get(a.id)).toMatchObject({ on: true, paused: null });
+    expect(t.h.audit.map((e) => [e.tool, e.source])).toEqual([["turn_rule_on", "card"]]);
+
+    // a rule changed between the card and Do it is another card's
+    t.engine.setOn(a.id, false);
+    const again = await t.h.turn("turn A on", async (call) => (await call("turn_rule_on", { rule: a.id }), "Card up."));
+    t.engine.change(a.id, { label: "A", trigger: finishedOf("s1"), actions: [{ tool: "notify", args: { text: "Something else" } }] });
+    t.h.svc.stateChanged();
+    expect(await t.h.card(again.steps[0].cardId!)).toMatchObject({ state: "expired" });
+    expect(t.engine.get(a.id)!.on).toBe(false);
+
+    const already = await t.h.turn("turn A off", async (call) => (await call("turn_rule_off", { rule: a.id }), "Already."));
+    expect(already.steps[0]).toMatchObject({ state: "failed", error: "It's off already" });
+  });
+
+  it("turn_rule_off and remove_rule act at once, with an Undo that puts back what was", async () => {
     const t = setup({ sessions: people(), tools: [focusTool()] });
     const a = t.engine.add(draft({ label: "A" }));
     const b = t.engine.add(draft({ label: "B" }));
     t.book.note(a.id, { paused: "3 runs failed in a row: x" });
-    const on = await t.h.turn("turn A back on", async (call) => (await call("set_rule_on", { rule: a.id, on: true }), "On."));
-    expect(on.steps[0]).toMatchObject({ state: "done", label: "Turn “A” on", undoUntil: expect.any(Number) });
-    expect(t.engine.get(a.id)).toMatchObject({ on: true, paused: null });
-    expect(await t.h.svc.undo(on.steps[0].id)).toMatchObject({ state: "undone" });
+    const offA = await t.h.turn("turn A off", async (call) => (await call("turn_rule_off", { rule: a.id }), "Off."));
+    expect(offA.steps[0]).toMatchObject({ tier: "direct", state: "done", label: "Turn “A” off", undoUntil: expect.any(Number) });
+    expect(t.engine.get(a.id)).toMatchObject({ on: false, paused: "3 runs failed in a row: x" });
+    expect(await t.h.svc.undo(offA.steps[0].id)).toMatchObject({ state: "undone" });
     expect(t.engine.get(a.id)).toMatchObject({ on: true, paused: "3 runs failed in a row: x" });
 
-    const off = await t.h.turn("turn B off", async (call) => (await call("set_rule_on", { rule: b.id, on: false }), "Off."));
+    const off = await t.h.turn("turn B off", async (call) => (await call("turn_rule_off", { rule: b.id }), "Off."));
     expect(t.engine.get(b.id)!.on).toBe(false);
     // switched again from the sheet since: Undo would undo that too
     t.h.svc.ruleOn(b.id, true);
     expect(await t.h.svc.undo(off.steps[0].id)).toEqual({ error: expect.stringContaining("changed again") });
     expect(t.engine.get(b.id)!.on).toBe(true);
-
-    const already = await t.h.turn("turn B on", async (call) => (await call("set_rule_on", { rule: b.id, on: true }), "Already."));
-    expect(already.steps[0]).toMatchObject({ state: "failed", error: "It's on already" });
 
     const before = t.engine.list();
     const removed = await t.h.turn("remove A", async (call) => (await call("remove_rule", { rule: a.id }), "Removed."));
@@ -640,9 +738,9 @@ describe("the rule tools", () => {
     expect(t.engine.list()).toEqual(before);
     expect(new RuleBook({ file: t.file, log: () => {} }).list()).toEqual(before);
     expect(t.h.audit.map((e) => [e.tool, e.source])).toEqual([
-      ["set_rule_on", "step"],
-      ["set_rule_on", "undo"],
-      ["set_rule_on", "step"],
+      ["turn_rule_off", "step"],
+      ["turn_rule_off", "undo"],
+      ["turn_rule_off", "step"],
       ["remove_rule", "step"],
       ["remove_rule", "undo"],
     ]);
@@ -654,7 +752,7 @@ describe("the rule tools", () => {
     let answer: any;
     await t.h.turn("what rules do I have?", async (call) => ((answer = await call("list_rules")), "One."));
     const listed = JSON.parse(answer.result);
-    expect(listed.rules).toEqual([{ id: r.id, label: r.label, when: "When “tests” finishes a turn", trigger: r.trigger, actions: r.actions, on: true, paused: null, lastRun: null }]);
+    expect(listed.rules).toEqual([{ id: r.id, label: r.label, when: "When “tests” · s1 finishes a turn", trigger: r.trigger, actions: r.actions, on: true, paused: null, lastRun: null }]);
     expect(listed.usable.map((u: { tool: string }) => u.tool)).toEqual(["focus_it", "notify", "text_me"]);
     expect(listed.limits).toEqual({ rules: 20, actionsPerRule: 5, runsPerHour: 6, failuresToPause: 3 });
   });

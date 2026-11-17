@@ -112,7 +112,7 @@ describe("push_branch", () => {
     const a = { session: "a1" };
     expect(await t.check!(a)).toBeNull();
     expect(await t.card!(a)).toEqual({
-      title: "Push fix from “api”",
+      title: "Push fix from “api” · a1 · atticus",
       detail: "Pushes fix's commits to origin, a plain push that's never forced.",
       warnings: ["1 file has uncommitted changes, which aren't pushed", "It's 2 commits behind origin/fix: git refuses the push until it's brought up to date"],
     });
@@ -149,9 +149,10 @@ describe("open_pr", () => {
     const a = { session: "a1", title: "Filter orgs by state", description: "## Summary\nFilters." };
     expect(await t.check!(a)).toBeNull();
     expect(await t.card!(a)).toEqual({
-      title: "Open a pull request for #5038 from “Filter orgs”",
-      detail: "Pushes 5038-filter-orgs to origin (never forced), then opens a pull request from it into dev on Azure DevOps (Atticus/atticus), linked to #5038: “Filter orgs by state”.",
-      warnings: ["3 commits go in it", "Its description: “## Summary Filters.”"],
+      title: "Open a pull request for #5038 from “Filter orgs” · a1 · atticus",
+      detail: "Pushes 5038-filter-orgs to origin (never forced), then opens a pull request from it into dev on Azure DevOps (Atticus/atticus), linked to #5038: “Filter orgs by state”. Its description, below, is published with it.",
+      body: "## Summary\nFilters.",
+      warnings: ["3 commits go in it"],
     });
     expect((await t.run(a)).text).toBe("Opened a pull request for #5038: https://example.invalid/pr/7");
     expect(asked).toEqual([
