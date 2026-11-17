@@ -316,6 +316,16 @@ describe("watchEvents", () => {
     expect(seen.map((ev) => !!ev.prompted)).toEqual([true, false, false, false, false, false]);
   });
 
+  it("passes on the mode an agent reports in its payload (permission_mode), as Mockingbird names it, and none when it names none", async () => {
+    const seen = watch();
+    drop(event("SessionStart", { permission_mode: "bypassPermissions", source: "startup" }));
+    drop(event("UserPromptSubmit", { permission_mode: "acceptEdits", prompt: "go" }));
+    drop(event("PreToolUse", { permission_mode: "dontAsk" }));
+    drop(event("Stop", {}));
+    await settle();
+    expect(seen.map((ev) => ("mode" in ev ? ev.mode : "none"))).toEqual(["bypass", "acceptEdits", null, "none"]);
+  });
+
   it("marks an agent that has just started, resumed or cleared idle at its prompt — without a 'Finished' alert, and not for a compaction", async () => {
     const alerts: string[] = [];
     const seen: any[] = [];

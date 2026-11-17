@@ -9,6 +9,7 @@ import type { AssistantTool } from "../src/main/assistant/registry";
 import { DAILY_WINDOW_MS, GONE_MS, dailySlot, targetMatches, type RuleLimits } from "../src/main/assistant/ruleEngine";
 import { RuleBook, ruleDenied, type RuleDraft } from "../src/main/assistant/rules";
 import { CARD_SHOWN } from "../src/main/assistant/service";
+import { CHANGED_SINCE_CARD } from "../src/main/assistant/tools/lookup";
 import { ruleTools } from "../src/main/assistant/tools/rules";
 import { SendError, type AlertSender } from "../src/main/phone/sender";
 import { tempDir } from "./helpers";
@@ -661,7 +662,7 @@ describe("the rule tools", () => {
       title: "Change the rule “When tests finishes, focus review”",
       detail: "From now on: When “tests” · s1 exits, it does this:",
       actions: [{ line: "Focus s2", warnings: [] }],
-      warnings: ["Once it's on, it does these each time without asking you.", "It's off, and stays off until you turn it on."],
+      warnings: ["Once it's on, it does these each time without asking you.", "It's off, and stays off until you turn it on.", "Mockingbird paused it (3 runs failed in a row: x): changing it clears that."],
       blocked: null,
     });
     expect(t.engine.get(r.id)!.trigger.kind).toBe("finished");
@@ -675,6 +676,53 @@ describe("the rule tools", () => {
     t.engine.remove(r.id);
     t.h.svc.stateChanged();
     expect(await t.h.card(gone.steps[0].cardId!)).toMatchObject({ state: "expired" });
+  });
+
+  it("change_rule's card says an on rule's pause is cleared and it runs again; a rule changed, switched or paused after the card refuses Do it and expires the card", async () => {
+    const t = setup({ sessions: people(), tools: [focusTool()] });
+    const r = t.engine.add(draft({ label: "A", actions: [{ tool: "focus_it", args: { session: "s2" } }] }));
+    t.book.note(r.id, { paused: "3 runs failed in a row: x" });
+    const paused = await t.h.turn("rename it", async (call) => (await call("change_rule", { rule: r.id, label: "B" }), "Card up."));
+    expect((await t.h.card(paused.steps[0].cardId!)).warnings).toEqual([
+      "Once it's on, it does these each time without asking you.",
+      "Mockingbird paused it (3 runs failed in a row: x): changing it clears that, so it runs again.",
+    ]);
+    t.h.svc.stateChanged();
+    expect(await t.h.card(paused.steps[0].cardId!)).toMatchObject({ state: "open" });
+    // its pause cleared from the sheet since: what the card said of it no longer holds
+    t.engine.setOn(r.id, true);
+    t.h.svc.stateChanged();
+    expect(await t.h.card(paused.steps[0].cardId!)).toMatchObject({ state: "expired" });
+
+    // the card shows the actions as they are; what change_rule leaves out is taken at Do it, so a change between is refused
+    const tool = t.h.svc.ruleTool("change_rule")!;
+    const args = { rule: r.id, label: "Renamed" };
+    expect(await tool.check!(args)).toBeNull();
+    const card = await tool.card!(args);
+    expect(card.actions).toEqual([{ line: "Focus s2", warnings: [] }]);
+    t.engine.change(r.id, { label: "A", trigger: finishedOf("s1"), actions: [{ tool: "focus_it", args: { session: "s1" } }] });
+    expect(tool.stillValid!(args)).toBe(false);
+    expect(await tool.check!(args)).toBe(CHANGED_SINCE_CARD);
+    expect(() => tool.run(args)).toThrow(CHANGED_SINCE_CARD);
+    expect(t.engine.get(r.id)).toMatchObject({ label: "A", actions: [{ tool: "focus_it", args: { session: "s1" } }] });
+
+    // through the service: the card expires, and nothing changes
+    const turn = await t.h.turn("rename it", async (call) => (await call("change_rule", { rule: r.id, label: "Renamed" }), "Card up."));
+    t.engine.setOn(r.id, false);
+    expect(await t.h.svc.confirm(turn.steps[0].cardId!)).toMatchObject({ state: "expired" });
+    expect(t.engine.get(r.id)).toMatchObject({ label: "A", on: false });
+  });
+
+  it("turn_rule_off's Undo is offered only while the rule is as it left it: changed since, it's the user's", async () => {
+    const t = setup({ sessions: people(), tools: [focusTool()] });
+    const a = t.engine.add(draft({ label: "A" }));
+    const off = await t.h.turn("turn A off", async (call) => (await call("turn_rule_off", { rule: a.id }), "Off."));
+    expect(off.steps[0]).toMatchObject({ state: "done", undoUntil: expect.any(Number) });
+    // off still, its actions changed since
+    t.engine.change(a.id, { label: "A", trigger: finishedOf("s1"), actions: [{ tool: "notify", args: { text: "Something else" } }] });
+    expect(t.engine.get(a.id)!.on).toBe(false);
+    expect(await t.h.svc.undo(off.steps[0].id)).toEqual({ error: expect.stringContaining("changed again") });
+    expect(t.engine.get(a.id)).toMatchObject({ on: false, actions: [{ tool: "notify" }] });
   });
 
   it("turning a rule on is a card showing its trigger and every action: nothing changes, a paused one's pause stays, until Do it", async () => {

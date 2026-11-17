@@ -31,6 +31,10 @@ export interface AssistantSession {
   repo: string | null;
   branch: string | null;
   model: string | null;
+  /**
+   * The mode it runs in, as every wider-mode warning and refusal goes by it: the wider of the one Mockingbird launched
+   * it in and the one its agent last reported in a hook (a mode switched in the pane, or its own settings' default).
+   */
   permissionMode: PermissionMode;
   /** This Mac's own; false for a teammate's room session, whose owner `owner` names. */
   mine: boolean;

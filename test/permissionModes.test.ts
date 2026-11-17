@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { agentFor, CODEX_EFFORTS, modeArgs, permissionModeRefusal, readRelaunchChange, type LaunchContext } from "../src/main/agents";
 import { HELPDESK_MODE_WHY } from "../src/main/helpdesk";
-import { PERMISSION_MODES, WIDER_MODES, type PermissionMode } from "../src/shared/permissionModes";
+import { hookMode, PERMISSION_MODES, widerMode, WIDER_MODES, type PermissionMode } from "../src/shared/permissionModes";
 import type { AgentKind, NewSessionRequest, SessionInfo } from "../src/shared/types";
 import { PaneRail } from "../src/renderer/TerminalPane";
 
@@ -139,5 +139,22 @@ describe("the workspace's info", () => {
     expect(rail(session({ permissionMode: "plan" }))).toContain('<span class="k">Mode</span><span class="v">Plan mode</span>');
     expect(rail(session({ permissionMode: "bypass" }))).toContain('<span class="v">Bypass permissions</span>');
     for (const permissionMode of [undefined, null, "default"] as const) expect(rail(session({ permissionMode }))).not.toContain(">Mode<");
+  });
+});
+
+describe("the mode an agent reports in its hooks", () => {
+  it("reads Claude Code's and Codex's names as Mockingbird's: bypassPermissions as bypass, dontAsk as never wider, an unknown name as nothing", () => {
+    expect(["default", "plan", "acceptEdits", "auto", "bypassPermissions"].map(hookMode)).toEqual(["default", "plan", "acceptEdits", "auto", "bypass"]);
+    expect(hookMode("dontAsk")).toBeNull();
+    for (const raw of [undefined, null, "", "yolo", 3]) expect(hookMode(raw)).toBeUndefined();
+  });
+
+  it("goes by the wider of the launched and the reported mode, never narrower than the launch", () => {
+    expect(widerMode("default", "bypass")).toBe("bypass");
+    expect(widerMode("acceptEdits", "auto")).toBe("auto");
+    expect(widerMode("plan", "default")).toBe("default");
+    expect(widerMode("bypass", "default")).toBe("bypass");
+    expect(widerMode("auto", null)).toBe("auto");
+    expect(widerMode("default", undefined)).toBe("default");
   });
 });

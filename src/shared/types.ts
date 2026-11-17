@@ -39,6 +39,11 @@ export interface SessionInfo {
   effort?: string | null;
   /** Its permission mode (permissionModes.ts), kept through every relaunch as its model and effort are; absent is `default`. */
   permissionMode?: PermissionMode | null;
+  /**
+   * The mode its agent last reported in a hook's payload (permissionModes.ts hookMode): one switched in the pane, or
+   * the agent's own settings' default. Absent until its agent reports, and on every launch until it does.
+   */
+  liveMode?: PermissionMode | null;
   exitCode?: number | null; // set when the process ends; shown on the dead pane
   repoPath: string | null; // null for assistant/free sessions
   cwd: string; // where claude runs (worktree path, repo path, or WorkTracker)

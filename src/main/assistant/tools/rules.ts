@@ -72,6 +72,9 @@ const draftOf = (r: AssistantRule): RuleDraft => ({ label: r.label, trigger: r.t
 /** What a card about rule `r` showed of it: the same rule changed since is another card's. */
 const shapeOf = (r: AssistantRule): string => JSON.stringify([r.label, r.trigger, r.actions.map((x) => [x.tool, x.args])]);
 
+/** shapeOf, and whether it's on and why it's paused: a change_rule card says both, and a turn_rule_off Undo puts back only over its own. */
+const stateOf = (r: AssistantRule): string => JSON.stringify([shapeOf(r), r.on, r.paused ?? null]);
+
 /**
  * A card about what a rule will do: its trigger, then each action as main spells it out from its arguments (every
  * payload whole, sessions by id, a wider mode warned of), in the danger color when any action is. `lead` comes before
@@ -96,6 +99,7 @@ export function ruleTools(d: Deps): AssistantTool[] {
     actions: a.actions ?? r.actions.map((x) => ({ tool: x.tool, args: x.args })),
   });
   const onSaw = cardSaw<string>();
+  const changeSaw = cardSaw<string>();
 
   return [
     defineTool<Record<string, never>>({
@@ -141,19 +145,32 @@ export function ruleTools(d: Deps): AssistantTool[] {
         const r = d.rules.get(a.rule);
         if (!r) return noRule(a.rule);
         if (a.label === undefined && a.trigger === undefined && a.actions === undefined) return "Say what to change: its label, trigger or actions";
+        // Do it: what's left out is taken from the rule as it is then, so it must be the rule the card showed
+        const saw = changeSaw.get(a);
+        if (saw !== undefined && saw !== stateOf(r)) return CHANGED_SINCE_CARD;
         return d.rules.refusal(changed(a, r), a.rule);
       },
       card: (a): ToolCard => {
         const r = d.rules.get(a.rule);
         if (!r) return { title: `Change the rule ${quoted(a.rule, 80)}`, detail: noRule(a.rule), warnings: [] };
+        changeSaw.set(a, stateOf(r));
         const next = changed(a, r);
         const renamed = plainLine(next.label, RULE_LABEL_MAX) !== r.label ? `It's renamed “${plainLine(next.label, 120)}”. ` : "";
-        return ruleCard(d, next, `Change the rule “${r.label}”`, `${renamed}From now on: `, r.on ? [] : ["It's off, and stays off until you turn it on."]);
+        return ruleCard(d, next, `Change the rule “${r.label}”`, `${renamed}From now on: `, [
+          ...(r.on ? [] : ["It's off, and stays off until you turn it on."]),
+          ...(r.paused ? [`Mockingbird paused it (${plainLine(r.paused, 200)}): changing it clears that${r.on ? ", so it runs again" : ""}.`] : []),
+        ]);
       },
-      stillValid: (a) => !!d.rules.get(a.rule),
+      stillValid: (a) => {
+        const r = d.rules.get(a.rule);
+        const saw = changeSaw.get(a);
+        return !!r && (saw === undefined || saw === stateOf(r));
+      },
       run: (a) => {
         const r = d.rules.get(a.rule);
         if (!r) throw new Error(noRule(a.rule));
+        const saw = changeSaw.get(a);
+        if (saw !== undefined && saw !== stateOf(r)) throw new Error(CHANGED_SINCE_CARD);
         const after = d.rules.change(a.rule, changed(a, r));
         return { text: `Changed the rule “${after.label}”.` };
       },
@@ -209,12 +226,13 @@ export function ruleTools(d: Deps): AssistantTool[] {
         const after = d.rules.setOn(a.rule, false);
         if (!before || !after) throw new Error(noRule(a.rule));
         const was = { on: before.on, paused: before.paused ?? null };
+        const left = stateOf(after);
         return {
           text: `Turned “${after.label}” off.`,
           // put back only over its own switch: a rule switched, paused or changed again since is as it is now
           stillUndoable: () => {
             const r = d.rules.get(a.rule);
-            return !!r && r.on === after.on && (r.paused ?? null) === (after.paused ?? null);
+            return !!r && stateOf(r) === left;
           },
           undo: () => {
             d.rules.putBack(a.rule, was);

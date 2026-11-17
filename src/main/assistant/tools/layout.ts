@@ -8,7 +8,7 @@ import type { AssistantDeps, AssistantRoom, AssistantSession } from "../deps";
 import { ACROSS_ROOM_TOOL, areaName, carry, layoutNow, planBoundary, ready, roomBoundary, roomCrossing, undoable, workspaceOf, type LayoutNow } from "../layoutPlan";
 import { defineTool, type AssistantTool, type ToolCard, type ToolResult } from "../registry";
 import { cardSaw } from "./sessions";
-import { noSession, SESSION_ARG, sessionById, teammates, titleOf } from "./lookup";
+import { noSession, SESSION_ARG, sessionById, sessionRef, teammates, titleOf } from "./lookup";
 
 /**
  * Layout (docs/assistant.md → Ability groups): the landscape and the groups, and small changes to where and how
@@ -195,7 +195,7 @@ export function layoutTools(d: Deps): AssistantTool[] {
   const acrossKey = (m: Across): string =>
     JSON.stringify([m.s.group, m.out?.id ?? null, m.into?.id ?? null, m.s.agent, m.s.permissionMode, m.s.status === "dead", m.into ? d.roomSandboxed(m.into.id) : null]);
   const acrossCard = (m: Across): ToolCard => {
-    const name = label(m.s.id);
+    const name = sessionRef({ sessions: d.sessions }, m.s.id);
     const to = m.group ? areaName(m.group) : "no group";
     const terminal = m.s.agent === "terminal";
     const joins = m.into

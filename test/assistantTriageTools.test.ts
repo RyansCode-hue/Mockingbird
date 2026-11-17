@@ -137,6 +137,24 @@ describe("send_to_session", () => {
     expect(mac.typed).toEqual([]);
   });
 
+  it("goes by the mode its agent reports when that's wider than its launch's: the card warns of it, a standing rule types nothing into it", async () => {
+    const mac = fakeMac();
+    // launched asking as usual; switched to bypass in its pane (Shift+Tab), as its hooks say
+    const a1 = info("a1", { title: "api", liveMode: "bypass" });
+    mac.own.push(a1);
+    const t = mac.tool("send_to_session");
+    const card = await t.card!({ session: "a1", text: "run the tests" });
+    expect(card).toMatchObject({ danger: true, warnings: ["“api” · a1 · atticus runs in Bypass permissions mode: its agent acts on this without asking you first"] });
+    expect(await t.check!({ session: "a1", text: "run the tests" }, { rule: true })).toBe(
+      "“api” · a1 · atticus runs in Bypass permissions mode: a standing rule types nothing into a session that acts without asking you"
+    );
+    // reported narrower than its launch: the launch's mode still holds
+    Object.assign(a1, { permissionMode: "acceptEdits", liveMode: "default" });
+    expect((await t.card!({ session: "a1", text: "hi" })).warnings).toEqual(["“api” · a1 · atticus runs in Accept edits mode: its agent acts on this without asking you first"]);
+    Object.assign(a1, { permissionMode: undefined, liveMode: null });
+    expect(await t.check!({ session: "a1", text: "hi" }, { rule: true })).toBeNull();
+  });
+
   it("refuses the Helpdesk workspace, a teammate's, a taken-over copy, an exited pane and a terminal", async () => {
     const mac = fakeMac();
     mac.own.push(helpdesk(), info("k1"), info("d1", { status: "dead" }), info("t1", { shell: true }));

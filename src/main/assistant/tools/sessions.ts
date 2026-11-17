@@ -4,15 +4,15 @@ import { plainLine } from "../../../shared/team/agentText";
 import { AGENT_NAME, topOfKey, type AgentKind, type RelaunchChange, type SessionInfo } from "../../../shared/types";
 import { CLAUDE_EFFORTS, widerModeWarning } from "../../agents";
 import type { GuardOp } from "../../sessionGuards";
-import type { AssistantDeps, AssistantSession } from "../deps";
+import type { AssistantDeps, AssistantRoom, AssistantSession } from "../deps";
 import { defineTool, type AssistantTool, type JsonSchema } from "../registry";
-import { noSession, SESSION_ARG, sessionById, sessionRef, teammates, titleOf } from "./lookup";
+import { joinsRoomWarning, noSession, roomJoined, SESSION_ARG, sessionById, sessionRef, teammates, titleOf } from "./lookup";
 
 /** Sessions (docs/assistant.md → Ability groups): what's running and how; restarting, closing, resuming and handing off. */
 
 type Deps = Pick<
   AssistantDeps,
-  "sessions" | "groups" | "relaunchRefusal" | "relaunch" | "guards" | "takenOver" | "record" | "describeRelaunch" | "relaunchWith" | "close" | "resume" | "reopen" | "briefStart" | "handoffStart"
+  "sessions" | "groups" | "rooms" | "relaunchRefusal" | "relaunch" | "guards" | "takenOver" | "record" | "describeRelaunch" | "relaunchWith" | "close" | "resume" | "reopen" | "briefStart" | "handoffStart"
 >;
 
 // ---- shared by the sessions, start work, triage, git and diagnose tools ----------------------------
@@ -71,6 +71,18 @@ export const sameIds = (a: readonly string[], b: readonly string[]): boolean => 
  */
 export const cardSaw = <T>() => new WeakMap<object, T>();
 
+/**
+ * The team room each card that starts a session said it joins (its id; null: none), by its call's arguments: a group
+ * shared as a room since the card, or a room left, makes it another card, whose warnings would differ.
+ */
+export function roomCards() {
+  const saw = cardSaw<string | null>();
+  return {
+    shown: (a: object, room: AssistantRoom | null): void => void saw.set(a, room?.id ?? null),
+    same: (a: object, room: AssistantRoom | null): boolean => !saw.has(a) || saw.get(a) === (room?.id ?? null),
+  };
+}
+
 // ---- the tools ------------------------------------------------------------------------------------
 
 /** A session as list_sessions gives it: its state, never its output. */
@@ -123,6 +135,12 @@ export function sessionTools(d: Deps): AssistantTool[] {
   const target = (a: { session: string }) => ({ session: a.session, title: sessionById(d, a.session)?.title ?? d.record(a.session)?.info.title ?? null });
   const groupSaw = cardSaw<string[]>();
   const resumeSaw = cardSaw<"resume" | "reopen">();
+  const handoffRoom = roomCards();
+  /** The team room a handoff's fresh session joins: it starts in its session's group. */
+  const handoffJoins = (id: string) => {
+    const s = openRecord(d, id);
+    return { group: s?.taskGroup ?? null, room: roomJoined(d, s?.taskGroup, s?.role) };
+  };
 
   return [
     defineTool<Record<string, never>>({
@@ -339,16 +357,19 @@ export function sessionTools(d: Deps): AssistantTool[] {
         const s = openRecord(d, a.session);
         const from = s?.agent ?? "claude";
         const to = a.to === "other" ? (from === "claude" ? "codex" : "claude") : from;
+        const { group, room } = handoffJoins(a.session);
+        handoffRoom.shown(a, room);
         return {
           title: `Hand ${sessionRef(d, a.session)} off to a fresh ${AGENT_NAME[to]} session`,
           detail:
             a.to === "other"
               ? `${AGENT_NAME[to]} writes a handoff from its conversation, then a ${AGENT_NAME[to]} session starts from it in the same folder and group, on its branch as it stands. It keeps running.`
               : `A fresh ${AGENT_NAME[to]} session starts in the same folder and group, from a brief of its conversation: its branch, changes, plan and latest turns. It keeps running.`,
-          warnings: a.to === "other" ? [`Writing the handoff takes ${AGENT_NAME[to]} up to 4 minutes`] : [],
+          warnings: [...(a.to === "other" ? [`Writing the handoff takes ${AGENT_NAME[to]} up to 4 minutes`] : []), ...(room && group ? [joinsRoomWarning(room, group)] : [])],
+          ...(room ? { danger: true } : {}),
         };
       },
-      stillValid: (a) => !!openRecord(d, a.session),
+      stillValid: (a) => !!openRecord(d, a.session) && handoffRoom.same(a, handoffJoins(a.session).room),
       target,
       run: async (a) => {
         const next = a.to === "other" ? await d.handoffStart(a.session) : await d.briefStart(a.session);

@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { SessionManager, paneEnv, terminalEnv } from "../src/main/sessions";
+import { worldSessions } from "../src/main/assistant/world";
 
 type Written = string[];
 function manager(saved: any[] = []) {
@@ -30,6 +31,27 @@ function manager(saved: any[] = []) {
 
 beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] }));
 afterEach(() => vi.useRealTimers());
+
+describe("the mode an agent reports", () => {
+  it("is kept from its own pane's events only, a dontAsk as null, and a launch's mode is what the Assistant sees widened by it", () => {
+    const { m, add, info } = manager();
+    add("a", "working", "/w/shared");
+    expect(info("a").liveMode).toBeUndefined();
+    m.statusFromHook({ paneId: "a", status: "working", mode: "bypass" });
+    expect(info("a").liveMode).toBe("bypass");
+    // one matched only by its folder may be another agent's there: it can't narrow what this pane said
+    m.statusFromHook({ cwd: "/w/shared", status: "working", mode: "default" });
+    expect(info("a").liveMode).toBe("bypass");
+    // an event naming no mode leaves it
+    m.statusFromHook({ paneId: "a", status: "idle" });
+    expect(info("a").liveMode).toBe("bypass");
+    m.statusFromHook({ paneId: "a", status: "working", mode: null });
+    expect(info("a").liveMode).toBeNull();
+    m.statusFromHook({ paneId: "a", status: "working", mode: "auto" });
+    const [seen] = worldSessions({ own: [{ ...info("a"), permissionMode: "plan" }], remote: [], rooms: [] });
+    expect(seen.permissionMode).toBe("auto");
+  });
+});
 
 describe("delivering agent messages", () => {
   it("pastes and submits into an idle pane", () => {

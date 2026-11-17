@@ -108,6 +108,8 @@ export function diagnoseTools(d: Deps): AssistantTool[] {
           model: i.model ?? null,
           effort: i.effort ?? null,
           permissionMode: i.permissionMode ?? "default",
+          // what its agent last said it runs in (Shift+Tab, or its own settings' default), which can differ from its launch's
+          ...(i.liveMode !== undefined ? { reportedMode: i.liveMode ?? "dontAsk" } : {}),
           ...(i.agentVersion ? { agentVersion: i.agentVersion } : {}),
           branch: i.branch,
           group: i.taskGroup,

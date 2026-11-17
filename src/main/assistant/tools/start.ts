@@ -6,10 +6,10 @@ import { isTicketFailure, type TicketSessionPlan } from "../../../shared/team/ti
 import { AGENT_NAME, type AdoWorkItem, type AgentKind, type NewSessionRequest, type RepoEntry, type SessionPreset } from "../../../shared/types";
 import { readRelaunchChange } from "../../agents";
 import { HELPDESK_FOLDER_ONLY } from "../../helpdesk";
-import type { AssistantDeps, HouseBoardUnread } from "../deps";
-import { defineTool, type AssistantTool, type JsonSchema } from "../registry";
-import { CHANGED_SINCE_CARD, leadWarnings, noSession, SESSION_ARG, sessionById, sessionRef, teammates } from "./lookup";
-import { cardSaw, EFFORT_ARG, iso, MODE_ARG, MODEL_ARG, modeWarnings, nameOf, openRecord } from "./sessions";
+import type { AssistantDeps, AssistantRoom, HouseBoardUnread } from "../deps";
+import { defineTool, type AssistantTool, type CallContext, type JsonSchema } from "../registry";
+import { CHANGED_SINCE_CARD, joinsRoomWarning, leadWarnings, noSession, roomJoined, roomOfGroup, ruleIntoRoom, ruleIntoRoomWarning, SESSION_ARG, sessionById, sessionRef, teammates } from "./lookup";
+import { cardSaw, EFFORT_ARG, iso, MODE_ARG, MODEL_ARG, modeWarnings, nameOf, openRecord, roomCards } from "./sessions";
 
 /**
  * Start work (docs/assistant.md → Ability groups): what can be started (presets, templates, the House and Azure DevOps
@@ -189,18 +189,26 @@ export function startTools(d: Deps): AssistantTool[] {
     return { req, where, switches: !worktree && a.branch ? `It switches ${repo.name}'s checkout to ${a.branch}` : null };
   };
 
+  /** The group start_session's session starts in (the one named, else the one inherited with inFolderOf), and its team room. */
+  const startsIn = (a: StartArgs): { group: string | null; room: AssistantRoom | null } => {
+    const r = requestOf(a);
+    const group = "why" in r ? (a.group ?? null) : (r.req.taskGroup ?? null);
+    return { group, room: roomJoined(d, group) };
+  };
+
   /**
    * start_session as its card and a rule's card say it: where, then its group, title, permission mode, model and effort
    * (", in “atticus”, titled “Login fix”, in Plan mode…"), and what to know: a wider mode, a first prompt its agent may
-   * run as a command, a checkout switched, a team room's members seeing it.
+   * run as a command, a checkout switched, a team room's members seeing it (in the danger color), or for a rule's card
+   * that a rule starts nothing there.
    */
-  const started = (a: StartArgs) => {
+  const started = (a: StartArgs, rule = false) => {
     const r = requestOf(a);
-    const room = a.group ? d.groups().find((g) => g.key === a.group || g.stacks.includes(a.group!))?.room : null;
+    const { group, room } = startsIn(a);
     return {
       where: "why" in r ? "a new session" : r.where,
       how: [
-        a.group ? `, in “${plainLine(a.group, 120)}”` : "",
+        group ? (a.group !== undefined ? `, in “${plainLine(group, 120)}”` : `, in its group “${plainLine(group, 120)}”`) : "",
         a.title ? `, titled “${plainLine(a.title, 120)}”` : "",
         a.permissionMode && a.permissionMode !== "default" ? `, in ${PERMISSION_MODE_LABEL[a.permissionMode]}` : "",
         a.model ? `, on ${plainLine(a.model, 80)}` : "",
@@ -210,10 +218,39 @@ export function startTools(d: Deps): AssistantTool[] {
         ...modeWarnings(a.permissionMode, a.agent),
         ...(a.prompt ? leadWarnings(a.prompt, AGENT_NAME[a.agent]) : []),
         ...("why" in r || !r.switches ? [] : [r.switches]),
-        ...(room ? [`“${plainLine(a.group, 120)}” is team room ${room}'s area: its members see the session`] : []),
+        ...(room && group ? [roomNote(room, group, rule)] : []),
       ],
-      danger: a.permissionMode === "bypass",
+      danger: a.permissionMode === "bypass" || (!!room && !rule),
+      room,
     };
+  };
+
+  /** What a card says of a start in room `room`'s group `group`: teammates will see it, or on a rule's card that a rule starts nothing there. */
+  const roomNote = (room: AssistantRoom, group: string, rule: boolean, many = false): string => (rule ? ruleIntoRoomWarning(room, group) : joinsRoomWarning(room, group, many));
+
+  /** Why a standing rule can't start a session in group `group` now: it's a team room's (docs/assistant.md → Standing rules). */
+  const ruleRoomRefusal = (ctx: CallContext | undefined, group: string | null, role?: SessionPreset["role"]): string | null => {
+    if (!ctx?.rule || !group) return null;
+    const room = roomJoined(d, group, role);
+    return room ? ruleIntoRoom(room, group) : null;
+  };
+  /** The same, thrown: a rule's run is refused again as it runs, whatever its check said. */
+  const refuseRuleRoom = (ctx: CallContext | undefined, group: string | null, role?: SessionPreset["role"]): void => {
+    const why = ruleRoomRefusal(ctx, group, role);
+    if (why) throw new Error(why);
+  };
+
+  /** The group a preset starts its session in, as presetRequest gives it. */
+  const presetGroup = (p: SessionPreset): string | null => p.group?.trim() || null;
+
+  const sessionRoom = roomCards();
+  const presetRoom = roomCards();
+  const layOutRoom = roomCards();
+  const reviewRoom = roomCards();
+  /** The team room a review's session joins: it starts in the reviewed session's group. */
+  const reviewJoins = (id: string) => {
+    const s = openRecord(d, id);
+    return { group: s?.taskGroup ?? null, room: roomJoined(d, s?.taskGroup, s?.role) };
   };
 
   const layOutSaw = cardSaw<{ ticket: AdoWorkItem | null }>();
@@ -357,16 +394,17 @@ export function startTools(d: Deps): AssistantTool[] {
         const r = requestOf(a);
         return `Start ${AGENT_NAME[a.agent]} in ${"why" in r ? "a new session" : r.where}`;
       },
-      describe: (a) => {
-        const s = started(a);
+      describe: (a, ctx) => {
+        const s = started(a, ctx.rule);
         return { line: `Start a new ${AGENT_NAME[a.agent]} session in ${s.where}${s.how}${a.prompt ? ", with this first prompt" : ""}`, ...(a.prompt ? { body: a.prompt } : {}), warnings: s.warnings, ...(s.danger ? { danger: true } : {}) };
       },
-      check: (a) => {
+      check: (a, ctx) => {
         const r = requestOf(a);
-        return "why" in r ? r.why : null;
+        return "why" in r ? r.why : ruleRoomRefusal(ctx, r.req.taskGroup ?? null);
       },
       card: (a) => {
         const s = started(a);
+        sessionRoom.shown(a, s.room);
         return {
           title: `Start ${AGENT_NAME[a.agent]} in ${s.where}`,
           detail: `Starts a new ${AGENT_NAME[a.agent]} session in ${s.where}${s.how}.${a.prompt ? " Its first prompt, below, is sent once it's up." : ""}`,
@@ -375,9 +413,12 @@ export function startTools(d: Deps): AssistantTool[] {
           ...(s.danger ? { danger: true } : {}),
         };
       },
-      run: async (a) => {
+      // the card names the team room it joins, or none: the group shared as a room since, or left, is another card
+      stillValid: (a) => sessionRoom.same(a, startsIn(a).room),
+      run: async (a, ctx) => {
         const r = requestOf(a);
         if ("why" in r) throw new Error(r.why);
+        refuseRuleRoom(ctx, r.req.taskGroup ?? null);
         const s = await d.createSession(r.req);
         return { text: `Started “${plainLine(s.ticketTitle ?? s.title, 120)}” (${s.id}) in ${r.where}.` };
       },
@@ -390,23 +431,45 @@ export function startTools(d: Deps): AssistantTool[] {
       description: "Start a session from one of the presets list_presets gives, as New session's preset button does. This puts a card in front of the user; it runs only when they confirm.",
       inputSchema: { type: "object", properties: { preset: { type: "string", minLength: 1, maxLength: 80, description: "The preset's id, from list_presets" } }, required: ["preset"], additionalProperties: false },
       label: (a) => `Start the preset “${plainLine(d.presets().find((p) => p.id === a.preset)?.name ?? a.preset, 80)}”`,
-      describe: (a) => {
+      describe: (a, ctx) => {
         const p = d.presets().find((x) => x.id === a.preset);
         if (!p) return { line: `Start the preset ${JSON.stringify(plainLine(a.preset, 80))}, which is gone` };
-        return { line: `Start the preset “${plainLine(p.name, 80)}”: ${presetStarts(p)}${p.kickoff ? `, with this first ${p.launch === "shell" ? "command" : "prompt"}` : ""}`, ...(p.kickoff ? { body: p.kickoff } : {}) };
+        const group = presetGroup(p);
+        const room = roomJoined(d, group, p.role);
+        return {
+          line: `Start the preset “${plainLine(p.name, 80)}”: ${presetStarts(p)}${p.kickoff ? `, with this first ${p.launch === "shell" ? "command" : "prompt"}` : ""}`,
+          ...(p.kickoff ? { body: p.kickoff } : {}),
+          warnings: room && group ? [roomNote(room, group, ctx.rule)] : [],
+          ...(room && !ctx.rule ? { danger: true } : {}),
+        };
       },
-      check: (a) => (d.presets().some((p) => p.id === a.preset) ? null : `There's no preset with id “${plainLine(a.preset, 80)}”: list_presets lists them`),
+      check: (a, ctx) => {
+        const p = d.presets().find((x) => x.id === a.preset);
+        if (!p) return `There's no preset with id “${plainLine(a.preset, 80)}”: list_presets lists them`;
+        return ruleRoomRefusal(ctx, presetGroup(p), p.role);
+      },
       card: (a) => {
         const p = d.presets().find((x) => x.id === a.preset);
         if (!p) return { title: `Start the preset “${plainLine(a.preset, 80)}”`, detail: "There's no such preset any more.", warnings: [] };
+        const group = presetGroup(p);
+        const room = roomJoined(d, group, p.role);
+        presetRoom.shown(a, room);
         return {
           title: `Start the preset “${plainLine(p.name, 80)}”`,
           detail: `Starts ${presetStarts(p)}.${p.kickoff ? ` Its first ${p.launch === "shell" ? "command" : "prompt"}, below, is sent once it's up.` : ""}`,
           ...(p.kickoff ? { body: p.kickoff } : {}),
-          warnings: [],
+          warnings: room && group ? [roomNote(room, group, false)] : [],
+          ...(room ? { danger: true } : {}),
         };
       },
-      run: async (a) => {
+      // the card names the team room it joins, or none: its group shared as a room since, or left, is another card
+      stillValid: (a) => {
+        const p = d.presets().find((x) => x.id === a.preset);
+        return !p || presetRoom.same(a, roomJoined(d, presetGroup(p), p.role));
+      },
+      run: async (a, ctx) => {
+        const p = d.presets().find((x) => x.id === a.preset);
+        if (p) refuseRuleRoom(ctx, presetGroup(p), p.role);
         const s = await d.startPreset(a.preset);
         return { text: `Started “${plainLine(s.ticketTitle ?? s.title, 120)}” (${s.id}).` };
       },
@@ -432,18 +495,23 @@ export function startTools(d: Deps): AssistantTool[] {
         additionalProperties: false,
       },
       label: (a) => `Lay out “${plainLine(d.templates().templates.find((t) => t.id === a.template)?.name ?? a.template, 60)}” in “${plainLine(a.area, 120)}”`,
-      describe: (a) => {
+      describe: (a, ctx) => {
         const t = d.templates().templates.find((x) => x.id === a.template);
+        const room = roomJoined(d, a.area);
         return {
           line:
             `Lay out the template “${plainLine(t?.name ?? a.template, 60)}” (${plainLine(a.template, 60)}) in “${plainLine(a.area, 120)}”` +
             `${a.repo ? `, its worktrees in ${plainLine(a.repo, 300)}` : ""}${a.base ? `, cut from origin/${plainLine(a.base, 200)}` : ""}${a.ticket ? `, for #${a.ticket.replace(/^#/, "")}` : ""}` +
             `${t?.startFirst ? ", its first step started" : ""}`,
+          warnings: room ? [roomNote(room, a.area, ctx.rule, true)] : [],
+          ...(room && !ctx.rule ? { danger: true } : {}),
         };
       },
-      check: async (a) => {
+      check: async (a, ctx) => {
         const l = layOutOf(a);
         if ("why" in l) return l.why;
+        const intoRoom = ruleRoomRefusal(ctx, a.area);
+        if (intoRoom) return intoRoom;
         let ticket: AdoWorkItem | null = null;
         if (a.ticket !== undefined) {
           const id = a.ticket.replace(/^#/, "");
@@ -457,7 +525,7 @@ export function startTools(d: Deps): AssistantTool[] {
           if (!ticket) return `#${id} isn't among the Azure DevOps work items the Dashboard lists`;
         }
         layOutSaw.set(a, { ticket });
-        const plan = layOutPlan(l.t, { room: !!l.area.room, ticket: !!ticket });
+        const plan = layOutPlan(l.t, { room: !!roomJoined(d, a.area), ticket: !!ticket });
         if (plan.problems.length) return plan.problems[0];
         if (l.t.steps.some((s) => s.folder === "new") && !l.repo) return "Its steps work in worktrees of their own: name the repo";
         return null;
@@ -466,7 +534,9 @@ export function startTools(d: Deps): AssistantTool[] {
         const l = layOutOf(a);
         if ("why" in l) return { title: `Lay out a template in “${plainLine(a.area, 120)}”`, detail: l.why, warnings: [] };
         const ticket = layOutSaw.get(a)?.ticket ?? null;
-        const plan = layOutPlan(l.t, { room: !!l.area.room, ticket: !!ticket });
+        const room = roomJoined(d, a.area);
+        layOutRoom.shown(a, room);
+        const plan = layOutPlan(l.t, { room: !!room, ticket: !!ticket });
         const made = plan.steps.filter((s) => !s.shape && (!s.terminal || s.terminal.laid));
         const starts = plan.steps.find((s) => s.starts);
         return {
@@ -475,12 +545,16 @@ export function startTools(d: Deps): AssistantTool[] {
             `Makes ${made.map((s) => `${plainLine(s.step.name, 60)} (${s.step.agent === "terminal" ? "a terminal" : AGENT_NAME[s.step.agent]})`).join(", ")} in “${plainLine(a.area, 120)}”` +
             `${l.repo ? `, in ${l.repo.name}` : ""}${ticket ? `, for #${ticket.id} “${plainLine(ticket.title, 120)}”` : ""}. ` +
             (starts ? `${plainLine(starts.step.name, 60)} starts now; the rest wait for their handoffs.` : "Every step waits for its handoff."),
-          warnings: plan.forced ? [roomAsked(plan.forced)] : [],
+          warnings: [...(plan.forced ? [roomAsked(plan.forced)] : []), ...(room ? [joinsRoomWarning(room, a.area, made.length > 1)] : [])],
+          ...(room ? { danger: true } : {}),
         };
       },
-      run: async (a) => {
+      // the card names the team room its steps join, or none: the area shared as a room since, or left, is another card
+      stillValid: (a) => layOutRoom.same(a, roomJoined(d, a.area)),
+      run: async (a, ctx) => {
         const l = layOutOf(a);
         if ("why" in l) throw new Error(l.why);
+        refuseRuleRoom(ctx, a.area);
         const ticket = layOutSaw.get(a)?.ticket ?? null;
         const r = await d.layOut({
           name: l.t.name,
@@ -534,15 +608,26 @@ export function startTools(d: Deps): AssistantTool[] {
         const s = ticketSaw.get(a);
         ticketShown.set(a, s ?? null);
         const agent = AGENT_NAME[a.agent ?? "claude"];
-        if (!s) return { title: `Start on #${a.ticket}`, detail: `Claims #${a.ticket} on the House as you, makes its worktree and starts ${agent} there.`, warnings: [] };
+        const named = roomOf(a.room);
+        if (!s) {
+          return {
+            title: `Start on #${a.ticket}`,
+            detail: `Claims #${a.ticket} on the House as you, makes its worktree and starts ${agent} there.`,
+            warnings: named ? [joinsRoomWarning(named, named.group)] : [],
+            ...(named ? { danger: true } : {}),
+          };
+        }
         const repo = s.plan.repos.find((r) => r.path === s.repo);
         const branch = s.plan.branchFrom === "new" && a.branch ? a.branch : s.plan.branch;
+        // a ticket's session starts in its room's group: always a room session
+        const room = roomOfGroup(d, s.plan.group) ?? { name: s.plan.room };
         return {
           title: `Start on #${a.ticket} “${plainLine(s.plan.title, 120)}”`,
           detail:
             `${s.plan.holder.state === "yours" ? `#${a.ticket} is yours already, so nothing is claimed. ` : `Claims #${a.ticket} on room ${plainLine(s.plan.room, 80)}'s House board as you. `}` +
             `Makes ${branch}'s worktree in ${repo?.name ?? s.repo}${s.plan.branchFrom === "new" && repo?.base ? `, cut from origin/${repo.base}` : ""}, and starts ${agent} there in “${plainLine(s.plan.group, 120)}” with the ticket as its brief.`,
-          warnings: s.plan.repoNote ? [plainLine(s.plan.repoNote, 300)] : [],
+          warnings: [...(s.plan.repoNote ? [plainLine(s.plan.repoNote, 300)] : []), joinsRoomWarning(room, s.plan.group)],
+          danger: true,
         };
       },
       run: async (a) => {
@@ -564,20 +649,31 @@ export function startTools(d: Deps): AssistantTool[] {
         "This puts a card in front of the user; it runs only when they confirm.",
       inputSchema: { type: "object", properties: { session: SESSION_ARG }, required: ["session"], additionalProperties: false },
       label: (a) => `Have ${nameOf(d, a.session)}'s branch reviewed`,
-      describe: (a) => ({ line: `Have the other agent review the branch of ${sessionRef(d, a.session)}, in its folder, and report back to it` }),
-      check: (a) => reviewRefusal(a.session),
+      describe: (a, ctx) => {
+        const { group, room } = reviewJoins(a.session);
+        return {
+          line: `Have the other agent review the branch of ${sessionRef(d, a.session)}, in its folder, and report back to it`,
+          warnings: room && group ? [roomNote(room, group, ctx.rule)] : [],
+          ...(room && !ctx.rule ? { danger: true } : {}),
+        };
+      },
+      check: (a, ctx) => reviewRefusal(a.session) ?? ruleRoomRefusal(ctx, reviewJoins(a.session).group),
       card: (a) => {
         const s = openRecord(d, a.session);
         const reviewer = AGENT_NAME[(s?.agent ?? "claude") === "claude" ? "codex" : "claude"];
+        const { group, room } = reviewJoins(a.session);
+        reviewRoom.shown(a, room);
         return {
           title: `Have ${reviewer} review the branch of ${sessionRef(d, a.session)}`,
           detail: `Starts ${reviewer} in its folder${s?.branch ? `, on ${s.branch} as it stands` : ""}, to review it against its base and report back to it.`,
-          warnings: [],
+          warnings: room && group ? [joinsRoomWarning(room, group)] : [],
+          ...(room ? { danger: true } : {}),
         };
       },
-      stillValid: (a) => !!openRecord(d, a.session),
+      stillValid: (a) => !!openRecord(d, a.session) && reviewRoom.same(a, reviewJoins(a.session).room),
       target: (a) => ({ session: a.session, title: sessionById(d, a.session)?.title ?? null }),
-      run: async (a) => {
+      run: async (a, ctx) => {
+        refuseRuleRoom(ctx, reviewJoins(a.session).group);
         const s = await d.startReview(a.session);
         return { text: `Started “${plainLine(s.ticketTitle ?? s.title, 120)}” (${s.id}) to review ${nameOf(d, a.session)}'s branch.` };
       },

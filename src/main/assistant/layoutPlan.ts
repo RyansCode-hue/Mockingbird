@@ -1,8 +1,9 @@
 import type { Landscape } from "../../shared/landscape";
 import { carryPlan, resolveLayout, undoOfPlan, withoutGone, type AreaPlan, type ReadyPlan, type ResolvedLayout, type Tile } from "../../shared/landscapeModel";
-import { topOfKey, type SessionInfo } from "../../shared/types";
+import type { SessionInfo } from "../../shared/types";
 import type { AssistantDeps, AssistantRoom } from "./deps";
 import type { ToolResult } from "./registry";
+import { roomOfGroup } from "./tools/lookup";
 
 /**
  * The Assistant's landscape changes (docs/assistant.md → Plumbing), planned in main with the planners the window's
@@ -17,10 +18,6 @@ export type PlanDeps = Pick<AssistantDeps, "landscapeState" | "layoutSessions" |
 
 /** The one tool that moves a session into a team room's group, out of one, or between two: a card the user confirms. */
 export const ACROSS_ROOM_TOOL = "move_across_room";
-
-/** The team room group `key` is shared as: its top-level group's, as the live panes map a group to its room. */
-export const roomOfGroup = (d: Pick<AssistantDeps, "rooms">, key: string | null): AssistantRoom | null =>
-  key ? (d.rooms().find((r) => r.group === topOfKey(key)) ?? null) : null;
 
 /** The rooms a session leaves (`out`) and joins (`into`) moving from group `from` to `to`; null when it stays in the same room, or in none. */
 export function roomCrossing(d: Pick<AssistantDeps, "rooms">, from: string | null, to: string | null): { out: AssistantRoom | null; into: AssistantRoom | null } | null {

@@ -26,6 +26,7 @@ import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
 import { compactBlocker } from "../shared/contextBudget";
 import { tildePath } from "../shared/paths";
+import { pasteText } from "../shared/pasteText";
 import { isRemotePaneId, type PaneSnapshot, type RoomSandboxChange } from "../shared/team/livePanes";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
@@ -72,18 +73,9 @@ export function restartDivider(at: Date, earlier: string, what?: string): string
   return `${entered > left ? "\x1b[?1049l" : ""}\r\n\x1b[?25h\x1b[0m\x1b[2m── ${what ?? `restarted ${when}`} · earlier output above ──\x1b[0m\r\n\r\n`;
 }
 
-/** Something Mockingbird did while starting a pane that its user should know about, as the pane shows it above the agent's output. */
-/**
- * A message's text as it may be pasted into an agent's prompt: lines and tabs
- * kept, every other control character gone — ESC above all, so nothing in it
- * can end the bracketed paste (ESC [ 201 ~) and go on as keys typed into the
- * pane, and no carriage return can press Enter inside it. C1 controls go
- * too (0x9b is a one-byte CSI to a terminal that reads 8-bit controls).
- */
-export function pasteText(text: string): string {
-  return text.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
-}
+export { pasteText };
 
+/** Something Mockingbird did while starting a pane that its user should know about, as the pane shows it above the agent's output. */
 export const paneNotice = (text: string): string => `\x1b[0m\x1b[33m${text.replace(/\r?\n/g, "\r\n")}\x1b[0m\r\n\r\n`;
 
 /**
@@ -1289,6 +1281,7 @@ export class SessionManager {
     delete i.agentVersion;
     delete i.quitInSandbox;
     delete i.exitCode;
+    delete i.liveMode;
     Object.assign(i, {
       shell: true,
       agentQuit: { agent, ...(i.conversation?.agent === agent ? { conversation: i.conversation.id } : {}) },
@@ -2773,6 +2766,8 @@ export class SessionManager {
     transcriptPath?: string;
     /** When the hook wrote it (its `ts`, whole seconds). */
     at?: number;
+    /** The mode its agent reported (hookMode): null for one narrower than the default; absent when it named none. */
+    mode?: PermissionMode | null;
   }): SessionInfo | null {
     // a tagged event that names no live pane comes from something else Mockingbird
     // runs (a Collaborate room) or a closed pane — never guess a pane for it
@@ -2794,6 +2789,12 @@ export class SessionManager {
     }
     // Codex fires no hook until its folder notice is answered: its own event says it's past it
     if (s.folderNotice && ev.paneId === s.info.id) s.folderNotice.hookEvent();
+    // only the pane's own events speak for its mode: a narrower one another agent in its folder reported mustn't hide
+    // a wider one this pane runs in
+    if (ev.mode !== undefined && ev.paneId === s.info.id && (s.info.liveMode ?? null) !== ev.mode) {
+      s.info.liveMode = ev.mode;
+      this.emitChanged();
+    }
     if (ev.prompted) {
       if (s.ownPrompts > 0) s.ownPrompts--;
       else {

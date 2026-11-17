@@ -56,7 +56,17 @@ Every tool has a tier, fixed in main's registry. The model can't change it.
   (8,000), a preset's kickoff, a pull request's description (4,000). It
   warns when the target runs in a mode wider than the default (bypass in the
   danger color), and when the text starts with "!" or "/", which Claude and
-  Codex may run as a shell or slash command.
+  Codex may run as a shell or slash command. That's read on the text as it's
+  typed (`shared/pasteText.ts`, which takes control characters out), so none
+  in front of a "!" hides it.
+- **A session started in a team room** (its group a room's, by the group's
+  top-level key as the live panes map it: a stack that doesn't exist yet, a
+  group inherited from the session it starts beside, a preset's group, a
+  template's area, a House ticket, a review's or a handoff's session) is
+  said so on its card in the danger color: "Teammates in “Atticus team” will
+  see its terminal and scrollback". The card expires when that changes (the
+  group shared as a room since, or the room left). `lookup.ts` roomOfGroup
+  and roomJoined decide it for every start and the layout tools.
 - An allow/deny card shows what the prompt asks: the pane's last lines as
   displayed (ANSI taken out, through the same output read as session_detail,
   guarded by whyNot("readOutput"), so never the Helpdesk workspace's). When
@@ -68,7 +78,9 @@ Every tool has a tier, fixed in main's registry. The model can't change it.
   the same check phone replies make. A Do it that plans again (open_pr,
   start_from_ticket, cleanup_worktree, turning a rule on) compares the plan
   with what the card showed and refuses what differs: "It changed since the
-  card: ask again".
+  card: ask again". So does change_rule: what it leaves out is taken from the
+  rule at Do it, so the rule (its label, trigger, actions, on and pause) must
+  be the one its card showed, and the card expires when it isn't.
 - Every action that runs, from a card, a direct step, an Undo or a rule,
   goes into the activity log (`assistant.action`, remoteAudit.ts) with its
   tool, target, outcome and source.
@@ -127,6 +139,21 @@ kept through every relaunch like its model and effort.
   `describeRelaunch` gives a card why it's blocked and its warnings (mid-turn,
   a wider mode).
 - The workspace's info shows its mode whenever it isn't the default.
+- **The mode it runs in now.** A session can run wider than the mode
+  Mockingbird launched it in: its agent's own settings may set a default mode,
+  and Shift+Tab (Claude) changes it in the pane. Both agents say which mode
+  they're in on their hooks' payloads (`permission_mode`: Claude Code fills it
+  with its live mode, Codex sends it on its turn events), and the hook script
+  passes the payload on whole. Main keeps the latest one from the pane's own
+  events (`SessionInfo.liveMode`, cleared on every launch; an event matched
+  only by its folder may be another agent's, so it's never taken), reading
+  Claude's `bypassPermissions` as bypass and `dontAsk` as never wider. Every
+  wider-mode check goes by the wider of the launched and the reported mode
+  (`widerMode`, in `world.ts`): cards' warnings, a standing rule's refusal to
+  type into such a session, and move_across_room's room-sandbox warning. A
+  narrower mode reported never narrows the launch's. Until an agent's hooks
+  report (not installed, or before its first event), only the launch's mode
+  is known. session_detail shows what was reported as `reportedMode`.
 
 ## Ability groups (v1)
 
@@ -173,7 +200,8 @@ one-prompt check and the rules' ban on answering prompts.
   room's settings: nothing crosses the room's line for it until it's
   restarted there), when it's a terminal (it can read any file), and when it
   runs in a permission mode the room's sandbox wouldn't allow
-  (`permissionModeRefusal`). The Helpdesk workspace is refused, as
+  (`permissionModeRefusal`, on the wider of its launched and reported mode).
+  Its title names the session by sessionRef. The Helpdesk workspace is refused, as
   `sessions:setGroup` refuses it. The card expires when the session's group,
   the rooms it leaves or joins, its agent, mode, running state or the room's
   sandbox switch change.
@@ -199,7 +227,10 @@ one-prompt check and the rules' ban on answering prompts.
   color. It says that once it's on, it runs them without asking each time.
   The sheet's Rules list shows each rule's actions the same way, built again
   by main each time it's read. Turning a rule off (`turn_rule_off`) is direct
-  with Undo; turning one on (`turn_rule_on`, which clears a pause) is a card.
+  with Undo, offered only while the rule is as it left it (changed, switched
+  or paused since, it's the user's); turning one on (`turn_rule_on`, which
+  clears a pause) is a card. A change_rule card says when the change clears a
+  pause, as turn_rule_on's does.
 - **Triggers are app state, never text**: a session's turn finished, it has
   waited on you N minutes, it exited, or a time of day (`HH:MM`, chosen
   weekdays). The target is a session, a group, or any session.
@@ -211,12 +242,17 @@ one-prompt check and the rules' ban on answering prompts.
   standing yes to every prompt), any permission mode wider than the default
   (accept edits, auto, bypass; plan and the default are fine), closing with
   forget, worktree cleanup, push or PR, leaving a room, take-over, starting
-  from a House ticket (it claims the ticket on the room's shared board), and
+  from a House ticket (it claims the ticket on the room's shared board),
   moving a session across a team room's boundary (`move_across_room` isn't
-  rule-able, and a rule's `set_group` is refused there on every run).
+  rule-able, and a rule's `set_group` is refused there on every run), and
+  starting a session in a team room's group: start_session, start_preset,
+  lay_out_template and review_branch are refused on every run whose session
+  would start in one (`lookup.ts` ruleIntoRoom), as teammates would be
+  streamed it with no one asked, and a rule's card says so.
 - When a rule runs, it types nothing into a session that runs in a wider
-  mode then: send_to_session is refused, and a broadcast leaves it out,
-  saying so in the run.
+  mode then (launched in one, or reported in one by its hooks: Permission
+  modes → The mode it runs in now): send_to_session is refused, and a
+  broadcast leaves it out, saying so in the run.
 - **Limits**: at most 20 rules, 5 actions each. A rule runs at most once per
   trigger event and 6 times an hour. After 3 failed runs in a row it pauses
   itself and says why. Guards are checked on every run.

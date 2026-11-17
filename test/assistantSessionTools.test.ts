@@ -4,6 +4,7 @@ import type { HouseView } from "../src/shared/team/house";
 import type { TicketSessionPlan } from "../src/shared/team/ticketSession";
 import { HELPDESK_PRESET, type NewSessionRequest } from "../src/shared/types";
 import { HELPDESK_CONVERSATION_WHY, HELPDESK_FOLDER_ONLY } from "../src/main/helpdesk";
+import { harness } from "./assistantHarness";
 import { cleanTree, fakeMac, helpdesk, info, teammate } from "./assistantWorkFakes";
 
 /** The tiers and standing-rule flags of the sessions, start work, triage, git and diagnose tools (docs/assistant.md). */
@@ -337,7 +338,7 @@ describe("start_session", () => {
     expect(card.warnings).toEqual([
       "Bypass permissions: Codex runs every command without asking, and outside its sandbox",
       "It switches atticus's checkout to dev",
-      "“atticus” is team room Atticus team's area: its members see the session",
+      "Teammates in “Atticus team” will see its terminal and scrollback: “atticus” is that team room's group",
     ]);
   });
 
@@ -357,6 +358,98 @@ describe("start_session", () => {
     mac.deps.createSession = async (req) => (asked.push(req), info("n1"));
     await t.run({ agent: "codex", inFolderOf: "a1", prompt: "Look at the failing test" });
     expect(asked).toEqual([{ repoPath: "/code/atticus", cwd: "/w/fix", branchName: "fix", useWorktree: false, taskGroup: "atticus", agent: "codex", initialPrompt: "Look at the failing test" }]);
+  });
+});
+
+describe("starting a session in a team room", () => {
+  const ATTICUS = { id: "R1", name: "Atticus team", groupKey: "atticus", members: [{ name: "Ryan", self: true }], online: [] };
+  const JOINS = (group: string, many = false) => `Teammates in “Atticus team” will see ${many ? "their terminals and scrollback" : "its terminal and scrollback"}: “${group}” is that team room's group`;
+  const RULE_REFUSED = (group: string) => `A standing rule starts nothing in a team room: “${group}” is team room “Atticus team”'s group, whose teammates would see what it starts`;
+  const RULE_WARNED = (group: string) => `A standing rule starts nothing in a team room: while “${group}” is team room “Atticus team”'s group, this is refused on every run`;
+  const roomMac = () => {
+    const mac = fakeMac();
+    mac.rooms.push(ATTICUS);
+    mac.own.push(info("a1", { title: "api", branch: "fix", cwd: "/w/fix" }), info("d1", { title: "docs", taskGroup: "docs" }));
+    mac.deps.presets = () => [
+      { ...HELPDESK_PRESET, id: "p-room", name: "Room shell", launch: "shell", role: undefined, group: "atticus/scratch", repoPath: null, kickoff: undefined },
+      { ...HELPDESK_PRESET, id: "p-help", group: "atticus" },
+    ];
+    mac.deps.templates = () => ({ templates: [template()], refused: [] });
+    return mac;
+  };
+
+  it("is decided by the group's top-level key and by an inherited group, as the live panes decide it: every such card says so in the danger color", async () => {
+    const mac = roomMac();
+    const start = mac.tool("start_session");
+    // a stack that doesn't exist yet is still the room's
+    const stack = await start.card!({ agent: "claude", group: "atticus/newstack" });
+    expect(stack).toMatchObject({ danger: true, warnings: [JOINS("atticus/newstack")] });
+    // another session's folder brings its group, and its room
+    const beside = await start.card!({ agent: "codex", inFolderOf: "a1" });
+    expect(beside).toMatchObject({ danger: true, warnings: [JOINS("atticus")], detail: "Starts a new Codex session in the folder of “api” · a1 · atticus, on fix as it stands, in its group “atticus”." });
+    const elsewhere = await start.card!({ agent: "claude", inFolderOf: "a1", group: "docs" });
+    expect(elsewhere.warnings).toEqual([]);
+    expect(elsewhere.danger).toBeUndefined();
+    expect((await start.card!({ agent: "claude", inFolderOf: "d1" })).warnings).toEqual([]);
+
+    const preset = mac.tool("start_preset");
+    expect(await preset.card!({ preset: "p-room" })).toMatchObject({ danger: true, warnings: [JOINS("atticus/scratch")] });
+    // the Helpdesk workspace is never a room's, wherever its group is (main refuses it there)
+    expect((await preset.card!({ preset: "p-help" })).warnings).toEqual([]);
+
+    const layOut = await mac.tool("lay_out_template").card!({ template: "t-build", area: "atticus", repo: "atticus" });
+    expect(layOut.danger).toBe(true);
+    expect(layOut.warnings).toContain(JOINS("atticus", true));
+
+    expect(await mac.tool("review_branch").card!({ session: "a1" })).toMatchObject({ danger: true, warnings: [JOINS("atticus")] });
+    expect(await mac.tool("handoff_session").card!({ session: "a1" })).toMatchObject({ danger: true, warnings: [JOINS("atticus")] });
+    expect((await mac.tool("review_branch").card!({ session: "d1" })).warnings).toEqual([]);
+  });
+
+  it("a card expires when the group it starts in is shared as a room after it, or the room is left", async () => {
+    const mac = roomMac();
+    const start = mac.tool("start_session");
+    const into = { agent: "claude" as const, group: "docs/new" };
+    await start.card!(into);
+    expect(start.stillValid!(into)).toBe(true);
+    mac.rooms.push({ ...ATTICUS, id: "R2", name: "Docs team", groupKey: "docs" });
+    expect(start.stillValid!(into)).toBe(false);
+    const beside = { agent: "claude" as const, inFolderOf: "a1" };
+    await start.card!(beside);
+    expect(start.stillValid!(beside)).toBe(true);
+    mac.rooms.splice(0, 1);
+    expect(start.stillValid!(beside)).toBe(false);
+    const layOut = mac.tool("lay_out_template");
+    const a = { template: "t-build", area: "atticus", repo: "atticus" };
+    await layOut.card!(a);
+    mac.rooms.push(ATTICUS);
+    expect(layOut.stillValid!(a)).toBe(false);
+  });
+
+  it("is never a standing rule's: refused on every run, and its card says so", async () => {
+    const mac = roomMac();
+    const rule = { rule: true };
+    const cases: [string, Record<string, unknown>, string][] = [
+      ["start_session", { agent: "claude", group: "atticus/newstack" }, "atticus/newstack"],
+      ["start_session", { agent: "claude", inFolderOf: "a1" }, "atticus"],
+      ["start_preset", { preset: "p-room" }, "atticus/scratch"],
+      ["lay_out_template", { template: "t-build", area: "atticus", repo: "atticus" }, "atticus"],
+      ["review_branch", { session: "a1" }, "atticus"],
+    ];
+    for (const [name, args, group] of cases) {
+      const t = mac.tool(name);
+      expect(await t.check!(args, rule), name).toBe(RULE_REFUSED(group));
+      await expect(Promise.resolve().then(() => t.run(args, rule)), name).rejects.toThrow(RULE_REFUSED(group));
+      expect(t.describe!(args, rule).warnings, name).toContain(RULE_WARNED(group));
+      // the user's own card is theirs to confirm
+      expect(await t.check!(args, { rule: false }), name).toBeNull();
+    }
+    expect(mac.did).toEqual([]);
+    // through the service, as a rule's run is
+    const h = harness(mac.registry.list());
+    expect(await h.svc.runAction({ tool: "start_session", args: { agent: "claude", inFolderOf: "a1" }, label: "Start" }, "Beside api")).toMatchObject({ ok: false, text: RULE_REFUSED("atticus") });
+    expect(await h.svc.runAction({ tool: "start_session", args: { agent: "claude", inFolderOf: "d1" }, label: "Start" }, "Beside docs")).toMatchObject({ ok: true });
+    expect(mac.did).toEqual(["started new"]);
   });
 });
 
@@ -430,7 +523,8 @@ describe("start_from_ticket", () => {
     expect(await t.card!(a)).toEqual({
       title: "Start on #12 “Export API”",
       detail: "Claims #12 on room Atticus team's House board as you. Makes feature/12-export-api's worktree in atticus, cut from origin/dev, and starts Claude there in “atticus” with the ticket as its brief.",
-      warnings: [],
+      warnings: ["Teammates in “Atticus team” will see its terminal and scrollback: “atticus” is that team room's group"],
+      danger: true,
     });
     expect((await t.run(a)).text).toBe("Claimed #12 and started Claude on feature/12-export-api (n1).");
     expect(asked).toEqual([["R1", { n: 12, agent: "claude", repoPath: "/code/atticus" }]]);

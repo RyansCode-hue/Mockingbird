@@ -1,5 +1,5 @@
 import { LOOSE_GROUP } from "../../shared/landscape";
-import { isPermissionMode, type PermissionMode } from "../../shared/permissionModes";
+import { isPermissionMode, widerMode, type PermissionMode } from "../../shared/permissionModes";
 import { splitGroupKey, topOfKey, type SessionInfo } from "../../shared/types";
 import type { AssistantGroup, AssistantRoom, AssistantSession } from "./deps";
 
@@ -18,8 +18,12 @@ export interface WorldRoom {
   online: string[];
 }
 
-// a record written before permission modes, or by a newer Mockingbird, reads as the default
-const modeOf = (s: SessionInfo): PermissionMode => (isPermissionMode(s.permissionMode) ? s.permissionMode : "default");
+/**
+ * The mode a session runs in as the Assistant goes by it: the wider of its launch's and the one its agent last reported
+ * (a mode switched in the pane, or its own settings' default). A record written before permission modes, or by a newer
+ * Mockingbird, reads as the default.
+ */
+const modeOf = (s: SessionInfo): PermissionMode => widerMode(isPermissionMode(s.permissionMode) ? s.permissionMode : "default", isPermissionMode(s.liveMode) ? s.liveMode : null);
 
 const groupOf = (s: SessionInfo): string | null => (s.taskGroup && topOfKey(s.taskGroup) !== LOOSE_GROUP ? s.taskGroup : null);
 

@@ -414,7 +414,7 @@ describe("team rooms' boundaries", () => {
     const { card, before, done } = await acrossConfirmed(w, { session: "d1", group: "atticus" });
     expect(card).toMatchObject({
       tool: "move_across_room",
-      title: "Move “d1” into the team room “Atticus team”",
+      title: "Move “d1” · d1 · docs into the team room “Atticus team”",
       detail:
         "Puts it in “atticus”. Teammates in “Atticus team” will see its terminal and scrollback, and their agents can message it. Moving it out again doesn't take back what they've seen.",
       warnings: [
@@ -428,18 +428,31 @@ describe("team rooms' boundaries", () => {
     expect(w.did).toEqual(["group d1 atticus"]);
   });
 
+  it("move_across_room names the session by its id as well as its title, two sharing one told apart, and warns of the mode its agent reports when that's wider", async () => {
+    const w = roomWorld();
+    w.own.push(info("d2", { taskGroup: "docs" }));
+    w.mine("d1").title = "notes";
+    w.mine("d2").title = "notes";
+    const tool = w.tool("move_across_room");
+    expect((await tool.card!({ session: "d1", group: "atticus" })).title).toBe("Move “notes” · d1 · docs into the team room “Atticus team”");
+    expect((await tool.card!({ session: "d2", group: "atticus" })).title).toBe("Move “notes” · d2 · docs into the team room “Atticus team”");
+    // launched asking as usual, switched to Auto in its pane: the room's sandbox wouldn't allow that
+    Object.assign(w.mine("d2"), { status: "dead", liveMode: "auto" });
+    expect((await tool.card!({ session: "d2", group: "atticus" })).warnings).toEqual([expect.stringMatching(/^“Atticus team”'s sandbox wouldn't allow the mode it runs in \(Auto would loosen/)]);
+  });
+
   it("move_across_room out of a room says its teammates lose it; between rooms it says both; a Codex's every mode but the default is warned of", async () => {
     const w = roomWorld([ATTICUS_ROOM, DOCS_ROOM]);
     const tool = w.tool("move_across_room");
     w.rooms.splice(1, 1);
     expect(await tool.card!({ session: "a1", group: "docs" })).toEqual({
-      title: "Move “a1” out of the team room “Atticus team”",
+      title: "Move “a1” · a1 · atticus out of the team room “Atticus team”",
       detail: "Puts it in “docs”. Teammates in “Atticus team” lose it: it goes from their landscapes, and their agents can't message it any more.",
       warnings: [],
     });
     w.rooms.push(DOCS_ROOM);
     const between = await tool.card!({ session: "a1", group: "docs" });
-    expect(between).toMatchObject({ title: "Move “a1” into the team room “Docs team” from “Atticus team”", danger: true });
+    expect(between).toMatchObject({ title: "Move “a1” · a1 · atticus into the team room “Docs team” from “Atticus team”", danger: true });
     expect(between.detail).toBe(
       "Puts it in “docs”. Teammates in “Atticus team” lose it: it goes from their landscapes, and their agents can't message it any more. " +
         "Teammates in “Docs team” will see its terminal and scrollback, and their agents can message it. Moving it out again doesn't take back what they've seen."
