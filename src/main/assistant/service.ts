@@ -5,7 +5,7 @@ import { plainLine } from "../../shared/team/agentText";
 import { CardBook, type HeldCard } from "./cards";
 import type { AssistantDeps } from "./deps";
 import { validateArgs, type AssistantTool, type Registry, type ToolCard, type ToolResult } from "./registry";
-import { noRules, ruleDenied, type RulesStore } from "./rules";
+import { describeAction, noRules, ruleDenied, type RulesStore } from "./rules";
 import { TurnRunner, UNAVAILABLE, type AssistantLimits, type SpawnRequest } from "./turns";
 import { UndoBook } from "./undo";
 
@@ -113,7 +113,8 @@ export class AssistantService {
     return {
       turns: structuredClone(this.runner.list()),
       cards: this.cards.view(),
-      rules: this.rules.list(),
+      // each action as main spells it out now, from its arguments: the Rules list never shows only the model's label
+      rules: this.rules.list().map((r) => ({ ...r, actions: r.actions.map((a) => ({ ...a, detail: describeAction(this.ruleTool(a.tool), a, this.d.world, this.d.log) })) })),
       runs: this.rules.runs(),
       busy: this.runner.busy(),
       ...(this.unavailable ? { unavailable: this.unavailable } : {}),
@@ -133,7 +134,7 @@ export class AssistantService {
     if ("error" in h) return h;
     // a card whose time ran out or whose target changed expires here, before anything can run
     this.sweep();
-    if (h.card.state !== "open") return h.card.state === "expired" ? { ...h.card, warnings: [...h.card.warnings] } : { error: `That card is ${h.card.state} already` };
+    if (h.card.state !== "open") return h.card.state === "expired" ? structuredClone(h.card) : { error: `That card is ${h.card.state} already` };
     const tool = this.registry.get(h.card.tool);
     if (!tool) return this.settleCard(h, "failed", `Mockingbird has no ${h.card.tool} tool any more, so nothing ran`);
     h.card.state = "running";
@@ -146,7 +147,7 @@ export class AssistantService {
       h.card.state = "open";
       h.card.blocked = r.why;
       this.changed();
-      return { ...h.card, warnings: [...h.card.warnings] };
+      return structuredClone(h.card);
     }
     return this.settleCard(h, "failed", r.why);
   }
@@ -267,7 +268,8 @@ export class AssistantService {
   /**
    * A standing rule's action, run as the rule's (ruleEngine.ts): only a tool marked `rule` that the deny list doesn't
    * name (rules.ts RULE_DENY_LIST), or a rule-only action, its arguments checked against its schema and its guards
-   * checked now, and recorded in the activity log as rule `rule`'s (its label). No card: the rule was made through one.
+   * checked now, those a tool keeps for a rule's run among them (CallContext), and recorded in the activity log as
+   * rule `rule`'s (its label). No card: the rule was made through one.
    */
   async runAction(a: RuleAction, rule?: string): Promise<{ ok: boolean; text: string; step: AssistantStep }> {
     const tool = this.ruleTool(a.tool);
@@ -320,7 +322,7 @@ export class AssistantService {
     let blocked: string | null;
     let card: ToolCard;
     try {
-      blocked = (await tool.check?.(args)) ?? null;
+      blocked = (await tool.check?.(args, { rule: false })) ?? null;
       card = tool.card ? await tool.card(args) : { title: step.label, detail: step.label, warnings: [] };
     } catch (err) {
       this.d.log(`assistant: making a card for ${tool.name}`, err);
@@ -338,9 +340,10 @@ export class AssistantService {
    * its outcome after `prefix` (a rule's name).
    */
   private async perform(tool: AssistantTool, args: Record<string, unknown>, source: AssistantSource | null, prefix = ""): Promise<Performed> {
+    const ctx = { rule: source === "rule" };
     let why: string | null;
     try {
-      why = (await tool.check?.(args)) ?? null;
+      why = (await tool.check?.(args, ctx)) ?? null;
     } catch (err) {
       this.d.log(`assistant: checking ${tool.name}`, err);
       return { ok: false, why: `Mockingbird couldn't check whether it can be done: ${message(err)}`, refused: false };
@@ -349,7 +352,7 @@ export class AssistantService {
     const label = this.labelOf(tool, args);
     const target = this.targetOf(tool, args);
     try {
-      const result = await tool.run(args);
+      const result = await tool.run(args, ctx);
       if (typeof result?.text !== "string") throw new Error(`${tool.name} answered without saying what it did`);
       if (source) this.record(tool.name, target, source, `${prefix}${label}: done`);
       return { ok: true, result };
@@ -387,7 +390,7 @@ export class AssistantService {
       if (state === "failed") step.error = result;
     }
     this.changed();
-    return { ...card, warnings: [...card.warnings] };
+    return structuredClone(card);
   }
 
   private heldCard(cardId: unknown): HeldCard | { error: string } {

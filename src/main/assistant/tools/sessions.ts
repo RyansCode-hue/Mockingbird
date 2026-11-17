@@ -1,12 +1,12 @@
 import { closeWarningLines } from "../../../shared/closing";
-import { PERMISSION_MODE_LABEL, PERMISSION_MODES, type PermissionMode } from "../../../shared/permissionModes";
+import { PERMISSION_MODE_LABEL, PERMISSION_MODES, WIDER_MODES, type PermissionMode } from "../../../shared/permissionModes";
 import { plainLine } from "../../../shared/team/agentText";
-import { AGENT_NAME, topOfKey, type RelaunchChange, type SessionInfo } from "../../../shared/types";
-import { CLAUDE_EFFORTS } from "../../agents";
+import { AGENT_NAME, topOfKey, type AgentKind, type RelaunchChange, type SessionInfo } from "../../../shared/types";
+import { CLAUDE_EFFORTS, widerModeWarning } from "../../agents";
 import type { GuardOp } from "../../sessionGuards";
 import type { AssistantDeps, AssistantSession } from "../deps";
 import { defineTool, type AssistantTool, type JsonSchema } from "../registry";
-import { noSession, SESSION_ARG, sessionById, teammates, titleOf } from "./lookup";
+import { noSession, SESSION_ARG, sessionById, sessionRef, teammates, titleOf } from "./lookup";
 
 /** Sessions (docs/assistant.md → Ability groups): what's running and how; restarting, closing, resuming and handing off. */
 
@@ -42,6 +42,9 @@ export function openRecord(d: Pick<AssistantDeps, "record">, id: string): Sessio
   const r = d.record(id);
   return r?.open ? r.info : null;
 }
+
+/** What a card warns of a permission mode it gives a session: what its agent then does without asking. */
+export const modeWarnings = (mode: PermissionMode | undefined, agent: AgentKind): string[] => (mode && WIDER_MODES.has(mode) ? [widerModeWarning(mode, agent)] : []);
 
 /** An ISO time, or null. */
 export const iso = (ms: number | null | undefined): string | null => (typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : null);
@@ -147,12 +150,21 @@ export function sessionTools(d: Deps): AssistantTool[] {
         additionalProperties: false,
       },
       label: (a) => `Restart ${nameOf(d, a.session)}${changeWords(changeOf(a))}`,
+      describe: (a) => {
+        const c = changeOf(a);
+        const s = sessionById(d, a.session);
+        return {
+          line: `Restart ${sessionRef(d, a.session)}${changeWords(c)}`,
+          warnings: modeWarnings(c.permissionMode, s && s.agent !== "terminal" ? s.agent : "claude"),
+          ...(c.permissionMode === "bypass" ? { danger: true } : {}),
+        };
+      },
       check: (a) => refusal(d, a.session, "relaunch", "restart it") ?? d.describeRelaunch(a.session, changeOf(a)).blocked,
       card: (a) => {
         const c = changeOf(a);
         const { warnings } = d.describeRelaunch(a.session, c);
         return {
-          title: `Restart ${nameOf(d, a.session)}${changeWords(c)}`,
+          title: `Restart ${sessionRef(d, a.session)}${changeWords(c)}`,
           detail: `Stops its agent and starts it again on the same conversation, in the same folder${c.permissionMode || c.model || c.effort ? `, now${changeWords(c)}` : ""}. Nothing in its folder changes.`,
           warnings,
           ...(c.permissionMode === "bypass" ? { danger: true } : {}),
@@ -188,13 +200,14 @@ export function sessionTools(d: Deps): AssistantTool[] {
         const all = agentsIn(d, a.group);
         const ok = all.filter((s) => !d.relaunchRefusal(s.id));
         groupSaw.set(a, ok.map((s) => s.id));
+        const ref = (s: AssistantSession) => sessionRef(d, s.id);
         return {
           title: `Restart ${ok.length === 1 ? "1 session" : `${ok.length} sessions`} in “${plainLine(a.group, 120)}”`,
-          detail: `Stops each one's agent and starts it again on the same conversation: ${ok.map((s) => titleOf(s, s.id)).join(", ") || "none"}.`,
+          detail: `Stops each one's agent and starts it again on the same conversation: ${ok.map(ref).join(", ") || "none"}.`,
           warnings: [
-            ...ok.filter((s) => s.status === "working").map((s) => `${titleOf(s, s.id)} is mid-turn: restarting stops the turn it's on`),
-            ...ok.filter((s) => s.status === "waiting").map((s) => `${titleOf(s, s.id)} is waiting on you: restarting drops the prompt it's showing`),
-            ...all.filter((s) => !ok.includes(s)).map((s) => `${titleOf(s, s.id)} is left out: ${d.relaunchRefusal(s.id)}`),
+            ...ok.filter((s) => s.status === "working").map((s) => `${ref(s)} is mid-turn: restarting stops the turn it's on`),
+            ...ok.filter((s) => s.status === "waiting").map((s) => `${ref(s)} is waiting on you: restarting drops the prompt it's showing`),
+            ...all.filter((s) => !ok.includes(s)).map((s) => `${ref(s)} is left out: ${d.relaunchRefusal(s.id)}`),
           ],
         };
       },
@@ -242,9 +255,10 @@ export function sessionTools(d: Deps): AssistantTool[] {
         "so resume_session reopens it. This puts a card in front of the user saying what's at stake; it runs only when they confirm.",
       inputSchema: { type: "object", properties: { session: SESSION_ARG }, required: ["session"], additionalProperties: false },
       label: (a) => `Close ${nameOf(d, a.session)}`,
+      describe: (a) => ({ line: `Close ${sessionRef(d, a.session)}, kept in Closed sessions to reopen` }),
       check: (a) => refusal(d, a.session, "kill", "close it") ?? (openRecord(d, a.session) ? null : "It's closed already: resume_session reopens it"),
       card: async (a) => ({
-        title: `Close ${nameOf(d, a.session)}`,
+        title: `Close ${sessionRef(d, a.session)}`,
         detail: "Closes its pane and stops its agent. It stays in Closed sessions with its conversation and folder, so it can be reopened.",
         warnings: openRecord(d, a.session) ? closeWarningLines(await d.guards.closeWarnings(a.session)) : [],
       }),
@@ -266,6 +280,7 @@ export function sessionTools(d: Deps): AssistantTool[] {
         "This puts a card in front of the user; it runs only when they confirm.",
       inputSchema: { type: "object", properties: { session: SESSION_ARG }, required: ["session"], additionalProperties: false },
       label: (a) => `Resume ${nameOf(d, a.session)}`,
+      describe: (a) => ({ line: `Resume ${sessionRef(d, a.session)} on its conversation (an exited pane in place, a closed session reopened)` }),
       check: (a) => {
         const r = d.record(a.session);
         if (!r) return refusal(d, a.session, "resume", "resume it");
@@ -277,8 +292,8 @@ export function sessionTools(d: Deps): AssistantTool[] {
         const how = d.record(a.session)?.open ? "resume" : "reopen";
         resumeSaw.set(a, how);
         return how === "resume"
-          ? { title: `Resume ${nameOf(d, a.session)}`, detail: "Starts its agent again in its pane, on the same conversation and in the same folder.", warnings: [] }
-          : { title: `Reopen ${nameOf(d, a.session)}`, detail: "Opens it again from Closed sessions: its agent resumes the same conversation, in its folder.", warnings: [] };
+          ? { title: `Resume ${sessionRef(d, a.session)}`, detail: "Starts its agent again in its pane, on the same conversation and in the same folder.", warnings: [] }
+          : { title: `Reopen ${sessionRef(d, a.session)}`, detail: "Opens it again from Closed sessions: its agent resumes the same conversation, in its folder.", warnings: [] };
       },
       // an exited pane closed since, or a closed session reopened since, is another card's
       stillValid: (a) => {
@@ -325,11 +340,11 @@ export function sessionTools(d: Deps): AssistantTool[] {
         const from = s?.agent ?? "claude";
         const to = a.to === "other" ? (from === "claude" ? "codex" : "claude") : from;
         return {
-          title: `Hand ${nameOf(d, a.session)} off to a fresh ${AGENT_NAME[to]} session`,
+          title: `Hand ${sessionRef(d, a.session)} off to a fresh ${AGENT_NAME[to]} session`,
           detail:
             a.to === "other"
-              ? `${AGENT_NAME[to]} writes a handoff from its conversation, then a ${AGENT_NAME[to]} session starts from it in the same folder and group, on its branch as it stands. ${nameOf(d, a.session)} keeps running.`
-              : `A fresh ${AGENT_NAME[to]} session starts in the same folder and group, from a brief of its conversation: its branch, changes, plan and latest turns. ${nameOf(d, a.session)} keeps running.`,
+              ? `${AGENT_NAME[to]} writes a handoff from its conversation, then a ${AGENT_NAME[to]} session starts from it in the same folder and group, on its branch as it stands. It keeps running.`
+              : `A fresh ${AGENT_NAME[to]} session starts in the same folder and group, from a brief of its conversation: its branch, changes, plan and latest turns. It keeps running.`,
           warnings: a.to === "other" ? [`Writing the handoff takes ${AGENT_NAME[to]} up to 4 minutes`] : [],
         };
       },

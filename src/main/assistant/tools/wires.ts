@@ -5,7 +5,7 @@ import type { LandscapeStore } from "../../landscape";
 import type { WireService } from "../../wires";
 import type { AssistantDeps, AssistantWire } from "../deps";
 import { defineTool, type AssistantTool, type JsonSchema } from "../registry";
-import { SESSION_ARG, sessionById, titleOf } from "./lookup";
+import { SESSION_ARG, sessionById, sessionRef, titleOf } from "./lookup";
 
 /**
  * Wires (docs/assistant.md → Ability groups; docs/landscape-wires.md): the wires between sessions and what waits at
@@ -92,7 +92,9 @@ export function wiresSeen(book: WireBook, ctx: GateContext): AssistantWire[] {
 
 export function wireTools(d: Deps): AssistantTool[] {
   const name = (id: string) => titleOf(sessionById(d, id), id);
-  const wire = (id: string): AssistantWire | null => d.wireList().find((w) => w.id === id) ?? null;
+  /** A session as a card names it (lookup.ts sessionRef), from the landscape's sessions: these tools read no records. */
+  const ref = (id: string) => sessionRef({ sessions: () => d.sessions() }, id);
+  const wire =(id: string): AssistantWire | null => d.wireList().find((w) => w.id === id) ?? null;
   const noWire = (id: string) => `There's no wire ${JSON.stringify(id)}: the wires are in list_wires`;
   const between = (w: Pick<AssistantWire, "from" | "to" | "type">) => `${TYPE_WORDS[w.type]} from ${name(w.from)} to ${name(w.to)}`;
   const target = (id: string) => ({ session: id, title: sessionById(d, id)?.title ?? null });
@@ -208,12 +210,12 @@ export function wireTools(d: Deps): AssistantTool[] {
         const w = wire(a.wire);
         const warnings: string[] = [];
         const to = w && sessionById(d, w.to);
-        if (to?.status === "working") warnings.push(`${name(w!.to)} is working: it's queued until its turn ends.`);
+        if (to?.status === "working") warnings.push(`${ref(w!.to)} is working: it's queued until its turn ends.`);
         if (w?.rounds) warnings.push(`It's round ${w.rounds.used + 1} of ${w.rounds.limit}.`);
         return {
-          title: w ? `Send what waits on the ${between(w)}` : `Send what waits on wire ${a.wire}`,
+          title: w ? `Send what waits on the ${TYPE_WORDS[w.type]} from ${ref(w.from)} to ${ref(w.to)}` : `Send what waits on wire ${a.wire}`,
           detail: w
-            ? `Pastes the message readied at its gate (${w.waiting?.chars ?? 0} characters) into ${name(w.to)} and submits it, as Send in the wire's popover does.`
+            ? `Pastes the message readied at its gate (${w.waiting?.chars ?? 0} characters) into ${ref(w.to)} and submits it, as Send in the wire's popover does.`
             : "Sends what waits at its gate.",
           warnings,
         };

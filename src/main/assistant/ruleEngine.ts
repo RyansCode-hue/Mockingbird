@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { ASSISTANT_LIMITS, type AssistantRule, type AssistantStep, type RuleAction, type RuleRun, type RuleTarget, type RuleTrigger } from "../../shared/assistant";
+import { ASSISTANT_LIMITS, type ActionDetail, type AssistantRule, type AssistantStep, type RuleAction, type RuleRun, type RuleTarget, type RuleTrigger } from "../../shared/assistant";
 import { ALERT_MAX, alertLine, normalizeHandle, phoneSettings } from "../../shared/phoneAlerts";
 import { plainLine, quoted } from "../../shared/team/agentText";
 import type { Settings } from "../../shared/types";
@@ -7,7 +7,8 @@ import { inQuietHours, shouldNotify } from "../notifications";
 import type { AlertSender } from "../phone/sender";
 import type { AssistantDeps, AssistantSession } from "./deps";
 import { defineTool, validateArgs, type AssistantTool, type JsonSchema } from "./registry";
-import { RULE_LABEL_MAX, ruleDenied, targetOf, triggerShape, type RuleBook, type RuleDraft, type RulesApi, type RulesStore } from "./rules";
+import { describeAction, RULE_LABEL_MAX, ruleDenied, targetOf, triggerShape, type RuleBook, type RuleDraft, type RulesApi, type RulesStore } from "./rules";
+import { refLine } from "./tools/lookup";
 
 /**
  * The standing rules running in main (docs/assistant.md → Standing rules). Their triggers are app state, never text:
@@ -151,14 +152,16 @@ export class RuleEngine implements RulesStore, RulesApi {
     return this.d.book.problem();
   }
 
-  /** Turning a rule on clears its pause and its failures: it starts over. */
+  /** Turning a rule on clears its pause and its failures: it starts over. Turning one off holds even unsaved (RuleBook.relax). */
   setOn(id: string, on: boolean): AssistantRule | null {
     if (!this.d.book.get(id)) return null;
-    this.d.book.change((rules) => {
+    const edit = (rules: AssistantRule[]) => {
       const r = rules.find((x) => x.id === id)!;
       r.on = on;
       if (on) r.paused = null;
-    });
+    };
+    if (on) this.d.book.change(edit);
+    else this.d.book.relax([id], edit);
     if (on) {
       this.restart(id);
       this.armed.set(id, this.now());
@@ -210,6 +213,12 @@ export class RuleEngine implements RulesStore, RulesApi {
     if (t.kind === "finished") return `When ${who} finishes a turn`;
     if (t.kind === "exited") return `When ${who} exits`;
     return `When ${who} has waited on you ${plural(t.minutes, "minute")}`;
+  }
+
+  details(draft: RuleDraft): ActionDetail[] {
+    const actions = Array.isArray(draft.actions) ? draft.actions : [];
+    // a draft's actions are the model's, unchecked: one that isn't an object is described as naming no tool
+    return actions.map((a) => describeAction(typeof a?.tool === "string" ? this.runner?.ruleTool(a.tool) : undefined, a ?? { tool: "", args: {} }, this.d.world, this.d.log));
   }
 
   actions(draft: RuleDraft): RuleAction[] {
@@ -265,11 +274,14 @@ export class RuleEngine implements RulesStore, RulesApi {
 
   putBack(id: string, state: { on: boolean; paused: string | null }): AssistantRule {
     if (!this.d.book.get(id)) throw new Error("That rule has been removed since");
-    this.d.book.change((rules) => {
+    const edit = (rules: AssistantRule[]) => {
       const r = rules.find((x) => x.id === id)!;
       r.on = state.on;
       r.paused = state.paused;
-    });
+    };
+    // putting a rule back on must be saved; putting it back off or paused stops it, which holds unsaved
+    if (state.on && !state.paused) this.d.book.change(edit);
+    else this.d.book.relax([id], edit);
     this.changed();
     return this.d.book.get(id)!;
   }
@@ -278,7 +290,7 @@ export class RuleEngine implements RulesStore, RulesApi {
     const all = this.d.book.list();
     const index = all.findIndex((r) => r.id === id);
     if (index < 0) return null;
-    this.d.book.change((rules) => void rules.splice(index, 1));
+    this.d.book.relax([id], (rules) => void rules.splice(index, 1));
     this.restart(id);
     this.queue = this.queue.filter((j) => j.ruleId !== id);
     this.changed();
@@ -508,9 +520,9 @@ export class RuleEngine implements RulesStore, RulesApi {
 
   private targetName(t: RuleTarget): string {
     if ("session" in t) {
+      // named as every card names a session: a title alone can be changed, or be another's too
       const s = this.d.world.sessions().find((x) => x.id === t.session);
-      const title = s?.title ?? this.titles.get(t.session);
-      return title ? `“${title}”` : quoted(t.session, 80);
+      return refLine(s?.title ?? this.titles.get(t.session) ?? null, t.session, s?.group ?? null);
     }
     if ("group" in t) return `any session in ${t.group}`;
     return "any session";
@@ -539,6 +551,11 @@ export class RuleEngine implements RulesStore, RulesApi {
     const schema = { type: "object" as const, properties: { text: TEXT }, required: ["text"], additionalProperties: false };
     /** What fired the run, for the notice: "“tests” finished · When tests finishes, tell me". */
     const context = () => (this.current ? `${this.current.event.text} · ${plainLine(this.current.rule.label, 120)}` : "A standing rule");
+    /** The text whole on its line, and in a body too when the line can't show it as it is (a line break, a hidden character). */
+    const said = (verb: string, text: string) => {
+      const one = plainLine(text, TEXT.maxLength);
+      return { line: `${verb}: “${one}”`, ...(one === text ? {} : { body: text }) };
+    };
     return [
       defineTool<{ text: string }>({
         name: "notify",
@@ -547,6 +564,7 @@ export class RuleEngine implements RulesStore, RulesApi {
         description: "A standing rule's action only: a desktop notification saying `text`, shown as the user's notification settings and quiet hours allow.",
         inputSchema: schema,
         label: (a) => `Notify me: “${plainLine(a.text, 80)}”`,
+        describe: (a) => said("Notify me", a.text),
         run: (a) => {
           const at = new Date(this.now());
           const settings = this.d.settings();
@@ -563,6 +581,7 @@ export class RuleEngine implements RulesStore, RulesApi {
         description: "A standing rule's action only: an iMessage saying `text` to the user's own handle, through phone alerts (Settings → Notifications → Phone alerts), outside quiet hours.",
         inputSchema: schema,
         label: (a) => `Text me: “${plainLine(a.text, 80)}”`,
+        describe: (a) => said("Text me", a.text),
         check: () => {
           const p = phoneSettings(this.d.settings().phoneAlerts);
           if (!normalizeHandle(p.handle)) return "Phone alerts aren't set up: enter your iMessage handle in Settings → Notifications → Phone alerts";

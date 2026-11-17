@@ -24,7 +24,7 @@ const HITS_SHOWN = 15;
 const why = (err: unknown): string => (err instanceof Error ? err.message : String(err)) || "it failed without saying why";
 
 /** The last lines `raw` (a terminal's output) shows, what looks like a secret taken out: redacted whole before it's cut. */
-function tailOf(raw: string): string {
+export function tailOf(raw: string): string {
   const lines = redactSecrets(terminalLines(raw).join("\n")).text.split("\n");
   while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
   let tail = lines.slice(-TAIL_LINES).join("\n");

@@ -1,15 +1,15 @@
 import { layOutPlan, roomAsked, type PipelineTemplate } from "../../../shared/pipelineTemplates";
-import { PERMISSION_MODE_LABEL, WIDER_MODES, type PermissionMode } from "../../../shared/permissionModes";
+import { PERMISSION_MODE_LABEL, type PermissionMode } from "../../../shared/permissionModes";
 import { plainLine } from "../../../shared/team/agentText";
 import type { HouseRow } from "../../../shared/team/house";
 import { isTicketFailure, type TicketSessionPlan } from "../../../shared/team/ticketSession";
 import { AGENT_NAME, type AdoWorkItem, type AgentKind, type NewSessionRequest, type RepoEntry, type SessionPreset } from "../../../shared/types";
-import { readRelaunchChange, widerModeWarning } from "../../agents";
+import { readRelaunchChange } from "../../agents";
 import { HELPDESK_FOLDER_ONLY } from "../../helpdesk";
 import type { AssistantDeps } from "../deps";
 import { defineTool, type AssistantTool, type JsonSchema } from "../registry";
-import { noSession, SESSION_ARG, sessionById, teammates } from "./lookup";
-import { cardSaw, EFFORT_ARG, iso, MODE_ARG, MODEL_ARG, nameOf, openRecord } from "./sessions";
+import { CHANGED_SINCE_CARD, leadWarnings, noSession, SESSION_ARG, sessionById, sessionRef, teammates } from "./lookup";
+import { cardSaw, EFFORT_ARG, iso, MODE_ARG, MODEL_ARG, modeWarnings, nameOf, openRecord } from "./sessions";
 
 /**
  * Start work (docs/assistant.md → Ability groups): what can be started (presets, templates, the House and Azure DevOps
@@ -40,7 +40,6 @@ type Deps = Pick<
 const HOUSE_ROWS = 40;
 const ADO_ROWS = 50;
 const PROMPT_MAX = 8_000;
-const PROMPT_SHOWN = 300;
 
 const AGENT_ARG: JsonSchema = { type: "string", enum: ["claude", "codex"], description: "Which agent: claude or codex" };
 const REPO_ARG: JsonSchema = { type: "string", minLength: 1, maxLength: 300, description: "A repository this Mac knows, by its folder name or path (list_presets and the sessions name them)" };
@@ -57,11 +56,11 @@ function repoOf(d: Pick<AssistantDeps, "repos">, name: string): RepoEntry | { wh
   return { why: `“${plainLine(name, 120)}” isn't a repository this Mac knows: the ones in Settings → General's folders are` };
 }
 
-/** A prompt as a card shows it: one line, cut short. */
-const shownPrompt = (p: string): string => `“${plainLine(p, PROMPT_SHOWN)}${p.length > PROMPT_SHOWN ? "…" : ""}”`;
-
-/** What a card warns of a permission mode: what its agent then does without asking. */
-const modeWarnings = (mode: PermissionMode | undefined, agent: AgentKind): string[] => (mode && WIDER_MODES.has(mode) ? [widerModeWarning(mode, agent)] : []);
+/** What start_from_ticket would do, as its card says it: a plan read again since that differs is another card's. */
+const ticketShape = (s: { plan: TicketSessionPlan; repo: string }) => {
+  const p = s.plan;
+  return JSON.stringify([p.roomId, p.room, p.group, p.n, p.title, p.holder.state, p.branch, p.branchFrom, s.repo, p.repos.find((r) => r.path === s.repo)?.base ?? null, p.repoNote]);
+};
 
 /** A preset as list_presets gives it. */
 function presetListed(p: SessionPreset) {
@@ -78,6 +77,13 @@ function presetListed(p: SessionPreset) {
     ...(p.kickoff ? { kickoff: plainLine(p.kickoff, 160) } : {}),
     ...(p.role === "tasks" ? { helpdesk: true } : {}),
   };
+}
+
+/** What preset `p` starts: "a Claude session in atticus (a new worktree, the checkout as it is), in “atticus”". */
+function presetStarts(p: SessionPreset): string {
+  const l = presetListed(p);
+  const what = p.launch === "shell" ? "a terminal" : `a ${AGENT_NAME[p.launch]} session`;
+  return `${what}${l.repo ? ` in ${l.repo} (${p.useWorktree ? "a new worktree" : "its checkout"}, ${l.branch})` : ""}${p.group ? `, in “${plainLine(p.group, 120)}”` : ""}`;
 }
 
 /** A template as list_templates gives it: its steps and how they're joined, never its prompts. */
@@ -155,7 +161,7 @@ export function startTools(d: Deps): AssistantTool[] {
       const group = a.group ?? s.taskGroup ?? undefined;
       return {
         req: { repoPath: s.repoPath, cwd: s.cwd, branchName: s.branch ?? undefined, useWorktree: false, ...(group ? { taskGroup: group } : {}), ...common },
-        where: `${nameOf(d, a.inFolderOf)}'s folder${s.branch ? `, on ${s.branch} as it stands` : ""}`,
+        where: `the folder of ${sessionRef(d, a.inFolderOf)}${s.branch ? `, on ${s.branch} as it stands` : ""}`,
         switches: null,
       };
     }
@@ -180,8 +186,37 @@ export function startTools(d: Deps): AssistantTool[] {
     return { req, where, switches: !worktree && a.branch ? `It switches ${repo.name}'s checkout to ${a.branch}` : null };
   };
 
+  /**
+   * start_session as its card and a rule's card say it: where, then its group, title, permission mode, model and effort
+   * (", in “atticus”, titled “Login fix”, in Plan mode…"), and what to know: a wider mode, a first prompt its agent may
+   * run as a command, a checkout switched, a team room's members seeing it.
+   */
+  const started = (a: StartArgs) => {
+    const r = requestOf(a);
+    const room = a.group ? d.groups().find((g) => g.key === a.group || g.stacks.includes(a.group!))?.room : null;
+    return {
+      where: "why" in r ? "a new session" : r.where,
+      how: [
+        a.group ? `, in “${plainLine(a.group, 120)}”` : "",
+        a.title ? `, titled “${plainLine(a.title, 120)}”` : "",
+        a.permissionMode && a.permissionMode !== "default" ? `, in ${PERMISSION_MODE_LABEL[a.permissionMode]}` : "",
+        a.model ? `, on ${plainLine(a.model, 80)}` : "",
+        a.effort ? `, at ${a.effort} effort` : "",
+      ].join(""),
+      warnings: [
+        ...modeWarnings(a.permissionMode, a.agent),
+        ...(a.prompt ? leadWarnings(a.prompt, AGENT_NAME[a.agent]) : []),
+        ...("why" in r || !r.switches ? [] : [r.switches]),
+        ...(room ? [`“${plainLine(a.group, 120)}” is team room ${room}'s area: its members see the session`] : []),
+      ],
+      danger: a.permissionMode === "bypass",
+    };
+  };
+
   const layOutSaw = cardSaw<{ ticket: AdoWorkItem | null }>();
   const ticketSaw = cardSaw<{ plan: TicketSessionPlan; repo: string }>();
+  /** The plan start_from_ticket's card showed; null when it showed none (it couldn't be planned then). */
+  const ticketShown = cardSaw<{ plan: TicketSessionPlan; repo: string } | null>();
 
   /** lay_out_template's template, area and repo, or why not. */
   const layOutOf = (a: LayOutArgs) => {
@@ -319,30 +354,22 @@ export function startTools(d: Deps): AssistantTool[] {
         const r = requestOf(a);
         return `Start ${AGENT_NAME[a.agent]} in ${"why" in r ? "a new session" : r.where}`;
       },
+      describe: (a) => {
+        const s = started(a);
+        return { line: `Start a new ${AGENT_NAME[a.agent]} session in ${s.where}${s.how}${a.prompt ? ", with this first prompt" : ""}`, ...(a.prompt ? { body: a.prompt } : {}), warnings: s.warnings, ...(s.danger ? { danger: true } : {}) };
+      },
       check: (a) => {
         const r = requestOf(a);
         return "why" in r ? r.why : null;
       },
       card: (a) => {
-        const r = requestOf(a);
-        const where = "why" in r ? "a new session" : r.where;
-        const room = a.group ? d.groups().find((g) => g.key === a.group || g.stacks.includes(a.group!))?.room : null;
+        const s = started(a);
         return {
-          title: `Start ${AGENT_NAME[a.agent]} in ${where}`,
-          detail: [
-            `Starts a new ${AGENT_NAME[a.agent]} session in ${where}${a.group ? `, in “${plainLine(a.group, 120)}”` : ""}`,
-            a.permissionMode && a.permissionMode !== "default" ? `, in ${PERMISSION_MODE_LABEL[a.permissionMode]}` : "",
-            a.model ? `, on ${plainLine(a.model, 80)}` : "",
-            a.effort ? `, at ${a.effort} effort` : "",
-            ".",
-            a.prompt ? ` Its first prompt: ${shownPrompt(a.prompt)}` : "",
-          ].join(""),
-          warnings: [
-            ...modeWarnings(a.permissionMode, a.agent),
-            ...("why" in r || !r.switches ? [] : [r.switches]),
-            ...(room ? [`“${plainLine(a.group, 120)}” is team room ${room}'s area: its members see the session`] : []),
-          ],
-          ...(a.permissionMode === "bypass" ? { danger: true } : {}),
+          title: `Start ${AGENT_NAME[a.agent]} in ${s.where}`,
+          detail: `Starts a new ${AGENT_NAME[a.agent]} session in ${s.where}${s.how}.${a.prompt ? " Its first prompt, below, is sent once it's up." : ""}`,
+          ...(a.prompt ? { body: a.prompt } : {}),
+          warnings: s.warnings,
+          ...(s.danger ? { danger: true } : {}),
         };
       },
       run: async (a) => {
@@ -360,15 +387,19 @@ export function startTools(d: Deps): AssistantTool[] {
       description: "Start a session from one of the presets list_presets gives, as New session's preset button does. This puts a card in front of the user; it runs only when they confirm.",
       inputSchema: { type: "object", properties: { preset: { type: "string", minLength: 1, maxLength: 80, description: "The preset's id, from list_presets" } }, required: ["preset"], additionalProperties: false },
       label: (a) => `Start the preset “${plainLine(d.presets().find((p) => p.id === a.preset)?.name ?? a.preset, 80)}”`,
+      describe: (a) => {
+        const p = d.presets().find((x) => x.id === a.preset);
+        if (!p) return { line: `Start the preset ${JSON.stringify(plainLine(a.preset, 80))}, which is gone` };
+        return { line: `Start the preset “${plainLine(p.name, 80)}”: ${presetStarts(p)}${p.kickoff ? `, with this first ${p.launch === "shell" ? "command" : "prompt"}` : ""}`, ...(p.kickoff ? { body: p.kickoff } : {}) };
+      },
       check: (a) => (d.presets().some((p) => p.id === a.preset) ? null : `There's no preset with id “${plainLine(a.preset, 80)}”: list_presets lists them`),
       card: (a) => {
         const p = d.presets().find((x) => x.id === a.preset);
         if (!p) return { title: `Start the preset “${plainLine(a.preset, 80)}”`, detail: "There's no such preset any more.", warnings: [] };
-        const l = presetListed(p);
-        const what = p.launch === "shell" ? "a terminal" : `a ${AGENT_NAME[p.launch]} session`;
         return {
           title: `Start the preset “${plainLine(p.name, 80)}”`,
-          detail: `Starts ${what}${l.repo ? ` in ${l.repo} (${p.useWorktree ? "a new worktree" : "its checkout"}, ${l.branch})` : ""}${p.group ? `, in “${plainLine(p.group, 120)}”` : ""}${p.kickoff ? `. Its first prompt: ${shownPrompt(p.kickoff)}` : "."}`,
+          detail: `Starts ${presetStarts(p)}.${p.kickoff ? ` Its first ${p.launch === "shell" ? "command" : "prompt"}, below, is sent once it's up.` : ""}`,
+          ...(p.kickoff ? { body: p.kickoff } : {}),
           warnings: [],
         };
       },
@@ -398,6 +429,15 @@ export function startTools(d: Deps): AssistantTool[] {
         additionalProperties: false,
       },
       label: (a) => `Lay out “${plainLine(d.templates().templates.find((t) => t.id === a.template)?.name ?? a.template, 60)}” in “${plainLine(a.area, 120)}”`,
+      describe: (a) => {
+        const t = d.templates().templates.find((x) => x.id === a.template);
+        return {
+          line:
+            `Lay out the template “${plainLine(t?.name ?? a.template, 60)}” (${plainLine(a.template, 60)}) in “${plainLine(a.area, 120)}”` +
+            `${a.repo ? `, its worktrees in ${plainLine(a.repo, 300)}` : ""}${a.base ? `, cut from origin/${plainLine(a.base, 200)}` : ""}${a.ticket ? `, for #${a.ticket.replace(/^#/, "")}` : ""}` +
+            `${t?.startFirst ? ", its first step started" : ""}`,
+        };
+      },
       check: async (a) => {
         const l = layOutOf(a);
         if ("why" in l) return l.why;
@@ -479,11 +519,17 @@ export function startTools(d: Deps): AssistantTool[] {
       check: async (a) => {
         const s = await ticketStart(a);
         if ("why" in s) return s.why;
+        // Do it plans again: what runs must be what the card showed, or nothing does
+        if (ticketShown.has(a)) {
+          const shown = ticketShown.get(a);
+          if (!shown || ticketShape(shown) !== ticketShape(s)) return CHANGED_SINCE_CARD;
+        }
         ticketSaw.set(a, s);
         return null;
       },
       card: (a) => {
         const s = ticketSaw.get(a);
+        ticketShown.set(a, s ?? null);
         const agent = AGENT_NAME[a.agent ?? "claude"];
         if (!s) return { title: `Start on #${a.ticket}`, detail: `Claims #${a.ticket} on the House as you, makes its worktree and starts ${agent} there.`, warnings: [] };
         const repo = s.plan.repos.find((r) => r.path === s.repo);
@@ -515,13 +561,14 @@ export function startTools(d: Deps): AssistantTool[] {
         "This puts a card in front of the user; it runs only when they confirm.",
       inputSchema: { type: "object", properties: { session: SESSION_ARG }, required: ["session"], additionalProperties: false },
       label: (a) => `Have ${nameOf(d, a.session)}'s branch reviewed`,
+      describe: (a) => ({ line: `Have the other agent review the branch of ${sessionRef(d, a.session)}, in its folder, and report back to it` }),
       check: (a) => reviewRefusal(a.session),
       card: (a) => {
         const s = openRecord(d, a.session);
         const reviewer = AGENT_NAME[(s?.agent ?? "claude") === "claude" ? "codex" : "claude"];
         return {
-          title: `Have ${reviewer} review ${nameOf(d, a.session)}'s branch`,
-          detail: `Starts ${reviewer} in ${nameOf(d, a.session)}'s folder${s?.branch ? `, on ${s.branch} as it stands` : ""}, to review it against its base and report back to ${nameOf(d, a.session)}.`,
+          title: `Have ${reviewer} review the branch of ${sessionRef(d, a.session)}`,
+          detail: `Starts ${reviewer} in its folder${s?.branch ? `, on ${s.branch} as it stands` : ""}, to review it against its base and report back to it.`,
           warnings: [],
         };
       },

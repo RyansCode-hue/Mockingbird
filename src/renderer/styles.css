@@ -3810,6 +3810,17 @@ pre.wg-body { margin: 0; resize: none; white-space: pre-wrap; overflow-wrap: any
 .as-card.danger { border-color: color-mix(in srgb, var(--red) 50%, transparent); box-shadow: inset 2px 0 0 var(--red); }
 .as-card.danger .as-card-t, .as-card.danger .as-card-warn li, .as-card.danger .as-card-warn li::before { color: var(--red); }
 .as-card-blocked { padding: 4px 7px; border-radius: 5px; background: var(--fill-subtle); font: 400 11px/1.4 var(--ui); color: var(--text-2); }
+/* what a card or a rule's action types, whole: plain text that scrolls, never cut, with no ligature drawing "--" or "!=" as another glyph */
+.as-payload {
+  margin: 0; max-height: 168px; overflow: auto; padding: 6px 8px; border: 1px solid var(--line-soft); border-radius: 5px; background: var(--fill-subtle);
+  font: 400 11px/1.45 var(--mono); font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; color: var(--text-1);
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text;
+}
+.as-acts { margin: 0; padding: 0 0 0 16px; display: flex; flex-direction: column; gap: 6px; font: 400 11.5px/1.45 var(--ui); color: var(--text-2); }
+.as-acts > li::marker { font: 400 10.5px var(--mono); color: var(--text-3); }
+.as-act { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.as-act-l { overflow-wrap: anywhere; }
+.as-act.danger > .as-act-l, .as-act.danger .as-card-warn li, .as-act.danger .as-card-warn li::before { color: var(--red); }
 .as-card-acts { display: flex; gap: 6px; margin-top: 3px; }
 .as-card-acts button { padding: 4px 11px; font-size: 11px; }
 button.as-do.danger { border-color: var(--red); color: var(--red); background: transparent; font-weight: 600; }
@@ -3847,6 +3858,9 @@ button.as-do.danger[aria-disabled="true"], button.as-do.danger[aria-disabled="tr
 .as-rule-l { font: 400 11.5px/1.4 var(--ui); color: var(--text-1); }
 .as-rule:not(.on) .as-rule-l { color: var(--text-3); }
 .as-rule-paused { font: 400 11px/1.4 var(--ui); color: var(--red); }
+.as-rule-unsaved { font: 400 11px/1.4 var(--ui); color: var(--red); }
+.as-rule .as-acts { margin: 2px 0 1px; font-size: 11px; color: var(--text-3); }
+.as-rule .as-payload { max-height: 120px; }
 .as-rule-last { font: 400 10px/1.4 var(--mono); color: var(--text-4); }
 button.as-remove { flex-shrink: 0; font-size: 11px; line-height: 20px; color: var(--text-4); text-decoration: none; }
 button.as-remove:hover { color: var(--red); text-decoration: underline; }

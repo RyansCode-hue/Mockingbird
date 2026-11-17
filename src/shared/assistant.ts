@@ -36,6 +36,10 @@ export interface AssistantCard {
   warnings: string[];
   /** Shown in the danger color: bypass permissions, deleting a worktree. */
   danger?: boolean;
+  /** The text it types, sends or publishes, whole: the sheet shows it as plain text, never as HTML. */
+  body?: string;
+  /** A standing rule's card: each of its actions as main spells it out from its arguments. */
+  actions?: ActionDetail[];
   /** open: why it can't be done now (Do it stays but answers with this); null when it can. */
   blocked?: string | null;
   state: "open" | "running" | "done" | "failed" | "cancelled" | "expired";
@@ -70,12 +74,29 @@ export type RuleTrigger =
   /** Local time HH:MM, on these weekdays (0 = Sunday); every day when absent. */
   | { kind: "daily"; at: string; days?: number[] };
 
+/**
+ * One call as main spells it out from its validated arguments, never in the model's words: a rule's card and the
+ * sheet's Rules list show each action so.
+ */
+export interface ActionDetail {
+  /** "Start Claude in atticus's checkout as it is, in “atticus”, in Plan mode, on opus". */
+  line: string;
+  /** The text it types or sends, whole, when the line can't hold it as it is. */
+  body?: string;
+  /** What to know about it: a wider permission mode, text an agent may run as a command. */
+  warnings: string[];
+  /** Shown in the danger color: bypass permissions. */
+  danger?: boolean;
+}
+
 /** One action of a rule: a registry tool with its arguments, fixed when the rule is made, checked again each run. */
 export interface RuleAction {
   tool: string;
   args: Record<string, unknown>;
   /** "Start the review session". */
   label: string;
+  /** The sheet's view only, never saved: main's account of it now (ActionDetail). */
+  detail?: ActionDetail;
 }
 
 export interface AssistantRule {
@@ -89,6 +110,8 @@ export interface AssistantRule {
   /** Paused by Mockingbird (3 failed runs in a row, or a target that's gone): why. Cleared by turning it on again. */
   paused?: string | null;
   lastRun?: { at: number; ok: boolean; text: string } | null;
+  /** The sheet's view only: its off or pause holds only until Mockingbird quits, as the rules file couldn't be saved. Says so. */
+  unsaved?: string;
 }
 
 /** A rule's run, in the sheet. */

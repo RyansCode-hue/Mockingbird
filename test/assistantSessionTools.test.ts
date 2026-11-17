@@ -64,7 +64,7 @@ describe("restart_session", () => {
     expect(t.label(plan)).toBe("Restart “api-fix” in Plan mode, on opus, at high effort");
     expect(await t.check!(plan)).toBeNull();
     expect(await t.card!(plan)).toEqual({
-      title: "Restart “api-fix” in Plan mode, on opus, at high effort",
+      title: "Restart “api-fix” · a1 · atticus in Plan mode, on opus, at high effort",
       detail: "Stops its agent and starts it again on the same conversation, in the same folder, now in Plan mode, on opus, at high effort. Nothing in its folder changes.",
       warnings: ["It's mid-turn: restarting stops the turn it's on"],
     });
@@ -121,8 +121,8 @@ describe("restart_group", () => {
     const args = { group: "atticus" };
     expect(await t.card!(args)).toEqual({
       title: "Restart 3 sessions in “atticus”",
-      detail: "Stops each one's agent and starts it again on the same conversation: “api”, “web”, “wait”.",
-      warnings: ["“api” is mid-turn: restarting stops the turn it's on", "“wait” is waiting on you: restarting drops the prompt it's showing", "“copy” is left out: it continues on Nick's laptop"],
+      detail: "Stops each one's agent and starts it again on the same conversation: “api” · a1 · atticus, “web” · a2 · atticus/ui, “wait” · w1 · atticus.",
+      warnings: ["“api” · a1 · atticus is mid-turn: restarting stops the turn it's on", "“wait” · w1 · atticus is waiting on you: restarting drops the prompt it's showing", "“copy” · g1 · atticus is left out: it continues on Nick's laptop"],
     });
     expect(t.stillValid!(args)).toBe(true);
     const r = await t.run(args);
@@ -155,7 +155,7 @@ describe("close_session", () => {
     const t = mac.tool("close_session");
     expect(await t.check!({ session: "a1" })).toBeNull();
     expect(await t.card!({ session: "a1" })).toEqual({
-      title: "Close “api”",
+      title: "Close “api” · a1 · atticus",
       detail: "Closes its pane and stops its agent. It stays in Closed sessions with its conversation and folder, so it can be reopened.",
       warnings: ["2 files have uncommitted changes", "1 commit isn't pushed", "It's mid-turn: closing stops it"],
     });
@@ -187,8 +187,8 @@ describe("resume_session", () => {
     expect(await t.check!({ session: "c1" })).toBeNull();
     const d1 = { session: "d1" };
     const c1 = { session: "c1" };
-    expect((await t.card!(d1)).title).toBe("Resume “dead”");
-    expect((await t.card!(c1)).title).toBe("Reopen “closed”");
+    expect((await t.card!(d1)).title).toBe("Resume “dead” · d1 · atticus");
+    expect((await t.card!(c1)).title).toBe("Reopen “closed” · c1 · atticus");
     expect((await t.run(d1)).text).toBe("Resumed “dead”.");
     expect((await t.run(c1)).text).toBe("Reopened “closed”.");
     expect(mac.did).toEqual(["resume d1", "reopen c1"]);
@@ -217,8 +217,8 @@ describe("handoff_session", () => {
     mac.own.push(info("a1", { title: "api" }));
     const t = mac.tool("handoff_session");
     expect(await t.check!({ session: "a1" })).toBeNull();
-    expect(await t.card!({ session: "a1" })).toMatchObject({ title: "Hand “api” off to a fresh Claude session", detail: expect.stringContaining("from a brief of its conversation"), warnings: [] });
-    expect(await t.card!({ session: "a1", to: "other" })).toMatchObject({ title: "Hand “api” off to a fresh Codex session", warnings: ["Writing the handoff takes Codex up to 4 minutes"] });
+    expect(await t.card!({ session: "a1" })).toMatchObject({ title: "Hand “api” · a1 · atticus off to a fresh Claude session", detail: expect.stringContaining("from a brief of its conversation"), warnings: [] });
+    expect(await t.card!({ session: "a1", to: "other" })).toMatchObject({ title: "Hand “api” · a1 · atticus off to a fresh Codex session", warnings: ["Writing the handoff takes Codex up to 4 minutes"] });
     expect((await t.run({ session: "a1" })).text).toMatch(/^Started “a1 · fresh” \(new\d+\) from “api”\.$/);
     expect((await t.run({ session: "a1", to: "other" })).text).toMatch(/^Started “a1 · codex”/);
     expect(mac.did).toEqual(["started a1 · fresh", "started a1 · codex"]);
@@ -318,7 +318,8 @@ describe("start_session", () => {
     expect(await t.check!(a)).toBeNull();
     expect(await t.card!(a)).toEqual({
       title: "Start Claude in a new worktree of atticus on fix/login, cut from origin/dev",
-      detail: "Starts a new Claude session in a new worktree of atticus on fix/login, cut from origin/dev, in “atticus”, in Accept edits, on opus, at high effort. Its first prompt: “Fix the login bug in auth.ts”",
+      detail: "Starts a new Claude session in a new worktree of atticus on fix/login, cut from origin/dev, in “atticus”, titled “Login fix”, in Accept edits, on opus, at high effort. Its first prompt, below, is sent once it's up.",
+      body: "Fix the login bug in auth.ts",
       warnings: ["Accept edits: it changes files without asking you first"],
     });
     expect((await t.run(a)).text).toBe("Started “Login fix” (n1) in a new worktree of atticus on fix/login, cut from origin/dev.");
@@ -466,7 +467,7 @@ describe("review_branch", () => {
     expect(await t.check!({ session: "t1" })).toBe("It's a terminal: it has no agent's work to review");
     expect(await t.check!({ session: "k1" })).toBe("“k1” continues on Nick's laptop — take it back rather than having this copy's branch reviewed");
     expect(await t.check!({ session: "a1" })).toBeNull();
-    expect(await t.card!({ session: "a1" })).toMatchObject({ title: "Have Codex review “api”'s branch", detail: expect.stringContaining("on fix as it stands") });
+    expect(await t.card!({ session: "a1" })).toMatchObject({ title: "Have Codex review the branch of “api” · a1 · atticus", detail: expect.stringContaining("on fix as it stands") });
     await t.run({ session: "a1" });
     expect(mac.did).toEqual(["started Review · a1"]);
   });

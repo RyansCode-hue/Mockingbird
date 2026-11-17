@@ -32,6 +32,8 @@ export class CardBook {
       detail: p.card.detail,
       warnings: [...p.card.warnings],
       ...(p.card.danger ? { danger: true } : {}),
+      ...(p.card.body !== undefined ? { body: p.card.body } : {}),
+      ...(p.card.actions ? { actions: structuredClone(p.card.actions) } : {}),
       blocked: p.blocked,
       state: "open",
       expiresAt: this.o.now() + this.o.cardMs,
@@ -60,7 +62,7 @@ export class CardBook {
   view(): AssistantCard[] {
     const open = this.held.filter((h) => h.card.state === "open" || h.card.state === "running");
     const settled = this.held.filter((h) => h.card.state !== "open" && h.card.state !== "running");
-    return [...open, ...settled].map((h) => ({ ...h.card, warnings: [...h.card.warnings] }));
+    return [...open, ...settled].map((h) => structuredClone(h.card));
   }
 
   /** Open cards whose time ran out, or whose target changed (`valid` false), expire. Returns those that did. */

@@ -3,11 +3,13 @@ import { plainLine, quoted } from "../../../shared/team/agentText";
 import type { AssistantDeps } from "../deps";
 import { defineTool, type AssistantTool, type JsonSchema, type ToolCard } from "../registry";
 import { RULE_LABEL_MAX, triggerShape, WAITING_MAX_MINUTES, type RuleDraft } from "../rules";
-import { SESSION_ARG } from "./lookup";
+import { CHANGED_SINCE_CARD, SESSION_ARG } from "./lookup";
+import { cardSaw } from "./sessions";
 
 /**
- * Standing rules (docs/assistant.md → Standing rules): listing them, making or changing one (always a card: once on,
- * a rule acts without asking each time), and turning one on or off or removing it (direct, with Undo).
+ * Standing rules (docs/assistant.md → Standing rules): listing them; making, changing or turning one on (always a
+ * card showing its trigger and every action: once on, a rule acts without asking each time); turning one off or
+ * removing it (direct, with Undo).
  */
 
 type Deps = Pick<AssistantDeps, "rules">;
@@ -64,10 +66,26 @@ function listed(d: Deps, r: AssistantRule) {
 /** The trigger in plain words, or that it isn't one (a card names what it's refused for). */
 const whenOf = (d: Deps, t: RuleTrigger): string => (triggerShape(t) ? "A trigger that isn't one" : d.rules.describe(t));
 
-/** "When “tests” finishes a turn: Focus “review”; then Notify me: “Tests done”." */
-function sentence(d: Deps, draft: RuleDraft): string {
-  const actions = Array.isArray(draft.actions) ? d.rules.actions(draft).map((a) => a.label) : [];
-  return `${whenOf(d, draft.trigger)}: ${actions.join("; then ") || "nothing"}.`;
+/** Rule `r` as a draft: what it watches and does. */
+const draftOf = (r: AssistantRule): RuleDraft => ({ label: r.label, trigger: r.trigger, actions: r.actions.map((x) => ({ tool: x.tool, args: x.args })) });
+
+/** What a card about rule `r` showed of it: the same rule changed since is another card's. */
+const shapeOf = (r: AssistantRule): string => JSON.stringify([r.label, r.trigger, r.actions.map((x) => [x.tool, x.args])]);
+
+/**
+ * A card about what a rule will do: its trigger, then each action as main spells it out from its arguments (every
+ * payload whole, sessions by id, a wider mode warned of), in the danger color when any action is. `lead` comes before
+ * the trigger ("From now on: "); `warnings` follow the one every rule card carries.
+ */
+function ruleCard(d: Deps, draft: RuleDraft, title: string, lead: string, warnings: string[]): ToolCard {
+  const actions = Array.isArray(draft.actions) ? d.rules.details(draft) : [];
+  return {
+    title,
+    detail: `${lead}${whenOf(d, draft.trigger)}, it does ${actions.length === 1 ? "this" : `these ${actions.length}, in order`}:`,
+    actions,
+    warnings: [RUNS_WITHOUT_ASKING, ...warnings],
+    ...(actions.some((a) => a.danger) ? { danger: true } : {}),
+  };
 }
 
 export function ruleTools(d: Deps): AssistantTool[] {
@@ -77,6 +95,7 @@ export function ruleTools(d: Deps): AssistantTool[] {
     trigger: a.trigger ?? r.trigger,
     actions: a.actions ?? r.actions.map((x) => ({ tool: x.tool, args: x.args })),
   });
+  const onSaw = cardSaw<string>();
 
   return [
     defineTool<Record<string, never>>({
@@ -104,7 +123,7 @@ export function ruleTools(d: Deps): AssistantTool[] {
       inputSchema: { type: "object", properties: { label: LABEL, trigger: TRIGGER, actions: ACTIONS }, required: ["label", "trigger", "actions"], additionalProperties: false },
       label: (a) => `Make the rule “${plainLine(a.label, 120)}”`,
       check: (a) => d.rules.refusal(a),
-      card: (a): ToolCard => ({ title: `Make the rule “${plainLine(a.label, 120)}”`, detail: sentence(d, a), warnings: [RUNS_WITHOUT_ASKING] }),
+      card: (a): ToolCard => ruleCard(d, a, `Make the rule “${plainLine(a.label, 120)}”`, "", []),
       run: (a) => {
         const r = d.rules.add(a);
         return { text: `Made the rule “${r.label}” (${r.id}): it's on.` };
@@ -128,12 +147,8 @@ export function ruleTools(d: Deps): AssistantTool[] {
         const r = d.rules.get(a.rule);
         if (!r) return { title: `Change the rule ${quoted(a.rule, 80)}`, detail: noRule(a.rule), warnings: [] };
         const next = changed(a, r);
-        const renamed = plainLine(next.label, RULE_LABEL_MAX) !== r.label ? ` It's renamed “${plainLine(next.label, 120)}”.` : "";
-        return {
-          title: `Change the rule “${r.label}”`,
-          detail: `From now on: ${sentence(d, next)}${renamed}`,
-          warnings: [RUNS_WITHOUT_ASKING, ...(r.on ? [] : ["It's off, and stays off until you turn it on."])],
-        };
+        const renamed = plainLine(next.label, RULE_LABEL_MAX) !== r.label ? `It's renamed “${plainLine(next.label, 120)}”. ` : "";
+        return ruleCard(d, next, `Change the rule “${r.label}”`, `${renamed}From now on: `, r.on ? [] : ["It's off, and stays off until you turn it on."]);
       },
       stillValid: (a) => !!d.rules.get(a.rule),
       run: (a) => {
@@ -143,26 +158,59 @@ export function ruleTools(d: Deps): AssistantTool[] {
         return { text: `Changed the rule “${after.label}”.` };
       },
     }),
-    defineTool<{ rule: string; on: boolean }>({
-      name: "set_rule_on",
-      tier: "direct",
-      description: "Turn one of the user's standing rules on or off. Turning a paused rule on clears its pause. The user can Undo it.",
-      inputSchema: { type: "object", properties: { rule: RULE_ARG, on: { type: "boolean" } }, required: ["rule", "on"], additionalProperties: false },
-      label: (a) => `Turn ${nameOf(d, a.rule)} ${a.on ? "on" : "off"}`,
+    // turning a rule on is a card, as making one is: once on it acts without asking, and a paused one's pause goes
+    defineTool<{ rule: string }>({
+      name: "turn_rule_on",
+      tier: "confirm",
+      description:
+        "Turn one of the user's standing rules on, or a paused one on again (its pause is cleared). " +
+        "This puts a card in front of the user showing its trigger and every action; it's on only when they confirm.",
+      inputSchema: { type: "object", properties: { rule: RULE_ARG }, required: ["rule"], additionalProperties: false },
+      label: (a) => `Turn ${nameOf(d, a.rule)} on`,
       check: (a) => {
         const r = d.rules.get(a.rule);
         if (!r) return noRule(a.rule);
-        if (a.on && r.on && !r.paused) return "It's on already";
-        if (!a.on && !r.on) return "It's off already";
-        return null;
+        if (r.on && !r.paused) return "It's on already";
+        // Do it: the rule it turns on must be the one the card showed
+        const saw = onSaw.get(a);
+        if (saw !== undefined && saw !== shapeOf(r)) return CHANGED_SINCE_CARD;
+        return d.rules.refusal(draftOf(r), a.rule);
+      },
+      card: (a): ToolCard => {
+        const r = d.rules.get(a.rule);
+        if (!r) return { title: `Turn on the rule ${quoted(a.rule, 80)}`, detail: noRule(a.rule), warnings: [] };
+        onSaw.set(a, shapeOf(r));
+        return ruleCard(d, draftOf(r), `Turn on the rule “${r.label}”`, "", r.paused ? [`Mockingbird paused it (${plainLine(r.paused, 200)}): turning it on clears that.`] : []);
+      },
+      stillValid: (a) => {
+        const r = d.rules.get(a.rule);
+        const saw = onSaw.get(a);
+        return !!r && (saw === undefined || saw === shapeOf(r));
+      },
+      run: (a) => {
+        const after = d.rules.setOn(a.rule, true);
+        if (!after) throw new Error(noRule(a.rule));
+        return { text: `Turned “${after.label}” on.` };
+      },
+    }),
+    defineTool<{ rule: string }>({
+      name: "turn_rule_off",
+      tier: "direct",
+      description: "Turn one of the user's standing rules off: it runs no more until it's turned on again. The user can Undo it.",
+      inputSchema: { type: "object", properties: { rule: RULE_ARG }, required: ["rule"], additionalProperties: false },
+      label: (a) => `Turn ${nameOf(d, a.rule)} off`,
+      check: (a) => {
+        const r = d.rules.get(a.rule);
+        if (!r) return noRule(a.rule);
+        return r.on ? null : "It's off already";
       },
       run: (a) => {
         const before = d.rules.get(a.rule);
-        const after = d.rules.setOn(a.rule, a.on);
+        const after = d.rules.setOn(a.rule, false);
         if (!before || !after) throw new Error(noRule(a.rule));
         const was = { on: before.on, paused: before.paused ?? null };
         return {
-          text: `Turned “${after.label}” ${a.on ? "on" : "off"}.`,
+          text: `Turned “${after.label}” off.`,
           // put back only over its own switch: a rule switched, paused or changed again since is as it is now
           stillUndoable: () => {
             const r = d.rules.get(a.rule);

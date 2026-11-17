@@ -43,7 +43,7 @@ describe("answer_prompt", () => {
     const mac = fakeMac();
     mac.own.push(waiting("a1", { title: "api" }));
     const { h, card } = await proposed(mac, "a1", "allow");
-    expect(card).toMatchObject({ title: "Allow “api”'s prompt once", detail: `Answers yes to “${PERMISSION}”, this once: not “always allow”. Its next prompt asks again.`, blocked: null });
+    expect(card).toMatchObject({ title: "Allow the prompt of “api” · a1 · atticus, once", detail: expect.stringMatching(new RegExp(`^Answers yes to “${PERMISSION}”, this once: not “always allow”\\. Its next prompt asks again\\.`)), blocked: null });
     expect(mac.typed).toEqual([]);
     expect(await h.svc.confirm(card.id)).toMatchObject({ state: "done", result: "Answered “api”'s prompt: allow once." });
     expect(mac.typed).toEqual([["a1", "1"]]);
@@ -106,7 +106,12 @@ describe("send_to_session", () => {
     mac.own.push(info("a1", { title: "api" }), info("w1", { title: "busy", status: "working" }));
     const t = mac.tool("send_to_session");
     expect(await t.check!({ session: "a1", text: "run the tests" })).toBeNull();
-    expect(await t.card!({ session: "w1", text: "run the tests" })).toEqual({ title: "Send “busy” a message", detail: "Types it into its prompt and sends it: “run the tests”", warnings: ["It's mid-turn: the message goes in when the turn ends"] });
+    expect(await t.card!({ session: "w1", text: "run the tests" })).toEqual({
+      title: "Send “busy” · w1 · atticus a message",
+      detail: "Types this into its prompt and sends it, as you would:",
+      body: "run the tests",
+      warnings: ["It's mid-turn: the message goes in when the turn ends"],
+    });
     expect((await t.run({ session: "a1", text: "run the tests" })).text).toBe("Sent to “api”.");
     expect((await t.run({ session: "w1", text: "run the tests" })).text).toBe("Queued for “busy”: it goes in when its turn ends.");
     expect(mac.did).toEqual(["broadcast a1 run the tests", "broadcast w1 run the tests"]);
@@ -159,8 +164,9 @@ describe("broadcast", () => {
     expect(await t.check!(a)).toBeNull();
     expect(await t.card!(a)).toEqual({
       title: "Broadcast to 2 sessions in “atticus”",
-      detail: "Types it into each one's prompt as its turn ends (“api”, “web”): “status?”",
-      warnings: [`“Helpdesk tasks” is left out: ${HELPDESK_CONVERSATION_WHY}`, "“copy” is left out: “k1” continues on Nick's laptop — take it back rather than sending this copy a broadcast"],
+      detail: "Types this into each one's prompt as its turn ends: “api” · a1 · atticus, “web” · a2 · atticus/ui.",
+      body: "status?",
+      warnings: [`“Helpdesk tasks” · h1 · atticus is left out: ${HELPDESK_CONVERSATION_WHY}`, "“copy” · k1 · atticus is left out: “k1” continues on Nick's laptop — take it back rather than sending this copy a broadcast"],
     });
     expect((await t.run(a)).text).toBe("Sent to “api”. Queued for “web”.");
     expect(mac.did).toEqual(["broadcast a1 status?", "broadcast a2 status?"]);
@@ -175,7 +181,7 @@ describe("broadcast", () => {
     mac.own.push(info("a1", { title: "api" }), a2, waiting("w1", { title: "asking" }));
     const t = mac.tool("broadcast");
     const a = { group: "atticus", text: "1" };
-    expect(await t.card!(a)).toMatchObject({ title: "Broadcast to 2 sessions in “atticus”", warnings: [`“asking” is left out: ${AT_PERMISSION_PROMPT}`] });
+    expect(await t.card!(a)).toMatchObject({ title: "Broadcast to 2 sessions in “atticus”", warnings: [`“asking” · w1 · atticus is left out: ${AT_PERMISSION_PROMPT}`] });
     // reached a prompt after the card was made: left out of the run all the same
     Object.assign(a2, { status: "waiting", waitingReason: PERMISSION, waitingSince: 5, waitingAt: 5 });
     expect((await t.run(a)).text).toBe("Sent to “api”.");
@@ -185,7 +191,7 @@ describe("broadcast", () => {
   it("refuses a group none of whose sessions can take it", async () => {
     const mac = fakeMac();
     mac.own.push(helpdesk("h1", { taskGroup: "atticus" }));
-    expect(await mac.tool("broadcast").check!({ group: "atticus", text: "hi" })).toBe(`No session in “atticus” can take it: “Helpdesk tasks”: ${HELPDESK_CONVERSATION_WHY}`);
+    expect(await mac.tool("broadcast").check!({ group: "atticus", text: "hi" })).toBe(`No session in “atticus” can take it: “Helpdesk tasks” · h1 · atticus: ${HELPDESK_CONVERSATION_WHY}`);
   });
 });
 

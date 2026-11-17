@@ -8,7 +8,8 @@ import type { AssistantCard, AssistantStep, AssistantView } from "../src/shared/
 // The app Assistant's window side (docs/assistant.md → The sheet and ⌘K) in the UI preview, in real headless Chrome:
 // local only (CI runners have no desktop); the script passes a mock keychain. src/preview/assistantStub.ts stands in for
 // main: ?assistant=open opens the sheet on its fixtures (a done direct step st1 with a live Undo, an undone st2 and a
-// failed st3; card c1 running; open cards c2, c3 (danger) and c4 (blocked); c5 settled; rule1 on, rule2 paused; a run).
+// failed st3; card c1 running; open cards c2 (its prompt's pane lines), c3 (danger), c4 (blocked) and c6 (a message,
+// whole, with its warnings); c5 settled; rule1 on, rule2 paused, each with its actions spelled out; a run).
 // window.__mbCalls is what the window asked main for.
 const chrome = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const local = !process.env.CI && fs.existsSync(chrome);
@@ -289,7 +290,15 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
       }));
       const reply = $('.as-turn[data-turn="t1"] .as-reply');
       const rules = $$(".as-rule").map((x) => ({ id: x.dataset.rule, on: x.querySelector('[role="switch"]').getAttribute("aria-checked"), paused: x.querySelector(".as-rule-paused")?.textContent ?? null, last: x.querySelector(".as-rule-last")?.textContent ?? null }));
+      const payload = (p) => {
+        const s = getComputedStyle(p);
+        return { text: p.textContent, tag: p.tagName, elements: p.children.length, mono: s.fontFamily === getComputedStyle($(".as-run-at")).fontFamily, wrap: s.whiteSpace, scroll: s.overflowY };
+      };
+      const bodies = $$('.as-card[data-state="open"] .as-payload').map((p) => [p.closest(".as-card").dataset.card, payload(p)]);
+      const ruleActs = $$(".as-rule").map((x) => [x.dataset.rule, [...x.querySelectorAll(".as-act")].map((a) => [a.querySelector(".as-act-l").textContent, a.querySelector(".as-payload")?.textContent ?? null])]);
       return {
+        bodies,
+        ruleActs,
         turns: $$(".as-turn").map((t) => [t.dataset.turn, t.dataset.state]),
         you: $('.as-turn[data-turn="t1"] .as-you').textContent,
         reply: { text: reply.textContent, strong: reply.querySelector("strong")?.textContent, code: reply.querySelector("code")?.textContent, em: reply.querySelector("em")?.textContent },
@@ -318,9 +327,34 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
       ["rs1", "done", false, null],
     ]);
     expect(r.cards).toEqual([
-      { id: "c2", title: "Allow codex-review's Bash once?", danger: false, warnings: [], blocked: null, buttons: ["Do it", "Cancel"] },
+      { id: "c2", title: "Allow the prompt of “API: last org per user” · s2 · 5101/api, once", danger: false, warnings: [], blocked: null, buttons: ["Do it", "Cancel"] },
       { id: "c3", title: "Delete old-spike's worktree", danger: true, warnings: ["2 uncommitted changes would be lost", "1 commit isn't pushed"], blocked: null, buttons: ["Do it", "Cancel"] },
       { id: "c4", title: "Push 5101-orgDropdowns", danger: false, warnings: [], blocked: "Can't be done now: Nothing to push: it's up to date with origin", buttons: ["Do it", "Cancel"] },
+      {
+        id: "c6",
+        title: "Send “API tests” · s3 · 5101/api a message",
+        danger: false,
+        warnings: ["“API tests” · s3 · 5101/api runs in Auto mode: its agent acts on this without asking you first", "It starts with “!”: Codex may run it as a shell command rather than read it"],
+        blocked: null,
+        buttons: ["Do it", "Cancel"],
+      },
+    ]);
+    // a card's body: the text whole, as plain text (its markup-like words stay words) in a scrolling monospace block
+    const block = { tag: "PRE", elements: 0, mono: true, wrap: "pre-wrap", scroll: "auto" };
+    expect(r.bodies).toEqual([
+      ["c2", { ...block, text: expect.stringMatching(/^ Bash command\n\n {3}npm test -- --run src\/orgs\n[^]*3\. No, and tell Claude what to do differently \(esc\)$/) }],
+      ["c6", { ...block, text: "!npm run lint -- --fix && git add -A\n\nThen rerun the org dropdown tests and tell me which still fail in <OrgDropdown />." }],
+    ]);
+    // the Rules list spells out each action as main gave it, the text it types whole
+    expect(r.ruleActs).toEqual([
+      [
+        "rule1",
+        [
+          ["Have the other agent review the branch of “#5101 — Org dropdowns remember the last org” · s1 · 5101, in its folder, and report back to it", null],
+          ["Type this into the prompt of “API tests” · s3 · 5101/api and send it", "The review is up: read its notes, fix what it found, and run the org dropdown tests again."],
+        ],
+      ],
+      ["rule2", [["Text me: “Check what's waiting”", null]]],
     ]);
     expect(r.dangerRed).toBe(true);
     expect(r.rulesHead).toBe("Rules· 1 on · 1 paused");
@@ -359,6 +393,18 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
     expect(r.role).toBe("alert");
     expect(r.folded).toBe("false");
     expect(r.rules).toBe(0);
+  }, 120_000);
+
+  it("says on a rule when its being off couldn't be saved, and holds only until Mockingbird quits", async () => {
+    const r = await drive<{ on: string | null; unsaved: string | null; others: number }>(
+      "assistant=open&assistantRules&assistantRulesUnsaved",
+      '.as-sheet [data-rule="rule1"]',
+      `
+      await sleep(300);
+      const rule = $('[data-rule="rule1"]');
+      return { on: rule.querySelector('[role="switch"]').getAttribute("aria-checked"), unsaved: rule.querySelector(".as-rule-unsaved")?.textContent ?? null, others: $$('[data-rule="rule2"] .as-rule-unsaved').length };`
+    );
+    expect(r).toEqual({ on: "false", unsaved: "Off only until Mockingbird quits: it couldn't be saved (the rules file can't be saved over)", others: 0 });
   }, 120_000);
 
   it("calls main for Undo, Do it, Cancel, the rule switches, Remove and Clear; Do it and Cancel are off while one runs, and an { error } shows on its card", async () => {
@@ -413,8 +459,8 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
     expect(r.c3).toContain("st-cancelled");
     expect(r.c4).toEqual({ open: true, err: "Nothing to push: it's up to date with origin" });
     expect(r.rule2).toEqual({ paused: false, head: "Rules· 1 on" });
-    // a fresh thread: the card still open stays
-    expect(r.afterClear).toEqual({ turns: 0, cards: ["c4"] });
+    // a fresh thread: the cards still open stay
+    expect(r.afterClear).toEqual({ turns: 0, cards: ["c4", "c6"] });
   }, 120_000);
 
   it("hides a step's Undo once its window has closed, without anything else changing", async () => {
@@ -492,6 +538,7 @@ describe.skipIf(!local)("the Assistant's sheet and the keyboard", () => {
       await clickAndType("remove", $('[data-rule="rule2"] .as-remove'));
       await clickAndType("rulesFold", $(".as-rules-h"));
       await clickAndType("words", $('.as-turn[data-turn="t1"] .as-reply'));
+      await clickAndType("payload", $('[data-card="c6"] .as-payload'));
       await clickAndType("background", $(".as-hint"));
       await clickAndType("clear", $(".as-head .as-hbtn:not(.icon)"));
       const mark = w.__mbCalls.length;
@@ -504,7 +551,7 @@ describe.skipIf(!local)("the Assistant's sheet and the keyboard", () => {
       { size: "1600x900" }
     );
     expect(r.start).toBe("term:s2");
-    const names = ["undo", "doIt", "cancel", "blocked", "ruleSwitch", "remove", "rulesFold", "words", "background", "clear", "close"];
+    const names = ["undo", "doIt", "cancel", "blocked", "ruleSwitch", "remove", "rulesFold", "words", "payload", "background", "clear", "close"];
     expect(r.out).toEqual(names.map((name) => ({ name, at: "term:s2", typed: ["s2:x"] })));
     expect(r.esc).toEqual(["s2:\u001b"]);
     expect(r.sheet).toBe(true);
@@ -601,7 +648,10 @@ describe.skipIf(!local)("the Assistant's sheet, looked at", () => {
         for (const l of layers.reverse()) base = { r: l.r * l.a + base.r * (1 - l.a), g: l.g * l.a + base.g * (1 - l.a), b: l.b * l.a + base.b * (1 - l.a), a: 1 };
         return "rgb(" + base.r + ", " + base.g + ", " + base.b + ")";
       };
-      const texts = [".as-head-t", '.as-turn[data-turn="t1"] .as-reply', '[data-step="st2"] .as-step-l', '[data-step="st8"] .as-step-res', '[data-card="c2"] .as-card-d', '[data-card="c3"] .as-card-t', '[data-card="c4"] .as-card-blocked', ".as-run-at", ".as-rules-n", ".as-hint", ".as-sec-h"];
+      const texts = [
+        ".as-head-t", '.as-turn[data-turn="t1"] .as-reply', '[data-step="st2"] .as-step-l', '[data-step="st8"] .as-step-res', '[data-card="c2"] .as-card-d', '[data-card="c3"] .as-card-t', '[data-card="c4"] .as-card-blocked',
+        '[data-card="c6"] .as-payload', '[data-rule="rule1"] .as-act-l', '[data-rule="rule1"] .as-payload', ".as-run-at", ".as-rules-n", ".as-hint", ".as-sec-h",
+      ];
       const low = texts.map((s) => [s, ratio(getComputedStyle($(s)).color, bgOf($(s)))]).filter(([, r]) => r < 4.5).map(([s, r]) => s + " " + r.toFixed(2));
       const sheet = $(".as-sheet");
       return {
