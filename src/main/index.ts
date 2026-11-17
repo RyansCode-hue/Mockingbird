@@ -1549,13 +1549,14 @@ const assistantDeps: AssistantDeps = {
   layOut: (req) => layOutTemplate(req),
   repos: () => indexRepos(store.settings.repoRoots),
   createSession: async (req) => sessionOpened(await sessions.create(req), req.ticketId, req.ticketTitle),
+  // a board that can't be read is listed with why: dropped, the Assistant would show fewer boards and not say so
   houseBoards: () =>
-    team.status().rooms.flatMap((r) => {
+    team.status().rooms.map((r) => {
       try {
-        return [teamHouse.view(r.id)];
+        return teamHouse.view(r.id);
       } catch (err) {
         logError(`assistant: reading room ${r.id}'s House board`, err);
-        return [];
+        return { roomId: r.id, room: r.name, error: (err instanceof Error ? err.message : String(err)) || "it failed without saying why" };
       }
     }),
   adoItems: () => listWorkItems(store),

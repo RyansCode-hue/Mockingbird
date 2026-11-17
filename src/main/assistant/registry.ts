@@ -153,7 +153,8 @@ export function validateArgs(schema: JsonSchema, value: unknown, at = "arguments
       const props = schema.properties ?? {};
       for (const key of schema.required ?? []) if (value[key] === undefined) return `${at}.${key} is required`;
       for (const [key, v] of Object.entries(value)) {
-        const sub = props[key];
+        // own properties only: `__proto__` and `constructor` would otherwise find Object.prototype's, and pass unchecked
+        const sub = Object.hasOwn(props, key) ? props[key] : undefined;
         if (!sub) {
           if (schema.additionalProperties === false) return `${at}.${key} isn't an argument this tool takes`;
           continue;

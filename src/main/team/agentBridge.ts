@@ -48,10 +48,10 @@ export interface AgentBridgeDeps {
    */
   roomOf?: (sessionId: string) => RoomId | null;
   /**
-   * What a session's launch runs under in its room (the session manager's guardsOf): a Claude session started outside
-   * the room has none, and takes no agent messages from it until it's restarted there (outsideRoomSandbox).
+   * What a session's launch runs under in its room (the session manager's guardsOf): a Claude or Codex session started
+   * outside the room has none, and takes no agent messages from it until it's restarted there (outsideRoomSandbox).
    */
-  guardsOf?: (sessionId: string) => { secrets: boolean } | null;
+  guardsOf?: (sessionId: string) => { secrets: boolean; starting?: boolean; outside?: boolean; unsandboxed?: boolean } | null;
   log: (msg: string) => void;
   now?: () => number;
 }

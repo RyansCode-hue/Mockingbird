@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { HouseView } from "../src/shared/team/house";
 import type { TakeoverPlan } from "../src/shared/team/takeover";
 import { roomTools } from "../src/main/assistant/tools/rooms";
+import { startTools } from "../src/main/assistant/tools/start";
 import type { AssistantTool } from "../src/main/assistant/registry";
 import { harness } from "./assistantHarness";
 import { info, landscapeWorld, theirs } from "./assistantWorld";
@@ -89,6 +91,23 @@ describe("the Assistant's room tools", () => {
     expect(await board.check!({ room: "nowhere" })).toContain("isn't in a room called");
     expect(JSON.parse((await board.run({ room: "atticus" })).text)).toEqual({ room: "Atticus team", board: "Project atticus.\n#143 api · Nick · in progress" });
     expect(w.did).toEqual(["board R1"]);
+  });
+
+  it("a House board that can't be read is said, never left out: list_tickets names it, house_board fails naming the room", async () => {
+    const w = world();
+    const ok = { roomId: "R1", room: "Atticus team", project: "atticus", admin: "Ryan", isAdmin: true, envFile: "~/x.env", connection: { state: "ok" }, open: [], added: [], fetchedAt: 0, refreshing: false, branches: [] } as unknown as HouseView;
+    const tickets = startTools({ ...w.deps, houseBoards: () => [{ roomId: "R2", room: "Docs team", error: "Room R2 isn't in this install's team state" }, ok] }).find((t) => t.name === "list_tickets")!;
+    expect(JSON.parse((await tickets.run({ source: "house" })).text).house).toEqual([
+      { room: "Docs team", roomId: "R2", error: "(Docs team's board couldn't be read: Room R2 isn't in this install's team state)" },
+      { room: "Atticus team", roomId: "R1", project: "atticus", connection: "ok", read: null, open: [] },
+    ]);
+    const board = roomTools({
+      ...w.deps,
+      houseBoard: async () => {
+        throw new Error("the House's cache is gone");
+      },
+    }).find((t) => t.name === "house_board")!;
+    await expect(Promise.resolve(board.run({ room: "atticus" }))).rejects.toThrow("Atticus team's board couldn't be read: the House's cache is gone");
   });
 
   it("share_group shares a named group through team:share's checks, never giving the invite", async () => {

@@ -177,6 +177,15 @@ describe("the Assistant's registry", () => {
     expect(validateArgs(schema, { n: 1, ids: ["a", "b", "c"] })).toBe("arguments.ids must have at most 2 items");
     expect(validateArgs(schema, [])).toBe("arguments must be an object");
   });
+
+  it("takes only a schema's own properties: inherited names are arguments it doesn't take", () => {
+    const schema = { type: "object" as const, properties: { n: { type: "integer" as const } }, additionalProperties: false };
+    // as the MCP call's JSON parses: __proto__ an own property, not the prototype
+    expect(validateArgs(schema, JSON.parse('{"n":1,"__proto__":{"polluted":true}}'))).toBe("arguments.__proto__ isn't an argument this tool takes");
+    expect(validateArgs(schema, { n: 1, constructor: "x" })).toBe("arguments.constructor isn't an argument this tool takes");
+    expect(validateArgs(schema, { n: 1, toString: 5 })).toBe("arguments.toString isn't an argument this tool takes");
+    expect(validateArgs({ ...schema, additionalProperties: undefined }, { n: 1, constructor: "x" })).toBeNull();
+  });
 });
 
 describe("the app as the Assistant sees it", () => {

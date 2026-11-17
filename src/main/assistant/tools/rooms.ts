@@ -82,7 +82,13 @@ export function roomTools(d: Deps): AssistantTool[] {
       check: (a) => why(a.room),
       run: async (a) => {
         const r = room(a.room);
-        const board = await d.houseBoard(r.id);
+        let board: string | null;
+        try {
+          board = await d.houseBoard(r.id);
+        } catch (err) {
+          // one board is the whole answer: the step fails, naming the room, as list_tickets names a board it couldn't read
+          throw new Error(`${r.name}'s board couldn't be read: ${message(err)}`);
+        }
         return { text: JSON.stringify({ room: r.name, board: board ?? "The room isn't connected to a House project." }) };
       },
     }),
