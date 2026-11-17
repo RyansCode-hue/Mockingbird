@@ -1,7 +1,7 @@
 import type { Landscape } from "../../shared/landscape";
 import { carryPlan, resolveLayout, undoOfPlan, withoutGone, type AreaPlan, type ReadyPlan, type ResolvedLayout, type Tile } from "../../shared/landscapeModel";
-import type { SessionInfo } from "../../shared/types";
-import type { AssistantDeps } from "./deps";
+import { topOfKey, type SessionInfo } from "../../shared/types";
+import type { AssistantDeps, AssistantRoom } from "./deps";
 import type { ToolResult } from "./registry";
 
 /**
@@ -11,7 +11,45 @@ import type { ToolResult } from "./registry";
  * is the window's: everything put back while the landscape's revision is still the one the change made.
  */
 
-export type PlanDeps = Pick<AssistantDeps, "landscapeState" | "layoutSessions" | "patchLandscape" | "setGroup">;
+export type PlanDeps = Pick<AssistantDeps, "landscapeState" | "layoutSessions" | "patchLandscape" | "setGroup" | "rooms">;
+
+// ---- team rooms' boundaries ----
+
+/** The one tool that moves a session into a team room's group, out of one, or between two: a card the user confirms. */
+export const ACROSS_ROOM_TOOL = "move_across_room";
+
+/** The team room group `key` is shared as: its top-level group's, as the live panes map a group to its room. */
+export const roomOfGroup = (d: Pick<AssistantDeps, "rooms">, key: string | null): AssistantRoom | null =>
+  key ? (d.rooms().find((r) => r.group === topOfKey(key)) ?? null) : null;
+
+/** The rooms a session leaves (`out`) and joins (`into`) moving from group `from` to `to`; null when it stays in the same room, or in none. */
+export function roomCrossing(d: Pick<AssistantDeps, "rooms">, from: string | null, to: string | null): { out: AssistantRoom | null; into: AssistantRoom | null } | null {
+  const out = roomOfGroup(d, from);
+  const into = roomOfGroup(d, to);
+  return (out?.id ?? null) === (into?.id ?? null) ? null : { out, into };
+}
+
+/**
+ * Why a direct change can't move session `title` from group `from` to `to`, or null when it stays on its side of every
+ * room's boundary. A session in a room's group is a room session: teammates are streamed its terminal and scrollback,
+ * which no Undo takes back, and their agents can message it. So only ACROSS_ROOM_TOOL's card crosses one.
+ */
+export function roomBoundary(d: Pick<AssistantDeps, "rooms">, title: string, from: string | null, to: string | null): string | null {
+  const c = roomCrossing(d, from, to);
+  if (!c) return null;
+  const where = c.out && c.into ? `out of the team room “${c.out.name}” and into “${c.into.name}”` : c.into ? `into the team room “${c.into.name}”` : `out of the team room “${c.out!.name}”`;
+  return `That would move ${title} ${where}, which changes what teammates see: only ${ACROSS_ROOM_TOOL} does that, on a card the user confirms`;
+}
+
+/** Why plan `plan`, made against `now`, can't be carried out directly: the first of its group moves that crosses a room's boundary. */
+export function planBoundary(d: Pick<AssistantDeps, "rooms">, now: LayoutNow, plan: ReadyPlan): string | null {
+  for (const m of plan.moves) {
+    const s = now.known.find((x) => x.id === m.id);
+    const why = roomBoundary(d, s ? `“${s.ticketTitle ?? s.title}”` : m.id, now.groups.get(m.id) ?? null, m.group ?? null);
+    if (why) return why;
+  }
+  return null;
+}
 
 /** The landscape as a gesture is planned against it: as stored, with gone sessions' places let go, laid out. */
 export interface LayoutNow {
@@ -64,9 +102,13 @@ export function ready(plan: AreaPlan, unchanged: string): ReadyPlan | { refused:
 
 /**
  * Carry plan `plan` out (carryPlan), made against `now`: the revision it left the landscape at (null: it saved no
- * place), and its note. Throws what stopped it, once whatever it had done is put back as carryPlan puts it back.
+ * place), and its note. Throws what stopped it, once whatever it had done is put back as carryPlan puts it back; and,
+ * before doing anything, when one of its moves would cross a team room's boundary (planBoundary).
  */
 export async function carry(d: PlanDeps, now: LayoutNow, plan: ReadyPlan, what: string): Promise<{ rev: number | null; note: string | null }> {
+  // every direct layout change, and every Undo of one, comes through here
+  const across = planBoundary(d, now, plan);
+  if (across) throw new Error(across);
   const said: string[] = [];
   const done = await carryPlan(plan, what, {
     before: now.stored,

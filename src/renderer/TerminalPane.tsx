@@ -271,7 +271,7 @@ function GuardChip({ session, guards, inline, onRestart }: { session: SessionInf
     return (
       <span
         className="chip warn"
-        title={`Teammates in this room see what this session prints, and Codex can read .env files and keys: ${which} ${CODEX_ROOM_GUARD_SINCE}, the first release whose permission profiles keep a room session from reading them. Update Codex (Settings → Agents → Update), then restart this session.${credit}`}
+        title={`Teammates in this room see what this session prints, and Codex can read .env files and keys: ${which} ${CODEX_ROOM_GUARD_SINCE}, the first release whose permission profiles keep a room session from reading them, and until it runs under one nothing crosses the room's line for it. Update Codex (Settings → Agents → Update), then restart this session.${credit}`}
       >
         codex: secrets unguarded
       </span>

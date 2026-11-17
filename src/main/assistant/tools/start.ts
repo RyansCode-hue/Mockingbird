@@ -6,7 +6,7 @@ import { isTicketFailure, type TicketSessionPlan } from "../../../shared/team/ti
 import { AGENT_NAME, type AdoWorkItem, type AgentKind, type NewSessionRequest, type RepoEntry, type SessionPreset } from "../../../shared/types";
 import { readRelaunchChange, widerModeWarning } from "../../agents";
 import { HELPDESK_FOLDER_ONLY } from "../../helpdesk";
-import type { AssistantDeps } from "../deps";
+import type { AssistantDeps, HouseBoardUnread } from "../deps";
 import { defineTool, type AssistantTool, type JsonSchema } from "../registry";
 import { noSession, SESSION_ARG, sessionById, teammates } from "./lookup";
 import { cardSaw, EFFORT_ARG, iso, MODE_ARG, MODEL_ARG, nameOf, openRecord } from "./sessions";
@@ -106,6 +106,9 @@ function houseRow(r: HouseRow) {
     ...(t.blockedBy.length ? { blockedBy: t.blockedBy } : {}),
   };
 }
+
+/** A room whose House board couldn't be read, as list_tickets says so. */
+const unreadBoard = (v: HouseBoardUnread) => ({ room: v.room, roomId: v.roomId, error: `(${plainLine(v.room, 120)}'s board couldn't be read: ${plainLine(v.error, 200)})` });
 
 const adoRow = (w: AdoWorkItem) => ({ id: w.id, title: w.title, state: w.state, type: w.type, assignedTo: w.assignedTo || null, ...(w.boardColumn ? { column: w.boardColumn } : {}), changed: w.changed });
 
@@ -266,8 +269,8 @@ export function startTools(d: Deps): AssistantTool[] {
         if (a.source !== "ado") {
           out.house = d
             .houseBoards()
-            .filter((v) => !!v.project)
-            .map((v) => ({
+            .filter((v) => "error" in v || !!v.project)
+            .map((v) => "error" in v ? unreadBoard(v) : ({
               room: v.room,
               roomId: v.roomId,
               project: v.project,

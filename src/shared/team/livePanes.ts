@@ -126,7 +126,10 @@ export function parseRemoteId(id: string): { session: string; member: string } |
  * agent quits would run as a shell command. Teammates' views show all of
  * these sessions, so list_sessions lists them too, with this reason.
  */
-export function roomMessageRefusal(s: { agent: AgentKind | null; status: SessionStatus; live: boolean; guards?: { secrets: boolean; starting?: boolean; outside?: boolean } | null }, owner: string): string | null {
+export function roomMessageRefusal(
+  s: { agent: AgentKind | null; status: SessionStatus; live: boolean; guards?: { secrets: boolean; starting?: boolean; outside?: boolean; unsandboxed?: boolean } | null },
+  owner: string
+): string | null {
   const who = named(owner, 60);
   if (!s.live) return `${who} closed it; only ${who} can resume it`;
   if (s.agent === null) {
@@ -143,11 +146,16 @@ export function roomMessageRefusal(s: { agent: AgentKind | null; status: Session
  * Claude session that wasn't started there (it joined the room's area while it was running), one whose Claude Code
  * is too old for it (claudeSandboxes), one whose sandbox didn't report in, or hasn't yet (`starting`:
  * RoomSandboxWatch); and a session of either agent started with the room's sandbox switched off on its Mac whose
- * room has it on now (`outside`: RoomSandboxChange "missing", known only on its own Mac). `guards` are its launch's
- * (secrets: it runs under the room's settings); none for one that wasn't started in a room.
+ * room has it on now (`outside`: RoomSandboxChange "missing", known only on its own Mac). A Codex session is outside
+ * when it doesn't run under the room's permission profile (no secrets): it joined while running, its Codex is too old
+ * for the profile, or its launch couldn't name what to switch off; one started with the room's sandbox switched off
+ * on its Mac (`unsandboxed`) has no profile by design, and stays on the line as Claude's does with its deny rules.
+ * `guards` are its launch's (secrets: it runs under the room's settings); none for one that wasn't started in a room.
  */
-export const outsideRoomSandbox = (agent: AgentKind | null | undefined, guards: { secrets: boolean; starting?: boolean; outside?: boolean } | null | undefined): boolean =>
-  !!guards?.outside || (agent === "claude" && (!guards?.secrets || !!guards.starting));
+export const outsideRoomSandbox = (
+  agent: AgentKind | null | undefined,
+  guards: { secrets: boolean; starting?: boolean; outside?: boolean; unsandboxed?: boolean } | null | undefined
+): boolean => !!guards?.outside || (agent === "claude" && (!guards?.secrets || !!guards.starting)) || (agent === "codex" && !guards?.secrets && !guards?.unsandboxed);
 
 /** Why a session can be outside its room's sandbox, as what it and its teammates are told says it. */
 const OUTSIDE_WHY = "it joined the room while it was running, its sandbox didn't start, or the room's sandbox was switched on after it started";

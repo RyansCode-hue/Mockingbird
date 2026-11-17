@@ -669,6 +669,15 @@ Member replace the single admin (creator, else longest-standing member).
     sessions as configured and they say "codex: secrets unguarded", naming
     the update to make. Mockingbird reads the installed version before a room
     launch when it doesn't know it yet.
+  - **Outside the profile, off the line:** a Codex session that doesn't run
+    under the profile — it joined the room while running, its Codex is older
+    than 0.138, or its launch couldn't name the MCP servers or folders to
+    switch off — is kept off the room's line until it's restarted there, as
+    a Claude one outside its sandbox is (`outsideRoomSandbox`): teammates'
+    messages, its own `send_message` to teammates, wires and its wire tools,
+    and the House, artifact and teammates'-changes tools are refused, saying
+    why. One started with the room's sandbox switched off on this Mac has no
+    profile by design and stays on the line (below).
 - **Claude room sessions** run in Claude Code's own sandbox, given with
   `--settings` on that launch alone (`src/main/claudeRoomSandbox.ts`), so
   `~/.claude/settings.json` is never touched. It mirrors Codex's profile:
@@ -797,7 +806,8 @@ Member replace the single admin (creator, else longest-standing member).
     crosses the room's line to or from it: teammates' messages, its own
     `send_message` to teammates, wires and its wire tools (`finish_step`,
     `read_context`, `read_terminal`, `list_links`), and the House, artifact
-    and teammates'-changes tools are refused, saying why.
+    and teammates'-changes tools are refused, saying why. A Codex one is held
+    the same way (Codex room sessions above).
   - **Switched off on this Mac.** Settings → Team → Rooms has **Sandbox
     this room's sessions** for each room, on by default; turning it off asks
     first. It's this Mac's alone (`roomsUnsandboxed` in its settings, never
@@ -2002,11 +2012,10 @@ same file, and tools for agents to see what teammates change.
 - **Codex asks** before each `reserve_migration_number` (its launch sets the
   tool's `approval_mode="prompt"`, as for the House's writes; agents.ts
   `CODEX_ASKS_TOOLS`): a reservation is a room event every teammate's agents
-  are held to. Unlike the House's writes, an older Codex (or one that joined
-  the room while running) isn't refused: a reservation spends no one's
-  credentials, and the caps and plausibility bound what an agent approving
-  its own calls can do. Claude asks as its permission mode says (the tool
-  isn't pre-allowed).
+  are held to. A Codex outside the room's profile (an older one, or one that
+  joined the room while running) is off the room's line, so the tool refuses
+  it with the room's other tools. Claude asks as its permission mode says
+  (the tool isn't pre-allowed).
 - **The hold-back** (on by default; the room's owner or an admin turns it off in Settings →
   Team, `room.settings { migrationCheck }`, a room rule: the owner's or an admin's): the hook
   reads `migrations.json`; creating a file that doesn't exist yet in one of

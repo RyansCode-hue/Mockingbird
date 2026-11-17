@@ -3,6 +3,7 @@ import type { Landscape } from "../src/shared/landscape";
 import { layoutTools } from "../src/main/assistant/tools/layout";
 import type { AssistantTool, ToolResult } from "../src/main/assistant/registry";
 import { harness } from "./assistantHarness";
+import type { WorldRoom } from "../src/main/assistant/world";
 import { info, landscapeWorld, theirs, type LandscapeWorld } from "./assistantWorld";
 
 /**
@@ -32,10 +33,11 @@ async function go(w: ReturnType<typeof world>, name: string, args: Record<string
 const elsewhere = (w: LandscapeWorld) => w.store.update({ areas: { docs: { collapsed: true } } });
 
 describe("the Assistant's layout tools", () => {
-  it("fix their tiers, and only set_group, mute_session and unmute are rule-able", () => {
+  it("fix their tiers, move_across_room the one card, and only set_group, mute_session and unmute are rule-able", () => {
     const w = world();
     const all = layoutTools(w.deps);
     expect(Object.fromEntries(all.map((t) => [t.name, t.tier]))).toMatchObject({
+      move_across_room: "confirm",
       landscape: "read",
       move_workspace: "direct",
       stack_workspaces: "direct",
@@ -315,5 +317,177 @@ describe("the Assistant's layout tools", () => {
     expect((await h.step(step.id)).undoUntil).toBeUndefined();
     expect(await h.svc.undo(step.id)).toEqual({ error: expect.stringContaining("has no Undo") });
     expect(w.groupOf("a1")).toBe("docs");
+  });
+});
+
+const ATTICUS_ROOM: WorldRoom = { id: "R1", name: "Atticus team", groupKey: "atticus", members: [{ name: "Ryan", self: true }, { name: "Nick", self: false }], online: ["nick"] };
+const DOCS_ROOM: WorldRoom = { id: "R2", name: "Docs team", groupKey: "docs", members: [{ name: "Ryan", self: true }], online: [] };
+const room = (id: string, groupKey: string): WorldRoom => ({ id, name: `${groupKey[0].toUpperCase()}${groupKey.slice(1)}`, groupKey, members: [{ name: "Ryan", self: true }], online: [] });
+
+/** The layout world with team rooms: atticus is shared as “Atticus team” unless `rooms` says otherwise; each room's sandbox on unless `unsandboxed`. */
+function roomWorld(rooms: WorldRoom[] = [ATTICUS_ROOM]) {
+  const unsandboxed = new Set<string>();
+  const w = world({ rooms, over: { wireList: () => [], roomSandboxed: (id) => (rooms.some((r) => r.id === id) ? !unsandboxed.has(id) : null) } });
+  const mine = (id: string) => w.own.find((s) => s.id === id)!;
+  return { ...w, rooms, unsandboxed, mine };
+}
+
+const across = (title: string, where: string) => `That would move “${title}” ${where}, which changes what teammates see: only move_across_room does that, on a card the user confirms`;
+
+/** Make move_across_room's card through the service and press Do it: the card as it was shown, and as it settled. */
+async function acrossConfirmed(w: ReturnType<typeof roomWorld>, args: Record<string, unknown>) {
+  const h = harness([w.tool("move_across_room")]);
+  const t = await h.turn("move it", async (call) => (await call("move_across_room", args), "Card up."));
+  const card = await h.card(t.steps[0].cardId!);
+  const before = { group: w.groupOf(String(args.session)), did: [...w.did] };
+  return { card, before, done: await h.svc.confirm(card.id) };
+}
+
+describe("team rooms' boundaries", () => {
+  it("set_group refuses a move into a room's group, out of one, or between two, naming move_across_room, in its check and its run", async () => {
+    const w = roomWorld([ATTICUS_ROOM, DOCS_ROOM]);
+    const set = w.tool("set_group");
+    expect(await set.check!({ session: "f1", group: "atticus" })).toBe(across("f1", "into the team room “Atticus team”"));
+    expect(await set.check!({ session: "f1", group: "atticus/tabs" })).toBe(across("f1", "into the team room “Atticus team”"));
+    expect(await set.check!({ session: "a1", group: "frozen" })).toBe(across("a1", "out of the team room “Atticus team”"));
+    expect(await set.check!({ session: "a1", group: "" })).toBe(across("a1", "out of the team room “Atticus team”"));
+    expect(await set.check!({ session: "a1", group: "docs" })).toBe(across("a1", "out of the team room “Atticus team” and into “Docs team”"));
+    expect(() => set.run({ session: "f1", group: "atticus" })).toThrow(across("f1", "into the team room “Atticus team”"));
+    expect(w.did).toEqual([]);
+    // inside one room, and between groups no room shares, it goes ahead
+    expect(await set.check!({ session: "a1", group: "atticus/tabs" })).toBeNull();
+    expect(await set.check!({ session: "f1", group: "elsewhere" })).toBeNull();
+    // a teammate's session is the guard's to refuse first
+    expect(await set.check!({ session: "r~nick~x", group: "docs" })).toContain("teammate's session");
+  });
+
+  it("move_workspace and create_group refuse a plan that moves a session across a room's boundary, and save nothing", async () => {
+    const w = roomWorld();
+    const rev = w.rev();
+    expect(await w.tool("move_workspace").check!({ session: "d1", area: "atticus" })).toBe(across("d1", "into the team room “Atticus team”"));
+    expect(await w.tool("move_workspace").check!({ session: "d1", next_to: "a1" })).toBe(across("d1", "into the team room “Atticus team”"));
+    expect(await w.tool("move_workspace").check!({ session: "a1", area: "docs" })).toBe(across("a1", "out of the team room “Atticus team”"));
+    expect(await w.tool("create_group").check!({ name: "misc", sessions: ["a1"] })).toBe(across("a1", "out of the team room “Atticus team”"));
+    // run without its check, as nothing in the service does: carry refuses before saving a place
+    await expect(Promise.resolve(w.tool("move_workspace").run({ session: "d1", area: "atticus" }))).rejects.toThrow(across("d1", "into the team room “Atticus team”"));
+    await expect(Promise.resolve(w.tool("create_group").run({ name: "misc", sessions: ["a1"] }))).rejects.toThrow(across("a1", "out of the team room “Atticus team”"));
+    expect(w.did).toEqual([]);
+    expect(w.rev()).toBe(rev);
+    expect(w.groupOf("d1")).toBe("docs");
+    // what stays inside a room, or outside every room, goes ahead
+    await go(w, "unstack", { session: "s1" });
+    expect(w.groupOf("s1")).toBe("atticus");
+    await go(w, "create_group", { name: "misc", sessions: ["d1"] });
+    expect(w.groupOf("d1")).toBe("misc");
+  });
+
+  it("refuses an Undo that would cross a room's boundary: the group was shared as a room since", async () => {
+    const w = roomWorld();
+    const made = await go(w, "create_group", { name: "misc", sessions: ["d1"] });
+    const set = await go(w, "set_group", { session: "f1", group: "elsewhere" });
+    w.rooms.push(room("R3", "elsewhere"), room("R4", "misc"));
+    expect(() => set.undo!()).toThrow(across("f1", "out of the team room “Elsewhere”"));
+    expect(made.stillUndoable!()).toBe(true);
+    await expect(Promise.resolve(made.undo!())).rejects.toThrow(across("d1", "out of the team room “Misc”"));
+    expect(w.groupOf("f1")).toBe("elsewhere");
+    expect(w.groupOf("d1")).toBe("misc");
+  });
+
+  it("a standing rule's set_group meets the same refusal on every run; move_across_room is never a rule's", async () => {
+    const w = roomWorld();
+    const h = harness(layoutTools(w.deps));
+    expect(await h.svc.runAction({ tool: "set_group", args: { session: "d1", group: "atticus" }, label: "Move d1 to atticus" }, "Gather")).toMatchObject({
+      ok: false,
+      text: across("d1", "into the team room “Atticus team”"),
+    });
+    expect(await h.svc.runAction({ tool: "move_across_room", args: { session: "d1", group: "atticus" }, label: "Move d1 to atticus" }, "Gather")).toMatchObject({
+      ok: false,
+      text: "move_across_room can't be a standing rule's action",
+    });
+    expect(w.groupOf("d1")).toBe("docs");
+    expect(await h.svc.runAction({ tool: "set_group", args: { session: "d1", group: "elsewhere" }, label: "Move d1" }, "Gather")).toMatchObject({ ok: true });
+  });
+
+  it("move_across_room's card says what teammates in the room will see, warns of a running session and a mode the room's sandbox wouldn't allow, and moves it only on Do it", async () => {
+    const w = roomWorld();
+    w.mine("d1").permissionMode = "bypass";
+    const { card, before, done } = await acrossConfirmed(w, { session: "d1", group: "atticus" });
+    expect(card).toMatchObject({
+      tool: "move_across_room",
+      title: "Move “d1” into the team room “Atticus team”",
+      detail:
+        "Puts it in “atticus”. Teammates in “Atticus team” will see its terminal and scrollback, and their agents can message it. Moving it out again doesn't take back what they've seen.",
+      warnings: [
+        "It's running, so it joins as it started, outside the room's settings: teammates see its terminal from now, but nothing crosses the room's line for it (their agents' messages, wires, the House) until it's restarted in the room.",
+        "“Atticus team”'s sandbox wouldn't allow the mode it runs in (Bypass permissions would loosen the team room's sandbox, where a mode may only tighten it: Ask as usual or Plan mode). It keeps that mode until it's restarted, and can't restart in the room in it.",
+      ],
+      danger: true,
+    });
+    expect(before).toEqual({ group: "docs", did: [] });
+    expect(done).toMatchObject({ state: "done", result: "Moved “d1” to “atticus”: teammates in “Atticus team” see it now." });
+    expect(w.did).toEqual(["group d1 atticus"]);
+  });
+
+  it("move_across_room out of a room says its teammates lose it; between rooms it says both; a Codex's every mode but the default is warned of", async () => {
+    const w = roomWorld([ATTICUS_ROOM, DOCS_ROOM]);
+    const tool = w.tool("move_across_room");
+    w.rooms.splice(1, 1);
+    expect(await tool.card!({ session: "a1", group: "docs" })).toEqual({
+      title: "Move “a1” out of the team room “Atticus team”",
+      detail: "Puts it in “docs”. Teammates in “Atticus team” lose it: it goes from their landscapes, and their agents can't message it any more.",
+      warnings: [],
+    });
+    w.rooms.push(DOCS_ROOM);
+    const between = await tool.card!({ session: "a1", group: "docs" });
+    expect(between).toMatchObject({ title: "Move “a1” into the team room “Docs team” from “Atticus team”", danger: true });
+    expect(between.detail).toBe(
+      "Puts it in “docs”. Teammates in “Atticus team” lose it: it goes from their landscapes, and their agents can't message it any more. " +
+        "Teammates in “Docs team” will see its terminal and scrollback, and their agents can message it. Moving it out again doesn't take back what they've seen."
+    );
+    Object.assign(w.mine("a1"), { agent: "codex", permissionMode: "plan", status: "dead" });
+    expect((await tool.card!({ session: "a1", group: "docs" })).warnings).toEqual([expect.stringMatching(/^“Docs team”'s sandbox wouldn't allow the mode it runs in \(Codex's Plan mode picks its own sandbox/)]);
+    // with the room's sandbox switched off on this Mac, the mode is the session's own
+    w.unsandboxed.add("R2");
+    expect((await tool.card!({ session: "a1", group: "docs" })).warnings).toEqual([]);
+  });
+
+  it("move_across_room shares a terminal saying it can read any file, refuses what isn't a crossing, the Helpdesk and a teammate's session", async () => {
+    const w = roomWorld();
+    const tool = w.tool("move_across_room");
+    w.own.push(info("t1", { shell: true, taskGroup: "docs" }), info("h1", { taskGroup: "help", role: "tasks" }));
+    expect(await tool.card!({ session: "t1", group: "atticus" })).toMatchObject({
+      detail: "Puts it in “atticus”. Teammates in “Atticus team” will see its terminal and scrollback, and can ask you to let them type into it. Moving it out again doesn't take back what they've seen.",
+      warnings: ["A terminal can read any file you can, .env files included, and teammates see whatever it prints."],
+    });
+    expect(await tool.check!({ session: "d1", group: "elsewhere" })).toBe("That move doesn't cross a team room's boundary: set_group makes it, with an Undo");
+    expect(await tool.check!({ session: "a1", group: "atticus/tabs" })).toBe("That move doesn't cross a team room's boundary: set_group makes it, with an Undo");
+    expect(await tool.check!({ session: "h1", group: "atticus" })).toBe("The Helpdesk tasks workspace never runs in a team room's area: teammates would see your admin consoles and could type into it.");
+    expect(await tool.check!({ session: "r~nick~x", group: "docs" })).toBe("“r~nick~x” is Nick's session: only its owner can move it to another group");
+    w.refuse.set("group d1", "It's being resumed");
+    expect(await tool.check!({ session: "d1", group: "atticus" })).toBe("It's being resumed");
+    expect(w.did).toEqual([]);
+  });
+
+  it("move_across_room's card expires when the move it showed changes: the session's group, a room, its mode or the room's sandbox", async () => {
+    const w = roomWorld();
+    const tool = w.tool("move_across_room");
+    const fresh = async () => {
+      const a = { session: "d1", group: "atticus" };
+      await tool.card!(a);
+      return a;
+    };
+    let a = await fresh();
+    expect(tool.stillValid!(a)).toBe(true);
+    w.mine("d1").permissionMode = "plan";
+    expect(tool.stillValid!(a)).toBe(false);
+    a = await fresh();
+    w.unsandboxed.add("R1");
+    expect(tool.stillValid!(a)).toBe(false);
+    a = await fresh();
+    w.mine("d1").taskGroup = "elsewhere";
+    expect(tool.stillValid!(a)).toBe(false);
+    a = await fresh();
+    w.rooms.splice(0, 1);
+    expect(tool.stillValid!(a)).toBe(false);
   });
 });

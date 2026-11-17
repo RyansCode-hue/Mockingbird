@@ -40,7 +40,7 @@ Every tool has a tier, fixed in main's registry. The model can't change it.
 |---|---|---|
 | **read** | Runs and returns data | list sessions, what's waiting, usage, git status, why it's stuck |
 | **direct** | Runs, and its step shows **Undo** while what it changed is unchanged since (10 min, in memory) | focus, move/stack/size/arrange, move to a group, create/rename a group, rename, mute, settings toggles, draw or remove a wire |
-| **confirm** | Nothing happens: a **card** appears in the sheet, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, approve a gate, create or change a standing rule |
+| **confirm** | Nothing happens: a **card** appears in the sheet, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, create or change a standing rule |
 
 - A card names the exact target and effect ("Restart api-fix in plan mode:
   stops its current turn and resumes the same conversation"), and lists its
@@ -67,6 +67,8 @@ asking the model to behave:
   than the default (auto, accept edits, bypass) isn't offered for it.
 - Force-push.
 - Teammates' sessions, except through the room's own take-over flow.
+- Moving a session across a team room's boundary without a card (Layout's
+  room boundaries, below).
 - Treating text from tools (titles, transcripts, chat, artifacts, the House
   board, PR text) as instructions. It's data, and the prompt says so. The
   tiers are what make that hold: injected text can at most cause reads,
@@ -113,7 +115,7 @@ kept through every relaunch like its model and effort.
 | Group | Read | Direct (Undo) | Confirm |
 |---|---|---|---|
 | Sessions | list, detail | — | restart with mode/model/effort, restart all (group), close, resume, hand off to a fresh session |
-| Layout | landscape | focus, move, stack, size, arrange, move to group, create/rename group, rename, mute | — |
+| Layout | landscape | focus, move, stack, size, arrange, move to group, create/rename group, rename, mute (none across a room's boundary) | move a session into, out of or between team rooms |
 | Start work | presets, templates, House/ADO tickets | — | new session/worktree/branch (agent, mode, model, first prompt), preset, lay out a template, from a ticket, review a branch |
 | Triage | needs-you list, rollup | — | allow/deny a prompt once, type into a session, broadcast to a group |
 | Git | worktrees (dirty/ahead/behind), branch stat, PR status | — | clean up a worktree, push, open a PR |
@@ -130,15 +132,41 @@ one-prompt check and the rules' ban on answering prompts.
 - Layout's tools: `landscape`, `list_groups`, `focus_session`, `rename_session`,
   `move_workspace` (into an area, or next to another workspace), `stack_workspaces`,
   `unstack` (one tab out, beside its stack), `size_workspace` (S/M/L), `tidy_area`,
-  `set_group`, `create_group`, `rename_group`, `mute_session`, `unmute`. Each
-  layout change's Undo is the window's: offered while the landscape's revision
-  is the one the change made.
+  `set_group`, `create_group`, `rename_group`, `mute_session`, `unmute`, and
+  the one confirm tool, `move_across_room`. Each layout change's Undo is the
+  window's: offered while the landscape's revision is the one the change made.
+- **Room boundaries:** a session in a team room's group is a room session:
+  teammates are streamed its terminal and scrollback (livePanes.ts), which no
+  Undo takes back, and their agents can message it. So no direct tool moves
+  one across a room's boundary: into a room's group, out of one, or between
+  two. `set_group`, every planned change (`move_workspace`, `create_group`; a
+  stack or an unstack stays in one area, so in one room) and every Undo of
+  them are refused there (`layoutPlan.ts` roomBoundary, in the tool's check
+  and again in `carry`, which every plan and its Undo go through), and the
+  refusal names `move_across_room`. A group's room is its
+  top-level group's, as the live panes map it. A standing rule's `set_group`
+  meets the same refusal on every run.
+- `move_across_room` (confirm, never a rule's) is that move on a card. It says
+  what happens: "Teammates in “Atticus team” will see its terminal and
+  scrollback, and their agents can message it" (a terminal: they can ask to
+  type into it), and that moving it out again doesn't take back what they've
+  seen; out of a room, that its teammates lose it. Into a room it's in the
+  danger color, and warns when the session is running (it joins outside the
+  room's settings: nothing crosses the room's line for it until it's
+  restarted there), when it's a terminal (it can read any file), and when it
+  runs in a permission mode the room's sandbox wouldn't allow
+  (`permissionModeRefusal`). The Helpdesk workspace is refused, as
+  `sessions:setGroup` refuses it. The card expires when the session's group,
+  the rooms it leaves or joins, its agent, mode, running state or the room's
+  sandbox switch change.
 - Wires: `approve_gate` is the ticket pipeline's stakeholder-testing gate
   (`pipeline:approve`); `send_handoff` sends what waits at a wire's gate, by its
   pending's id, as it was readied (`wires:send`; a stopped other end isn't
   started). `remove_wire`'s Undo lasts while the wire service still holds it.
 - Rooms: `share_group` never gives the invite code (the Team view has it);
-  `take_over` reads the take-over plan for its card.
+  `take_over` reads the take-over plan for its card. A House board that can't
+  be read is never left out: `list_tickets` lists it as "(<room>'s board
+  couldn't be read: why)", and `house_board` fails saying the same.
 - Settings: only notifications, finished alerts, quiet hours and phone alerts
   on/off; phone alerts only once a handle is set up, which is never read.
 - Rule-able among these: `set_group`, `mute_session`, `unmute`, `set_setting`.
@@ -156,8 +184,10 @@ one-prompt check and the rules' ban on answering prompts.
   your own handle; a development build only logs it).
 - **Not allowed in a rule**: allowing or denying prompts (that would be a
   standing yes to every prompt), bypass mode, closing with forget, worktree
-  cleanup, push or PR, leaving a room, take-over, and starting from a House
-  ticket (it claims the ticket on the room's shared board).
+  cleanup, push or PR, leaving a room, take-over, starting from a House
+  ticket (it claims the ticket on the room's shared board), and moving a
+  session across a team room's boundary (`move_across_room` isn't rule-able,
+  and a rule's `set_group` is refused there on every run).
 - **Limits**: at most 20 rules, 5 actions each. A rule runs at most once per
   trigger event and 6 times an hour. After 3 failed runs in a row it pauses
   itself and says why. Guards are checked on every run.

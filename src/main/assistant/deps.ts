@@ -124,8 +124,11 @@ export interface AssistantWorkDeps {
   repos(): import("../../shared/types").RepoEntry[];
   /** New session's start (sessions:create). */
   createSession(req: import("../../shared/types").NewSessionRequest): Promise<import("../../shared/types").SessionInfo>;
-  /** Each team room's House board, as its cache has it (house:get): nothing is fetched or written. */
-  houseBoards(): import("../../shared/team/house").HouseView[];
+  /**
+   * Each team room's House board, as its cache has it (house:get): nothing is fetched or written. A room whose board
+   * couldn't be read is there too, with why, so a listing says so rather than leaving it out.
+   */
+  houseBoards(): (import("../../shared/team/house").HouseView | HouseBoardUnread)[];
   /** The Azure DevOps work items the Dashboard lists (ado:list): read only. */
   adoItems(): Promise<{ items: import("../../shared/types").AdoWorkItem[]; total: number; me: string }>;
   /** What starting a session from House ticket `n` of room `roomId` would do (house:sessionPlan). */
@@ -248,6 +251,13 @@ export interface AssistantLayoutDeps {
 
 /** Everything the tools reach, one block per tool group. */
 export interface AssistantDeps extends AssistantCoreDeps, AssistantRuleDeps, AssistantWorkDeps, AssistantLayoutDeps {}
+
+/** A team room whose House board couldn't be read (houseBoards): its id, its name and why. */
+export interface HouseBoardUnread {
+  roomId: string;
+  room: string;
+  error: string;
+}
 
 /** A wire as the Assistant reads it: never its pending's text, a summary or a template. */
 export interface AssistantWire {

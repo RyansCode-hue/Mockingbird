@@ -1,11 +1,13 @@
 import { GAP, LOOSE_GROUP, SIZE_PRESETS, type Rect, type SizePreset } from "../../../shared/landscape";
 import { newAreaPatch, planMakeArea, planMoveTile, planResizeTile, planStack, planTidy, planUnstack, presetFor, tileSize, type ReadyPlan, type TidyWire } from "../../../shared/landscapeModel";
 import { plainLine } from "../../../shared/team/agentText";
-import { groupKey, sanitizeSegment, splitGroupKey } from "../../../shared/types";
+import { groupKey, HELPDESK_IN_ROOM, sanitizeSegment, splitGroupKey } from "../../../shared/types";
+import { permissionModeRefusal } from "../../agents";
 import type { GuardOp } from "../../sessionGuards";
-import type { AssistantDeps } from "../deps";
-import { areaName, carry, layoutNow, ready, undoable, workspaceOf, type LayoutNow } from "../layoutPlan";
-import { defineTool, type AssistantTool, type ToolResult } from "../registry";
+import type { AssistantDeps, AssistantRoom, AssistantSession } from "../deps";
+import { ACROSS_ROOM_TOOL, areaName, carry, layoutNow, planBoundary, ready, roomBoundary, roomCrossing, undoable, workspaceOf, type LayoutNow } from "../layoutPlan";
+import { defineTool, type AssistantTool, type ToolCard, type ToolResult } from "../registry";
+import { cardSaw } from "./sessions";
 import { noSession, SESSION_ARG, sessionById, teammates, titleOf } from "./lookup";
 
 /**
@@ -13,19 +15,43 @@ import { noSession, SESSION_ARG, sessionById, teammates, titleOf } from "./looku
  * sessions show, each with an Undo. Moves, stacks, sizes and Tidy are planned with the window's own planners
  * (layoutPlan.ts), so what the window would refuse is refused here. Rule-able: set_group, mute_session and unmute;
  * the rest move the user's view of things about, which a standing rule has no business doing unasked.
+ *
+ * None of the direct tools moves a session across a team room's boundary (layoutPlan.ts roomBoundary): into a room's
+ * group, out of one, or between two. That's move_across_room's, a card, never a rule's.
  */
 
 type Deps = Pick<
   AssistantDeps,
-  "sessions" | "groups" | "toWindow" | "rename" | "guard" | "landscapeState" | "layoutSessions" | "patchLandscape" | "setGroup" | "renameGroup" | "setMuted" | "muted" | "wireList"
+  | "sessions"
+  | "groups"
+  | "rooms"
+  | "toWindow"
+  | "rename"
+  | "guard"
+  | "landscapeState"
+  | "layoutSessions"
+  | "patchLandscape"
+  | "setGroup"
+  | "renameGroup"
+  | "setMuted"
+  | "muted"
+  | "wireList"
+  | "roomSandboxed"
 >;
 
 const TITLE_MAX = 120;
 const NAME_MAX = 80;
 const AREA_ARG = { type: "string" as const, minLength: 1, maxLength: NAME_MAX, description: "An area's key: a top-level group, from landscape or list_groups" };
+const GROUP_ARG = { type: "string" as const, maxLength: 2 * NAME_MAX + 1, description: 'The group\'s key, or "" for none' };
+/** What each direct tool that can change a session's group tells the model of rooms' boundaries. */
+const ACROSS = ` Never across a team room's boundary (into a room's group, out of one, or between two): ${ACROSS_ROOM_TOOL} does that, on a card.`;
 
 /** A plan for a call, made against the landscape now, or why it can't be made. */
 type Planned = { now: LayoutNow; plan: ReadyPlan } | { refused: string };
+
+type AcrossArgs = { session: string; group: string };
+/** A move across rooms' boundaries: the session, the group it goes to (null: none), and the rooms it leaves and joins. */
+type Across = { s: AssistantSession; group: string | null; out: AssistantRoom | null; into: AssistantRoom | null };
 
 const rect = (r: Rect) => ({ x: r.x, y: r.y, w: r.w, h: r.h });
 
@@ -38,14 +64,14 @@ export function layoutTools(d: Deps): AssistantTool[] {
   const label = (id: string) => titleOf(sessionById(d, id), id);
   const target = (id: string) => ({ session: id, title: sessionById(d, id)?.title ?? null });
 
-  /** A planning tool's check: its session's guard, then the plan's own refusal. */
+  /** A planning tool's check: its session's guard, then the plan's own refusal, then a move across a room's boundary. */
   const checked = (plan: () => Planned, ...ids: [string, GuardOp][]) => (): string | null => {
     for (const [id, op] of ids) {
       const why = guard(id, op);
       if (why) return why;
     }
     const p = plan();
-    return "refused" in p ? p.refused : null;
+    return "refused" in p ? p.refused : planBoundary(d, p.now, p.plan);
   };
   /** A planning tool's run: planned again against the landscape as it is now, carried out, with its Undo. */
   const carried = async (p: Planned, what: string, text: string, undone?: string): Promise<ToolResult> => {
@@ -142,6 +168,61 @@ export function layoutTools(d: Deps): AssistantTool[] {
       // Make area…: a new area formed around them, moved clear of the others with them
       return withPlan(now, ready(planMakeArea(now.placed, now.layout, keys, key, areaName), "Nothing to move"));
     });
+
+  // ---- move_across_room ----
+  /** What each move_across_room card showed, by its call's arguments. */
+  const acrossSaw = cardSaw<string>();
+
+  /** move_across_room's move as it stands: the session, the group it goes to and the rooms it leaves and joins; or why there's none. */
+  const acrossOf = (a: AcrossArgs): Across | { refused: string } => {
+    const s = sessionById(d, a.session);
+    if (!s) return { refused: noSession(a.session) };
+    const g = groupArg(a.group);
+    if (!g) return { refused: `“${plainLine(a.group, NAME_MAX)}” can't name a group: pick another name` };
+    if ((s.group ?? null) === g.group) return { refused: g.group ? `It's in ${areaName(g.group)} already` : "It's in no group already" };
+    const c = roomCrossing(d, s.group, g.group);
+    if (!c) return { refused: "That move doesn't cross a team room's boundary: set_group makes it, with an Undo" };
+    return { s, group: g.group, ...c };
+  };
+  /** acrossOf, and why the move can't be made now: a teammate's session, the Helpdesk into a room, the session guards. */
+  const acrossMove = (a: AcrossArgs): Across | { refused: string } => {
+    const m = acrossOf(a);
+    if ("refused" in m) return m;
+    if (m.into && m.s.helpdesk) return { refused: `${HELPDESK_IN_ROOM}.` };
+    const why = teammates(m.s, "move it to another group") ?? d.guard("group", m.s.id);
+    return why ? { refused: why } : m;
+  };
+  const acrossKey = (m: Across): string =>
+    JSON.stringify([m.s.group, m.out?.id ?? null, m.into?.id ?? null, m.s.agent, m.s.permissionMode, m.s.status === "dead", m.into ? d.roomSandboxed(m.into.id) : null]);
+  const acrossCard = (m: Across): ToolCard => {
+    const name = label(m.s.id);
+    const to = m.group ? areaName(m.group) : "no group";
+    const terminal = m.s.agent === "terminal";
+    const joins = m.into
+      ? `Teammates in “${m.into.name}” will see its terminal and scrollback, ${terminal ? "and can ask you to let them type into it" : "and their agents can message it"}. Moving it out again doesn't take back what they've seen.`
+      : "";
+    const leaves = m.out ? `Teammates in “${m.out.name}” lose it: it goes from their landscapes${terminal ? "" : ", and their agents can't message it any more"}.` : "";
+    const warnings: string[] = [];
+    if (m.into && terminal) warnings.push("A terminal can read any file you can, .env files included, and teammates see whatever it prints.");
+    if (m.into && !terminal && m.s.status !== "dead") {
+      warnings.push(
+        "It's running, so it joins as it started, outside the room's settings: teammates see its terminal from now, but nothing crosses the room's line for it " +
+          "(their agents' messages, wires, the House) until it's restarted in the room."
+      );
+    }
+    if (m.into && !terminal) {
+      // a room this Mac isn't in now reads as sandboxed: the warning errs toward saying the mode won't do there
+      const mode = permissionModeRefusal(m.s.agent === "codex" ? "codex" : "claude", m.s.permissionMode, { role: null, roomSandboxed: d.roomSandboxed(m.into.id) !== false });
+      if (mode) warnings.push(`“${m.into.name}”'s sandbox wouldn't allow the mode it runs in (${mode}). It keeps that mode until it's restarted, and can't restart in the room in it.`);
+    }
+    return {
+      title: m.into ? `Move ${name} into the team room “${m.into.name}”${m.out ? ` from “${m.out.name}”` : ""}` : `Move ${name} out of the team room “${m.out!.name}”`,
+      detail: [`Puts it in ${to}.`, leaves, joins].filter(Boolean).join(" "),
+      warnings,
+      // what teammates are streamed can't be taken back
+      ...(m.into ? { danger: true } : {}),
+    };
+  };
 
   return [
     defineTool<Record<string, never>>({
@@ -244,7 +325,8 @@ export function layoutTools(d: Deps): AssistantTool[] {
       description:
         "Move a session's workspace (its whole stack, for a stack's tab) into an area (its group follows: placed where the area has room, " +
         "the area growing to hold it), or next to another session's workspace (just right of it, in its area, pushing what's there aside). " +
-        "Give area or next_to, not both. Refused where the landscape refuses the drag: a locked area, a teammate's workspace across areas, a stack left loose.",
+        "Give area or next_to, not both. Refused where the landscape refuses the drag: a locked area, a teammate's workspace across areas, a stack left loose." +
+        ACROSS,
       inputSchema: {
         type: "object",
         properties: { session: SESSION_ARG, area: AREA_ARG, next_to: { ...SESSION_ARG, description: "The id of the session to put it next to" } },
@@ -261,7 +343,8 @@ export function layoutTools(d: Deps): AssistantTool[] {
       tier: "direct",
       description:
         "Stack two or more sessions' workspaces in one area into one card with a tab each (⌘G): the first stack among them takes the others in, " +
-        "else a new one forms where the first of them is. A teammate's workspace stays out.",
+        "else a new one forms where the first of them is. A teammate's workspace stays out." +
+        ACROSS,
       inputSchema: {
         type: "object",
         properties: { sessions: { type: "array", items: SESSION_ARG, minItems: 2, maxItems: 12, description: "The sessions' ids" } },
@@ -321,10 +404,11 @@ export function layoutTools(d: Deps): AssistantTool[] {
       rule: true,
       description:
         'Put a session in a group, as Move to group does: a top-level group ("atticus") or a stack in one ("atticus/api"); "" takes it out of every group. ' +
-        "The landscape places it in that group's area. Can be a standing rule's action.",
+        "The landscape places it in that group's area. Can be a standing rule's action." +
+        ACROSS,
       inputSchema: {
         type: "object",
-        properties: { session: SESSION_ARG, group: { type: "string", maxLength: 2 * NAME_MAX + 1, description: 'The group\'s key, or "" for none' } },
+        properties: { session: SESSION_ARG, group: GROUP_ARG },
         required: ["session", "group"],
         additionalProperties: false,
       },
@@ -338,7 +422,7 @@ export function layoutTools(d: Deps): AssistantTool[] {
         const g = groupArg(a.group);
         if (!g) return `“${plainLine(a.group, NAME_MAX)}” can't name a group: pick another name`;
         if ((s.group ?? null) === g.group) return g.group ? `It's in ${areaName(g.group)} already` : "It's in no group already";
-        return d.guard("group", s.id);
+        return d.guard("group", s.id) ?? roomBoundary(d, label(s.id), s.group, g.group);
       },
       target: (a) => target(a.session),
       run: (a) => {
@@ -346,6 +430,8 @@ export function layoutTools(d: Deps): AssistantTool[] {
         const g = groupArg(a.group);
         if (!g) throw new Error(`“${plainLine(a.group, NAME_MAX)}” can't name a group`);
         const group = g.group;
+        const across = roomBoundary(d, label(a.session), before, group);
+        if (across) throw new Error(across);
         d.setGroup(a.session, group);
         const groupNow = () => sessionById(d, a.session)?.group ?? null;
         return {
@@ -353,10 +439,53 @@ export function layoutTools(d: Deps): AssistantTool[] {
           stillUndoable: () => groupNow() === group,
           undo: () => {
             if (groupNow() !== group) throw new Error("It was moved again since");
+            // a group shared as a room since, or a room left: putting it back would cross that room's boundary
+            const back = roomBoundary(d, label(a.session), group, before);
+            if (back) throw new Error(back);
             d.setGroup(a.session, before);
             return before ? `Moved it back to ${areaName(before)}` : "Took it back out of every group";
           },
         };
+      },
+    }),
+    defineTool<AcrossArgs>({
+      name: ACROSS_ROOM_TOOL,
+      tier: "confirm",
+      description:
+        "Move one of this Mac's sessions across a team room's boundary, as Move to group does: into a room's group (\"atticus\", or a stack in it, \"atticus/api\"), " +
+        'out of one (to another group, or "" for none), or from one room\'s group to another\'s. Teammates in a room it joins see its terminal and scrollback, ' +
+        "and their agents can message it; a room it leaves loses it. The only way across: the other layout tools refuse these moves. Never a standing rule's action. " +
+        "This puts a card in front of the user; it runs only when they confirm.",
+      inputSchema: { type: "object", properties: { session: SESSION_ARG, group: GROUP_ARG }, required: ["session", "group"], additionalProperties: false },
+      label: (a) => {
+        const m = acrossOf(a);
+        if ("refused" in m) return `Move ${label(a.session)} across a team room's boundary`;
+        return m.into ? `Move ${label(a.session)} into the team room “${m.into.name}”` : `Move ${label(a.session)} out of the team room “${m.out!.name}”`;
+      },
+      check: (a) => {
+        const m = acrossMove(a);
+        return "refused" in m ? m.refused : null;
+      },
+      card: (a): ToolCard => {
+        const m = acrossOf(a);
+        if ("refused" in m) return { title: `Move ${label(a.session)} across a team room's boundary`, detail: m.refused, warnings: [] };
+        acrossSaw.set(a, acrossKey(m));
+        return acrossCard(m);
+      },
+      // the card names the rooms it leaves and joins, and warns by its agent, mode and state: any of them changing makes it another card
+      stillValid: (a) => {
+        const saw = acrossSaw.get(a);
+        if (saw === undefined) return true;
+        const m = acrossOf(a);
+        return !("refused" in m) && acrossKey(m) === saw;
+      },
+      target: (a) => target(a.session),
+      run: (a) => {
+        const m = acrossMove(a);
+        if ("refused" in m) throw new Error(m.refused);
+        d.setGroup(m.s.id, m.group);
+        const to = m.group ? areaName(m.group) : "no group";
+        return { text: `Moved ${label(m.s.id)} to ${to}: ${m.into ? `teammates in “${m.into.name}” see it now` : `it's out of “${m.out!.name}”`}.` };
       },
     }),
     defineTool<{ name: string; sessions?: string[] }>({
@@ -364,7 +493,8 @@ export function layoutTools(d: Deps): AssistantTool[] {
       tier: "direct",
       description:
         "Make a new group, as Make area… does: with sessions, a new area forms around their workspaces and they move into it; " +
-        "without, an empty area is added right of the others. Refused when a group of that name exists.",
+        "without, an empty area is added right of the others. Refused when a group of that name exists." +
+        ACROSS,
       inputSchema: {
         type: "object",
         properties: {

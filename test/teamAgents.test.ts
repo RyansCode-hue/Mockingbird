@@ -217,9 +217,9 @@ describe("the MCP server script", () => {
   });
 });
 
-describe("a Claude session that joined its room while it was running", () => {
-  it("gets nothing across the room's line, either way, saying why, until it's restarted in the room; nor does a terminal or a Codex change", async () => {
-    const joined = session("joined", { title: "Joined", taskGroup: "5110" });
+describe("a Claude or Codex session that joined its room while it was running", () => {
+  it.each(["claude", "codex"] as const)("(%s) gets nothing across the room's line, either way, saying why, until it's restarted in the room", async (agent) => {
+    const joined = session("joined", { title: "Joined", taskGroup: "5110", agent });
     ryan.sessions.push(joined);
     ryan.unguarded.add("joined");
     const before = nick.delivered.length;
@@ -239,9 +239,8 @@ describe("a Claude session that joined its room while it was running", () => {
       const sent = await nick.room.bridge.send(roomId, { id: "api", title: "Export API", agent: "claude", repo: "backoffice", branch: "api-branch" }, rid("joined", ryan), "hello");
       expect(sent).toMatchObject({ status: "refused", detail: expect.stringContaining(why) });
       expect(ryan.delivered.some((d) => d.to === "joined")).toBe(false);
-      // the same session outside a room, and a Codex in one, are as before
-      expect(roomMessageRefusal({ agent: "codex", status: "idle", live: true, guards: null }, "Ryan")).toBeNull();
-      expect(roomMessageRefusal({ agent: "claude", status: "idle", live: true }, "Ryan")).toBeNull();
+      // a session the room's guards aren't asked about is as before
+      expect(roomMessageRefusal({ agent, status: "idle", live: true }, "Ryan")).toBeNull();
       // restarted in the room, it runs under the room's settings
       ryan.unguarded.delete("joined");
       expect((await ask({ op: "send_message", from: "joined", args: { to: rid("api", nick), message: "back" } })).result).toMatch(/^Delivered to "Export API"/);
@@ -250,6 +249,20 @@ describe("a Claude session that joined its room while it was running", () => {
       ryan.sessions.splice(ryan.sessions.indexOf(joined), 1);
       ryan.unguarded.delete("joined");
     }
+  });
+
+  it("a Codex is off the line without the room's permission profile, and on it under the profile or with the room's sandbox switched off", () => {
+    const codex = (guards: Parameters<typeof roomMessageRefusal>[0]["guards"]) => roomMessageRefusal({ agent: "codex", status: "idle", live: true, guards }, "Ryan");
+    const off = expect.stringContaining("it isn't in the room's sandbox on Ryan's Mac");
+    // joined while running; a Codex too old for the profile, or a launch that couldn't name what to switch off
+    expect(codex(null)).toEqual(off);
+    expect(codex({ secrets: false })).toEqual(off);
+    // started in the room's sandbox; started with the room's sandbox switched off, unless the room has it on now
+    expect(codex({ secrets: true })).toBeNull();
+    expect(codex({ secrets: false, unsandboxed: true })).toBeNull();
+    expect(codex({ secrets: false, unsandboxed: true, outside: true })).toEqual(off);
+    // a terminal never takes agent messages, whatever its guards
+    expect(roomMessageRefusal({ agent: null, status: "idle", live: true, guards: null }, "Ryan")).toContain("it's a terminal");
   });
 });
 
