@@ -52,7 +52,7 @@ export const CHANGELOG: Release[] = [
       n("Quitting Claude or Codex (/exit) leaves a terminal in its folder; Resume Claude brings the agent back"),
       n("A focused workspace has browser-style tabs, a shorter ⋯, and Files, Changes and Run docked on its left"),
       f("Switching tabs in a focused workspace no longer asks you to click the landscape before typing"),
-      f("Switching a room's sandbox off or on now reaches running sessions: they say so and offer a restart"),
+      f("Room sandboxes: sessions follow the switch, and Codex outside it can't be messaged by teammates' agents"),
     ],
   },
   {
