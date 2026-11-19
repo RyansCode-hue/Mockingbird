@@ -393,15 +393,24 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
     armFocus(vp());
     return r;
   };
+  /** Go there takes a session's own item off the list: a new prompt, or another turn ending, lists it again. */
+  const fresh = async (id: string) => {
+    const s = env.sessions().find((x) => x.id === id)!;
+    env.setSession(id, s.status === "waiting" ? { waitingAt: Date.now() } : { finishedAt: Date.now() });
+    await sleep(400);
+  };
   // Go there on the permission prompt: the tray goes, the workspace is selected, the keyboard on the landscape (a
-  // single letter answers Codex's prompt); Enter then gives its terminal the keyboard
+  // single letter answers Codex's prompt), the item off the list; Enter then gives its terminal the keyboard
   armFocus(vp());
   await openTray();
   out.goTitle = actBtn("s:s2", "go")?.title ?? null;
+  const countBefore = button().count;
   act("s:s2", "go");
   await sleep(800);
   out.goPermission = { open: tray().open, ws: selectedWs(), keyboard: keyboard(), terminal: document.activeElement === term("s2")?.textarea };
+  out.goDismissed = { before: countBefore, after: button().count };
   out.goPermissionEnter = await enterAndBack("s2");
+  await fresh("s2");
 
   // a stack's tab behind another: N brings it to the front, the keyboard kept on the landscape, and N on round to the
   // first tab brings that back
@@ -454,6 +463,7 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   await sleep(800);
   out.goCards = { ws: selectedWs(), keyboard: keyboard() };
   out.goCardsEnter = await enterAndBack("s2");
+  await fresh("s2");
 
   // Go there on the join request: its room's area, and the admin's prompt for it
   armFocus(vp());
@@ -491,6 +501,7 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   act("s:s8", "go");
   await sleep(900);
   out.goFromFocus = { inFocus, focus: !!document.querySelector(".ls-focus"), ws: selectedWs(), keyboard: keyboard() };
+  await fresh("s8");
 
   // from another tab, Go there comes back to the landscape
   [...document.querySelectorAll<HTMLElement>(".tab")].find((b) => b.textContent?.trim() === "Dashboard")?.click();

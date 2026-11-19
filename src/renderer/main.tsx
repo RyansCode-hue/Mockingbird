@@ -102,7 +102,7 @@ import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type
 import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
 import { useWireNeeds } from "./NeedsWire";
-import { currentIndex, goCan, selectionAfter, stepItem, targetOf, typingAsksOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
+import { currentIndex, goCan, goDismisses, nextItem, selectionAfter, targetOf, typingAsksOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
 import { decideTyping } from "./team/Typing";
 import { BadgeContext } from "./cardBadges";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
@@ -2564,12 +2564,13 @@ function App() {
    */
   const toNeeds = (item: NeedsItem, o: { go: boolean; avoid: ScreenBox | null }) => {
     const t = targetOf(item, sessions);
+    const index = needs.items.findIndex((x) => x.id === item.id);
     if ("no" in t) {
       // N's place moves on to it all the same, so the next N goes past an item with nowhere to go (a ticket of no workspace here)
-      needsLast.current = { id: item.id, sel: needsSel };
+      needsLast.current = { id: item.id, sel: needsSel, index };
       return lsSay(t.no);
     }
-    needsLast.current = { id: item.id, sel: selectionAfter(item, needsSel, onLandscape) };
+    needsLast.current = { id: item.id, sel: selectionAfter(item, needsSel, onLandscape), index };
     if ("session" in t) {
       setTab("sessions");
       revealWorkspace(t.session.id, false, { keys: o.go, avoid: o.avoid });
@@ -2599,7 +2600,7 @@ function App() {
     setLandscapeKeys((k) => ({ n: k.n + 1, armed }));
   }, [joinShown]);
   const stepNeeds = (dir: 1 | -1, avoid: ScreenBox | null = null) => {
-    const next = stepItem(needs.items, needsAt, dir);
+    const next = nextItem(needs.items, needsSel, needsLast.current, dir);
     if (!next) return lsSay(needs.joinError ? `Couldn't read the rooms' join requests: ${needs.joinError}` : "Nothing needs you right now");
     toNeeds(next, { go: false, avoid });
   };
@@ -2656,14 +2657,15 @@ function App() {
       go: goCan(target, () => {
         close();
         toNeeds(item, { go: true, avoid: null });
+        if (goDismisses(item)) needs.dismiss(item);
       }),
       goTitle: item.join
         ? "Fly to the room's area and show the request: accept or decline it there"
         : ask
           ? "Bring it into view at 100%, where its strip has Allow for this session, Allow for 15 min and Deny"
           : item.kind === "finished"
-            ? "Bring it into view and select it: Enter or a click on its terminal to type there"
-            : "Bring it into view and select it, the keyboard kept off its prompt (a single letter can answer one): Enter or a click on its terminal to answer it",
+            ? "Bring it into view and select it, and take it off this list: Enter or a click on its terminal to type there"
+            : "Bring it into view and select it, and take it off this list, the keyboard kept off its prompt (a single letter can answer one): Enter or a click on its terminal to answer it",
       dismiss: () => needs.dismiss(item),
       answer:
         ask && item.session

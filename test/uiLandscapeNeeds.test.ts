@@ -48,6 +48,7 @@ interface GoAudit {
   keys: string;
   goTitle: string | null;
   goPermission: { open: boolean; ws: string | null; keyboard: string; terminal: boolean };
+  goDismissed: { before: string | null; after: string | null };
   goPermissionEnter: { terminal: boolean; focus: boolean };
   nStack: { before: string | null; front: string | null; ws: string | null; keyboard: string; farBefore: boolean; onScreen: boolean; note: string | null };
   nStackBack: { front: string | null; ws: string | null; keyboard: string };
@@ -392,6 +393,8 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(g.goTitle).toMatch(/the keyboard kept off its prompt .*Enter or a click on its terminal to answer it/);
     // selected and on the landscape's keyboard, never the terminal's; Enter then gives its terminal the keyboard
     expect(g.goPermission).toEqual({ open: false, ws: "s2", keyboard: "landscape", terminal: false });
+    // and the prompt's item is off the list: the workspace it went to shows the prompt
+    expect(Number(g.goDismissed.before) - Number(g.goDismissed.after)).toBe(1);
     expect(g.goPermissionEnter).toEqual({ terminal: true, focus: true });
     // a stack's tab behind another comes to the front, by N or Go there, and into view from off screen, so the terminal
     // Enter gives the keyboard to is its; nothing said, as nothing failed

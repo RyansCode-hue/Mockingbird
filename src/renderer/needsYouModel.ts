@@ -452,10 +452,11 @@ export interface NeedsSel {
   session: string | null;
   area: string | null;
 }
-/** The item N (or Go there) last went to, and the selection that left. */
+/** The item N (or Go there) last went to, the selection that left, and where it was in the list then. */
 export interface NeedsLast {
   id: string;
   sel: NeedsSel;
+  index?: number;
 }
 
 /**
@@ -489,6 +490,26 @@ export function stepItem(items: readonly NeedsItem[], current: number, dir: 1 | 
   const from = current < 0 || current >= items.length ? (dir === 1 ? -1 : items.length) : current;
   return items[(from + dir + items.length) % items.length];
 }
+
+/**
+ * N and ⇧N as the window takes them: from the item the view is on (currentIndex); or, when the item N or Go there last
+ * went to has left the list (dismissed by Go there, answered) and the selection is still the one it left and is on no
+ * other item, from the gap it left, so N goes on to the item that took its place rather than back to the first.
+ */
+export function nextItem(items: readonly NeedsItem[], sel: NeedsSel, last: NeedsLast | null, dir: 1 | -1): NeedsItem | null {
+  const at = currentIndex(items, sel, last);
+  const gap = at < 0 && last?.index !== undefined && last.sel.session === sel.session && last.sel.area === sel.area && !items.some((x) => x.id === last.id);
+  if (!gap || !items.length) return stepItem(items, at, dir);
+  const k = Math.min(last!.index!, items.length);
+  return items[(dir === 1 ? k : k - 1 + items.length) % items.length];
+}
+
+/**
+ * Whether Go there dismisses `item`: a workspace's own prompt or ended turn, which Go there lands on and its card goes
+ * on showing (a new prompt or another turn is a new item). A teammate's typing ask, a join request, and a wire's,
+ * ticket's or PR request's item stay listed: someone waits on their answers, which the tray holds.
+ */
+export const goDismisses = (item: NeedsItem): boolean => item.kind === "finished" || item.kind === "permission" || item.kind === "question";
 
 /** Where Go there (and N) take an item: a workspace, or a room's area; or why it can't be gone to now. */
 export type NeedsTarget = { session: SessionInfo } | { area: string; roomId: string; requestKey: string } | { no: string };

@@ -11,10 +11,12 @@ import {
   dismiss,
   dismissedFrom,
   goCan,
+  goDismisses,
   namedSendRefusal,
   needsByArea,
   needsItems,
   needsLabel,
+  nextItem,
   planItems,
   selectionAfter,
   shownItems,
@@ -23,6 +25,7 @@ import {
   undismiss,
   wireItems,
   type NeedsItem,
+  type NeedsKind,
   type NeedsLast,
   type NeedsSel,
   type NeedsWires,
@@ -223,6 +226,29 @@ describe("N and ⇧N", () => {
     expect(list[at].id).toBe("s:done");
     // N's place gone from the list (answered meanwhile): the selection says where the view is
     expect(currentIndex(list, { session: "perm", area: null }, { id: "s:gone", sel: { session: "perm", area: null } })).toBe(currentIndex(list, { session: "perm", area: null }));
+  });
+  it("go on from the place of an item gone from the list since (Go there dismissed it): N to the one that took it, ⇧N to the one before", () => {
+    const went = list[1];
+    const sel = { session: went.session, area: null };
+    const last: NeedsLast = { id: went.id, sel, index: 1 };
+    const after = list.filter((x) => x.id !== went.id);
+    expect(nextItem(after, sel, last, 1)!.id).toBe(list[2].id);
+    expect(nextItem(after, sel, last, -1)!.id).toBe(list[0].id);
+    // the last item gone: N comes round to the first, ⇧N to the new last
+    const end = list[list.length - 1];
+    const fromEnd: NeedsLast = { id: end.id, sel: { session: end.session, area: null }, index: list.length - 1 };
+    const short = list.slice(0, -1);
+    expect(nextItem(short, fromEnd.sel, fromEnd, 1)!.id).toBe(list[0].id);
+    expect(nextItem(short, fromEnd.sel, fromEnd, -1)!.id).toBe(list[list.length - 2].id);
+    // a selection changed since goes by the selection; one still listed, by where it is
+    expect(nextItem(after, { session: list[0].session, area: null }, last, 1)!.id).toBe(after[1].id);
+    expect(nextItem(list, sel, last, 1)!.id).toBe(list[2].id);
+    expect(nextItem([], sel, last, 1)).toBeNull();
+  });
+  it("Go there takes off a workspace's own prompt or ended turn, never what someone waits on an answer to", () => {
+    const kinds = Object.keys(KIND_LABEL) as NeedsKind[];
+    expect(kinds).toHaveLength(10);
+    expect(kinds.filter((kind) => goDismisses({ kind } as NeedsItem)).sort()).toEqual(["finished", "permission", "question"]);
   });
 });
 
