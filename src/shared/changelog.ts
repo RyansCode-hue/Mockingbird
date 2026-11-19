@@ -42,6 +42,15 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.8.1",
+    date: "2026-11-19",
+    items: [
+      f("Agents message only the sessions in their own group; other groups' sessions are hidden and refused"),
+      f("Claude panes no longer take Claude Code's built-in messages from other Claude sessions on your Mac"),
+      f("Needs you: Go there takes the workspace's prompt or finished turn off the list"),
+    ],
+  },
+  {
     version: "1.8.0",
     date: "2026-11-13",
     items: [

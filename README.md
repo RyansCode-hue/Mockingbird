@@ -506,6 +506,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
+- **1.8.1: agents stay in their group** — released in 1.8.1. `list_sessions`
+  and `send_message` reach only the caller's group; Claude panes refuse
+  Claude Code's own cross-session messages and run without `ListAgents`, since
+  those can't be limited to a group. Running panes pick it up on restart.
 - **1.8.0: a room's sandbox switch** — released in 1.8.0. Settings → Team
   can run a room's sessions on your Mac without the room's sandbox, after a
   warning; a session that left its room or whose sandbox was switched off
