@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONTEXT_DIR, claudeContext, codexContext, readContextWindow, usageReporterArgs } from "../src/main/usage";
+import { CONTEXT_DIR, claudeContext, codexContext, readContextWindow, usageReporterSettings } from "../src/main/usage";
 import { contextLine, contextPct, contextTarget, contextTokens } from "../src/renderer/usageFormat";
 import type { RoomSessionTag } from "../src/shared/team/livePanes";
 
@@ -27,14 +27,14 @@ beforeEach(() => {
 
 describe("the reporter keeps each conversation's context window", () => {
   it("files every payload under its top-level session id, rate limits or not", () => {
-    usageReporterArgs();
+    usageReporterSettings();
     report({ session_id: ID, transcript_path: "/x.jsonl", model: { id: "claude-opus-4-7[1m]" }, context_window: contextWindow(275_600, 1_000_000), remote: { session_id: "other" } });
     const kept = JSON.parse(fs.readFileSync(path.join(CONTEXT_DIR, `${ID}.json`), "utf8"));
     expect(kept.context_window.total_input_tokens).toBe(275_600);
     expect(fs.readdirSync(CONTEXT_DIR)).toEqual([`${ID}.json`]); // no leftovers, no nested id
   });
   it("ignores a session id that couldn't name a file safely", () => {
-    usageReporterArgs();
+    usageReporterSettings();
     report({ session_id: "../../evil", context_window: contextWindow(1000, 200_000) });
     expect(fs.existsSync(CONTEXT_DIR)).toBe(false);
   });
@@ -46,7 +46,7 @@ describe("the reporter keeps each conversation's context window", () => {
     fs.writeFileSync(recent, "{}");
     const t = (Date.now() - 15 * 86_400_000) / 1000;
     fs.utimesSync(old, t, t);
-    usageReporterArgs();
+    usageReporterSettings();
     expect(fs.readdirSync(CONTEXT_DIR)).toEqual(["recent.json"]);
   });
 });

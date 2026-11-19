@@ -9,7 +9,6 @@ const USAGE_FILE = path.join(MB_DIR, "usage.json");
 // the last payload that carried the 5-hour window — the CLI leaves it out of some
 const FIVE_HOUR_FILE = path.join(MB_DIR, "usage-5h.json");
 const STATUSLINE_SCRIPT = path.join(MB_DIR, "statusline.sh");
-const STATUSLINE_SETTINGS = path.join(MB_DIR, "statusline-settings.json");
 /** Each Claude conversation's latest statusline payload, as <conversation id>.json: its context window. */
 export const CONTEXT_DIR = path.join(MB_DIR, "context");
 /** A conversation id safe to name a file with: what the script accepts, and what the reader looks up. */
@@ -42,17 +41,8 @@ exit 0
 `;
 
 /**
- * Extra claude args that make a session report usage. Empty when the user has
- * their own statusLine — --settings outranks ~/.claude/settings.json and would
- * replace it.
- */
-export function usageReporterArgs(): string[] {
-  return usageReporterSettings() ? ["--settings", STATUSLINE_SETTINGS] : [];
-}
-
-/**
- * The settings usageReporterArgs passes, for a launch that gives its own --settings (a team room session's sandbox)
- * and so has to carry them in the same one; null when the user has their own statusLine.
+ * The status line that makes a Claude session report usage, for the one --settings its launch passes (agents.ts). Null
+ * when the user has their own statusLine: --settings outranks ~/.claude/settings.json and would replace it.
  */
 export function usageReporterSettings(): { statusLine: { type: "command"; command: string } } | null {
   try {
@@ -64,7 +54,6 @@ export function usageReporterSettings(): { statusLine: { type: "command"; comman
   const settings = { statusLine: { type: "command" as const, command: `"${STATUSLINE_SCRIPT}"` } };
   // running panes run the script every few hundred ms: it is only replaced when it changed, and in one step
   writeGenerated(STATUSLINE_SCRIPT, SCRIPT, 0o755);
-  writeGenerated(STATUSLINE_SETTINGS, JSON.stringify(settings));
   pruneContextReports();
   return settings;
 }

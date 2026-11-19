@@ -4,7 +4,7 @@ import { AGENT_NAME, type AgentKind, type NewSessionRequest, type RelaunchChange
 import { isPermissionMode, PERMISSION_MODE_LABEL, WIDER_MODES, type PermissionMode } from "../shared/permissionModes";
 import { expandHome } from "./store";
 import { HELPDESK_MODE_WHY } from "./helpdesk";
-import { usageReporterArgs, usageReporterSettings } from "./usage";
+import { usageReporterSettings } from "./usage";
 import { MCP_SERVER, MCP_TOOL, claudeToolName, type McpLaunch } from "./messaging";
 import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
 import { readSlice } from "./fileOps";
@@ -162,6 +162,20 @@ function launchMode(agent: AgentKind, req: NewSessionRequest, roomSandboxed: boo
   return modeArgs(agent, req.permissionMode);
 }
 
+/**
+ * Settings every Claude pane runs with, over the user's and a room's. Claude Code's own messaging between the sessions
+ * on this Mac can't be limited by sender, so a pane takes none of it: agents reach each other with Mockingbird's
+ * send_message, which keeps to their group. From --settings, this outranks the user's own crossSessionInbound.
+ */
+export const CLAUDE_PANE_SETTINGS = { crossSessionInbound: "refuse" } as const;
+
+/**
+ * Claude Code tools a pane goes without. ListAgents lists every Claude session on this Mac, and every other pane in it
+ * refuses what it would send them, unseen by the sender; list_sessions shows the ones it can reach. SendMessage stays,
+ * for the pane's own subagents and teammates.
+ */
+export const CLAUDE_PANE_DENIED = ["ListAgents"] as const;
+
 /** Everything that differs between the coding-agent CLIs a session can run. */
 export interface AgentAdapter {
   /** The Settings field holding this agent's binary name or path. */
@@ -192,18 +206,18 @@ const claude: AgentAdapter = {
     if (req.effort) args.push("--effort", req.effort);
     args.push(...launchMode("claude", req, !!ctx.claudeSettings));
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    // one --settings: the room's sandbox carries the status line with it. Hooks from every settings file run, and
-    // outside the sandbox, as do the MCP servers a project's .mcp.json starts: a room launch reads only the user's
-    // settings (Mockingbird's own hooks are there) and runs only Mockingbird's server
-    if (ctx.claudeSettings) args.push("--settings", JSON.stringify({ ...usageReporterSettings(), ...ctx.claudeSettings }), "--setting-sources", "user", "--strict-mcp-config");
-    else args.push(...usageReporterArgs());
+    // one --settings, carrying the status line and a room's sandbox. Hooks from every settings file run, and outside
+    // the sandbox, as do the MCP servers a project's .mcp.json starts: a room launch reads only the user's settings
+    // (Mockingbird's own hooks are there) and runs only Mockingbird's server
+    args.push("--settings", JSON.stringify({ ...usageReporterSettings(), ...ctx.claudeSettings, ...CLAUDE_PANE_SETTINGS }));
+    if (ctx.claudeSettings) args.push("--setting-sources", "user", "--strict-mcp-config");
     // --mcp-config adds to the user's own servers (outside a room); the allow
     // rule spares a permission prompt on every message
     if (ctx.mcp) {
       const tools = [...new Set<string>([MCP_TOOL.listSessions, MCP_TOOL.sendMessage, MCP_TOOL.listLinks, ...Object.values(WIRE_TOOL), ...Object.values(TICKET_TOOL), ...(ctx.allowTools ?? [])])];
       args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", tools.map(claudeToolName).join(","));
     }
-    if (ctx.denyReads?.length) args.push("--disallowedTools", ...ctx.denyReads);
+    args.push("--disallowedTools", ...(ctx.denyReads ?? []), ...CLAUDE_PANE_DENIED);
     if (ctx.chrome) args.push("--chrome");
     if (ctx.instructions) args.push("--append-system-prompt", ctx.instructions);
     return args;

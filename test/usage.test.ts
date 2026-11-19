@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readUsage, setClaudePlan, usageReporterArgs } from "../src/main/usage";
+import { readUsage, setClaudePlan, usageReporterSettings } from "../src/main/usage";
 
 const mb = path.join(os.homedir(), ".mockingbird");
 const writeClaude = (payload: unknown) => {
@@ -54,7 +54,7 @@ describe("Claude usage", () => {
     expect(readUsage().claude!.limits[0]).toEqual({ label: "5-hour limit", window: "5h", usedPct: 0, resetsAt: null, note: "no reading yet" });
   });
   it("the reporter keeps the last payload that had the 5-hour window", () => {
-    usageReporterArgs();
+    usageReporterSettings();
     const report = (payload: unknown) => execFileSync(path.join(mb, "statusline.sh"), { input: JSON.stringify(payload) });
     report({ rate_limits: { five_hour: { used_percentage: 7, resets_at: 1 }, seven_day: { used_percentage: 1, resets_at: 2 } } });
     report({ rate_limits: { seven_day: { used_percentage: 2, resets_at: 2 } } });
@@ -110,25 +110,23 @@ describe("Codex usage", () => {
   });
 });
 
-describe("usageReporterArgs", () => {
+describe("usageReporterSettings", () => {
   const settings = path.join(os.homedir(), ".claude", "settings.json");
   it("adds Mockingbird's statusline when the user has none", () => {
     fs.mkdirSync(path.dirname(settings), { recursive: true });
     fs.writeFileSync(settings, JSON.stringify({ hooks: {} }));
-    const args = usageReporterArgs();
-    expect(args[0]).toBe("--settings");
-    expect(JSON.parse(fs.readFileSync(args[1], "utf8")).statusLine.command).toContain("statusline.sh");
+    expect(usageReporterSettings()!.statusLine.command).toContain("statusline.sh");
   });
   it("leaves the reporter script alone while it's current, and replaces it in one step when it isn't", () => {
     fs.rmSync(settings, { force: true });
     const script = path.join(mb, "statusline.sh");
-    usageReporterArgs();
+    usageReporterSettings();
     const first = fs.statSync(script).ino;
-    usageReporterArgs(); // every Claude launch: running panes may be executing it right now
+    usageReporterSettings(); // every Claude launch: running panes may be executing it right now
     expect(fs.statSync(script).ino).toBe(first);
     fs.writeFileSync(script, "#!/bin/bash\n# an older build's\n");
     const running = fs.openSync(script, "r");
-    usageReporterArgs();
+    usageReporterSettings();
     const buf = Buffer.alloc(64);
     expect(buf.toString("utf8", 0, fs.readSync(running, buf, 0, 64, 0))).toContain("an older build's"); // undisturbed
     fs.closeSync(running);
@@ -137,6 +135,6 @@ describe("usageReporterArgs", () => {
   });
   it("stays out of the way of the user's own statusLine", () => {
     fs.writeFileSync(settings, JSON.stringify({ statusLine: { type: "command", command: "mine.sh" } }));
-    expect(usageReporterArgs()).toEqual([]);
+    expect(usageReporterSettings()).toBeNull();
   });
 });

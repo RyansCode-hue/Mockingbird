@@ -16,7 +16,10 @@ const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
 const live = [
   session("front", { taskGroup: "5038/web", ticketTitle: "Filter orgs" }),
   session("back", { agent: "codex", status: "working" }),
+  session("side", { taskGroup: "5038" }),
   session("other", { taskGroup: "9999" }),
+  session("loose1", { taskGroup: null }),
+  session("loose2", { taskGroup: null }),
   session("term", { shell: true }),
   session("brief", { debrief: true }),
   session("helpdesk", { role: "tasks", repoPath: null, branch: null, taskGroup: "Helpdesk" }),
@@ -66,13 +69,33 @@ describe("relay", () => {
     for (let i = 0; i < 50 && (fs.statSync(sock).mode & 0o777) !== 0o600; i++) await new Promise((r) => setTimeout(r, 20));
     expect(fs.statSync(sock).mode & 0o777).toBe(0o600);
   });
-  it("lists other live agent sessions — no shells, debriefs, the Helpdesk tasks workspace, dead ones or yourself — marking your group", async () => {
+  it("lists the other live agent sessions in your group — no shells, debriefs, the Helpdesk tasks workspace, dead ones or yourself", async () => {
     const r = await ask({ op: "list_sessions", from: "front" });
     expect(r.result.you).toEqual({ id: "front", title: "Filter orgs" });
-    expect(r.result.sessions.map((s: any) => [s.id, s.agent, s.same_group])).toEqual([
-      ["back", "codex", true],
-      ["other", "claude", false],
+    // a group's workspaces are one group: 5038/web sees 5038/api and 5038 itself
+    expect(r.result.sessions.map((s: any) => [s.id, s.agent, s.group])).toEqual([
+      ["back", "codex", "5038/api"],
+      ["side", "claude", "5038"],
     ]);
+    // another group's sessions aren't listed, counted or named
+    expect(JSON.stringify(r.result)).not.toMatch(/other|9999|loose/);
+  });
+  it("lists only another group's own sessions to it, and the ungrouped ones to each other", async () => {
+    const other = await ask({ op: "list_sessions", from: "other" });
+    expect(other.result.sessions).toEqual([]);
+    const loose = await ask({ op: "list_sessions", from: "loose1" });
+    expect(loose.result.sessions.map((s: any) => s.id)).toEqual(["loose2"]);
+  });
+  it("refuses a message to another group's session, says why, and logs the refusal; nothing is typed there", async () => {
+    const before = delivered.length;
+    for (const [from, to] of [["front", "other"], ["other", "back"], ["loose1", "side"], ["side", "loose2"]]) {
+      const r = await ask({ op: "send_message", from, args: { to, message: "DB PAUSE" } });
+      expect(r.error).toMatch(/^That session is in another group\. A session messages only the sessions in its own group \(yours is "[^"]+"\), which list_sessions lists\.$/);
+      expect(logged.at(-1)).toMatchObject({ from, to, text: "DB PAUSE", refused: true, outcome: expect.stringMatching(/^refused: That session is in another group/) });
+    }
+    expect((await ask({ op: "send_message", from: "front", args: { to: "other", message: "x" } })).error).toMatch(/yours is "5038"/);
+    expect(delivered.length).toBe(before);
+    expect((await ask({ op: "send_message", from: "loose1", args: { to: "loose2", message: "hi" } })).result).toMatch(/^Delivered to "loose2"/);
   });
   it("delivers a message labelled with its sender and marked as agent-written", async () => {
     const r = await ask({ op: "send_message", from: "front", args: { to: "back", message: "orgId is now organizationId" } });
@@ -88,7 +111,7 @@ describe("relay", () => {
   });
   it("leaves the message in the prompt when auto-send is off", async () => {
     submit = false;
-    const r = await ask({ op: "send_message", from: "front", args: { to: "other", message: "hi" } });
+    const r = await ask({ op: "send_message", from: "front", args: { to: "side", message: "hi" } });
     submit = true;
     expect(r.result).toMatch(/placed in its prompt/);
     expect(delivered.at(-1)!.submit).toBe(false);
@@ -110,16 +133,16 @@ describe("relay", () => {
     expect((await ask({ op: "rm_rf", from: "front" })).error).toMatch(/Unknown tool/);
   });
   it("stops a ping-pong at 8 messages per pair per 5 minutes and tells the user", async () => {
-    // "other" <-> "back" has had no traffic yet in either direction
+    // "side" <-> "back" has had no traffic yet in either direction
     const send = (from: string, to: string) => ask({ op: "send_message", from, args: { to, message: "ping" } });
     for (let i = 0; i < 4; i++) {
-      expect((await send("other", "back")).result).toBeDefined();
-      expect((await send("back", "other")).result).toBeDefined();
+      expect((await send("side", "back")).result).toBeDefined();
+      expect((await send("back", "side")).result).toBeDefined();
     }
-    const ninth = await send("other", "back");
+    const ninth = await send("side", "back");
     expect(ninth.error).toMatch(/Paused: 8 messages/);
-    expect(loops).toContain("other->back");
-    expect(logged.at(-1)).toMatchObject({ from: "other", to: "back", refused: true, outcome: expect.stringMatching(/message limit/) });
+    expect(loops).toContain("side->back");
+    expect(logged.at(-1)).toMatchObject({ from: "side", to: "back", refused: true, outcome: expect.stringMatching(/message limit/) });
   });
 });
 

@@ -37,32 +37,55 @@ describe("Claude launch", () => {
   it("resumes a specific conversation by id", () => {
     expect(agentFor("claude").launchArgs({ ...base, resumeSessionId: "uuid-1" }, { mcp }).slice(0, 2)).toEqual(["--resume", "uuid-1"]);
   });
-  it("gives a room's sandbox and the status line in one --settings; without one, the status line's file as before", () => {
+  it("gives the status line, a room's sandbox and the refusal of Claude Code's peer messages in one --settings", () => {
+    const statusLine = { type: "command", command: expect.stringMatching(/statusline\.sh"$/) };
     const room = agentFor("claude").launchArgs({ ...base }, { claudeSettings: { sandbox: { enabled: true } } });
     expect(room.filter((a) => a === "--settings")).toHaveLength(1);
-    expect(JSON.parse(room[room.indexOf("--settings") + 1])).toEqual({ statusLine: { type: "command", command: expect.stringMatching(/statusline\.sh"$/) }, sandbox: { enabled: true } });
+    expect(JSON.parse(room[room.indexOf("--settings") + 1])).toEqual({ statusLine, sandbox: { enabled: true }, crossSessionInbound: "refuse" });
     // a room launch reads no settings but the user's (where Mockingbird's hooks are) and runs no MCP server but Mockingbird's
     expect(room.slice(room.indexOf("--settings") + 2, room.indexOf("--settings") + 5)).toEqual(["--setting-sources", "user", "--strict-mcp-config"]);
     const local = agentFor("claude").launchArgs({ ...base }, {});
-    expect(local[local.indexOf("--settings") + 1]).toMatch(/statusline-settings\.json$/);
+    expect(local.filter((a) => a === "--settings")).toHaveLength(1);
+    expect(JSON.parse(local[local.indexOf("--settings") + 1])).toEqual({ statusLine, crossSessionInbound: "refuse" });
     expect(local).not.toContain("--setting-sources");
     expect(local).not.toContain("--strict-mcp-config");
     // a room launch with its sandbox switched off: its deny rules and the room's tools, but the user's own settings and MCP servers
     const unsandboxed = agentFor("claude").launchArgs({ ...base }, { mcp, denyReads: ["Read(**/.env)"], allowTools: ["list_house_tickets"], instructions: "the board" });
     expect(unsandboxed).toContain("--disallowedTools");
     expect(unsandboxed).toContain("--mcp-config");
-    expect(unsandboxed[unsandboxed.indexOf("--settings") + 1]).toMatch(/statusline-settings\.json$/);
+    expect(JSON.parse(unsandboxed[unsandboxed.indexOf("--settings") + 1])).toEqual({ statusLine, crossSessionInbound: "refuse" });
     expect(unsandboxed).not.toContain("--setting-sources");
     expect(unsandboxed).not.toContain("--strict-mcp-config");
-    // the user's own status line is theirs: the room's settings go alone
+    // the user's own status line is theirs: the room's settings go without Mockingbird's
     fs.mkdirSync(path.join(os.homedir(), ".claude"), { recursive: true });
     fs.writeFileSync(path.join(os.homedir(), ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "mine" } }));
     try {
       const own = agentFor("claude").launchArgs({ ...base }, { claudeSettings: { sandbox: { enabled: true } } });
-      expect(JSON.parse(own[own.indexOf("--settings") + 1])).toEqual({ sandbox: { enabled: true } });
+      expect(JSON.parse(own[own.indexOf("--settings") + 1])).toEqual({ sandbox: { enabled: true }, crossSessionInbound: "refuse" });
+      const ownLocal = agentFor("claude").launchArgs({ ...base }, {});
+      expect(JSON.parse(ownLocal[ownLocal.indexOf("--settings") + 1])).toEqual({ crossSessionInbound: "refuse" });
     } finally {
       fs.rmSync(path.join(os.homedir(), ".claude", "settings.json"));
     }
+  });
+  it("takes no peer messages and has no ListAgents in any pane, a room's settings unable to turn the refusal back", () => {
+    const kinds = [
+      agentFor("claude").launchArgs({ ...base }, {}),
+      agentFor("claude").launchArgs({ ...base }, { mcp }),
+      agentFor("claude").launchArgs({ ...base, role: "tasks" }, { chrome: true }),
+      agentFor("claude").launchArgs({ ...base }, { claudeSettings: { crossSessionInbound: "accept" }, denyReads: ["Read(**/.env)"] }),
+    ];
+    for (const args of kinds) {
+      expect(JSON.parse(args[args.indexOf("--settings") + 1]).crossSessionInbound).toBe("refuse");
+      const at = args.indexOf("--disallowedTools");
+      expect(at).toBeGreaterThan(-1);
+      expect(args.slice(at + 1)).toContain("ListAgents");
+      // SendMessage stays: the pane's own subagents and teammates are messaged with it
+      expect(args.join(" ")).not.toMatch(/SendMessage/);
+    }
+    // the variadic list ends at the next flag: ListAgents is a rule, not a prompt
+    const ruled = kinds[3];
+    expect(ruled.slice(ruled.indexOf("--disallowedTools") + 1, ruled.indexOf("--disallowedTools") + 3)).toEqual(["Read(**/.env)", "ListAgents"]);
   });
   it("runs Claude in Chrome only when asked (the Helpdesk tasks workspace), with its rules and no Mockingbird server", () => {
     const tasks = agentFor("claude").launchArgs({ ...base, role: "tasks" }, { chrome: true, instructions: "HELPDESK RULES" });

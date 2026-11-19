@@ -67,6 +67,12 @@ const HELPDESK_TAKES_NO_MESSAGES = "That session is the Helpdesk tasks workspace
 /** How often a stream of requests with no valid token is logged. */
 const NO_TOKEN_LOG_MS = 60_000;
 
+/**
+ * The group a session messages within: its top-level group, the ungrouped bucket counting as one. list_sessions shows
+ * and send_message reaches only sessions of the caller's own, so one project's agents never write into another's.
+ */
+export const messageGroup = (s: Pick<SessionInfo, "taskGroup">): string => topOfKey(s.taskGroup ?? "");
+
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
 /** The Mockingbird MCP server's name in the agents' configs. */
@@ -177,8 +183,8 @@ const SESSION_TOOLS = [
   {
     name: ${JSON.stringify(MCP_TOOL.listSessions)},
     description:
-      "List the other coding-agent sessions open in Mockingbird (Claude and Codex panes the user is running), " +
-      "with id, title, agent, repo, branch, group and status. same_group marks sessions working on the same ticket/group as you. " +
+      "List the other coding-agent sessions open in Mockingbird in your group (Claude and Codex panes the user is running), " +
+      "with id, title, agent, repo, branch, group and status. Sessions in other groups are never listed and can't be messaged. " +
       "When your group is a shared team room, the sessions teammates run in it on their own laptops are listed too, " +
       "marked remote with their owner (their ids end in @ and the teammate's key); teammates lists who is connected. " +
       "A remote session with accepts_messages false (a terminal, an exited agent) is one its owner's Mockingbird won't type messages into; why says so. " +
@@ -188,7 +194,7 @@ const SESSION_TOOLS = [
   {
     name: ${JSON.stringify(MCP_TOOL.sendMessage)},
     description:
-      "Send a message to another Mockingbird session (by id from ${MCP_TOOL.listSessions}). It is typed into that session's prompt, " +
+      "Send a message to another Mockingbird session in your group (by id from ${MCP_TOOL.listSessions}). It is typed into that session's prompt, " +
       "labelled as coming from you; if the session is busy it is delivered when its current turn ends. " +
       "Replies come back the same way, as a new prompt in your session — do not wait, sleep or poll for them. " +
       "Use it to coordinate work across repos, e.g. telling the frontend session about an API change you just made. " +
@@ -698,12 +704,13 @@ export class Messaging {
     if (isTicketTool(req.op)) return this.ticketTools ? this.ticketTools.call(me, req.op, req.args ?? {}) : { error: "Ticket tools aren't ready yet — try again in a moment." };
 
     if (req.op === MCP_TOOL.listSessions) {
-      // only this Mac's sessions on its side of a team room's line, which send_message reaches; what's left out isn't
-      // counted or named, as the line names neither side. While the line can't be seen yet, none, saying so
+      // only this Mac's sessions in its group and on its side of a team room's line, which send_message reaches; what's
+      // left out isn't counted or named, as the line names neither side. While the line can't be seen yet, none, saying so
       let starting: string | null = null;
+      const group = messageGroup(me);
       const others: Record<string, unknown>[] = live
         .filter((s) => {
-          if (s.id === me.id || s.debrief || s.role === "tasks") return false;
+          if (s.id === me.id || s.debrief || s.role === "tasks" || messageGroup(s) !== group) return false;
           const across = this.wires?.acrossRoomLine?.(me, s) ?? null;
           if (across === ROOMS_STARTING) starting = across;
           return !across;
@@ -716,7 +723,6 @@ export class Messaging {
           branch: s.branch,
           group: s.taskGroup,
           status: s.status,
-          same_group: !!me.taskGroup && !!s.taskGroup && topOfKey(me.taskGroup) === topOfKey(s.taskGroup),
         }));
       const result: Record<string, unknown> = { you: { id: me.id, title: titleOf(me) }, sessions: others };
       if (starting) result.note = starting;
@@ -725,7 +731,6 @@ export class Messaging {
       else if (this.remote && roomId) {
         try {
           const teammates = await this.remote.list(roomId);
-          const group = me.taskGroup ? topOfKey(me.taskGroup) : null;
           result.sessions = [
             ...others,
             ...teammates.flatMap((t) =>
@@ -737,7 +742,6 @@ export class Messaging {
                 branch: s.branch,
                 group,
                 status: t.connected ? s.status : "offline",
-                same_group: true,
                 remote: true,
                 owner: t.name,
                 ...(s.refused ? { accepts_messages: false, why: s.refused } : {}),
@@ -766,6 +770,11 @@ export class Messaging {
       if (target.role === "tasks") return { error: HELPDESK_TAKES_NO_MESSAGES };
 
       const logged = { at: Date.now(), from: me.id, fromTitle: titleOf(me), to, toTitle: titleOf(target), text };
+      if (messageGroup(target) !== messageGroup(me)) {
+        const why = `That session is in another group. A session messages only the sessions in its own group (yours is ${quoted(messageGroup(me))}), which list_sessions lists.`;
+        this.onMessage({ ...logged, outcome: `refused: ${why}`, refused: true });
+        return { error: why };
+      }
       const looped = this.wires?.messageRefusal(me, target) ?? null;
       if (looped) {
         this.onMessage({ ...logged, outcome: `refused: ${looped}`, refused: true });

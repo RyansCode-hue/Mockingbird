@@ -954,7 +954,9 @@ describe("room session launch", () => {
   it("leaves sessions outside rooms alone; a Codex of unknown version and terminals get the hooks but no deny rules", async () => {
     const { ryan } = await pair();
     const outside = await ryan.start({ taskGroup: "private" });
-    expect(ptyOf(outside.id).args.join(" ")).not.toContain("--disallowedTools");
+    // no deny rules on reads: a pane's own tool rule alone
+    expect(ptyOf(outside.id).args.join(" ")).not.toContain("Read(");
+    expect(ptyOf(outside.id).args.join(" ")).toContain("'--disallowedTools' 'ListAgents'");
     expect(ptyOf(outside.id).env.GIT_CONFIG_PARAMETERS ?? "").not.toContain("core.hooksPath");
     expect(ryan.sessions.guardsOf(outside.id)).toBeNull();
     const codex = await ryan.start({ agent: "codex" });
@@ -1228,7 +1230,7 @@ describe("room session launch", () => {
     expect(ryan.live.outsideSandbox(again.id)).toBe(false);
   });
 
-  it("starts Claude in the room's sandbox, with the status line in the same --settings, reading no settings but the user's and running no MCP server but Mockingbird's; outside a room, as before", async () => {
+  it("starts Claude in the room's sandbox, with the status line in the same --settings, reading no settings but the user's and running no MCP server but Mockingbird's; outside a room, the status line and the pane's own settings alone", async () => {
     const { ryan } = await pair();
     const repo = makeRepo();
     const s = await ryan.start({ cwd: repo, extraDirs: ["/extra/dir"] });
@@ -1256,7 +1258,7 @@ describe("room session launch", () => {
     const outside = ptyOf((await ryan.start({ taskGroup: "private" })).id).args.join(" ");
     expect(outside).not.toContain("sandbox");
     expect(outside).not.toContain("--setting-sources");
-    expect(outside).toMatch(/--settings' '[^']*statusline-settings\.json'/);
+    expect(JSON.parse(/--settings' '(\{.*?\})'/.exec(outside)![1])).toEqual({ statusLine: expect.objectContaining({ type: "command" }), crossSessionInbound: "refuse" });
   });
 
   it("holds a room session's folder with no repository at launch to having none: its agent can't make a .git there, and git refuses one made all the same", async () => {
@@ -1642,7 +1644,7 @@ describe("the room's sandbox switched off on this Mac", () => {
     expect(args).toContain("--disallowedTools");
     expect(args).toContain("Read(**/.env)");
     for (const no of ["--setting-sources", "--strict-mcp-config", '"sandbox"', "room-sandbox.sh", "/usr/bin/env", "runs its Bash commands in the room's sandbox"]) expect(args, no).not.toContain(no);
-    expect(args).toMatch(/--settings' '[^']*statusline-settings\.json'/);
+    expect(JSON.parse(/--settings' '(\{.*?\})'/.exec(args)![1])).toEqual({ statusLine: expect.objectContaining({ type: "command" }), crossSessionInbound: "refuse" });
     expect(args).toMatch(/'--mcp-config' '\{"mcpServers":\{"mockingbird"/);
     expect(p.env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
     expect(p.env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBe("1");
@@ -1753,7 +1755,7 @@ describe("the room's sandbox switched off on this Mac", () => {
     // its restart starts it as this Mac's own sessions start
     const again = await ryan.sessions.restart(s.id);
     const args = ptyOf(again.id).args.join(" ");
-    for (const no of ["--strict-mcp-config", "--setting-sources", '"sandbox"', "--disallowedTools"]) expect(args, no).not.toContain(no);
+    for (const no of ["--strict-mcp-config", "--setting-sources", '"sandbox"', "Read("]) expect(args, no).not.toContain(no);
     expect(ryan.sessions.guardsOf(again.id)).toBeNull();
     expect(ryan.sessions.roomSandboxChange(again.id)).toBeNull();
     expect(ryan.live.state().sandboxUntilRestart).toEqual({});

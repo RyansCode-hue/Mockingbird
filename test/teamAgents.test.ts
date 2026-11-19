@@ -101,11 +101,12 @@ describe("list_sessions across laptops", () => {
   it("lists a room session's teammates' room sessions, marked remote with their owner — never their other sessions", async () => {
     const r = await ask({ op: "list_sessions", from: "front" });
     const remote = r.result.sessions.filter((s: any) => s.remote);
-    expect(r.result.sessions.find((s: any) => s.id === "solo")).toBeDefined();
-    expect(remote.map((s: any) => [s.id, s.title, s.owner, s.status, s.same_group])).toEqual([
-      [rid("api", nick), "Export API", "Nick", "idle", true],
-      [rid("busy", nick), "busy", "Nick", "working", true],
-      [rid("term", nick), "term", "Nick", "idle", true],
+    // a session of this Mac's in another group isn't listed
+    expect(r.result.sessions.find((s: any) => s.id === "solo")).toBeUndefined();
+    expect(remote.map((s: any) => [s.id, s.title, s.owner, s.status])).toEqual([
+      [rid("api", nick), "Export API", "Nick", "idle"],
+      [rid("busy", nick), "busy", "Nick", "working"],
+      [rid("term", nick), "term", "Nick", "idle"],
     ]);
     expect(remote[0]).toMatchObject({ agent: "claude", repo: "backoffice", branch: "api-branch", group: "5110" });
     expect(remote[0].accepts_messages).toBeUndefined();
