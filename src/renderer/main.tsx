@@ -78,6 +78,7 @@ import { roomRepoNames } from "./newSessionModel";
 import { fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { usePersisted, readPref, writePref } from "./prefs";
+import { inTabOrder, rerank, tabRankOf } from "../shared/tabOrder";
 import { D, EASE, initMotion, play } from "./motion";
 import { StatusDot } from "./StatusDot";
 // the landscape
@@ -844,8 +845,11 @@ function App() {
   });
 
 
-  // debrief sessions live on the WorkTracker tab, everything else on the landscape
-  const workSessions = useMemo(() => sessions.filter((s) => !s.debrief), [sessions]);
+  // stacks' tabs in the order they were dragged into on this Mac (shared/tabOrder.ts)
+  const [tabRankSaved, setTabRank] = usePersisted<unknown>("mb.tabOrder", []);
+  const tabRank = useMemo(() => tabRankOf(tabRankSaved), [tabRankSaved]);
+  // debrief sessions live on the WorkTracker tab, everything else on the landscape, each stack's in its tab order
+  const workSessions = useMemo(() => inTabOrder(sessions.filter((s) => !s.debrief), tabRank), [sessions, tabRank]);
   const debriefSessions = useMemo(() => sessions.filter((s) => s.debrief), [sessions]);
 
   // ---- the landscape: the Sessions tab's surface ----
@@ -2788,6 +2792,11 @@ function App() {
           onTab={(t, id) => {
             setFocused(id);
             if (t.stack) void lsChange({ stacks: { [t.stack]: { active: id, placement: t.rect } } }, "the stack's front tab");
+          }}
+          onReorderTabs={(_t, ids) => {
+            // the ranking keeps only sessions still known, open or closed
+            const known = new Set((knownSessions ?? sessions).map((s) => s.id));
+            setTabRank(rerank(tabRank, ids, (id) => known.has(id)));
           }}
           reveal={reveal}
           goTo={goTo}

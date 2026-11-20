@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { formatTokens, isErr, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
 import { carriesWork, gateOf, settingsRefusal, stepRefusal, verdictDue, type WireSettings, type WireVerdict } from "../shared/wires";
 import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, GAP, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
@@ -123,6 +124,7 @@ import { WireSettingsPopover, WireTypePicker, type WirePick, type WireSettingsPr
 import { WirePopover } from "./WirePopover";
 import { FinishStepPopover, type WireActs } from "./FinishStep";
 import { sendAlongWire } from "./wireSend";
+import { startTabDrag, type TabDrag } from "./tabDrag";
 
 /** Where this window's camera was, kept between launches: a view preference, never part of landscape.json. */
 export const CAMERA_PREF = "mb.landscape.camera";
@@ -197,11 +199,9 @@ export interface FocusActs {
 /** How far a press moves before it's a drag (a marquee, a workspace or an area moving) rather than a click. */
 const DRAG_PX = 4;
 /**
- * How far a stack's tab is pulled before it leaves its stack while the pointer is still on its workspace's header: a
- * click on a tab that slips a few px brings it to the front rather than taking it out.
+ * How far off its header, in screen px, a tab can be pulled and stay among its stack's tabs (a click, or a move along
+ * them), however thin the header is zoomed out; past it, the tab leaves its stack.
  */
-const TAB_DRAG_PX = 14;
-/** How far off its header, in screen px, a press on a tab can slip and stay a click, however thin the header is zoomed out. */
 const TAB_SLIP_PX = 8;
 /** How far a snap guide runs past the edges it lines up, in screen px. */
 const GUIDE_PAST_PX = 16;
@@ -224,8 +224,8 @@ const WIRES_UNREAD = "The wires haven't been read yet, so none can be made: try 
  */
 interface Gesture {
   /**
-   * `resize`: a workspace by an edge or corner (`edges`); `tab`: a stack's tab (`sid`) dragged out of it; `wire`: a wire
-   * from a workspace's edge handle, to the workspace it's dropped on.
+   * `resize`: a workspace by an edge or corner (`edges`); `tab`: a stack's tab (`sid`), moved along its tabs or dragged
+   * out of the stack; `wire`: a wire from a workspace's edge handle, to the workspace it's dropped on.
    */
   kind: "marquee" | "tile" | "area" | "window" | "card" | "resize" | "tab" | "wire";
   id: number;
@@ -240,8 +240,14 @@ interface Gesture {
   els: HTMLElement[];
   edges?: Edges;
   sid?: string;
-  /** A tab's workspace header, in the viewport: pulled off it, the tab leaves its stack sooner than TAB_DRAG_PX. */
+  /** A tab's workspace header, in the viewport: along it the tab moves among its stack's tabs, pulled off it it leaves the stack. */
   strip?: DOMRect;
+  /** The tab pressed. */
+  tab?: HTMLElement;
+  /** A tab in focus's header: it moves along its tabs and never leaves its stack. */
+  focus?: boolean;
+  /** The tab moving along its tabs; null once it can't (no other tab to pass, or it was pulled off its header). */
+  reorder?: TabDrag | null;
   /** Where a workspace being moved or resized (or a tab dragged out) lands now: snapped to the grid and its neighbours. */
   snapped?: Rect;
 }
@@ -313,6 +319,7 @@ export function Landscape({
   onSelectArea,
   onCloseMany,
   onTab,
+  onReorderTabs,
   reveal,
   goTo,
   onHandled,
@@ -369,6 +376,8 @@ export function Landscape({
   /** Close these sessions (several selected): asked first, then each as its own Close would. */
   onCloseMany: (ids: string[]) => void;
   onTab: (tile: Tile, id: string) => void;
+  /** A stack's tabs moved: `ids` are its sessions in their new order. */
+  onReorderTabs: (tile: Tile, ids: string[]) => void;
   /** Bring this session's workspace into view (in front, if it's a stack's tab), with `focus` filling the window with it. */
   reveal: RevealAsk | null;
   /** Fly to this area. */
@@ -1000,6 +1009,11 @@ export function Landscape({
   const frontAsk = useRef<({ tile: string; until: number; dialogs: number } & ({ ready: (t: Tile) => boolean } | { last: string })) | null>(null);
   const askFront = (tile: string, what: { ready: (t: Tile) => boolean } | { last: string }, dialogs: number) =>
     void (frontAsk.current = { tile, until: performance.now() + REVEAL_WAIT_MS, dialogs, ...what });
+  /** Bring tab `id` of `tile` to the front; in focus's header its terminal then takes the keyboard. */
+  const toTab = (tile: Tile, id: string, inFocus: boolean) => {
+    if (inFocus) askFront(tile.key, { ready: (x) => x.front.id === id }, 0);
+    onTab(tile, id);
+  };
   useEffect(() => {
     const drop = (e: Event) => {
       const ask = frontAsk.current;
@@ -1814,10 +1828,17 @@ export function Landscape({
     const dx = e.clientX - g.x0;
     const dy = e.clientY - g.y0;
     if (!g.on) {
-      const far = Math.hypot(dx, dy);
-      if (far < DRAG_PX) return;
+      if (Math.hypot(dx, dy) < DRAG_PX && !g.reorder) return;
       const s = g.strip;
-      if (g.kind === "tab" && far < TAB_DRAG_PX && s && e.clientX >= s.left && e.clientX <= s.right && e.clientY >= s.top - TAB_SLIP_PX && e.clientY <= s.bottom + TAB_SLIP_PX) return;
+      if (g.kind === "tab" && (g.focus || (s && e.clientX >= s.left && e.clientX <= s.right && e.clientY >= s.top - TAB_SLIP_PX && e.clientY <= s.bottom + TAB_SLIP_PX))) {
+        // along its header the tab moves among its stack's tabs (in focus, wherever the pointer goes)
+        if (g.reorder === undefined) g.reorder = g.tab ? startTabDrag(g.tab, g.x0) : null;
+        g.reorder?.move(e.clientX);
+        return;
+      }
+      // pulled off its header, it leaves its stack: its tabs go back in their places
+      g.reorder?.clear();
+      g.reorder = null;
       if (!begin(g)) return endGesture();
       g.on = true;
       // the selection bar is put away while anything is dragged, and comes back where the drop leaves its selection
@@ -1927,9 +1948,15 @@ export function Landscape({
   const gestureUp = (e: PointerEvent) => {
     const g = gesture.current;
     if (!g || e.pointerId !== g.id) return;
+    // a tab moved along its tabs stays drawn where it was dropped until the tabs are drawn in their new order
+    const reorder = g.reorder;
+    g.reorder = null;
     endGesture();
     if (g.on) droppedAt.current = { x: e.clientX, y: e.clientY };
-    if (e.type === "pointercancel") return release(g.els);
+    if (e.type === "pointercancel") {
+      reorder?.clear();
+      return release(g.els);
+    }
     const l = layoutNow.current;
     const z = cam.current.zoom;
     const dx = (e.clientX - g.x0) / z;
@@ -1969,12 +1996,18 @@ export function Landscape({
       // a click on an area's bare header, or its name zoomed out, selects it; a drag moves it
       if (g.kind === "area") selectArea(g.key);
       else if (g.kind === "tab") {
-        // a tab pressed and let go without being dragged out is a click on it, however the pointer slipped: the
-        // browser's click lands where the press and the release meet (its header, or past it), so it's brought to the
-        // front here and that click taken
+        // the browser's click lands where the press and the release meet (its header, or past it), so it's taken here
         swallowClick();
         const t = l.tiles.find((x) => x.key === g.key);
-        if (t && g.sid && t.front.id !== g.sid && t.members.some((m) => m.id === g.sid)) onTab(t, g.sid);
+        const order = reorder?.order();
+        if (t && order) {
+          // moved along its tabs: they're drawn in their new order before they're let go, so none jumps back first
+          flushSync(() => onReorderTabs(t, order));
+          return reorder?.clear();
+        }
+        reorder?.clear();
+        // pressed and let go without leaving its place, however the pointer slipped: a click on it, bringing it to the front
+        if (t && g.sid && t.front.id !== g.sid && t.members.some((m) => m.id === g.sid)) toTab(t, g.sid, !!g.focus);
       }
       return;
     }
@@ -2094,6 +2127,7 @@ export function Landscape({
     setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 0);
   }
   function endGesture() {
+    gesture.current?.reorder?.clear();
     gesture.current = null;
     if (marquee.current) marquee.current.hidden = true;
     drawGuides([]);
@@ -2201,7 +2235,15 @@ export function Landscape({
       }
       // A press on the landscape arms it (keyArm.ts): at once if it has the keyboard, or as the press gives it it. A
       // press that gives the keyboard to something of its own (a terminal, a button) arms nothing.
-      if (inFocus(e.target)) return armOnPress(overlay.current);
+      if (inFocus(e.target)) {
+        // a stack's tab in focus's header moves along its tabs; a click on it (no drag) brings it to the front
+        const tab = e.button === 0 && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey ? (e.target as Element).closest<HTMLElement>(".ls-focus .ls-tab[data-sid]") : null;
+        const ws = tab?.closest<HTMLElement>(".ls-node")?.dataset.ws;
+        if (tab && ws && layoutNow.current.tiles.find((x) => x.key === ws)?.stack) {
+          startRef.current({ kind: "tab", focus: true, id: e.pointerId, x0: e.clientX, y0: e.clientY, key: ws, add: false, base: [], sid: tab.dataset.sid, tab });
+        }
+        return armOnPress(overlay.current);
+      }
       armOnPress(viewport.current);
       stopHover();
       // a press takes the camera from a flight, and ends a gesture still going (its release never came)
@@ -2262,8 +2304,9 @@ export function Landscape({
           e.stopPropagation();
           startRef.current({ ...press, kind: "resize", key: node.dataset.ws!, edges: edgesOf(rz.dataset.edge as ResizeEdge) });
         } else if (node && tab && !e.shiftKey) {
-          // a tab dragged out leaves its stack; a click on it (no drag) still brings it to the front
-          startRef.current({ ...press, kind: "tab", key: node.dataset.ws!, sid: tab.dataset.sid, strip: (tab.closest(".ls-head") ?? tab).getBoundingClientRect() });
+          // a tab dragged along its tabs moves among them, and dragged off its header leaves its stack; a click on it
+          // (no drag) still brings it to the front
+          startRef.current({ ...press, kind: "tab", key: node.dataset.ws!, sid: tab.dataset.sid, tab, strip: (tab.closest(".ls-head") ?? tab).getBoundingClientRect() });
         } else if (node && (node.classList.contains("card") || t.closest(".ls-head")) && !t.closest("button")) {
           const key = node.dataset.ws!;
           // Shift-click picks it, or lets it go, and selects nothing else (its own press would select it alone);
@@ -2967,10 +3010,7 @@ export function Landscape({
       onSelect={pick}
       onFocus={(tile, doubled) => (!doubled || pairOn(tile.key)) && enterFocus(tile)}
       onBack={leaveFocus}
-      onTab={(tile, id) => {
-        if (mode === "focus") askFront(tile.key, { ready: (x) => x.front.id === id }, 0);
-        onTab(tile, id);
-      }}
+      onTab={(tile, id) => toTab(tile, id, mode === "focus")}
       actions={tileActions(t)}
       chrome={chromeFor(t.front)}
       onMore={(tile, from) => {

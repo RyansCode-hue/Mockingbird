@@ -255,7 +255,7 @@ export function WorkspaceNode({
                       aria-selected={m.id === s.id}
                       className={`ls-tab${m.id === s.id ? " on" : ""}${ask ? " ask" : ""}`}
                       data-sid={m.id}
-                      title={ask ? `${titleOf(m)} — ${ask.text}: bring it to the front to answer, or answer in Needs you` : `${titleOf(m)} — drag it out to take it out of the stack`}
+                      title={ask ? `${titleOf(m)} — ${ask.text}: bring it to the front to answer, or answer in Needs you` : focus ? `${titleOf(m)} — drag it along the tabs to move it` : `${titleOf(m)} — drag it along the tabs to move it, or off the header to take it out of the stack`}
                       onClick={() => m.id !== s.id && onTab(tile, m.id)}
                     >
                       <StatusDot status={m.status} className="sm" />

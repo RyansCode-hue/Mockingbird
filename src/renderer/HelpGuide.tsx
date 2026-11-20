@@ -64,8 +64,8 @@ export function HelpGuide() {
             bar lists them with their waiting counts: click an area to fly there, a workspace to
             bring it into view. <b>Stacks</b> (sub-groups) put several sessions in one card with
             tabs: <span className="kbd">⌘G</span> on a selection, or <b>New tab…</b> on a
-            workspace's ⋯. A stack's ⋯ renames it or unstacks its tabs; drag a tab out to unstack
-            that one.
+            workspace's ⋯. A stack's ⋯ renames it or unstacks its tabs; drag a tab along the tabs to
+            move it, or off the header to unstack that one.
           </p>
         </div>
         <div>

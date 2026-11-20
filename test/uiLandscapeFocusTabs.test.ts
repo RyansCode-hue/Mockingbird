@@ -765,3 +765,96 @@ describe.skipIf(!local)("the keyboard with a tool docked in focus", () => {
     expect(r.term).toEqual({ at: "term:s5", focus: true, typed: ["s5:\u001b"] });
   }, 120_000);
 });
+
+describe.skipIf(!local)("a stack's tabs dragged along them", () => {
+  /**
+   * Drag a stack's first tab (`tabSel` finds its tabs, `itemOf` what moves with one) past the second's middle, to `dy`
+   * below the header, holding it there, then let it go; then press a tab not in front and let it go 5 px on.
+   */
+  const steps = (tabSel: string, frontSel: string, dy: number) => `
+    const ids = () => [...document.querySelectorAll(${JSON.stringify(tabSel)})].map((t) => t.dataset.sid);
+    const box = (id) => document.querySelector(${JSON.stringify(tabSel)} + '[data-sid="' + id + '"]').getBoundingClientRect();
+    const front = () => $(${JSON.stringify(frontSel)})?.dataset.front ?? null;
+    const itemOf = (id) => { const t = document.querySelector(${JSON.stringify(tabSel)} + '[data-sid="' + id + '"]'); return t.closest(".ls-tabw") ?? t; };
+    const before = ids();
+    const frontBefore = front();
+    const a = box(before[0]), b = box(before[1]), c3 = box(before[2]);
+    const y = Math.round(a.top + a.height / 2);
+    const x0 = Math.round(a.left + a.width / 2);
+    // its right edge brought halfway between the second tab's middle and the third's
+    const x1 = Math.round(x0 + (b.left + b.width / 2 + c3.left + c3.width / 2) / 2 - a.right);
+    const mark = w.__mbCalls.length;
+    await press({ drag: { x0, y0: y, x1, y1: y + ${dy}, hold: "down" } });
+    await sleep(50);
+    const d = $(".ls-tab-dragged");
+    const mid = {
+      dragged: d ? (d.matches(".ls-tab") ? d : d.querySelector(".ls-tab")).dataset.sid : null,
+      passed: itemOf(before[1]).style.translate,
+      rest: itemOf(before[2]).style.translate,
+      box: !!$(".ls-sizebox") && !$(".ls-sizebox").hidden,
+    };
+    await press({ drag: { x0, y0: y, x1, y1: y + ${dy}, hold: "up" } });
+    await sleep(400);
+    const after = ids();
+    const moved = { order: after, front: front(), calls: calls().slice(mark).map((c) => c.fn), saved: JSON.parse(localStorage.getItem("mb.tabOrder") ?? "null"), left: before.map((id) => itemOf(id).style.translate).filter(Boolean).length + document.querySelectorAll(".ls-tab-dragged, .ls-reordering").length };
+    // pressed and let go a few px along, in its own place: a click on it, bringing it to the front
+    const other = after.find((id) => id !== front());
+    const c = box(other);
+    await press({ drag: { x0: Math.round(c.left + c.width / 2), y0: y, x1: Math.round(c.left + c.width / 2) + 5, y1: y + 1 } });
+    for (let i = 0; i < 40 && front() !== other; i++) await sleep(50);
+    return { before, frontBefore, mid, moved, slip: { id: other, front: front(), order: ids() } };`;
+  type Out = {
+    before: string[];
+    frontBefore: string;
+    mid: { dragged: string | null; passed: string; rest: string; box: boolean };
+    moved: { order: string[]; front: string; calls: string[]; saved: string[] | null; left: number };
+    slip: { id: string; front: string; order: string[] };
+  };
+  const expectMoved = (r: Out) => {
+    const [a, b, c] = r.before;
+    // while it's held past the second tab's middle: it's the one drawn dragged, the second has slid back over, the third not
+    expect(r.mid).toMatchObject({ dragged: a, rest: "", box: false });
+    expect(parseFloat(r.mid.passed)).toBeLessThan(0);
+    // let go: the two trade places, nothing jumps or stays drawn aside, the tab in front stays in front, and nothing is
+    // asked of main (the order is this Mac's, in its prefs; no group or layout changes)
+    expect(r.moved.order).toEqual([b, a, c]);
+    expect(r.moved.left).toBe(0);
+    expect(r.moved.front).toBe(r.frontBefore);
+    expect(r.moved.calls.filter((fn) => fn === "setGroup" || fn === "landscapeUpdate")).toEqual([]);
+    expect(r.moved.saved?.slice(-3)).toEqual([b, a, c]);
+    // a slip on another tab is still a click on it, and moves nothing
+    expect(r.slip.front).toBe(r.slip.id);
+    expect(r.slip.order).toEqual([b, a, c]);
+  };
+
+  it("in focus: a tab moves along them, pulled off the header or not, and a press that slips is still a click", async () => {
+    // pulled 60 px below the header: in focus a tab never leaves its stack
+    expectMoved(await drive<Out>("lsFocus=s2", FOCUSED_STACK, steps(".ls-focus .ls-tabs .ls-tab[data-sid]", ".ls-focus .ls-node", 60)));
+  }, 120_000);
+
+  it("on the landscape: a tab moves along them while the pointer stays on the header, and the area tree lists the stack's tabs in that order", async () => {
+    const node = '.ls-world .ls-node[data-ws="ws:5101/api"]';
+    // at 80%: the header's tabs drawn at the camera's zoom, and the terminals leave the wheel to the landscape
+    const r = await drive<Out & { tree: string[] }>(
+      "lsCamera=0,0,0.8",
+      '.lt-stack[data-ws="ws:5101/api"]',
+      `$('.lt-stack[data-ws="ws:5101/api"]').click();
+      const first = () => document.querySelector(${JSON.stringify(node + " .ls-tab[data-sid]")});
+      for (let i = 0; i < 60 && !first(); i++) await sleep(50);
+      await sleep(300);
+      // brought into view, its header can be above the view: scrolled down to it
+      const v = $(".ls-viewport").getBoundingClientRect();
+      for (let i = 0; i < 5 && first().getBoundingClientRect().top < v.top + 80; i++) {
+        await press({ wheel: { x: Math.round(v.left + v.width / 2), y: Math.round(v.top + v.height / 2), dy: Math.round(first().getBoundingClientRect().top - v.top - 200) } });
+        await sleep(150);
+      }
+      const out = await (async () => { ${steps(node + " .ls-tab[data-sid]", node, 3)} })();
+      const chev = $('.lt-stack[data-ws="ws:5101/api"] .lt-chev');
+      if (chev.getAttribute("aria-expanded") !== "true") chev.click();
+      await sleep(200);
+      return { ...out, tree: [...document.querySelectorAll(".lt-row.lt-ws.d2[data-sid]")].map((x) => x.dataset.sid) };`
+    );
+    expectMoved(r);
+    expect(r.tree).toEqual(r.slip.order);
+  }, 120_000);
+});

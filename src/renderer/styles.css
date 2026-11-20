@@ -3246,6 +3246,12 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-tabw:hover > .ls-tab { color: var(--text-1); }
 .ls-tabw:has(.ls-tab-x) > .ls-tab { padding-right: 3px; }
 .ls-tab.lone { cursor: default; }
+/* a tab dragged along its tabs (tabDrag.ts) is drawn over them, opaque; those it passes slide to make room */
+.ls-tabs.ls-reordering > :is(.ls-tab, .ls-tabw) { transition: translate var(--dur-1) var(--ease-move); }
+.ls-tabs.ls-reordering > .ls-tab-dragged {
+  position: relative; z-index: 1; transition: none; cursor: grabbing;
+  background-color: var(--bg-pane-header); background-image: linear-gradient(var(--fill-selected), var(--fill-selected));
+}
 /* the tablist that owns focus's tabs (WorkspaceNode): empty, taking no room */
 .ls-tablist { position: absolute; width: 0; height: 0; overflow: hidden; }
 .ls-tab-x, .ls-tab-new {
