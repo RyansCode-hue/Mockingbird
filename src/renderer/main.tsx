@@ -963,7 +963,7 @@ function App() {
    * Bring a session's workspace into view on the landscape (in front, if it's a stack's tab), and with `focus` fill the
    * window with it; `keys` gives the landscape the keyboard once it's there, `avoid` is a box on screen to keep it clear of.
    */
-  const revealWorkspace = (id: string, focus = false, o: { keys?: boolean; avoid?: ScreenBox | null } = {}) => {
+  const revealWorkspace = (id: string, focus = false, o: { keys?: boolean; avoid?: ScreenBox | null; stay?: boolean } = {}) => {
     // a teammate waiting to type in it: it comes in at 100%, where its strip's Allow and Deny take a click
     const s = sessions.find((x) => x.id === id);
     setReveal({ id, n: ++asked.current, focus, answer: !!s && typingAsksOf(s).length > 0, ...o });
@@ -2559,8 +2559,9 @@ function App() {
    * The view to an item, for N and Go there alike: its workspace brought into view (in front, when it's a stack's tab)
    * and selected, or its room's area flown to and selected. The keyboard never goes into the workspace's terminal:
    * Codex's approval prompt answers to a single y, a or n, so a habitual N, or any letter, typed there would answer
-   * it. Enter (focus) or a click on the terminal gives it the keyboard. Go there (`go`) gives the landscape the
-   * keyboard as the tray closes and shows a join request's prompt; `avoid` is the open tray's box, kept clear of.
+   * it. Enter (focus) or a click on the terminal gives it the keyboard. While a workspace is in focus, the item's
+   * workspace takes its place in focus. Go there (`go`) gives the landscape, or focus's frame, the keyboard as the tray
+   * closes and shows a join request's prompt; `avoid` is the open tray's box, kept clear of.
    */
   const toNeeds = (item: NeedsItem, o: { go: boolean; avoid: ScreenBox | null }) => {
     const t = targetOf(item, sessions);
@@ -2573,7 +2574,7 @@ function App() {
     needsLast.current = { id: item.id, sel: selectionAfter(item, needsSel, onLandscape), index };
     if ("session" in t) {
       setTab("sessions");
-      revealWorkspace(t.session.id, false, { keys: o.go, avoid: o.avoid });
+      revealWorkspace(t.session.id, false, { keys: o.go, avoid: o.avoid, stay: true });
       return setFocused(t.session.id);
     }
     if (onLandscape(t.area)) {

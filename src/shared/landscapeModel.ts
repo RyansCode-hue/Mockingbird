@@ -344,6 +344,8 @@ export interface RevealAsk {
   keys?: boolean;
   avoid?: ScreenBox | null;
   answer?: boolean;
+  /** While a workspace is in focus, this one takes its place in focus (Needs you's N and Go there) rather than focus ending. */
+  stay?: boolean;
 }
 /** Go to an area (fit it in view), clear of `avoid`. */
 export interface GoToAsk {

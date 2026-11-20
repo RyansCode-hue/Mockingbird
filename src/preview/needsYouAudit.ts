@@ -12,7 +12,7 @@
  * and the switcher; Esc giving the keyboard back to the button.
  * =g (with ?joinRequest=later): Go there on a permission prompt, N and Go there on a stack's tab behind another, at the
  * cards' zoom, on a join request and from another tab; the keyboard on the landscape after it, after a join request's
- * prompt and after leaving focus for another workspace, and Enter giving it to the terminal.
+ * prompt and from focus on another workspace (which then takes focus's place), and Enter giving it to the terminal.
  * =b: the badges as drawn at the camera's zoom (?lsCamera, or ?lsFit for the fit), each card's or workspace's, with
  * their boxes against their workspace's and their area's and each row's against its card; then s1's diff source
  * failing, which its badge then says rather than its old value. With ?badgeFail=… it reports what the failing sources
@@ -490,7 +490,7 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   document.querySelector<HTMLElement>('.join-ask button[title^="Answer later"]')?.click();
   await sleep(300);
 
-  // from focus on one workspace, Go there on another: focus ends, and N, Enter and Esc still work there
+  // from focus on one workspace, Go there on another: it takes focus's place, the keyboard on focus's frame, not its terminal
   await openTray();
   act("s:s2", "go");
   await sleep(800);
@@ -500,7 +500,16 @@ async function goPart(env: NeedsAuditEnv, out: Record<string, unknown>): Promise
   await openTray();
   act("s:s8", "go");
   await sleep(900);
-  out.goFromFocus = { inFocus, focus: !!document.querySelector(".ls-focus"), ws: selectedWs(), keyboard: keyboard() };
+  out.goFromFocus = {
+    inFocus,
+    focus: !!document.querySelector(".ls-focus"),
+    front: document.querySelector<HTMLElement>(".ls-focus [data-front]")?.dataset.front ?? null,
+    ws: selectedWs(),
+    keyboard: keyboard(),
+  };
+  // ⌘E leaves focus, as the next steps start from the landscape
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "e", metaKey: true, bubbles: true, cancelable: true }));
+  await sleep(400);
   await fresh("s8");
 
   // from another tab, Go there comes back to the landscape

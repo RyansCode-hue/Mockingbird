@@ -1166,7 +1166,7 @@ export function Landscape({
    * The pending reveal gives the landscape the keyboard once there (Go there), keeps clear of a box on screen (the
    * tray), and lands at 100% where a typing ask can be answered.
    */
-  const revealOpts = useRef<{ keys: boolean; avoid: ScreenBox | null; answer: boolean }>({ keys: false, avoid: null, answer: false });
+  const revealOpts = useRef<{ keys: boolean; avoid: ScreenBox | null; answer: boolean; stay: boolean }>({ keys: false, avoid: null, answer: false, stay: false });
   /** The reveal whose stack tab was asked to the front, waiting for the layout to have it there. */
   const fronting = useRef<PendingReveal | null>(null);
   const gaveUp = (p: PendingReveal) => {
@@ -1193,7 +1193,7 @@ export function Landscape({
     // or not from there, and nothing carries the camera on to the earlier one's place
     if (flight.current?.target) stopFly();
     revealFocus.current = !!reveal.focus;
-    revealOpts.current = { keys: !!reveal.keys, avoid: reveal.avoid ?? null, answer: !!reveal.answer };
+    revealOpts.current = { keys: !!reveal.keys, avoid: reveal.avoid ?? null, answer: !!reveal.answer, stay: !!reveal.stay };
     const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
     revealStamp.current = inputStamp();
     if (revealTimer.current) clearTimeout(revealTimer.current);
@@ -1268,6 +1268,17 @@ export function Landscape({
       return enterFocus(t);
     }
     const keys = revealOpts.current.keys;
+    if (revealOpts.current.stay && focusNow.current && layout.tiles.includes(t)) {
+      // in focus, it takes focus's place: the keyboard to focus's frame (Go there) or left where it is (N), never into
+      // its terminal, where a single letter answers Codex's approval prompt
+      if (!seen) {
+        stopFly();
+        apply(centreOn(cam.current, t.rect, vpNow.current));
+      }
+      if (focusNow.current !== t.key) enterFocus(t, false);
+      if (keys) armFocus(overlay.current);
+      return;
+    }
     const leaving = !!focusNow.current && focusNow.current !== t.key;
     if (leaving) {
       // surface would pick the focus overlay, which is about to go

@@ -62,7 +62,7 @@ interface GoAudit {
   goJoin: { open: boolean; area: string | null; ws: string | null; prompt: string | null };
   goJoinAfter: { prompt: boolean; keyboard: string };
   pickThenArea: { pickedBefore: number; picked: number; area: string | null };
-  goFromFocus: { inFocus: boolean; focus: boolean; ws: string | null; keyboard: string };
+  goFromFocus: { inFocus: boolean; focus: boolean; front: string | null; ws: string | null; keyboard: string };
   goFromTab: { tab: string | null; ws: string | null; keyboard: string };
   error?: string;
 }
@@ -414,8 +414,8 @@ describe.skipIf(!local)("Needs you (S7)", { timeout: 150_000 }, () => {
     expect(g.goJoinAfter).toEqual({ prompt: false, keyboard: "landscape" });
     // an area selected lets go of the several picked before: one selection at a time
     expect(g.pickThenArea).toEqual({ pickedBefore: 2, picked: 0, area: "5101" });
-    // from focus on another workspace: focus ends, and the keyboard isn't left on the overlay that went with it
-    expect(g.goFromFocus).toEqual({ inFocus: true, focus: false, ws: "s8", keyboard: "landscape" });
+    // from focus on another workspace: that one takes focus's place, the keyboard on focus's frame, never its terminal
+    expect(g.goFromFocus).toEqual({ inFocus: true, focus: true, front: "s8", ws: "s8", keyboard: "focus" });
     expect(g.goFromTab).toEqual({ tab: "Landscape", ws: "s8", keyboard: "landscape" });
   });
 
