@@ -506,6 +506,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
+- **1.8.2: group messages and tab order** — released in 1.8.2. Agents are
+  told, when they connect, to reach other sessions with Mockingbird's
+  `send_message` (Claude Code's own `SendMessage` was refused without the
+  sender knowing), so sessions in one group message each other again; restart
+  running panes to pick it up. In focus, Needs you's Go there and N switch
+  focus to the item's workspace. Stack tabs reorder by dragging them along
+  their strip; the order is kept on this Mac.
 - **1.8.1: agents stay in their group** — released in 1.8.1. `list_sessions`
   and `send_message` reach only the caller's group; Claude panes refuse
   Claude Code's own cross-session messages and run without `ListAgents`, since

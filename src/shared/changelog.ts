@@ -42,6 +42,15 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.8.2",
+    date: "2026-11-20",
+    items: [
+      f("Sessions in one group can message each other again: agents use Mockingbird's send_message, not Claude Code's"),
+      f("Needs you: in focus, Go there and N switch focus to the item's workspace and bring its tab to the front"),
+      u("Stack tabs can be dragged along their strip to reorder them, on the landscape and in focus"),
+    ],
+  },
+  {
     version: "1.8.1",
     date: "2026-11-19",
     items: [
