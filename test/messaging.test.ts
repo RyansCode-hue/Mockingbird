@@ -4,7 +4,7 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { Messaging, mcpLaunch, retireMcpLaunch, type ToolsLost } from "../src/main/messaging";
+import { Messaging, PANE_MCP_INSTRUCTIONS, mcpLaunch, retireMcpLaunch, type ToolsLost } from "../src/main/messaging";
 import { claudeMcpConfig, codexMcpSettings } from "../src/main/agents";
 import type { SessionInfo } from "../src/shared/types";
 import { HOUSE_READ_TOOLS, HOUSE_TOOL_NAMES, HOUSE_WRITE_TOOLS } from "../src/shared/team/house";
@@ -177,6 +177,10 @@ describe("MCP server script", () => {
     p.kill();
     const byId = Object.fromEntries(out.trim().split("\n").map((l) => JSON.parse(l)).map((m) => [m.id, m]));
     expect(byId[1].result).toMatchObject({ protocolVersion: "2025-06-18", serverInfo: { name: "mockingbird" } });
+    // a pane is told to reach other sessions with send_message, since Claude Code's SendMessage to them is dropped unseen
+    expect(byId[1].result.instructions).toBe(PANE_MCP_INSTRUCTIONS);
+    expect(PANE_MCP_INSTRUCTIONS).toMatch(/list_sessions and send_message/);
+    expect(PANE_MCP_INSTRUCTIONS).toMatch(/SendMessage doesn't reach these sessions/);
     // pinned whole: a tool can't be added without this changing, and the wire tools write no wire, gate or counter; the
     // ticket tools act on the caller's own ticket and push, open and post nothing (ticketTools.test.ts), and propose_plan
     // only holds a plan (plans.test.ts)
@@ -221,10 +225,15 @@ describe("MCP server script", () => {
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env } });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
+    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-06-18" } }) + "\n");
     p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
     await new Promise((r) => setTimeout(r, 800));
     p.kill();
-    expect(JSON.parse(out.trim()).result.tools.map((t: any) => t.name)).toEqual(["ask_code_reader"]);
+    const byId = Object.fromEntries(out.trim().split("\n").map((l) => JSON.parse(l)).map((m) => [m.id, m]));
+    expect(byId[1].result.tools.map((t: any) => t.name)).toEqual(["ask_code_reader"]);
+    // nor is it told about sessions it can't message
+    expect(byId[0].result.serverInfo).toEqual({ name: "mockingbird", version: "1.0.0" });
+    expect(byId[0].result).not.toHaveProperty("instructions");
   });
   it("offers a room model the tools its launch names", async () => {
     const list = async (tools: string) => {

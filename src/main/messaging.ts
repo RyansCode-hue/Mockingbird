@@ -106,6 +106,18 @@ export interface McpLaunch {
   env: Record<string, string>;
 }
 
+/**
+ * What a pane's agent is told when it connects to this server. Every Claude pane refuses Claude Code's own messaging
+ * (agents.ts, CLAUDE_PANE_SETTINGS) and its sender isn't told, so an agent sending another pane a message with it
+ * believes a dropped message was delivered.
+ */
+export const PANE_MCP_INSTRUCTIONS =
+  `To reach the other agent sessions the user runs in Mockingbird, use this server's ${MCP_TOOL.listSessions} and ${MCP_TOOL.sendMessage}: ` +
+  "they list and reach the sessions in your group, and messages go no further. " +
+  "Claude Code's SendMessage doesn't reach these sessions: they refuse its messages without the sender being told, so it would look sent. " +
+  `When the user asks you to tell another session something, or @-mentions one, find it with ${MCP_TOOL.listSessions} (by title or branch) ` +
+  `and use ${MCP_TOOL.sendMessage}. Keep SendMessage for your own subagents and teammates.`;
+
 // A stdio MCP server run by the app's own binary as plain Node
 // (ELECTRON_RUN_AS_NODE), so it needs no Node install. It only relays tool
 // calls to the app over the socket; the app decides everything. It is plain
@@ -264,6 +276,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         protocolVersion: (msg.params && msg.params.protocolVersion) || "2025-06-18",
         capabilities: { tools: {} },
         serverInfo: { name: ${JSON.stringify(MCP_SERVER)}, version: "1.0.0" },
+        ...(FROM && !ASSISTANT && !FROM.startsWith("collab-") ? { instructions: ${JSON.stringify(PANE_MCP_INSTRUCTIONS)} } : {}),
       });
     case "ping":
       return ok({});
