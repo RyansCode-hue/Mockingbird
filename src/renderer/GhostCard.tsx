@@ -42,8 +42,8 @@ export function useClosedLine(s: SessionInfo): { line: string | null; error: str
  * A step not started yet (W8, Inbox.dc.html's Tester) is drawn here too, as a faded card rather than an outline: its
  * title, "Not started" and what starts it in place of a last line, where it will work as its foot, and no buttons. Its
  * prompt is its line's tooltip. It takes the keyboard (a press on it, or Tab): Enter edits it, the menu key and ⇧F10
- * open its menu. Either kind can show a model chip (`modelChip`) and, where wires are made, the edge handle a wire is
- * dragged from (`handle`).
+ * open its menu. It's selected as a workspace is (`selected`: the landscape's selection, and its bar). Either kind can
+ * show a model chip (`modelChip`) and, where wires are made, the edge handle a wire is dragged from (`handle`).
  */
 export function GhostCard({
   ghost,
@@ -56,6 +56,7 @@ export function GhostCard({
   plannedShort,
   modelChip,
   handle = false,
+  selected = false,
 }: {
   ghost: GhostView;
   band: Band;
@@ -74,6 +75,8 @@ export function GhostCard({
   modelChip?: ReactNode;
   /** The edge handle a wire is dragged from, as a workspace has (Landscape.tsx draws the wire). */
   handle?: boolean;
+  /** A not-started step selected on the landscape. */
+  selected?: boolean;
 }) {
   const s = ghost.front;
   const { line, error } = useClosedLine(s);
@@ -93,7 +96,7 @@ export function GhostCard({
   const prompt = notYet ? s.planned!.prompt?.trim() : undefined;
   return (
     <div
-      className={["ls-ghost", compact ? "compact" : "", notYet ? "planned" : "", notYet && band === "live" ? "roomy" : "", taken ? "taken" : "", gone ? "gone" : "", ghost.hidden ? "hidden" : ""].filter(Boolean).join(" ")}
+      className={["ls-ghost", compact ? "compact" : "", notYet ? "planned" : "", notYet && selected ? "selected" : "", notYet && band === "live" ? "roomy" : "", taken ? "taken" : "", gone ? "gone" : "", ghost.hidden ? "hidden" : ""].filter(Boolean).join(" ")}
       data-ghost={ghost.key}
       data-front={s.id}
       data-area={ghost.area}

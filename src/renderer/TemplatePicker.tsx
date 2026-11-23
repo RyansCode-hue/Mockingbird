@@ -5,7 +5,7 @@ import { RepoPick } from "./RepoPick";
 import { ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { ANSWER_SETTLE_MS, useHeldOff, useOpenSettle } from "./answerGuard";
 import { baseName } from "../shared/paths";
-import { isErr, AGENT_NAME, type AgentKind, type ModelCatalog } from "../shared/types";
+import { isErr, AGENT_NAME, type AgentKind, type IpcResult, type ModelCatalog } from "../shared/types";
 import { carriesWork, templateOf, WIRE_WHENS, type WireGate, type WireWhen } from "../shared/wires";
 import {
   asShown,
@@ -901,18 +901,42 @@ export interface SaveTemplateProps {
   draft: TemplateDraft;
   /** What the chain leaves out that main can't see: the other branches at its steps. */
   leftOut: string[];
+  /** What the template can't hold as the pipeline has it (pipelineTemplateOf), said first. */
+  simplified?: readonly string[];
   /** Save it: settles with why it wasn't saved, or null once it was (and the dialog closes). */
   onSave: (name: string, body: TemplateBody) => Promise<string | null>;
+  /** Replace saved template `id` with it (templates:update), offered while its name is that one's; settles as onSave does. */
+  onReplace?: (id: string, name: string, body: TemplateBody) => Promise<string | null>;
   home: () => HTMLElement | null;
   onClose: () => void;
 }
 
+/** The saved templates' ids and names (templates:list), for Replace; why they couldn't be read, when they couldn't. */
+function useSavedNames(on: boolean): { saved: { id: string; name: string }[]; error: string | null } {
+  const [got, setGot] = useState<{ saved: { id: string; name: string }[]; error: string | null }>({ saved: [], error: null });
+  useEffect(() => {
+    if (!on) return;
+    let alive = true;
+    const failed = (why: string) => {
+      console.warn(`[mockingbird] reading the saved templates for Replace: ${why}`);
+      if (alive) setGot({ saved: [], error: why });
+    };
+    window.mb.templatesList().then(
+      (r: IpcResult<TemplateList>) => (isErr(r) ? failed(r.error) : alive && setGot({ saved: r.templates.map((t) => ({ id: t.template.id, name: t.template.name })), error: r.broken ?? null })),
+      (err: unknown) => failed(err instanceof Error ? err.message : String(err))
+    );
+    return () => void (alive = false);
+  }, [on]);
+  return got;
+}
+
 /**
- * Save as template: the chain as it'll be kept, every step's prompt whole, what was redacted or left out said above
- * it. What's saved is what's shown: main refuses text holding a secret-looking value or a home folder's path rather
- * than changing it. Kept on this Mac only, never sent to teammates.
+ * Save as template: the chain as it'll be kept, every step's prompt whole, what was simplified, redacted or left out
+ * said above it. What's saved is what's shown: main refuses text holding a secret-looking value or a home folder's path
+ * rather than changing it. A name a saved template has offers Replace in Save's place (with `onReplace`), which writes
+ * over that one. Kept on this Mac only, never sent to teammates.
  */
-export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: SaveTemplateProps) {
+export function SaveTemplateDialog({ draft, leftOut, simplified = [], onSave, onReplace, home, onClose }: SaveTemplateProps) {
   const head = useRef<HTMLDivElement>(null);
   const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
   const modelRead = useCatalog();
@@ -923,6 +947,8 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
   const [busy, setBusy] = useState(false);
   const busyNow = useRef(false);
   const [error, setError] = useState("");
+  const names = useSavedNames(!!onReplace);
+  const clash = onReplace ? names.saved.find((t) => t.name.toLowerCase() === name.trim().toLowerCase()) : undefined;
   const save = async () => {
     if (busyNow.current || heldOff("settle") || !name.trim()) return;
     busyNow.current = true;
@@ -930,7 +956,7 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
     setError("");
     let why: string | null;
     try {
-      why = await onSave(name.trim(), asShown(body));
+      why = clash && onReplace ? await onReplace(clash.id, name.trim(), asShown(body)) : await onSave(name.trim(), asShown(body));
     } catch (err) {
       console.warn(`[mockingbird] saving the template ${name}:`, err);
       why = `Couldn't save it: ${err instanceof Error ? err.message : String(err)}`;
@@ -940,7 +966,7 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
     }
     if (why) setError(why);
   };
-  const notes = [...draft.notes, ...(leftOut.length ? [`Not in the chain, so not kept: ${leftOut.join(", ")} (other branches).`] : [])];
+  const notes = [...simplified, ...draft.notes, ...(leftOut.length ? [`Not in the chain, so not kept: ${leftOut.join(", ")} (other branches).`] : [])];
   return (
     <Modal
       className="modal tp tp-save"
@@ -962,6 +988,16 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
         <div className="tp-k">Name</div>
         <input type="text" className="tp-name-in" aria-label="The template's name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} autoFocus />
       </div>
+      {clash && (
+        <div className="tp-note amber" data-note="replace">
+          There's a template called “{clash.name}” already: Replace writes over it, or name this one another way.
+        </div>
+      )}
+      {names.error && (
+        <div className="tp-note dim" data-note="unread">
+          The saved templates couldn't be read ({names.error}), so a name one has can't be offered as Replace.
+        </div>
+      )}
       {notes.map((n) => (
         <div key={n} className="tp-note dim" data-note>
           {n}
@@ -990,8 +1026,8 @@ export function SaveTemplateDialog({ draft, leftOut, onSave, home, onClose }: Sa
         <button className="outline" onClick={onClose}>
           Cancel
         </button>
-        <button className="primary" data-act="save" disabled={busy || !name.trim() || heldOff("settle")} onClick={() => void save()}>
-          {busy ? "Saving…" : "Save template"}
+        <button className="primary" data-act={clash ? "replace" : "save"} disabled={busy || !name.trim() || heldOff("settle")} onClick={() => void save()}>
+          {busy ? "Saving…" : clash ? "Replace" : "Save template"}
           {!busy && <span className="kbd"> ⌘↵</span>}
         </button>
       </div>

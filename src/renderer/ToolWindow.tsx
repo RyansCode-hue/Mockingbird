@@ -1,10 +1,10 @@
 import type React from "react";
 import type { ToolKind } from "../shared/landscape";
-import { ChatIcon, CloseIcon, FilesIcon, NoteIcon, RunDebugIcon, SearchIcon, SourceControlIcon } from "./Icons";
+import { ChatIcon, CloseIcon, FilesIcon, NoteIcon, PipelineIcon, RunDebugIcon, SearchIcon, SourceControlIcon } from "./Icons";
 import { TOOL_KEYS } from "./workspaceActions";
 
 /** What each tool window is called, and its icon (the rail's). */
-export const TOOL_NAME: Record<ToolKind, string> = { files: "Files", changes: "Changes", search: "Search", run: "Run & debug", artifacts: "Artifacts", chat: "Chat" };
+export const TOOL_NAME: Record<ToolKind, string> = { files: "Files", changes: "Changes", search: "Search", run: "Run & debug", artifacts: "Artifacts", chat: "Chat", pipeline: "Pipeline" };
 const TOOL_ICON: Record<ToolKind, () => React.ReactElement> = {
   files: () => <FilesIcon />,
   changes: () => <SourceControlIcon />,
@@ -12,6 +12,7 @@ const TOOL_ICON: Record<ToolKind, () => React.ReactElement> = {
   run: () => <RunDebugIcon />,
   artifacts: () => <NoteIcon />,
   chat: () => <ChatIcon />,
+  pipeline: () => <PipelineIcon />,
 };
 
 /** ⊟: dock it to the window's edge. */
@@ -30,8 +31,9 @@ const PlaceIcon = () => (
 );
 
 /**
- * A tool window (design O): one of today's side bar views — Files, Changes, Search, Run & debug, Artifacts, Chat —
- * in a frame that names its tool and its scope (the workspace or the area it works on). Placed on the landscape it's
+ * A tool window (design O): one of today's side bar views — Files, Changes, Search, Run & debug, Artifacts, Chat — or
+ * an area's Pipeline, in a frame that names its tool and its scope (the workspace or the area it works on), with what
+ * its tool puts in its head (`head`: Pipeline's Re-lay out). Placed on the landscape it's
  * dragged by its head and docks with ⊟; docked at the window's edge it follows the selected workspace and is placed
  * again with ⧉. Zoomed out to cards it's only its head, as a workspace is only its card. What it hosts is unchanged.
  */
@@ -42,6 +44,7 @@ export function ToolWindow({
   docked,
   compact = false,
   count,
+  head,
   style,
   onDock,
   onPlace,
@@ -57,6 +60,8 @@ export function ToolWindow({
   compact?: boolean;
   /** What its compact head counts after its name ("Artifacts · 3"). */
   count?: React.ReactNode;
+  /** Its tool's own buttons in its head, before dock and close (not drawn zoomed out). */
+  head?: React.ReactNode;
   style?: React.CSSProperties;
   onDock?: () => void;
   onPlace?: () => void;
@@ -78,6 +83,7 @@ export function ToolWindow({
           </span>
         )}
         <span className="ls-spacer" />
+        {!compact && head}
         {docked && <span className="ls-win-docked">docked</span>}
         {docked
           ? onPlace && (

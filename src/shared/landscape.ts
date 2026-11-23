@@ -85,10 +85,11 @@ export interface Ghost {
 
 /**
  * A tool window (docs/landscape.md, Tools; design O). The first four work on a workspace: its folder (Files, Search)
- * or its worktree (Changes, Run). Artifacts and Chat work on an area (Chat only a room's).
+ * or its worktree (Changes, Run). Artifacts, Chat and Pipeline work on an area (Chat only a room's; Pipeline on one of
+ * its pipelines, the one its `session` is in when it names one).
  */
-export type ToolKind = "files" | "changes" | "search" | "run" | "artifacts" | "chat";
-export const TOOL_KINDS: readonly ToolKind[] = ["files", "changes", "search", "run", "artifacts", "chat"];
+export type ToolKind = "files" | "changes" | "search" | "run" | "artifacts" | "chat" | "pipeline";
+export const TOOL_KINDS: readonly ToolKind[] = ["files", "changes", "search", "run", "artifacts", "chat", "pipeline"];
 /** The tools scoped to a workspace; the others are scoped to an area. */
 export const WORKSPACE_TOOLS: readonly ToolKind[] = ["files", "changes", "search", "run"];
 export const isWorkspaceTool = (t: ToolKind): boolean => WORKSPACE_TOOLS.includes(t);
@@ -96,7 +97,8 @@ export const isWorkspaceTool = (t: ToolKind): boolean => WORKSPACE_TOOLS.include
 /**
  * One tool window. Docked, it sits at the window's edge and follows the selected workspace, so it has no scope or
  * place of its own. Placed, it sits in `area` (null: loose, beside a loose workspace) and moves with it, scoped to
- * `session`'s workspace (the workspace tools) or to `area` itself (Artifacts, Chat). A placed one without a
+ * `session`'s workspace (the workspace tools) or to `area` itself (Artifacts, Chat, Pipeline: a Pipeline window's
+ * `session`, when it has one, is the member whose pipeline it shows, of the area's several). A placed one without a
  * `placement` is placed anew in its area, as a new workspace is (an area merged into another by a rename).
  */
 export interface ToolWindow {
@@ -715,7 +717,8 @@ const TOOL: Part = {
 };
 /**
  * A tool window, its fields and what they say together: a docked one has no scope or place (it follows the
- * selection), and a placed one has its scope, a workspace tool its session and an area tool its area.
+ * selection), and a placed one has its scope, a workspace tool its session and an area tool its area (a Pipeline window
+ * the member it shows too, when it names one).
  */
 const toolWindow: Check<ToolWindow> = (v, where) => {
   const t = fields<ToolWindow>(v, where, TOOL);
@@ -725,7 +728,7 @@ const toolWindow: Check<ToolWindow> = (v, where) => {
     if (t.session === undefined) fail(`${where}.session`, "is missing");
     if (t.area === undefined) fail(`${where}.area`, "is missing");
   } else if (typeof t.area !== "string") fail(`${where}.area`, t.area === null ? `is null, but ${t.tool} is an area's` : "is missing");
-  else if (t.session !== undefined) fail(where, `is an area's ${t.tool}, so it has no session`);
+  else if (t.session !== undefined && t.tool !== "pipeline") fail(where, `is an area's ${t.tool}, so it has no session`);
   return t;
 };
 const CARD: Part = {

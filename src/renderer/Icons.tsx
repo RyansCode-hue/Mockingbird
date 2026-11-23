@@ -225,6 +225,16 @@ export const UndoIcon = () => (
   </Icon>
 );
 
+/** Three steps in stage columns, the first handing off to the two after it: a pipeline. */
+export const PipelineIcon = () => (
+  <Icon>
+    <rect x="1.75" y="6" width="3.5" height="4" rx="0.8" />
+    <rect x="10.75" y="2.5" width="3.5" height="4" rx="0.8" />
+    <rect x="10.75" y="9.5" width="3.5" height="4" rx="0.8" />
+    <path d="M5.25 8h2.5M7.75 4.5v7M7.75 4.5h3M7.75 11.5h3" />
+  </Icon>
+);
+
 /** Two arrows passing: hand the task to the other agent. */
 export const HandoffIcon = () => (
   <Icon>

@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import type { StageGap } from "./landscapeModel";
 import { Modal } from "./Modal";
-import { Select } from "./Menu";
+import { Select, type SelectOption } from "./Menu";
 import { AnchoredPopover } from "./Popover";
 import { CatalogNote, WholeText, effortOptionsFor, modelOptionsFor, useCatalog } from "./TemplatePicker";
 import { modelChipText } from "../shared/pipelineEdit";
@@ -113,6 +113,21 @@ export interface PipelineUi {
   chip: (s: SessionInfo, where: ModelWhere) => ReactNode;
   /** The + between two stage columns, over handoff `gap.wire`: a step to insert between its ends. */
   insert: (gap: StageGap) => void;
+}
+
+/**
+ * What the landscape does to wires for what's drawn outside it (Landscape's `wireEditRef`; the Pipeline window's
+ * pickers), by its own rules and with its own notes and Undo.
+ */
+export interface WireEdits {
+  /** Wire `id`'s `end` as its From or To picker offers it: the sessions on the landscape, each off saying why the rules wouldn't have it there. */
+  endChoices: (id: string, end: "from" | "to") => SelectOption[];
+  /** Where a new handoff from session `from` can go, each off saying why not. */
+  handoffChoices: (from: string) => SelectOption[];
+  /** Wire `id`'s ends moved (wires:repoint), said with Undo; settles with why it didn't move, or null. */
+  repoint: (id: string, ends: { from?: string; to?: string }) => Promise<string | null>;
+  /** A handoff from `from` to `to` made (wires:add), said with Undo; settles with why it wasn't, or null. */
+  addHandoff: (from: string, to: string) => Promise<string | null>;
 }
 
 /** A card's model chip ("Sonnet ▾"): its model at a glance, a click opening ModelPopover. */

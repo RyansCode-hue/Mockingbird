@@ -10,6 +10,7 @@ import { CONTROL_RE, hiddenTextRefusal, withoutHidden, type TextUse } from "../s
 import { isRemotePaneId } from "../shared/team/livePanes";
 import { isObj, LandscapeShapeError, own, type Area } from "../shared/landscape";
 import {
+  BUILT_IN_ID,
   kickoffAsTicket,
   LayOutLeftError,
   ticketLine,
@@ -22,6 +23,7 @@ import {
   type TemplateBody,
   type TemplateDraft,
   type TemplateFolder,
+  type TemplateList,
   type TemplateStep,
   type TemplateWire,
 } from "../shared/pipelineTemplates";
@@ -315,17 +317,60 @@ const kb = (bytes: number) => `${Math.ceil(bytes / 1024)} KB`;
  * ones this version can't read included (and counted).
  */
 export function savedTemplates(nameRaw: unknown, bodyRaw: unknown, stored: unknown, d: SaveDeps): { list: unknown[]; template: PipelineTemplate } {
-  const read = readTemplates(stored);
-  if (read.broken) throw new Error(`${read.broken} Set them aside from Pipeline from a ticket… to start the list again.`);
+  const read = readList(stored);
   const kept = Array.isArray(stored) ? stored.length : 0;
   if (kept >= TEMPLATES_KEPT.count) throw new Error(`There are ${kept} saved templates, the most Mockingbird keeps: remove one you don't use first.`);
+  const { name, body } = checkedEntry(nameRaw, bodyRaw, read, d, null);
+  const ids = new Set([...read.templates.map((t) => t.template.id), ...read.refused.flatMap((r) => (r.id ? [r.id] : []))]);
+  let id = "";
+  do id = d.newId?.() ?? `tpl-${randomUUID().slice(0, 8)}`;
+  while (ids.has(id));
+  const template: PipelineTemplate = { id, name, savedAt: (d.now ?? Date.now)(), ...body };
+  return { list: withinKept([...(Array.isArray(stored) ? stored : []), template], "With this one"), template };
+}
+
+/**
+ * `stored` with saved template `id` replaced by `name`, `body` (Replace, in Save as template): kept under its id and
+ * place in the list, saved now. Checked as a new one is (savedTemplates), its name free of every other template's;
+ * refused for a template that isn't saved any more, the built-in one, and one this version can't read (it's left as it
+ * is). The list doesn't grow, so only its size is held to TEMPLATES_KEPT.
+ */
+export function updatedTemplate(idRaw: unknown, nameRaw: unknown, bodyRaw: unknown, stored: unknown, d: SaveDeps): { list: unknown[]; template: PipelineTemplate } {
+  const id = typeof idRaw === "string" ? idRaw : "";
+  if (id === BUILT_IN_ID) throw new Error("The built-in template can't be replaced: save this one under another name.");
+  const read = readList(stored);
+  if (!read.templates.some((t) => t.template.id === id)) {
+    const refused = read.refused.find((r) => r.id === id);
+    if (refused) throw new Error(`“${refused.name ?? id}” can't be read by this version of Mockingbird, so it's left as it is: save this one under another name.`);
+    throw new Error("That template isn't saved any more: save this one as a new one.");
+  }
+  const { name, body } = checkedEntry(nameRaw, bodyRaw, read, d, id);
+  const template: PipelineTemplate = { id, name, savedAt: (d.now ?? Date.now)(), ...body };
+  const list = (stored as unknown[]).map((v) => (isObj(v) && v.id === id ? template : v));
+  return { list: withinKept(list, "Replaced so"), template };
+}
+
+/** `stored` read as a list of templates, or throws saying how to start it again when it can't be. */
+function readList(stored: unknown): TemplateList {
+  const read = readTemplates(stored);
+  if (read.broken) throw new Error(`${read.broken} Set them aside from Pipeline from a ticket… to start the list again.`);
+  return read;
+}
+
+/**
+ * A template's name and body as they're kept, or throws saying why: a name of one line, short enough, and free of
+ * every template's but `self`'s (the one it replaces); a body that's one (parseTemplateBody), whose text holds no
+ * hidden characters, secret-looking value or folder in the home folder.
+ */
+function checkedEntry(nameRaw: unknown, bodyRaw: unknown, read: TemplateList, d: SaveDeps, self: string | null): { name: string; body: TemplateBody } {
   const raw = typeof nameRaw === "string" ? nameRaw : "";
   if (/[\r\n]/.test(raw)) throw new Error("A template's name is one line.");
   const name = oneLine(raw, TEMPLATE_MAX.name * 4);
   if (!name) throw new Error("Name the template.");
   if (name.length > TEMPLATE_MAX.name) throw new Error(`A template's name is at most ${TEMPLATE_MAX.name} characters.`);
-  const taken = [...read.templates.map((t) => t.template.name), ...read.refused.flatMap((r) => (r.name ? [r.name] : []))];
-  if (taken.some((t) => t.toLowerCase() === name.toLowerCase())) throw new Error(`There's a template called “${name}” already: name this one another way, or remove that one first.`);
+  const taken = [...read.templates.filter((t) => t.template.id !== self).map((t) => t.template.name), ...read.refused.flatMap((r) => (r.name ? [r.name] : []))];
+  if (taken.some((t) => t.toLowerCase() === name.toLowerCase()))
+    throw new Error(self ? `There's another template called “${name}”: name this one another way.` : `There's a template called “${name}” already: name this one another way, or remove that one first.`);
   let body: TemplateBody;
   try {
     body = parseTemplateBody(bodyRaw);
@@ -341,18 +386,17 @@ export function savedTemplates(nameRaw: unknown, bodyRaw: unknown, stored: unkno
     if (r.count) throw new Error(`${where} holds ${plural(r.count, "secret-looking value")}: take ${r.count === 1 ? "it" : "them"} out, as a template is kept in Mockingbird's settings and laid out for other tickets.`);
     if (namesHome(text, d.home)) throw new Error(`${where} names a folder in your home folder: a template is laid out in other folders, so it names none of this Mac's. Say “${FOLDER_MARK}”, or take it out.`);
   }
-  const ids = new Set([...read.templates.map((t) => t.template.id), ...read.refused.flatMap((r) => (r.id ? [r.id] : []))]);
-  let id = "";
-  do id = d.newId?.() ?? `tpl-${randomUUID().slice(0, 8)}`;
-  while (ids.has(id));
-  const template: PipelineTemplate = { id, name, savedAt: (d.now ?? Date.now)(), ...body };
-  const list = [...(Array.isArray(stored) ? stored : []), template];
+  return { name, body };
+}
+
+/** `list` when it's within TEMPLATES_KEPT's size as JSON, else throws, `lead` ("With this one") saying how it got there. */
+function withinKept(list: unknown[], lead: string): unknown[] {
   const bytes = Buffer.byteLength(JSON.stringify(list), "utf8");
   if (bytes > TEMPLATES_KEPT.bytes)
     throw new Error(
-      `With this one the saved templates would take ${kb(bytes)}, past the ${kb(TEMPLATES_KEPT.bytes)} Mockingbird keeps, as they're written with its settings every time a session changes: remove one you don't use, or shorten this one's prompts.`
+      `${lead} the saved templates would take ${kb(bytes)}, past the ${kb(TEMPLATES_KEPT.bytes)} Mockingbird keeps, as they're written with its settings every time a session changes: remove one you don't use, or shorten this one's prompts.`
     );
-  return { list, template };
+  return list;
 }
 
 /** `stored` without template `id`: one this version can't read too, when its id can be. Refused when there's none. */

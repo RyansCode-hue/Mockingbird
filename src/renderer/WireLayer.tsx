@@ -63,6 +63,11 @@ export interface WireLayerHandle {
   wireAt: (p: Point, within: number) => string | null;
   /** The wire whose gate dot, as drawn (in the live band), is within `within` of landscape point `p`: what a click there opens (W4c). */
   dotAt: (p: Point, within: number) => string | null;
+  /**
+   * The end of a wire, as last drawn, within `within` of landscape point `p`, at a workspace or a step (not a collapsed
+   * area's pill): its arrowhead (`to`) or its start (`from`), what a press there drags to move it. The nearest wins.
+   */
+  endAt: (p: Point, within: number) => { id: string; end: "from" | "to" } | null;
   /** Where wire `id`'s gate dot is on screen while it's drawn: its foot's middle, where its send popover opens, and its box, which the popover keeps clear of. */
   dotOnScreen: (id: string) => { x: number; y: number; box: AnchorBox } | null;
 }
@@ -231,6 +236,19 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
     () => ({
       follow: () => paintNow.current(),
       wireAt: (p, within) => wireNear(curves.current, p, within),
+      endAt: (p, within) => {
+        let best: { id: string; end: "from" | "to" } | null = null;
+        let near = within;
+        for (const v of now.current.views) {
+          const c = curves.current.get(v.id);
+          if (!c) continue;
+          for (const end of ["to", "from"] as const) {
+            const d = v[end].kind === "pill" ? Infinity : Math.hypot(c[end].x - p.x, c[end].y - p.y);
+            if (d <= near) [best, near] = [{ id: v.id, end }, d];
+          }
+        }
+        return best;
+      },
       dotAt: (p, within) => {
         let best: string | null = null;
         let near = within;

@@ -90,6 +90,26 @@ export function severalBarItems(actions: readonly ModelAction[]): BarItem[] {
   ]);
 }
 
+/**
+ * A not-started step's buttons, from its model (workspaceActions.tsx's plannedActions): Edit…, its model chip
+ * (`chip`, the card's own) and Start now stay longest; Insert step after…, Re-lay out pipeline and Forget fold first.
+ */
+export function stepBarItems(actions: readonly ModelAction[], chip: ReactNode | null): BarItem[] {
+  return present([
+    fromRow(actionOf(actions, "edit"), 1, { label: "Edit…" }),
+    !!chip && { key: "model", label: "Model", element: chip, rank: 1 },
+    fromRow(actionOf(actions, "start"), 1),
+    fromRow(actionOf(actions, "insertAfter"), 2, { label: "Insert step after…" }),
+    fromRow(actionOf(actions, "relayout"), 2, { label: "Re-lay out pipeline" }),
+    fromRow(actionOf(actions, "forget"), 2, { tone: "danger" }),
+  ]);
+}
+
+/** Several not-started steps' buttons (main.tsx's stepsActions): Re-lay out pipeline, while they're in one, and Forget. */
+export function stepsBarItems(actions: readonly ModelAction[]): BarItem[] {
+  return present([fromRow(actionOf(actions, "relayout"), 1, { label: "Re-lay out pipeline" }), fromRow(actionOf(actions, "forget"), 1, { tone: "danger" })]);
+}
+
 /** An area's status in its bar: what its sessions are doing, or how many workspaces it has when nothing is. */
 export function areaStatus(c: { waiting: number; working: number; dead: number; workspaces: number }): string {
   const parts = [c.waiting ? `${c.waiting} waiting` : "", c.working ? `${c.working} working` : "", c.dead ? `${c.dead} exited` : ""].filter(Boolean);
