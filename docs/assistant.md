@@ -40,9 +40,9 @@ Every tool has a tier, fixed in main's registry. The model can't change it.
 
 | Tier | What happens on the call | Examples |
 |---|---|---|
-| **read** | Runs and returns data | list sessions, what's waiting, usage, git status, why it's stuck |
-| **direct** | Runs, and its step shows **Undo** while what it changed is unchanged since (10 min, in memory) | focus, move/stack/size/arrange, move to a group, create/rename a group, rename, mute, settings toggles, draw or remove a wire |
-| **confirm** | Nothing happens: a **card** appears in the tab, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, create, change or turn on a standing rule |
+| **read** | Runs and returns data | list sessions, what's waiting, usage, git status, why it's stuck, a session's output, files and diff |
+| **direct** | Runs, and its step shows **Undo** while what it changed is unchanged since (10 min, in memory) | focus, move/stack/size/arrange, move to a group, create/rename a group, rename, mute, an area's colour, open or close a tool window, view and notification settings, draw or remove a wire |
+| **confirm** | Nothing happens: a **card** appears in the tab, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, create, change or turn on a standing rule, settings that change what agents may do or what reaches past this Mac |
 
 - A card names the exact target and effect ("Restart “api-fix” · s5 ·
   atticus in Plan mode: stops its agent and starts it again on the same
@@ -92,7 +92,8 @@ Every tool has a tier, fixed in main's registry. The model can't change it.
 There's no tool for any of these, and main refuses them by session, not by
 asking the model to behave:
 
-- Reading files, environment, secrets, credentials or tokens.
+- Reading the environment, secrets, credentials or tokens, or any file
+  outside a session's own folder (What the Assistant can read, below).
 - The Helpdesk workspace's conversation: no reading its output or
   transcript, no typing into it, and broadcasts skip it. Its status and
   lifecycle (restart, focus, move, mute) are fine. A permission mode wider
@@ -162,14 +163,15 @@ kept through every relaunch like its model and effort.
 | Group | Read | Direct (Undo) | Confirm |
 |---|---|---|---|
 | Sessions | list, detail | — | restart with mode/model/effort, restart all (group), close, resume, hand off to a fresh session |
-| Layout | landscape | focus, move, stack, size, arrange, move to group, create/rename group, rename, mute (none across a room's boundary) | move a session into, out of or between team rooms |
+| Layout | landscape | focus, move, stack, size, arrange, move to group, create/rename group, rename, mute (none across a room's boundary), an area's colour, open or close a tool window | move a session into, out of or between team rooms |
 | Start work | presets, templates, House/ADO tickets | — | new session/worktree/branch (agent, mode, model, first prompt), preset, lay out a template, from a ticket, review a branch |
 | Triage | needs-you list, rollup | — | allow/deny a prompt once, type into a session, broadcast to a group |
 | Git | worktrees (dirty/ahead/behind), branch stat, PR status | — | clean up a worktree, push, open a PR |
 | Wires | wires, gates | draw, remove | approve a gate, send a handoff |
 | Rooms | rooms, House board | — | share, leave, take over, room sandbox switch, claim/release a ticket |
-| Settings | settings | notifications, finished alerts, quiet hours, phone alerts on/off (once set up) | — |
-| Diagnose | stuck/exited detail, closed output tail (never Helpdesk's), usage and meters, which session touched a file (overlaps, turn changes, transcript search without Helpdesk) | — | — |
+| Settings | every setting but credentials paths and the phone handle | view and notification settings | settings that change what agents may do, what runs as you or what reaches past this Mac |
+| Diagnose | stuck/exited detail, closed output tail, recent output of any of this Mac's sessions (never Helpdesk's; a teammate's only as mirrored here), usage and meters, which session touched a file (overlaps, turn changes, transcript search without Helpdesk) | — | — |
+| Files | a session's files listed and read, its uncommitted diff (What the Assistant can read) | — | — |
 | Standing rules | list rules | turn a rule off, remove one | create, change or turn on a rule |
 
 Typing into a session (and a broadcast) refuses, or skips, a session waiting
@@ -215,9 +217,84 @@ one-prompt check and the rules' ban on answering prompts.
   `take_over` reads the take-over plan for its card. A House board that can't
   be read is never left out: `list_tickets` lists it as "(<room>'s board
   couldn't be read: why)", and `house_board` fails saying the same.
-- Settings: only notifications, finished alerts, quiet hours and phone alerts
-  on/off; phone alerts only once a handle is set up, which is never read.
+- Look: `set_area_colour` (by the Colour popover's names, or Automatic; its
+  Undo puts the colour back while it's still the one set), `open_tool` and
+  `close_tool` (Files, Changes, Search, Run & debug beside one of this Mac's
+  workspaces; Artifacts, Chat in an area; or docked). A window is opened by the
+  window itself (`assistant:window` openTool, through the same Show its own
+  buttons use), which places it or docks it when its area has no room; main
+  first refuses what those buttons would (a teammate's session, an exited one
+  but Search, Chat outside a room's area, a collapsed area, one open there
+  already). Its Undo closes the window it opened. close_tool closes through the
+  landscape, as ×, and its Undo puts the window back while the landscape's
+  revision is the one the close made. None is a rule's.
+- Settings: `tools/settings.ts` SETTINGS_TABLE classifies every setting, one row
+  each (phone alerts' parts one row each), and the tools read and change
+  nothing else. Its type needs a row for every key of `Settings`, and
+  `test/assistantSettings.test.ts` checks the interface's keys against it.
+  - **Direct** (`set_setting`, with Undo, rule-able): notifications, finished
+    alerts, quiet hours, phone alerts on/off (once set up), their away time and
+    finished-turn texts, the hidden tabs, the Assistant's model.
+  - **Confirm** (`change_setting`, a card, never a rule's): sending agents'
+    messages at once (and by group), phone replies, debriefs, the repository
+    folders, the Claude and Codex programs, where updates come from, your
+    team name, the signaling address, running room sessions inline. The
+    programs, the update folder and the signaling address are in the danger
+    color. The card expires when the setting changes before Do it.
+  - **Read only**: first-run setup, presets, saved templates, rooms without
+    their sandbox (`set_room_sandbox` switches those, on a card).
+  - **Never** read or changed: WorkTracker's folder (it leads to the ADO PAT)
+    and where phone alerts go.
 - Rule-able among these: `set_group`, `mute_session`, `unmute`, `set_setting`.
+
+## What the Assistant can read
+
+Read tools only; nothing here writes, and none is a rule's.
+
+- **Output** (`session_output`): the recent terminal output of one of this
+  Mac's sessions, Claude, Codex or a terminal, running, exited or closed (its
+  pane's buffer, or a closed one's saved output), ANSI taken out, what looks
+  like a secret redacted (`redactSecrets`), its last 120 lines unless asked for
+  up to 400, and at most 24,000 characters, saying when it cut. Never the
+  Helpdesk workspace's (`whyNot("readOutput")`). A teammate's room session is
+  read only from the copy this Mac already mirrors for its open terminal
+  (livePanes `mirrored`); nothing is fetched, and without one it's refused,
+  saying to open its workspace or ask its owner.
+- **Files** (`list_files`, `read_file`) and **the diff** (`git_diff`), only
+  in one of this Mac's sessions' folders (its worktree, or the folder it runs
+  in), through `assistant/sessionFiles.ts` FolderReader:
+  - A path is relative to the folder: an absolute one and one climbing out
+    with `..` are refused. The folder and the file are both resolved through
+    their links and the file must still be inside (`resolveIn`), so a link out
+    is refused; the file is opened without following a link.
+  - Refused by name at any depth, in any case: SECRET_FILE_GLOBS (env files,
+    keys, certificates, PAT and credentials files) and more for the Assistant:
+    `.env*`, `id_*`, `.npmrc`, `.netrc`, `.pypirc`, `.git-credentials`,
+    `*credentials*`, `*secret*`; a link whose target is so named; git's own
+    files (`.git/`); this Mac's known secret files (the ADO PAT file); and,
+    in a repository, whatever git ignores (`check-ignore`), which keeps out
+    dependencies, build output and most local secrets.
+  - Never read: a folder that is the home folder or holds it, and anything in
+    `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.mockingbird`,
+    `~/.claude`, `~/.codex` or `~/Library`. The Helpdesk workspace's folder
+    and teammates' sessions (whose folders are on their Macs) are refused.
+  - `read_file` refuses binary files, files over 200 KB and text holding a
+    private key, gives at most 2,000 lines or 60,000 characters at a time
+    (saying where to read on), and redacts what looks like a secret.
+  - `list_files` lists what git tracks and the untracked files it doesn't
+    ignore (outside git, a walk that skips hidden, dependency and build
+    folders), at most 500, saying when there are more and how many
+    secret-shaped names it left out.
+  - `git_diff` is the folder's uncommitted diff against its last commit, only
+    what's staged, or one file's, through guardedGit (nothing the repository
+    configures runs). Secret files are left out by git's own pathspecs and
+    again file by file, and named; a file whose diff holds a private key is
+    withheld; the rest is redacted and cut as a wire's `{diff}` is (`shapeDiff`).
+    Untracked files are named, not shown.
+- Every refusal says why, in plain words, and the prompt tells the model a
+  refusal is the answer. The prompt's rules also tell it to read a session's
+  output and diff before answering why it's stuck or what it changed. The
+  per-turn snapshot stays one line a session: no output or files in it.
 
 ## Standing rules
 
@@ -343,6 +420,9 @@ one-prompt check and the rules' ban on answering prompts.
   `claude` process it spawns (`mcpLaunch` / `bindMcpLaunch`). `tools/list`
   gives it only the Assistant's tools. `dispatch` refuses Assistant tools
   from any other caller, and pane tools from the Assistant.
+- **Deps:** `assistant/deps.ts` is all the tools reach: state and actions; a
+  session's output only through `output` and `mirroredOutput`, its folder only
+  through `folders` (FolderReader); never the environment or secrets.
 - **Registry:** `src/main/assistant/` — `registry.ts` (the tool type: name,
   tier, schema, `label(args)`, `describe?(args)` → the call whole for a
   rule's card, `check(args, ctx)` → why not, `run(args, ctx)` → result plus
@@ -350,7 +430,7 @@ one-prompt check and the rules' ban on answering prompts.
   `rule?: boolean`), and one file per group
   under `tools/`. The cards, undo, rules and turn runner use only the
   registry.
-- **Window-only steps** (focus, camera) go to the window as
+- **Window-only steps** (focus, camera, opening a tool window) go to the window as
   `assistant:window` events. Landscape moves are planned in main with the
   same planners the window uses (`src/shared/landscapeModel.ts`, which
   `renderer/landscapeModel.ts` re-exports; `assistant/layoutPlan.ts` carries

@@ -56,6 +56,7 @@ import { runPipelineAudit } from "./pipelineAudit";
 import { WIRE_AREA, acrossBook, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { runColourAudit } from "./colourAudit";
+import { runAssistantToolAudit } from "./assistantToolAudit";
 import { openFinishShot } from "./wireNeedsAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
@@ -3520,6 +3521,8 @@ if (params.has("landscapeNeedsAudit")) {
 if (params.has("landscapeStripAudit")) runStripAudit({ calls, waitFor });
 // ?landscapeColourAudit=a|b works an area's Colour popover (colourAudit.ts) for test/uiLandscapeColour.test.ts
 if (params.has("landscapeColourAudit")) runColourAudit({ calls, waitFor }, params.get("landscapeColourAudit") || "a");
+// ?assistantToolAudit sends the window the Assistant's openTool events (assistantToolAudit.ts) for test/uiAssistantTools.test.ts
+if (params.has("assistantToolAudit")) runAssistantToolAudit({ emit, calls, waitFor });
 // W17: ?landscapePlanAudit=<part> (with ?lsWires&lsPlan) works an Orchestrator's plan and the built-in template (planAudit.ts) for test/uiTemplatePicker.test.ts
 if (params.has("landscapePlanAudit")) runPlanAudit({ calls, waitFor }, params.get("landscapePlanAudit") || "plan");
 // ?landscapePipelineAudit=<part> (with ?lsWires&lsPlan=pipeline&lsLaid&lsModels) edits the laid-out pipeline on the canvas (pipelineAudit.ts) for test/uiPipelineEdit.test.ts

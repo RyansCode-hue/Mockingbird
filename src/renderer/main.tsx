@@ -1427,10 +1427,20 @@ function App() {
     openAssistant(true);
     void assistant.ask(text);
   };
-  // steps only the window can carry out: showing the tab (the keyboard stays where it is), and going to a session
+  // steps only the window can carry out: showing the tab (the keyboard stays where it is), going to a session, and
+  // opening a tool window as its own buttons do (showTool), main having checked what they check
   const assistantWindow = useRef((_a: AssistantWindowAction) => {});
   assistantWindow.current = (a) => {
     if (a.kind === "openTab") return openAssistant(false);
+    if (a.kind === "openTool") {
+      if (a.docked) return void openWindow(a.tool, null);
+      const s = a.session === undefined ? null : (sessions.find((x) => x.id === a.session) ?? null);
+      if (a.session !== undefined && !s) {
+        console.warn(`[mockingbird] the Assistant asked to open ${a.tool} beside ${a.session}, which isn't a session here`);
+        return lsSay(`The Assistant asked to open ${TOOL_NAME[a.tool]} beside a session that isn't here any more`);
+      }
+      return void showTool(a.tool, s, a.area);
+    }
     if (!sessions.some((s) => s.id === a.sessionId)) {
       console.warn(`[mockingbird] the Assistant asked to go to ${a.sessionId}, which isn't a session here`);
       return lsSay("The Assistant asked to go to a session that isn't here any more");

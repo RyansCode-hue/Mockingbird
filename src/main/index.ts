@@ -122,7 +122,7 @@ import { takenOverWhy, UNTAKEN_CALLS } from "./takenOverGuard";
 import type { PrPreflight } from "../shared/types";
 import { wireDeps } from "./assistant/tools/wires";
 import { readProblem } from "../shared/landscapeModel";
-import { normalizeHandle, phoneSettings } from "../shared/phoneAlerts";
+import { FolderReader } from "./assistant/sessionFiles";
 import { roomsUnsandboxedOf } from "../shared/team/livePanes";
 import { isShareableGroup, type Settings } from "../shared/types";
 import { guardNavigation } from "./navigation";
@@ -1698,34 +1698,12 @@ const assistantDeps: AssistantDeps = {
   roomSandboxed: (roomId) => (team.status().rooms.some((r) => r.id === roomId) ? !roomsUnsandboxedOf(store.settings).includes(roomId) : null),
   setRoomSandbox: (roomId, on) => setRoomSandbox(roomId, on),
   houseWrite: async (roomId, w) => (await teamHouse.write(roomId, w)).message,
-  settingsSeen: () => {
-    const s = store.settings;
-    const p = phoneSettings(s.phoneAlerts);
-    return {
-      notifications: s.notifications,
-      notifyFinished: s.notifyFinished !== false,
-      quietHours: s.quietHours ? { enabled: s.quietHours.enabled, from: s.quietHours.from, to: s.quietHours.to } : null,
-      phoneAlerts: { setUp: normalizeHandle(p.handle) !== null, enabled: p.enabled },
-    };
-  },
-  changeSetting: (c) => {
-    switch (c.key) {
-      case "notifications":
-        return void changeSettings({ notifications: c.on });
-      case "notifyFinished":
-        return void changeSettings({ notifyFinished: c.on });
-      case "quietHours":
-        return void changeSettings({ quietHours: { enabled: c.value.enabled, from: c.value.from, to: c.value.to } });
-      case "phoneAlerts": {
-        // on or off only: the handle and the rest stay as Settings has them
-        const p = phoneSettings(store.settings.phoneAlerts);
-        if (c.on && normalizeHandle(p.handle) === null) throw new Error("Phone alerts aren't set up: set them up in Settings → Phone alerts first");
-        return void changeSettings({ phoneAlerts: { ...p, enabled: c.on } });
-      }
-      default:
-        throw new Error(`The Assistant can't change ${JSON.stringify((c as { key?: unknown }).key)}`);
-    }
-  },
+  // the settings tools' table (tools/settings.ts) is what they read and change of these
+  settings: () => store.settings,
+  changeSettings: (patch) => void changeSettings(patch),
+  // ---- reading sessions' output and folders (tools/diagnose.ts session_output, tools/files.ts) ----
+  mirroredOutput: (id) => livePanes.mirrored(id),
+  folders: new FolderReader({ secretFiles: () => knownSecretFiles(store.settings.workTrackerPath).files }),
 };
 const assistant = new AssistantService({
   registry: buildRegistry(assistantDeps, Object.values(assistantGroups)),

@@ -89,7 +89,17 @@ describe("the Assistant's first tools", () => {
       release_ticket: "confirm",
       get_settings: "read",
       set_setting: "direct",
+      change_setting: "confirm",
+      session_output: "read",
+      list_files: "read",
+      read_file: "read",
+      git_diff: "read",
+      set_area_colour: "direct",
+      open_tool: "direct",
+      close_tool: "direct",
     });
+    // reading a session's output and folder changes nothing: none of those tools is anything but a read
+    for (const name of ["session_detail", "session_output", "list_files", "read_file", "git_diff"]) expect([name, registry.get(name)!.tier, !!registry.get(name)!.rule]).toEqual([name, "read", false]);
     for (const t of registry.mcpTools()) expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
   });
 

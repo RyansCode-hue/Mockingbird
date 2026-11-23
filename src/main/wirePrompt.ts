@@ -502,7 +502,7 @@ const FILE_BYTES = 256 * 1024;
 const MAX_FILES = 20;
 
 /** A file's start, opened so a link or a FIFO swapped in for it is refused, checked on the handle it's read through. */
-async function readHead(file: string, max: number): Promise<{ content: Buffer; size: number }> {
+export async function readHead(file: string, max: number): Promise<{ content: Buffer; size: number }> {
   const fh = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
     const st = await fh.stat();

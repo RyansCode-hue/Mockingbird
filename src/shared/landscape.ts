@@ -92,6 +92,8 @@ export const TOOL_KINDS: readonly ToolKind[] = ["files", "changes", "search", "r
 /** The tools scoped to a workspace; the others are scoped to an area. */
 export const WORKSPACE_TOOLS: readonly ToolKind[] = ["files", "changes", "search", "run"];
 export const isWorkspaceTool = (t: ToolKind): boolean => WORKSPACE_TOOLS.includes(t);
+/** What each tool window is called, in the window and by the Assistant. */
+export const TOOL_NAME: Record<ToolKind, string> = { files: "Files", changes: "Changes", search: "Search", run: "Run & debug", artifacts: "Artifacts", chat: "Chat" };
 
 /**
  * One tool window. Docked, it sits at the window's edge and follows the selected workspace, so it has no scope or

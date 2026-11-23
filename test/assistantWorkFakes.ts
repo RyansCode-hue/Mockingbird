@@ -7,6 +7,7 @@ import { buildRegistry, type AssistantTool } from "../src/main/assistant/registr
 import * as groups from "../src/main/assistant/tools";
 import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "../src/main/assistant/world";
 import { SessionGuards } from "../src/main/sessionGuards";
+import { FolderReader } from "../src/main/assistant/sessionFiles";
 import { takenOverWhy, UNTAKEN_CALLS } from "../src/main/takenOverGuard";
 import { rulesFor } from "./assistantHarness";
 import { unusedToolDeps } from "./assistantWorld";
@@ -88,6 +89,10 @@ export function fakeMac() {
   /** What was typed into a pty, as [id, keys]. */
   const typed: [string, string][] = [];
   const did: string[] = [];
+  /** What this Mac mirrors of teammates' terminals, by pane id. */
+  const mirrors = new Map<string, string>();
+  /** This Mac's known secret files (knownSecretFiles), by path. */
+  const secretFiles: string[] = [];
 
   const ownRefusal = (id: string, what: string) => (isRemotePaneId(id) ? `That's a teammate's session: only its owner can ${what}` : null);
   const takenRefusal = (id: string, doing: string) => (taken.has(id) ? `“${id}” continues on Nick's laptop — take it back rather than ${doing}` : null);
@@ -205,6 +210,9 @@ export function fakeMac() {
     overlaps: () => ({ bySession: {}, unread: {} }),
     turnFiles: async () => [],
     searchTranscripts: () => [],
+    mirroredOutput: (id) => mirrors.get(id) ?? null,
+    // the real reader, over the folders the test makes in its HOME
+    folders: new FolderReader({ secretFiles: () => secretFiles }),
   };
 
   const registry = buildRegistry(deps, Object.values(groups));
@@ -213,7 +221,7 @@ export function fakeMac() {
     if (!t) throw new Error(`no tool ${name}`);
     return t;
   };
-  return { own, closed, remote, rooms, areas, taken, guarded, trees, typed, did, deps, guards, registry, tool };
+  return { own, closed, remote, rooms, areas, taken, guarded, trees, typed, did, mirrors, secretFiles, deps, guards, registry, tool };
 }
 
 /** A clean worktree's state, `over` changed. */
