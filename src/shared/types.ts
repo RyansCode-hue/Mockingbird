@@ -4,6 +4,7 @@ import type { RoomSandboxChange, RoomSessionTag } from "./team/livePanes";
 import type { CouncilHouseTicket, CouncilTicketDrafts } from "./collabTickets";
 import type { PhoneAlertSettings } from "./phoneAlerts";
 import type { PermissionMode } from "./permissionModes";
+import type { AssistantModel } from "./assistant";
 
 /** Which coding-agent CLI a session runs. */
 export type AgentKind = "claude" | "codex";
@@ -503,6 +504,8 @@ export interface Settings {
    * sent to teammates; leaving a room drops its id.
    */
   roomsUnsandboxed?: string[];
+  /** The model the app Assistant's turns run (Settings → Assistant); Sonnet when unset (assistantModelOf). */
+  assistantModel?: AssistantModel;
 }
 
 export interface QuietHours {

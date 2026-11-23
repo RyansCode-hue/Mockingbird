@@ -1,12 +1,12 @@
 /**
- * The app Assistant's contract between main and the window (docs/assistant.md). Ask in ⌘K; it works in a sheet docked
- * at the landscape's right edge. Main's registry fixes each tool's tier, never the model: reads run, "direct" changes
- * run and keep an Undo, "confirm" changes become cards that run only on the user's Do it.
+ * The app Assistant's contract between main and the window (docs/assistant.md). Ask in its side bar tab (or ⌘K); the
+ * tab shows the work. Main's registry fixes each tool's tier, never the model: reads run, "direct" changes run and keep
+ * an Undo, "confirm" changes become cards that run only on the user's Do it.
  */
 
 export type AssistantTier = "read" | "direct" | "confirm";
 
-/** One tool call of a turn (or a rule run), as the sheet shows it. */
+/** One tool call of a turn (or a rule run), as the tab shows it. */
 export interface AssistantStep {
   id: string;
   tool: string;
@@ -36,7 +36,7 @@ export interface AssistantCard {
   warnings: string[];
   /** Shown in the danger color: bypass permissions, deleting a worktree. */
   danger?: boolean;
-  /** The text it types, sends or publishes, whole: the sheet shows it as plain text, never as HTML. */
+  /** The text it types, sends or publishes, whole: the tab shows it as plain text, never as HTML. */
   body?: string;
   /** A standing rule's card: each of its actions as main spells it out from its arguments. */
   actions?: ActionDetail[];
@@ -76,7 +76,7 @@ export type RuleTrigger =
 
 /**
  * One call as main spells it out from its validated arguments, never in the model's words: a rule's card and the
- * sheet's Rules list show each action so.
+ * tab's Rules list show each action so.
  */
 export interface ActionDetail {
   /** "Start Claude in atticus's checkout as it is, in “atticus”, in Plan mode, on opus". */
@@ -95,7 +95,7 @@ export interface RuleAction {
   args: Record<string, unknown>;
   /** "Start the review session". */
   label: string;
-  /** The sheet's view only, never saved: main's account of it now (ActionDetail). */
+  /** The tab's view only, never saved: main's account of it now (ActionDetail). */
   detail?: ActionDetail;
 }
 
@@ -110,11 +110,11 @@ export interface AssistantRule {
   /** Paused by Mockingbird (3 failed runs in a row, or a target that's gone): why. Cleared by turning it on again. */
   paused?: string | null;
   lastRun?: { at: number; ok: boolean; text: string } | null;
-  /** The sheet's view only: its off or pause holds only until Mockingbird quits, as the rules file couldn't be saved. Says so. */
+  /** The tab's view only: its off or pause holds only until Mockingbird quits, as the rules file couldn't be saved. Says so. */
   unsaved?: string;
 }
 
-/** A rule's run, in the sheet. */
+/** A rule's run, in the tab. */
 export interface RuleRun {
   id: string;
   ruleId: string;
@@ -125,7 +125,7 @@ export interface RuleRun {
   steps: AssistantStep[];
 }
 
-/** Everything the sheet shows. */
+/** Everything the tab shows. */
 export interface AssistantView {
   /** Oldest first; the last 20. */
   turns: AssistantTurn[];
@@ -140,10 +140,26 @@ export interface AssistantView {
   unavailable?: string;
   /** The rules file couldn't be read as it was: why, and where it was kept. Absent when it could. */
   rulesProblem?: string;
+  /** The thread's file couldn't be read (where it was kept) or saved: why. Absent when neither; Clear dismisses it. */
+  threadProblem?: string;
+  /** The model the next turn runs (Settings → Assistant). */
+  model: AssistantModel;
 }
 
-/** A step only the window can carry out. */
-export type AssistantWindowAction = { kind: "focus"; sessionId: string } | { kind: "openSheet" };
+/** The Claude models the Assistant runs on, by Claude Code's alias (Settings → Assistant). */
+export type AssistantModel = "sonnet" | "opus";
+export const ASSISTANT_MODELS: readonly { id: AssistantModel; label: string; note: string }[] = [
+  { id: "sonnet", label: "Sonnet", note: "faster" },
+  { id: "opus", label: "Opus", note: "smarter" },
+];
+export const DEFAULT_ASSISTANT_MODEL: AssistantModel = "sonnet";
+/** The model settings choose; anything that isn't one (unset, or written by hand) is the default. */
+export const assistantModelOf = (s: { assistantModel?: unknown }): AssistantModel => ASSISTANT_MODELS.find((m) => m.id === s.assistantModel)?.id ?? DEFAULT_ASSISTANT_MODEL;
+/** "Sonnet", "Opus". */
+export const assistantModelLabel = (m: AssistantModel): string => ASSISTANT_MODELS.find((x) => x.id === m)?.label ?? m;
+
+/** A step only the window can carry out: going to a session, or showing the Assistant's tab. */
+export type AssistantWindowAction = { kind: "focus"; sessionId: string } | { kind: "openTab" };
 
 /** IPC channel names (preload.ts ↔ main). Every invoke answers IpcResult<…>: `{ error }` on failure. */
 export const ASSISTANT_IPC = {

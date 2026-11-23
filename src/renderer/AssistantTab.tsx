@@ -1,26 +1,29 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import type { ActionDetail, AssistantCard, AssistantRule, AssistantStep, AssistantTurn, AssistantView, RuleRun } from "../shared/assistant";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { assistantModelLabel, type ActionDetail, type AssistantCard, type AssistantRule, type AssistantStep, type AssistantTurn, type AssistantView, type RuleRun } from "../shared/assistant";
 import { isErr, type IpcResult } from "../shared/types";
 import { ago } from "../shared/format";
 import { chatSegments } from "./team/chatText";
 import { renderSegment } from "./team/markdownView";
-import { ChevronIcon, CloseIcon, SparkleIcon } from "./Icons";
+import { ChevronIcon, CloseIcon } from "./Icons";
 import { Toggle } from "./Toggle";
 import { armFocus, isArmed, keyboardNowhere } from "./keyArm";
-import { ownsKeys } from "./keys";
-import { usePresence } from "./motion";
+import { OVERLAYS, ownsKeys } from "./keys";
 import { usePersisted } from "./prefs";
-import { cardState, nextChange, undoLive } from "./assistantModel";
-import type { ScreenBox } from "./landscapeModel";
+import { ASK_EXAMPLES, askable, askCounter, cardState, lastQuestion, nextChange, undoLive } from "./assistantModel";
 
 /**
- * The app Assistant's window side (docs/assistant.md → The sheet and ⌘K): what main says it's doing, in a slim sheet
- * docked at the landscape's right edge. Asked in ⌘K; the sheet shows the thread (your words, its reply, its steps with
- * Undo on direct changes), the cards waiting on Do it, recent rule runs and the standing rules.
+ * The app Assistant's window side (docs/assistant.md → The tab and ⌘K): a tab of the side bar's rail, in the area
+ * tree's place, where you keep asking. It shows what main says it's doing: the thread (your words, its reply, its steps
+ * with Undo on direct changes), the cards waiting on Do it, recent rule runs and the standing rules, with the message
+ * box at its foot.
  *
- * It never takes the keyboard from a session: a press on it keeps the keyboard where it was, as a press on one of the
+ * Only the message box takes the keyboard: clicked into, or opened for (focusBox). A press anywhere else on the tab
+ * leaves the keyboard where it was (a session's terminal, the message box, the landscape), as a press on one of the
  * landscape's own buttons does (Landscape.tsx's onButtonDown, keyArm.ts).
  */
+
+/** The tab's shortcut (main.tsx's keyboard layer), as the rail and Help show it. */
+export const ASSISTANT_KEYS = "⇧⌘A";
 
 /** An ask main refused ({ error }, or a rejected call): kept in the thread until Clear, never dropped. */
 export interface AskFailure {
@@ -44,11 +47,18 @@ async function settle<T>(what: string, call: () => Promise<IpcResult<T>>): Promi
   }
 }
 
-/** The Assistant's view, read again whenever main says it changed, and asking it. */
+/**
+ * The Assistant's view, read again whenever main says it changed, and asking it. What's typed in the message box lives
+ * here too, so a question half-written survives the tab being closed and opened again.
+ */
 export function useAssistant() {
   const [view, setView] = useState<AssistantView | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [failures, setFailures] = useState<AskFailure[]>([]);
+  const [draft, setDraft] = useState("");
+  /** Asks for the message box to take the keyboard, counted: the tab answers each once (focusSeen), mounted or not yet. */
+  const [focusAsk, setFocusAsk] = useState(0);
+  const focusSeen = useRef(0);
   const reads = useRef(0);
   const failId = useRef(0);
   /** The view last shown, as main sent it: a read that brings nothing new renders nothing (App, the landscape in it). */
@@ -78,11 +88,12 @@ export function useAssistant() {
     [reload]
   );
   const clearFailures = useCallback(() => setFailures([]), []);
-  return { view, readError, failures, ask, reload, clearFailures };
+  const focusBox = useCallback(() => setFocusAsk((n) => n + 1), []);
+  return { view, readError, failures, ask, reload, clearFailures, draft, setDraft, focusAsk, focusSeen, focusBox };
 }
 export type AssistantState = ReturnType<typeof useAssistant>;
 
-/** What a press may land on in the sheet and act: its buttons, switches and links. */
+/** What a press may land on in the tab and act: its buttons, switches and links. */
 const CONTROLS = "button, [role=button], [role=switch], a[href]";
 /** Text a press may start selecting (the thread's words, and what a card or a rule types). */
 const SELECTABLE = ".as-text, .as-payload";
@@ -119,27 +130,18 @@ function Actions({ actions }: { actions: ActionDetail[] }) {
   );
 }
 
-/**
- * Where the open sheet sits on screen, for the landscape to keep what it brings into view clear of (Landscape's
- * clearOf); null while it's closed (a closing one's copy, mb-ghost, isn't it). Read off its anchor at the landscape's
- * right edge and its own size, so its sliding in (a transform) doesn't count.
- */
-export function sheetBox(): ScreenBox | null {
-  const el = document.querySelector<HTMLElement>(".as-anchor > .as-sheet:not(.mb-ghost)");
-  const anchor = el?.parentElement?.getBoundingClientRect();
-  if (!el || !anchor) return null;
-  const top = anchor.top + el.offsetTop;
-  return { left: anchor.right - el.offsetWidth, right: anchor.right, top, bottom: top + el.offsetHeight };
-}
-
 type ThreadItem = { kind: "turn"; at: number; turn: AssistantTurn } | { kind: "failure"; at: number; failure: AskFailure };
 type Busy = (key: string) => boolean;
 type Act = (key: string, errKey: string, call: () => Promise<IpcResult<unknown>>) => void;
 
-export function AssistantSheet({ open, assistant, home, onClose }: { open: boolean; assistant: AssistantState; home: () => HTMLElement | null; onClose: () => void }) {
-  const { view, readError, failures, reload, clearFailures } = assistant;
-  const sheet = useRef<HTMLElement | null>(null);
-  const presence = usePresence<HTMLElement>("sheet", { also: sheet });
+/**
+ * The tab. `home`: what a press on it arms when the keyboard was nowhere or on the tab itself (the landscape, or the
+ * workspace in focus); `onEscape`: Esc in it that nothing inside took, which hands the keyboard back there.
+ */
+export function AssistantTab({ assistant, home, onClose, onEscape }: { assistant: AssistantState; home: () => HTMLElement | null; onClose: () => void; onEscape: () => void }) {
+  const { view, readError, failures, reload, clearFailures, draft, setDraft, ask } = assistant;
+  const tab = useRef<HTMLElement | null>(null);
+  const box = useRef<HTMLTextAreaElement | null>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const pendingNow = useRef(pending);
   pendingNow.current = pending;
@@ -149,12 +151,18 @@ export function AssistantSheet({ open, assistant, home, onClose }: { open: boole
   const [, setTick] = useState(0);
   const now = Date.now();
   useEffect(() => {
-    if (!view || !open) return;
+    if (!view) return;
     const at = nextChange(view, Date.now());
     if (at === null) return;
     const t = setTimeout(() => setTick((n) => n + 1), Math.max(0, at - Date.now()) + 25);
     return () => clearTimeout(t);
   });
+  // the box takes the keyboard when asked: before a closing palette or dialog hands it back elsewhere (useDialogFocus)
+  useLayoutEffect(() => {
+    if (assistant.focusAsk === assistant.focusSeen.current) return;
+    assistant.focusSeen.current = assistant.focusAsk;
+    box.current?.focus({ preventScroll: true });
+  }, [assistant.focusAsk, assistant.focusSeen]);
 
   const act: Act = (key, errKey, call) => {
     if (pendingNow.current.has(key)) return;
@@ -177,22 +185,23 @@ export function AssistantSheet({ open, assistant, home, onClose }: { open: boole
   const busy: Busy = (key) => pending.has(key);
 
   /**
-   * A press on the sheet never gives it the keyboard: a terminal or a field being typed in keeps it, as does anything
-   * else outside the sheet that has it; from the sheet itself, or from nowhere, the landscape (or focus's frame) takes
-   * it armed, as a press on one of the landscape's own buttons gives it. A press on the thread's words may start a
-   * selection: the keyboard goes back where it was unless one was made.
+   * A press on the tab never takes the keyboard, the message box aside: a terminal or a field being typed in keeps it,
+   * as does anything else outside the tab that has it; from the tab itself, or from nowhere, the landscape (or focus's
+   * frame) takes it armed, as a press on one of the landscape's own buttons gives it. A press on the thread's words may
+   * start a selection: the keyboard goes back where it was unless one was made.
    */
   const onPress = (e: ReactMouseEvent) => {
-    if (e.button !== 0 || !sheet.current) return;
+    if (e.button !== 0 || !tab.current) return;
     const t = e.target as Element;
+    if (t === box.current) return;
     if (!t.closest(CONTROLS) && t.closest(SELECTABLE)) {
       const had = document.activeElement;
       const wasArmed = isArmed(had);
-      // the press itself put the keyboard on the sheet (it's focusable, for Tab), or nowhere
+      // the press itself put the keyboard on the tab (it's focusable, for Tab), or nowhere
       const back = () =>
         setTimeout(() => {
-          const lost = keyboardNowhere() || document.activeElement === sheet.current;
-          if (!lost || !window.getSelection()?.isCollapsed || !(had instanceof HTMLElement) || !had.isConnected || had === sheet.current) return;
+          const lost = keyboardNowhere() || document.activeElement === tab.current;
+          if (!lost || !window.getSelection()?.isCollapsed || !(had instanceof HTMLElement) || !had.isConnected || had === tab.current) return;
           if (wasArmed) armFocus(had);
           else had.focus({ preventScroll: true });
         }, 0);
@@ -201,17 +210,24 @@ export function AssistantSheet({ open, assistant, home, onClose }: { open: boole
     }
     e.preventDefault();
     const a = document.activeElement;
-    if (ownsKeys(a) || (!keyboardNowhere() && !sheet.current.contains(a))) return;
+    if (ownsKeys(a) || (!keyboardNowhere() && !tab.current.contains(a))) return;
     armFocus(home());
   };
-  /** A control of its own that went (a card settled), hid or went off from under the keyboard leaves it on the sheet, not the page. */
+  /** A control of its own that went (a card settled), hid or went off from under the keyboard leaves it on the tab, not the page. */
   const onBlur = (e: ReactFocusEvent) => {
     const t = e.target as HTMLElement;
-    if (e.relatedTarget || !document.hasFocus() || t === sheet.current) return;
+    if (e.relatedTarget || !document.hasFocus() || t === tab.current) return;
     setTimeout(() => {
       if (!keyboardNowhere() || (t.isConnected && t.getClientRects().length > 0 && !(t as HTMLButtonElement).disabled)) return;
-      sheet.current?.focus({ preventScroll: true });
+      tab.current?.focus({ preventScroll: true });
     }, 0);
+  };
+  /** Esc that nothing inside took hands the keyboard back; the tab stays open. */
+  const onKey = (e: ReactKeyboardEvent) => {
+    if (e.key !== "Escape" || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || document.querySelector(OVERLAYS)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onEscape();
   };
 
   const cards = useMemo(() => new Map((view?.cards ?? []).map((c) => [c.id, c])), [view]);
@@ -222,18 +238,15 @@ export function AssistantSheet({ open, assistant, home, onClose }: { open: boole
     [view, failures]
   );
 
-  // the newest turn kept in view as it grows, unless the user has scrolled up to read; opening shows the newest
+  // the newest turn kept in view as it grows, unless the user has scrolled up to read; opening, or asking, shows the newest
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
-  const wasOpen = useRef(false);
   const last = thread[thread.length - 1];
   const lastKey = !last ? "" : last.kind === "turn" ? `${last.turn.id}:${last.turn.state}:${last.turn.steps.length}:${last.turn.reply?.length ?? 0}` : `f${last.failure.id}`;
   useLayoutEffect(() => {
-    if (open && !wasOpen.current) pinned.current = true;
-    wasOpen.current = open;
     const el = scroller.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [lastKey, open, thread.length]);
+  }, [lastKey, thread.length]);
 
   const rules = view?.rules ?? [];
   const onCount = rules.filter((r) => r.on && !r.paused).length;
@@ -248,103 +261,177 @@ export function AssistantSheet({ open, assistant, home, onClose }: { open: boole
       return r;
     });
 
+  // ---- the message box: ⏎ asks (queued behind a turn that's running, as main runs them), ⇧⏎ is a new line ----
+  const unavailable = view?.unavailable;
+  const check = askable(draft);
+  const tooLong = !check.ok && check.why !== null;
+  const send = () => {
+    if (unavailable || !check.ok) return;
+    setDraft("");
+    pinned.current = true;
+    void ask(check.text);
+    box.current?.focus({ preventScroll: true });
+  };
+  const onBoxKey = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+      // an IME's Enter picks its candidate; a held Enter's repeats ask nothing more
+      if (e.nativeEvent.isComposing) return;
+      e.preventDefault();
+      if (!e.repeat) send();
+      return;
+    }
+    if (e.key === "ArrowUp" && !draft && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      const q = lastQuestion(view?.turns ?? [], failures);
+      if (!q) return;
+      e.preventDefault();
+      setDraft(q);
+    }
+  };
+  const fill = (text: string) => {
+    setDraft(text);
+    box.current?.focus({ preventScroll: true });
+  };
+
   return (
-    <div className="as-anchor">
-      {open && (
-        <aside ref={presence} className="as-sheet" aria-label="Assistant" tabIndex={-1} onMouseDown={onPress} onBlur={onBlur}>
-          <header className="as-head">
-            <span className="as-head-ico">
-              <SparkleIcon />
-            </span>
-            <span className="as-head-t">Assistant</span>
-            {view?.busy && <span className="dot working sm" title="Working on a question" aria-label="Working" />}
-            <span className="as-spacer" />
-            <button type="button" className="as-hbtn" aria-disabled={busy("clear") || undefined} data-tip="Start a fresh thread: open cards stay" onClick={() => !busy("clear") && clear()}>
-              Clear
-            </button>
-            <button type="button" className="as-hbtn icon" aria-label="Close the Assistant" data-tip="Close: ⌘K asks again" onClick={onClose}>
-              <CloseIcon />
-            </button>
-          </header>
-          {errors.clear && (
-            <div className="as-err" role="alert">
-              Couldn't clear: {errors.clear}
-            </div>
-          )}
-          {readError && (
-            <div className="as-err" role="alert">
-              Couldn't read the Assistant: {readError}{" "}
-              <button type="button" className="as-link" onClick={() => void reload()}>
-                Retry
-              </button>
-            </div>
-          )}
-          {view?.unavailable && <div className="as-unavail">Can't ask on this Mac: {view.unavailable}</div>}
-          <div
-            className="as-body"
-            ref={scroller}
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-            }}
-          >
-            {!view && !readError && <div className="as-quiet">Reading…</div>}
-            {view && empty && <div className="as-quiet">Ask in ⌘K: "restart api-fix in plan mode", "what's waiting on me?", "when tests finishes, start the review".</div>}
-            {thread.map((item) =>
-              item.kind === "turn" ? (
-                <Turn key={item.turn.id} turn={item.turn} cards={cards} now={now} busy={busy} act={act} errors={errors} />
-              ) : (
-                <div key={`f${item.failure.id}`} className="as-turn" data-state="error" data-failure={item.failure.id}>
-                  <Words className="as-you" text={item.failure.text} />
-                  <div className="as-reply error" role="alert">
-                    Couldn't ask: {item.failure.error}
-                  </div>
-                </div>
-              )
-            )}
-            {loose.length > 0 && (
-              <section className="as-sec" aria-label="Cards">
-                <div className="as-sec-h">Cards</div>
-                {loose.map((c) => (
-                  <Card key={c.id} card={c} now={now} busy={busy} act={act} error={errors[c.id]} />
+    <section ref={tab} className="as-tab" data-tool="assistant" aria-label="Assistant" tabIndex={-1} onMouseDown={onPress} onBlur={onBlur} onKeyDown={onKey}>
+      <div className="side-head as-head">
+        <span className="side-title">Assistant</span>
+        {view && (
+          <span className="as-model" data-tip="The model it runs: Settings → Assistant">
+            {assistantModelLabel(view.model)}
+          </span>
+        )}
+        {view?.busy && <span className="dot working sm" title="Working on a question" aria-label="Working" />}
+        <span className="as-spacer" />
+        <button type="button" className="as-hbtn" aria-disabled={busy("clear") || undefined} data-tip="Start a fresh thread: open cards stay" onClick={() => !busy("clear") && clear()}>
+          Clear
+        </button>
+        <button type="button" className="ls-win-btn as-close" aria-label="Close the Assistant" data-tip={`Close (${ASSISTANT_KEYS})`} onClick={onClose}>
+          <CloseIcon />
+        </button>
+      </div>
+      {errors.clear && (
+        <div className="as-err" role="alert">
+          Couldn't clear: {errors.clear}
+        </div>
+      )}
+      {readError && (
+        <div className="as-err" role="alert">
+          Couldn't read the Assistant: {readError}{" "}
+          <button type="button" className="as-link" onClick={() => void reload()}>
+            Retry
+          </button>
+        </div>
+      )}
+      {view?.threadProblem && (
+        <div className="as-err as-thread-problem" role="alert">
+          {view.threadProblem}
+        </div>
+      )}
+      {unavailable && <div className="as-unavail">Can't ask on this Mac: {unavailable}</div>}
+      <div
+        className="as-body"
+        ref={scroller}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+      >
+        {!view && !readError && <div className="as-quiet">Reading…</div>}
+        {view && empty && (
+          <div className="as-empty">
+            <div className="as-quiet">Ask about your sessions, or for a change to them. Anything bigger than a small change waits for your OK.</div>
+            {!unavailable && (
+              <div className="as-examples" role="group" aria-label="Try">
+                {ASK_EXAMPLES.map((x) => (
+                  <button key={x} type="button" className="as-example" data-tip="Put it in the box" onClick={() => fill(x)}>
+                    {x}
+                  </button>
                 ))}
-              </section>
-            )}
-            {runs.length > 0 && (
-              <section className="as-sec" aria-label="Rule runs">
-                <div className="as-sec-h">Rule runs</div>
-                {runs.map((r) => (
-                  <Run key={r.id} run={r} rule={rules.find((x) => x.id === r.ruleId)} now={now} busy={busy} act={act} errors={errors} />
-                ))}
-              </section>
+              </div>
             )}
           </div>
-          <section className={`as-rules ${rulesOpen ? "open" : ""}`} aria-label="Rules">
-            <button type="button" className="as-rules-h" aria-expanded={rulesOpen} onClick={() => setRulesOpen((o) => !o)}>
-              <ChevronIcon open={rulesOpen} />
-              <span>Rules</span>
-              <span className="as-rules-n">· {rules.length ? `${onCount} on${pausedCount ? ` · ${pausedCount} paused` : ""}` : "none"}</span>
-            </button>
-            {view?.rulesProblem && (
-              <div className="as-err as-rules-problem" role="alert">
-                {view.rulesProblem}
+        )}
+        {thread.map((item) =>
+          item.kind === "turn" ? (
+            <Turn key={item.turn.id} turn={item.turn} cards={cards} now={now} busy={busy} act={act} errors={errors} />
+          ) : (
+            <div key={`f${item.failure.id}`} className="as-turn" data-state="error" data-failure={item.failure.id}>
+              <Words className="as-you" text={item.failure.text} />
+              <div className="as-reply error" role="alert">
+                Couldn't ask: {item.failure.error}
               </div>
-            )}
-            {rulesOpen && (
-              <div className="as-rules-list">
-                {!rules.length && <div className="as-quiet">None yet. Ask for one: "when tests finishes, start the review".</div>}
-                {rules.map((r) => (
-                  <Rule key={r.id} rule={r} now={now} busy={busy} act={act} error={errors[r.id]} />
-                ))}
-              </div>
-            )}
+            </div>
+          )
+        )}
+        {loose.length > 0 && (
+          <section className="as-sec" aria-label="Cards">
+            <div className="as-sec-h">Cards</div>
+            {loose.map((c) => (
+              <Card key={c.id} card={c} now={now} busy={busy} act={act} error={errors[c.id]} />
+            ))}
           </section>
-          <footer className="as-hint">⌘K to ask more</footer>
-        </aside>
-      )}
-    </div>
+        )}
+        {runs.length > 0 && (
+          <section className="as-sec" aria-label="Rule runs">
+            <div className="as-sec-h">Rule runs</div>
+            {runs.map((r) => (
+              <Run key={r.id} run={r} rule={rules.find((x) => x.id === r.ruleId)} now={now} busy={busy} act={act} errors={errors} />
+            ))}
+          </section>
+        )}
+      </div>
+      <section className={`as-rules ${rulesOpen ? "open" : ""}`} aria-label="Rules">
+        <button type="button" className="as-rules-h" aria-expanded={rulesOpen} onClick={() => setRulesOpen((o) => !o)}>
+          <ChevronIcon open={rulesOpen} />
+          <span>Rules</span>
+          <span className="as-rules-n">· {rules.length ? `${onCount} on${pausedCount ? ` · ${pausedCount} paused` : ""}` : "none"}</span>
+        </button>
+        {view?.rulesProblem && (
+          <div className="as-err as-rules-problem" role="alert">
+            {view.rulesProblem}
+          </div>
+        )}
+        {rulesOpen && (
+          <div className="as-rules-list">
+            {!rules.length && <div className="as-quiet">None yet. Ask for one: "when tests finishes, start the review".</div>}
+            {rules.map((r) => (
+              <Rule key={r.id} rule={r} now={now} busy={busy} act={act} error={errors[r.id]} />
+            ))}
+          </div>
+        )}
+      </section>
+      <div className="as-ask">
+        <textarea
+          ref={box}
+          className="as-input"
+          rows={1}
+          value={draft}
+          disabled={!!unavailable}
+          placeholder={unavailable ? "Can't ask on this Mac" : "Ask the Assistant…"}
+          aria-label="Ask the Assistant"
+          aria-invalid={tooLong || undefined}
+          title="⏎ asks · ⇧⏎ new line · ↑ in an empty box brings back your last question"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={onBoxKey}
+        />
+        <div className="as-ask-foot">
+          {tooLong ? (
+            <span className="as-over" aria-live="polite">
+              {check.why}
+            </span>
+          ) : (
+            <span className="as-ask-hint">{askCounter(draft) ?? "⏎ ask · ⇧⏎ new line"}</span>
+          )}
+          <button type="button" className="as-send primary" aria-disabled={!!unavailable || !check.ok || undefined} onClick={send}>
+            Ask
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }
+
 
 function Turn({ turn, cards, now, busy, act, errors }: { turn: AssistantTurn; cards: Map<string, AssistantCard>; now: number; busy: Busy; act: Act; errors: Readonly<Record<string, string>> }) {
   return (

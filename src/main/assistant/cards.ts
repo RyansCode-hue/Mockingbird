@@ -3,9 +3,10 @@ import type { AssistantCard } from "../../shared/assistant";
 import type { ToolCard } from "./registry";
 
 /**
- * The Assistant's confirm cards (docs/assistant.md → Tiers), in memory only. A card holds the call it stands for (tool
- * and arguments) for the user's Do it; the window sees only the card. Open → running → done or failed (or back to open
- * when Do it's check says no), open → cancelled, open → expired.
+ * The Assistant's confirm cards (docs/assistant.md → Tiers). A card holds the call it stands for (tool and arguments)
+ * for the user's Do it, in memory only; the window sees only the card. Open → running → done or failed (or back to open
+ * when Do it's check says no), open → cancelled, open → expired. The cards themselves are saved with the thread
+ * (thread.ts), and those kept from before a quit come back settled, with no call to run (restore).
  */
 
 const SETTLED_KEPT = 20;
@@ -41,6 +42,21 @@ export class CardBook {
     this.held.push({ card, args: p.args, stepId: p.stepId });
     this.trim();
     return card;
+  }
+
+  /**
+   * Cards kept from before Mockingbird last quit, set before any is opened. Only settled ones: a card that could still
+   * be done would need its call, which isn't saved. `stepOf` finds the step that put each up.
+   */
+  restore(cards: AssistantCard[], stepOf: (cardId: string) => string | undefined): void {
+    if (this.held.length) throw new Error("Cards can be restored only before any is opened");
+    this.held = cards.filter((c) => c.state !== "open" && c.state !== "running").map((card) => ({ card: structuredClone(card), args: {}, stepId: stepOf(card.id) ?? "" }));
+    this.trim();
+  }
+
+  /** A fresh thread: settled cards go, unless `kept` (their turn is still in the thread); open and running ones stay. */
+  clearSettled(kept: (card: AssistantCard) => boolean): void {
+    this.held = this.held.filter((h) => h.card.state === "open" || h.card.state === "running" || kept(h.card));
   }
 
   get(id: string): HeldCard | undefined {

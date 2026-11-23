@@ -99,7 +99,7 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     expect(a.error).toBeUndefined();
 
     // the rail names the tools as their windows are named
-    expect(a.rail).toEqual(["Sessions", "Files", "Changes", "Search", "Run & debug", "Chat", "Artifacts"]);
+    expect(a.rail).toEqual(["Sessions", "Files", "Changes", "Search", "Run & debug", "Chat", "Artifacts", "Assistant"]);
 
     // each opens beside the selected workspace, scoped to it, its area kept apart from the others, and in view
     for (const tool of ["files", "changes", "search", "run"] as const) {

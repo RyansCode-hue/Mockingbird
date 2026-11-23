@@ -102,11 +102,12 @@ import { AreaArtifacts, artifactShelves } from "./areaArtifacts";
 import { artifactViewer } from "./team/artifactViewer";
 import { isRemotePaneId } from "../shared/team/livePanes";
 // the app Assistant (docs/assistant.md)
-import { ASSISTANT_IPC, type AssistantWindowAction } from "../shared/assistant";
+import { ASSISTANT_IPC, assistantModelOf, type AssistantWindowAction } from "../shared/assistant";
 import { AssistantService } from "./assistant/service";
 import { buildRegistry } from "./assistant/registry";
 import * as assistantGroups from "./assistant/tools";
 import { cliSpawner } from "./assistant/launch";
+import { ThreadFile, threadFile } from "./assistant/thread";
 import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "./assistant/world";
 import type { AssistantDeps } from "./assistant/deps";
 // the app Assistant's standing rules
@@ -1295,6 +1296,7 @@ const changeSettings = (s: Partial<Settings>): Settings => {
   team.settingsChanged(before, store.settings);
   livePanes.settingsChanged(before, store.settings);
   phone?.alerts.settingsChanged();
+  if (assistantModelOf(before) !== assistantModelOf(store.settings)) assistant.modelChanged();
   return store.settings;
 };
 handle("settings:set", changeSettings);
@@ -1480,7 +1482,7 @@ handle("team:liveView", (view) => livePanes.setView(view));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 
-// ---- the app Assistant (docs/assistant.md): ask in ⌘K, its sheet docked at the landscape's right edge ----
+// ---- the app Assistant (docs/assistant.md): asked in its side bar tab or ⌘K; its thread kept across quits ----
 /** A step only the window can take. */
 const assistantToWindow = (action: AssistantWindowAction) => toWindow(ASSISTANT_IPC.window, action);
 const worldRoomList = (): WorldRoom[] =>
@@ -1700,6 +1702,8 @@ const assistant = new AssistantService({
   audit: remoteAudit,
   emit: () => toWindow(ASSISTANT_IPC.changed),
   log: logError,
+  thread: new ThreadFile({ file: threadFile(), log: logError }),
+  model: () => assistantModelOf(store.settings),
   // ---- standing rules ----
   rules: ruleEngine,
   ruleOnly: ruleEngine.ruleOnly,

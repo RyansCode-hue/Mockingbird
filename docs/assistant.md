@@ -2,14 +2,15 @@
 
 Ask Mockingbird to do things in plain words: "restart api-fix in plan mode",
 "put the atticus workspaces together", "what's waiting on me?", "when tests
-finishes, start the review". You ask in ⌘K, and the Assistant works in a
-slim sheet docked at the landscape's right edge. The sheet shows its steps
+finishes, start the review". You ask in the Assistant's tab on the side
+bar's rail (⇧⌘A), or from ⌘K, and keep asking there. The tab shows its steps
 live, an Undo on each change it made, a confirm card for each change it
 wants to make, and your standing rules.
 
 Decided with Ryan, 2026-11-16: mockup 3 (⌘K, then a docked sheet), all ten
 ability groups and standing rules in the first version, low-risk changes
-direct with Undo, everything else on a card.
+direct with Undo, everything else on a card. The sheet became a rail tab
+with its own message box, and the thread is kept across quits.
 
 The room's `@assistant` (team-rooms.md → Team room) is a different thing and
 stays as it is: it answers questions in a room's chat and has no tools,
@@ -18,17 +19,18 @@ because teammates write that chat.
 ## How a turn runs
 
 - **One headless Claude turn per question**, on this Mac, under the user's
-  own Claude Code account (`claude -p`, the `sonnet` alias, 180 s cap). It has
+  own Claude Code account (`claude -p`, 180 s cap), on the model Settings →
+  Assistant names: Sonnet (the default, faster) or Opus (smarter). It has
   **no built-in tools** (`--tools ""`) and **only Mockingbird's Assistant MCP
   server** (`--strict-mcp-config --mcp-config …`, `--allowedTools` limited to
   that server's tools). It saves nothing (`--no-session-persistence`). Codex
   isn't used: even read-only, its sandbox can read files.
-- The prompt holds the Assistant's rules, the last 8 turns of the sheet's
+- The prompt holds the Assistant's rules, the last 8 turns of the tab's
   thread (your words, its replies, what its steps did), so "those" and
   "them" work, and a compact snapshot: sessions, groups and rooms, one line
   each. Anything more it reads with its tools.
 - Turns run one at a time. A question asked while one runs waits its turn,
-  and the sheet says so. Clear in the sheet's header starts a fresh thread.
+  and the tab says so. Clear in the tab's header starts a fresh thread.
 - Needs Claude Code installed. Without it, the Ask row says so and does
   nothing.
 
@@ -40,7 +42,7 @@ Every tool has a tier, fixed in main's registry. The model can't change it.
 |---|---|---|
 | **read** | Runs and returns data | list sessions, what's waiting, usage, git status, why it's stuck |
 | **direct** | Runs, and its step shows **Undo** while what it changed is unchanged since (10 min, in memory) | focus, move/stack/size/arrange, move to a group, create/rename a group, rename, mute, settings toggles, draw or remove a wire |
-| **confirm** | Nothing happens: a **card** appears in the sheet, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, create, change or turn on a standing rule |
+| **confirm** | Nothing happens: a **card** appears in the tab, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, create, change or turn on a standing rule |
 
 - A card names the exact target and effect ("Restart “api-fix” · s5 ·
   atticus in Plan mode: stops its agent and starts it again on the same
@@ -225,7 +227,7 @@ one-prompt check and the rules' ban on answering prompts.
   text it types, a first prompt whole, the mode, model and group, the
   sessions it names by id, the warnings each would carry, and the danger
   color. It says that once it's on, it runs them without asking each time.
-  The sheet's Rules list shows each rule's actions the same way, built again
+  The tab's Rules list shows each rule's actions the same way, built again
   by main each time it's read. Turning a rule off (`turn_rule_off`) is direct
   with Undo, offered only while the rule is as it left it (changed, switched
   or paused since, it's the user's); turning one on (`turn_rule_on`, which
@@ -273,7 +275,7 @@ one-prompt check and the rules' ban on answering prompts.
 - Kept in `~/.mockingbird/assistant-rules.json`. The thread and cards are
   memory only. A rules file that can't be read is never overwritten: it's
   kept aside as `assistant-rules.json.corrupt-<time>`, logged, and the
-  sheet's Rules section says so; the rules that could be read are kept.
+  tab's Rules section says so; the rules that could be read are kept.
 - Turning a rule off, removing it and pausing it hold in memory even when
   they can't be saved (a file that couldn't be moved aside, a failed write),
   so a rule the user stopped never runs again while Mockingbird does; the
@@ -282,27 +284,57 @@ one-prompt check and the rules' ban on answering prompts.
 - Who wrote the rules file isn't checked: a process of the user's that
   could write it could already run anything as the user.
 
-## The sheet and ⌘K
+## The tab and ⌘K
 
+- **The tab** is the rail's last button (✦, ⇧⌘A from anywhere, the message
+  box included). On the landscape it shows in the side bar in the area
+  tree's place, as wide as the side bar is dragged; closing it goes back to
+  the tree, or to a hidden side bar if that's how it was. In focus it takes
+  the side bar's slot like Files, Changes and Run & debug, one at a time.
+  It isn't a tool window placed on the landscape: its thread is about the
+  whole app, not one workspace or area.
+- It holds the thread (your words, its reply, step rows with state, Undo on
+  direct steps), open cards (Do it / Cancel), recent rule runs, and a
+  **Rules** section (on/off, remove, each rule's actions spelled out by
+  main). The user's own switch there is direct; only the Assistant's turning
+  one on is a card. Its header names the model (Settings → Assistant).
+- **The message box** sits at its foot and grows to a few lines. ⏎ asks
+  (queued behind a turn that's running, which the thread shows), ⇧⏎ is a
+  new line, ↑ in an empty box brings back the last question. It empties and
+  keeps the keyboard after asking. Past 4,000 characters it says so and
+  won't ask, rather than cutting. Esc hands the keyboard back (the
+  landscape, or the workspace in focus's terminal), keeping what's typed.
+  With nothing yet, the tab offers example questions a click puts in the box.
+- Only the message box takes the keyboard. Clicking the tab's buttons or its
+  words leaves the keys where they were, the way the landscape's tab and ×
+  buttons do (keyArm.ts). Opening the tab from its button, ⇧⌘A or ⌘K gives
+  the box the keyboard; main's `openTab` (assistant:window) shows the tab
+  and leaves the keyboard alone.
 - ⌘K: once you've typed something, an **Ask Assistant** row joins the list.
   It comes first and selected when nothing matches or what you typed reads
   as a sentence (3+ words), and last otherwise. Words that all begin words
   of one row's label ("go to 5102", "Toggle the log panel") are that row's
   command, so ⏎ still runs it. ⌘⏎ always asks. Asking closes the palette,
-  shows the landscape and opens the sheet.
-- **The sheet** docks at the right edge, over the landscape, and stays until
-  you close it. It holds the thread (your words, its reply, step rows with
-  state, Undo on direct steps), open cards (Do it / Cancel), recent rule runs,
-  and a **Rules** section (on/off, remove, each rule's actions spelled out by
-  main). The user's own switch there is direct; only the Assistant's turning
-  one on is a card. It never takes the keyboard from
-  a session: clicking its buttons hands the keys back the way the landscape's
-  tab and × buttons do (keyArm.ts).
-- While the sheet is open, the landscape keeps what it brings into view clear
-  of it: Fit, going to a workspace (`focus_session` too) or an area, and the
-  arrow keys center in the part it leaves uncovered, and a workspace in focus
-  fills only that part.
+  shows the landscape, opens the tab and leaves the keyboard in its box.
 - Replies show as plain text with light markdown, never HTML.
+
+## The thread across quits
+
+- The thread (turns and the cards they put up) is saved to
+  `~/.mockingbird/assistant-turns.json` whenever it changes, written whole
+  and atomically, owner-only (`assistant/thread.ts`). It keeps the last 20
+  turns; past 512 KB the oldest turns, then the oldest settled cards, are
+  left out of the file (logged).
+- At start-up it loads. A turn that was running or queued at the quit loads
+  as "Stopped when Mockingbird quit"; a card waiting on Do it loads expired
+  (its call isn't saved, so it can't run), one that was running loads
+  failed; no Undo comes back, as what an Undo puts back lives in memory.
+- Clear clears the file too: finished turns and settled cards go; a running
+  or queued turn and an open card stay.
+- A file that can't be read is renamed aside (`.corrupt-<time>`), logged,
+  and named in the tab until Clear; the thread starts empty. One that can't
+  be moved aside is never saved over. A save that fails is logged once and
+  named in the tab until one works.
 
 ## Plumbing
 

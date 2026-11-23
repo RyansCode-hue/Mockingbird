@@ -1,5 +1,5 @@
 import * as path from "path";
-import type { AssistantTurn } from "../src/shared/assistant";
+import type { AssistantModel, AssistantTurn } from "../src/shared/assistant";
 import type { AuditEntry } from "../src/shared/team/audit";
 import { DEFAULT_SETTINGS, type Settings } from "../src/shared/types";
 import type { AssistantDeps } from "../src/main/assistant/deps";
@@ -27,6 +27,10 @@ export interface HarnessOptions {
   spawn?: (r: SpawnRequest) => Promise<string>;
   /** Replaces the activity log the test reads as `audit`. */
   audit?: AssistantServiceDeps["audit"];
+  /** Where the thread is kept (thread.ts ThreadFile over a file in this test file's HOME); in memory only when absent. */
+  thread?: AssistantServiceDeps["thread"];
+  /** The model Settings → Assistant names. */
+  model?: () => AssistantModel;
 }
 
 /** The Assistant service over `tools`, with a clock, the activity log and main's log the test can read. */
@@ -52,6 +56,8 @@ export function harness(tools: AssistantTool[], o: HarnessOptions = {}) {
     emit: () => void emits++,
     log: (context, err) => void log.push(`${context}: ${err instanceof Error ? err.message : String(err)}`),
     rules: o.rules,
+    thread: o.thread,
+    model: o.model,
     ruleOnly: o.ruleOnly,
     now: () => clock,
     limits: o.limits,

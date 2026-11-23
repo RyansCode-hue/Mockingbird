@@ -228,7 +228,8 @@ export function parseRule(raw: unknown): AssistantRule | string {
 export const rulesFile = (): string => path.join(os.homedir(), ".mockingbird", "assistant-rules.json");
 
 const FILE_VERSION = 1;
-const tilde = (p: string): string => (p.startsWith(os.homedir() + path.sep) ? `~${p.slice(os.homedir().length)}` : p);
+/** `p` with the home folder written as ~. */
+export const tilde = (p: string): string => (p.startsWith(os.homedir() + path.sep) ? `~${p.slice(os.homedir().length)}` : p);
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**

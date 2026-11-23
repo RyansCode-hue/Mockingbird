@@ -365,7 +365,6 @@ export function Landscape({
   nextStep,
   focusRef,
   onFocusFront,
-  clearOf,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -476,11 +475,6 @@ export function Landscape({
   focusRef?: React.MutableRefObject<FocusActs | null>;
   /** The session in front of the workspace in focus, each time that changes (a tab chosen, a move along the strip); null once focus ends. */
   onFocusFront?: (id: string | null) => void;
-  /**
-   * A box on screen docked over the view (the Assistant's sheet, while it's open), or null: fitting, going to a
-   * workspace or an area, and the arrow keys bring things into view clear of it, as they do of a reveal's `avoid`.
-   */
-  clearOf?: () => ScreenBox | null;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -491,21 +485,10 @@ export function Landscape({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [vp, setVp] = useState<Size | null>(null);
   const vpNow = useRef<Size>({ w: 0, h: 0 });
-  const clearOfNow = useRef(clearOf);
-  clearOfNow.current = clearOf;
-  /**
-   * The view's size to bring something into view in: the part of it left of `avoid` and of what's docked over it
-   * (clearOf), the narrower of the two, when each leaves room enough (clearRoom); else all of it.
-   */
+  /** The view's size to bring something into view in: the part of it clear of `avoid` (clearRoom). */
   const roomClearOf = (avoid: ScreenBox | null): Size => {
     const box = viewport.current?.getBoundingClientRect();
-    const docked = clearOfNow.current?.() ?? null;
-    if (!box || (!avoid && !docked)) return vpNow.current;
-    const at = { left: box.left, top: box.top, width: vpNow.current.w, height: vpNow.current.h };
-    return [avoid, docked].reduce<Size>((room, b) => {
-      const r = b ? clearRoom(at, b) : room;
-      return r.w < room.w ? r : room;
-    }, vpNow.current);
+    return box && avoid ? clearRoom({ left: box.left, top: box.top, width: vpNow.current.w, height: vpNow.current.h }, avoid) : vpNow.current;
   };
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const overlay = useRef<HTMLDivElement>(null);
@@ -891,7 +874,7 @@ export function Landscape({
   const fit = useCallback(() => {
     stopFlyRef.current();
     const rects = fitRects(layoutNow.current);
-    if (rects.length && vpNow.current.w) apply(fitBelow(rects, roomClearOf(null), topNow.current));
+    if (rects.length && vpNow.current.w) apply(fitBelow(rects, vpNow.current, topNow.current));
   }, []);
   // a window that has never shown the landscape starts with everything in view
   const anythingToFit = fitRects(layout).length > 0;
@@ -1136,7 +1119,7 @@ export function Landscape({
     const ghost = l.ghosts.find((g) => g.members.some((m) => m.id === id)) ?? l.tiles.find((t) => t.closed?.some((m) => m.id === id));
     if (ghost && !ghost.hidden) {
       leaveFocus();
-      return flyTo(centreOn(cam.current, ghost.rect, roomClearOf(null)));
+      return flyTo(centreOn(cam.current, ghost.rect, vpNow.current));
     }
     const s = ghost?.members.find((m) => m.id === id) ?? ghost?.closed?.find((m) => m.id === id) ?? closed.find((m) => m.id === id);
     const name = s ? `“${s.ticketTitle ?? s.title}”` : null;
@@ -1354,7 +1337,7 @@ export function Landscape({
     if (!t) return;
     select(t);
     stopFly();
-    apply(centreOn(cam.current, t.rect, roomClearOf(null)));
+    apply(centreOn(cam.current, t.rect, v));
   };
 
   // ---- areas: collapse and lock, the marquee's Make area…, and carrying out a gesture's plan ----

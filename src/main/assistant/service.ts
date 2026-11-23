@@ -1,11 +1,12 @@
 import { randomUUID } from "crypto";
-import type { AssistantCard, AssistantRule, AssistantStep, AssistantTurn, AssistantView, RuleAction } from "../../shared/assistant";
+import { DEFAULT_ASSISTANT_MODEL, type AssistantCard, type AssistantModel, type AssistantRule, type AssistantStep, type AssistantTurn, type AssistantView, type RuleAction } from "../../shared/assistant";
 import type { AuditEntry, AuditKind, AssistantSource } from "../../shared/team/audit";
 import { plainLine } from "../../shared/team/agentText";
 import { CardBook, type HeldCard } from "./cards";
 import type { AssistantDeps } from "./deps";
 import { validateArgs, type AssistantTool, type Registry, type ToolCard, type ToolResult } from "./registry";
 import { describeAction, noRules, ruleDenied, type RulesStore } from "./rules";
+import type { SavedThread, ThreadFile } from "./thread";
 import { TurnRunner, UNAVAILABLE, type AssistantLimits, type SpawnRequest } from "./turns";
 import { UndoBook } from "./undo";
 
@@ -16,6 +17,7 @@ import { UndoBook } from "./undo";
  * - direct: checked, run, and kept with an Undo while what it changed is unchanged (undo.ts);
  * - confirm: runs nothing; it puts up a card (cards.ts), and only the user's Do it, checked again then, runs it.
  * Everything that runs from a direct step, a card, an Undo or a rule is recorded in the activity log (`assistant.action`).
+ * The thread (turns and cards) is saved whenever it changes and read back at start-up (thread.ts); Undos aren't.
  */
 
 /** A tool call answer, as messaging.ts's dispatch gives it to the MCP server. */
@@ -42,6 +44,10 @@ export interface AssistantServiceDeps {
   emit(): void;
   log(context: string, err: unknown): void;
   rules?: RulesStore;
+  /** Where the thread is kept across quits (thread.ts ThreadFile); in memory only when absent. */
+  thread?: Pick<ThreadFile, "load" | "save" | "problem" | "dismiss">;
+  /** The model each turn runs (Settings → Assistant); Sonnet when absent. */
+  model?: () => AssistantModel;
   /** Actions only a standing rule takes (ruleEngine.ts: notify, text_me): never a turn's tools, so not in the registry. */
   ruleOnly?: readonly AssistantTool[];
   now?: () => number;
@@ -59,6 +65,7 @@ export class AssistantService {
   private readonly cards: CardBook;
   private readonly undos: UndoBook;
   private readonly rules: RulesStore;
+  private readonly thread: AssistantServiceDeps["thread"] | null;
   private readonly ruleOnly: Map<string, AssistantTool>;
   private readonly now: () => number;
   private unavailable: string | undefined;
@@ -72,6 +79,7 @@ export class AssistantService {
       spawn: d.spawn,
       world: d.world,
       toolNames: () => this.registry.names(),
+      model: d.model,
       cardState: (id) => this.cards.get(id)?.card.state ?? null,
       changed: () => this.changed(),
       log: d.log,
@@ -85,6 +93,14 @@ export class AssistantService {
     this.ruleOnly = new Map((d.ruleOnly ?? []).map((t) => [t.name, t]));
     for (const name of this.ruleOnly.keys()) if (this.registry.has(name)) throw new Error(`${name} is both an Assistant tool and a rule-only action`);
     this.rules.onChanged?.(() => this.changed());
+    this.thread = d.thread ?? null;
+    if (this.thread) {
+      const saved = this.thread.load();
+      this.runner.restore(saved.turns);
+      this.cards.restore(saved.cards, (cardId) => this.runner.list().flatMap((t) => t.steps).find((s) => s.cardId === cardId)?.id);
+      // what a quit cut short is saved as it loaded: stopped
+      this.save();
+    }
   }
 
   /** Expire cards and lapse Undos on a timer as well as on every change (stateChanged). */
@@ -110,6 +126,7 @@ export class AssistantService {
     await this.checkAvailable();
     this.sweep();
     const rulesProblem = this.rules.problem?.() ?? null;
+    const threadProblem = this.thread?.problem() ?? null;
     return {
       turns: structuredClone(this.runner.list()),
       cards: this.cards.view(),
@@ -119,7 +136,14 @@ export class AssistantService {
       busy: this.runner.busy(),
       ...(this.unavailable ? { unavailable: this.unavailable } : {}),
       ...(rulesProblem ? { rulesProblem } : {}),
+      ...(threadProblem ? { threadProblem } : {}),
+      model: this.d.model?.() ?? DEFAULT_ASSISTANT_MODEL,
     };
+  }
+
+  /** Settings → Assistant's model changed: the tab shows the one the next turn runs. */
+  modelChanged(): void {
+    this.changed();
   }
 
   async ask(text: unknown): Promise<{ turnId: string } | { error: string }> {
@@ -220,10 +244,16 @@ export class AssistantService {
     return { ok: true };
   }
 
-  /** A fresh thread: finished turns go (a running or queued one stays), and their Undos with them. Open cards stay. */
+  /**
+   * A fresh thread: finished turns go (a running or queued one stays), their Undos and settled cards with them; open
+   * cards stay. The saved thread is cleared alike, and why an earlier one couldn't be read is said no more.
+   */
   clear(): { ok: true } {
     this.runner.clear();
+    const left = new Set(this.runner.list().map((t) => t.id));
+    this.cards.clearSettled((c) => left.has(c.turnId));
     this.undos.clear((stepId) => !!this.findStep(stepId));
+    this.thread?.dismiss();
     this.changed();
     return { ok: true };
   }
@@ -459,7 +489,22 @@ export class AssistantService {
     if (changed) this.changed();
   }
 
+  /** The thread as it's saved: what the window shows of it, Undos aside. */
+  private saved(): SavedThread {
+    return { turns: this.runner.list(), cards: this.cards.view() };
+  }
+
+  /** Save the thread (ThreadFile.save logs and names its own failures; anything else it throws is logged here). */
+  private save(): void {
+    try {
+      this.thread?.save(this.saved());
+    } catch (err) {
+      this.d.log("assistant: saving the thread", err);
+    }
+  }
+
   private changed(): void {
+    this.save();
     try {
       this.d.emit();
     } catch (err) {
