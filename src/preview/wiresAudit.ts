@@ -1588,18 +1588,20 @@ const saver = () => document.querySelector<HTMLElement>(".modal.tp-save:not(.mb-
 const tpNow = (el: HTMLElement | null) =>
   el && {
     head: el.querySelector(".tp-head")?.textContent ?? null,
-    items: [...el.querySelectorAll<HTMLElement>(".tp-item")].map((i) => ({ t: i.querySelector(".t")?.textContent ?? null, s: i.querySelector(".s")?.textContent ?? null, sel: i.classList.contains("sel"), off: i.classList.contains("off"), title: i.title || null })),
+    template: el.querySelector(".tp-template .mb-select-val")?.textContent ?? null,
+    refused: [...el.querySelectorAll<HTMLElement>("[data-refused]")].map((r) => r.textContent?.replace(/\s+/g, " ").trim() ?? ""),
     empty: el.querySelector('[data-empty="templates"]')?.textContent ?? null,
     steps: [...el.querySelectorAll<HTMLElement>(".tp-step")].map((s) => {
-      const ta = s.querySelector<HTMLTextAreaElement>(":scope > textarea")!;
+      // a folded step (Pipeline from a ticket…) shows no prompt until it's unfolded
+      const ta = s.querySelector<HTMLTextAreaElement>(":scope > textarea");
       // shown whole: nothing of it scrolled out of sight, and none of it cut
       const whole = (t: HTMLTextAreaElement) => t.scrollHeight <= t.clientHeight + 1 && getComputedStyle(t).overflowY !== "scroll";
       return {
         name: s.querySelector<HTMLInputElement>("input.tp-name")?.value ?? s.querySelector(".tp-name")?.textContent ?? null,
         agent: s.querySelector(".tp-agent .mb-select-val")?.textContent ?? s.querySelector(".tp-fixed")?.textContent ?? null,
         effort: s.querySelector(".tp-effort .mb-select-val")?.textContent ?? null,
-        prompt: ta.value,
-        whole: whole(ta),
+        prompt: ta?.value ?? null,
+        whole: ta ? whole(ta) : null,
         flags: [...s.querySelectorAll<HTMLElement>("[data-flag]")].map((f) => `${f.dataset.flag}: ${f.textContent?.replace(/\s+/g, " ").trim()}`),
         flows: [...s.querySelectorAll<HTMLElement>(".tp-flow")].map((f) => {
           const t = f.querySelector("textarea")!;
@@ -1669,7 +1671,7 @@ async function templateNotesAudit(env: WiresAuditEnv, out: Record<string, unknow
   out.repo = { was: repoWas, noRepo, back: { said: flag("repo"), act: tpNow(picker())?.act ?? null } };
   // #5115, a new area, laid out and refused with a step left (main makes the area, and keeps it for that step): what's
   // said, the area, and where the step left is drawn
-  await choose(".tp-ticket", "#5115");
+  await tick("5115");
   await sleep(700);
   const area5115 = () => !!document.querySelector('.ls-world [data-area="5115"]');
   mark = env.calls.length;
@@ -1688,13 +1690,48 @@ async function openPicker(at: Pt): Promise<void> {
 }
 /** Choose `label` in the template dialog's dropdown `sel` (a Select), as a person does: open it, click the row. */
 async function choose(sel: string, label: string): Promise<void> {
+  if (!picker()) throw new Error(`the template dialog closed before “${label}” could be chosen in ${sel}`);
   await drive([{ mouse: { ...mid(picker()!.querySelector(sel)), clickCount: 1 } }]);
   await sleep(250);
   const row = [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.querySelector(".mb-opt-label")?.textContent?.includes(label));
+  if (!row) throw new Error(`${sel} offered no “${label}”: ${[...document.querySelectorAll(".mb-opt .mb-opt-label")].map((o) => o.textContent).join(" | ") || "it didn't open"}`);
+  row.scrollIntoView({ block: "nearest" });
   await drive([{ mouse: { ...mid(row), clickCount: 1 } }]);
   await sleep(250);
 }
-const itemOf = (el: HTMLElement, name: string) => [...el.querySelectorAll<HTMLElement>(".tp-item")].find((i) => i.querySelector(".t")?.textContent === name) ?? null;
+/** The picker's template dropdown opened as a person opens it and read, then closed: each choice, the chosen one marked. */
+async function templateItems(): Promise<{ t: string | null; s: string | null; sel: boolean }[]> {
+  const at = mid(picker()!.querySelector(".tp-template"));
+  await drive([{ mouse: { ...at, clickCount: 1 } }]);
+  await sleep(250);
+  if (!document.querySelector(".mb-listbox")) {
+    const hit = document.elementFromPoint(at.x, at.y);
+    throw new Error(`the template dropdown didn't open: the click at ${at.x},${at.y} landed on ${hit?.tagName}.${hit?.className}`);
+  }
+  const items = [...document.querySelectorAll<HTMLElement>(".mb-listbox .mb-opt")].map((o) => ({
+    t: o.querySelector(".mb-opt-label")?.textContent?.replace(/^✓/, "") ?? null,
+    s: o.querySelector(".mb-opt-desc")?.textContent ?? null,
+    sel: o.getAttribute("aria-selected") === "true",
+  }));
+  await drive([{ key: "Escape" }]);
+  await sleep(250);
+  return items;
+}
+/** Ticket `id` ticked in the picker's list, as a person ticks it. */
+async function tick(id: string): Promise<void> {
+  const row = picker()!.querySelector<HTMLElement>(`.tp-tk[data-ticket="${id}"] .tp-tk-pick`);
+  row?.scrollIntoView({ block: "nearest" });
+  await drive([{ mouse: { ...mid(row), clickCount: 1 } }]);
+  await sleep(250);
+}
+/** Every folded step of the picker unfolded, so its prompt and what's sent into it show. */
+async function unfoldSteps(): Promise<void> {
+  for (const b of [...(picker()?.querySelectorAll<HTMLElement>(".tp-step.shut .tp-fold") ?? [])]) {
+    b.click();
+    await sleep(100);
+  }
+  await sleep(200);
+}
 const lineButton = (el: HTMLElement, flag: string) => el.querySelector<HTMLButtonElement>(`[data-flag="${flag}"] button`);
 
 /**
@@ -1776,14 +1813,14 @@ async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
     note: noteNow(),
     keys: keysAt(),
   };
-  // the picker opened once, settled, to learn where Quick fix's row is (the dialog opens centred, so it's there again)
+  // the picker opened once, settled, to learn where its template dropdown is (the dialog opens centred, so it's there again)
   await sleep(600);
   await openPicker(spaceUnder());
   await sleep(700);
-  const quickAt = mid(itemOf(picker()!, "Quick fix"));
+  const quickAt = mid(picker()!.querySelector(".tp-template"));
   await drive([{ key: "Escape" }]);
   await sleep(400);
-  // then opened by a double click on its menu row, a click on Quick fix's row and ⌘↵ straight after: the second
+  // then opened by a double click on its menu row, a click on its template dropdown and ⌘↵ straight after: the second
   // click, the early click and the key take nothing
   mark = env.calls.length;
   await drive([{ mouse: { ...spaceUnder(), clickCount: 1, button: "right" } }]);
@@ -1791,37 +1828,44 @@ async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
   const row = mid(menuRow("Pipeline from a ticket…"));
   await drive([{ mouse: { ...row, clickCount: 1 } }, { mouse: { ...row, clickCount: 2 } }, { pause: 120 }, { mouse: { ...quickAt, clickCount: 1 } }, { key: "Enter", meta: true }]);
   const opened = tpNow(picker());
-  out.early = { opened, layOuts: since(mark, "templatesLayOut").length, open: !!picker() };
+  out.early = { opened, listOpen: !!document.querySelector(".mb-listbox"), layOuts: since(mark, "templatesLayOut").length, open: !!picker() };
   await sleep(700);
-  out.shown = tpNow(picker());
+  // its steps folded as it opens, then unfolded to read whole
+  const folded = [...(picker()?.querySelectorAll<HTMLElement>(".tp-step") ?? [])].map((s) => s.classList.contains("shut"));
+  await unfoldSteps();
+  out.shown = { ...tpNow(picker()), folded, items: await templateItems() };
   // Quick fix, saved by a newer version: its long prompt whole
-  await drive([{ mouse: { ...mid(itemOf(picker()!, "Quick fix")), clickCount: 1 } }]);
-  await sleep(300);
-  out.quick = tpNow(picker());
+  await choose(".tp-template", "Quick fix");
+  const quickAct = tpNow(picker())?.act ?? null;
+  await unfoldSteps();
+  out.quick = { ...tpNow(picker()), act: quickAct, unknown: picker()?.querySelector('[data-flag="unknown"]')?.textContent ?? null };
   // back to Build, review, test: Make it ask takes the automatic gate off, and choosing it again puts it back
-  await drive([{ mouse: { ...mid(itemOf(picker()!, "Build, review, test")), clickCount: 1 } }]);
+  await choose(".tp-template", "Build, review, test");
   await sleep(300);
+  await unfoldSteps();
+  lineButton(picker()!, "automatic")?.scrollIntoView({ block: "nearest" });
   await drive([{ mouse: { ...mid(lineButton(picker()!, "automatic")), clickCount: 1 } }]);
   await sleep(200);
   const asked = tpNow(picker());
-  // (one at a time: the dialog's height follows what the template shows, so its list moves between them)
-  await drive([{ mouse: { ...mid(itemOf(picker()!, "Quick fix")), clickCount: 1 } }]);
-  await sleep(200);
-  await drive([{ mouse: { ...mid(itemOf(picker()!, "Build, review, test")), clickCount: 1 } }]);
+  await choose(".tp-template", "Quick fix");
+  await choose(".tp-template", "Build, review, test");
   await sleep(300);
+  await unfoldSteps();
   out.makeAsk = { asked, again: tpNow(picker()) };
   // what Reviewer sends Tester, edited: it's laid out as it's shown
   const flow = picker()!.querySelector<HTMLTextAreaElement>('.tp-step[data-step="s3"] .tp-flow textarea');
+  flow?.scrollIntoView({ block: "nearest" });
   await drive([{ mouse: { ...mid(flow), clickCount: 1 } }, { pause: 200 }, ..." Be brief".split("").map((key) => ({ key }))]);
   await sleep(200);
   // what Reviewer sends back to Builder, emptied (a space typed over it): it sends the default, and says so
   const back = picker()!.querySelector<HTMLTextAreaElement>('.tp-step[data-step="s1"] .tp-flow textarea');
+  back?.scrollIntoView({ block: "nearest" });
   const backAt = mid(back);
   await drive([{ mouse: { ...backAt, clickCount: 1 } }, { mouse: { ...backAt, clickCount: 2 } }, { mouse: { ...backAt, clickCount: 3 } }, { pause: 200 }, { key: " " }, { pause: 200 }]);
   out.emptied = { text: back?.value ?? null, hint: picker()?.querySelector('.tp-step[data-step="s1"] [data-flow-default]')?.textContent ?? null };
   // its ticket: #5115, whose area is new; then ⌘↵ held down, as the keyboard repeats it, the first lay-out refused
   // (?lsLayOutFails=1): said, its area taken back, and the repeats after it lay nothing out
-  await choose(".tp-ticket", "#5115");
+  await tick("5115");
   out.ticketed = tpNow(picker());
   await sleep(700);
   mark = env.calls.length;
@@ -1862,10 +1906,10 @@ async function templateAudit(env: WiresAuditEnv, out: Record<string, unknown>): 
     await openPicker(spaceUnder());
     await sleep(700);
     const shown = tpNow(picker());
-    await drive([{ mouse: { ...mid(itemOf(picker()!, pick)), clickCount: 1 } }]);
-    await sleep(300);
-    if (ticket) await choose(".tp-ticket", ticket);
-    const chosen = tpNow(picker());
+    await choose(".tp-template", pick);
+    const act = tpNow(picker())?.act ?? null;
+    if (ticket) await tick(ticket.replace(/^#/, ""));
+    const chosen = { ...tpNow(picker()), act };
     await sleep(700);
     const m = env.calls.length;
     const at = new Set(Object.keys(await links()));
@@ -1906,10 +1950,7 @@ async function showAudit(part: string): Promise<void> {
     await sleep(300);
     menuRow("Pipeline from a ticket…")?.click();
     await sleep(800);
-    const ticket = picker()?.querySelector<HTMLElement>(".tp-ticket");
-    ticket?.click();
-    await sleep(250);
-    [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.textContent?.includes(part === "tpick" ? "#5115" : "#5110"))?.click();
+    picker()?.querySelector<HTMLElement>(`.tp-tk[data-ticket="${part === "tpick" ? "5115" : "5110"}"] .tp-tk-pick`)?.click();
     return;
   }
   if (part === "tsave") {

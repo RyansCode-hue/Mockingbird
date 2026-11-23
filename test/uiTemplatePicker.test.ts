@@ -202,11 +202,14 @@ describe.skipIf(!local)("the built-in Orchestrator → Coder → Verifier", () =
   it("lays out only its Orchestrator, told the rest as its plan's starting shape", async () => {
     const t = await audit<{
       items: { t: string | null; s: string | null; sel: boolean }[];
+      folded: { shut: boolean; prompt: boolean; fold: string | null }[];
       chosen: { steps: { name: string | null; agent: string | null; whole: boolean; flags: string[] }[]; foot: string | null; act: { off: boolean; title: string | null } | null };
       laid: { calls: number; first: Record<string, unknown> | null; steps: number; ticket: string | null; description: boolean; open: boolean; note: string | null; orchestrators: [string, string][]; planned: number };
     }>("landscapePlanAudit=builtin");
     // offered first, and chosen when nothing's saved
     expect(t.items).toEqual([{ t: "Orchestrator → Coder → Verifier", s: "Built in · 3 steps", sel: true }]);
+    // each step folded to its line, its prompt a click away
+    expect(t.folded).toEqual(Array(3).fill({ shut: true, prompt: false, fold: "Prompt" }));
     const shape = "shape: Not laid out now: the Orchestrator is told it as its plan's starting shape, and proposes the steps. Nothing more is made until you lay its plan out.";
     expect(t.chosen.steps.map((s) => [s.name, s.agent, s.whole, s.flags])).toEqual([
       ["Orchestrator", "Claude", true, ["start: An Orchestrator: it starts as it's laid out, in a worktree on the ticket's branch, reads the ticket and proposes the rest as its plan. It creates nothing and writes no code."]],
@@ -221,23 +224,20 @@ describe.skipIf(!local)("the built-in Orchestrator → Coder → Verifier", () =
     expect(t.laid).toMatchObject({ more: null, tickets: [null] });
   }, 200_000);
 
-  it("takes more tickets for its one Orchestrator: a row each, an empty row holding Lay out off, all of them sent", async () => {
+  it("takes more tickets for its one Orchestrator, ticked on the list: the first ticked is the lead, which can be changed, all of them sent", async () => {
     const t = await audit<{
-      more: { offered: string[]; rows: (string | null)[]; notes: string[]; off: { off: boolean; title: string | null } | null };
+      more: { two: { ticked: (string | null)[]; foot: string | null; off: boolean | null }; swapped: (string | null)[]; back: (string | null)[]; filtered: (string | null)[] };
       laid: { calls: number; ticket: string | null; more: string[] | null; tickets: (string[] | null)[]; note: string | null };
     }>("landscapePlanAudit=builtinmany");
-    // the first ticket isn't offered again
-    expect(t.more.offered.some((o) => o.includes("#5115"))).toBe(false);
-    expect(t.more.offered.some((o) => o.includes("#5110"))).toBe(true);
-    expect(t.more.rows).toEqual(["#5110 · Export donors to CSV", "Choose a ticket"]);
-    expect(t.more.notes).toEqual(
-      expect.arrayContaining([
-        "tickets: Its Orchestrator reads both tickets and proposes one plan, each workspace on one of them. Its own folder is on #5115's branch.",
-        "more: Choose the other ticket, or remove its row. Lay out is off until then.",
-      ])
-    );
-    expect(t.more.off).toEqual({ off: true, title: "Choose the other ticket, or remove its row" });
-    // the empty row removed: laid out with both, one Orchestrator holding both
+    const ticked = (lead: "5115" | "5110") => [`✓#5110Export donors to CSV${lead === "5110" ? "lead" : "Make lead"}`, `✓#5115Donor sync waits on the CRM's API keys${lead === "5115" ? "lead" : "Make lead"}`];
+    // #5115 ticked first is the lead, its branch holding the Orchestrator's folder, as the foot says
+    expect(t.more.two).toEqual({ ticked: ticked("5115"), foot: "2 tickets · Orchestrator on #5115's branch · new area #5115 · worktree from origin/dev", off: false });
+    // Make lead on #5110 swaps them, and on #5115 swaps them back
+    expect(t.more.swapped).toEqual(ticked("5110"));
+    expect(t.more.back).toEqual(ticked("5115"));
+    // a filter that matches nothing still shows what's ticked
+    expect(t.more.filtered).toEqual(["5110", "5115"]);
+    // laid out with both, one Orchestrator holding both
     expect(t.laid).toMatchObject({ calls: 1, ticket: "5115", more: ["5110"], tickets: [["5115", "5110"]] });
     expect(t.laid.note).toMatch(/It reads #5115 and #5110 and proposes the rest as its plan/);
   }, 200_000);

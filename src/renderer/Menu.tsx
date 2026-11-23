@@ -207,7 +207,8 @@ export function Select({
           setOpen((o) => !o);
         }}
         onKeyDown={(e) => {
-          if (!open && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")) {
+          // ⌘↵ and the like are the surface's own (a dialog's ⌘↵ submits it), never an opening
+          if (!open && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
             unplace();
             setOpen(true);

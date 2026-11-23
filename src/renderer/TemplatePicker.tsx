@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { Pick, Select, type SelectOption } from "./Menu";
 import { RepoPick } from "./RepoPick";
@@ -216,9 +216,15 @@ interface StepsProps {
   onStep: (key: string, patch: Partial<TemplateStep>) => void;
   onWire: (index: number, patch: Partial<TemplateWire>) => void;
   onStartFirst: (starts: boolean) => void;
+  /**
+   * Steps folded to their one line (Pipeline from a ticket…): `open` holds those unfolded, whose prompt and what's sent
+   * into them show. A warning (a problem, an automatic gate, one a room makes ask) and the first step's start show
+   * either way.
+   */
+  folding?: { open: ReadonlySet<string>; toggle: (key: string) => void };
 }
 
-function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst }: StepsProps) {
+function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst, folding }: StepsProps) {
   return (
     <>
       {body.steps.map((s, i) => {
@@ -238,8 +244,9 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
           ...(s.model && !models.some((m) => m.id === s.model) ? [{ value: s.model, label: s.model }] : []),
           ...models.map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
         ];
+        const shut = !!folding && !folding.open.has(s.key);
         return (
-          <div key={s.key} className="tp-step" data-step={s.key}>
+          <div key={s.key} className={`tp-step${folding ? " folds" : ""}${shut ? " shut" : ""}`} data-step={s.key}>
             <div className="tp-step-head">
               <span className="tp-dot" />
               {editNames ? (
@@ -265,60 +272,69 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
                   <Select className="tp-effort" value={s.effort ?? ""} placeholder="Default effort" title={`${s.name}'s effort`} options={effortOptions} onChange={(v) => onStep(s.key, { effort: v || undefined })} />
                 </>
               )}
+              {folding && (
+                <button type="button" className="link tp-fold" data-fold={s.key} aria-expanded={!shut} onClick={() => folding.toggle(s.key)} title={shut ? `Show ${s.name}'s ${terminal ? "command" : "prompt"}, and what's sent into it` : undefined}>
+                  {shut ? (terminal ? "Command" : "Prompt") : "Hide"}
+                </button>
+              )}
             </div>
-            <WholeText
-              value={s.prompt}
-              mono
-              label={terminal ? `${s.name}'s command` : `${s.name}'s prompt`}
-              placeholder={terminal ? "The command it runs, e.g. npm run dev" : "What it's told as it starts"}
-              onChange={(v) => onStep(s.key, { prompt: v })}
-            />
-            {typeof s.folder === "object" && !terminal && (
-              <div className="tp-line dim">Works in {body.steps.find((x) => x.key === (s.folder as { sameAs: string }).sameAs)?.name}'s folder.</div>
-            )}
-            {into
-              .filter(({ w }) => carriesWork(w.type))
-              .map(({ w, j }) => (
-                <div key={`flow-${j}`} className="tp-flow" data-wire={j}>
-                  <div className="tp-line dim">
-                    What {nameOf(w.from)} sends {w.type === "feedback" ? "back" : "it"} ({w.type}):
+            {!shut && (
+              <>
+                <WholeText
+                  value={s.prompt}
+                  mono
+                  label={terminal ? `${s.name}'s command` : `${s.name}'s prompt`}
+                  placeholder={terminal ? "The command it runs, e.g. npm run dev" : "What it's told as it starts"}
+                  onChange={(v) => onStep(s.key, { prompt: v })}
+                />
+                {typeof s.folder === "object" && !terminal && (
+                  <div className="tp-line dim">Works in {body.steps.find((x) => x.key === (s.folder as { sameAs: string }).sameAs)?.name}'s folder.</div>
+                )}
+                {into
+                  .filter(({ w }) => carriesWork(w.type))
+                  .map(({ w, j }) => (
+                    <div key={`flow-${j}`} className="tp-flow" data-wire={j}>
+                      <div className="tp-line dim">
+                        What {nameOf(w.from)} sends {w.type === "feedback" ? "back" : "it"} ({w.type}):
+                      </div>
+                      <WholeText
+                        value={templateOf({ template: w.template, when: w.when ?? "finished" })}
+                        mono
+                        label={`What ${nameOf(w.from)} → ${s.name} sends`}
+                        placeholder="{summary}"
+                        onChange={(v) => onWire(j, { template: v })}
+                      />
+                      {w.template !== undefined && !w.template.trim() && (
+                        <div className="tp-line dim" data-flow-default>
+                          Empty, so it sends the default: {flowOf(w).replace(/\s+/g, " ")}
+                        </div>
+                      )}
+                      {w.files?.length ? (
+                        <div className="tp-files">
+                          <span className="dim">Its files:</span>
+                          {w.files.map((f, x) => (
+                            <span key={f} className="tp-file">
+                              {f}
+                              <button type="button" className="link" aria-label={`Leave out ${f}`} title="Leave it out" onClick={() => onWire(j, { files: w.files!.filter((_f, y) => y !== x) })}>
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                {terminal && (
+                  <div className="tp-line dim" data-flag="terminal">
+                    A terminal runs this as a command. {p.terminal!.why}
                   </div>
-                  <WholeText
-                    value={templateOf({ template: w.template, when: w.when ?? "finished" })}
-                    mono
-                    label={`What ${nameOf(w.from)} → ${s.name} sends`}
-                    placeholder="{summary}"
-                    onChange={(v) => onWire(j, { template: v })}
-                  />
-                  {w.template !== undefined && !w.template.trim() && (
-                    <div className="tp-line dim" data-flow-default>
-                      Empty, so it sends the default: {flowOf(w).replace(/\s+/g, " ")}
-                    </div>
-                  )}
-                  {w.files?.length ? (
-                    <div className="tp-files">
-                      <span className="dim">Its files:</span>
-                      {w.files.map((f, x) => (
-                        <span key={f} className="tp-file">
-                          {f}
-                          <button type="button" className="link" aria-label={`Leave out ${f}`} title="Leave it out" onClick={() => onWire(j, { files: w.files!.filter((_f, y) => y !== x) })}>
-                            ×
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            {terminal && (
-              <div className="tp-line dim" data-flag="terminal">
-                A terminal runs this as a command. {p.terminal!.why}
-              </div>
-            )}
-            {i === 0 && s.role === "orchestrator" && (
-              <div className="tp-line dim" data-flag="start">
-                An Orchestrator: it starts as it's laid out, in a worktree on the ticket's branch, reads the ticket and proposes the rest as its plan. It creates nothing and writes no code.
-              </div>
+                )}
+                {i === 0 && s.role === "orchestrator" && (
+                  <div className="tp-line dim" data-flag="start">
+                    An Orchestrator: it starts as it's laid out, in a worktree on the ticket's branch, reads the ticket and proposes the rest as its plan. It creates nothing and writes no code.
+                  </div>
+                )}
+              </>
             )}
             {i === 0 && !s.role && (
               <div className="tp-line dim" data-flag="start">
@@ -328,7 +344,7 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
                 </button>
               </div>
             )}
-            {p.shape && (
+            {p.shape && !shut && (
               <div className="tp-line dim" data-flag="shape">
                 {p.shape}
               </div>
@@ -437,7 +453,6 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 /** Why the picker's Lay out is off for want of a repo, or of an area to lay out in: on its button, and said under what's missing. */
 const NEEDS_REPO = "Its steps work in worktrees of their own: choose a repo";
 const NEEDS_AREA = "Choose a ticket, so its steps have an area";
-const NEEDS_MORE = "Choose the other ticket, or remove its row";
 
 /** A body with step `key` changed. */
 const withStep = (b: TemplateBody, key: string, patch: Partial<TemplateStep>): TemplateBody => ({
@@ -508,7 +523,8 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   }, [list]);
   const name = chosen === OFFERED ? offered!.name : chosen === BUILT_IN_TEMPLATE.id ? BUILT_IN_TEMPLATE.name : (templates.find((x) => x.template.id === chosen)?.template.name ?? "");
 
-  // the ticket, as New session picks one: yours first, then anyone's
+  // the tickets, ticked on the board's list: yours first, then anyone's. The first ticked is the lead, whose branch
+  // holds the Orchestrator's folder; only a template that starts at an Orchestrator takes more than one
   const ado = useAdoTickets();
   const all = ado.items ?? [];
   const [whoPick, setWhoPick] = useState("");
@@ -518,15 +534,30 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
     const mine = who && who !== "*" ? names.filter((n) => n === who) : [];
     return [...mine, ...names.filter((n) => !mine.includes(n))];
   }, [all, who]);
-  const columns = useMemo(() => ticketsByColumn(who && who !== "*" ? all.filter((t) => t.assignedTo === who) : all, ado.stateOrder), [all, who, ado.stateOrder]);
-  const [ticketSel, setTicketSel] = useState("");
-  const ticket = all.find((t) => String(t.id) === ticketSel) ?? null;
+  const [picked, setPicked] = useState<string[]>([]);
+  const [filter, setFilter] = useState("");
+  const several = !!body && startsAtOrchestrator(body);
+  const chosenIds = (several ? picked : picked.slice(0, 1)).filter((id) => all.some((t) => String(t.id) === id));
+  const [ticket = null, ...more] = chosenIds.map((id) => all.find((t) => String(t.id) === id)!);
   const tLine = ticket ? ticketLine(String(ticket.id), ticket.title) : "";
-  // an Orchestrator template takes more tickets after the first: it plans for all of them, each step on one
-  const [moreSel, setMoreSel] = useState<string[]>([]);
-  const orchestrated = !!body && startsAtOrchestrator(body) && !!ticket;
-  const moreRows = orchestrated ? moreSel : [];
-  const more = moreRows.flatMap((id) => all.filter((t) => String(t.id) === id));
+  // what's ticked always shows, whoever's it is and whatever the filter says
+  const columns = useMemo(() => {
+    const q = filter.trim().toLowerCase().replace(/^#/, "");
+    const shows = (t: (typeof all)[number]) =>
+      picked.includes(String(t.id)) || ((!who || who === "*" || t.assignedTo === who) && (!q || String(t.id).startsWith(q) || t.title.toLowerCase().includes(q)));
+    return ticketsByColumn(all.filter(shows), ado.stateOrder);
+  }, [all, who, filter, picked, ado.stateOrder]);
+  const [capped, setCapped] = useState(false);
+  const tick = (id: string) => {
+    setCapped(false);
+    if (picked.includes(id)) return setPicked(picked.filter((x) => x !== id));
+    if (!several) return setPicked([id]);
+    if (picked.length >= ORCHESTRATOR_TICKETS_MAX) return setCapped(true);
+    setPicked([...picked, id]);
+  };
+  const makeLead = (id: string) => setPicked([id, ...picked.filter((x) => x !== id)]);
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+  const folding = useMemo(() => ({ open, toggle: (k: string) => setOpen((o) => (o.has(k) ? new Set([...o].filter((x) => x !== k)) : new Set([...o, k]))) }), [open]);
 
   const [repo, setRepo] = useState(where.seed.repo ?? "");
   const { branches, base, setBase, error: branchError } = useRepoBranches(repo || null);
@@ -543,8 +574,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const plan = useMemo(() => (body ? layOutPlan(body, { room, ticket: !!ticket }) : null), [body, room, ticket]);
   const needsRepo = !!body && body.steps.some((s) => s.folder === "new") && !repo;
   const needsArea = !!body && !area;
-  const needsMore = moreRows.some((id) => !id);
-  const blocked = !body ? "Choose a template" : plan!.problems[0] ?? (needsRepo ? NEEDS_REPO : needsArea ? NEEDS_AREA : needsMore ? NEEDS_MORE : null);
+  const blocked = !body ? "Choose a template" : plan!.problems[0] ?? (needsRepo ? NEEDS_REPO : needsArea ? NEEDS_AREA : null);
 
   const [busy, setBusy] = useState(false);
   const busyNow = useRef(false);
@@ -605,9 +635,18 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
     }
   };
 
+  const templateOptions: SelectOption[] = [
+    ...(offered ? [{ value: OFFERED, label: offered.name, description: offered.provenance }] : []),
+    { value: BUILT_IN_TEMPLATE.id, label: BUILT_IN_TEMPLATE.name, description: `Built in · ${plural(BUILT_IN_TEMPLATE.steps.length, "step")}` },
+    ...templates.map(({ template: t, unknown }) => {
+      const auto = automaticGates(t);
+      return { value: t.id, label: t.name, description: [plural(t.steps.length, "step"), ...(auto ? [`${auto} automatic`] : []), ...(unknown.length ? ["another version's"] : [])].join(" · ") };
+    }),
+  ];
   const existing = area ? where.areaTitle(area) : null;
   const usesWorktree = !!body?.steps.some((s) => s.folder === "new");
   const foot = [
+    ...(more.length ? [`${more.length + 1} tickets · Orchestrator on #${ticket!.id}'s branch`] : []),
     !area ? "no area yet" : existing ? `in ${existing}` : `new area ${ticket ? `#${ticket.id}` : area}`,
     !repo ? "no repo" : usesWorktree ? `worktree from ${base ? `origin/${base}` : `${baseName(repo)}'s HEAD`}` : `${baseName(repo)}'s checkout`,
     ...(room ? ["team room: gates ask"] : []),
@@ -631,20 +670,19 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
         <h3>Pipeline from a ticket</h3>
         {chosen === OFFERED && offered && <span className="tp-prov">{offered.provenance}</span>}
       </div>
-      <div className="tp-sec">
-        <div className="tp-k">Ticket</div>
+      <div className="tp-sec tp-tix">
+        <div className="tp-k">{several ? "Tickets" : "Ticket"}</div>
         <div className="tp-line2">
-          <Pick
-            className="tp-who"
-            value={who}
-            onChange={(e) => {
-              setWhoPick(e.target.value);
-              setTicketSel("");
-              setMoreSel([]);
-            }}
+          <input
+            type="text"
+            className="tp-filter"
+            placeholder="Filter by number or title"
+            aria-label="Filter the tickets"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
             disabled={!all.length}
-            title="Whose tickets to choose from"
-          >
+          />
+          <Pick className="tp-who" value={who} onChange={(e) => setWhoPick(e.target.value)} disabled={!all.length} title="Whose tickets to list: what's ticked stays">
             <option value="*">Anyone</option>
             {people.map((p) => (
               <option key={p} value={p}>
@@ -652,80 +690,68 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
               </option>
             ))}
           </Pick>
-          <Pick
-            className="tp-ticket"
-            value={ticketSel}
-            onChange={(e) => {
-              setTicketSel(e.target.value);
-              setMoreSel((m) => m.map((id) => (id === e.target.value ? "" : id)));
-            }}
-            title="The ticket its steps are on: {ticket} in a prompt names it"
-          >
-            <option value="">{ado.items === null ? (ado.error ? "No ticket (the board can't be read)" : "No ticket (reading the board…)") : "No ticket"}</option>
-            {columns.map((c) => (
-              <optgroup key={c.state} label={c.state}>
-                {c.items.map((t) => (
-                  <option key={t.id} value={String(t.id)}>
-                    #{t.id} · {t.title}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </Pick>
         </div>
-        {moreRows.map((sel, i) => (
-          <div className="tp-line2 tp-more" key={i} data-more={i}>
-            <span className="tp-and">and</span>
-            <Pick
-              className="tp-ticket"
-              value={sel}
-              onChange={(e) => setMoreSel((m) => m.map((id, j) => (j === i ? e.target.value : id)))}
-              title="Another ticket its Orchestrator plans for: each step of its plan works on one of them"
-            >
-              <option value="">Choose a ticket</option>
-              {columns.map((c) => {
-                const free = c.items.filter((t) => String(t.id) === sel || (String(t.id) !== ticketSel && !moreRows.includes(String(t.id))));
-                return free.length ? (
-                  <optgroup key={c.state} label={c.state}>
-                    {free.map((t) => (
-                      <option key={t.id} value={String(t.id)}>
-                        #{t.id} · {t.title}
-                      </option>
-                    ))}
-                  </optgroup>
-                ) : null;
-              })}
-            </Pick>
-            <button type="button" className="link tp-unticket" data-ticket-act="remove" onClick={() => setMoreSel((m) => m.filter((_, j) => j !== i))} title={sel ? `Leave #${sel} out` : "Remove this row"}>
-              Remove
-            </button>
-          </div>
-        ))}
-        {orchestrated && moreRows.length + 1 < ORCHESTRATOR_TICKETS_MAX && (
-          <button type="button" className="link tp-addticket" data-ticket-act="add" onClick={() => setMoreSel((m) => [...m, ""])} title="Give its Orchestrator another ticket: it reads them all and proposes one plan">
-            + Another ticket
-          </button>
-        )}
+        <div className="tp-tk-list" role="group" aria-label="Tickets">
+          {ado.items === null ? (
+            <div className="tp-empty">{ado.error ? "No tickets: the board can't be read" : "Reading the board…"}</div>
+          ) : !columns.length ? (
+            <div className="tp-empty">{all.length ? `No ticket matches “${filter.trim()}”` : "No tickets on the board"}</div>
+          ) : (
+            columns.map((c) => (
+              <Fragment key={c.state}>
+                <div className="tp-tk-state">{c.state}</div>
+                {c.items.map((t) => {
+                  const id = String(t.id);
+                  const on = chosenIds.includes(id);
+                  const lead = on && more.length > 0 && id === chosenIds[0];
+                  return (
+                    <div key={id} className={`tp-tk${on ? " on" : ""}`} data-ticket={id}>
+                      <button
+                        type="button"
+                        role="checkbox"
+                        aria-checked={on}
+                        className="tp-tk-pick"
+                        onClick={() => tick(id)}
+                        title={on ? `Leave #${id} out` : several ? "Its Orchestrator plans for every ticket ticked, each workspace on one" : "The ticket its steps are on: {ticket} in a prompt names it"}
+                      >
+                        <span className="tp-cb" aria-hidden="true">
+                          {on ? "✓" : ""}
+                        </span>
+                        <span className="tp-tk-id">#{id}</span>
+                        <span className="tp-tk-t">{t.title}</span>
+                      </button>
+                      {lead && (
+                        <span className="tp-lead" title="Its Orchestrator's own folder is on this ticket's branch">
+                          lead
+                        </span>
+                      )}
+                      {on && more.length > 0 && !lead && (
+                        <button type="button" className="link tp-mklead" data-ticket-act="lead" onClick={() => makeLead(id)} title={`Put the Orchestrator's own folder on #${id}'s branch`}>
+                          Make lead
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </Fragment>
+            ))
+          )}
+        </div>
       </div>
-      {more.length > 0 && (
-        <div className="tp-note dim" data-flag="tickets">
-          Its Orchestrator reads {more.length === 1 ? "both tickets" : `all ${more.length + 1} tickets`} and proposes one plan, each workspace on one of them. Its own folder is on #{ticket!.id}&apos;s branch.
+      {capped && (
+        <div className="tp-note amber" data-flag="capped">
+          An Orchestrator takes at most {ORCHESTRATOR_TICKETS_MAX} tickets: leave one out first.
         </div>
       )}
-      {needsMore && (
-        <div className="tp-note amber" data-flag="more">
-          {NEEDS_MORE}. Lay out is off until then.
+      {!several && picked.length > 1 && ticket && (
+        <div className="tp-note dim" data-flag="onlyone">
+          “{name}” doesn&apos;t start at an Orchestrator, so it takes one ticket: #{ticket.id}.
         </div>
       )}
       {ado.error && <div className="tp-note dim">Azure DevOps: {ado.error}</div>}
       {needsArea && (
         <div className="tp-note amber" data-flag="area">
           {NEEDS_AREA}. Lay out is off until then.
-        </div>
-      )}
-      {body?.steps.some((s) => s.agent !== "terminal" && s.prompt.includes("{ticket}")) && (
-        <div className="tp-note dim" data-flag="ticket">
-          {tLine ? `{ticket} in a prompt is “${tLine}”.` : "{ticket} in a prompt is empty: no ticket is chosen."}
         </div>
       )}
       <div className="tp-sec">
@@ -748,111 +774,94 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
           {NEEDS_REPO}. Lay out is off until then.
         </div>
       )}
-      <div className="tp-main">
-        <div className="tp-list" role="listbox" aria-label="Templates">
-          <div className="tp-k pad">Templates</div>
-          {offered && (
-            <button type="button" role="option" aria-selected={chosen === OFFERED} className={`tp-item${chosen === OFFERED ? " sel" : ""}`} onClick={() => choose(OFFERED)}>
-              <span className="t">{offered.name}</span>
-              <span className="s">{offered.provenance}</span>
-            </button>
-          )}
-          <button
-            type="button"
-            role="option"
-            aria-selected={chosen === BUILT_IN_TEMPLATE.id}
-            className={`tp-item${chosen === BUILT_IN_TEMPLATE.id ? " sel" : ""}`}
-            data-template={BUILT_IN_TEMPLATE.id}
-            onClick={() => choose(BUILT_IN_TEMPLATE.id)}
-          >
-            <span className="t">{BUILT_IN_TEMPLATE.name}</span>
-            <span className="s">Built in · {plural(BUILT_IN_TEMPLATE.steps.length, "step")}</span>
-          </button>
-          {list === null && <div className="tp-empty">Reading the saved templates…</div>}
-          {list && isErr(list) && (
-            <div className="tp-empty red">
-              The saved templates couldn't be read: {list.error}{" "}
-              <button type="button" className="link" onClick={() => void read()}>
-                Try again
-              </button>
-            </div>
-          )}
-          {list && !isErr(list) && list.broken && (
-            <div className="tp-empty red" data-broken>
-              {list.broken}{" "}
-              <button type="button" className="link" onClick={() => void setAside()}>
-                Set them aside…
-              </button>
-            </div>
-          )}
-          {aside && (
-            <div className="tp-empty" data-aside>
-              {aside}
-            </div>
-          )}
-          {templates.map(({ template: t, unknown }) => {
-            const auto = automaticGates(t);
-            return (
-              <button
-                key={t.id}
-                type="button"
-                role="option"
-                aria-selected={chosen === t.id}
-                className={`tp-item${chosen === t.id ? " sel" : ""}`}
-                data-template={t.id}
-                title={unknown.length ? `Saved by another version of Mockingbird: this one doesn't read ${unknown.join(", ")}, which ${unknown.length === 1 ? "is" : "are"} kept as ${unknown.length === 1 ? "it is" : "they are"}` : undefined}
-                onClick={() => choose(t.id)}
-              >
-                <span className="t">{t.name}</span>
-                <span className="s">
-                  {plural(t.steps.length, "step")}
-                  {auto ? (
-                    <>
-                      {" · "}
-                      <span className="amber">{auto} automatic</span>
-                    </>
-                  ) : null}
-                  {unknown.length ? " · another version's" : ""}
-                </span>
-              </button>
-            );
-          })}
-          {list && !isErr(list) &&
-            list.refused.map((r) => (
-              <div key={`refused-${r.index}`} className="tp-item off" data-refused={r.index} title={r.why}>
-                <span className="t">{r.name ?? `Template ${r.index + 1}`}</span>
-                <span className="s red">Can't be used here: {r.why}</span>
-                {r.id && (
-                  <button type="button" className="link" onClick={() => void removeIt(r.id!, r.name ?? `template ${r.index + 1}`)}>
-                    Remove…
-                  </button>
-                )}
-              </div>
-            ))}
-          {list && !isErr(list) && !templates.length && !offered && (
-            <div className="tp-empty" data-empty="templates">
-              No saved templates yet: Save as template… in a wired workspace's ⋯ saves its chain as one.
-            </div>
-          )}
+      <div className="tp-sec">
+        <div className="tp-k">Template</div>
+        <div className="tp-line2">
+          <Select
+            className="tp-template"
+            value={chosen ?? ""}
+            placeholder={list === null ? "Reading the saved templates…" : "Choose a template"}
+            title="The chain of steps and wires it lays out"
+            options={templateOptions}
+            onChange={(v) => choose(v)}
+          />
           {chosen && chosen !== OFFERED && chosen !== BUILT_IN_TEMPLATE.id && (
             <button type="button" className="link tp-remove" onClick={() => void removeIt(chosen, name)}>
-              Remove this template…
+              Remove…
             </button>
           )}
         </div>
-        <div className="tp-steps">
+      </div>
+      {(() => {
+        const unknown = templates.find((x) => x.template.id === chosen)?.unknown ?? [];
+        return unknown.length ? (
+          <div className="tp-note dim" data-flag="unknown">
+            Saved by another version of Mockingbird: this one doesn&apos;t read {unknown.join(", ")}, which {unknown.length === 1 ? "is" : "are"} kept as {unknown.length === 1 ? "it is" : "they are"}.
+          </div>
+        ) : null;
+      })()}
+      {list && isErr(list) && (
+        <div className="tp-note red">
+          The saved templates couldn&apos;t be read: {list.error}{" "}
+          <button type="button" className="link" onClick={() => void read()}>
+            Try again
+          </button>
+        </div>
+      )}
+      {list && !isErr(list) && list.broken && (
+        <div className="tp-note red" data-broken>
+          {list.broken}{" "}
+          <button type="button" className="link" onClick={() => void setAside()}>
+            Set them aside…
+          </button>
+        </div>
+      )}
+      {aside && (
+        <div className="tp-note dim" data-aside>
+          {aside}
+        </div>
+      )}
+      {list && !isErr(list) &&
+        list.refused.map((r) => (
+          <div key={`refused-${r.index}`} className="tp-note red" data-refused={r.index}>
+            “{r.name ?? `Template ${r.index + 1}`}” can&apos;t be used here: {r.why}{" "}
+            {r.id && (
+              <button type="button" className="link" onClick={() => void removeIt(r.id!, r.name ?? `template ${r.index + 1}`)}>
+                Remove…
+              </button>
+            )}
+          </div>
+        ))}
+      {list && !isErr(list) && !templates.length && !offered && (
+        <div className="tp-note dim" data-empty="templates">
+          No saved templates yet: Save as template… in a wired workspace&apos;s ⋯ saves its chain as one.
+        </div>
+      )}
+      <div className="tp-main">
+        <div className="tp-steps solo">
           {body && plan ? (
             <>
-              <ChainSketch body={body} plan={plan} width={354} />
+              <ChainSketch body={body} plan={plan} width={520} />
               <CatalogNote read={modelRead} />
+              {open.size > 0 && body.steps.some((s) => s.agent !== "terminal" && s.prompt.includes("{ticket}")) && (
+                <div className="tp-line dim" data-flag="ticket">
+                  {tLine ? `{ticket} in a prompt is “${tLine}”.` : "{ticket} in a prompt is empty: no ticket is chosen."}
+                </div>
+              )}
               <StepRows
                 body={body}
                 plan={plan}
                 catalog={catalog}
+                folding={folding}
                 onStep={(k, p) => setBody((b) => b && withStep(b, k, p))}
                 onWire={(j, p) => setBody((b) => b && withWire(b, j, p))}
                 onStartFirst={(starts) => setBody((b) => b && { ...b, startFirst: starts })}
               />
+              {several && body.steps.length > 1 && (
+                <div className="tp-line dim" data-flag="shapes">
+                  Only its Orchestrator starts now: the other steps are the shape it plans from, and nothing more is made until you lay its plan out.
+                </div>
+              )}
             </>
           ) : (
             <div className="tp-empty">Choose a template to see its steps.</div>

@@ -873,7 +873,12 @@ describe.skipIf(!local)("Add next step", () => {
 // ---- W9: pipeline templates (?landscapeWiresAudit=template, with ?lsTemplates) ----
 interface TP {
   head: string | null;
-  items: { t: string | null; s: string | null; sel: boolean; off: boolean; title: string | null }[];
+  /** The template dropdown's choices, read with it opened (only where the audit opens it). */
+  items?: { t: string | null; s: string | null; sel: boolean }[];
+  template: string | null;
+  refused: string[];
+  folded?: boolean[];
+  unknown?: string | null;
   empty: string | null;
   steps: { name: string | null; agent: string | null; effort: string | null; prompt: string; whole: boolean; flags: string[]; flows: { wire: number; says: string | null; text: string; whole: boolean; files: string[] }[] }[];
   boxes: string[];
@@ -896,7 +901,7 @@ interface Templates {
   overTerminal: Record<"picker" | "save", { before: string; open: boolean; closed: boolean; keys: string }>;
   saveEsc: { before: string; menu: { row: boolean; off: boolean | null }; drafts: unknown[][]; draft: TP; closed: boolean; keys: string };
   saved: { calls: [string, string[]][]; shownFlows: Flow[] | null; savedFlows: Flow[]; closed: boolean; note: string | null; keys: string };
-  early: { opened: TP; layOuts: number; open: boolean };
+  early: { opened: TP; listOpen: boolean; layOuts: number; open: boolean };
   refused: { calls: number; open: boolean; error: string | null; area: boolean };
   shown: TP;
   quick: TP;
@@ -954,17 +959,20 @@ describe.skipIf(!local)("Pipeline templates", () => {
     expect(byWire(t.saved.savedFlows).filter(([j]) => j < 4)).toEqual(byWire(t.saved.shownFlows!));
     // the picker, opened by a double click with ⌘↵ straight after: its Lay out off for a moment, nothing laid out
     expect(t.early).toMatchObject({ layOuts: 0, open: true, opened: { head: "Pipeline from a ticket", act: { off: true }, keyboard: true } });
-    // and a click on Quick fix's row straight after it opened chose nothing
-    expect(t.early.opened.items.filter((i) => i.sel).map((i) => i.t)).toEqual(["Build, review, test"]);
+    // and a click on its template dropdown straight after it opened opened nothing, the first saved one still chosen
+    expect(t.early).toMatchObject({ listOpen: false, opened: { template: "Build, review, test" } });
+    // its steps folded to one line each as it opens
+    expect(t.shown.folded).toEqual([true, true, true, true]);
     // the built-in Orchestrator → Coder → Verifier first; the saved templates: one from a newer version offered (what it
-    // doesn't read kept), a malformed one refused saying why
+    // doesn't read kept, and said once it's chosen), a malformed one refused saying why
     expect(t.shown.items).toEqual([
-      { t: "Orchestrator → Coder → Verifier", s: "Built in · 3 steps", sel: false, off: false, title: null },
-      { t: "Build, review, test", s: "4 steps · 1 automatic", sel: true, off: false, title: null },
-      { t: "Quick fix", s: "2 steps · another version's", sel: false, off: false, title: "Saved by another version of Mockingbird: this one doesn't read colour, steps[0].icon, which are kept as they are" },
-      { t: "Donor export", s: "5 steps", sel: false, off: false, title: null },
-      { t: "Ticket → build → review", s: "Can't be used here: Its steps aren't a list.", sel: false, off: true, title: "Its steps aren't a list." },
+      { t: "Orchestrator → Coder → Verifier", s: "Built in · 3 steps", sel: false },
+      { t: "Build, review, test", s: "4 steps · 1 automatic", sel: true },
+      { t: "Quick fix", s: "2 steps · another version's", sel: false },
+      { t: "Donor export", s: "5 steps", sel: false },
     ]);
+    expect(t.shown.refused).toEqual([expect.stringMatching(/^“Ticket → build → review” can't be used here: Its steps aren't a list\./)]);
+    expect(t.quick.unknown).toBe("Saved by another version of Mockingbird: this one doesn't read colour, steps[0].icon, which are kept as they are.");
     // each step's prompt whole, a terminal's command flagged as one, the first step's start, the automatic gate
     expect(t.shown.steps.map((s) => [s.name, s.agent, s.whole])).toEqual([["Builder", "Codex", true], ["Reviewer", "Claude", true], ["Tester", "Claude", true], ["Dev server", "Terminal", true]]);
     expect(t.shown.steps[0].prompt).toBe("Implement {ticket}. Run the tests, commit, then finish the step.");

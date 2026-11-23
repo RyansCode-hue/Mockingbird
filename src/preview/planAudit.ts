@@ -330,35 +330,56 @@ async function builtinAudit(env: PlanAuditEnv, out: Record<string, unknown>, sho
   await sleep(300);
   menuRow("Pipeline from a ticket…")?.click();
   await sleep(900);
-  const p = picker();
-  out.items = [...(p?.querySelectorAll<HTMLElement>(".tp-item") ?? [])].map((i) => ({ t: i.querySelector(".t")?.textContent ?? null, s: i.querySelector(".s")?.textContent ?? null, sel: i.classList.contains("sel") }));
-  const built = p?.querySelector<HTMLElement>('.tp-item[data-template="builtin-orchestrator"]');
-  built?.click();
-  await sleep(700);
-  // its ticket: #5115, whose area is new
-  picker()?.querySelector<HTMLElement>(".tp-ticket")?.click();
+  // the template dropdown opened as a person opens it: its choices, the chosen one marked
+  const dropdown = () => picker()?.querySelector<HTMLElement>(".tp-template");
+  dropdown()?.click();
   await sleep(250);
-  [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.textContent?.includes("#5115"))?.click();
+  out.items = [...document.querySelectorAll<HTMLElement>(".mb-listbox .mb-opt")].map((o) => ({
+    t: o.querySelector(".mb-opt-label")?.textContent?.replace(/^✓/, "") ?? null,
+    s: o.querySelector(".mb-opt-desc")?.textContent ?? null,
+    sel: o.getAttribute("aria-selected") === "true",
+  }));
+  [...document.querySelectorAll<HTMLElement>(".mb-listbox .mb-opt")].find((o) => o.textContent?.includes("Orchestrator → Coder → Verifier"))?.click();
   await sleep(700);
+  const tick = async (id: string) => {
+    await click(picker()?.querySelector(`.tp-tk[data-ticket="${id}"] .tp-tk-pick`));
+    await sleep(350);
+  };
+  const ticked = () => [...(picker()?.querySelectorAll<HTMLElement>(".tp-tk.on") ?? [])].map((r) => flat(r));
+  // its ticket: #5115, whose area is new
+  await tick("5115");
+  out.folded = [...(picker()?.querySelectorAll<HTMLElement>(".tp-step") ?? [])].map((s) => ({ shut: s.classList.contains("shut"), prompt: !!s.querySelector(":scope > textarea"), fold: flat(s.querySelector(".tp-fold")) }));
   if (many) {
-    // two more tickets: #5110 chosen in the first row, the second row left empty, which keeps Lay out off
-    await click(picker()?.querySelector('[data-ticket-act="add"]'));
-    picker()?.querySelector<HTMLElement>(".tp-more .tp-ticket")?.click();
-    await sleep(250);
-    const offered = [...document.querySelectorAll<HTMLElement>(".mb-opt")].map((o) => o.textContent ?? "");
-    [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.textContent?.includes("#5110"))?.click();
-    await sleep(400);
-    await click(picker()?.querySelector('[data-ticket-act="add"]'));
-    await sleep(300);
+    // #5110 too, then made the lead and back: the lead's branch holds the Orchestrator's folder
+    await tick("5110");
     const act = picker()?.querySelector<HTMLButtonElement>('button[data-act="layout"]');
-    out.more = {
-      offered,
-      rows: [...(picker()?.querySelectorAll<HTMLElement>(".tp-more") ?? [])].map((r) => flat(r.querySelector(".tp-ticket"))?.replace(/\s*▾$/, "") ?? null),
-      notes: [...(picker()?.querySelectorAll<HTMLElement>(":scope > .tp-note") ?? [])].map((n) => `${n.dataset.flag ?? ""}: ${flat(n)}`),
-      off: act ? { off: act.disabled, title: act.title || null } : null,
-    };
-    await click(picker()?.querySelectorAll<HTMLElement>('[data-ticket-act="remove"]')[1]);
+    const two = { ticked: ticked(), foot: picker()?.querySelector(".tp-where")?.textContent ?? null, off: act ? act.disabled : null };
+    await click(picker()?.querySelector('.tp-tk[data-ticket="5110"] [data-ticket-act="lead"]'));
     await sleep(300);
+    const swapped = ticked();
+    await click(picker()?.querySelector('.tp-tk[data-ticket="5115"] [data-ticket-act="lead"]'));
+    await sleep(300);
+    // filtered to nothing, what's ticked still shows
+    const filter = picker()?.querySelector<HTMLInputElement>(".tp-filter");
+    if (filter) {
+      filter.focus();
+      document.execCommand("insertText", false, "zzz");
+      await sleep(300);
+    }
+    const filtered = [...(picker()?.querySelectorAll<HTMLElement>(".tp-tk") ?? [])].map((r) => r.dataset.ticket ?? null);
+    if (filter) {
+      filter.select();
+      document.execCommand("delete");
+      await sleep(300);
+    }
+    out.more = { two, swapped, back: ticked(), filtered };
+  }
+  // a screenshot shows it as it opens, its steps folded
+  if (shot) return;
+  // every step unfolded, to read it whole
+  for (const b of [...(picker()?.querySelectorAll<HTMLElement>(".tp-step.shut .tp-fold") ?? [])]) {
+    b.click();
+    await sleep(150);
   }
   const steps = [...(picker()?.querySelectorAll<HTMLElement>(".tp-step") ?? [])].map((s) => ({
     name: s.querySelector(".tp-name")?.textContent ?? null,
@@ -367,7 +388,6 @@ async function builtinAudit(env: PlanAuditEnv, out: Record<string, unknown>, sho
     flags: [...s.querySelectorAll<HTMLElement>("[data-flag]")].map((f) => `${f.dataset.flag}: ${flat(f)}`),
   }));
   out.chosen = { steps, foot: picker()?.querySelector(".tp-where")?.textContent ?? null, act: ((b) => b && { off: b.disabled, title: b.title || null })(picker()?.querySelector<HTMLButtonElement>("button[data-act]") ?? null) };
-  if (shot) return;
   const mark = env.calls.length;
   await click(picker()!.querySelector("button[data-act]"));
   await sleep(2500);

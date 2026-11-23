@@ -4146,12 +4146,12 @@ button.ls-empty-link { pointer-events: auto; }
 .ls-tour-acts button.outline { font-weight: 400; }
 
 /* ---- W9: the template picker (TemplatePicker.tsx; WireTemplates.dc.html A) and Save as template ---- */
-.modal.tp { width: 556px; max-width: calc(100vw - 32px); max-height: 88vh; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.modal.tp { width: 600px; max-width: calc(100vw - 32px); max-height: 88vh; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
 .modal.tp-save { width: 600px; }
 .tp-head { display: flex; align-items: baseline; gap: 10px; padding: 13px 16px 10px; border-bottom: 1px solid var(--line-med); flex-shrink: 0; }
 .tp-head h3 { margin: 0; font: 500 14px var(--ui); color: var(--text-1); }
 .tp-prov { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 11.5px var(--ui); color: var(--text-4); }
-.tp-sec { display: grid; grid-template-columns: 50px minmax(0, 1fr); column-gap: 10px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line-med); flex-shrink: 0; }
+.tp-sec { display: grid; grid-template-columns: 66px minmax(0, 1fr); column-gap: 10px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line-med); flex-shrink: 0; }
 .tp-k { font: 400 11px var(--ui); color: var(--idle); text-transform: uppercase; letter-spacing: .06em; }
 .tp-k.pad { padding: 0 9px 6px; }
 .tp-line2 { display: flex; gap: 8px; min-width: 0; }
@@ -4159,26 +4159,29 @@ button.ls-empty-link { pointer-events: auto; }
 .modal.tp .mb-select.tp-who { flex: 0 0 110px; width: 110px; }
 .modal.tp .mb-select.tp-ticket, .modal.tp .mb-select.tp-repo { flex: 1; min-width: 0; }
 .modal.tp .mb-select.tp-base { flex: 0 0 170px; width: 170px; }
-.tp-sec > .tp-more, .tp-sec > .tp-addticket { grid-column: 2; margin-top: 6px; }
-.tp-sec > .tp-more { align-items: center; }
-.tp-and { flex: 0 0 110px; text-align: right; padding-right: 2px; box-sizing: border-box; font: 400 12px var(--ui); color: var(--text-4); }
-.tp-sec > .tp-addticket { justify-self: start; margin-left: 118px; }
-.tp-more button.link.tp-unticket { flex-shrink: 0; color: var(--text-4); }
+/* the board's tickets, ticked: the first ticked is the lead */
+.tp-tix { align-items: start; }
+.tp-tix > .tp-k { padding-top: 6px; }
+.modal.tp input.tp-filter { flex: 1; min-width: 0; padding: 4px 8px; font: 400 12px var(--ui); }
+.tp-tk-list { grid-column: 2; margin-top: 6px; max-height: 172px; overflow-y: auto; display: flex; flex-direction: column; border: 1px solid var(--line-med); border-radius: 6px; padding: 3px; }
+.tp-tk-state { padding: 5px 7px 2px; font: 400 10.5px var(--ui); color: var(--idle); text-transform: uppercase; letter-spacing: .06em; }
+.tp-tk { display: flex; align-items: center; gap: 6px; min-width: 0; border-radius: 5px; padding-right: 6px; }
+.tp-tk:hover { background: var(--fill-subtle); }
+.tp-tk.on { background: var(--fill-selected); }
+.tp-tk-pick { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; background: none; border: 0; padding: 5px 7px; color: var(--text-1); text-align: left; font: 400 12px var(--ui); }
+.tp-cb { width: 13px; height: 13px; flex-shrink: 0; box-sizing: border-box; border: 1px solid var(--line-strong2); border-radius: 3px; display: inline-flex; align-items: center; justify-content: center; font: 500 10px var(--ui); color: var(--bg-chrome); }
+.tp-tk.on .tp-cb { background: var(--teal); border-color: var(--teal); }
+.tp-tk-id { flex-shrink: 0; font: 400 11.5px var(--mono); color: var(--text-3); }
+.tp-tk-t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-lead { flex-shrink: 0; font: 400 10.5px var(--ui); color: var(--text-2); border: 1px solid var(--line-strong2); border-radius: 4px; padding: 0 5px; }
+.tp-tk button.link.tp-mklead { flex-shrink: 0; font: 400 11px var(--ui); color: var(--text-4); }
+.modal.tp .mb-select.tp-template { flex: 1; min-width: 0; }
+.tp-sec button.link.tp-remove { flex-shrink: 0; font: 400 11.5px var(--ui); color: var(--text-4); }
 .tp-tickets { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .modal.tp input.tp-name-in { padding: 5px 8px; font: 400 12px var(--ui); }
 .tp-main { display: flex; min-height: 0; flex: 1; }
-.tp-list { width: 178px; flex-shrink: 0; box-sizing: border-box; border-right: 1px solid var(--line-med); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
-.tp-item { display: block; width: 100%; text-align: left; background: none; color: var(--text-1); border: 0; border-radius: 6px; padding: 7px 9px; font: inherit; }
-.tp-item:hover { background: var(--fill-subtle); }
-.tp-item.sel { background: var(--fill-selected); }
-.tp-item .t { display: block; font: 400 12.5px var(--ui); color: var(--text-1); overflow-wrap: anywhere; }
-.tp-item .s { display: block; margin-top: 1px; font: 400 11px var(--ui); color: var(--idle); overflow-wrap: anywhere; }
-.tp-item .amber { color: var(--amber); }
-.tp-item.off .t { color: var(--text-3); }
-.tp-item.off .s.red, .tp-empty.red { color: var(--red); }
-.tp-item.off button.link { margin-top: 3px; font-size: 11px; }
+.tp-empty.red { color: var(--red); }
 .tp-empty { padding: 6px 9px; font: 400 11.5px/16px var(--ui); color: var(--text-4); }
-.tp-list button.link.tp-remove { margin: 8px 9px 0; align-self: flex-start; font-size: 11px; color: var(--text-4); }
 .tp-steps { flex: 1; min-width: 0; box-sizing: border-box; padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
 .tp-steps.solo { padding: 12px 16px; flex: 1; min-height: 0; }
 .tp-sketch { position: relative; flex-shrink: 0; max-width: 100%; color: var(--text-4); }
@@ -4203,6 +4206,9 @@ button.ls-empty-link { pointer-events: auto; }
 .modal.tp .mb-select.tp-model { width: 132px; flex: 0 0 132px; font-size: 11.5px; }
 .modal.tp .mb-select.tp-effort { width: 108px; flex: 0 0 108px; font-size: 11.5px; }
 .tp-step-head { flex-wrap: wrap; row-gap: 4px; }
+/* folded to one line (Pipeline from a ticket…), its prompt a click away */
+.tp-step.folds + .tp-step.folds { padding-top: 8px; border-top: 1px solid var(--line-med); }
+.tp-step-head button.link.tp-fold { flex: 0 0 54px; text-align: right; font: 400 11.5px var(--ui); color: var(--text-3); }
 .modal.tp input.tp-name-edit { flex: 1 1 120px; min-width: 0; padding: 3px 6px; font: 500 12.5px var(--ui); }
 /* what a wire into a step carries, under it */
 .tp-flow { display: flex; flex-direction: column; gap: 3px; margin-left: 4px; padding-left: 8px; border-left: 2px solid var(--line-med); }
