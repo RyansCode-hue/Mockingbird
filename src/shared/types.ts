@@ -151,6 +151,76 @@ export interface StepStarted {
   stageWhy: string | null;
 }
 
+/**
+ * A change to a not-started step (steps:edit; main's PipelineEdits.editStep), checked as a session's start checks it.
+ * Absent: as it is. A null model or effort is its agent's default; a null permission mode the default mode; a null or
+ * empty prompt none.
+ */
+export interface StepEdit {
+  title?: string;
+  agent?: AgentKind;
+  model?: string | null;
+  effort?: string | null;
+  permissionMode?: PermissionMode | null;
+  prompt?: string | null;
+}
+
+/** A model and effort for any session (sessions:setModel). Absent: as it is; null: its agent's default. */
+export interface ModelChange {
+  model?: string | null;
+  effort?: string | null;
+}
+
+/**
+ * What sessions:setModel did: a running pane restarted in place with it (its wires, place and area kept), a not-started
+ * step's spec edited, or a closed session's record changed, for its Reopen.
+ */
+export interface ModelSet {
+  info: SessionInfo;
+  did: "restarted" | "edited" | "stored";
+}
+
+/**
+ * A step to insert (steps:insert): a not-started step after session `after`, ahead of session `before`, or between
+ * them. Between, their handoff A→B becomes A→new→B: new→B takes A→B's settings, and A→new is a plain handoff. The step
+ * goes in the area of the step it's next to, and works in a worktree of its own when that one does.
+ */
+export interface InsertStepRequest {
+  after?: string | null;
+  before?: string | null;
+  title: string;
+  agent: AgentKind;
+  model?: string | null;
+  effort?: string | null;
+  prompt?: string | null;
+}
+
+/** A step inserted: its record, the wires made for it, and what didn't go as asked (`note`), else null. */
+export interface StepInserted {
+  info: SessionInfo;
+  wires: string[];
+  note: string | null;
+}
+
+/** A handoff made from A to B as the step between them went (Forget's bridge). */
+export interface BridgedWire {
+  id: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * What forgetting a session did to its chain (sessions:forget): each A→B bridged over it, what couldn't be (why, with
+ * its ends' names), and the token its Undo takes (sessions:unforget), null when there's nothing to put back.
+ * `wiresLeft`: why its wires stayed in the book when it couldn't be changed (they show blocked), else null.
+ */
+export interface Forgotten {
+  bridged: BridgedWire[];
+  unbridged: string[];
+  undo: string | null;
+  wiresLeft: string | null;
+}
+
 /** Add next step's request (sessions:plan): a not-started step after session `after`, joined to it by a handoff wire. */
 export interface PlanRequest {
   after: string;

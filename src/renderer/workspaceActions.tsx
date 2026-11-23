@@ -499,7 +499,7 @@ export function areaActions(env: AreaEnv): ModelAction[] {
       { section: "area", key: "collapse", label: st.collapsed ? "Open" : "Collapse", menuLabel: st.collapsed ? "Open the area" : "Collapse to a pill", onPick: env.collapse },
       { section: "area", key: "lock", label: st.locked ? "Locked" : "Lock", menuLabel: st.locked ? "Unlock its layout" : "Lock its layout", title: lockTitle(!!st.locked), pressed: !!st.locked, onPick: env.lock }
     );
-  if (env.tidy) out.push({ section: "area", key: "tidy", label: "Tidy", kbd: "T", title: "Pack its workspaces in the order they were made — Undo puts them back", ...can(env.tidy) });
+  if (env.tidy) out.push({ section: "area", key: "tidy", label: "Tidy", kbd: "T", title: "Lay out the whole area: wired workspaces in stage columns along their wires, the rest in rows as they were made — Undo puts them back", ...can(env.tidy) });
   if (env.ghosts) out.push(...ghostsActions(env.ghosts));
   out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: env.room ? "The room's artifacts" : "The area's artifacts, on this Mac", onPick: env.artifacts });
   if (env.room) out.push({ section: "tools", key: "tool:chat", label: "Chat", icon: env.chatIcon, title: "The room's chat", onPick: env.chat });

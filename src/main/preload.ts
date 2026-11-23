@@ -1,4 +1,4 @@
-import type { AgentTold, IpcResult, MissingFolder, PlanRequest, RelaunchChange, SessionInfo, StepStarted, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
+import type { AgentTold, Forgotten, InsertStepRequest, IpcResult, MissingFolder, ModelChange, ModelSet, PlanRequest, RelaunchChange, SessionInfo, StepEdit, StepInserted, StepStarted, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
@@ -24,6 +24,16 @@ const api = {
   startPlanned: (id: string): Promise<IpcResult<StepStarted>> => ipcRenderer.invoke("sessions:startPlanned", id),
   /** Where Start now would start not-started step `id`, said for its confirm; refused as the start would be. */
   describeStart: (id: string): Promise<IpcResult<string>> => ipcRenderer.invoke("sessions:describeStart", id),
+  /** Edit…: not-started step `id`'s title, agent, model, effort, permission mode or prompt (PipelineEdits.editStep). */
+  editStep: (id: string, edit: StepEdit): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("steps:edit", id, edit),
+  /** Insert step: a not-started step after a session, ahead of one, or between two (PipelineEdits.insertStep). */
+  insertStep: (req: InsertStepRequest): Promise<IpcResult<StepInserted>> => ipcRenderer.invoke("steps:insert", req),
+  /** A session's model and effort: an open one restarted in place, a step's spec, a closed one's record (PipelineEdits.setModel). */
+  setModel: (id: string, change: ModelChange): Promise<IpcResult<ModelSet>> => ipcRenderer.invoke("sessions:setModel", id, change),
+  /** Forget session `id`, its chain bridged over it (WireService.forgetChain): what was bridged, and its Undo's token. */
+  forgetSession: (id: string): Promise<IpcResult<Forgotten>> => ipcRenderer.invoke("sessions:forget", id),
+  /** Undo a Forget by its token: the record and wires back, the bridges made over it gone. */
+  unforgetSession: (token: string): Promise<IpcResult<{ state: WireState; notes: string[] } | { refused: string }>> => ipcRenderer.invoke("sessions:unforget", token),
   /** Pipeline templates (W9): the saved ones as this version reads them, each refused one with why. */
   templatesList: (): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:list"),
   /** Save as template's draft of chain `ids` (first to last): what it keeps, redacted, and what it leaves out. */
@@ -339,6 +349,9 @@ const api = {
   wiresRemove: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:remove", id),
   wiresRestore: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:restore", id),
   wiresRekey: (old: string, next: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:rekey", old, next),
+  /** Move a wire's ends, keeping its type and settings (WireService.repoint); wiresUnrepoint is its Undo. */
+  wiresRepoint: (id: string, ends: { from?: string; to?: string }): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:repoint", id, ends),
+  wiresUnrepoint: (id: string): Promise<IpcResult<WireReply>> => ipcRenderer.invoke("wires:unrepoint", id),
   // "Add terminal on its tree": a terminal in the session's folder and group, wired to it by a shared worktree wire
   wiresAddTerminal: (sessionId: string): Promise<IpcResult<SessionInfo>> => ipcRenderer.invoke("wires:addTerminal", sessionId),
   // a person's Finish step: the summary as the popover shows it, from the session's latest message (wiresLastMessage)

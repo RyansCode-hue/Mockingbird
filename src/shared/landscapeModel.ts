@@ -1463,7 +1463,8 @@ const STILL_KEY = "still\n";
  * `leaving` (tile keys) and `leavingKept` (Kept keys) are what the gesture moves itself: never in the way. What's in
  * which area is read once from `l` and `layout` as stored (keptOf), never from what `p` has moved so far.
  */
-function pushFrom(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, r: Rect, leaving: ReadonlySet<string>, leavingKept: ReadonlySet<string> = NONE_LEAVING): void {
+function pushFrom(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, r: Rect | readonly Rect[], leaving: ReadonlySet<string>, leavingKept: ReadonlySet<string> = NONE_LEAVING): void {
+  const stills = Array.isArray(r) ? (r as readonly Rect[]) : [r as Rect];
   const kept = keptOf(l, layout).filter((k) => !leavingKept.has(k.key));
   type Item = { rect: Rect; passive: boolean; move: (dx: number, dy: number) => void };
   const items: Item[] = [
@@ -1474,20 +1475,21 @@ function pushFrom(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: strin
     }),
   ];
   const rects: Record<string, Rect> = {};
-  put(rects, STILL_KEY, r);
+  const stillKeys = stills.map((_, i) => (i ? `${STILL_KEY}${i}` : STILL_KEY));
+  stills.forEach((x, i) => put(rects, stillKeys[i], x));
   items.forEach((x, i) => put(rects, LOOSE_KEY + i, x.rect));
   const passive = new Set(items.flatMap((x, i) => (x.passive ? [LOOSE_KEY + i] : [])));
   const area = key === LOOSE_GROUP ? undefined : layout.areas.find((a) => a.key === key);
   if (!area) {
     // loose: the areas stay where they are, and a loose thing pushed into one goes on past it
     for (const a of layout.areas) put(rects, AREA_KEY + a.key, a.rect);
-    const still = [STILL_KEY, ...layout.areas.map((a) => AREA_KEY + a.key)];
+    const still = [...stillKeys, ...layout.areas.map((a) => AREA_KEY + a.key)];
     const gap = (a: string, b: string) => (a.startsWith(AREA_KEY) && b.startsWith(AREA_KEY) ? 0 : GAP);
     for (const [k, m] of Object.entries(pushAside(rects, still, gap, passive))) if (k.startsWith(LOOSE_KEY)) items[Number(k.slice(LOOSE_KEY.length))].move(m.dx, m.dy);
     return;
   }
-  const moved: Rect[] = [r];
-  for (const [k, m] of Object.entries(pushAside(rects, STILL_KEY, GAP, passive))) {
+  const moved: Rect[] = [...stills];
+  for (const [k, m] of Object.entries(pushAside(rects, stillKeys, GAP, passive))) {
     const i = Number(k.slice(LOOSE_KEY.length));
     items[i].move(m.dx, m.dy);
     moved.push(shifted(items[i].rect, m.dx, m.dy));
@@ -2315,6 +2317,134 @@ export function stageCaptions(layout: Pick<ResolvedLayout, "areas" | "tiles" | "
   return out;
 }
 
+/** Something Tidy places: a workspace, a ghost, a tool window or a card, and how its place is set in a patch. */
+type TidyItem = { key: string; rect: Rect; move: (p: FullPatch, r: Rect) => void };
+
+/**
+ * Chains laid out along their wires (alongWires' `bands`) from (`left`, `top`) down: each chain's columns left to right
+ * WIRED_COLUMN_GAP apart, one chain under another, a chain that fans out leaving room over its columns for their
+ * captions; in a column a workspace, the terminals sharing its worktree, then their tool windows (`windowsOf`, by tile
+ * key). Each is put where it goes with `place`. Answers the y under them all.
+ */
+function placeBands(
+  along: NonNullable<ReturnType<typeof alongWires>>,
+  windowsOf: ReadonlyMap<string, TidyItem[]>,
+  itemOf: (t: Tile) => TidyItem,
+  place: (it: TidyItem, x: number, y: number) => void,
+  left: number,
+  top: number
+): number {
+  let y = top;
+  for (const band of along.bands) {
+    if (fans(band.filter(Boolean))) y = snapUp(y + STAGE_CAPTION_H);
+    let x = left;
+    let below = y;
+    for (const column of band) {
+      const stacked = column.flatMap((t) => {
+        const block = [t, ...(along.under.get(t) ?? [])];
+        return [...block.map(itemOf), ...block.flatMap((u) => windowsOf.get(u.key) ?? [])];
+      });
+      let cy = y;
+      for (const it of stacked) {
+        place(it, x, cy);
+        cy = snapUp(cy + it.rect.h + GAP);
+      }
+      below = Math.max(below, cy);
+      // every column after the first has a handoff in from the one before it (the longest path)
+      x = snapUp(x + Math.max(...stacked.map((it) => it.rect.w)) + WIRED_COLUMN_GAP);
+    }
+    y = below;
+  }
+  return y;
+}
+
+/** The workspaces and ghosts of one pipeline (pipelineOf): its area, and its tiles in the order they were made. */
+export interface Pipeline {
+  area: string;
+  tiles: Tile[];
+}
+
+/**
+ * The pipeline `key` is part of: the workspaces and ghosts (not-started steps and closed ones among them) in its area
+ * that wires join to it, whatever their type, through one another. `key` is a tile's key (a ghost's too) or one of its
+ * sessions' ids. A wire to another area's workspace isn't followed: a pipeline is laid out in its area. Null when it
+ * isn't drawn, or no wire joins it to another there.
+ */
+export function pipelineOf(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: string, wires: readonly TidyWire[]): Pipeline | null {
+  const all = [...layout.tiles, ...layout.ghosts].filter((t) => !t.hidden);
+  const idsOf = (t: Tile) => [...t.members, ...(t.closed ?? [])].map((s) => s.id);
+  const start = all.find((t) => t.key === key) ?? all.find((t) => idsOf(t).includes(key));
+  if (!start) return null;
+  const tileOf = new Map<string, Tile>();
+  for (const t of all.filter((x) => x.area === start.area)) for (const id of idsOf(t)) tileOf.set(id, t);
+  const next = new Map<Tile, Set<Tile>>();
+  for (const w of wires) {
+    const a = tileOf.get(w.from);
+    const b = tileOf.get(w.to);
+    if (!a || !b || a === b) continue;
+    next.set(a, (next.get(a) ?? new Set()).add(b));
+    next.set(b, (next.get(b) ?? new Set()).add(a));
+  }
+  const seen = new Set<Tile>([start]);
+  const queue = [start];
+  while (queue.length) for (const n of next.get(queue.shift()!) ?? []) if (!seen.has(n)) seen.add(n) && queue.push(n);
+  if (seen.size < 2) return null;
+  return { area: start.area, tiles: [...seen].sort((a, b) => madeAt(a) - madeAt(b) || a.rect.y - b.rect.y || a.rect.x - b.rect.x) };
+}
+
+/**
+ * Re-lay out the pipeline `key` is part of (pipelineOf) in stage columns along its wires, as Tidy lays a chain out
+ * (alongWires, placeBands), at any time: only its workspaces and ghosts and their tool windows move, anchored at the
+ * pipeline's top-left as it lies now (its first stage's), with room over fanning columns for their captions. What else
+ * is in the area stays where it is unless the new block lands on it; then it's pushed aside as a drag pushes what's in
+ * its way (pushFrom), and the area grows to hold it all. Refused while the area is locked or collapsed, or when `key`
+ * isn't wired to anything in it. `undoOfPlan(l, plan)` puts every place back.
+ */
+export function planRelayoutPipeline(l: Landscape, layout: ResolvedLayout, key: string, titleOf: (key: string) => string, wires: readonly TidyWire[]): AreaPlan {
+  const pipe = pipelineOf(layout, key, wires);
+  if (!pipe) return { refused: "It isn't wired to another workspace in its area, so there's no pipeline to lay out" };
+  const area = layout.areas.find((a) => a.key === pipe.area);
+  if (!area) return { refused: "Its pipeline isn't in an area: move it into one to lay it out" };
+  if (area.rect.locked) return { refused: `${titleOf(pipe.area)} is locked: unlock it to lay its pipeline out` };
+  if (area.rect.collapsed) return { refused: `${titleOf(pipe.area)} is collapsed: open it to lay its pipeline out` };
+  const along = alongWires(pipe.tiles, wires);
+  if (!along) return { refused: "It isn't wired to another workspace in its area, so there's no pipeline to lay out" };
+  const members = new Set(pipe.tiles);
+  const none = emptyPatch();
+  const windowsOf = new Map<string, TidyItem[]>();
+  const leavingKept = new Set<string>();
+  for (const k of keptOf(l, layout)) {
+    if (k.area !== pipe.area) continue;
+    const ghost = pipe.tiles.find((g) => layout.ghosts.includes(g) && (k.key === `place:${g.front.id}` || (g.stack && k.key === `stack:${g.stack}`)));
+    if (ghost) {
+      leavingKept.add(k.key);
+      continue;
+    }
+    const w = k.key.startsWith("tool:") ? layout.windows.find((x) => `tool:${x.id}` === k.key) : undefined;
+    const owner = w?.win.session ? pipe.tiles.find((t) => [...t.members, ...(t.closed ?? [])].some((m) => m.id === w.win.session)) : undefined;
+    const r = owner ? k.at(none) : null;
+    if (!owner || !r) continue;
+    leavingKept.add(k.key);
+    windowsOf.set(owner.key, [...(windowsOf.get(owner.key) ?? []), { key: k.key, rect: r, move: k.to }]);
+  }
+  const itemOf = (t: Tile): TidyItem => ({ key: t.key, rect: t.rect, move: (p, r) => (t.stack ? put(p.stacks, t.stack, { active: own(p.stacks, t.stack)?.active ?? t.front.id, placement: r }) : put(p.workspaces, t.front.id, r)) });
+  const fanning = along.bands.some((band) => fans(band.filter(Boolean)));
+  const left = snapUp(Math.max(area.rect.x + AREA_PAD, Math.min(...pipe.tiles.map((t) => t.rect.x))));
+  const tilesTop = snapUp(Math.max(area.rect.y + AREA_HEADER + (fanning ? STAGE_CAPTION_H : 0), Math.min(...pipe.tiles.map((t) => t.rect.y))));
+  const p = emptyPatch();
+  const placed: Rect[] = [];
+  placeBands(along, windowsOf, itemOf, (it, x, y) => {
+    const r = { ...it.rect, x, y };
+    placed.push(r);
+    if (r.x !== it.rect.x || r.y !== it.rect.y) it.move(p, r);
+  }, left, fanning ? tilesTop - STAGE_CAPTION_H : tilesTop);
+  const leaving = new Set(layout.tiles.filter((t) => members.has(t)).map((t) => t.key));
+  pushFrom(p, l, layout, pipe.area, placed, leaving, leavingKept);
+  const patch = finish(p);
+  const names = pipe.tiles.length;
+  return { patch, moves: [], after: null, note: `Laid out ${names} workspaces of ${titleOf(pipe.area)} along their wires` };
+}
+
 /**
  * An area's workspaces and ghosts (`tiles`, in the order they were made) along `wires` (earliest first), for Tidy; null
  * when none runs between two of them. A stack is one: a wire to any of its tabs is a wire to it, and one between two
@@ -2432,7 +2562,7 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
   const area = layout.areas.find((a) => a.key === key)!;
   const kept = keptOf(l, layout).filter((k) => k.area === key);
   const none = emptyPatch();
-  type Item = { key: string; rect: Rect; move: (p: FullPatch, r: Rect) => void };
+  type Item = TidyItem;
   const tiles = [...layout.tiles, ...layout.ghosts].filter((t) => t.area === key).sort((a, b) => madeAt(a) - madeAt(b) || a.rect.y - b.rect.y || a.rect.x - b.rect.x);
   const windowsOf = new Map<string, Item[]>();
   const rest: Item[] = [];
@@ -2469,29 +2599,7 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
     keys.add(it.key);
     if (r.x !== it.rect.x || r.y !== it.rect.y) it.move(p, r);
   };
-  let y = top;
-  for (const band of along?.bands ?? []) {
-    // a chain that fans out leaves room over its columns for their captions
-    if (fans(band.filter(Boolean))) y = snapUp(y + STAGE_CAPTION_H);
-    let x = left;
-    let below = y;
-    for (const column of band) {
-      // a workspace, the terminals sharing its worktree, then their tool windows
-      const stacked = column.flatMap((t) => {
-        const block = [t, ...(along!.under.get(t) ?? [])];
-        return [...block.map(itemOf), ...block.flatMap((u) => windowsOf.get(u.key) ?? [])];
-      });
-      let cy = y;
-      for (const it of stacked) {
-        place(it, x, cy);
-        cy = snapUp(cy + it.rect.h + GAP);
-      }
-      below = Math.max(below, cy);
-      // every column after the first has a handoff in from the one before it (the longest path)
-      x = snapUp(x + Math.max(...stacked.map((it) => it.rect.w)) + WIRED_COLUMN_GAP);
-    }
-    y = below;
-  }
+  let y = along ? placeBands(along, windowsOf, itemOf, place, left, top) : top;
   const wide = Math.max(0, ...placed.map((r) => r.x + r.w - left));
   const inner = Math.max(area.rect.w - 2 * AREA_PAD, wide, ...items.map((i) => i.rect.w));
   let x = left;
