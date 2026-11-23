@@ -8,13 +8,13 @@ import { globRegex } from "../lsp/watchedFiles";
 import { guardedGit, type GuardedGit } from "../safeGit";
 import { SECRET_FILE_GLOBS, secretPathspecs } from "../secrets";
 import { holdsPrivateKey } from "../team/artifactStore";
-import { readHead, redactSecrets, shapeDiff } from "../wirePrompt";
+import { redactSecrets, shapeDiff } from "../wirePrompt";
 
 /**
  * A session's folder as the Assistant reads it (docs/assistant.md → What the Assistant can read): read only, and only
  * inside the folder. A path is taken relative to the folder, never absolute and never climbing out with `..`; the folder
  * and the file are both resolved through their links and the file must still be inside (resolveIn), and it's opened
- * without following a link (readHead). Refused, saying why: secret-shaped names at any depth (secretWhy), this Mac's
+ * without following a link and checked again once read (readPinned). Refused, saying why: secret-shaped names at any depth (secretWhy), this Mac's
  * known secret files, home's credential folders and Mockingbird's, Claude Code's and Codex's own data, git's own files,
  * whatever git ignores, binary files, files over FOLDER_LIMITS.readBytes, and text holding a private key. What's read is
  * redacted (redactSecrets) and cut to size, saying so. git runs through guardedGit: nothing the repository configures
@@ -217,8 +217,9 @@ export class FolderReader {
     if (st.size > FOLDER_LIMITS.readBytes) refuse(`${rel} is ${kb(st.size)}: the Assistant reads files up to ${kb(FOLDER_LIMITS.readBytes)}`);
     let head: { content: Buffer; size: number };
     try {
-      head = await readHead(target, FOLDER_LIMITS.readBytes);
+      head = await readPinned(target, FOLDER_LIMITS.readBytes);
     } catch (err) {
+      if (err instanceof FolderRefusal) throw err;
       return refuse(errCode(err) === "ELOOP" ? `${rel} turned into a link as it was read, so it isn't` : `${rel} couldn't be read (${errCode(err) ?? (err as Error).message})`);
     }
     if (head.size > FOLDER_LIMITS.readBytes) refuse(`${rel} is ${kb(head.size)}: the Assistant reads files up to ${kb(FOLDER_LIMITS.readBytes)}`);
@@ -359,6 +360,37 @@ export class FolderReader {
     }
     const against = o.staged ? "what's staged, against its last commit" : head ? "its last commit (staged and unstaged together)" : "nothing: its repository has no commit yet";
     return { against, diff: chunks.length ? shaped.text : "(No changes.)", leftOut, untracked, notes, redacted: shaped.redacted };
+  }
+}
+
+/**
+ * Up to `max` bytes of the file at real path `real`, as readHead reads it, refused unless what was opened is still the
+ * file at that path once read. O_NOFOLLOW guards only the last part of the path: a folder above it swapped for a link
+ * between the checks and the open would lead the open elsewhere. Afterwards the path must still resolve to itself (no
+ * link along it now) and name the very file that was opened (device and inode), so a swap made and undone around the
+ * open is caught too. `between` runs after the read and before the checks (tests make the swap there).
+ */
+export async function readPinned(real: string, max: number, between?: () => Promise<void>): Promise<{ content: Buffer; size: number }> {
+  const fh = await fs.promises.open(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const opened = await fh.stat();
+    if (!opened.isFile()) throw Object.assign(new Error("it isn't a regular file"), { code: "ENOTFILE" });
+    const buf = Buffer.alloc(Math.min(opened.size, max));
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    await between?.();
+    const moved = `${real} changed as it was read (a folder on its way swapped for a link), so it isn't read`;
+    let now: string;
+    let at: fs.Stats;
+    try {
+      [now, at] = await Promise.all([fs.promises.realpath(real), fs.promises.stat(real)]);
+    } catch (err) {
+      if (errCode(err) === "ENOENT") refuse(moved);
+      throw err;
+    }
+    if (now !== real || at.dev !== opened.dev || at.ino !== opened.ino) refuse(moved);
+    return { content: buf.subarray(0, bytesRead), size: opened.size };
+  } finally {
+    await fh.close();
   }
 }
 

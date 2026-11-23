@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import type { AssistantTool } from "../src/main/assistant/registry";
-import { FOLDER_LIMITS, MORE_SECRET_GLOBS, secretWhy } from "../src/main/assistant/sessionFiles";
+import { FOLDER_LIMITS, FolderRefusal, MORE_SECRET_GLOBS, readPinned, secretWhy } from "../src/main/assistant/sessionFiles";
 import { HELPDESK_FOLDER } from "../src/main/assistant/tools/files";
 import { OUTPUT_LINES } from "../src/main/assistant/tools/diagnose";
 import { SECRET_FILE_GLOBS } from "../src/main/secrets";
@@ -137,6 +137,37 @@ describe("read_file", () => {
     expect(why(await call(mac.tool("read_file"), { session: "c1", path: "x.txt" }))).toContain("it's in ~/.claude, and it's Claude Code's own data");
     expect(why(await call(mac.tool("list_files"), { session: "m1" }))).toContain("it's in ~/.mockingbird");
     expect(why(await call(mac.tool("read_file"), { session: "s1", path: "x.txt" }))).toContain("it's in ~/.ssh, and it holds ssh keys");
+  });
+
+  it("refuses a file whose folder is swapped for a link as it's read, kept or put back", async () => {
+    const base = fs.realpathSync(tempDir("pinned"));
+    const outside = path.join(base, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "notes.txt"), "elsewhere\n");
+    const root = path.join(base, "root");
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "notes.txt");
+    fs.writeFileSync(file, "inside\n");
+    const swap = async () => {
+      fs.renameSync(path.join(root, "src"), path.join(root, "src.real"));
+      fs.symlinkSync(outside, path.join(root, "src"));
+    };
+    const unswap = async () => {
+      fs.unlinkSync(path.join(root, "src"));
+      fs.renameSync(path.join(root, "src.real"), path.join(root, "src"));
+    };
+    expect((await readPinned(file, 1000)).content.toString()).toBe("inside\n");
+    // the swap is still there when it's checked: the path no longer resolves to itself
+    await expect(readPinned(file, 1000, swap)).rejects.toThrow(FolderRefusal);
+    await unswap();
+    // the open goes through the swapped folder, which is put back before the check: another file was opened
+    await swap();
+    await expect(readPinned(file, 1000, unswap)).rejects.toThrow(/changed as it was read/);
+    // swapped before the open and still swapped at the check: the opened file is the one the path now names, but the path leads out
+    await swap();
+    await expect(readPinned(file, 1000)).rejects.toThrow(/changed as it was read/);
+    await unswap();
+    expect((await readPinned(file, 1000)).content.toString()).toBe("inside\n");
   });
 });
 
