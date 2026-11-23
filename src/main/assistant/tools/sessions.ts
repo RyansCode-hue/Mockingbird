@@ -12,7 +12,23 @@ import { joinsRoomWarning, noSession, roomJoined, SESSION_ARG, sessionById, sess
 
 type Deps = Pick<
   AssistantDeps,
-  "sessions" | "groups" | "rooms" | "relaunchRefusal" | "relaunch" | "guards" | "takenOver" | "record" | "describeRelaunch" | "relaunchWith" | "close" | "resume" | "reopen" | "briefStart" | "handoffStart"
+  | "sessions"
+  | "plannedSteps"
+  | "closedSessions"
+  | "groups"
+  | "rooms"
+  | "relaunchRefusal"
+  | "relaunch"
+  | "guards"
+  | "takenOver"
+  | "record"
+  | "describeRelaunch"
+  | "relaunchWith"
+  | "close"
+  | "resume"
+  | "reopen"
+  | "briefStart"
+  | "handoffStart"
 >;
 
 // ---- shared by the sessions, start work, triage, git and diagnose tools ----------------------------
@@ -85,6 +101,9 @@ export function roomCards() {
 
 // ---- the tools ------------------------------------------------------------------------------------
 
+/** How many closed sessions list_sessions lists: the rest are counted. */
+const CLOSED_LISTED = 60;
+
 /** A session as list_sessions gives it: its state, never its output. */
 function listed(s: AssistantSession) {
   return {
@@ -149,10 +168,29 @@ export function sessionTools(d: Deps): AssistantTool[] {
       description:
         "Every session on the user's landscape: this Mac's own and teammates' room sessions (mine false, with their owner). " +
         "For each: id, title, agent, status (working, waiting, idle, dead), why and since when it waits on the user, group, team room, repo, branch, model, " +
-        "permission mode, and whether it's the Helpdesk workspace. It never includes what a session printed.",
+        "permission mode, and whether it's the Helpdesk workspace. Then, apart, this Mac's steps not started yet and its closed sessions (drawn as ghosts): " +
+        "id, title, agent, state (not started or closed), group, model and effort. It never includes what a session printed.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       label: () => "Listed the sessions",
-      run: () => ({ text: JSON.stringify({ sessions: d.sessions().map(listed) }) }),
+      run: () => {
+        const ghost = (s: SessionInfo, state: "not started" | "closed") => ({
+          id: s.id,
+          title: s.ticketTitle ?? s.title,
+          agent: s.shell ? "terminal" : (s.agent ?? "claude"),
+          state,
+          group: s.taskGroup ?? null,
+          ...(s.shell ? {} : { model: s.model ?? null, effort: s.effort ?? null }),
+        });
+        const closed = d.closedSessions();
+        const notRunning = [...d.plannedSteps().map((s) => ghost(s, "not started")), ...closed.slice(0, CLOSED_LISTED).map((s) => ghost(s, "closed"))];
+        return {
+          text: JSON.stringify({
+            sessions: d.sessions().map(listed),
+            notRunning,
+            ...(closed.length > CLOSED_LISTED ? { closedNotListed: closed.length - CLOSED_LISTED } : {}),
+          }),
+        };
+      },
     }),
 
     defineTool<RestartArgs>({

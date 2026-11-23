@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STAGE_CAPTION_H, WIRED_COLUMN_GAP, pipelineOf, planRelayoutPipeline, resolveLayout, stageCaptions, undoOfPlan, type AreaPlan, type TidyWire } from "../src/renderer/landscapeModel";
+import { STAGE_CAPTION_H, WIRED_COLUMN_GAP, pipelineOf, pipelineStages, planRelayoutPipeline, resolveLayout, stageCaptions, undoOfPlan, type AreaPlan, type TidyWire } from "../src/renderer/landscapeModel";
 import { AREA_HEADER, AREA_PAD, GAP, applyPatch, emptyLandscape, overlaps, presetSize, snapUp, type Area, type Landscape } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
 
@@ -71,6 +71,18 @@ describe("pipelineOf", () => {
     expect(pipelineOf(layout, "x", all)).toBeNull();
     expect(pipelineOf(layout, "nope", all)).toBeNull();
     expect(pipelineOf(layout, "o", all)?.tiles.map((t) => t.key)).not.toContain("b");
+  });
+});
+
+describe("pipelineStages", () => {
+  it("is a pipeline's columns in order, by the longest path of handoffs into each, a terminal sharing a worktree right after its agent", () => {
+    const { l, running, closed, wires } = scene();
+    l.workspaces.t = { x: snapUp(5.5 * M.w), y: snapUp(4.5 * M.h), ...M };
+    const layout = resolveLayout(l, [...running, session("t", { createdAt: 6, shell: true })], undefined, [], null, closed);
+    const stages = (k: string, w: readonly TidyWire[]) => pipelineStages(layout, k, w)?.stages.map((s) => s.map((t) => t.key));
+    expect(stages("c2", wires)).toEqual([["o"], ["ghost:c1", "ghost:c2"], ["ghost:v"]]);
+    expect(stages("o", [...wires, wire("o", "t", "worktree")])).toEqual([["o", "t"], ["ghost:c1", "ghost:c2"], ["ghost:v"]]);
+    expect(pipelineStages(layout, "x", wires)).toBeNull();
   });
 });
 

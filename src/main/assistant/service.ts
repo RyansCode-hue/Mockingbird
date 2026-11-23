@@ -36,8 +36,8 @@ export interface AssistantServiceDeps {
   claudeBin(): Promise<string | null>;
   /** One headless turn (launch.ts cliSpawner). */
   spawn(r: SpawnRequest): Promise<string>;
-  /** What each turn's snapshot is read from. */
-  world: Pick<AssistantDeps, "sessions" | "groups" | "rooms">;
+  /** What each turn's snapshot is read from (TurnRunnerDeps.world). */
+  world: Pick<AssistantDeps, "sessions" | "groups" | "rooms"> & Partial<Pick<AssistantDeps, "heldPlans">>;
   /** The activity log (remoteAudit.ts). */
   audit: { record(kind: AuditKind, who: { session?: string; title?: string | null }, more?: Partial<AuditEntry>): void };
   /** The view changed (`assistant:changed`). */

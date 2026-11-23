@@ -702,6 +702,11 @@ export class WireService {
     return { bridged, unbridged, undo, wiresLeft: null };
   }
 
+  /** Whether Forget `token` (forgetChain's) can still be undone (unforget). */
+  forgetUndoable(tokenRaw: unknown): boolean {
+    return this.undo.get(String(tokenRaw ?? ""))?.kind === "forgot";
+  }
+
   /**
    * Undo a Forget (`token`, forgetChain's): its record put back first when one was kept (`restoreRecord`, which throws
    * saying why it can't be), then, in one change, the bridges made over it taken away (those still running as they were

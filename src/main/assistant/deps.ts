@@ -4,7 +4,7 @@ import type { PermissionMode } from "../../shared/permissionModes";
 import type { RulesApi } from "./rules";
 import type { TakeoverPlan } from "../../shared/team/takeover";
 import type { AgentKind, SessionInfo, SessionStatus } from "../../shared/types";
-import type { GateState, WireGate, WireType, WireWhen } from "../../shared/wires";
+import type { GateState, WireGate, WireSettings, WireType, WireWhen } from "../../shared/wires";
 import type { GuardOp } from "../sessionGuards";
 
 /**
@@ -55,6 +55,10 @@ export interface AssistantGroup {
   room: string | null;
   /** It has an area on the landscape. */
   area: boolean;
+  /** This Mac's steps in it not started yet (drawn as ghosts, each waiting for its handoff); left out when none. */
+  notStarted?: number;
+  /** This Mac's closed sessions in it that can be reopened (drawn as ghosts where they were); left out when none. */
+  closed?: number;
 }
 
 /** A team room this install is in. */
@@ -268,8 +272,48 @@ export interface AssistantFileDeps {
   folders: Pick<import("./sessionFiles").FolderReader, "list" | "read" | "diff">;
 }
 
+export interface AssistantPipelineDeps {
+  // ---- pipelines: their not-started steps, editing them, and the Orchestrator's held plans (tools/pipeline.ts) ----
+  /** This Mac's steps not started yet (SessionManager.planned), each waiting for its handoff or Start now. */
+  plannedSteps(): SessionInfo[];
+  /** This Mac's closed sessions that can be reopened (SessionManager.resumable). */
+  closedSessions(): SessionInfo[];
+  /** The models and efforts this Mac's agents offer (models:catalog); null when they can't be read. */
+  modelCatalog(): Promise<import("../../shared/types").ModelCatalog | null>;
+  /** Edit not-started step `id`'s spec, as its Edit… does (steps:edit, PipelineEdits.editStep). Throws why not. */
+  editStep(id: string, edit: import("../../shared/types").StepEdit): Promise<SessionInfo>;
+  /** Insert a not-started step after, ahead of or between sessions (steps:insert, PipelineEdits.insertStep). Throws why not. */
+  insertStep(req: import("../../shared/types").InsertStepRequest): Promise<import("../../shared/types").StepInserted>;
+  /** Session `id`'s model and effort wherever it is (sessions:setModel, PipelineEdits.setModel): an open one restarts in place. Throws why not. */
+  setModel(id: string, change: import("../../shared/types").ModelChange): Promise<import("../../shared/types").ModelSet>;
+  /** Forget session `id` (sessions:forget): its chain bridged over it, its record held for unforget. Throws why not. */
+  forgetSession(id: string): import("../../shared/types").Forgotten;
+  /** Undo Forget `token` (sessions:unforget): what couldn't come back, in lines. Throws why not. */
+  unforget(token: string): string[];
+  /** Whether Forget `token` can still be undone. */
+  forgetUndoable(token: string): boolean;
+  /** A wire's settings as a person set them (settingsOf), what it sends included: for its Undo and its tier, never shown. Null when there's no such wire. */
+  wireSettings(id: string): WireSettings | null;
+  /** Change wire `id`'s settings, as its Settings… does (wires:set). Throws why not. */
+  setWire(id: string, settings: WireSettings): void;
+  /** Move wire `id`'s ends, keeping its type and settings (wires:repoint). Throws why not. */
+  repointWire(id: string, ends: { from?: string; to?: string }): void;
+  /** Undo wire `id`'s last move (wires:unrepoint). Throws why not. */
+  unrepointWire(id: string): void;
+  /** Whether wire `id`'s last move can still be undone. */
+  repointUndoable(id: string): boolean;
+  /** The Orchestrators' held plans as the window's dialog shows them (plans:list), each checked again now. */
+  plans(): Promise<import("../../shared/plans").PlanView[]>;
+  /** The plans held now, read without checking them: what the snapshot counts and a card goes by. */
+  heldPlans(): { id: string; from: string; at: number }[];
+  /** Lay held plan `id` out as `shown`, going where `at` says (plans:layOut). Throws why not. */
+  layOutPlan(id: string, shown: import("../../shared/plans").Plan, at: import("../../shared/plans").PlanShownAt): Promise<import("../../shared/plans").PlanLaidOut>;
+  /** Dismiss held plan `id`, its Orchestrator told with `note` (plans:dismiss). Throws why not. */
+  dismissPlan(id: string, note: string): import("../../shared/types").AgentTold;
+}
+
 /** Everything the tools reach, one block per tool group. */
-export interface AssistantDeps extends AssistantCoreDeps, AssistantRuleDeps, AssistantWorkDeps, AssistantLayoutDeps, AssistantFileDeps {}
+export interface AssistantDeps extends AssistantCoreDeps, AssistantRuleDeps, AssistantWorkDeps, AssistantLayoutDeps, AssistantFileDeps, AssistantPipelineDeps {}
 
 /** A team room whose House board couldn't be read (houseBoards): its id, its name and why. */
 export interface HouseBoardUnread {

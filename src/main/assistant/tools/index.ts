@@ -11,3 +11,4 @@ export { roomTools } from "./rooms";
 export { settingTools } from "./settings";
 export { fileTools } from "./files";
 export { lookTools } from "./look";
+export { pipelineTools } from "./pipeline";

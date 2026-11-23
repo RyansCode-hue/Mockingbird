@@ -38,8 +38,8 @@ export interface TurnRunnerDeps {
   claudeBin(): Promise<string | null>;
   /** Run one turn and answer its reply text; throws the CLI's error. */
   spawn(r: SpawnRequest): Promise<string>;
-  /** What the prompt's snapshot is read from. */
-  world: Pick<AssistantDeps, "sessions" | "groups" | "rooms">;
+  /** What the prompt's snapshot is read from: the held plans are counted when it can read them. */
+  world: Pick<AssistantDeps, "sessions" | "groups" | "rooms"> & Partial<Pick<AssistantDeps, "heldPlans">>;
   toolNames(): string[];
   /** The model each turn runs, read as it starts (Settings → Assistant); Sonnet when absent. */
   model?(): AssistantModel;
@@ -188,7 +188,14 @@ export class TurnRunner {
         return `(${what} couldn't be read: ${err instanceof Error ? err.message : String(err)})`;
       }
     };
-    return { sessions: part("the sessions", () => this.d.world.sessions()), groups: part("the groups", () => this.d.world.groups()), rooms: part("the rooms", () => this.d.world.rooms()), now: this.now() };
+    const held = this.d.world.heldPlans;
+    return {
+      sessions: part("the sessions", () => this.d.world.sessions()),
+      groups: part("the groups", () => this.d.world.groups()),
+      rooms: part("the rooms", () => this.d.world.rooms()),
+      ...(held ? { plans: part("the held plans", () => held()) } : {}),
+      now: this.now(),
+    };
   }
 }
 
@@ -212,6 +219,12 @@ export const ASSISTANT_RULES = [
   "- Asked what a session changed or is working on: read its diff (git_diff), and its files (list_files, read_file) when that isn't enough.",
   "- Prefer reading to guessing, and say what you read. These read only inside a session's own folder; secret files, ignored files and the Helpdesk workspace are refused, and a refusal is the answer: don't look for a way round it.",
   "",
+  "## Pipelines",
+  "- A pipeline is workspaces joined by wires, laid out in stages; its steps that haven't started are ghosts, each waiting for its handoff. The snapshot only counts them per group: pipeline() shows a pipeline's stages, steps, models, prompts and wires.",
+  "- Fixing a pipeline means reading pipeline() first and then making the smallest edit that does it: edit_step for a step that hasn't started (title, agent, model, effort, prompt), insert_step to add one, repoint_wire to move a wire's end, wire_settings for when a wire sends, set_model for a not-started step's or closed session's model, remove_step to take out a step that hasn't started. Don't remove and re-add what an edit can change.",
+  "- A running session's model (restart_with_model), forgetting a running or closed session (forget_session), a wire that would send without asking (automate_wire), and laying out or dismissing an Orchestrator's held plan (lay_out_plan, dismiss_plan; list_plans reads them) are cards.",
+  "- insert_step and lay_out_template lay the pipeline out again afterwards; relayout_pipeline does it on its own when asked.",
+  "",
   "## Settings, colours and windows",
   "- get_settings says how each setting changes: set_setting changes a view or notification setting at once; change_setting puts one that changes what agents may do, or what runs as the user or leaves the Mac, on a card.",
   "- set_area_colour colours an area; open_tool and close_tool open and close tool windows (Files, Changes, Search, Run & debug, Artifacts, Chat).",
@@ -231,6 +244,8 @@ interface Snapshot {
   sessions: AssistantSession[] | string;
   groups: AssistantGroup[] | string;
   rooms: AssistantRoom[] | string;
+  /** The Orchestrators' held plans, counted: list_plans reads them. Left out when they aren't read. */
+  plans?: { id: string; from: string; at: number }[] | string;
   now: number;
 }
 
@@ -256,6 +271,8 @@ export function groupLine(g: AssistantGroup): string {
     named(g.key, 80),
     `${g.sessions} running session${g.sessions === 1 ? "" : "s"}`,
     ...(g.stacks.length ? [`stacks ${g.stacks.map((k) => named(k, 80)).join(", ")}`] : []),
+    ...(g.notStarted ? [`${g.notStarted} not started`] : []),
+    ...(g.closed ? [`${g.closed} closed`] : []),
     ...(g.room ? [`shared as room ${named(g.room, 80)}`] : []),
     ...(g.area ? [] : ["no area on the landscape"]),
   ];
@@ -294,6 +311,14 @@ function stepOutcome(s: AssistantStep, cardState: CardState): string {
   return `${what} (${s.state})`;
 }
 
+/** The held plans' line: how many wait to be laid out or dismissed, or why they couldn't be read; nothing when none do. */
+function heldLine(plans: Snapshot["plans"]): string[] {
+  if (plans === undefined) return [];
+  if (typeof plans === "string") return [`### Held plans\n${plans}`];
+  if (!plans.length) return [];
+  return [`### Held plans\n${plans.length === 1 ? "1 Orchestrator plan waits" : `${plans.length} Orchestrator plans wait`} to be laid out or dismissed: list_plans reads ${plans.length === 1 ? "it" : "them"}`];
+}
+
 /** The turn's prompt: the app as it is now, the thread so far, and the question. */
 export function assistantPrompt(o: { question: string; thread: AssistantTurn[]; snapshot: Snapshot; cardState?: CardState }): string {
   const list = <T>(v: T[] | string, line: (x: T) => string, none: string, cap = Infinity): string => {
@@ -307,6 +332,7 @@ export function assistantPrompt(o: { question: string; thread: AssistantTurn[]; 
     `### Sessions\n${list(o.snapshot.sessions, (s) => sessionLine(s, o.snapshot.now), "(none running)", SNAPSHOT_SESSIONS)}`,
     `### Groups\n${list(o.snapshot.groups, groupLine, "(none)")}`,
     `### Team rooms\n${list(o.snapshot.rooms, roomLine, "(none)")}`,
+    ...heldLine(o.snapshot.plans),
     `## The thread so far (oldest first)\n${o.thread.length ? o.thread.map((t) => threadEntry(t, o.cardState)).join("\n\n") : "(this is its first question)"}`,
     `## The user asks now\n${o.question}`,
   ].join("\n\n");

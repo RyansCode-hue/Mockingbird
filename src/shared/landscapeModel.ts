@@ -2428,6 +2428,19 @@ export function pipelineOf(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key
 }
 
 /**
+ * The pipeline `key` is part of (pipelineOf) in its stages: the columns Re-lay out pipeline and Tidy put it in
+ * (alongWires: by the longest path of handoffs into each), left to right, each a column's tiles top to bottom, a tile's
+ * terminals sharing its worktree right after it. Null when there's no pipeline.
+ */
+export function pipelineStages(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: string, wires: readonly TidyWire[]): { area: string; stages: Tile[][] } | null {
+  const pipe = pipelineOf(layout, key, wires);
+  const along = pipe && alongWires(pipe.tiles, wires);
+  if (!pipe || !along) return null;
+  const stages = along.bands.flatMap((band) => band.filter((column) => column?.length).map((column) => column.flatMap((t) => [t, ...(along.under.get(t) ?? [])])));
+  return { area: pipe.area, stages };
+}
+
+/**
  * Re-lay out the pipeline `key` is part of (pipelineOf) in stage columns along its wires, as Tidy lays a chain out
  * (alongWires, placeBands), at any time: only its workspaces and ghosts and their tool windows move, anchored at the
  * pipeline's top-left as it lies now (its first stage's), with room over fanning columns for their captions. What else

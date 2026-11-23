@@ -1,5 +1,5 @@
 import type { Landscape } from "../../shared/landscape";
-import { carryPlan, resolveLayout, undoOfPlan, withoutGone, type AreaPlan, type ReadyPlan, type ResolvedLayout, type Tile } from "../../shared/landscapeModel";
+import { carryPlan, planRelayoutPipeline, resolveLayout, undoOfPlan, withoutGone, type AreaPlan, type ReadyPlan, type ResolvedLayout, type Tile } from "../../shared/landscapeModel";
 import type { SessionInfo } from "../../shared/types";
 import type { AssistantDeps, AssistantRoom } from "./deps";
 import type { ToolResult } from "./registry";
@@ -90,6 +90,55 @@ export function workspaceOf(now: LayoutNow, id: string): { tile: Tile } | { refu
   return { tile: t };
 }
 
+/**
+ * The tile session `id` is drawn in: its workspace, or the ghost a not-started step or a closed session is drawn as
+ * (a pipeline's members, which Re-lay out pipeline moves with the rest); null when it isn't drawn.
+ */
+export const drawnOf = (layout: ResolvedLayout, id: string): Tile | null =>
+  tileOf(layout, id) ?? layout.ghosts.find((t) => t.members.some((m) => m.id === id)) ?? null;
+
+const LAID_ALREADY = "Its pipeline is laid out already";
+
+/** How long laying a pipeline out waits for the window to place what was just made. */
+export const PLACED_WAIT_MS = 3_000;
+const PLACED_POLL_MS = 100;
+
+/**
+ * The landscape once each of `ids` is drawn with its place saved (the window saves a new workspace's or step's place as
+ * it first draws it), waiting up to `ms`; after that, as it is then. A place saved over the window's would be put back
+ * by its own save of where it drew it.
+ */
+export async function placedNow(d: PlanDeps, ids: readonly string[], ms = PLACED_WAIT_MS): Promise<LayoutNow | { refused: string }> {
+  const until = Date.now() + ms;
+  for (;;) {
+    const now = layoutNow(d);
+    if ("refused" in now) return now;
+    const waiting = ids.filter((id) => !drawnOf(now.layout, id) || Object.hasOwn(now.layout.patch?.workspaces ?? {}, id));
+    if (!waiting.length || Date.now() >= until) return now;
+    await new Promise((r) => setTimeout(r, PLACED_POLL_MS));
+  }
+}
+
+/**
+ * The plan that lays out the pipeline session `id` is part of in stage columns along its wires (planRelayoutPipeline),
+ * as the window's Re-lay out pipeline does, against `now`: places the layout gave what had none yet saved first (a step
+ * just made, which the window hasn't drawn), then the pipeline's. Its refusal, or that it's laid out already.
+ */
+export function relayoutPlan(d: Pick<AssistantDeps, "wireList">, now: LayoutNow, id: string): ReadyPlan | { refused: string } {
+  const t = drawnOf(now.layout, id);
+  if (!t) return { refused: "It isn't on the landscape" };
+  if (t.hidden) return { refused: `It's in ${areaName(t.area)}, which is collapsed: open it first` };
+  let wires: ReturnType<typeof d.wireList>;
+  try {
+    wires = d.wireList();
+  } catch (err) {
+    return { refused: `Its wires couldn't be read (${message(err)}), so its stages can't be worked out` };
+  }
+  const plan = planRelayoutPipeline(now.placed, now.layout, id, areaName, wires);
+  if ("refused" in plan) return plan;
+  return ready({ patch: now.layout.patch, moves: [], after: plan.patch, note: plan.note }, LAID_ALREADY);
+}
+
 /** A plan's refusal, or that it changes nothing (`unchanged` says so), or the plan. */
 export function ready(plan: AreaPlan, unchanged: string): ReadyPlan | { refused: string } {
   if ("refused" in plan) return plan;
@@ -159,4 +208,25 @@ export function undoable(d: PlanDeps, now: LayoutNow, plan: ReadyPlan, done: { r
       return undone;
     },
   };
+}
+
+/**
+ * Lay the pipeline session `key` is part of out again once `ids` (what was just made: an inserted step, a lay-out's
+ * steps) are drawn and placed, as the window does after an insert: what to say of it, and the result whose Undo puts
+ * its places back (null when nothing was laid out). It never throws: what stopped it is said.
+ */
+export async function layOutAgain(d: PlanDeps & Pick<AssistantDeps, "wireList">, ids: readonly string[], key: string): Promise<{ said: string; done: ToolResult | null }> {
+  const not = (why: string) => ({ said: why === LAID_ALREADY ? `${LAID_ALREADY}.` : `Its pipeline wasn't laid out again: ${why}.`, done: null });
+  try {
+    const now = await placedNow(d, ids);
+    if ("refused" in now) return not(now.refused);
+    const plan = relayoutPlan(d, now, key);
+    if ("refused" in plan) return not(plan.refused);
+    // what carrying it out said ends with the plan's own note
+    const done = await carry(d, now, plan, "laying its pipeline out");
+    const said = `${done.note ?? "Laid its pipeline out"}.`;
+    return { said, done: undoable(d, now, plan, done, said, "its pipeline's places") };
+  } catch (err) {
+    return not(message(err));
+  }
 }

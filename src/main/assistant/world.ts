@@ -50,8 +50,12 @@ export function worldSessions(o: { own: SessionInfo[]; remote: SessionInfo[]; ro
   return [...o.own.filter((s) => !s.debrief && !s.planned).map((s) => one(s, true)), ...o.remote.map((s) => one(s, false))];
 }
 
-/** Every top-level group: its sessions', its area's, its stacks' and its room's. */
-export function worldGroups(o: { own: SessionInfo[]; remote: SessionInfo[]; areas: string[]; stacks: string[]; rooms: WorldRoom[] }): AssistantGroup[] {
+/**
+ * Every top-level group: its sessions', its not-started steps', its area's, its stacks' and its room's. Each counts
+ * this Mac's running sessions in it, and its not-started steps and closed sessions (`planned`, `closed`: drawn as
+ * ghosts) when it has any. A closed session makes no group of its own: it may be in one long gone.
+ */
+export function worldGroups(o: { own: SessionInfo[]; remote: SessionInfo[]; areas: string[]; stacks: string[]; rooms: WorldRoom[]; planned?: SessionInfo[]; closed?: SessionInfo[] }): AssistantGroup[] {
   const keys = new Set<string>();
   const subs = new Map<string, Set<string>>();
   const note = (key: string | null | undefined) => {
@@ -62,15 +66,23 @@ export function worldGroups(o: { own: SessionInfo[]; remote: SessionInfo[]; area
     if (sub) subs.set(top, (subs.get(top) ?? new Set()).add(`${top}/${sub}`));
   };
   const own = o.own.filter((s) => !s.debrief && !s.planned);
-  for (const s of [...own, ...o.remote]) note(s.taskGroup);
+  const planned = o.planned ?? [];
+  for (const s of [...own, ...o.remote, ...planned]) note(s.taskGroup);
   for (const k of [...o.areas, ...o.stacks, ...o.rooms.map((r) => r.groupKey)]) note(k);
-  return [...keys].sort().map((key) => ({
-    key,
-    stacks: [...(subs.get(key) ?? [])].sort(),
-    sessions: own.filter((s) => s.status !== "dead" && s.taskGroup && topOfKey(s.taskGroup) === key).length,
-    room: o.rooms.find((r) => r.groupKey === key)?.name ?? null,
-    area: o.areas.includes(key),
-  }));
+  const inGroup = (key: string) => (s: SessionInfo) => !!s.taskGroup && topOfKey(s.taskGroup) === key;
+  return [...keys].sort().map((key) => {
+    const notStarted = planned.filter(inGroup(key)).length;
+    const closed = (o.closed ?? []).filter(inGroup(key)).length;
+    return {
+      key,
+      stacks: [...(subs.get(key) ?? [])].sort(),
+      sessions: own.filter((s) => s.status !== "dead" && inGroup(key)(s)).length,
+      room: o.rooms.find((r) => r.groupKey === key)?.name ?? null,
+      area: o.areas.includes(key),
+      ...(notStarted ? { notStarted } : {}),
+      ...(closed ? { closed } : {}),
+    };
+  });
 }
 
 export function worldRooms(rooms: WorldRoom[]): AssistantRoom[] {

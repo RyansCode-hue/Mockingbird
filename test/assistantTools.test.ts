@@ -97,6 +97,20 @@ describe("the Assistant's first tools", () => {
       set_area_colour: "direct",
       open_tool: "direct",
       close_tool: "direct",
+      pipeline: "read",
+      list_plans: "read",
+      edit_step: "direct",
+      insert_step: "direct",
+      repoint_wire: "direct",
+      relayout_pipeline: "direct",
+      set_model: "direct",
+      restart_with_model: "confirm",
+      wire_settings: "direct",
+      automate_wire: "confirm",
+      remove_step: "direct",
+      forget_session: "confirm",
+      lay_out_plan: "confirm",
+      dismiss_plan: "confirm",
     });
     // reading a session's output and folder changes nothing: none of those tools is anything but a read
     for (const name of ["session_detail", "session_output", "list_files", "read_file", "git_diff"]) expect([name, registry.get(name)!.tier, !!registry.get(name)!.rule]).toEqual([name, "read", false]);
