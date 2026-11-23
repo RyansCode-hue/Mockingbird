@@ -1155,6 +1155,8 @@ describe("a looping Orchestrator can't replace what the user reads", () => {
     // what's open stays as it was, saying a newer one waits
     const now = await t.plans.list();
     expect(now.map((v) => [v.id, v.held.plan.summary, !!v.newer])).toEqual([[shownId, toolPlan().summary, true]]);
+    // held() reads as list() lists, unchecked: the waiting one isn't among them
+    expect(t.plans.held()).toEqual([{ id: shownId, from: now[0].held.from, at: now[0].held.at }]);
     // a third replaces the waiting one, not the open one
     await t.propose(toolPlan({ summary: "Newest." }));
     expect((await t.plans.list()).map((v) => v.held.plan.summary)).toEqual([toolPlan().summary]);

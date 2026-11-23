@@ -40,9 +40,9 @@ Every tool has a tier, fixed in main's registry. The model can't change it.
 
 | Tier | What happens on the call | Examples |
 |---|---|---|
-| **read** | Runs and returns data | list sessions, what's waiting, usage, git status, why it's stuck, a session's output, files and diff |
-| **direct** | Runs, and its step shows **Undo** while what it changed is unchanged since (10 min, in memory) | focus, move/stack/size/arrange, move to a group, create/rename a group, rename, mute, an area's colour, open or close a tool window, view and notification settings, draw or remove a wire |
-| **confirm** | Nothing happens: a **card** appears in the tab, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, create, change or turn on a standing rule, settings that change what agents may do or what reaches past this Mac |
+| **read** | Runs and returns data | list sessions, what's waiting, usage, git status, why it's stuck, a session's output, files and diff, a pipeline's stages, held plans |
+| **direct** | Runs, and its step shows **Undo** while what it changed is unchanged since (10 min, in memory) | focus, move/stack/size/arrange, move to a group, create/rename a group, rename, mute, an area's colour, open or close a tool window, view and notification settings, draw, move or remove a wire and change its settings, edit, insert or remove a step that hasn't started, a step's or closed session's model, re-lay out a pipeline |
+| **confirm** | Nothing happens: a **card** appears in the tab, and the call returns "card shown, the user decides". It runs only when the user presses **Do it** | restart (permission mode, model, effort), close, resume, type into a session, broadcast, allow/deny a prompt, start sessions/worktrees/templates/reviews, hand off, git cleanup/push/PR, room actions, moving a session across a team room's boundary, approve a gate, a wire that sends without asking, a running session's model, forgetting a running or closed session, laying out or dismissing an Orchestrator's plan, create, change or turn on a standing rule, settings that change what agents may do or what reaches past this Mac |
 
 - A card names the exact target and effect ("Restart “api-fix” · s5 ·
   atticus in Plan mode: stops its agent and starts it again on the same
@@ -168,6 +168,7 @@ kept through every relaunch like its model and effort.
 | Triage | needs-you list, rollup | — | allow/deny a prompt once, type into a session, broadcast to a group |
 | Git | worktrees (dirty/ahead/behind), branch stat, PR status | — | clean up a worktree, push, open a PR |
 | Wires | wires, gates | draw, remove | approve a gate, send a handoff |
+| Pipelines | a pipeline's stages, steps (not started ones too) and wires; held plans | edit, insert or remove a not-started step, move a wire's end, a wire's settings, a not-started step's or closed session's model, re-lay out | restart on another model, forget a running or closed session, a wire that sends without asking, lay out or dismiss a plan |
 | Rooms | rooms, House board | — | share, leave, take over, room sandbox switch, claim/release a ticket |
 | Settings | every setting but credentials paths and the phone handle | view and notification settings | settings that change what agents may do, what runs as you or what reaches past this Mac |
 | Diagnose | stuck/exited detail, closed output tail, recent output of any of this Mac's sessions (never Helpdesk's; a teammate's only as mirrored here), usage and meters, which session touched a file (overlaps, turn changes, transcript search without Helpdesk) | — | — |
@@ -213,6 +214,45 @@ one-prompt check and the rules' ban on answering prompts.
   (`pipeline:approve`); `send_handoff` sends what waits at a wire's gate, by its
   pending's id, as it was readied (`wires:send`; a stopped other end isn't
   started). `remove_wire`'s Undo lasts while the wire service still holds it.
+- Pipelines (`tools/pipeline.ts`), through main's own paths: PipelineEdits
+  (`steps:edit`, `steps:insert`, `sessions:setModel`), the wire service
+  (`wires:set`, `wires:repoint`) and Forget (`sessions:forget`, its chain
+  joined up over it). `pipeline` reads one pipeline (by a session) or every
+  one in an area (by a group): its stages in the order Re-lay out puts them
+  (`pipelineStages`), each step's state, agent, model and effort, a
+  not-started step's prompt (its first line unless `full_prompts`), and the
+  wires between them; collapsed areas are read too. `list_plans` reads the
+  held plans as their dialog shows them. The snapshot only counts not-started
+  steps and closed sessions per group ("3 not started") and the held plans,
+  so it stays small; `list_sessions` lists them apart, `session_detail` gives
+  a step's spec, and `list_wires` names their ends.
+  - **Direct**: `edit_step` (not started: title, agent, model, effort, prompt;
+    Undo sets back what it changed while the step is as it left it);
+    `insert_step` (after, ahead of, or between two joined by a handoff, the
+    wire into the second keeping its id; then the pipeline is laid out again;
+    Undo moves that wire back, puts the places back and takes the step out);
+    `repoint_wire` (Undo while the service holds the move); `relayout_pipeline`
+    (`planRelayoutPipeline`, ghosts with the rest; Undo as a layout change's);
+    `set_model` on a not-started step or a closed session (Undo while its model
+    is still the one set); `wire_settings` (when, gate, rounds, tool output,
+    what it sends, files; Undo sets back the keys it changed); `remove_step` on
+    a not-started step (Undo through `sessions:unforget`, its place put back).
+  - **Confirm**: `restart_with_model` (a running session restarted in place,
+    its card saying it keeps its id, wires, place and area); `automate_wire`
+    (a change after which the wire sends without asking: an automatic gate
+    that fires when its source finishes or its PR merges, or what such a wire
+    sends); `forget_session` (running or closed; a running one's card carries
+    the close warnings); `lay_out_plan` (the held plan as held, where it was
+    listed going; then the pipeline laid out along its wires: the window
+    instead tidies a plan's steps only when its area holds nothing else);
+    `dismiss_plan` (its Orchestrator told, with the note). A plan card expires
+    when a newer plan is held in its place.
+  - Model names are checked against what this Mac's agent offers (the
+    models catalog, `modelRefusal`) before anything changes. Insert and
+    template lay-outs wait (up to 3 s) for the window to draw and place
+    what's new before laying the pipeline out, since a place saved first
+    would be overwritten by the window's own; a lay-out that can't be laid
+    out again says why and stands. None of these is a rule's.
 - Rooms: `share_group` never gives the invite code (the Team view has it);
   `take_over` reads the take-over plan for its card. A House board that can't
   be read is never left out: `list_tickets` lists it as "(<room>'s board

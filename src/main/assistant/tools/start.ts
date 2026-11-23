@@ -8,6 +8,7 @@ import { AGENT_NAME, type AdoWorkItem, type AgentKind, type NewSessionRequest, t
 import { readRelaunchChange } from "../../agents";
 import { HELPDESK_FOLDER_ONLY } from "../../helpdesk";
 import type { AssistantDeps, AssistantRoom, HouseBoardUnread } from "../deps";
+import { layOutAgain } from "../layoutPlan";
 import { defineTool, type AssistantTool, type CallContext, type JsonSchema } from "../registry";
 import { CHANGED_SINCE_CARD, joinsRoomWarning, leadWarnings, noSession, roomJoined, roomOfGroup, ruleIntoRoom, ruleIntoRoomWarning, SESSION_ARG, sessionById, sessionRef, teammates } from "./lookup";
 import { cardSaw, EFFORT_ARG, iso, MODE_ARG, MODEL_ARG, modeWarnings, nameOf, openRecord, roomCards } from "./sessions";
@@ -36,6 +37,11 @@ type Deps = Pick<
   | "ticketPlan"
   | "startTicket"
   | "startReview"
+  | "landscapeState"
+  | "layoutSessions"
+  | "patchLandscape"
+  | "setGroup"
+  | "wireList"
 >;
 
 const HOUSE_ROWS = 40;
@@ -487,7 +493,7 @@ export function startTools(d: Deps): AssistantTool[] {
       name: "lay_out_template",
       tier: "confirm",
       description:
-        "Lay a pipeline template out in an area of the landscape that's there: its steps as workspaces joined by their wires, the first started when the template says so. " +
+        "Lay a pipeline template out in an area of the landscape that's there: its steps as workspaces joined by their wires, the first started when the template says so, then laid out in stage columns along their wires. " +
         "repo: where its steps' worktrees go; ticket: an Azure DevOps work item id it's for. " +
         "more_tickets: for a template that starts at an Orchestrator, further work items it's for: one Orchestrator reads them all with ticket and proposes one plan, each step on one of them. " +
         "This puts a card in front of the user; it runs only when they confirm.",
@@ -596,10 +602,12 @@ export function startTools(d: Deps): AssistantTool[] {
           area: a.area,
         });
         const started = r.steps.find((s) => s.id === r.started);
+        // its steps went where there was room in the area: lined up in stage columns along their wires once drawn
+        const laid = r.steps.length > 1 ? await layOutAgain(d, r.steps.map((s) => s.id), r.steps[0].id) : null;
         return {
           text:
             `Laid out “${plainLine(l.t.name, 60)}” in “${plainLine(a.area, 120)}”: ${r.steps.map((s) => `${plainLine(s.title, 80)} (${s.id})`).join(", ")}` +
-            `${started ? `; ${plainLine(started.title, 80)} started` : ""}.${r.notes.length ? ` ${r.notes.map((n) => plainLine(n, 200)).join(" ")}` : ""}`,
+            `${started ? `; ${plainLine(started.title, 80)} started` : ""}.${r.notes.length ? ` ${r.notes.map((n) => plainLine(n, 200)).join(" ")}` : ""}${laid ? ` ${laid.said}` : ""}`,
         };
       },
       rule: true,

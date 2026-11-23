@@ -13,6 +13,17 @@ export function sessionById(d: Pick<AssistantDeps, "sessions">, id: string): Ass
   return d.sessions().find((s) => s.id === id) ?? null;
 }
 
+/**
+ * Session `id`'s title wherever the landscape has it: its sessions, else this Mac's not-started steps and closed
+ * sessions (drawn as ghosts), its ticket's title when it has one; null when there's no such session.
+ */
+export function knownTitle(d: Pick<AssistantDeps, "sessions" | "plannedSteps" | "closedSessions">, id: string): string | null {
+  const s = sessionById(d, id);
+  if (s) return s.title;
+  const r = d.plannedSteps().find((x) => x.id === id) ?? d.closedSessions().find((x) => x.id === id);
+  return r ? (r.ticketTitle ?? r.title) : null;
+}
+
 /** Why there's no session `id` to act on. */
 export const noSession = (id: string): string => `There's no session with id ${quoted(id, 80)}: the ids are in the snapshot and list_sessions`;
 

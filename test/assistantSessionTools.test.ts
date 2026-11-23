@@ -488,7 +488,8 @@ describe("lay_out_template", () => {
       detail: "Makes Orchestrator (Claude) in “atticus”, in atticus, for #5038 “Filter orgs”. Orchestrator starts now; the rest wait for their handoffs.",
       warnings: [],
     });
-    expect((await t.run(a)).text).toBe("Laid out “Orchestrated” in “atticus”: Builder (s1), Reviewer (s2); Builder started.");
+    // laying its pipeline out again afterwards is said when it can't be done, and the lay-out stands
+    expect((await t.run(a)).text).toBe("Laid out “Orchestrated” in “atticus”: Builder (s1), Reviewer (s2); Builder started. Its pipeline wasn't laid out again: landscapeState isn't faked in this test.");
     expect(asked).toEqual([
       { name: "Orchestrated", template: { startFirst: true, steps: orchestrated.steps, wires: orchestrated.wires }, ticketId: "5038", ticketTitle: "Filter orgs", ticketDescription: "Orgs list is slow", repoPath: "/code/atticus", area: "atticus" },
     ]);

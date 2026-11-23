@@ -35,9 +35,9 @@ import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
 import { WireService } from "./wires";
 import { PipelineEdits } from "./pipelineEdit";
-import { wiresInOrder, type WireState } from "../shared/wires";
+import { settingsOf, wiresInOrder, type WireState } from "../shared/wires";
 import { WireDelivery } from "./wireDelivery";
-import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
+import { areaKeyOf, LOOSE_GROUP, own } from "../shared/landscape";
 import { guardedOrigin, openPr, prCreateRefusal, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, publicUrl, remoteName } from "./git";
@@ -46,6 +46,7 @@ import { conversationFiles, handoffKickoff, handoffPrompt, replyOfConversation, 
 import { WireTools } from "./wireTools";
 import { TicketTools } from "./ticketTools";
 import { Plans } from "./plans";
+import type { PlanLaidOut } from "../shared/plans";
 import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
 import { draftTemplate, removedTemplate, savedTemplates, setAsideTemplates, TemplateLayOuts } from "./templates";
@@ -1541,7 +1542,7 @@ const assistantDeps: AssistantDeps = {
   sessions: () => worldSessions({ own: sessions.list(), remote: livePanes.state().remote, rooms: worldRoomList() }),
   groups: () => {
     const l = landscape.get().landscape;
-    return worldGroups({ own: sessions.list(), remote: livePanes.state().remote, areas: Object.keys(l.areas), stacks: Object.keys(l.stacks), rooms: worldRoomList() });
+    return worldGroups({ own: sessions.list(), remote: livePanes.state().remote, areas: Object.keys(l.areas), stacks: Object.keys(l.stacks), rooms: worldRoomList(), planned: sessions.planned(), closed: sessions.resumable() });
   },
   rooms: () => worldRooms(worldRoomList()),
   toWindow: assistantToWindow,
@@ -1704,6 +1705,49 @@ const assistantDeps: AssistantDeps = {
   // ---- reading sessions' output and folders (tools/diagnose.ts session_output, tools/files.ts) ----
   mirroredOutput: (id) => livePanes.mirrored(id),
   folders: new FolderReader({ secretFiles: () => knownSecretFiles(store.settings.workTrackerPath).files }),
+  // ---- pipelines (tools/pipeline.ts): the pipeline edits, wire service and plans are made further down ----
+  plannedSteps: () => sessions.planned(),
+  closedSessions: () => sessions.resumable(),
+  modelCatalog: async () => {
+    try {
+      return await modelCatalog();
+    } catch (err) {
+      logError("assistant: reading the model catalog", err);
+      return null;
+    }
+  },
+  editStep: (id, edit) => pipelineEdits.editStep(id, edit),
+  insertStep: (req) => pipelineEdits.insertStep(req),
+  setModel: (id, change) => pipelineEdits.setModel(id, change),
+  forgetSession: (id) => forgetSession(id),
+  unforget: (token) => {
+    const r = wires.unforget(token, (rec) => sessions.restoreRecord(rec));
+    if ("refused" in r) throw new Error(r.refused);
+    return r.notes;
+  },
+  forgetUndoable: (token) => wires.forgetUndoable(token),
+  wireSettings: (id) => {
+    const w = landscape.wires().book?.links;
+    const wire = w ? own(w, id) : undefined;
+    return wire ? settingsOf(wire) : null;
+  },
+  setWire: (id, settings) => {
+    const r = wires.set(id, settings);
+    if ("refused" in r) throw new Error(r.refused);
+  },
+  repointWire: (id, ends) => {
+    const r = wires.repoint(id, ends);
+    if ("refused" in r) throw new Error(r.refused);
+  },
+  unrepointWire: (id) => {
+    const r = wires.unrepoint(id);
+    if ("refused" in r) throw new Error(r.refused);
+  },
+  repointUndoable: (id) => wires.repointUndoable(id),
+  plans: () => plans.list(),
+  heldPlans: () => plans.held(),
+  layOutPlan: (id, shown, at) => layOutHeldPlan(id, shown, at),
+  dismissPlan: (id, note) => plans.dismiss(id, note).told,
 };
 const assistant = new AssistantService({
   registry: buildRegistry(assistantDeps, Object.values(assistantGroups)),
@@ -2043,8 +2087,9 @@ const plans: Plans = new Plans({
 });
 handle("plans:list", () => plans.list());
 handle("plans:viewing", (id) => plans.setViewing(id));
-handle("plans:layOut", (id, shown, at) =>
-  plans.layOut(id, shown, at, {
+/** Lay held plan `id` out as `shown` (the window's dialog, or the Assistant's lay_out_plan card). */
+function layOutHeldPlan(id: unknown, shown: unknown, at: unknown): Promise<PlanLaidOut> {
+  return plans.layOut(id, shown, at, {
     planStep: (q) => sessions.planStep(q),
     forget: (id) => {
       sessions.kill(id, true);
@@ -2053,8 +2098,9 @@ handle("plans:layOut", (id, shown, at) =>
     start: (id, from, ticketTitle) => startStep(id, from, ticketTitle),
     addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
     countSent: (wire, why) => delivery.countSent(wire, why),
-  })
-);
+  });
+}
+handle("plans:layOut", (id, shown, at) => layOutHeldPlan(id, shown, at));
 handle("plans:dismiss", (id, note) => plans.dismiss(id, note));
 // the agents' set_stage, request_pr, write_patch_notes and propose_plan (routed by messaging), and the window's answers to them
 const ticketTools = new TicketTools({

@@ -4,7 +4,7 @@ import { resolveLayout } from "../src/shared/landscapeModel";
 import type { SessionInfo } from "../src/shared/types";
 import { areaKeyOf } from "../src/shared/landscape";
 import { LandscapeStore } from "../src/main/landscape";
-import type { AssistantDeps, AssistantFileDeps, AssistantLayoutDeps } from "../src/main/assistant/deps";
+import type { AssistantDeps, AssistantFileDeps, AssistantLayoutDeps, AssistantPipelineDeps } from "../src/main/assistant/deps";
 import type { GuardOp } from "../src/main/sessionGuards";
 import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "../src/main/assistant/world";
 import { tempDir } from "./helpers";
@@ -20,7 +20,7 @@ import { unusedWorkDeps } from "./assistantWorkFakes";
  * The deps these tools reach, and the output and folder readers, for a test that never calls them: the guard lets
  * everything by, the rest throw.
  */
-export function unusedToolDeps(): AssistantLayoutDeps & AssistantFileDeps {
+export function unusedToolDeps(): AssistantLayoutDeps & AssistantFileDeps & AssistantPipelineDeps {
   const no = (name: string) => () => {
     throw new Error(`${name} isn't faked in this test`);
   };
@@ -56,6 +56,25 @@ export function unusedToolDeps(): AssistantLayoutDeps & AssistantFileDeps {
     changeSettings: no("changeSettings"),
     mirroredOutput: no("mirroredOutput"),
     folders: { list: no("folders.list"), read: no("folders.read"), diff: no("folders.diff") },
+    // no step waits and no session is closed, and no plan is held: what the listings and the snapshot read
+    plannedSteps: () => [],
+    closedSessions: () => [],
+    heldPlans: () => [],
+    modelCatalog: no("modelCatalog"),
+    editStep: no("editStep"),
+    insertStep: no("insertStep"),
+    setModel: no("setModel"),
+    forgetSession: no("forgetSession"),
+    unforget: no("unforget"),
+    forgetUndoable: no("forgetUndoable"),
+    wireSettings: no("wireSettings"),
+    setWire: no("setWire"),
+    repointWire: no("repointWire"),
+    unrepointWire: no("unrepointWire"),
+    repointUndoable: no("repointUndoable"),
+    plans: no("plans"),
+    layOutPlan: no("layOutPlan"),
+    dismissPlan: no("dismissPlan"),
   };
 }
 

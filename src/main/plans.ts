@@ -508,6 +508,13 @@ export class Plans {
     return out.sort((a, b) => b.held.at - a.held.at);
   }
 
+  /** The plans held now, as list() lists them (one waiting for a dialog isn't), read without checking any: id, Orchestrator, when. */
+  held(): { id: string; from: string; at: number }[] {
+    return Object.entries(this.data)
+      .filter(([, p]) => !p.waitsFor)
+      .map(([id, p]) => ({ id, from: p.from, at: p.at }));
+  }
+
   /** Orchestrator `id` was forgotten: its held plans go with it. */
   sessionForgotten(id: string): void {
     const mine = Object.keys(this.data).filter((k) => this.data[k].from === id);

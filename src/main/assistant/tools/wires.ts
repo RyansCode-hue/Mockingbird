@@ -5,7 +5,7 @@ import type { LandscapeStore } from "../../landscape";
 import type { WireService } from "../../wires";
 import type { AssistantDeps, AssistantWire } from "../deps";
 import { defineTool, type AssistantTool, type JsonSchema } from "../registry";
-import { SESSION_ARG, sessionById, sessionRef, titleOf } from "./lookup";
+import { knownTitle, SESSION_ARG, sessionById, sessionRef, titleOf } from "./lookup";
 
 /**
  * Wires (docs/assistant.md → Ability groups; docs/landscape-wires.md): the wires between sessions and what waits at
@@ -17,7 +17,7 @@ import { SESSION_ARG, sessionById, sessionRef, titleOf } from "./lookup";
 
 type Deps = Pick<
   AssistantDeps,
-  "sessions" | "guard" | "wireList" | "wireAddRefusal" | "addWire" | "removeWire" | "restoreWire" | "wireRestorable" | "sendWaiting" | "ticketStage" | "approveTicket"
+  "sessions" | "plannedSteps" | "closedSessions" | "guard" | "wireList" | "wireAddRefusal" | "addWire" | "removeWire" | "restoreWire" | "wireRestorable" | "sendWaiting" | "ticketStage" | "approveTicket"
 >;
 
 const WIRE_ARG: JsonSchema = { type: "string", minLength: 1, maxLength: 80, description: "The wire's id, from list_wires" };
@@ -91,7 +91,11 @@ export function wiresSeen(book: WireBook, ctx: GateContext): AssistantWire[] {
 }
 
 export function wireTools(d: Deps): AssistantTool[] {
-  const name = (id: string) => titleOf(sessionById(d, id), id);
+  /** A wire's end by its title, a not-started step's and a closed session's included. */
+  const name = (id: string) => {
+    const t = knownTitle(d, id);
+    return t === null ? titleOf(null, id) : `“${t}”`;
+  };
   /** A session as a card names it (lookup.ts sessionRef), from the landscape's sessions: these tools read no records. */
   const ref = (id: string) => sessionRef({ sessions: () => d.sessions() }, id);
   const wire =(id: string): AssistantWire | null => d.wireList().find((w) => w.id === id) ?? null;
@@ -104,7 +108,7 @@ export function wireTools(d: Deps): AssistantTool[] {
       name: "list_wires",
       tier: "read",
       description:
-        "The wires between sessions, earliest first: id, its ends (session ids and titles), type (handoff, context, feedback, worktree), " +
+        "The wires between sessions, earliest first: id, its ends (session ids and titles, a not-started step and a closed session among them), type (handoff, context, feedback, worktree), " +
         "when it fires (finished, manual, pr-merged), and its gate: state (idle, ready, sending, sent, blocked) and why, whether it asks the user " +
         "or sends itself, what waits at it (its pending id, when it was readied, how long it is) and a feedback wire's rounds. Never what it carries.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -113,8 +117,8 @@ export function wireTools(d: Deps): AssistantTool[] {
         text: JSON.stringify({
           wires: d.wireList().map((w) => ({
             ...w,
-            fromTitle: sessionById(d, w.from)?.title ?? null,
-            toTitle: sessionById(d, w.to)?.title ?? null,
+            fromTitle: knownTitle(d, w.from),
+            toTitle: knownTitle(d, w.to),
             waiting: w.waiting && { pending: w.waiting.pendingId, since: new Date(w.waiting.at).toISOString(), chars: w.waiting.chars },
           })),
         }),

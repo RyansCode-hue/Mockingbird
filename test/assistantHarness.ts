@@ -17,7 +17,7 @@ export type Model = (call: (op: string, args?: Record<string, unknown>) => Promi
 export interface HarnessOptions {
   /** Claude Code's binary; null: it isn't installed. */
   bin?: string | null;
-  world?: Pick<AssistantDeps, "sessions" | "groups" | "rooms">;
+  world?: Pick<AssistantDeps, "sessions" | "groups" | "rooms"> & Partial<Pick<AssistantDeps, "heldPlans">>;
   rules?: RulesStore;
   /** Actions only rules take (the rules engine's notify and text_me). */
   ruleOnly?: readonly AssistantTool[];

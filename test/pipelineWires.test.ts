@@ -128,6 +128,8 @@ describe("a forgotten step's chain", () => {
     expect(r.unbridged).toEqual([]);
     expect(links(s)[r.bridged[0].id]).toMatchObject({ from: "a", to: "b", type: "handoff", template: "Verify: {summary}" });
     expect(pairs(s)).toEqual(["a→b:handoff"]);
+    expect(s.service.forgetUndoable(r.undo)).toBe(true);
+    expect(s.service.forgetUndoable("forgot:p1:nope")).toBe(false);
     const restored: SessionInfo[] = [];
     const back = s.service.unforget(r.undo, (x) => {
       restored.push(x);
@@ -137,6 +139,7 @@ describe("a forgotten step's chain", () => {
     expect(restored.map((x) => x.id)).toEqual(["p1"]);
     expect(pairs(s)).toEqual(before);
     expect(refusal(s.service.unforget(r.undo, () => {}))).toMatch(/can't be undone any more/);
+    expect(s.service.forgetUndoable(r.undo)).toBe(false);
   });
 
   it("bridges each way in to each way out, makes none that's there already, and says one the rules refuse", () => {
