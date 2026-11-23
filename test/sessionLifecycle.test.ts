@@ -187,6 +187,130 @@ describe("messages waiting for a pane", () => {
   });
 });
 
+describe("a message its agent doesn't take after its Enter", () => {
+  /** A Claude pane whose hooks have reported, at its prompt. */
+  async function atPrompt() {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Orchestrator" });
+    m.statusFromHook({ paneId: s.id, status: "idle", started: true });
+    vi.advanceTimersByTime(2000);
+    const p = ptys.at(-1)!;
+    p.writes.length = 0;
+    return { m, s, p };
+  }
+  const enters = (p: FakePty) => p.writes.filter((w) => w === "\r").length;
+
+  it("is sent with Enter pressed again until its agent says it took it", async () => {
+    const { SUBMIT_CONFIRM_MS } = await import("../src/main/sessions");
+    const { m, s, p } = await atPrompt();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    m.sendMessage(s.id, "the long kickoff\nTicket: screenshot.png");
+    vi.advanceTimersByTime(150);
+    expect(p.writes).toEqual(["|the long kickoff\nTicket: screenshot.png|", "\r"]);
+    vi.advanceTimersByTime(SUBMIT_CONFIRM_MS);
+    expect(enters(p)).toBe(2);
+    expect(warn.mock.calls.some((c) => /hasn't taken the message pasted .* ago: Enter pressed again/.test(String(c[0])))).toBe(true);
+    m.statusFromHook({ paneId: s.id, status: "working", prompted: true });
+    vi.advanceTimersByTime(SUBMIT_CONFIRM_MS * 4);
+    expect(enters(p)).toBe(2);
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("working");
+  });
+
+  it("isn't pressed again once its agent has taken it", async () => {
+    const { SUBMIT_CONFIRM_MS } = await import("../src/main/sessions");
+    const { m, s, p } = await atPrompt();
+    m.sendMessage(s.id, "the summary");
+    vi.advanceTimersByTime(150);
+    m.statusFromHook({ paneId: s.id, status: "working", prompted: true });
+    vi.advanceTimersByTime(SUBMIT_CONFIRM_MS * 4);
+    expect(enters(p)).toBe(1);
+  });
+
+  it("reads the hook events written so far before pressing Enter again", async () => {
+    const { SUBMIT_CONFIRM_MS } = await import("../src/main/sessions");
+    const { m, s, p } = await atPrompt();
+    m.sendMessage(s.id, "the summary");
+    vi.advanceTimersByTime(150);
+    // its prompt event was written, and the poll hasn't read it yet
+    m.hooksCatchUp = () => void m.statusFromHook({ paneId: s.id, status: "working", prompted: true });
+    vi.advanceTimersByTime(SUBMIT_CONFIRM_MS);
+    expect(enters(p)).toBe(1);
+  });
+
+  it("leaves it to the user after the last Enter, the pane waiting and saying why", async () => {
+    const { SUBMIT_CONFIRM_MS, SUBMIT_RETRIES, UNSENT_REASON } = await import("../src/main/sessions");
+    const { m, s, p } = await atPrompt();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    m.sendMessage(s.id, "the summary");
+    vi.advanceTimersByTime(150 + SUBMIT_CONFIRM_MS * (SUBMIT_RETRIES + 3));
+    expect(enters(p)).toBe(1 + SUBMIT_RETRIES);
+    const info = m.list().find((x) => x.id === s.id)!;
+    expect(info.status).toBe("waiting");
+    expect(info.waitingReason).toBe(UNSENT_REASON);
+    expect(error.mock.calls.some((c) => String(c[0]).includes(`after ${1 + SUBMIT_RETRIES} Enters`))).toBe(true);
+  });
+
+  it("isn't pressed again once the user has typed there, nor while it asks for permission", async () => {
+    const { SUBMIT_CONFIRM_MS } = await import("../src/main/sessions");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const typed = await atPrompt();
+    typed.m.sendMessage(typed.s.id, "the summary");
+    vi.advanceTimersByTime(1000);
+    typed.m.write(typed.s.id, " and more");
+    vi.advanceTimersByTime(SUBMIT_CONFIRM_MS * 4);
+    expect(enters(typed.p)).toBe(1);
+    const asking = await atPrompt();
+    asking.m.sendMessage(asking.s.id, "the summary");
+    vi.advanceTimersByTime(1000);
+    asking.m.statusFromHook({ paneId: asking.s.id, status: "waiting", reason: "Claude needs your permission to use Bash" });
+    vi.advanceTimersByTime(SUBMIT_CONFIRM_MS * 4);
+    expect(enters(asking.p)).toBe(1);
+    expect(warn.mock.calls.filter((c) => /Enter isn't pressed again/.test(String(c[0])))).toHaveLength(2);
+  });
+
+  it("is sent once, unconfirmed, by a pane whose hooks haven't reported, a Codex, a working agent, or as a slash command", async () => {
+    const { SUBMIT_CONFIRM_MS } = await import("../src/main/sessions");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { m } = await manager();
+    const silent = await m.create({ ...agentPane, title: "silent" });
+    const codex = await m.create({ ...agentPane, agent: "codex", title: "codex" });
+    m.statusFromHook({ paneId: codex.id, status: "idle", started: true });
+    const working = await m.create({ ...agentPane, title: "working" });
+    m.statusFromHook({ paneId: working.id, status: "working", prompted: true });
+    const slash = await m.create({ ...agentPane, title: "slash" });
+    m.statusFromHook({ paneId: slash.id, status: "idle", started: true });
+    vi.advanceTimersByTime(2000);
+    const panes = ptys.slice(-4);
+    for (const p of panes) p.writes.length = 0;
+    m.sendMessage(silent.id, "hello");
+    m.sendMessage(codex.id, "hello");
+    m.sendMessage(working.id, "hello");
+    m.sendMessage(slash.id, "/compact");
+    vi.advanceTimersByTime(150 + SUBMIT_CONFIRM_MS * 4);
+    expect(panes.map(enters)).toEqual([1, 1, 1, 1]);
+  });
+
+  it("covers a kickoff, pasted while its just-started agent is still \"working\"", async () => {
+    const { SUBMIT_CONFIRM_MS } = await import("../src/main/sessions");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, title: "Orchestrator", initialPrompt: "You're the Orchestrator for #5152 and #5153" });
+    m.statusFromHook({ paneId: s.id, status: "idle", started: true });
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("working");
+    const p = ptys.at(-1)!;
+    vi.advanceTimersByTime(6000 + 150);
+    expect(p.writes).toEqual(["|You're the Orchestrator for #5152 and #5153|", "\r"]);
+    vi.advanceTimersByTime(SUBMIT_CONFIRM_MS);
+    expect(enters(p)).toBe(2);
+    m.statusFromHook({ paneId: s.id, status: "working", prompted: true });
+    vi.advanceTimersByTime(SUBMIT_CONFIRM_MS * 4);
+    expect(enters(p)).toBe(2);
+  });
+});
+
 describe("a queued message's receipt", () => {
   /** A receipt that writes down what it hears, and the pane's writes as it heard each. */
   function receipt(p: () => FakePty, opts: { paste?: boolean } = {}) {

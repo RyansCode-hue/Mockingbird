@@ -42,6 +42,13 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.8.3",
+    date: "2026-11-23",
+    items: [
+      f("Kickoffs and messages typed into Claude no longer sit in its prompt unsent when Claude misses the Enter"),
+    ],
+  },
+  {
     version: "1.8.2",
     date: "2026-11-23",
     items: [

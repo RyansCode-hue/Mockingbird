@@ -506,6 +506,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
+- **1.8.3: messages that reach Claude are sent** — released in 1.8.3. Claude
+  Code can drop the Enter that follows a long paste (an Orchestrator's kickoff,
+  a handoff), leaving the message in its prompt unsent. Mockingbird now waits
+  for Claude's hooks to say the prompt was taken and presses Enter again, twice
+  at most; after that the pane waits for you, saying the message is in its
+  prompt.
 - **1.8.2: several tickets per Orchestrator, group messages and tab order** —
   released in 1.8.2. Pipeline from a ticket… (with an Orchestrator template)
   takes more tickets with + Another ticket, and ⌘K's `lay_out_template` takes

@@ -44,6 +44,12 @@ export function tailOf(text: string, max: number): string {
 }
 /** How long after an agent's start hook its prompt is ready to take a queued message. */
 const STARTED_SETTLE_MS = 1500;
+/** How long after a message's Enter its agent's UserPromptSubmit has to come before Enter is pressed again (confirmSubmit). */
+export const SUBMIT_CONFIRM_MS = 5000;
+/** How many more times Enter is pressed for a message its agent hasn't taken (confirmSubmit). */
+export const SUBMIT_RETRIES = 2;
+/** What a pane holding a message its agent never took says while it waits for the user (confirmSubmit). */
+export const UNSENT_REASON = "A message to it is in its prompt, unsent: press Enter there to send it";
 /** What of a teammate's typing is held while a Codex's folder notice is up (writeFromTeammate). */
 const MAX_HELD_INPUT = 64 * 1024;
 
@@ -239,6 +245,7 @@ interface LiveSession {
   startTimer: NodeJS.Timeout | null; // delivers queued messages once a just-started agent has drawn its prompt
   compactSentAt: number | null; // when Compact (usage warnings) last sent /compact here
   prompts: number; // prompts its agent has taken this launch (UserPromptSubmit), Mockingbird's own notices not counted
+  submits: number; // prompts its agent has taken this launch (UserPromptSubmit), Mockingbird's own notices too
   ownPrompts: number; // notices submitted whose UserPromptSubmit hasn't come yet: those prompts aren't counted
   promptAt: number | null; // when the latest of those prompts came (SessionInfo.promptAt)
   toTerminal: boolean; // its agent quit and the terminal it becomes is starting (toTerminal): its pty has exited
@@ -920,6 +927,7 @@ export class SessionManager {
       startTimer: null,
       compactSentAt: null,
       prompts: 0,
+      submits: 0,
       ownPrompts: 0,
       promptAt: null,
       toTerminal: false,
@@ -992,8 +1000,9 @@ export class SessionManager {
       const prompt = req.initialPrompt;
       sess.kickoff = true;
       setTimeout(() => {
-        sess.kickoff = false;
+        // still a kickoff as it's pasted: its Enter is confirmed though the agent's start left the pane "working"
         this.sendMessage(info.id, prompt);
+        sess.kickoff = false;
       }, 6000);
     }
     // a terminal's kickoff is a command (a preset's "npm test -- --watch"): typed
@@ -2525,6 +2534,8 @@ export class SessionManager {
       return false;
     }
     if (receipt && !this.mayPaste(receipt, id)) return false;
+    // only a prompt at rest is confirmed: one pasted into a working agent is queued by it, and taken when its turn ends
+    const confirm = (s.info.status === "idle" || s.kickoff) && !message.startsWith("/") ? { submits: s.submits, pastedAt: Date.now() } : null;
     // bracketed paste so multi-line messages arrive as one prompt
     s.proc.write(`\x1b[200~${pasteText(message)}\x1b[201~`);
     if (!submit) {
@@ -2553,9 +2564,44 @@ export class SessionManager {
         return;
       }
       s.proc.write("\r");
+      if (confirm) this.confirmSubmit(s, confirm.submits, confirm.pastedAt, 1);
       this.settle(receipt, "sent");
     }, 120);
     return true;
+  }
+
+  /**
+   * Claude Code holds an Enter that comes while it's still taking in a paste and presses it once the paste is in, but
+   * drops it when a pasted line names an image file (its check for one clears the held key) or its prompt is redrawn
+   * meanwhile (a just-started agent), leaving the message in its prompt, unsent. So a Claude pane whose hooks report has
+   * to show the prompt taken (UserPromptSubmit) within SUBMIT_CONFIRM_MS of the Enter, or Enter is pressed again, up to
+   * SUBMIT_RETRIES times; then the pane waits for the user, saying why. Not once the user has typed there since the
+   * paste (what's in the prompt is theirs to send), nor while it asks for permission (an Enter would answer it).
+   */
+  private confirmSubmit(s: LiveSession, submits: number, pastedAt: number, pressed: number): void {
+    if ((s.info.agent ?? "claude") !== "claude" || !s.hookEvents) return;
+    setTimeout(() => {
+      if (this.quitting || this.live.get(s.info.id) !== s || s.info.status === "dead" || s.toTerminal) return;
+      this.catchUpHooks();
+      if (s.submits > submits) return;
+      const id = s.info.id;
+      const ago = `${Math.round((Date.now() - pastedAt) / 1000)}s`;
+      if (s.lastInput > pastedAt || s.info.status === "waiting") {
+        const why = s.info.status === "waiting" ? "it's asking for permission" : "the user has typed there since";
+        console.warn(`[sessions] ${id}: its agent hasn't taken the message pasted ${ago} ago, and ${why}: Enter isn't pressed again`);
+        return;
+      }
+      if (pressed > SUBMIT_RETRIES) {
+        console.error(`[sessions] ${id}: its agent didn't take the message pasted ${ago} ago after ${pressed} Enters: it's left in the prompt for the user`);
+        s.draft = true;
+        s.lastInput = Date.now();
+        this.setStatus(id, "waiting", UNSENT_REASON);
+        return;
+      }
+      console.warn(`[sessions] ${id}: its agent hasn't taken the message pasted ${ago} ago: Enter pressed again`);
+      s.proc.write("\r");
+      this.confirmSubmit(s, submits, pastedAt, pressed + 1);
+    }, SUBMIT_CONFIRM_MS);
   }
 
   /**
@@ -2816,6 +2862,7 @@ export class SessionManager {
       this.emitChanged();
     }
     if (ev.prompted) {
+      s.submits++;
       if (s.ownPrompts > 0) s.ownPrompts--;
       else {
         s.prompts++;
