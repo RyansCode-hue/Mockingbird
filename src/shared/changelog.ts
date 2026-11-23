@@ -45,9 +45,14 @@ export const CHANGELOG: Release[] = [
     version: "1.9.0",
     date: "2026-11-23",
     items: [
+      n("Edit a laid-out pipeline: a Pipeline panel, a model chip on each card, Edit… and + to insert steps"),
+      n("Re-point a wire by dragging its end, save a pipeline as a template; Forget rejoins the chain, with Undo"),
+      n("The Assistant is a tab on the left rail (⇧⌘A) with its own message box, its thread kept across quits"),
+      n("The Assistant reads output, files and diffs, and edits pipelines, area colours, tool windows and settings"),
+      n("Choose an area's colour: click its dot, or Colour… in its ⋯"),
       n("A laid-out plan goes in stage columns, a ticket to a row, its columns of two or more captioned"),
       n("Pipeline from a ticket…: tick tickets on a list, choose the template from a dropdown, steps fold to a line"),
-      f("⌘↵ lays out even while one of the dialog's dropdowns has focus, instead of opening it"),
+      f("A model change sticks after a restart, and Brief and Continue in Codex keep a session's wires"),
     ],
   },
   {
