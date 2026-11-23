@@ -276,3 +276,26 @@ describe.skipIf(!local)("an Orchestrator's plan on several tickets", () => {
     ]);
   }, 200_000);
 });
+
+describe.skipIf(!local)("an Orchestrator's plan laid out on two tickets", () => {
+  it("goes in stage columns in its own area, a ticket to a row, each column of two captioned", async () => {
+    const t = await audit<{ laid: { note: string | null; at: Record<string, [number, number] | null>; captions: [string | null, number][] } }>("lsPlan=pipeline&landscapePlanAudit=pipeline");
+    expect(t.laid.note).toBe("Laid out the plan in #5115: 4 steps, Coder 5115 – CRM keys started.");
+    const at = t.laid.at;
+    for (const k of Object.keys(at)) expect(at[k], k).not.toBeNull();
+    const [orch, c1, c2, v1, v2] = ["Orchestrator", "Coder 5115", "Coder 5110", "Verifier 5115", "Verifier 5110"].map((k) => at[k]!);
+    // columns: the Orchestrator, then both Coders, then both Verifiers, left to right
+    expect(c1[0]).toBe(c2[0]);
+    expect(v1[0]).toBe(v2[0]);
+    expect(orch[0]).toBeLessThan(c1[0]);
+    expect(c1[0]).toBeLessThan(v1[0]);
+    // a row per ticket: each Verifier level with its Coder, #5110's under #5115's
+    expect(v1[1]).toBe(c1[1]);
+    expect(v2[1]).toBe(c2[1]);
+    expect(c2[1]).toBeGreaterThan(c1[1]);
+    // the columns of two captioned, over them (a card is drawn a few px inside its place)
+    expect(t.laid.captions.map(([text]) => text)).toEqual(["Coder", "Verifier"]);
+    expect(Math.abs(t.laid.captions[0][1] - c1[0])).toBeLessThanOrEqual(8);
+    expect(Math.abs(t.laid.captions[1][1] - v1[0])).toBeLessThanOrEqual(8);
+  }, 200_000);
+});

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { formatTokens, isErr, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
-import { carriesWork, gateOf, settingsRefusal, stepRefusal, verdictDue, type WireSettings, type WireVerdict } from "../shared/wires";
+import { carriesWork, gateOf, settingsRefusal, stepRefusal, verdictDue, wiresInOrder, type WireSettings, type WireVerdict } from "../shared/wires";
 import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, GAP, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
 import type { LandscapeSave, Migrating } from "./useLandscape";
 import {
@@ -64,6 +64,8 @@ import {
   clearRoom,
   sessionsOnScreen,
   shortAreaName,
+  stageCaptions,
+  STAGE_CAPTION_H,
   takesKeys,
   tilesIn,
   toLandscape,
@@ -708,7 +710,7 @@ export function Landscape({
   const paintScale = (zoom: number) => {
     const inv = String(1 / zoom);
     const hs = String(Math.max(1, 1 / zoom));
-    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-wh, .ls-window, .ls-acard, .ls-ghost, .ls-wires, .ls-wire-labels, .ls-wire-dots") ?? []) {
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-node.stack, .ls-wh, .ls-window, .ls-acard, .ls-ghost, .ls-wires, .ls-wire-labels, .ls-wire-dots, .ls-stage") ?? []) {
       el.style.setProperty("--ls-inv", inv);
       el.style.setProperty("--ls-hs", hs);
     }
@@ -1645,6 +1647,8 @@ export function Landscape({
   }, [tourWanted]);
   const wireBook = useWires().state;
   const wireList = useMemo(() => wireViews(wireBook, layout, rooms), [wireBook, layout, rooms]);
+  // what each column of a chain laid out along its wires is, over it
+  const stageList = useMemo(() => stageCaptions(layout, wiresInOrder(wireBook?.book?.links ?? {}).map(([, w]) => w)), [layout, wireBook]);
   const tourArea = useRef<string | null>(null);
   if (tourUp && !layout.areas.some((a) => a.key === tourArea.current)) tourArea.current = tourAreaOf(layout, cam.current, vpNow.current);
   const tourWires = (): TourTarget => {
@@ -3078,6 +3082,11 @@ export function Landscape({
               onCollapse={(on) => setAreaFlag(a.key, "collapsed", on)}
               onGrab={(e) => grabArea(a.key, e)}
             />
+          ))}
+          {stageList.map((c) => (
+            <div key={`${c.area}:${c.x}`} className="ls-stage" data-area={c.area} style={{ left: c.x, top: c.y + STAGE_CAPTION_H, ["--ls-inv" as string]: 1 / cam.current.zoom }}>
+              {c.text}
+            </div>
           ))}
           <WireLayer ref={wiresRef} views={wireList} band={band} cam={cam} listeners={listeners.current} />
           {layout.ghosts.map((g) => {

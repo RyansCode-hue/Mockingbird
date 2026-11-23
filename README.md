@@ -506,6 +506,16 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
+- **1.9.0: plans in stage columns, a tidier Pipeline from a ticket** —
+  released in 1.9.0. A plan laid out into its Orchestrator's area, when that
+  area holds only the Orchestrator and its steps, goes in stage columns along
+  its wires: the Orchestrator, then each stage's workspaces side by side, a
+  ticket to a row; a column of two or more is captioned with the word their
+  names share (Coder, Verifier). An area holding anything else keeps the old
+  rule, so nothing of yours moves. Pipeline from a ticket… lists the board's
+  tickets to tick (filter, whose; the first ticked is the lead, Make lead
+  changes it), offers the templates in a dropdown, and folds each step to one
+  line with its prompt behind Prompt.
 - **1.8.3: messages that reach Claude are sent** — released in 1.8.3. Claude
   Code can drop the Enter that follows a long paste (an Orchestrator's kickoff,
   a handoff), leaving the message in its prompt unsent. Mockingbird now waits

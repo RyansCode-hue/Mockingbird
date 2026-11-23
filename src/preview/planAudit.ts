@@ -98,6 +98,29 @@ export function ticketsPlan(make: (id: string, over: Partial<SessionInfo>) => Se
   return { orchestrator, held: { id: "pl-tickets", from: orchestrator.id, at: now - 4 * 60_000, plan } };
 }
 
+/**
+ * ?lsPlan=pipeline: an Orchestrator given #5115 and #5110, its plan a Coder and a Verifier on each, named for their
+ * tickets as an Orchestrator names them: laid out, its area (#5115's, new) holds only them, so they go in stage columns.
+ */
+export function pipelinePlan(make: (id: string, over: Partial<SessionInfo>) => SessionInfo, wt: (branch: string) => string, now: number) {
+  const orchestrator = make("pp-orch", { title: "Orchestrator", role: "orchestrator", taskGroup: "5115", ticketId: "5115", tickets: ["5115", "5110"], branch: "5115-orchestrator", cwd: wt("5115-orchestrator"), status: "idle", createdAt: now - 40 * 60_000 });
+  const coder = (key: string, ticket: string, title: string, folder: Plan["steps"][number]["folder"]) => ({ key, name: `Coder ${ticket} – ${title}`, agent: "codex" as const, folder, ticket, prompt: `Implement {ticket}. Run the tests, commit, then call finish_step.` });
+  const verifier = (key: string, ticket: string, of: string) => ({ key, name: `Verifier ${ticket}`, agent: "claude" as const, folder: { sameAs: of }, ticket, prompt: "Check the Coder's work against {ticket}, then call finish_step with your verdict." });
+  const plan: Plan = {
+    summary: "Wait out the CRM's API keys on #5115 and add the CSV export of #5110: a Coder and a Verifier for each, side by side.",
+    steps: [coder("c1", "5115", "CRM keys", "orchestrator"), coder("c2", "5110", "CSV export", "new"), verifier("v1", "5115", "c1"), verifier("v2", "5110", "c2")],
+    wires: [
+      { from: "me", to: "c1", type: "handoff" },
+      { from: "me", to: "c2", type: "handoff" },
+      { from: "c1", to: "v1", type: "handoff", when: "finished", gate: "ask" },
+      { from: "c2", to: "v2", type: "handoff", when: "finished", gate: "ask" },
+      { from: "v1", to: "c1", type: "feedback", gate: "ask", rounds: 3 },
+      { from: "v2", to: "c2", type: "feedback", gate: "ask", rounds: 3 },
+    ],
+  };
+  return { orchestrator, held: { id: "pl-pipeline", from: orchestrator.id, at: now - 4 * 60_000, plan } };
+}
+
 /** The Council fixture's title (stub.ts' councils[0]), and its own area (collab.ts' councilArea). */
 const COUNCIL_TITLE = "CSV export for the donor list";
 const COUNCIL_AREA = `Council — ${COUNCIL_TITLE}`;
@@ -323,6 +346,26 @@ async function ticketsAudit(env: PlanAuditEnv, out: Record<string, unknown>): Pr
   };
 }
 
+/** ?lsPlan=pipeline's plan laid out: its area tidied into stage columns, each column of two captioned. */
+async function pipelineAudit(out: Record<string, unknown>): Promise<void> {
+  const item = await trayItem(true);
+  await click(actionOf(item, "open"));
+  await sleep(900);
+  await click(dialog()?.querySelector('button[data-act="layout"]'));
+  await sleep(3000);
+  const at = (title: string) => {
+    // a running workspace's card names no area: each is found by its name, which only this plan's steps carry
+    const el = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node, .ls-world .ls-ghost")].find((n) => (n.dataset.ws === "pp-orch" || title !== "Orchestrator") && n.querySelector(".lg-name, .ls-title, .ls-card-title")?.textContent?.startsWith(title));
+    const r = el?.getBoundingClientRect();
+    return r ? [Math.round(r.left), Math.round(r.top)] : null;
+  };
+  out.laid = {
+    note: noteNow(),
+    at: Object.fromEntries(["Orchestrator", "Coder 5115", "Coder 5110", "Verifier 5115", "Verifier 5110"].map((t) => [t, at(t)])),
+    captions: [...document.querySelectorAll<HTMLElement>('.ls-stage[data-area="5115"]')].map((c) => [c.textContent, Math.round(c.getBoundingClientRect().left)]),
+  };
+}
+
 async function builtinAudit(env: PlanAuditEnv, out: Record<string, unknown>, shot: boolean, many = false): Promise<void> {
   const v = document.querySelector<HTMLElement>(".ls-viewport")!.getBoundingClientRect();
   const at = { x: Math.round(v.right - 120), y: Math.round(v.bottom - 80) };
@@ -425,6 +468,13 @@ export function runPlanAudit(env: PlanAuditEnv, part: string): void {
       else if (part === "builtin" || part === "builtinshot") await builtinAudit(env, out, part === "builtinshot");
       else if (part === "builtinmany" || part === "builtinmanyshot") await builtinAudit(env, out, part === "builtinmanyshot", true);
       else if (part === "tickets") await ticketsAudit(env, out);
+      else if (part === "pipeline") await pipelineAudit(out);
+      else if (part === "pipelineshot") {
+        const item = await trayItem(false);
+        actionOf(item, "open")?.click();
+        await sleep(900);
+        dialog()?.querySelector<HTMLElement>('button[data-act="layout"]')?.click();
+      }
       else {
         // shot, gone, room, roomgone, newer: the plan opened from the tray (synthetic events) and read
         const item = await trayItem(false);

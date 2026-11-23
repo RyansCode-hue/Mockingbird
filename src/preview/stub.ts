@@ -50,7 +50,7 @@ import { runSwitchAudit } from "./switchAudit";
 import { assistantApi, openAssistantSheet } from "./assistantStub";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
-import { boardPlan, councilPlan, runPlanAudit, ticketsPlan } from "./planAudit";
+import { boardPlan, councilPlan, pipelinePlan, runPlanAudit, ticketsPlan } from "./planAudit";
 import { WIRE_AREA, acrossBook, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { openFinishShot } from "./wireNeedsAudit";
@@ -9514,7 +9514,7 @@ Object.assign(api, {
 // boardPlan); =room shares that area as a team room's; =gone holds it and then lets it go, as a newer plan would;
 // =council holds a Council's Orchestrator's plan instead, in the Council's own area on no ticket (councilPlan, W18).
 const lsPlanQ = params.get("lsPlan");
-const planOrch = wireBoard && lsPlanQ !== null ? (lsPlanQ === "council" ? councilPlan(session, WT, now) : lsPlanQ === "tickets" ? ticketsPlan(session, WT, now) : boardPlan(session, WT, now)) : null;
+const planOrch = wireBoard && lsPlanQ !== null ? (lsPlanQ === "council" ? councilPlan(session, WT, now) : lsPlanQ === "tickets" ? ticketsPlan(session, WT, now) : lsPlanQ === "pipeline" ? pipelinePlan(session, WT, now) : boardPlan(session, WT, now)) : null;
 if (planOrch && lsPlanQ === "council") councils[0].implementedIn = planOrch.orchestrator.id;
 if (planOrch) {
   sessions.push(planOrch.orchestrator);

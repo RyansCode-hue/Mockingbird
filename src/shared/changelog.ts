@@ -42,6 +42,15 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.9.0",
+    date: "2026-11-23",
+    items: [
+      n("A laid-out plan goes in stage columns, a ticket to a row, its columns of two or more captioned"),
+      n("Pipeline from a ticket…: tick tickets on a list, choose the template from a dropdown, steps fold to a line"),
+      f("⌘↵ lays out even while one of the dialog's dropdowns has focus, instead of opening it"),
+    ],
+  },
+  {
     version: "1.8.3",
     date: "2026-11-23",
     items: [

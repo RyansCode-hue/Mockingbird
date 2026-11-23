@@ -2962,6 +2962,13 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 }
 .ls-viewport.ls-band-cards .ls-area.drop-on { border-color: var(--acc); background: color-mix(in srgb, var(--acc) 12%, transparent); }
 .ls-viewport.ls-band-cards .ls-area-empty { display: none; }
+/* what a column of a chain laid out along its wires is (stageCaptions): its bottom on the column's top, in the room Tidy
+   leaves over it, and the same size on screen at any zoom, as an area's name is */
+.ls-stage {
+  position: absolute; transform: translateY(-100%) scale(var(--ls-inv, 1)); transform-origin: 0 100%;
+  padding: 0 2px 5px; pointer-events: none; user-select: none; white-space: nowrap;
+  font: 500 10.5px var(--ui); letter-spacing: .08em; text-transform: uppercase; color: var(--text-3);
+}
 .ls-area-title {
   position: absolute; left: calc(12px * var(--ls-inv, 1)); bottom: calc(100% + 6px * var(--ls-inv, 1));
   width: calc(var(--aw) * 1px / var(--ls-inv, 1) - 24px);

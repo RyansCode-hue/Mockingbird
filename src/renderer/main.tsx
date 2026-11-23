@@ -2391,8 +2391,12 @@ function App() {
     setLaidTick((n) => n + 1);
     return null;
   };
-  /** A lay-out made, until its steps and wires are drawn and (`tidy`: its area was made for it) tidied along them. */
-  const laidOut = useRef<{ area: string; ids: string[]; wires: string[]; said: string; tidy: boolean; until: number } | null>(null);
+  /**
+   * A lay-out made, until its steps and wires are drawn and tidied along them: `tidy` true when its area was made for
+   * it; a set of sessions when it went in an area there already (a plan's, its Orchestrator's), tidied only if that area
+   * holds nothing but them, so nothing else there moves.
+   */
+  const laidOut = useRef<{ area: string; ids: string[]; wires: string[]; said: string; tidy: boolean | ReadonlySet<string>; until: number } | null>(null);
   const [laidTick, setLaidTick] = useState(0);
   useEffect(() => {
     const p = laidOut.current;
@@ -2410,19 +2414,22 @@ function App() {
       return lsSay(`${p.said} ${p.tidy ? "Its area wasn't tidied: its steps weren't drawn in time. Tidy it from its ⋯ once they are." : ""}`.trim());
     }
     laidOut.current = null;
+    const roomy = `${p.said} They went where there was room in ${areaTitle(p.area)}, and nothing already in it moved: Tidy in its ⋯ lines them up along their wires, with Undo.`;
     if (!p.tidy) {
       goToArea(p.area);
-      return lsSay(`${p.said} They went where there was room in ${areaTitle(p.area)}, and nothing already in it moved: Tidy in its ⋯ lines them up along their wires, with Undo.`);
+      return lsSay(roomy);
     }
-    const plan = planTidy(placed, layout, p.area, areaTitle, wiresInOrder(links).map(([, w]) => w));
+    const only = p.tidy === true ? undefined : p.tidy;
+    const plan = planTidy(placed, layout, p.area, areaTitle, wiresInOrder(links).map(([, w]) => w), only ? { only } : {});
     goToArea(p.area);
-    if ("refused" in plan) return lsSay(`${p.said} Its area wasn't tidied: ${plan.refused}`);
+    if ("refused" in plan) return lsSay(only ? roomy : `${p.said} Its area wasn't tidied: ${plan.refused}`);
     if (!plan.patch) return lsSay(p.said);
     void lsSaves.save(plan.patch, `tidying ${areaTitle(p.area)}`).then((s) => lsSay("error" in s ? `${p.said} Its area wasn't tidied: ${s.error}` : p.said));
   }, [laidTick, landscapeLayout]);
   /**
    * Lay out held plan `id` as its dialog shows it (W17): main reads and checks it all again, and makes it once. The steps
-   * go in its Orchestrator's area, which is there already, so nothing there moves (W9's rule for an existing area).
+   * go in its Orchestrator's area, which is there already: laid out in stage columns along their wires when it holds
+   * nothing else, else where there's room, so nothing else there moves (W9's rule for an existing area).
    */
   const layOutPlanNow = async (id: string, shown: Plan, at: PlanShownAt): Promise<string | null> => {
     let r: IpcResult<PlanLaidOut>;
@@ -2439,7 +2446,9 @@ function App() {
     await refresh();
     const started = r.steps.filter((x) => x.id === r.started).map((x) => x.title);
     const said = [`Laid out the plan in ${areaTitle(r.area)}: ${r.steps.length === 1 ? "1 step" : `${r.steps.length} steps`}${started.length ? `, ${started.join(", ")} started` : ""}.`, ...r.notes].join(" ");
-    laidOut.current = { area: r.area, ids: r.steps.map((x) => x.id), wires: r.wires, said, tidy: false, until: Date.now() + LAID_OUT_WAIT_MS };
+    // its Orchestrator and its steps, in stage columns, when its area holds nothing else
+    const orchestrator = planFor?.view.held.from;
+    laidOut.current = { area: r.area, ids: r.steps.map((x) => x.id), wires: r.wires, said, tidy: new Set([...r.steps.map((x) => x.id), ...(orchestrator ? [orchestrator] : [])]), until: Date.now() + LAID_OUT_WAIT_MS };
     setLaidTick((n) => n + 1);
     return null;
   };

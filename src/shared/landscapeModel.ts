@@ -2265,6 +2265,57 @@ export type TidyWire = Pick<Wire, "from" | "to" | "type">;
 export const WIRED_COLUMN_GAP = 112;
 
 /**
+ * The room Tidy leaves over a chain that fans out (a column of two or more, an Orchestrator's steps on several
+ * tickets), for each column's caption: what its workspaces are (stageCaptions).
+ */
+export const STAGE_CAPTION_H = 24;
+
+/** A column caption over a chain Tidy laid out along its wires: the word its workspaces' names share, placed over them. */
+export interface StageCaption {
+  area: string;
+  x: number;
+  y: number;
+  w: number;
+  text: string;
+}
+
+/** The first word every one of `tiles`' names starts with ("Coder 5152 – …", "Coder 5153 – …": Coder), or null. */
+export function stageWord(tiles: readonly Tile[]): string | null {
+  const words = tiles.map((t) => (t.front.title.trim().split(/[\s–—:·]+/)[0] ?? "").replace(/[^\p{L}\p{N}-]+$/u, ""));
+  const first = words[0];
+  return first && words.every((w) => w.toLowerCase() === first.toLowerCase()) ? first : null;
+}
+
+/** Whether a chain fans out: it has columns, one of which holds two or more, so its columns are captioned. */
+const fans = (band: readonly Tile[][]) => band.length > 1 && band.some((column) => column.length > 1);
+
+/**
+ * The captions over each fanning chain laid out in columns along `wires` (Tidy, or a plan laid out): a chain whose
+ * columns still line up, each at one left edge and left of the next, gets the word each column of two or more
+ * workspaces' names share over it. A chain moved out of its columns gets none, as does a column whose names share no
+ * first word.
+ */
+export function stageCaptions(layout: Pick<ResolvedLayout, "areas" | "tiles" | "ghosts">, wires: readonly TidyWire[]): StageCaption[] {
+  const out: StageCaption[] = [];
+  for (const a of layout.areas) {
+    if (a.rect.collapsed) continue;
+    const tiles = [...layout.tiles, ...layout.ghosts].filter((t) => t.area === a.key && !t.hidden).sort((x, y) => madeAt(x) - madeAt(y) || x.rect.y - y.rect.y || x.rect.x - y.rect.x);
+    for (const band of alongWires(tiles, wires)?.bands ?? []) {
+      const columns = band.filter((c) => c?.length);
+      if (!fans(columns)) continue;
+      const lined = columns.every((c, i) => c.every((t) => Math.abs(t.rect.x - c[0].rect.x) < 1) && (i === 0 || c[0].rect.x > Math.max(...columns[i - 1].map((t) => t.rect.x + t.rect.w))));
+      if (!lined) continue;
+      // one workspace's column needs none: its own name says it
+      for (const c of columns.filter((x) => x.length > 1)) {
+        const text = stageWord(c);
+        if (text) out.push({ area: a.key, x: c[0].rect.x, y: Math.min(...c.map((t) => t.rect.y)) - STAGE_CAPTION_H, w: Math.max(...c.map((t) => t.rect.w)), text });
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * An area's workspaces and ghosts (`tiles`, in the order they were made) along `wires` (earliest first), for Tidy; null
  * when none runs between two of them. A stack is one: a wire to any of its tabs is a wire to it, and one between two
  * of its tabs runs nowhere. A shared worktree's terminal goes `under` its agent (the first wire's, when there are
@@ -2366,13 +2417,16 @@ export function newAreaPatch(l: Landscape, key: string, repo: { path: string; ba
  * holds: smaller, or larger, when it pushes what's in its way aside as any area that grows does. Refused while it's
  * locked or collapsed. `undoOf(l, patch)` puts every place back.
  *
+ * Given `only` (a lay-out's sessions), it's refused unless every workspace and ghost in the area is one of them, they're
+ * joined by wires, and the area keeps nothing else: a lay-out into an area there already tidies only its own.
+ *
  * Given `wires` (the book's, earliest first), it lays the area out along those between two of its workspaces or ghosts
  * instead, with a note saying so (alongWires): each chain left to right in columns WIRED_COLUMN_GAP apart, one
  * chain under another, its workspaces' tool windows under them; then, below, in rows as above, what no wire joins and
  * what else it keeps. A wire to another area's workspace is passed over. With none inside it, it's laid out in rows as
  * above.
  */
-export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titleOf: (key: string) => string, wires: readonly TidyWire[] = []): AreaPlan {
+export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titleOf: (key: string) => string, wires: readonly TidyWire[] = [], opts: { only?: ReadonlySet<string> } = {}): AreaPlan {
   const refused = tidyRefusal(layout, key, titleOf);
   if (refused) return { refused };
   const area = layout.areas.find((a) => a.key === key)!;
@@ -2401,6 +2455,9 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
   }
   items.push(...rest.sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x));
   if (!items.length && !along) return { refused: `${titleOf(key)} has nothing in it to tidy` };
+  // `only`: a lay-out's sessions, tidied only when the area holds nothing else of its own, which would move
+  if (opts.only && (!along || items.length || tiles.some((t) => ![...t.members, ...(t.closed ?? [])].some((m) => opts.only!.has(m.id)))))
+    return { refused: `${titleOf(key)} holds more than what was laid out, which Tidy would move` };
   const left = snapUp(area.rect.x + AREA_PAD);
   const top = snapUp(area.rect.y + AREA_HEADER);
   const p = emptyPatch();
@@ -2414,6 +2471,8 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
   };
   let y = top;
   for (const band of along?.bands ?? []) {
+    // a chain that fans out leaves room over its columns for their captions
+    if (fans(band.filter(Boolean))) y = snapUp(y + STAGE_CAPTION_H);
     let x = left;
     let below = y;
     for (const column of band) {

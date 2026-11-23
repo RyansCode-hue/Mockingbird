@@ -3,6 +3,7 @@ import {
   GHOST_INSET,
   MOVE_EDGES,
   SNAP_PX,
+  STAGE_CAPTION_H,
   WIRED_COLUMN_GAP,
   areaCounts,
   areaSummary,
@@ -12,6 +13,8 @@ import {
   revealTile,
   revealables,
   forgetPatch,
+  stageCaptions,
+  stageWord,
   ghostDrawnHeight,
   minWorkspace,
   newAreaPatch,
@@ -730,23 +733,26 @@ describe("Tidy along wires (W10)", () => {
     expect([at(round, "a2"), at(round, "a3"), at(round, "a1")]).toEqual([0, 1, 2].map((n) => ({ x: col(n), y: row(0) })));
   });
 
-  it("fans out down a column, each by the longest path of handoffs into it", () => {
+  it("fans out down a column, each by the longest path of handoffs into it, with room over the columns for their captions", () => {
     const { l, sessions } = scattered(["a1", "a2", "a3", "a4"]);
     const { r } = tidy(l, sessions, [wire("a1", "a4"), wire("a1", "a2"), wire("a1", "a3"), wire("a2", "a4")]);
-    expect(at(r, "a1")).toEqual({ x: col(0), y: row(0) });
-    expect([at(r, "a2"), at(r, "a3")]).toEqual([0, 1].map((n) => ({ x: col(1), y: row(n) })));
+    const fanned = (n: number) => row(n) + STAGE_CAPTION_H;
+    expect(at(r, "a1")).toEqual({ x: col(0), y: fanned(0) });
+    expect([at(r, "a2"), at(r, "a3")]).toEqual([0, 1].map((n) => ({ x: col(1), y: fanned(n) })));
     // after a2, not beside it, for a1 → a2 → a4
-    expect(at(r, "a4")).toEqual({ x: col(2), y: row(0) });
+    expect(at(r, "a4")).toEqual({ x: col(2), y: fanned(0) });
   });
 
   it("puts each chain under the one before it, a column's workspaces by the row of what hands off to them", () => {
     const { l, sessions } = scattered(["a1", "a2", "a3", "a4", "a5", "a6"]);
     // one chain, joined by the feedback wire: a5, made after a2, goes over it, as a1, handing off to it, is over a3
     const { r } = tidy(l, sessions, [wire("a1", "a5"), wire("a3", "a2"), wire("a1", "a3", "feedback"), wire("a4", "a6", "context")]);
-    expect([at(r, "a1"), at(r, "a3")]).toEqual([0, 1].map((n) => ({ x: col(0), y: row(n) })));
-    expect([at(r, "a5"), at(r, "a2")]).toEqual([0, 1].map((n) => ({ x: col(1), y: row(n) })));
+    // it fans out, so it's lower by its captions' room; the one-column chain under it leaves none
+    const lower = (n: number) => row(n) + STAGE_CAPTION_H;
+    expect([at(r, "a1"), at(r, "a3")]).toEqual([0, 1].map((n) => ({ x: col(0), y: lower(n) })));
+    expect([at(r, "a5"), at(r, "a2")]).toEqual([0, 1].map((n) => ({ x: col(1), y: lower(n) })));
     // the other chain, joined by a context link that doesn't order either, under it
-    expect([at(r, "a4"), at(r, "a6")]).toEqual([2, 3].map((n) => ({ x: col(0), y: row(n) })));
+    expect([at(r, "a4"), at(r, "a6")]).toEqual([2, 3].map((n) => ({ x: col(0), y: lower(n) })));
   });
 
   it("passes over a wire to another area's workspace, laying the area out as it would with none", () => {
@@ -1060,5 +1066,55 @@ describe("an area for a template's steps (newAreaPatch)", () => {
     expect(Object.entries(made.areas).filter(([k]) => k !== "5115").some(([, a]) => overlaps(a, made.areas["5115"]))).toBe(false);
     expect(newAreaPatch(made, "5115", null)).toBeNull();
     expect(newAreaPatch(emptyLandscape(), "Donor export", null)).toMatchObject({ areas: { "Donor export": { x: 0, y: 0, repos: [] } } });
+  });
+});
+
+describe("stage captions over a chain laid out in columns", () => {
+  const wire = (from: string, to: string, type: TidyWire["type"] = "handoff"): TidyWire => ({ from, to, type });
+  const M = { w: 480, h: 320 };
+  /** An Orchestrator's plan on two tickets in area A: Orchestrator → each Coder → its Verifier, placed anywhere. */
+  const plan = () => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 3000, 2000);
+    const ids = ["orch", "c1", "c2", "v1", "v2"];
+    ids.forEach((id, i) => (l.workspaces[id] = { x: AREA_PAD, y: AREA_HEADER + i * (M.h + 16), ...M }));
+    const titles: Record<string, string> = { orch: "Orchestrator", c1: "Coder 5152 – Attune", c2: "Coder 5153 – PROFILES", v1: "Verifier 5152", v2: "Verifier 5153 – switch" };
+    const sessions = ids.map((id, i) => session(id, { taskGroup: "A", createdAt: i + 1, title: titles[id] }));
+    const wires = [wire("orch", "c1"), wire("orch", "c2"), wire("c1", "v1"), wire("c2", "v2"), wire("v1", "c1", "feedback")];
+    return { l, sessions, wires };
+  };
+
+  it("names a column by the first word its workspaces' names share, or not at all", () => {
+    const tile = (title: string) => ({ front: session("x", { title }) }) as Parameters<typeof stageWord>[0][number];
+    expect(stageWord([tile("Coder 5152 – Attune"), tile("coder 5153")])).toBe("Coder");
+    expect(stageWord([tile("Verifier: 5152"), tile("Verifier 5153")])).toBe("Verifier");
+    expect(stageWord([tile("Coder 5152"), tile("Export coder")])).toBeNull();
+  });
+
+  it("captions each column of two in a plan Tidy laid out on two tickets, over its top, and none once it's moved out of its columns", () => {
+    const { l, sessions, wires } = plan();
+    const p = ready(planTidy(l, resolveLayout(l, sessions), "A", T, wires));
+    const { l: tidied, r } = settle(l, p, sessions);
+    const caps = stageCaptions(r, wires);
+    // the columns of two: the Orchestrator's own name says what it is
+    expect(caps.map((c) => c.text)).toEqual(["Coder", "Verifier"]);
+    // each over its column's top, in the room Tidy left
+    expect(caps.map((c) => [c.x, c.y])).toEqual([1, 2].map((n) => [AREA_PAD + n * (M.w + WIRED_COLUMN_GAP), AREA_HEADER]));
+    // the second Coder dragged out of line: that chain's columns don't line up, so it says nothing
+    tidied.workspaces.c2 = { ...tidied.workspaces.c2!, x: tidied.workspaces.c2!.x + 40 };
+    expect(stageCaptions(resolveLayout(tidied, sessions), wires)).toEqual([]);
+  });
+
+  it("tidies a lay-out's own area only when every workspace in it is one of the lay-out's", () => {
+    const { l, sessions, wires } = plan();
+    const only = new Set(sessions.map((x) => x.id));
+    const said = "A holds more than what was laid out, which Tidy would move";
+    expect("refused" in planTidy(l, resolveLayout(l, sessions), "A", T, wires, { only })).toBe(false);
+    // a workspace of the area's own, wired into the plan: it would move, so nothing is tidied
+    l.workspaces.mine = { x: 2000, y: AREA_HEADER, ...M };
+    const more = [...sessions, session("mine", { taskGroup: "A", createdAt: 9 })];
+    expect(refusal(planTidy(l, resolveLayout(l, more), "A", T, [...wires, wire("v1", "mine")], { only }))).toBe(said);
+    // and one no wire joins
+    expect(refusal(planTidy(l, resolveLayout(l, more), "A", T, wires, { only }))).toBe(said);
   });
 });
