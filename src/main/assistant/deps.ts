@@ -289,6 +289,14 @@ export interface AssistantPipelineDeps {
    * place, or with `restart: false` is refused as it acts. Throws why not.
    */
   setModel(id: string, change: import("../../shared/types").ModelChange, o?: { restart?: boolean }): Promise<import("../../shared/types").ModelSet>;
+  /** What Save as template keeps of sessions `ids`, in stage order (templates:draft): redacted, each change noted. Throws why not. */
+  templateDraft(ids: string[]): import("../../shared/pipelineTemplates").TemplateDraft;
+  /** Save `body` as a new template named `name` (templates:save), checked as the window's save is. Throws why not. */
+  saveTemplate(name: string, body: import("../../shared/pipelineTemplates").TemplateBody): import("../../shared/pipelineTemplates").PipelineTemplate;
+  /** Write saved template `id` over with `name` and `body` (templates:update), keeping its id. Throws why not. */
+  replaceTemplate(id: string, name: string, body: import("../../shared/pipelineTemplates").TemplateBody): import("../../shared/pipelineTemplates").PipelineTemplate;
+  /** Remove saved template `id` (templates:remove). Throws why not. */
+  removeTemplate(id: string): void;
   /** Forget session `id` (sessions:forget): its chain bridged over it, its record held for unforget. Throws why not. */
   forgetSession(id: string): import("../../shared/types").Forgotten;
   /** Undo Forget `token` (sessions:unforget): what couldn't come back, in lines. Throws why not. */

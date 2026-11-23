@@ -236,7 +236,10 @@ one-prompt check and the rules' ban on answering prompts.
     `set_model` on a not-started step or a closed session (Undo while its model
     is still the one set); `wire_settings` (when, gate, rounds, tool output,
     what it sends, files; Undo sets back the keys it changed); `remove_step` on
-    a not-started step (Undo through `sessions:unforget`, its place put back).
+    a not-started step (Undo through `sessions:unforget`, its place put back);
+    `save_template` (the pipeline as a new template, as its Pipeline window's
+    Save as template drafts it, `pipelineTemplateOf` then `templates:draft`;
+    a name a template has is refused; Undo removes it while it's as saved).
   - **Confirm**: `restart_with_model` (a running session restarted in place,
     its card saying it keeps its id, wires, place and area); `automate_wire`
     (a change after which the wire sends without asking: an automatic gate
@@ -245,7 +248,10 @@ one-prompt check and the rules' ban on answering prompts.
     the close warnings); `lay_out_plan` (the held plan as held, where it was
     listed going; then the pipeline laid out along its wires: the window
     instead tidies a plan's steps only when its area holds nothing else);
-    `dismiss_plan` (its Orchestrator told, with the note). A plan card expires
+    `dismiss_plan` (its Orchestrator told, with the note); `replace_template`
+    (a saved template written over with the pipeline under its id and name,
+    as Replace does; the built-in one can't be; the card stands only while
+    the template is as it was when the card was shown). A plan card expires
     when a newer plan is held in its place.
   - Model names are checked against what this Mac's agent offers (the
     models catalog, `modelRefusal`) before anything changes. Insert and

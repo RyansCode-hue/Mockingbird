@@ -3,13 +3,14 @@ import { resolveLayout, withoutGone } from "../src/shared/landscapeModel";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../src/shared/plans";
 import type { ModelCatalog, SessionInfo, StepEdit } from "../src/shared/types";
 import { PipelineEdits, type PipelineEditDeps } from "../src/main/pipelineEdit";
+import { draftTemplate, removedTemplate, savedTemplates, updatedTemplate } from "../src/main/templates";
 import { WireService } from "../src/main/wires";
 import { pipelineTools } from "../src/main/assistant/tools/pipeline";
 import { wireTools } from "../src/main/assistant/tools/wires";
 import { sessionTools } from "../src/main/assistant/tools/sessions";
 import { diagnoseTools } from "../src/main/assistant/tools/diagnose";
 import { startTools } from "../src/main/assistant/tools/start";
-import type { PipelineTemplate } from "../src/shared/pipelineTemplates";
+import { BUILT_IN_ID, type PipelineTemplate } from "../src/shared/pipelineTemplates";
 import { assistantPrompt, groupLine } from "../src/main/assistant/turns";
 import { worldGroups } from "../src/main/assistant/world";
 import type { AssistantTool, ToolResult } from "../src/main/assistant/registry";
@@ -249,6 +250,8 @@ describe("the Assistant's pipeline tools", () => {
       forget_session: "confirm",
       lay_out_plan: "confirm",
       dismiss_plan: "confirm",
+      save_template: "direct",
+      replace_template: "confirm",
     });
     expect(pipelineTools(w.deps).filter((t) => t.rule)).toEqual([]);
   });
@@ -556,5 +559,59 @@ describe("the Assistant's pipeline tools", () => {
     const ws = w.store.get().landscape.workspaces;
     expect(ws.n1.x).toBeLessThan(ws.n2.x);
     expect(ws.n1.y).toBe(ws.n2.y);
+  });
+  it("save_template saves a pipeline as a new template with an Undo, a taken name refused; replace_template writes a saved one over on a card", async () => {
+    const w = world();
+    let stored: unknown[] = [];
+    const saved = () => stored as PipelineTemplate[];
+    const home = "/Users/someone";
+    const deps = {
+      ...w.deps,
+      templates: () => ({ templates: saved(), refused: [] }),
+      templateDraft: (ids: string[]) =>
+        draftTemplate(ids, { sessionOf: (id) => [...w.own, ...w.ghosts].find((x) => x.id === id), book: () => w.store.wires().book ?? { refused: "no book" }, ticketTitleOf: () => null, home }),
+      saveTemplate: (name: string, body: unknown) => {
+        const r = savedTemplates(name, body, stored, { home });
+        stored = r.list;
+        return r.template;
+      },
+      replaceTemplate: (id: string, name: string, body: unknown) => {
+        const r = updatedTemplate(id, name, body, stored, { home });
+        stored = r.list;
+        return r.template;
+      },
+      removeTemplate: (id: string) => void (stored = removedTemplate(id, stored).list),
+    };
+    const tools = pipelineTools(deps as typeof w.deps);
+    const t = (n: string) => tools.find((x) => x.name === n)!;
+    const a = { session: "p1", name: "Plan, code, review" };
+    expect(await t("save_template").check!(a)).toBeNull();
+    const r = await t("save_template").run(a);
+    expect(r.text).toMatch(/as the template “Plan, code, review” \(3 steps\)/);
+    expect(saved().map((x) => x.steps.map((st) => st.name))).toEqual([["Planner", "Coder", "Reviewer"]]);
+    expect(saved()[0].wires).toHaveLength(2);
+    expect(await t("save_template").check!({ session: "p2", name: "plan, CODE, review" })).toMatch(/already named “Plan, code, review”: replace_template/);
+    expect(await t("save_template").check!({ session: "t1-nope", name: "Other" })).toMatch(/./);
+    expect(r.stillUndoable!()).toBe(true);
+    expect(await r.undo!()).toBe("Removed the template “Plan, code, review”");
+    expect(saved()).toEqual([]);
+
+    await t("save_template").run(a);
+    const id = saved()[0].id;
+    await go(w, "edit_step", { session: "p2", title: "Checker" });
+    expect(await t("replace_template").check!({ session: "p1", template: "nothing like it" })).toMatch(/No saved template/);
+    expect(await t("replace_template").check!({ session: "p1", template: BUILT_IN_ID })).toMatch(/./);
+    const rep = { session: "p1", template: "plan, code, review" };
+    expect(await t("replace_template").check!(rep)).toBeNull();
+    const card = await t("replace_template").card!(rep);
+    expect(card.title).toContain("Replace the template “Plan, code, review”");
+    expect(t("replace_template").stillValid!(rep)).toBe(true);
+    await t("replace_template").run(rep);
+    expect(saved().map((x) => [x.id, x.name, x.steps.map((st) => st.name)])).toEqual([[id, "Plan, code, review", ["Planner", "Coder", "Checker"]]]);
+    // a template changed between the card and Do it: the card no longer stands
+    const again = { session: "p1", template: id };
+    await t("replace_template").card!(again);
+    stored = [{ ...saved()[0], steps: saved()[0].steps.slice(0, 2), wires: saved()[0].wires.slice(0, 1) }];
+    expect(t("replace_template").stillValid!(again)).toBe(false);
   });
 });

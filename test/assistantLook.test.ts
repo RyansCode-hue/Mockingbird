@@ -7,7 +7,7 @@ import { harness } from "./assistantHarness";
 import { info, landscapeWorld, theirs } from "./assistantWorld";
 
 /** The Assistant's look tools (tools/look.ts) over a real LandscapeStore: atticus (a1, a2, Nick's x), docs (d1), and d9 exited in docs. */
-function world(o: { rooms?: WorldRoom[] } = {}) {
+function world(o: { rooms?: WorldRoom[]; wires?: { id: string; from: string; to: string; type: "handoff" }[] } = {}) {
   const own = [info("a1"), info("a2"), info("d1", { taskGroup: "docs" }), info("d9", { taskGroup: "docs", status: "dead" })];
   const w = landscapeWorld(own, {
     remote: [theirs("x", "atticus")],
@@ -17,6 +17,7 @@ function world(o: { rooms?: WorldRoom[] } = {}) {
         const s = own.find((x) => x.id === id);
         return s ? { info: s, open: true } : null;
       },
+      wireList: () => (o.wires ?? []).map((x) => ({ ...x, when: "finished", state: "idle", why: null, gate: "ask" }) as never),
     },
   });
   const tools = lookTools(w.deps);
@@ -126,6 +127,11 @@ describe("open_tool", () => {
     w.store.update({ areas: { docs: { collapsed: true } } });
     expect(await t.check!({ kind: "files", session: "d1" })).toContain("which is collapsed: open it first");
     expect(w.did.filter((x) => x.startsWith("window"))).toEqual([]);
+  });
+
+  it("opens Pipeline only in an area whose workspaces wires join into one", async () => {
+    expect(await world().tool("open_tool").check!({ kind: "pipeline", group: "atticus" })).toBe("No wires join “atticus”'s workspaces into a pipeline, so there's nothing for Pipeline to show");
+    expect(await world({ wires: [{ id: "w1", from: "a1", to: "a2", type: "handoff" }] }).tool("open_tool").check!({ kind: "pipeline", group: "atticus" })).toBeNull();
   });
 
   it("keeps an Undo that closes the window it opened, once the window has placed it, and lapses when it never did", async () => {

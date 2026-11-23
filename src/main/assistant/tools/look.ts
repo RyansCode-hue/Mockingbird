@@ -1,5 +1,5 @@
 import { isWorkspaceTool, TOOL_KINDS, TOOL_NAME, type ToolKind, type ToolWindow } from "../../../shared/landscape";
-import { ACCENT_NAMES, automaticAccent } from "../../../shared/landscapeModel";
+import { ACCENT_NAMES, automaticAccent, pipelinesIn } from "../../../shared/landscapeModel";
 import { plainLine } from "../../../shared/team/agentText";
 import type { AssistantDeps } from "../deps";
 import { areaName, layoutNow, tileOf } from "../layoutPlan";
@@ -15,7 +15,7 @@ import { noSession, roomOfGroup, SESSION_ARG, sessionById, titleOf } from "./loo
  * but Search; Chat outside a team room's area. None is a standing rule's: they change what the user is looking at.
  */
 
-type Deps = Pick<AssistantDeps, "sessions" | "rooms" | "record" | "toWindow" | "landscapeState" | "layoutSessions" | "patchLandscape" | "setGroup">;
+type Deps = Pick<AssistantDeps, "sessions" | "rooms" | "record" | "toWindow" | "landscapeState" | "layoutSessions" | "patchLandscape" | "setGroup" | "wireList">;
 
 type ColourArgs = { group: string; colour: string };
 type ToolArgs = { kind: ToolKind; session?: string; group?: string; docked?: boolean };
@@ -86,6 +86,7 @@ export function lookTools(d: Deps): AssistantTool[] {
       if (!area) return `There's no area ${areaName(a.group!)} on the landscape: list_groups says which groups have one`;
       if (area.rect.collapsed) return `${areaName(area.key)} is collapsed: open it first`;
       if (a.kind === "chat" && !roomOfGroup(d, area.key)) return `${areaName(area.key)} isn't a team room's area: Chat is a room's`;
+      if (a.kind === "pipeline" && !pipelinesIn(now.layout, area.key, d.wireList()).length) return `No wires join ${areaName(area.key)}'s workspaces into a pipeline, so there's nothing for Pipeline to show`;
     }
     return openWhere(a).length ? `${nameOf(a.kind)} is open ${where(a)} already` : null;
   };
@@ -93,7 +94,7 @@ export function lookTools(d: Deps): AssistantTool[] {
   const toolSchema = {
     type: "object" as const,
     properties: {
-      kind: { type: "string" as const, enum: TOOL_KINDS, description: "files, changes, search, run (Run & debug): beside a workspace; artifacts, chat: in an area" },
+      kind: { type: "string" as const, enum: TOOL_KINDS, description: "files, changes, search, run (Run & debug): beside a workspace; artifacts, chat, pipeline: in an area" },
       session: SESSION_ARG,
       group: AREA_ARG,
       docked: { type: "boolean" as const, description: "true: docked at the window's edge, where it follows the selected workspace" },
@@ -146,7 +147,7 @@ export function lookTools(d: Deps): AssistantTool[] {
       tier: "direct",
       description:
         "Open a tool window as the window's own buttons do: Files, Changes, Search or Run & debug (kind files, changes, search, run) beside one of this Mac's sessions' workspaces, " +
-        "Artifacts or Chat (artifacts, chat) in an area (Chat only a team room's), or any of them docked at the window's edge (docked: true), where it follows the selection. " +
+        "Artifacts, Chat or Pipeline (artifacts, chat, pipeline) in an area (Chat only a team room's, Pipeline only where wires join a pipeline), or any of them docked at the window's edge (docked: true), where it follows the selection. " +
         "The window places it beside its workspace, or docks it when the area has no room. Only Search opens on an exited session. The user can Undo it.",
       inputSchema: toolSchema,
       label: (a) => `Open ${nameOf(a.kind)} ${where(a)}`,

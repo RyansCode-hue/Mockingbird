@@ -1,7 +1,8 @@
 import { closeWarningLines } from "../../../shared/closing";
 import type { LandscapePatch } from "../../../shared/landscape";
-import { forgetPatch, pipelineStageTiles, resolveLayout, undoOf, withoutGone, type Tile } from "../../../shared/landscapeModel";
-import { insertDefaults } from "../../../shared/pipelineEdit";
+import { forgetPatch, pipelineStages, pipelineStageTiles, resolveLayout, undoOf, withoutGone, type Tile } from "../../../shared/landscapeModel";
+import { asOrchestrated, insertDefaults, pipelineTemplateOf } from "../../../shared/pipelineEdit";
+import { BUILT_IN_ID, TEMPLATE_MAX, type PipelineTemplate, type TemplateBody } from "../../../shared/pipelineTemplates";
 import { ME, type PlanView } from "../../../shared/plans";
 import { plainLine, quoted } from "../../../shared/team/agentText";
 import { AGENT_NAME, topOfKey, type AgentKind, type Forgotten, type InsertStepRequest, type ModelChange, type SessionInfo, type StepEdit } from "../../../shared/types";
@@ -53,6 +54,11 @@ type Deps = Pick<
   | "heldPlans"
   | "layOutPlan"
   | "dismissPlan"
+  | "templates"
+  | "templateDraft"
+  | "saveTemplate"
+  | "replaceTemplate"
+  | "removeTemplate"
 >;
 
 const TITLE_MAX = 120;
@@ -295,6 +301,21 @@ export function pipelineTools(d: Deps): AssistantTool[] {
   const wireSaw = cardSaw<string>();
   const forgetSaw = cardSaw<Where>();
   const planSaw = cardSaw<{ at: number; area: string; room: string | null }>();
+  const templateSaw = cardSaw<{ id: string; was: string; body: TemplateBody }>();
+  /** A template by its id, else its name in any case: the built-in one included, so a name it has is taken. */
+  const templateNamed = (v: string): PipelineTemplate | null => {
+    const all = d.templates().templates;
+    const k = v.trim().toLowerCase();
+    return all.find((t) => t.id === v.trim()) ?? all.find((t) => t.name.trim().toLowerCase() === k) ?? null;
+  };
+  /** The pipeline `session` is in as a template (pipelineTemplateOf, then main's draft), with what was simplified and noted. */
+  const templateOf = (session: string): { body: TemplateBody; said: string[] } => {
+    const p = pipelineStages(drawn(), session, d.wireList());
+    if (!p) throw new Error(`${name(session)} isn't wired to another workspace in its area, so there's no pipeline to save`);
+    const plan = pipelineTemplateOf(p.stages);
+    const draft = d.templateDraft(plan.ids);
+    return { body: plan.orchestrator ? asOrchestrated(draft.body) : draft.body, said: [...plan.simplified, ...draft.notes] };
+  };
 
   return [
     defineTool<{ group?: string; session?: string; full_prompts?: boolean }>({
@@ -835,5 +856,83 @@ export function pipelineTools(d: Deps): AssistantTool[] {
         return { text: "told" in told ? `Dismissed the plan; ${who} was told.` : `Dismissed the plan. ${told.notTold}` };
       },
     }),
+
+    defineTool<{ session: string; name: string }>({
+      name: "save_template",
+      tier: "direct",
+      description:
+        "Save the pipeline a session is in as a new template, as its Pipeline window's Save as template does: its steps in stage order with their agents, models, effort and prompts " +
+        "(redacted), and its wires as far as a template holds them; what a template can't hold as the pipeline has it is said. A name a template already has is refused: " +
+        "replace_template writes over a saved one, on a card. The user can Undo it.",
+      inputSchema: { type: "object", properties: { session: SESSION_ARG, name: TEMPLATE_NAME_ARG }, required: ["session", "name"], additionalProperties: false },
+      label: (a) => `Save ${name(a.session)}'s pipeline as the template “${plainLine(a.name, TEMPLATE_MAX.name)}”`,
+      target: (a) => target(a.session),
+      check: (a) => (knownTitle(d, a.session) ? (templateNamed(a.name) ? `A template is already named “${templateNamed(a.name)!.name}”: replace_template writes over a saved one, on a card` : null) : noSession(a.session)),
+      run: (a) => {
+        const draft = templateOf(a.session);
+        const t = d.saveTemplate(a.name.trim(), draft.body);
+        const saved = JSON.stringify(bodyOf(t));
+        return {
+          text: `Saved ${name(a.session)}'s pipeline as the template “${t.name}” (${t.steps.length} step${t.steps.length === 1 ? "" : "s"}).${said(draft.said)}`,
+          stillUndoable: () => d.templates().templates.some((x) => x.id === t.id && JSON.stringify(bodyOf(x)) === saved),
+          undo: () => {
+            d.removeTemplate(t.id);
+            return `Removed the template “${t.name}”`;
+          },
+        };
+      },
+    }),
+
+    defineTool<{ session: string; template: string }>({
+      name: "replace_template",
+      tier: "confirm",
+      description:
+        "Write a saved template over with the pipeline a session is in, keeping the template's name and its place in the picker, as Save as template's Replace does. " +
+        "Name the template by its name or id; the built-in one can't be replaced. This puts a card in front of the user; it runs only when they confirm.",
+      inputSchema: {
+        type: "object",
+        properties: { session: SESSION_ARG, template: { type: "string", minLength: 1, maxLength: 120, description: "A saved template's name or id (list_templates)" } },
+        required: ["session", "template"],
+        additionalProperties: false,
+      },
+      label: (a) => `Replace the template “${plainLine(templateNamed(a.template)?.name ?? a.template, TEMPLATE_MAX.name)}” with ${name(a.session)}'s pipeline`,
+      target: (a) => target(a.session),
+      check: (a) => {
+        if (!knownTitle(d, a.session)) return noSession(a.session);
+        const t = templateNamed(a.template);
+        if (!t) return `No saved template is named or has the id “${plainLine(a.template, TEMPLATE_MAX.name)}”: list_templates lists them, and save_template saves a new one`;
+        return t.id === BUILT_IN_ID ? "The built-in template can't be replaced: save_template saves the pipeline as a new one" : null;
+      },
+      card: (a) => {
+        const t = templateNamed(a.template)!;
+        const draft = templateOf(a.session);
+        templateSaw.set(a, { id: t.id, was: JSON.stringify(bodyOf(t)), body: draft.body });
+        return {
+          title: `Replace the template “${t.name}” with ${ref(a.session)}'s pipeline`,
+          detail: `Its ${t.steps.length} step${t.steps.length === 1 ? "" : "s"} are written over with the pipeline's ${draft.body.steps.length}, under the same name. It can't be undone from here.`,
+          warnings: draft.said,
+        };
+      },
+      stillValid: (a) => {
+        const saw = templateSaw.get(a);
+        const t = saw && d.templates().templates.find((x) => x.id === saw.id);
+        return !!t && JSON.stringify(bodyOf(t)) === saw.was;
+      },
+      run: (a) => {
+        const saw = templateSaw.get(a);
+        const t = saw && d.templates().templates.find((x) => x.id === saw.id);
+        if (!saw || !t) throw new Error(CHANGED_SINCE_CARD);
+        const done = d.replaceTemplate(t.id, t.name, saw.body);
+        return { text: `Replaced the template “${done.name}” with ${name(a.session)}'s pipeline (${done.steps.length} step${done.steps.length === 1 ? "" : "s"}).` };
+      },
+    }),
   ];
 }
+
+const TEMPLATE_NAME_ARG: JsonSchema = { type: "string", minLength: 1, maxLength: TEMPLATE_MAX.name, description: "The template's name, as the picker will list it" };
+
+/** A template's steps and wires, what Undo and a card compare: not its id, name or when it was saved. */
+const bodyOf = (t: PipelineTemplate): TemplateBody => ({ startFirst: t.startFirst, steps: t.steps, wires: t.wires });
+
+/** What a template drafted from a pipeline leaves out or changes, after what it says. */
+const said = (lines: readonly string[]): string => (lines.length ? ` ${lines.join(" ")}` : "");

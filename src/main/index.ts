@@ -1719,6 +1719,10 @@ const assistantDeps: AssistantDeps = {
   editStep: (id, edit) => pipelineEdits.editStep(id, edit),
   insertStep: (req) => pipelineEdits.insertStep(req),
   setModel: (id, change, o) => pipelineEdits.setModel(id, change, o),
+  templateDraft: (ids) => templateDraftOf(ids),
+  saveTemplate: (name, body) => saveTemplate(name, body),
+  replaceTemplate: (id, name, body) => replaceTemplate(id, name, body),
+  removeTemplate: (id) => void removeTemplate(id),
   forgetSession: (id) => forgetSession(id),
   unforget: (token) => {
     const r = wires.unforget(token, (rec) => sessions.restoreRecord(rec));
@@ -1932,8 +1936,9 @@ handle(
 );
 // ---- pipeline templates (W9): saved from a chain, laid out from a ticket; kept in settings, on this Mac only ----
 handle("templates:list", () => readTemplates(store.settings.pipelineTemplates));
-handle("templates:draft", (ids) =>
-  draftTemplate(ids, {
+// what Save as template keeps of sessions, and saved templates' changes: the window's and the Assistant's
+function templateDraftOf(ids: unknown) {
+  return draftTemplate(ids, {
     sessionOf: (id) => [...sessions.list(), ...sessions.resumable(), ...sessions.planned()].find((s) => s.id === id),
     book: () => {
       const w = landscape.wires();
@@ -1941,23 +1946,36 @@ handle("templates:draft", (ids) =>
     },
     ticketTitleOf: (id) => pipeline.get(id)?.title ?? null,
     home: os.homedir(),
-  })
-);
-handle("templates:save", (name, body) => {
-  const { list } = savedTemplates(name, body, store.settings.pipelineTemplates, { home: os.homedir() });
+  });
+}
+function saveTemplate(name: unknown, body: unknown) {
+  const { list, template } = savedTemplates(name, body, store.settings.pipelineTemplates, { home: os.homedir() });
   store.setSettings({ pipelineTemplates: list });
-  return readTemplates(list);
-});
+  return template;
+}
 // Replace, in Save as template: a saved template written over under its id, checked as a new one is
-handle("templates:update", (id, name, body) => {
-  const { list } = updatedTemplate(id, name, body, store.settings.pipelineTemplates, { home: os.homedir() });
+function replaceTemplate(id: unknown, name: unknown, body: unknown) {
+  const { list, template } = updatedTemplate(id, name, body, store.settings.pipelineTemplates, { home: os.homedir() });
   store.setSettings({ pipelineTemplates: list });
-  return readTemplates(list);
+  return template;
+}
+function removeTemplate(id: unknown) {
+  const { list, name } = removedTemplate(id, store.settings.pipelineTemplates);
+  store.setSettings({ pipelineTemplates: list });
+  return name;
+}
+handle("templates:draft", (ids) => templateDraftOf(ids));
+handle("templates:save", (name, body) => {
+  saveTemplate(name, body);
+  return readTemplates(store.settings.pipelineTemplates);
+});
+handle("templates:update", (id, name, body) => {
+  replaceTemplate(id, name, body);
+  return readTemplates(store.settings.pipelineTemplates);
 });
 handle("templates:remove", (id) => {
-  const { list } = removedTemplate(id, store.settings.pipelineTemplates);
-  store.setSettings({ pipelineTemplates: list });
-  return readTemplates(list);
+  removeTemplate(id);
+  return readTemplates(store.settings.pipelineTemplates);
 });
 // saved templates that aren't a list stop every save and remove: a copy is kept, said, and the list starts empty
 handle("templates:setAside", () => {
