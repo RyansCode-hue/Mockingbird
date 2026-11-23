@@ -506,16 +506,31 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **1.9.0: plans in stage columns, a tidier Pipeline from a ticket** —
-  released in 1.9.0. A plan laid out into its Orchestrator's area, when that
-  area holds only the Orchestrator and its steps, goes in stage columns along
-  its wires: the Orchestrator, then each stage's workspaces side by side, a
-  ticket to a row; a column of two or more is captioned with the word their
-  names share (Coder, Verifier). An area holding anything else keeps the old
-  rule, so nothing of yours moves. Pipeline from a ticket… lists the board's
-  tickets to tick (filter, whose; the first ticked is the lead, Make lead
-  changes it), offers the templates in a dropdown, and folds each step to one
-  line with its prompt behind Prompt.
+- **1.9.0: pipelines you can edit, the Assistant as a tab, area colours** —
+  released in 1.9.0. A laid-out pipeline can be changed in place: a **Pipeline**
+  window (an area's ⋯ → Pipeline…, or a card's Open pipeline) lists its steps
+  by stage with each one's model, who it hands off to, and a not-started
+  step's prompt to edit, plus Add step, Remove step (its chain joined up, with
+  Undo), Re-lay out and Save as template (or Replace one). On the canvas each
+  pipeline card has a model chip (a running one restarts in place and keeps
+  its wires; the choice sticks for later restarts, as does a `/model` typed
+  in Claude while Mockingbird's status line is the one it runs), steps that haven't started have Edit… and can be selected, a +
+  between stage columns inserts a step, and a wire's end can be dragged to
+  another card (or changed with From and To in its Settings). Forget joins
+  the chain around what it removes, Brief and Continue in Codex keep a
+  session's wires, and wire Undo survives a restart. The **Assistant** moved to
+  a tab on the left rail (⇧⌘A) with its own message box, keeps its thread
+  across quits, can run on Sonnet or Opus, and does more: it reads sessions'
+  recent output and the files and diffs in their folders (never secrets), and
+  edits pipelines, area colours, tool windows and settings, asking first for
+  anything risky. An area's **colour** can be chosen: click its dot, or
+  Colour… in its ⋯ (ten colours, or Automatic). A plan laid out into its
+  Orchestrator's area, when that area holds only the Orchestrator and its
+  steps, goes in stage columns along its wires, a ticket to a row, a column of
+  two or more captioned with the word their names share. Pipeline from a
+  ticket… lists the board's tickets to tick, offers the templates in a
+  dropdown, and folds each step to one line. landscape.json moves to version 4
+  (the colours): an older Mockingbird opens it read-only.
 - **1.8.3: messages that reach Claude are sent** — released in 1.8.3. Claude
   Code can drop the Enter that follows a long paste (an Orchestrator's kickoff,
   a handoff), leaving the message in its prompt unsent. Mockingbird now waits
