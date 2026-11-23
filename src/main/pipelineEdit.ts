@@ -126,9 +126,10 @@ export class PipelineEdits {
    *   the window asks before this for a working one;
    * - not started: its step's spec edited (editStep);
    * - closed: kept on its record, for its Reopen, Resume or Start fresh to run.
-   * Each checked against what its agent offers on this Mac (modelRefusal) before anything changes.
+   * Each checked against what its agent offers on this Mac (modelRefusal) before anything changes. `restart: false`
+   * refuses an open one instead, decided as it acts, so a session reopened while the check ran isn't restarted.
    */
-  async setModel(idRaw: unknown, raw: unknown): Promise<ModelSet> {
+  async setModel(idRaw: unknown, raw: unknown, o: { restart?: boolean } = {}): Promise<ModelSet> {
     const id = String(idRaw ?? "");
     const change = readModelChange(raw);
     const planned = this.d.sessions.planned().find((s) => s.id === id);
@@ -140,7 +141,11 @@ export class PipelineEdits {
     if (s.shell) throw new Error(`${quoted(s)} is a terminal: it has no agent to run a model`);
     const why = modelRefusal(s.agent ?? "claude", change.model, change.effort, await this.d.catalog());
     if (why) throw new Error(why);
-    if (open) return { info: await this.d.sessions.relaunchWith(id, change), did: "restarted" };
+    // read again after the catalog's await: a closed session may have been reopened meanwhile
+    if (this.d.sessions.list().some((x) => x.id === id)) {
+      if (o.restart === false) throw new Error(`${quoted(s)} is running: changing its model restarts it`);
+      return { info: await this.d.sessions.relaunchWith(id, change), did: "restarted" };
+    }
     return { info: this.d.sessions.setClosedModel(id, change), did: "stored" };
   }
 

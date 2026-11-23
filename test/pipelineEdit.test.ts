@@ -39,7 +39,7 @@ const CATALOG: ModelCatalog = {
   codex: { models: [{ id: "gpt-5.1-codex", label: "GPT-5.1 Codex" }], efforts: ["low", "medium", "high", "xhigh"] },
 };
 
-async function setup(opts: { catalog?: ModelCatalog | null } = {}) {
+async function setup(opts: { catalog?: ModelCatalog | null; whileReadingCatalog?: () => Promise<void> } = {}) {
   const { SessionManager } = await import("../src/main/sessions");
   const saved: SessionInfo[] = [];
   const store = {
@@ -73,7 +73,10 @@ async function setup(opts: { catalog?: ModelCatalog | null } = {}) {
       m.kill(id, true);
       wires.sessionForgotten(id);
     },
-    catalog: async () => (opts.catalog === undefined ? CATALOG : opts.catalog),
+    catalog: async () => {
+      await opts.whileReadingCatalog?.();
+      return opts.catalog === undefined ? CATALOG : opts.catalog;
+    },
     log,
   });
   return { m, store, wires, edits, logged, forgot };
@@ -173,6 +176,24 @@ describe("a session's model (setModel)", () => {
     await expect(edits.setModel("nope", { model: "opus" })).rejects.toThrow(/no session "nope"/);
     await expect(edits.setModel(s.id, {})).rejects.toThrow(/Say the model, the effort or both/);
     expect(ptys.slice(-2).map((p) => p.killed)).toEqual([false, false]);
+  });
+
+  it("with restart off, refuses an open pane, one reopened while the catalog is read included, and stops nothing", async () => {
+    const { m, edits } = await setup();
+    const s = await m.create(pane({ model: "opus" }));
+    await expect(edits.setModel(s.id, { model: "sonnet" }, { restart: false })).rejects.toThrow(/is running: changing its model restarts it/);
+    expect(ptys.at(-1)!.killed).toBe(false);
+    let reopen: (() => Promise<void>) | undefined;
+    const late = await setup({ whileReadingCatalog: () => reopen?.() ?? Promise.resolve() });
+    const c = await late.m.create(pane({ model: "opus" }));
+    late.m.kill(c.id, false);
+    reopen = async () => {
+      reopen = undefined;
+      await late.m.relaunch(c.id);
+    };
+    await expect(late.edits.setModel(c.id, { model: "sonnet" }, { restart: false })).rejects.toThrow(/is running/);
+    expect(ptys.at(-1)!.killed).toBe(false);
+    expect(late.m.list().find((x) => x.id === c.id)?.model ?? null).not.toBe("sonnet");
   });
 });
 

@@ -110,7 +110,7 @@ function world() {
         place();
         return r;
       },
-      setModel: (id, c) => edits.setModel(id, c),
+      setModel: (id, c, o) => edits.setModel(id, c, o),
       forgetSession: (id) => {
         const s = all().find((x) => x.id === id);
         const record = s && !s.shell ? { ...s, ...(s.planned ? { planned: { ...s.planned } } : {}) } : null;

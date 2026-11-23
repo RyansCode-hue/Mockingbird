@@ -558,12 +558,12 @@ export function pipelineTools(d: Deps): AssistantTool[] {
       target: (a) => target(a.session),
       check: (a) => modelCheck(a, "waiting"),
       run: async (a) => {
-        // a session reopened since the check would be restarted: that's the card's to do
+        // a session reopened since the check would be restarted: that's the card's to do, and main refuses it as it acts
         if (where(a.session) === "running") throw new Error(`${name(a.session)} is running now: restart_with_model restarts it on that model, on a card`);
         const r0 = ownRecord(a.session)!;
         const before: ModelChange = { model: r0.model ?? null, effort: r0.effort ?? null };
         const change = modelChange(a);
-        const r = await d.setModel(a.session, change);
+        const r = await d.setModel(a.session, change, { restart: false });
         const set = { model: r.info.model ?? null, effort: r.info.effort ?? null };
         const same = () => {
           const now = where(a.session) === "running" ? null : ownRecord(a.session);
@@ -574,7 +574,7 @@ export function pipelineTools(d: Deps): AssistantTool[] {
           stillUndoable: same,
           undo: async () => {
             if (!same()) throw new Error("It has started, been reopened or been changed since");
-            await d.setModel(a.session, before);
+            await d.setModel(a.session, before, { restart: false });
             return `Put ${name(a.session)} back on ${modelWords(before)}`;
           },
         };

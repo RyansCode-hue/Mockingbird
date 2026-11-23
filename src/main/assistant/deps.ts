@@ -284,8 +284,11 @@ export interface AssistantPipelineDeps {
   editStep(id: string, edit: import("../../shared/types").StepEdit): Promise<SessionInfo>;
   /** Insert a not-started step after, ahead of or between sessions (steps:insert, PipelineEdits.insertStep). Throws why not. */
   insertStep(req: import("../../shared/types").InsertStepRequest): Promise<import("../../shared/types").StepInserted>;
-  /** Session `id`'s model and effort wherever it is (sessions:setModel, PipelineEdits.setModel): an open one restarts in place. Throws why not. */
-  setModel(id: string, change: import("../../shared/types").ModelChange): Promise<import("../../shared/types").ModelSet>;
+  /**
+   * Session `id`'s model and effort wherever it is (sessions:setModel, PipelineEdits.setModel): an open one restarts in
+   * place, or with `restart: false` is refused as it acts. Throws why not.
+   */
+  setModel(id: string, change: import("../../shared/types").ModelChange, o?: { restart?: boolean }): Promise<import("../../shared/types").ModelSet>;
   /** Forget session `id` (sessions:forget): its chain bridged over it, its record held for unforget. Throws why not. */
   forgetSession(id: string): import("../../shared/types").Forgotten;
   /** Undo Forget `token` (sessions:unforget): what couldn't come back, in lines. Throws why not. */

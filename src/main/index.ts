@@ -1718,7 +1718,7 @@ const assistantDeps: AssistantDeps = {
   },
   editStep: (id, edit) => pipelineEdits.editStep(id, edit),
   insertStep: (req) => pipelineEdits.insertStep(req),
-  setModel: (id, change) => pipelineEdits.setModel(id, change),
+  setModel: (id, change, o) => pipelineEdits.setModel(id, change, o),
   forgetSession: (id) => forgetSession(id),
   unforget: (token) => {
     const r = wires.unforget(token, (rec) => sessions.restoreRecord(rec));
