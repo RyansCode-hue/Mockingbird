@@ -50,7 +50,7 @@ import { runSwitchAudit } from "./switchAudit";
 import { assistantApi, openAssistantSheet } from "./assistantStub";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
-import { boardPlan, councilPlan, runPlanAudit } from "./planAudit";
+import { boardPlan, councilPlan, runPlanAudit, ticketsPlan } from "./planAudit";
 import { WIRE_AREA, acrossBook, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { openFinishShot } from "./wireNeedsAudit";
@@ -9424,20 +9424,23 @@ Object.assign(api, {
       if (!req.repoPath) return err(`“${body.steps[0].name}” works in a worktree of the ticket's repo on its branch: choose a repo.`);
       const first = body.steps[0];
       const id = `orch${Date.now().toString(36)}`;
+      const more = req.moreTickets ?? [];
       const o: SessionInfo = {
-        ...session(id, { title: first.name, agent: first.agent as "claude" | "codex", role: "orchestrator", taskGroup: req.area, ticketId: req.ticketId ?? null, status: "working", createdAt: Date.now() }),
+        ...session(id, { title: first.name, agent: first.agent as "claude" | "codex", role: "orchestrator", taskGroup: req.area, ticketId: req.ticketId ?? null, status: "working", createdAt: Date.now(), ...(more.length ? { tickets: [String(req.ticketId), ...more.map((t) => t.ticketId)] } : {}) }),
         repoPath: req.repoPath,
         cwd: WT(`${req.ticketId}-orchestrator`),
         branch: `${req.ticketId}-orchestrator`,
       };
       sessions = [...sessions, o];
-      buffers[id] = `${C.dim}(UI preview: the Orchestrator would be told this)${C.reset}\r\n${orchestratorKickoff({ ticketId: String(req.ticketId), title: req.ticketTitle ?? "", description: req.ticketDescription ?? "", told: withTicket(first.prompt, ticketLine(req.ticketId, req.ticketTitle)), template: body }).replace(/\n/g, "\r\n")}\r\n> `;
-      if (req.ticketId && !pipelines[req.ticketId]) {
-        pipelineOf(req.ticketId).title = req.ticketTitle ?? undefined;
+      buffers[id] = `${C.dim}(UI preview: the Orchestrator would be told this)${C.reset}\r\n${orchestratorKickoff({ ticketId: String(req.ticketId), title: req.ticketTitle ?? "", description: req.ticketDescription ?? "", told: withTicket(first.prompt, ticketLine(req.ticketId, req.ticketTitle)), template: body, more: more.map((t) => ({ ticketId: t.ticketId, title: t.ticketTitle, description: t.ticketDescription })) }).replace(/\n/g, "\r\n")}\r\n> `;
+      for (const [t, title] of [[req.ticketId, req.ticketTitle], ...more.map((m) => [m.ticketId, m.ticketTitle])] as const) {
+        if (!t || pipelines[t]) continue;
+        pipelineOf(t).title = title ?? undefined;
         pipelinesChanged();
       }
       sessionsChanged();
-      return { steps: [{ key: first.key, id, title: first.name }], wires: [], started: id, notes: [`It reads #${req.ticketId} and proposes the rest as its plan, which comes to Needs you: nothing more is made until you lay it out.`] } satisfies LayOutReply;
+      const ids = [req.ticketId, ...more.map((t) => t.ticketId)].map((t) => `#${t}`);
+      return { steps: [{ key: first.key, id, title: first.name }], wires: [], started: id, notes: [`It reads ${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}` : ids[0]} and proposes the rest as its plan, which comes to Needs you: nothing more is made until you lay it out.`] } satisfies LayOutReply;
     }
     if (!req.repoPath && body.steps.some((x) => x.folder === "new")) return err("Its steps work in worktrees of their own, which need a repo: choose one.");
     const steps: LayOutReply["steps"] = [];
@@ -9511,7 +9514,7 @@ Object.assign(api, {
 // boardPlan); =room shares that area as a team room's; =gone holds it and then lets it go, as a newer plan would;
 // =council holds a Council's Orchestrator's plan instead, in the Council's own area on no ticket (councilPlan, W18).
 const lsPlanQ = params.get("lsPlan");
-const planOrch = wireBoard && lsPlanQ !== null ? (lsPlanQ === "council" ? councilPlan(session, WT, now) : boardPlan(session, WT, now)) : null;
+const planOrch = wireBoard && lsPlanQ !== null ? (lsPlanQ === "council" ? councilPlan(session, WT, now) : lsPlanQ === "tickets" ? ticketsPlan(session, WT, now) : boardPlan(session, WT, now)) : null;
 if (planOrch && lsPlanQ === "council") councils[0].implementedIn = planOrch.orchestrator.id;
 if (planOrch) {
   sessions.push(planOrch.orchestrator);
@@ -9541,6 +9544,9 @@ function planView(h: (typeof heldPlans)[number]): PlanView | null {
     held: { from: h.from, ticket, at: h.at, ...(h.replaces ? { replaces: h.replaces } : {}), plan: clone(h.plan), ...(h.notes ? { notes: [...h.notes] } : {}) },
     me: endOf(me, null),
     ticketTitle: ticket ? (pipelines[ticket]?.title ?? "Stream the donor export") : null,
+    tickets: ticket
+      ? [ticket, ...(me.tickets ?? []).filter((t) => t !== ticket)].map((t) => ({ id: t, title: pipelines[t]?.title ?? (t === ticket ? "Stream the donor export" : (tickets.find((w) => String(w.id) === t)?.title ?? null)) }))
+      : [],
     council: councils.find((c) => c.implementedIn === me.id)?.title ?? null,
     area,
     room,
@@ -9560,7 +9566,7 @@ function planView(h: (typeof heldPlans)[number]): PlanView | null {
 /** The plan the dialog says is open (plans:viewing), and when a newer one was proposed while it was (?lsPlan=newer). */
 let viewingPlan: string | null = null;
 let newerAt: number | null = null;
-const planCtx = (v: Omit<PlanView, "problem">): PlanContext => ({ me: v.me, existing: v.existing, installed: v.installed, catalog: null, repos: v.repos, room: !!v.room, ticket: v.held.ticket });
+const planCtx = (v: Omit<PlanView, "problem">): PlanContext => ({ me: v.me, existing: v.existing, installed: v.installed, catalog: null, repos: v.repos, room: !!v.room, ticket: v.held.ticket, tickets: v.tickets.map((t) => t.id) });
 if (lsPlanQ === "gone" && planOrch)
   setTimeout(() => {
     spentPlans.set(planOrch.held.id, "That plan was replaced by a newer one from “Orchestrator”: open that one instead.");
@@ -9622,17 +9628,17 @@ Object.assign(api, {
     const steps: PlanLaidOut["steps"] = [];
     const idOf = new Map<string, string>();
     const endId = (k: string) => (k === PLAN_ME ? me.id : (idOf.get(k) ?? k));
-    const line = ticketLine(v.held.ticket, v.ticketTitle);
     let n = 0;
     for (const p of layout.steps) {
       const st = p.step;
       if (st.agent === "terminal") continue;
+      const line = ticketLine(p.ticket, v.tickets.find((t) => t.id === p.ticket)?.title ?? null);
       const sid = `pp${Date.now().toString(36)}${n++}`;
       const shares = st.folder === "orchestrator" ? me : typeof st.folder === "object" ? planned.find((x) => x.id === idOf.get((st.folder as { sameAs: string }).sameAs)) : undefined;
       planned = [
         ...planned,
         {
-          ...session(sid, { title: st.name, agent: st.agent as "claude" | "codex", taskGroup: v.area, status: "idle", createdAt: Date.now(), branch: null, ticketId: v.held.ticket }),
+          ...session(sid, { title: st.name, agent: st.agent as "claude" | "codex", taskGroup: v.area, status: "idle", createdAt: Date.now(), branch: null, ticketId: p.ticket }),
           repoPath: shares ? shares.repoPath : (p.repo ?? me.repoPath),
           cwd: shares ? shares.cwd : (p.repo ?? me.repoPath ?? "/Users/you"),
           planned: { worktree: st.folder === "new", ...(shares ? { sharesWith: shares.id } : {}), prompt: withTicket(st.prompt, line) },

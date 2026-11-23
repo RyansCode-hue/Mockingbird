@@ -218,5 +218,61 @@ describe.skipIf(!local)("the built-in Orchestrator → Coder → Verifier", () =
     expect(t.laid).toMatchObject({ calls: 1, steps: 3, ticket: "5115", description: true, open: false, orchestrators: [["Orchestrator", "5115"]], planned: 0 });
     expect(t.laid.first).toMatchObject({ key: "orchestrator", role: "orchestrator", agent: "claude", folder: "new" });
     expect(t.laid.note).toBe("Laid out “Orchestrator → Coder → Verifier” in #5115: Orchestrator started. It reads #5115 and proposes the rest as its plan, which comes to Needs you: nothing more is made until you lay it out.");
+    expect(t.laid).toMatchObject({ more: null, tickets: [null] });
+  }, 200_000);
+
+  it("takes more tickets for its one Orchestrator: a row each, an empty row holding Lay out off, all of them sent", async () => {
+    const t = await audit<{
+      more: { offered: string[]; rows: (string | null)[]; notes: string[]; off: { off: boolean; title: string | null } | null };
+      laid: { calls: number; ticket: string | null; more: string[] | null; tickets: (string[] | null)[]; note: string | null };
+    }>("landscapePlanAudit=builtinmany");
+    // the first ticket isn't offered again
+    expect(t.more.offered.some((o) => o.includes("#5115"))).toBe(false);
+    expect(t.more.offered.some((o) => o.includes("#5110"))).toBe(true);
+    expect(t.more.rows).toEqual(["#5110 · Export donors to CSV", "Choose a ticket"]);
+    expect(t.more.notes).toEqual(
+      expect.arrayContaining([
+        "tickets: Its Orchestrator reads both tickets and proposes one plan, each workspace on one of them. Its own folder is on #5115's branch.",
+        "more: Choose the other ticket, or remove its row. Lay out is off until then.",
+      ])
+    );
+    expect(t.more.off).toEqual({ off: true, title: "Choose the other ticket, or remove its row" });
+    // the empty row removed: laid out with both, one Orchestrator holding both
+    expect(t.laid).toMatchObject({ calls: 1, ticket: "5115", more: ["5110"], tickets: [["5115", "5110"]] });
+    expect(t.laid.note).toMatch(/It reads #5115 and #5110 and proposes the rest as its plan/);
+  }, 200_000);
+});
+
+describe.skipIf(!local)("an Orchestrator's plan on several tickets", () => {
+  it("shows every ticket and each step's own, refuses a step where another ticket's branch is, and lays each out on its ticket", async () => {
+    const t = await audit<{
+      shown: { provenance: string | null; tickets: (string | null)[]; on: [string | null, string | null][]; ticketNote: string | null; blocked: string | null };
+      moved: { on: [string | null, string | null][]; blocked: string | null };
+      laid: { calls: number; tickets: [string, string | null][] | null; made: [string, string | null, boolean][]; open: boolean };
+    }>("lsPlan=tickets&landscapePlanAudit=tickets");
+    expect(t.shown.provenance).toBe("Proposed by Orchestrator's agent, which read #5120, #5110, written by others");
+    expect(t.shown.tickets).toEqual(["#5120 · Stream the donor export", "#5110 · Export donors to CSV"]);
+    expect(t.shown.on).toEqual([
+      ["coder", "On #5120"],
+      ["export", "On #5110"],
+      ["verifier", "On #5120"],
+    ]);
+    expect(t.shown.ticketNote).toMatch(/^\{ticket\} in a step's prompt names the ticket it's on/);
+    expect(t.shown.blocked).toBeNull();
+    expect(t.moved.blocked).toBe("“Verifier” is on #5110, and “Coder” is on #5120: a step shares only the folder of a step on its own ticket.");
+    expect(t.laid).toMatchObject({
+      calls: 1,
+      tickets: [
+        ["coder", "5120"],
+        ["export", "5110"],
+        ["verifier", "5120"],
+      ],
+      open: false,
+    });
+    expect(t.laid.made).toEqual([
+      ["Coder", "5120", false],
+      ["Export coder", "5110", false],
+      ["Verifier", "5120", true],
+    ]);
   }, 200_000);
 });

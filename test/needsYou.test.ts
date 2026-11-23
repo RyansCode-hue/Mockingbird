@@ -720,6 +720,7 @@ describe("an Orchestrator's plan's item (W17)", () => {
     id: "pl-1",
     held: { from: "orch", ticket: "5101", at: NOW - 3 * MIN, plan: { summary: "Stream it.", steps: [{ key: "coder", name: "Coder", agent: "codex", folder: "orchestrator", prompt: "Implement {ticket}." }], wires: [] } },
     me: { id: "orch", title: "Orchestrator", kind: "agent", agent: "claude", repo: "/r", branch: "b", ticket: "5101", refusal: null },
+    tickets: [{ id: "5101", title: null }],
     ticketTitle: "Stream the donor export",
     area: "5101",
     room: null,

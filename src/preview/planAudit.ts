@@ -76,6 +76,28 @@ export function boardPlan(make: (id: string, over: Partial<SessionInfo>) => Sess
   };
 }
 
+/**
+ * ?lsPlan=tickets: an Orchestrator given #5120 and #5110 at once, its plan a Coder on each (the second in a worktree of
+ * its own) and a Verifier on #5120 in the first Coder's folder.
+ */
+export function ticketsPlan(make: (id: string, over: Partial<SessionInfo>) => SessionInfo, wt: (branch: string) => string, now: number) {
+  const orchestrator = make("wb-orch", { title: "Orchestrator", role: "orchestrator", taskGroup: AREA, ticketId: AREA, tickets: [AREA, "5110"], branch: DIR, cwd: wt(DIR), status: "idle", createdAt: now - 40 * 60_000 });
+  const plan: Plan = {
+    summary: "Fix the receipt names on #5120 and add the CSV export of #5110. They touch different code, so each has its own Coder; the Verifier checks the receipts once their pull request merges.",
+    steps: [
+      { key: "coder", name: "Coder", agent: "codex", folder: "orchestrator", ticket: AREA, prompt: "Implement {ticket}: wrap long donor names in Receipts/ReceiptPdf.cs instead of cutting them. Run the tests, commit, then ask for the pull request to dev with request_pr." },
+      { key: "export", name: "Export coder", agent: "codex", folder: "new", ticket: "5110", prompt: "Implement {ticket}: an Export button on the donor list that streams the filtered rows as CSV. Run the tests, commit, then ask for the pull request to dev with request_pr." },
+      { key: "verifier", name: "Verifier", agent: "claude", folder: { sameAs: "coder" }, ticket: AREA, prompt: "Once the pull request merges, print a receipt for a donor with a 60-character name on dev and check nothing is cut." },
+    ],
+    wires: [
+      { from: "me", to: "coder", type: "handoff" },
+      { from: "me", to: "export", type: "handoff" },
+      { from: "coder", to: "verifier", type: "handoff", when: "pr-merged", gate: "ask" },
+    ],
+  };
+  return { orchestrator, held: { id: "pl-tickets", from: orchestrator.id, at: now - 4 * 60_000, plan } };
+}
+
 /** The Council fixture's title (stub.ts' councils[0]), and its own area (collab.ts' councilArea). */
 const COUNCIL_TITLE = "CSV export for the donor list";
 const COUNCIL_AREA = `Council — ${COUNCIL_TITLE}`;
@@ -262,7 +284,46 @@ async function dismissAudit(env: PlanAuditEnv, out: Record<string, unknown>): Pr
   out.dismissed = { calls: env.calls.slice(mark).filter((c) => c.fn === "plansDismiss").map((c) => c.args), open: !!dialog(), note: noteNow(), item: !!document.querySelector('.ny-item[data-item^="plan:"]'), layOuts: env.calls.filter((c) => c.fn === "plansLayOut").length };
 }
 
-async function builtinAudit(env: PlanAuditEnv, out: Record<string, unknown>, shot: boolean): Promise<void> {
+/** ?lsPlan=tickets' plan opened: every ticket shown, each step's own; a step moved where another ticket's branch is refused; laid out as shown. */
+async function ticketsAudit(env: PlanAuditEnv, out: Record<string, unknown>): Promise<void> {
+  const item = await trayItem(true);
+  await click(actionOf(item, "open"));
+  await sleep(900);
+  const read = () => {
+    const d = dialog();
+    return {
+      provenance: d?.querySelector("[data-provenance]")?.textContent ?? null,
+      tickets: [...(d?.querySelectorAll<HTMLElement>("[data-tickets] .tp-line2") ?? [])].map((r) => flat(r)),
+      on: [...(d?.querySelectorAll<HTMLElement>(".tp-step") ?? [])].map((s) => [s.dataset.step ?? null, flat(s.querySelector(".tp-on .mb-select-val"))]),
+      ticketNote: flat(d?.querySelector(':scope > [data-flag="ticket"]')),
+      blocked: d?.querySelector('[data-flag="blocked"]')?.textContent ?? null,
+    };
+  };
+  out.shown = read();
+  // the Verifier moved onto #5110 while in the #5120 Coder's folder: refused, saying why; moved back, it can be laid out
+  const pick = async (label: string) => {
+    dialog()?.querySelector<HTMLElement>('.tp-step[data-step="verifier"] .tp-on')?.click();
+    await sleep(250);
+    [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.textContent?.includes(label))?.click();
+    await sleep(400);
+  };
+  await pick("On #5110");
+  out.moved = read();
+  await pick("On #5120");
+  const mark = env.calls.length;
+  await click(dialog()?.querySelector('button[data-act="layout"]'));
+  await sleep(1500);
+  const sent = env.calls.slice(mark).filter((c) => c.fn === "plansLayOut").map((c) => c.args[1] as { steps: { key: string; ticket?: string }[] });
+  out.laid = {
+    calls: sent.length,
+    tickets: sent[0]?.steps.map((s) => [s.key, s.ticket ?? null]) ?? null,
+    // the Export coder started as it was laid out; the Verifier waits for its handoff
+    made: [...((await window.mb.listSessions()) as SessionInfo[]), ...((await window.mb.plannedSessions()) as SessionInfo[])].filter((s) => s.id.startsWith("pp")).map((s) => [s.title, s.ticketId, !!s.planned]),
+    open: !!dialog(),
+  };
+}
+
+async function builtinAudit(env: PlanAuditEnv, out: Record<string, unknown>, shot: boolean, many = false): Promise<void> {
   const v = document.querySelector<HTMLElement>(".ls-viewport")!.getBoundingClientRect();
   const at = { x: Math.round(v.right - 120), y: Math.round(v.bottom - 80) };
   document.querySelector(".ls-viewport")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 2 }));
@@ -279,6 +340,26 @@ async function builtinAudit(env: PlanAuditEnv, out: Record<string, unknown>, sho
   await sleep(250);
   [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.textContent?.includes("#5115"))?.click();
   await sleep(700);
+  if (many) {
+    // two more tickets: #5110 chosen in the first row, the second row left empty, which keeps Lay out off
+    await click(picker()?.querySelector('[data-ticket-act="add"]'));
+    picker()?.querySelector<HTMLElement>(".tp-more .tp-ticket")?.click();
+    await sleep(250);
+    const offered = [...document.querySelectorAll<HTMLElement>(".mb-opt")].map((o) => o.textContent ?? "");
+    [...document.querySelectorAll<HTMLElement>(".mb-opt")].find((o) => o.textContent?.includes("#5110"))?.click();
+    await sleep(400);
+    await click(picker()?.querySelector('[data-ticket-act="add"]'));
+    await sleep(300);
+    const act = picker()?.querySelector<HTMLButtonElement>('button[data-act="layout"]');
+    out.more = {
+      offered,
+      rows: [...(picker()?.querySelectorAll<HTMLElement>(".tp-more") ?? [])].map((r) => flat(r.querySelector(".tp-ticket"))?.replace(/\s*▾$/, "") ?? null),
+      notes: [...(picker()?.querySelectorAll<HTMLElement>(":scope > .tp-note") ?? [])].map((n) => `${n.dataset.flag ?? ""}: ${flat(n)}`),
+      off: act ? { off: act.disabled, title: act.title || null } : null,
+    };
+    await click(picker()?.querySelectorAll<HTMLElement>('[data-ticket-act="remove"]')[1]);
+    await sleep(300);
+  }
   const steps = [...(picker()?.querySelectorAll<HTMLElement>(".tp-step") ?? [])].map((s) => ({
     name: s.querySelector(".tp-name")?.textContent ?? null,
     agent: s.querySelector(".tp-agent .mb-select-val")?.textContent ?? null,
@@ -290,8 +371,10 @@ async function builtinAudit(env: PlanAuditEnv, out: Record<string, unknown>, sho
   const mark = env.calls.length;
   await click(picker()!.querySelector("button[data-act]"));
   await sleep(2500);
-  const sent = env.calls.slice(mark).filter((c) => c.fn === "templatesLayOut").map((c) => c.args[0] as { template: { steps: { role?: string }[] }; ticketId: string; ticketDescription?: string });
+  const sent = env.calls.slice(mark).filter((c) => c.fn === "templatesLayOut").map((c) => c.args[0] as { template: { steps: { role?: string }[] }; ticketId: string; ticketDescription?: string; moreTickets?: { ticketId: string }[] });
   out.laid = {
+    more: sent[0]?.moreTickets?.map((t) => t.ticketId) ?? null,
+    tickets: ((await window.mb.listSessions()) as SessionInfo[]).filter((s) => s.role === "orchestrator").map((s) => s.tickets ?? null),
     calls: sent.length,
     first: sent[0]?.template.steps[0] ?? null,
     steps: sent[0]?.template.steps.length ?? 0,
@@ -320,6 +403,8 @@ export function runPlanAudit(env: PlanAuditEnv, part: string): void {
       if (part === "plan") await planAudit(env, out);
       else if (part === "dismiss") await dismissAudit(env, out);
       else if (part === "builtin" || part === "builtinshot") await builtinAudit(env, out, part === "builtinshot");
+      else if (part === "builtinmany" || part === "builtinmanyshot") await builtinAudit(env, out, part === "builtinmanyshot", true);
+      else if (part === "tickets") await ticketsAudit(env, out);
       else {
         // shot, gone, room, roomgone, newer: the plan opened from the tray (synthetic events) and read
         const item = await trayItem(false);

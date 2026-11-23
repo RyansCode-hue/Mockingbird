@@ -40,6 +40,11 @@ export interface PlanStep {
   /** A new worktree's repo, one of its area's; left out, its Orchestrator's. Only with folder "new". */
   repo?: string;
   folder: PlanFolder;
+  /**
+   * Which of its Orchestrator's tickets it works on, by id: required when the Orchestrator holds several, left out on
+   * one (its ticket) and for a terminal (its tree's).
+   */
+  ticket?: string;
   /** What it's told as it starts, `{ticket}` filled in at Lay out; a terminal's command, which takes no `{ticket}`. */
   prompt: string;
 }
@@ -100,6 +105,10 @@ const oneOf =
   <T extends string>(allowed: readonly T[]): Read<T> =>
   (v, what) =>
     allowed.includes(v as T) ? (v as T) : bad(`${what} isn't ${allowed.join(", ").replace(/, ([^,]*)$/, " or $1")}.`);
+const ticketRef: Read<string> = (v, what) => {
+  const id = typeof v === "string" ? v.trim().replace(/^#/, "") : "";
+  return /^\d{1,12}$/.test(id) ? id : bad(`${what} isn't a ticket's id (its number, as in "1234").`);
+};
 const rounds: Read<number> = (v, what) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= PLAN_MAX.rounds ? (v as number) : bad(`${what} isn't a whole number from 1 to ${PLAN_MAX.rounds}.`));
 const onlyFalse: Read<false> = (v, what) => (v === false ? false : bad(`${what} is only ever false: a context link reads tool output unless it's set to leave it out.`));
 const folderOf =
@@ -135,7 +144,7 @@ function readAs(v: unknown, sp: Spelling): Plan {
     read<PlanStep>(
       s,
       `Step ${i + 1}`,
-      { key, name: line(PLAN_MAX.name), agent: oneOf(TEMPLATE_AGENTS), model: line(PLAN_MAX.model), effort: line(PLAN_MAX.model), repo: text(1024), folder: folderOf(sp), prompt: text(PLAN_MAX.prompt) },
+      { key, name: line(PLAN_MAX.name), agent: oneOf(TEMPLATE_AGENTS), model: line(PLAN_MAX.model), effort: line(PLAN_MAX.model), repo: text(1024), folder: folderOf(sp), ticket: ticketRef, prompt: text(PLAN_MAX.prompt) },
       ["key", "name", "agent", "folder", "prompt"]
     )
   );
@@ -185,7 +194,10 @@ export interface PlanContext {
   repos: readonly string[];
   /** Its area is a team room's: every gate asks, and its steps are room sessions. */
   room: boolean;
+  /** Its Orchestrator's ticket: the one its folder's branch is on. */
   ticket: string | null;
+  /** Every ticket its Orchestrator holds, `ticket` first (SessionInfo.tickets); left out, just `ticket`. */
+  tickets?: readonly string[];
 }
 
 export interface PlanStepOut {
@@ -197,6 +209,8 @@ export interface PlanStepOut {
   /** What it says of where it works and how it starts. */
   where: string;
   says: string;
+  /** The ticket it's made on: its own, its tree's for a terminal, or null on none. */
+  ticket: string | null;
   /** A terminal: laid out on its agent's tree when that's its Orchestrator or a step that starts, else not, saying why. */
   terminal: { laid: boolean; why: string } | null;
 }
@@ -271,6 +285,10 @@ export function checkPlan(p: Plan, ctx: PlanContext): PlanLayOut {
   };
   const nameOf = (k: string) => (k === ME ? ctx.me.title : (step(k)?.name ?? ctx.existing[k]?.title ?? k));
   const label = (w: Pick<PlanWire, "from" | "to">) => `${nameOf(w.from)} → ${nameOf(w.to)}`;
+  const tickets = ticketsOf(ctx);
+  const listed = tickets.map((t) => `#${t}`).join(", ");
+  // an agent step's ticket, once held to the rules below: its own, else its Orchestrator's
+  const ticketOf = (s: PlanStep): string | null => s.ticket ?? ctx.ticket;
 
   const steps = p.steps.map((s, i): PlanStepOut => {
     const n = `“${s.name}”`;
@@ -286,6 +304,7 @@ export function checkPlan(p: Plan, ctx: PlanContext): PlanLayOut {
     if (!s.prompt.trim()) bad(`${n} has no ${s.agent === "terminal" ? "command" : "prompt"}: say what it's ${s.agent === "terminal" ? "to run" : "told as it starts"}.`);
     if (s.agent === "terminal") {
       if (!shares) bad(`${n} is a terminal: it runs on an agent's tree, so its folder is "orchestrator" or an agent step's.`);
+      if (s.ticket !== undefined) bad(`${n} is a terminal, on its tree's ticket: leave ticket out.`);
       if (s.model || s.effort) bad(`${n} is a terminal: it has no model or effort.`);
       // a ticket's title is text others wrote: typed into a shell, it would run
       if (s.prompt.includes("{ticket}")) bad(`${n} is a terminal, whose command doesn't take {ticket}: a ticket's text typed into a shell would run.`);
@@ -294,6 +313,7 @@ export function checkPlan(p: Plan, ctx: PlanContext): PlanLayOut {
       return {
         step: s,
         starts: false,
+        ticket: shares === ME ? ctx.ticket : ticketOf(other!),
         repo: shares === ME ? ctx.me.repo : (other!.repo ?? null),
         where: `On ${shares === ME ? `${ctx.me.title}'s` : `“${other!.name}”'s`} tree.`,
         says: "Runs this as a command.",
@@ -314,6 +334,13 @@ export function checkPlan(p: Plan, ctx: PlanContext): PlanLayOut {
       if (!offered) bad(`${n} names an effort, and the efforts this Mac's ${AGENT_NAME[agent]} takes can't be read now: leave it out.`);
       if (!offered!.efforts.includes(s.effort)) bad(`${n}'s effort, ${quoted(s.effort, 40)}, isn't one ${AGENT_NAME[agent]} takes (${offered!.efforts.join(", ")}).`);
     }
+    if (s.ticket !== undefined && !tickets.includes(s.ticket))
+      bad(tickets.length ? `${n} is on #${s.ticket}, which isn't ${tickets.length === 1 ? `${ctx.me.title}'s ticket (${listed})` : `one of ${ctx.me.title}'s tickets (${listed})`}.` : `${n} is on #${s.ticket}, and ${ctx.me.title} is on no ticket: leave ticket out.`);
+    if (s.ticket === undefined && tickets.length > 1) bad(`${n} doesn't say which ticket it works on: ${ctx.me.title} holds ${listed}, so give each step one with ticket.`);
+    const mine = ticketOf(s);
+    if (shares === ME && mine !== ctx.ticket)
+      bad(`${n} is on #${mine}, and ${ctx.me.title}'s folder is on #${ctx.ticket}'s branch: give it a worktree of its own (folder "new"), or put it on #${ctx.ticket}.`);
+    if (other && agentStep(other) && ticketOf(other) !== mine) bad(`${n} is on #${mine}, and “${other.name}” is on #${ticketOf(other)}: a step shares only the folder of a step on its own ticket.`);
     let repo: string | null;
     let where: string;
     if (s.folder === "new") {
@@ -336,7 +363,7 @@ export function checkPlan(p: Plan, ctx: PlanContext): PlanLayOut {
         ? `Starts as it's laid out, with this prompt: Lay out sends ${ctx.me.title}'s handoff to it.`
         : "Starts as it's laid out, with this prompt."
       : `Waits, not started: it starts when ${ins.filter((w) => !sentNow(w)).map((w) => `${nameOf(w.from)}'s`).join(" or ")} handoff is sent.`;
-    return { step: s, starts, repo, where, says, terminal: null };
+    return { step: s, starts, repo, where, says, terminal: null, ticket: mine };
   });
 
   const made: Record<string, Wire> = {};
@@ -389,6 +416,9 @@ export function checkPlan(p: Plan, ctx: PlanContext): PlanLayOut {
   });
   return { steps, wires, forced };
 }
+
+/** Every ticket a plan's Orchestrator holds, its own first. */
+export const ticketsOf = (ctx: Pick<PlanContext, "ticket" | "tickets">): readonly string[] => (ctx.tickets?.length ? ctx.tickets : ctx.ticket ? [ctx.ticket] : []);
 
 /** Plan `p` read and checked whole, as main does both at propose_plan and at Lay out. */
 export function parsePlan(v: unknown, spelling: Spelling, ctx: PlanContext): { plan: Plan; layout: PlanLayOut } {
@@ -455,6 +485,8 @@ export interface PlanView {
   /** Its Orchestrator, as an end of its wires. */
   me: PlanEnd;
   ticketTitle: string | null;
+  /** Every ticket its Orchestrator holds, `held.ticket` first, with its title as the board has it; empty on none. */
+  tickets: { id: string; title: string | null }[];
   /** The area its steps go in: its Orchestrator's. */
   area: string;
   /** The team room its area is shared as, or null. */
@@ -480,10 +512,15 @@ export interface PlanLaidOut extends LayOutReply {
  * Who wrote a plan, as the dialog's head says it (section 4): an agent that read a ticket others wrote, or a Council's
  * approved plan (which the dialog's Council line names: the head has one line).
  */
-export const provenanceOf = (v: Pick<PlanView, "me" | "held" | "council">): string =>
-  `Proposed by ${v.me.title}'s agent${v.held.ticket ? `, which read #${v.held.ticket}, written by others` : v.council ? ", which read the Council's approved plan" : ", from what it read"}`;
+export const provenanceOf = (v: Pick<PlanView, "me" | "held" | "council"> & { tickets?: PlanView["tickets"] }): string => {
+  const read = v.tickets && v.tickets.length > 1 ? v.tickets.map((t) => `#${t.id}`).join(", ") : v.held.ticket ? `#${v.held.ticket}` : null;
+  return `Proposed by ${v.me.title}'s agent${read ? `, which read ${read}, written by others` : v.council ? ", which read the Council's approved plan" : ", from what it read"}`;
+};
 
 // ---- an Orchestrator's start ----------------------------------------------------------------
+
+/** How many tickets one Orchestrator is given: each step of its plan works on one, so no more than a plan has steps. */
+export const ORCHESTRATOR_TICKETS_MAX = PLAN_MAX.steps;
 
 /** How much of a ticket's description an Orchestrator's kickoff carries: past it, it's cut, saying how much. */
 export const KICKOFF_DESCRIPTION_MAX = 20_000;
@@ -519,25 +556,53 @@ export function startingShape(b: TemplateBody): { steps: Record<string, unknown>
   };
 }
 
+/** A ticket an Orchestrator is told of: its id, title and description as the board has them. */
+export interface KickoffTicket {
+  ticketId: string;
+  title: string;
+  description: string;
+}
+
 /**
- * What an Orchestrator is told as it starts: its own Tell it (`told`, `{ticket}` filled in), the ticket's title and
+ * What an Orchestrator is told as it starts: its own Tell it (`told`, `{ticket}` filled in), each ticket's title and
  * description fenced as text others wrote, and the rest of its template as its plan's starting shape, which is the
- * user's. Its rules are its system prompt's (Mockingbird's provider), not this.
+ * user's. Given `more` tickets, it plans for all of them, each step on one, and their descriptions share the one
+ * ticket's room. Its rules are its system prompt's (Mockingbird's provider), not this.
  */
-export function orchestratorKickoff(o: { ticketId: string; title: string; description: string; told: string; template: TemplateBody; makeNonce?: () => string }): string {
-  const d = o.description.trim();
-  const description = d.length > KICKOFF_DESCRIPTION_MAX ? `${d.slice(0, KICKOFF_DESCRIPTION_MAX)}\n[cut: ${nOf(d.length - KICKOFF_DESCRIPTION_MAX)} more characters]` : d;
+export function orchestratorKickoff(o: KickoffTicket & { told: string; template: TemplateBody; more?: readonly KickoffTicket[]; makeNonce?: () => string }): string {
+  const all: KickoffTicket[] = [o, ...(o.more ?? [])];
+  const room = Math.floor(KICKOFF_DESCRIPTION_MAX / all.length);
+  const cut = (text: string) => {
+    const d = text.trim();
+    return d.length > room ? `${d.slice(0, room)}\n[cut: ${nOf(d.length - room)} more characters]` : d;
+  };
   const shape = startsAtOrchestrator(o.template) && o.template.steps.length > 1 ? startingShape(o.template) : null;
+  if (all.length === 1)
+    return [
+      `You're the Orchestrator for Azure DevOps ticket #${o.ticketId}, in Mockingbird.`,
+      ...(o.told.trim() ? [o.told.trim()] : []),
+      fencedTicket(o.title, cut(o.description), o.makeNonce),
+      ...(shape
+        ? [
+            "The user's template gives your plan's starting shape: change it to fit the ticket, then propose it with propose_plan. In propose_plan's terms:",
+            "```json\n" + JSON.stringify(shape, null, 2) + "\n```",
+          ]
+        : ["Propose the workspaces and wires to do it with propose_plan."]),
+    ].join("\n\n");
+  const ids = all.map((t) => `#${t.ticketId}`);
   return [
-    `You're the Orchestrator for Azure DevOps ticket #${o.ticketId}, in Mockingbird.`,
+    `You're the Orchestrator for Azure DevOps tickets ${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}, in Mockingbird: one plan for all of them.`,
     ...(o.told.trim() ? [o.told.trim()] : []),
-    fencedTicket(o.title, description, o.makeNonce),
+    ...all.map((t) => `Ticket #${t.ticketId}:\n${fencedTicket(t.title, cut(t.description), o.makeNonce)}`),
+    `Every step of your plan works on one of these tickets: give each its ticket (its number, as in "${o.ticketId}"); its {ticket}, stages and pull request are that ticket's. ` +
+      `Your own folder is on #${o.ticketId}'s branch, so only a step on #${o.ticketId} works there ("orchestrator"); a step on another ticket works in a worktree of its own ("new") or an earlier step's folder on its ticket. ` +
+      "Where tickets touch the same code, say so in your summary, and order or link their steps rather than have two edit it at once.",
     ...(shape
       ? [
-          "The user's template gives your plan's starting shape: change it to fit the ticket, then propose it with propose_plan. In propose_plan's terms:",
+          "The user's template gives the starting shape for one ticket: repeat or change it to fit these tickets, then propose it with propose_plan. In propose_plan's terms:",
           "```json\n" + JSON.stringify(shape, null, 2) + "\n```",
         ]
-      : ["Propose the workspaces and wires to do it with propose_plan."]),
+      : ["Propose the workspaces and wires to do them with propose_plan."]),
   ].join("\n\n");
 }
 

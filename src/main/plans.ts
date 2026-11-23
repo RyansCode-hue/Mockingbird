@@ -12,12 +12,14 @@ import { agentOf, layOutPlan, parseTemplateBody, startsAtOrchestrator, TemplateE
 import {
   checkPlan,
   ME,
+  ORCHESTRATOR_TICKETS_MAX,
   orchestratorKickoff,
   PLAN_MAX,
   PlanError,
   readPlanArgs,
   readShownPlan,
   type HeldPlan,
+  type KickoffTicket,
   type Plan,
   type PlanContext,
   type PlanEnd,
@@ -29,7 +31,7 @@ import {
 } from "../shared/plans";
 import { visibleLine, withoutHidden, type TextUse } from "../shared/hiddenText";
 import { oneLine, plainLine } from "../shared/team/agentText";
-import { slugBranch, suggestTicketName, ticketIdOf, ticketOfSession, topOfKey, type AgentKind, type AgentTold, type ModelCatalog, type NewSessionRequest, type SessionInfo, type StepStarted } from "../shared/types";
+import { isWorkItemId, slugBranch, suggestTicketName, ticketIdOf, ticketOfSession, ticketsOfSession, topOfKey, type AgentKind, type AgentTold, type ModelCatalog, type NewSessionRequest, type SessionInfo, type StepStarted } from "../shared/types";
 import { carriesWork, ROOM_LINE, ROOMS_STARTING, settingsRefusal, wireRefusal, type GateContext, type Wire, type WireEnd, type WireGate, type WireReply, type WireSettings } from "../shared/wires";
 
 /**
@@ -65,8 +67,11 @@ export interface PlanLayOutDeps {
 /** What an Orchestrator's start needs (templates:layOut with a template whose first step is one). */
 export interface OrchestratorStartDeps {
   create(req: NewSessionRequest): Promise<SessionInfo>;
-  /** It's open: its folder's overlaps checked, and its ticket tracked at BA rather than its coding started (index.ts). */
-  opened(info: SessionInfo, ticketTitle: string): void;
+  /**
+   * It's open: its folder's overlaps checked, and its ticket tracked at BA rather than its coding started (index.ts),
+   * as each of its `more` tickets is.
+   */
+  opened(info: SessionInfo, ticketTitle: string, more: readonly { id: string; title: string }[]): void;
 }
 
 export interface PlansOptions {
@@ -402,7 +407,7 @@ export class Plans {
     }
     const [installed, catalog] = await Promise.all([this.o.installed(), this.o.catalog()]);
     const repos = [...new Set([me, ...all.values()].filter((s) => s.id === me.id || topOfKey(s.taskGroup ?? s.ticketId ?? "") === area).flatMap((s) => (s.repoPath ? [s.repoPath] : [])))];
-    return { ctx: { me: endOf(me, null), existing, installed, catalog, repos, room: !!room, ticket: ticketOfSession(me) }, area, room };
+    return { ctx: { me: endOf(me, null), existing, installed, catalog, repos, room: !!room, ticket: ticketOfSession(me), tickets: ticketsOfSession(me) }, area, room };
   }
 
   // ---- the tool ------------------------------------------------------------------------------
@@ -427,6 +432,7 @@ export class Plans {
       const { ctx } = await this.contextFor(me);
       const layout = checkPlan(plan, ctx);
       const ticket = ticketOfSession(me);
+      const forTickets = ticketsOfSession(me).map((t) => `#${t}`).join(", ");
       const mine = Object.entries(this.data).filter(([, p]) => p.from === me.id);
       // the user has its plan open: this one waits for the dialog to close, rather than changing what they're reading
       const shown = mine.find(([k, p]) => k === this.viewingId && !p.waitsFor)?.[0] ?? null;
@@ -445,7 +451,7 @@ export class Plans {
       const starts = layout.steps.filter((s) => s.starts).length;
       return {
         result:
-          `Held for the user: ${plural(plan.steps.length, "step")} and ${plural(plan.wires.length, "wire")}${ticket ? ` for #${ticket}` : ""}. Nothing exists until they lay it out from Mockingbird, ` +
+          `Held for the user: ${plural(plan.steps.length, "step")} and ${plural(plan.wires.length, "wire")}${forTickets ? ` for ${forTickets}` : ""}. Nothing exists until they lay it out from Mockingbird, ` +
           `and they may change any of it first. Laid out as it is, ${starts ? `${plural(starts, "step")} ${starts === 1 ? "starts" : "start"} with ${starts === 1 ? "its" : "their"} prompt` : "no step starts"}` +
           `${plan.steps.length - starts ? ` and ${plan.steps.length - starts} ${plan.steps.length - starts === 1 ? "waits" : "wait"} for ${plan.steps.length - starts === 1 ? "its" : "their"} handoff` : ""}. ` +
           `You'll hear if they dismiss it.` +
@@ -480,16 +486,19 @@ export class Plans {
       const waiting = Object.values(this.data).find((p) => p.waitsFor === id);
       const newer = waiting ? { at: waiting.at } : null;
       const ticketTitle = held.ticket ? visibleLine(this.o.ticketTitleOf(held.ticket), 200) || null : null;
+      // its Orchestrator's tickets now, the held plan's own first: a plan held on one ticket stays on it
+      const ids = held.ticket ? [held.ticket, ...ticketsOfSession(me).filter((t) => t !== held.ticket)] : [];
+      const tickets = ids.map((t) => ({ id: t, title: visibleLine(this.o.ticketTitleOf(t), 200) || null }));
       let problem: string | null = null;
       let view: Omit<PlanView, "problem"> | null = null;
       try {
         const { ctx, area, room } = await this.contextFor(me);
-        view = { id, held, me: ctx.me, ticketTitle, area, room, existing: { ...ctx.existing }, installed: [...ctx.installed], repos: [...ctx.repos], newer };
+        view = { id, held, me: ctx.me, ticketTitle, tickets, area, room, existing: { ...ctx.existing }, installed: [...ctx.installed], repos: [...ctx.repos], newer };
         checkPlan(held.plan, ctx);
       } catch (err) {
         if (!view) {
           // its area can't be worked out now (rooms starting): shown, and Lay out says why
-          view = { id, held, me: { id: me.id, title: visibleLine(me.title, 80), kind: "agent", agent: me.agent ?? "claude", repo: me.repoPath, branch: me.branch, ticket: ticketOfSession(me), refusal: null }, ticketTitle, area: topOfKey(me.taskGroup ?? me.ticketId ?? ""), room: null, existing: {}, installed: [], repos: [], newer };
+          view = { id, held, me: { id: me.id, title: visibleLine(me.title, 80), kind: "agent", agent: me.agent ?? "claude", repo: me.repoPath, branch: me.branch, ticket: ticketOfSession(me), refusal: null }, ticketTitle, tickets, area: topOfKey(me.taskGroup ?? me.ticketId ?? ""), room: null, existing: {}, installed: [], repos: [], newer };
         }
         problem = errText(err);
       }
@@ -523,9 +532,17 @@ export class Plans {
     this.releaseWaiting(id);
     this.changed();
     const line =
-      `[Mockingbird: the user dismissed your plan${held.ticket ? ` for #${held.ticket}` : ""}. Nothing was made. ` +
+      `[Mockingbird: the user dismissed your plan${this.forTickets(held)}. Nothing was made. ` +
       `${note ? "Their note follows." : "They left no note."} Propose another with ${TICKET_TOOL.proposePlan} if they ask for one.]${note ? `\n\n${note}` : ""}`;
     return { told: this.tell(held.from, line) };
+  }
+
+  /** " for #a, #b": the tickets plan `held`'s Orchestrator holds, its own first, as its notices name them; "" on none. */
+  private forTickets(held: HeldPlan): string {
+    if (!held.ticket) return "";
+    const me = this.sessionOf(held.from);
+    const ids = [held.ticket, ...(me ? ticketsOfSession(me) : []).filter((t) => t !== held.ticket)];
+    return ` for ${ids.map((t) => `#${t}`).join(", ")}`;
   }
 
   /** `text` to Orchestrator `to` through its queue, or why it wasn't: not running, or taken over. Never throws. */
@@ -611,9 +628,10 @@ export class Plans {
     const nameOf = (k: string) => (k === ME ? me.title : (keyed.get(k)?.name ?? ctx.existing[k]?.title ?? k));
     const label = (w: PlanWire) => `${nameOf(w.from)} → ${nameOf(w.to)}`;
     const wctx = this.o.wires.context(state.book);
+    const ticketAt = new Map(layout.steps.map((p) => [p.step.key, p.ticket]));
     const probe = (k: string): WireEnd => {
       const s = keyed.get(k)!;
-      return { id: `\0${k}`, title: s.name, kind: s.agent === "terminal" ? "terminal" : "agent", debrief: false, tasks: false, room, takenOver: null, outsideSandbox: false, where: "planned", placed: true, folder: `\0${k}`, hooksSilent: false, ticket: ctx.ticket, branch: null };
+      return { id: `\0${k}`, title: s.name, kind: s.agent === "terminal" ? "terminal" : "agent", debrief: false, tasks: false, room, takenOver: null, outsideSandbox: false, where: "planned", placed: true, folder: `\0${k}`, hooksSilent: false, ticket: ticketAt.get(k) ?? null, branch: null };
     };
     // the wires in the book and the plan's wires probed so far: a cycle or a second wire through one already made is refused here
     const links: Record<string, Wire> = { ...state.book.links };
@@ -660,11 +678,12 @@ export class Plans {
             : "The plan couldn't be held again (plans.json couldn't be written): ask its Orchestrator to propose it again.";
       throw new Error(`Couldn't lay out the plan: ${why.replace(/\.$/, "")}. ${said.length ? said.join(" ") : "Nothing was left."} ${plan}`);
     };
-    const line = ticketLine(ctx.ticket, ctx.ticket ? this.o.ticketTitleOf(ctx.ticket) : null);
+    const titleOf = (t: string | null) => (t ? visibleLine(this.o.ticketTitleOf(t), 200) || null : null);
     for (const p of layout.steps) {
       const s = p.step;
       const agent = agentOf(s);
       if (!agent) continue;
+      const line = ticketLine(p.ticket, titleOf(p.ticket));
       let info: SessionInfo;
       try {
         info = d.planStep({
@@ -676,7 +695,7 @@ export class Plans {
           worktree: s.folder === "new",
           taskGroup: area,
           // the ticket's title only in its prompt: a session's ticketTitle would stand for every step's own name
-          ...(ctx.ticket ? { ticketId: ctx.ticket } : {}),
+          ...(p.ticket ? { ticketId: p.ticket } : {}),
           prompt: withTicket(s.prompt, line),
           ...(s.folder === "orchestrator" ? { sharesWith: me.id } : typeof s.folder === "object" ? { sharesWith: idOf.get(s.folder.sameAs)! } : {}),
         });
@@ -727,7 +746,7 @@ export class Plans {
       const sentIn = layout.wires.map((w, j) => ({ w, j })).filter((x) => x.w.sentByLayOut && x.w.wire.to === s.key);
       let info: SessionInfo;
       try {
-        const r = await d.start(idOf.get(s.key)!, sentIn.length ? me.id : null, ctx.ticket ? visibleLine(this.o.ticketTitleOf(ctx.ticket), 200) || null : null);
+        const r = await d.start(idOf.get(s.key)!, sentIn.length ? me.id : null, titleOf(p.ticket));
         info = r.info;
         if (r.stageWhy) notes.push(`“${s.name}” started, but ${r.stageWhy}.`);
       } catch (err) {
@@ -757,7 +776,7 @@ export class Plans {
     const startedNames = layout.steps.filter((p) => p.starts && started.includes(idOf.get(p.step.key)!)).map((p) => `“${p.step.name}”`);
     this.tell(
       me.id,
-      `[Mockingbird: the user laid out your plan${held.ticket ? ` for #${held.ticket}` : ""}, as they read and edited it. ` +
+      `[Mockingbird: the user laid out your plan${this.forTickets(held)}, as they read and edited it. ` +
         `${startedNames.length ? `${startedNames.join(", ")} started with ${startedNames.length === 1 ? "its" : "their"} prompt${startedNames.length === 1 ? "" : "s"}` : "No step started"}` +
         `${waiting.length ? `; ${waiting.join(", ")} ${waiting.length === 1 ? "waits" : "wait"} for ${waiting.length === 1 ? "its" : "their"} handoff` : ""}. ` +
         `What you handed them went as their prompts, so don't call ${MCP_SERVER} ${WIRE_TOOL.finishStep} for it. Create nothing yourself; propose another plan only if the user asks.]`
@@ -777,7 +796,8 @@ export class Plans {
    * Lay out a template whose first step is an Orchestrator (W17): that step only, as From a ticket… starts a session, in
    * a worktree of the ticket's repo on the ticket's branch, in the area chosen, told its Tell it, the ticket fenced as
    * text others wrote, and the rest of the template as its plan's starting shape. Its ticket is tracked at BA, not
-   * moved to Coding: the Coder starting does that.
+   * moved to Coding: the Coder starting does that. `moreTickets` gives it several: it's told each, plans for all of
+   * them (each step on one), and each is tracked at BA; its folder is on the first one's branch.
    */
   async startOrchestrator(raw: unknown, d: OrchestratorStartDeps): Promise<LayOutReply> {
     const req = isObj(raw) ? raw : {};
@@ -805,9 +825,11 @@ export class Plans {
     const description = typeof req.ticketDescription === "string" ? req.ticketDescription : "";
     const base = text(req.base);
     const id = ticketIdOf(ticketId);
+    const more = moreTicketsOf(req.moreTickets, id);
     const info = await d.create({
       repoPath,
       ticketId: id,
+      ...(more.length ? { tickets: [id, ...more.map((t) => t.ticketId)] } : {}),
       branchName: slugBranch(id, suggestTicketName(ticketTitle) || "orchestrator"),
       useWorktree: true,
       ...(base ? { baseBranch: base } : {}),
@@ -817,14 +839,36 @@ export class Plans {
       ...(first.model ? { model: first.model } : {}),
       ...(first.effort ? { effort: first.effort } : {}),
       role: "orchestrator",
-      initialPrompt: orchestratorKickoff({ ticketId: id, title: ticketTitle, description, told: withTicket(first.prompt, ticketLine(id, ticketTitle)), template: body }),
+      initialPrompt: orchestratorKickoff({ ticketId: id, title: ticketTitle, description, told: withTicket(first.prompt, ticketLine(id, ticketTitle)), template: body, more }),
     });
-    d.opened(info, ticketTitle);
+    d.opened(info, ticketTitle, more.map((t) => ({ id: t.ticketId, title: t.title })));
+    const ids = [id, ...more.map((t) => t.ticketId)].map((t) => `#${t}`);
     return {
       steps: [{ key: first.key, id: info.id, title: first.name }],
       wires: [],
       started: info.id,
-      notes: [`It reads #${id} and proposes the rest as its plan, which comes to Needs you: nothing more is made until you lay it out.`],
+      notes: [
+        `It reads ${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}` : ids[0]} and proposes the rest as its plan, which comes to Needs you: nothing more is made until you lay it out.`,
+      ],
     };
   }
+}
+
+/**
+ * A lay-out's tickets after its first (`first`, LayOutRequest.moreTickets), read strictly: each a work item id (none
+ * twice, nor the first again) with its title and description as the board has them. Refused whole, saying why.
+ */
+function moreTicketsOf(v: unknown, first: string): KickoffTicket[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) throw new Error("Its other tickets aren't a list.");
+  if (v.length + 1 > ORCHESTRATOR_TICKETS_MAX) throw new Error(`An Orchestrator takes at most ${ORCHESTRATOR_TICKETS_MAX} tickets, one for each step its plan can have: choose fewer.`);
+  const seen = new Set([first]);
+  return v.map((t, i) => {
+    const id = isObj(t) && typeof t.ticketId === "string" ? ticketIdOf(t.ticketId.trim()) : "";
+    if (!isWorkItemId(id)) throw new Error(`Its ticket ${i + 2} isn't a work item.`);
+    if (seen.has(id)) throw new Error(`#${id} is chosen twice.`);
+    seen.add(id);
+    const o = t as Record<string, unknown>;
+    return { ticketId: id, title: visibleLine(o.ticketTitle, 500), description: typeof o.ticketDescription === "string" ? o.ticketDescription : "" };
+  });
 }

@@ -24,7 +24,7 @@ import {
   type TemplateStep,
   type TemplateWire,
 } from "../shared/pipelineTemplates";
-import { checkPlan, ME, PLAN_MAX, planFlags, provenanceOf, type Plan, type PlanLayOut, type PlanShownAt, type PlanStep, type PlanView, type PlanWire } from "../shared/plans";
+import { checkPlan, ME, ORCHESTRATOR_TICKETS_MAX, PLAN_MAX, planFlags, provenanceOf, type Plan, type PlanLayOut, type PlanShownAt, type PlanStep, type PlanView, type PlanWire } from "../shared/plans";
 import { agoShort } from "../shared/format";
 
 /**
@@ -437,6 +437,7 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 /** Why the picker's Lay out is off for want of a repo, or of an area to lay out in: on its button, and said under what's missing. */
 const NEEDS_REPO = "Its steps work in worktrees of their own: choose a repo";
 const NEEDS_AREA = "Choose a ticket, so its steps have an area";
+const NEEDS_MORE = "Choose the other ticket, or remove its row";
 
 /** A body with step `key` changed. */
 const withStep = (b: TemplateBody, key: string, patch: Partial<TemplateStep>): TemplateBody => ({
@@ -521,6 +522,11 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const [ticketSel, setTicketSel] = useState("");
   const ticket = all.find((t) => String(t.id) === ticketSel) ?? null;
   const tLine = ticket ? ticketLine(String(ticket.id), ticket.title) : "";
+  // an Orchestrator template takes more tickets after the first: it plans for all of them, each step on one
+  const [moreSel, setMoreSel] = useState<string[]>([]);
+  const orchestrated = !!body && startsAtOrchestrator(body) && !!ticket;
+  const moreRows = orchestrated ? moreSel : [];
+  const more = moreRows.flatMap((id) => all.filter((t) => String(t.id) === id));
 
   const [repo, setRepo] = useState(where.seed.repo ?? "");
   const { branches, base, setBase, error: branchError } = useRepoBranches(repo || null);
@@ -537,7 +543,8 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const plan = useMemo(() => (body ? layOutPlan(body, { room, ticket: !!ticket }) : null), [body, room, ticket]);
   const needsRepo = !!body && body.steps.some((s) => s.folder === "new") && !repo;
   const needsArea = !!body && !area;
-  const blocked = !body ? "Choose a template" : plan!.problems[0] ?? (needsRepo ? NEEDS_REPO : needsArea ? NEEDS_AREA : null);
+  const needsMore = moreRows.some((id) => !id);
+  const blocked = !body ? "Choose a template" : plan!.problems[0] ?? (needsRepo ? NEEDS_REPO : needsArea ? NEEDS_AREA : needsMore ? NEEDS_MORE : null);
 
   const [busy, setBusy] = useState(false);
   const busyNow = useRef(false);
@@ -554,6 +561,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
         template: asShown(body),
         // an Orchestrator is told the ticket's description, fenced as text others wrote (main builds its kickoff)
         ...(ticket ? { ticketId: String(ticket.id), ticketTitle: ticket.title, ...(startsAtOrchestrator(body) ? { ticketDescription: ticket.description } : {}) } : {}),
+        ...(more.length ? { moreTickets: more.map((t) => ({ ticketId: String(t.id), ticketTitle: t.title, ticketDescription: t.description })) } : {}),
         repoPath: repo || null,
         ...(repo && base ? { base } : {}),
         area,
@@ -632,6 +640,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
             onChange={(e) => {
               setWhoPick(e.target.value);
               setTicketSel("");
+              setMoreSel([]);
             }}
             disabled={!all.length}
             title="Whose tickets to choose from"
@@ -643,7 +652,15 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
               </option>
             ))}
           </Pick>
-          <Pick className="tp-ticket" value={ticketSel} onChange={(e) => setTicketSel(e.target.value)} title="The ticket its steps are on: {ticket} in a prompt names it">
+          <Pick
+            className="tp-ticket"
+            value={ticketSel}
+            onChange={(e) => {
+              setTicketSel(e.target.value);
+              setMoreSel((m) => m.map((id) => (id === e.target.value ? "" : id)));
+            }}
+            title="The ticket its steps are on: {ticket} in a prompt names it"
+          >
             <option value="">{ado.items === null ? (ado.error ? "No ticket (the board can't be read)" : "No ticket (reading the board…)") : "No ticket"}</option>
             {columns.map((c) => (
               <optgroup key={c.state} label={c.state}>
@@ -656,7 +673,50 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
             ))}
           </Pick>
         </div>
+        {moreRows.map((sel, i) => (
+          <div className="tp-line2 tp-more" key={i} data-more={i}>
+            <span className="tp-and">and</span>
+            <Pick
+              className="tp-ticket"
+              value={sel}
+              onChange={(e) => setMoreSel((m) => m.map((id, j) => (j === i ? e.target.value : id)))}
+              title="Another ticket its Orchestrator plans for: each step of its plan works on one of them"
+            >
+              <option value="">Choose a ticket</option>
+              {columns.map((c) => {
+                const free = c.items.filter((t) => String(t.id) === sel || (String(t.id) !== ticketSel && !moreRows.includes(String(t.id))));
+                return free.length ? (
+                  <optgroup key={c.state} label={c.state}>
+                    {free.map((t) => (
+                      <option key={t.id} value={String(t.id)}>
+                        #{t.id} · {t.title}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null;
+              })}
+            </Pick>
+            <button type="button" className="link tp-unticket" data-ticket-act="remove" onClick={() => setMoreSel((m) => m.filter((_, j) => j !== i))} title={sel ? `Leave #${sel} out` : "Remove this row"}>
+              Remove
+            </button>
+          </div>
+        ))}
+        {orchestrated && moreRows.length + 1 < ORCHESTRATOR_TICKETS_MAX && (
+          <button type="button" className="link tp-addticket" data-ticket-act="add" onClick={() => setMoreSel((m) => [...m, ""])} title="Give its Orchestrator another ticket: it reads them all and proposes one plan">
+            + Another ticket
+          </button>
+        )}
       </div>
+      {more.length > 0 && (
+        <div className="tp-note dim" data-flag="tickets">
+          Its Orchestrator reads {more.length === 1 ? "both tickets" : `all ${more.length + 1} tickets`} and proposes one plan, each workspace on one of them. Its own folder is on #{ticket!.id}&apos;s branch.
+        </div>
+      )}
+      {needsMore && (
+        <div className="tp-note amber" data-flag="more">
+          {NEEDS_MORE}. Lay out is off until then.
+        </div>
+      )}
       {ado.error && <div className="tp-note dim">Azure DevOps: {ado.error}</div>}
       {needsArea && (
         <div className="tp-note amber" data-flag="area">
@@ -959,7 +1019,7 @@ const withPlanStep = (p: Plan, key: string, patch: Partial<PlanStep>): Plan => (
   steps: p.steps.map((s) => {
     if (s.key !== key) return s;
     const next: PlanStep = { ...s, ...patch };
-    for (const k of ["model", "effort", "repo"] as const) if (next[k] === undefined) delete next[k];
+    for (const k of ["model", "effort", "repo", "ticket"] as const) if (next[k] === undefined) delete next[k];
     return next;
   }),
 });
@@ -1032,7 +1092,11 @@ export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut,
     return () => say(false);
   }, [view.id]);
   const [body, setBody] = useState<Plan>(() => structuredClone(view.held.plan));
-  const ctx = useMemo(() => ({ me: view.me, existing: view.existing, installed: view.installed, catalog, repos: view.repos, room: !!view.room, ticket: view.held.ticket }), [view, catalog]);
+  const ctx = useMemo(
+    () => ({ me: view.me, existing: view.existing, installed: view.installed, catalog, repos: view.repos, room: !!view.room, ticket: view.held.ticket, tickets: view.tickets.map((t) => t.id) }),
+    [view, catalog]
+  );
+  const several = view.tickets.length > 1;
   const checked = useMemo((): { layout: PlanLayOut } | { problem: string } => {
     try {
       return { layout: checkPlan(body, ctx) };
@@ -1090,7 +1154,19 @@ export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut,
           {provenanceOf(view)}
         </span>
       </div>
-      {ticket ? (
+      {several ? (
+        <div className="tp-sec" data-tickets>
+          <div className="tp-k">Tickets</div>
+          <div className="tp-tickets">
+            {view.tickets.map((t) => (
+              <div key={t.id} className="tp-line2">
+                #{t.id}
+                {t.title ? ` · ${t.title}` : ""}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : ticket ? (
         <div className="tp-sec">
           <div className="tp-k">Ticket</div>
           <div className="tp-line2">{ticket}</div>
@@ -1116,7 +1192,11 @@ export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut,
         </div>
       )}
       <div className="tp-note dim" data-flag="ticket">
-        {tLine ? `{ticket} in a prompt is “${tLine}”.` : "{ticket} in a prompt is empty: its Orchestrator is on no ticket."}
+        {several
+          ? `{ticket} in a step's prompt names the ticket it's on, and its stages and pull request are that ticket's. Only a step on #${view.held.ticket} works in ${view.me.title}'s folder, which is on its branch.`
+          : tLine
+            ? `{ticket} in a prompt is “${tLine}”.`
+            : "{ticket} in a prompt is empty: its Orchestrator is on no ticket."}
       </div>
       {view.room && (
         <div className="tp-note dim" data-flag="room">
@@ -1180,6 +1260,16 @@ export function PlanPicker({ view, gone, newer, dismissing, areaTitle, onLayOut,
               </div>
               <div className="tp-line dim" data-flag="where">
                 <span className="grow">{p?.where ?? (s.folder === "orchestrator" ? `In ${view.me.title}'s folder.` : s.folder === "new" ? "A new worktree." : `In ${nameOf(s.folder.sameAs)}'s folder.`)}</span>
+                {several && !terminal && (
+                  <Select
+                    className="tp-on"
+                    value={s.ticket ?? ""}
+                    placeholder="Which ticket?"
+                    title={`The ticket ${s.name} works on: its {ticket}, stages and pull request`}
+                    options={[...(s.ticket && !view.tickets.some((t) => t.id === s.ticket) ? [{ value: s.ticket, label: `#${s.ticket} (not one of its tickets)` }] : []), ...view.tickets.map((t) => ({ value: t.id, label: `On #${t.id}`, description: t.title ?? undefined }))]}
+                    onChange={(v) => setBody((b) => withPlanStep(b, s.key, { ticket: v || undefined }))}
+                  />
+                )}
                 {s.folder === "new" && view.repos.length > 1 && (
                   <Select
                     className="tp-repo"

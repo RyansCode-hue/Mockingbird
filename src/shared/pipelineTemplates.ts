@@ -536,6 +536,11 @@ export interface LayOutRequest {
   ticketTitle?: string | null;
   /** The ticket's description as the board has it: an Orchestrator is told it, fenced as text others wrote. */
   ticketDescription?: string | null;
+  /**
+   * An Orchestrator template's other tickets, as the board has them: its Orchestrator plans for all of them, each step on
+   * one, its folder on the first ticket's branch (Plans.startOrchestrator). Refused for any other template.
+   */
+  moreTickets?: { ticketId: string; ticketTitle: string; ticketDescription: string }[];
   /** The repo its steps' worktrees (and checkouts) are in; none: their checkouts are home. */
   repoPath: string | null;
   /** A new worktree with nothing to start from is cut from origin's branch of this name. */

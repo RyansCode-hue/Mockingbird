@@ -1882,17 +1882,25 @@ const templateLayOuts = new TemplateLayOuts({ store: landscape, log: logError })
 const layOutTemplate = (raw: unknown): Promise<LayOutReply> =>
   templateLayOuts.layOut(raw, (req) =>
     atOrchestrator(req)
-      ? plans.startOrchestrator(req, { create: (q) => sessions.create(q), opened: (info, title) => void sessionOpened(info, info.ticketId, title) })
-      : wires.layOut(req, {
-          planStep: (q) => sessions.planStep(q),
-          forget: (id) => {
-            sessions.kill(id, true);
-            return wires.sessionForgotten(id);
+      ? plans.startOrchestrator(req, {
+          create: (q) => sessions.create(q),
+          opened: (info, title, more) => {
+            sessionOpened(info, info.ticketId, title);
+            for (const t of more) sessionOpened(info, t.id, t.title);
           },
-          start: (id, ticketTitle) => startStep(id, undefined, ticketTitle),
-          addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
-          roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
         })
+      : isObj(req) && Array.isArray(req.moreTickets) && req.moreTickets.length
+        ? Promise.reject(new Error("Only a template that starts at an Orchestrator takes several tickets: choose one ticket, or that template."))
+        : wires.layOut(req, {
+            planStep: (q) => sessions.planStep(q),
+            forget: (id) => {
+              sessions.kill(id, true);
+              return wires.sessionForgotten(id);
+            },
+            start: (id, ticketTitle) => startStep(id, undefined, ticketTitle),
+            addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
+            roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
+          })
   );
 handle("templates:layOut", (raw) => layOutTemplate(raw));
 // the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an

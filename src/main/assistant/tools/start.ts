@@ -1,4 +1,5 @@
 import { layOutPlan, roomAsked, type PipelineTemplate } from "../../../shared/pipelineTemplates";
+import { ORCHESTRATOR_TICKETS_MAX } from "../../../shared/plans";
 import { PERMISSION_MODE_LABEL, type PermissionMode } from "../../../shared/permissionModes";
 import { plainLine } from "../../../shared/team/agentText";
 import type { HouseRow } from "../../../shared/team/house";
@@ -135,7 +136,13 @@ type StartArgs = {
   prompt?: string;
 };
 
-type LayOutArgs = { template: string; area: string; repo?: string; base?: string; ticket?: string };
+type LayOutArgs = { template: string; area: string; repo?: string; base?: string; ticket?: string; more_tickets?: string[] };
+
+/** Tickets `ids` as a card says them: "#1", "#1 and #2", "#1, #2 and #3". */
+const ticketList = (ids: readonly (string | number)[]): string => {
+  const t = ids.map((id) => `#${String(id).replace(/^#/, "")}`);
+  return t.length > 1 ? `${t.slice(0, -1).join(", ")} and ${t[t.length - 1]}` : (t[0] ?? "");
+};
 type TicketArgs = { room: string; ticket: number; repo?: string; agent?: AgentKind; branch?: string };
 
 export function startTools(d: Deps): AssistantTool[] {
@@ -253,7 +260,7 @@ export function startTools(d: Deps): AssistantTool[] {
     return { group: s?.taskGroup ?? null, room: roomJoined(d, s?.taskGroup, s?.role) };
   };
 
-  const layOutSaw = cardSaw<{ ticket: AdoWorkItem | null }>();
+  const layOutSaw = cardSaw<{ ticket: AdoWorkItem | null; more: AdoWorkItem[] }>();
   const ticketSaw = cardSaw<{ plan: TicketSessionPlan; repo: string }>();
   /** The plan start_from_ticket's card showed; null when it showed none (it couldn't be planned then). */
   const ticketShown = cardSaw<{ plan: TicketSessionPlan; repo: string } | null>();
@@ -481,7 +488,9 @@ export function startTools(d: Deps): AssistantTool[] {
       tier: "confirm",
       description:
         "Lay a pipeline template out in an area of the landscape that's there: its steps as workspaces joined by their wires, the first started when the template says so. " +
-        "repo: where its steps' worktrees go; ticket: an Azure DevOps work item id it's for. This puts a card in front of the user; it runs only when they confirm.",
+        "repo: where its steps' worktrees go; ticket: an Azure DevOps work item id it's for. " +
+        "more_tickets: for a template that starts at an Orchestrator, further work items it's for: one Orchestrator reads them all with ticket and proposes one plan, each step on one of them. " +
+        "This puts a card in front of the user; it runs only when they confirm.",
       inputSchema: {
         type: "object",
         properties: {
@@ -490,6 +499,13 @@ export function startTools(d: Deps): AssistantTool[] {
           repo: REPO_ARG,
           base: { ...BRANCH_ARG, description: "A new worktree with nothing to start from is cut from origin's branch of this name" },
           ticket: { type: "string", minLength: 1, maxLength: 20, pattern: "^#?\\d+$", description: "An Azure DevOps work item id, from list_tickets" },
+          more_tickets: {
+            type: "array",
+            items: { type: "string", minLength: 1, maxLength: 20, pattern: "^#?\\d+$" },
+            minItems: 1,
+            maxItems: ORCHESTRATOR_TICKETS_MAX - 1,
+            description: "An Orchestrator template only, with ticket: further Azure DevOps work item ids, from list_tickets, that its Orchestrator plans for along with ticket",
+          },
         },
         required: ["template", "area"],
         additionalProperties: false,
@@ -501,7 +517,7 @@ export function startTools(d: Deps): AssistantTool[] {
         return {
           line:
             `Lay out the template “${plainLine(t?.name ?? a.template, 60)}” (${plainLine(a.template, 60)}) in “${plainLine(a.area, 120)}”` +
-            `${a.repo ? `, its worktrees in ${plainLine(a.repo, 300)}` : ""}${a.base ? `, cut from origin/${plainLine(a.base, 200)}` : ""}${a.ticket ? `, for #${a.ticket.replace(/^#/, "")}` : ""}` +
+            `${a.repo ? `, its worktrees in ${plainLine(a.repo, 300)}` : ""}${a.base ? `, cut from origin/${plainLine(a.base, 200)}` : ""}${a.ticket ? `, for ${ticketList([a.ticket, ...(a.more_tickets ?? [])])}` : ""}` +
             `${t?.startFirst ? ", its first step started" : ""}`,
           warnings: room ? [roomNote(room, a.area, ctx.rule, true)] : [],
           ...(room && !ctx.rule ? { danger: true } : {}),
@@ -513,18 +529,29 @@ export function startTools(d: Deps): AssistantTool[] {
         const intoRoom = ruleRoomRefusal(ctx, a.area);
         if (intoRoom) return intoRoom;
         let ticket: AdoWorkItem | null = null;
+        const more: AdoWorkItem[] = [];
+        if (a.more_tickets?.length) {
+          if (a.ticket === undefined) return "more_tickets come after ticket: name the first one as ticket";
+          if (l.t.steps[0]?.role !== "orchestrator") return `“${plainLine(l.t.name, 60)}” doesn't start at an Orchestrator, so it takes one ticket: lay it out once for each`;
+        }
         if (a.ticket !== undefined) {
-          const id = a.ticket.replace(/^#/, "");
+          const ids = [a.ticket, ...(a.more_tickets ?? [])].map((t) => t.replace(/^#/, ""));
+          const twice = ids.find((id, i) => ids.indexOf(id) !== i);
+          if (twice) return `#${twice} is named twice`;
           let items: AdoWorkItem[];
           try {
             items = (await d.adoItems()).items;
           } catch (err) {
-            return `Azure DevOps couldn't be read for #${id}: ${why(err)}`;
+            return `Azure DevOps couldn't be read for ${ticketList(ids)}: ${why(err)}`;
           }
-          ticket = items.find((w) => String(w.id) === id) ?? null;
-          if (!ticket) return `#${id} isn't among the Azure DevOps work items the Dashboard lists`;
+          for (const id of ids) {
+            const w = items.find((x) => String(x.id) === id);
+            if (!w) return `#${id} isn't among the Azure DevOps work items the Dashboard lists`;
+            if (ticket) more.push(w);
+            else ticket = w;
+          }
         }
-        layOutSaw.set(a, { ticket });
+        layOutSaw.set(a, { ticket, more });
         const plan = layOutPlan(l.t, { room: !!roomJoined(d, a.area), ticket: !!ticket });
         if (plan.problems.length) return plan.problems[0];
         if (l.t.steps.some((s) => s.folder === "new") && !l.repo) return "Its steps work in worktrees of their own: name the repo";
@@ -534,6 +561,7 @@ export function startTools(d: Deps): AssistantTool[] {
         const l = layOutOf(a);
         if ("why" in l) return { title: `Lay out a template in “${plainLine(a.area, 120)}”`, detail: l.why, warnings: [] };
         const ticket = layOutSaw.get(a)?.ticket ?? null;
+        const more = layOutSaw.get(a)?.more ?? [];
         const room = roomJoined(d, a.area);
         layOutRoom.shown(a, room);
         const plan = layOutPlan(l.t, { room: !!room, ticket: !!ticket });
@@ -543,7 +571,8 @@ export function startTools(d: Deps): AssistantTool[] {
           title: `Lay out “${plainLine(l.t.name, 60)}” in “${plainLine(a.area, 120)}”`,
           detail:
             `Makes ${made.map((s) => `${plainLine(s.step.name, 60)} (${s.step.agent === "terminal" ? "a terminal" : AGENT_NAME[s.step.agent]})`).join(", ")} in “${plainLine(a.area, 120)}”` +
-            `${l.repo ? `, in ${l.repo.name}` : ""}${ticket ? `, for #${ticket.id} “${plainLine(ticket.title, 120)}”` : ""}. ` +
+            `${l.repo ? `, in ${l.repo.name}` : ""}${ticket ? `, for ${[ticket, ...more].map((w) => `#${w.id} “${plainLine(w.title, 120)}”`).join(", ")}` : ""}. ` +
+            (more.length ? `Its Orchestrator reads ${more.length === 1 ? "both tickets" : `all ${more.length + 1} tickets`} and proposes one plan, each step on one of them. ` : "") +
             (starts ? `${plainLine(starts.step.name, 60)} starts now; the rest wait for their handoffs.` : "Every step waits for its handoff."),
           warnings: [...(plan.forced ? [roomAsked(plan.forced)] : []), ...(room ? [joinsRoomWarning(room, a.area, made.length > 1)] : [])],
           ...(room ? { danger: true } : {}),
@@ -556,10 +585,12 @@ export function startTools(d: Deps): AssistantTool[] {
         if ("why" in l) throw new Error(l.why);
         refuseRuleRoom(ctx, a.area);
         const ticket = layOutSaw.get(a)?.ticket ?? null;
+        const more = layOutSaw.get(a)?.more ?? [];
         const r = await d.layOut({
           name: l.t.name,
           template: { startFirst: l.t.startFirst, steps: l.t.steps, wires: l.t.wires },
           ...(ticket ? { ticketId: String(ticket.id), ticketTitle: ticket.title, ...(l.t.steps[0]?.role === "orchestrator" ? { ticketDescription: ticket.description } : {}) } : {}),
+          ...(more.length ? { moreTickets: more.map((w) => ({ ticketId: String(w.id), ticketTitle: w.title, ticketDescription: w.description })) } : {}),
           repoPath: l.repo?.path ?? null,
           ...(l.repo && a.base ? { base: a.base } : {}),
           area: a.area,

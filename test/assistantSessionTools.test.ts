@@ -493,6 +493,39 @@ describe("lay_out_template", () => {
       { name: "Orchestrated", template: { startFirst: true, steps: orchestrated.steps, wires: orchestrated.wires }, ticketId: "5038", ticketTitle: "Filter orgs", ticketDescription: "Orgs list is slow", repoPath: "/code/atticus", area: "atticus" },
     ]);
   });
+
+  it("gives one Orchestrator several tickets, each looked up, and refuses them for any other template", async () => {
+    const mac = fakeMac();
+    const orchestrated = template({ id: "t-orch", name: "Orchestrated", steps: [{ key: "o", name: "Orchestrator", agent: "claude", folder: "new", prompt: "Plan {ticket}", role: "orchestrator" }, ...template().steps] });
+    mac.deps.templates = () => ({ templates: [template(), orchestrated], refused: [] });
+    const item = (id: number, title: string, description: string) => ({ id, title, state: "Active", type: "Bug", assignedTo: "Ryan", changed: "", description, url: "", tags: [] });
+    mac.deps.adoItems = async () => ({ me: "Ryan", total: 2, items: [item(5038, "Filter orgs", "Orgs list is slow"), item(5040, "Sort orgs", "By name")] });
+    const asked: unknown[] = [];
+    mac.deps.layOut = async (req) => (asked.push(req), { steps: [{ key: "o", id: "s1", title: "Orchestrator" }], wires: [], started: "s1", notes: [] });
+    const t = mac.tool("lay_out_template");
+    const a = { template: "t-orch", area: "atticus", repo: "atticus", ticket: "5038", more_tickets: ["#5040"] };
+    expect(await t.check!({ ...a, template: "t-build" })).toBe("“Build → Review” doesn't start at an Orchestrator, so it takes one ticket: lay it out once for each");
+    expect(await t.check!({ ...a, ticket: undefined })).toBe("more_tickets come after ticket: name the first one as ticket");
+    expect(await t.check!({ ...a, more_tickets: ["5038"] })).toBe("#5038 is named twice");
+    expect(await t.check!({ ...a, more_tickets: ["5041"] })).toBe("#5041 isn't among the Azure DevOps work items the Dashboard lists");
+    expect(await t.check!(a)).toBeNull();
+    expect((await t.card!(a)).detail).toBe(
+      "Makes Orchestrator (Claude) in “atticus”, in atticus, for #5038 “Filter orgs”, #5040 “Sort orgs”. Its Orchestrator reads both tickets and proposes one plan, each step on one of them. Orchestrator starts now; the rest wait for their handoffs."
+    );
+    await t.run(a);
+    expect(asked).toEqual([
+      {
+        name: "Orchestrated",
+        template: { startFirst: true, steps: orchestrated.steps, wires: orchestrated.wires },
+        ticketId: "5038",
+        ticketTitle: "Filter orgs",
+        ticketDescription: "Orgs list is slow",
+        moreTickets: [{ ticketId: "5040", ticketTitle: "Sort orgs", ticketDescription: "By name" }],
+        repoPath: "/code/atticus",
+        area: "atticus",
+      },
+    ]);
+  });
 });
 
 describe("start_from_ticket", () => {

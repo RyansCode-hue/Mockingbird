@@ -854,6 +854,20 @@ describe("what an agent is told of its wires as it launches", () => {
       [undefined, "5120"],
     ]);
   });
+  it("keeps an Orchestrator's several tickets, its own first, through a relaunch; refused for any other session", async () => {
+    const { m } = await manager();
+    const o = await m.create({ ...agentPane, role: "orchestrator", ticketId: "4182", tickets: ["4182", "#4190", "4190"], taskGroup: "4182" });
+    expect(o.tickets).toEqual(["4182", "4190"]);
+    m.kill(o.id, false);
+    expect((await m.relaunch(o.id))!.tickets).toEqual(["4182", "4190"]);
+    // on its own ticket alone it holds no list
+    expect((await m.create({ ...agentPane, role: "orchestrator", ticketId: "4182", tickets: ["4182"], taskGroup: "4182" })).tickets).toBeUndefined();
+    const before = ptys.length;
+    await expect(m.create({ ...agentPane, ticketId: "4182", tickets: ["4182", "4190"] })).rejects.toThrow("Only an Orchestrator works on several tickets");
+    await expect(m.create({ ...agentPane, role: "orchestrator", ticketId: "4182", tickets: ["4190", "4182"] })).rejects.toThrow("An Orchestrator's tickets start with its own ticket");
+    await expect(m.create({ ...agentPane, role: "orchestrator", ticketId: "4182", tickets: ["4182", "gifts"] })).rejects.toThrow("Its tickets aren't a list of work item ids");
+    expect(ptys.length).toBe(before);
+  });
   it("isn't asked for a terminal or a debrief", async () => {
     const { m } = await manager();
     const asked: string[] = [];
@@ -1575,6 +1589,18 @@ describe("a step not started yet (W8)", () => {
     expect((await first).id).toBe(b.id);
     expect(ptys.length).toBe(before + 1);
     expect(store.state.sessions.filter((s: any) => s.id === b.id)).toHaveLength(1);
+  });
+
+  it("leads its branch with its own ticket when the branch it follows is another ticket's, as an Orchestrator's several are", async () => {
+    const { m } = await manager();
+    const origin = makeRepo({ "a.txt": "1" }, "origin");
+    const clone = path.join(path.dirname(origin), "clone");
+    git(path.dirname(origin), "clone", "-q", origin, clone);
+    const a = await m.create({ repoPath: clone, useWorktree: true, branchName: "4182-donors", agent: "claude", title: "Orchestrator", taskGroup: "4182" });
+    const other = m.plan(step(a.id, { repoPath: clone, worktree: true, taskGroup: "4182", ticketId: "4190", title: "Gift coder" }));
+    expect((await m.startPlanned(other.id, a.id)).branch).toBe("4190-gift-coder");
+    const same = m.plan(step(a.id, { repoPath: clone, worktree: true, taskGroup: "4182", ticketId: "4182", title: "Coder" }));
+    expect((await m.startPlanned(same.id, a.id)).branch).toBe("4182-donors-coder");
   });
 
   it("says in its pane that the step before's uncommitted files aren't there, and takes a branch no other has", async () => {

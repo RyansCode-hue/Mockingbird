@@ -43,8 +43,9 @@ const u = (text: string): Change => ({ kind: "ui", text });
 export const CHANGELOG: Release[] = [
   {
     version: "1.8.2",
-    date: "2026-11-20",
+    date: "2026-11-23",
     items: [
+      u("One Orchestrator can take several tickets (+ Another ticket, or ⌘K): one plan, each workspace on one ticket"),
       f("Sessions in one group can message each other again: agents use Mockingbird's send_message, not Claude Code's"),
       f("Needs you: in focus, Go there and N switch focus to the item's workspace and bring its tab to the front"),
       u("Stack tabs can be dragged along their strip to reorder them, on the landscape and in focus"),

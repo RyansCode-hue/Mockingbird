@@ -124,7 +124,7 @@ export const TICKET_TOOL_SCHEMAS = [
   {
     name: TICKET_TOOL.proposePlan,
     description:
-      "An Orchestrator workspace's plan: the workspaces (steps) to do its ticket's work and the wires between them. Mockingbird holds it for the user and makes nothing: " +
+      "An Orchestrator workspace's plan: the workspaces (steps) to do its ticket's work (or its tickets', each step on one) and the wires between them. Mockingbird holds it for the user and makes nothing: " +
       "they read all of it, may change any of it, and lay it out with one click. It answers at once. Calling it again replaces a plan they haven't laid out. " +
       `At most ${PLAN_MAX.steps} steps and ${PLAN_MAX.wires} wires; each prompt at most ${PLAN_MAX.prompt} characters, and whole, since its agent sees nothing else as it starts; ` +
       `names one line of at most ${PLAN_MAX.name}. A wire's from and to are a step's key, "${ME}" (this Orchestrator) or the id of a workspace in this area (list_sessions). ` +
@@ -155,7 +155,13 @@ export const TICKET_TOOL_SCHEMAS = [
                   { type: "object", properties: { same_as: { type: "string" } }, required: ["same_as"], additionalProperties: false },
                 ],
               },
-              prompt: { type: "string", description: `What it's told as it starts, whole: at most ${PLAN_MAX.prompt} characters. {ticket} names the ticket; a terminal's command takes no {ticket}` },
+              ticket: {
+                type: "string",
+                description:
+                  "Which of your tickets it works on, by number: required when you were given several, when its {ticket}, stages and pull request are that ticket's; " +
+                  'left out on one ticket, and for a terminal. Only a step on your own (first) ticket works in your folder ("orchestrator")',
+              },
+              prompt: { type: "string", description: `What it's told as it starts, whole: at most ${PLAN_MAX.prompt} characters. {ticket} names its ticket; a terminal's command takes no {ticket}` },
             },
             required: ["key", "name", "agent", "folder", "prompt"],
             additionalProperties: false,

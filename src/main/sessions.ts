@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, type AgentQuit, type RelaunchChange, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, type AgentQuit, type RelaunchChange, isWorkItemId, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
 import { dirtyFileCount } from "./scm";
@@ -257,6 +257,19 @@ const titled = (s: Pick<SessionInfo, "title" | "ticketTitle">): string => `“${
 const lowerFirst = (s: string): string => (s.startsWith("“") ? s : s.charAt(0).toLowerCase() + s.slice(1));
 /** What a running session in a folder a step would share is doing, as Start now's confirm says it. */
 const STATUS_WORD: Record<Exclude<SessionStatus, "dead">, string> = { working: "working", waiting: "waiting for you", idle: "idle" };
+/**
+ * Request `req`'s several tickets (NewSessionRequest.tickets), read before anything is made: work item ids, its own
+ * ticket first, for an Orchestrator only. Null when it has none, or only its own.
+ */
+function orchestratorTickets(req: NewSessionRequest): string[] | null {
+  if (req.tickets === undefined) return null;
+  if (req.role !== "orchestrator") throw new Error("Only an Orchestrator works on several tickets");
+  if (!Array.isArray(req.tickets) || !req.tickets.every((t) => typeof t === "string" && isWorkItemId(ticketIdOf(t.trim())))) throw new Error("Its tickets aren't a list of work item ids");
+  const ids = [...new Set(req.tickets.map((t) => ticketIdOf(t.trim())))];
+  if (!req.ticketId || ids[0] !== ticketIdOf(req.ticketId.trim())) throw new Error("An Orchestrator's tickets start with its own ticket");
+  return ids.length > 1 ? ids : null;
+}
+
 /** Where a not-started step starts (SessionManager.stepPlace): create()'s say in it. */
 type StepWhere = Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "useWorktree" | "baseBranch" | "startAt">;
 /** A session a not-started step starts from (its folder, or its commit), and what of it: "in “Builder”'s folder". */
@@ -646,6 +659,7 @@ export class SessionManager {
     const roomGroup = req.taskGroup ?? req.ticketId ?? null;
     const modeFirst = req.shell && !req.shellResume ? null : permissionModeRefusal(req.shell ? req.shellResume!.agent : req.agent ?? "claude", req.permissionMode, { role: req.role, roomSandboxed: !req.debrief && !tasks && !!roomGroup && this.roomSandboxOff?.(roomGroup) === false });
     if (modeFirst) throw new Error(modeFirst);
+    const tickets = orchestratorTickets(req);
     if (tasks) await this.mayStartTasks(req);
     const settings = this.store.settings;
     let cwd: string;
@@ -841,6 +855,7 @@ export class SessionManager {
       debrief: req.debrief || undefined,
       shell: req.shell || undefined,
       role: req.role || undefined,
+      ...(tickets ? { tickets } : {}),
       model: req.model || undefined,
       effort: req.effort || undefined,
       permissionMode: req.permissionMode && req.permissionMode !== "default" ? req.permissionMode : undefined,
@@ -1352,6 +1367,7 @@ export class SessionManager {
           title: i.title,
           shell: true,
           role: i.role,
+          ...(i.tickets ? { tickets: i.tickets } : {}),
           model: i.model ?? undefined,
           effort: i.effort ?? undefined,
           permissionMode: i.permissionMode ?? undefined,
@@ -2027,6 +2043,9 @@ export class SessionManager {
       notes.push(`The branch it follows, ${JSON.stringify(head)}, can't lead a branch's name, so its own starts "step".`);
       head = null;
     }
+    // a step following another ticket's branch (an Orchestrator's several tickets) leads with its own ticket instead
+    const ticket = rec.ticketId ? ticketIdOf(rec.ticketId) : null;
+    if (head && ticket && isWorkItemId(ticket) && /^\d+-/.test(head) && !head.startsWith(`${ticket}-`)) head = ticket;
     const name = `${head ?? "step"}-${stepSlug(rec.title)}`;
     const bases = [...BASE_NAMES.dev, ...BASE_NAMES.main, ...(rec.planned?.base ? [rec.planned.base] : [])].map((b) => b.toLowerCase());
     if (bases.includes(name.toLowerCase())) throw new Error(`${titled(rec)} would start on ${name}, a base branch's name: rename the step`);
@@ -2130,6 +2149,7 @@ export class SessionManager {
       debrief: old.debrief,
       shell: old.shell,
       role: old.role,
+      ...(old.tickets ? { tickets: old.tickets } : {}),
       model: (change.model !== undefined ? change.model : old.model) ?? undefined,
       effort: (change.effort !== undefined ? change.effort : old.effort) ?? undefined,
       permissionMode: change.permissionMode ?? old.permissionMode ?? undefined,

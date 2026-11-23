@@ -50,6 +50,11 @@ export interface SessionInfo {
   branch: string | null;
   ticketId: string | null;
   ticketTitle: string | null;
+  /**
+   * An Orchestrator given several tickets at once (Pipeline from a ticket…, the Assistant): every one, `ticketId` first.
+   * Each step of its plan works on one of them. Absent for every other session, and for an Orchestrator on one ticket.
+   */
+  tickets?: string[];
   taskGroup: string | null; // groups multiple sessions under one task
   status: SessionStatus;
   createdAt: number;
@@ -425,6 +430,8 @@ export interface NewSessionRequest {
   permissionMode?: PermissionMode;
   /** A session with a standing job (SessionRole): `tasks` runs in ~/Helpdesk, on no repository. */
   role?: SessionRole;
+  /** An Orchestrator's several tickets (SessionInfo.tickets), `ticketId` first: refused for any other session. */
+  tickets?: string[];
 }
 
 /**
@@ -1178,6 +1185,13 @@ export function ticketOfSession(s: Partial<Pick<SessionInfo, "ticketId" | "taskG
   if (s.ticketId) return ticketIdOf(s.ticketId);
   const top = s.taskGroup ? topOfKey(s.taskGroup) : "";
   return top && isWorkItemId(top) ? top : null;
+}
+
+/** Every ticket a session works on: an Orchestrator's several (SessionInfo.tickets), else ticketOfSession's one, else none. */
+export function ticketsOfSession(s: Partial<Pick<SessionInfo, "ticketId" | "taskGroup" | "tickets">>): string[] {
+  if (s.tickets?.length) return [...new Set(s.tickets.map(ticketIdOf))];
+  const one = ticketOfSession(s);
+  return one ? [one] : [];
 }
 
 export function slugBranch(ticketId: string, ticketTitle: string): string {

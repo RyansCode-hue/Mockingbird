@@ -506,7 +506,15 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **1.8.2: group messages and tab order** — released in 1.8.2. Agents are
+- **1.8.2: several tickets per Orchestrator, group messages and tab order** —
+  released in 1.8.2. Pipeline from a ticket… (with an Orchestrator template)
+  takes more tickets with + Another ticket, and ⌘K's `lay_out_template` takes
+  `more_tickets`: one Orchestrator reads them all and proposes one plan, each
+  workspace on one ticket (its `{ticket}`, stages and pull request), every
+  ticket tracked at BA. Its folder is on the first ticket's branch, so a step
+  on another ticket works in a worktree of its own, whose branch is named
+  after that ticket; the plan dialog lists every ticket and lets you move a
+  step to another. Agents are
   told, when they connect, to reach other sessions with Mockingbird's
   `send_message` (Claude Code's own `SendMessage` was refused without the
   sender knowing), so sessions in one group message each other again; restart
