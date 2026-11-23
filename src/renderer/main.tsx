@@ -88,21 +88,22 @@ import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type Focus
 import { FocusPanel, isFocusTool, type FocusTool } from "./FocusPanel";
 import { useLandscape, useLandscapeMigration, type LandscapeSave } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
-import { viewOnlyPatch, ACCENT_NAMES, accentOf, areaAccents, automaticAccent, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, plannedIn, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planRelayoutPipeline, planTidy, planUnstackAll, pipelineOf, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { viewOnlyPatch, ACCENT_NAMES, accentOf, areaAccents, automaticAccent, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, plannedIn, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planRelayoutPipeline, shownPipeline, planTidy, planUnstackAll, pipelineOf, pipelinesIn, shortAreaName, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type PipelineStage, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { wiresInOrder } from "../shared/wires";
 import { wiresNow } from "./WireLayer";
 import { droppedNote, unmovedNote } from "./wiresModel";
 import { chainOf } from "./pipelineChain";
 import { REVEAL_WAIT_MS, newAreaPatch } from "./landscapeModel";
 import { PlanPicker, SaveTemplateDialog, TemplatePicker } from "./TemplatePicker";
-import { ModelChip, ModelPopover, StepEditDialog, setModelCall, specOf, type ModelWhere, type PipelineUi, type StepSpec } from "./PipelineEdit";
-import { insertDefaults } from "../shared/pipelineEdit";
+import { ModelChip, ModelPopover, StepEditDialog, setModelCall, specOf, type ModelWhere, type PipelineUi, type StepSpec, type WireEdits } from "./PipelineEdit";
+import { PipelinePanel, type StepWhere } from "./PipelinePanel";
+import { asOrchestrated, insertDefaults, pipelineTemplateOf } from "../shared/pipelineEdit";
 import { usePlans } from "./usePlans";
 import { toldLine } from "./ticketPipelineModel";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
 import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
-import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type Area, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
-import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { GAP, LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, boundsOf, isWorkspaceTool, own, type Area, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
+import { CLOSED_BUSY_WHY, actionOf, closedStatus, areaActions as areaModel, artifactsOf, createActions, ghostActions, ghostsActions, menuOf, needsActions, paneRow, pipelineActions, plannedActions, plannedWhere, takenOverWhy, workspaceActions, type Can, type GhostEnv, type GhostsEnv, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { NeedsYou, useNeedsYou } from "./NeedsYou";
 import { useWireNeeds } from "./NeedsWire";
 import { currentIndex, goCan, goDismisses, nextItem, selectionAfter, targetOf, typingAsksOf, type NeedsItem, type NeedsLast, type NeedsSel } from "./needsYouModel";
@@ -284,6 +285,8 @@ function App() {
   const [nextFrom, setNextFrom] = useState<SessionInfo | null>(null);
   // the landscape's selection besides the selected session: an area selected as a whole (the selection bar's)
   const [selArea, setSelArea] = useState<string | null>(null);
+  // not-started steps selected on the landscape (their session ids), one kind of selection as the others are
+  const [selSteps, setSelSteps] = useState<string[]>([]);
   // where the workspace a right-click's New workspace makes goes (resolveLayout); `took` names the session placed
   // there, and it's let go once that session's place is saved, or `until` passes without one
   const [placeHint, setPlaceHint] = useState<(PlaceHint & { created?: boolean; until?: number }) | null>(null);
@@ -297,7 +300,7 @@ function App() {
   const [startAsk, setStartAsk] = useState<{ step: SessionInfo; where: string } | null>(null);
   // pipeline templates (W9): the picker, opened in an area (or none), and Save as template's dialog
   const [templatePicker, setTemplatePicker] = useState<{ area: string | null } | null>(null);
-  const [templateSave, setTemplateSave] = useState<{ draft: TemplateDraft; leftOut: string[] } | null>(null);
+  const [templateSave, setTemplateSave] = useState<{ draft: TemplateDraft; leftOut: string[]; simplified?: string[] } | null>(null);
   // a held plan open in the picker, as it was when it opened: one replaced meanwhile stays shown, saying it's gone
   const [planFor, setPlanFor] = useState<{ view: PlanView; dismissing: boolean } | null>(null);
   // a lone pane's "+" promotes it to a workspace, but only once the new session
@@ -1033,6 +1036,10 @@ function App() {
   useEffect(() => {
     if (focused) setSelArea(null);
   }, [focused]);
+  // steps selected that have started or gone are let go
+  useEffect(() => {
+    if (selSteps.length && !selSteps.every((id) => planned.some((p) => p.id === id))) setSelSteps((ids) => ids.filter((id) => planned.some((p) => p.id === id)));
+  }, [planned]);
   // an area renamed or merged stays selected under its new key; one removed is let go, so no tool, key or Esc acts on
   // an area that isn't there
   useEffect(() => {
@@ -1514,10 +1521,11 @@ function App() {
   /** What `tool` opens on from the selection: the selected workspace, or for an area's tool the area selected as a whole. */
   const selScope = (tool: ToolKind): ToolScope | null => scopeOf(tool, selectedAny, selArea ?? undefined);
   /**
-   * Tool window `id` (a new one by default) opened as `tool` on `scope`, beside its workspace or in its area
-   * (planOpenWindow). With nothing to open it on, or no room for it in a locked area, it's docked instead, and said.
+   * Tool window `id` (a new one by default) opened as `tool` on `scope`, beside its workspace or in its area (beside
+   * `beside` there when there's room: planOpenWindow). With nothing to open it on, or no room for it in a locked area,
+   * it's docked instead, and said.
    */
-  const openWindow = (tool: ToolKind, scope: ToolScope | null, id?: string): boolean => {
+  const openWindow = (tool: ToolKind, scope: ToolScope | null, id?: string, beside: Rect | null = null): boolean => {
     const l = lsNow.current?.landscape;
     const layout = layoutNow.current;
     if (!l || !layout) return false;
@@ -1529,7 +1537,7 @@ function App() {
       return true;
     };
     if (!scope) return dock();
-    const plan = planOpenWindow(l, layout, wid, tool, scope, areaTitle);
+    const plan = planOpenWindow(l, layout, wid, tool, scope, areaTitle, beside);
     if ("refused" in plan) {
       // a docked window shows the selection's area: the selection goes into this one first, so it shows this one
       if ("area" in scope) {
@@ -1780,6 +1788,8 @@ function App() {
           />
         );
       }
+      case "pipeline":
+        return pipelinePanel(area, [s?.id, ...selectedIds], () => {});
       case "artifacts": {
         if (!area) return <div className="fp-note">Select a workspace in an area: the area's artifacts show here.</div>;
         const shelf = shelfFor(area);
@@ -1806,6 +1816,12 @@ function App() {
   const windowFor = (w: WindowView, seen: boolean) => {
     const s = w.win.session ? sessions.find((x) => x.id === w.win.session) ?? null : null;
     const area = w.area ?? (s && areaKeyOf(s) !== LOOSE_GROUP ? areaKeyOf(s) : null);
+    if (w.win.tool === "pipeline") {
+      // its member first, then the selection: the switcher makes another member its own
+      const prefer = [w.win.session, ...selectedIds];
+      const member = (id: string) => void lsChange({ tools: { [w.id]: { ...w.win, session: id } } }, "showing another of its pipelines");
+      return { scope: w.area ? shortAreaName(w.area, areaTitle(w.area)) : null, head: pipelineHead(w.area, prefer), body: pipelinePanel(w.area, prefer, member) };
+    }
     if (isWorkspaceTool(w.win.tool)) {
       if (!s) return { scope: "Its workspace closed", body: <div className="fp-note">The workspace this window was opened on has closed. Close the window, or dock it to follow the selected workspace.</div> };
       return { scope: [area && areaTitle(area), s.branch ?? titleOf(s)].filter(Boolean).join(" · "), body: toolBody(w.win.tool, s, area, w.id, w.rect, seen) };
@@ -1838,7 +1854,10 @@ function App() {
       <aside className="ls-dock" aria-label="Docked tools">
         {docked.map(({ id, win }) => {
           const ws = isWorkspaceTool(win.tool);
-          const scope = ws ? (focusedSession ? [selectedArea && areaTitle(selectedArea), focusedSession.branch ?? titleOf(focusedSession)].filter(Boolean).join(" · ") : null) : selectedArea ? areaTitle(selectedArea) : null;
+          // a docked Pipeline window shows the selection's, a selected step's area too
+          const pipeArea = win.tool === "pipeline" ? (selectedArea ?? ((g) => (g && g.area !== LOOSE_GROUP ? g.area : null))(landscapeLayout?.ghosts.find((x) => x.members.some((m) => selSteps.includes(m.id))))) : null;
+          const prefer = [dockPick[id], ...selectedIds];
+          const scope = ws ? (focusedSession ? [selectedArea && areaTitle(selectedArea), focusedSession.branch ?? titleOf(focusedSession)].filter(Boolean).join(" · ") : null) : win.tool === "pipeline" ? (pipeArea ? shortAreaName(pipeArea, areaTitle(pipeArea)) : null) : selectedArea ? areaTitle(selectedArea) : null;
           return (
             <ToolWindow
               key={id}
@@ -1854,8 +1873,9 @@ function App() {
                 openWindow(win.tool, to, id);
               }}
               onClose={() => closeWindow(id)}
+              head={win.tool === "pipeline" ? pipelineHead(pipeArea, prefer) : undefined}
             >
-              {toolBody(win.tool, ws ? focusedSession : null, ws ? null : selectedArea, id)}
+              {win.tool === "pipeline" ? pipelinePanel(pipeArea, prefer, (m) => setDockPick((d) => ({ ...d, [id]: m }))) : toolBody(win.tool, ws ? focusedSession : null, ws ? null : selectedArea, id)}
             </ToolWindow>
           );
         })}
@@ -2307,15 +2327,19 @@ function App() {
       lsSay(`${lead}${plan.note ?? "Laid its pipeline out"}`, back ? { label: "Undo", run: undo } : undefined);
     });
   };
-  /** Session `s`'s pipeline edits in its menu: Insert step after… and Re-lay out pipeline, while it's in a pipeline. */
+  /** The Edit dialog for a step inserted after `s`: with one handoff out of it, between it and that handoff's end. */
+  const insertAfter = (s: SessionInfo) => {
+    const outs = bookWires().filter((w) => w.type === "handoff" && w.from === s.id);
+    setStepDlg({ mode: "insert", after: s, before: outs.length === 1 ? (knownSession(outs[0].to) ?? null) : null });
+  };
+  /** Session `s`'s pipeline edits in its menu: Open pipeline, Insert step after… and Re-lay out pipeline, while it's in a pipeline. */
   const pipelineCans = (s: SessionInfo) => {
     const layout = layoutNow.current;
-    const wires = bookWires();
-    if (!layout || s.shell || !pipelineOf(layout, s.id, wires)) return undefined;
-    const outs = wires.filter((w) => w.type === "handoff" && w.from === s.id);
+    const pipe = layout && !s.shell ? pipelineOf(layout, s.id, bookWires()) : null;
+    if (!pipe) return undefined;
     return {
-      // with one handoff out it goes between, else after it alone
-      insertAfter: () => setStepDlg({ mode: "insert", after: s, before: outs.length === 1 ? (knownSession(outs[0].to) ?? null) : null }),
+      open: pipe.area === LOOSE_GROUP ? { no: "Its pipeline is in no area: move it into one to open its window" } : () => openPipeline(pipe.area, s.id),
+      insertAfter: () => insertAfter(s),
       relayout: () => relayoutPipeline(s.id),
     };
   };
@@ -2392,20 +2416,32 @@ function App() {
       r.unbridged.length ? `Not bridged: ${r.unbridged.join("; ")}.` : "",
       r.wiresLeft ? `Its wires stayed (${r.wiresLeft}): remove them from their right-click.` : "",
     ].filter(Boolean).join(" ");
-    lsSay(said, r.undo ? { label: "Undo", run: () => void unforget(r.undo!, back) } : undefined);
+    lsSay(said, r.undo ? { label: "Undo", run: () => void unforget([r.undo!], back) } : undefined);
   };
-  const unforget = async (token: string, back: LandscapePatch | null) => {
-    let r: IpcResult<{ notes: string[] } | { refused: string }>;
-    try {
-      r = await window.mb.unforgetSession(token);
-    } catch (err) {
-      r = { error: err instanceof Error ? err.message : String(err) };
+  /** Forgets undone (sessions:unforget), the last first, then their places (`back`); what couldn't be put back is said. */
+  const unforget = async (tokens: readonly string[], back: LandscapePatch | null) => {
+    const notes: string[] = [];
+    let putBack = 0;
+    for (const token of [...tokens].reverse()) {
+      let r: IpcResult<{ notes: string[] } | { refused: string }>;
+      try {
+        r = await window.mb.unforgetSession(token);
+      } catch (err) {
+        r = { error: err instanceof Error ? err.message : String(err) };
+      }
+      if (isErr(r)) notes.push(`Couldn't put ${tokens.length === 1 ? "it" : "one"} back: ${r.error}`);
+      else if ("refused" in r) notes.push(r.refused);
+      else {
+        putBack++;
+        notes.push(...r.notes);
+      }
     }
-    if (isErr(r)) return lsSay(`Couldn't put it back: ${r.error}`);
-    if ("refused" in r) return lsSay(r.refused);
-    if (back) await lsChange(back, "putting its place back");
+    // the places of any not put back are passed over, as places of sessions that aren't there are
+    if (back && putBack) await lsChange(back, "putting its place back");
     await refresh();
-    lsSay(r.notes.length ? `Put it back. ${r.notes.join(" ")}` : "Put it back, with its wires");
+    if (!putBack) return lsSay(notes.join(" "));
+    const what = tokens.length === 1 ? "it" : putBack === tokens.length ? "them" : `${putBack} of ${tokens.length}`;
+    lsSay(notes.length ? `Put ${what} back. ${notes.join(" ")}` : `Put ${what} back, with ${tokens.length === 1 ? "its" : "their"} wires`);
   };
   /** Forget a not-started step or one ghost through the bridging path (sessions:forget): its place goes too, and Undo brings both back. */
   const forgetStep = (s: SessionInfo) =>
@@ -2425,6 +2461,191 @@ function App() {
       await refresh();
       sayForgotten(s, r, patch && l ? undoOf(l, patch) : null);
     });
+  /**
+   * Several not-started steps forgotten through the bridging path (sessions:forget), one after another, their places
+   * too: said once, with what hands off now and one Undo that puts every one back.
+   */
+  const forgetSteps = (list: readonly SessionInfo[]) =>
+    whileClosedBusy(
+      list.map((s) => s.id),
+      `forgetting ${list.length} steps`,
+      async () => {
+        const l = lsNow.current?.landscape;
+        const layout = layoutNow.current;
+        const tokens: string[] = [];
+        const gone: SessionInfo[] = [];
+        const bridged: string[] = [];
+        const failed: string[] = [];
+        for (const s of list) {
+          forgettingNow.current.add(s.id);
+          let r: IpcResult<Forgotten>;
+          try {
+            r = await window.mb.forgetSession(s.id);
+          } catch (err) {
+            r = { error: err instanceof Error ? err.message : String(err) };
+          } finally {
+            forgettingNow.current.delete(s.id);
+          }
+          if (isErr(r)) {
+            failed.push(`${titleOf(s)}: ${r.error}`);
+            continue;
+          }
+          gone.push(s);
+          if (r.undo) tokens.push(r.undo);
+          bridged.push(...r.bridged.map((b) => `${((x) => (x ? titleOf(x) : b.from))(knownSession(b.from))} → ${((x) => (x ? titleOf(x) : b.to))(knownSession(b.to))}`));
+        }
+        const patch = l && layout && gone.length ? forgetPatch(l, layout, gone.map((s) => s.id)) : null;
+        if (patch) await lsChange(patch, `letting ${gone.length} steps' places go`);
+        await refresh();
+        if (failed.length) console.error(`[mockingbird] forgetting steps:`, failed);
+        const said = [
+          gone.length ? `Forgot ${gone.map(titleOf).join(", ")}.` : "",
+          bridged.length ? `${bridged.join(", ")} ${bridged.length === 1 ? "hands" : "hand"} off now.` : "",
+          failed.length ? `Couldn't forget ${failed.join("; ")}.` : "",
+        ].filter(Boolean).join(" ");
+        lsSay(said, tokens.length ? { label: "Undo", run: () => void unforget(tokens, patch && l ? undoOf(l, patch) : null) } : undefined);
+      }
+    );
+  /** Several selected steps' actions (their bar and right-click): Re-lay out pipeline, while they're all in one, and Forget. */
+  const stepsActions = (steps: SessionInfo[]): ModelAction[] => {
+    const layout = layoutNow.current;
+    const wires = bookWires();
+    const pipes = new Set(steps.map((s) => (layout ? pipelineOf(layout, s.id, wires)?.tiles[0].key : undefined)));
+    const one = pipes.size === 1 && !![...pipes][0];
+    return [
+      ...pipelineActions(one ? { relayout: () => relayoutPipeline(steps[0].id) } : undefined),
+      {
+        section: "end",
+        key: "forget",
+        label: "Forget",
+        menuLabel: `Forget these ${steps.length}`,
+        danger: true,
+        title: steps.some((s) => closedBusy.has(s.id)) ? "One of them is being started or forgotten already" : "Let them go, with their places and wires: the steps either side of each hand off to each other — Undo brings them back",
+        disabled: steps.some((s) => closedBusy.has(s.id)),
+        onPick: () => void forgetSteps(steps),
+      },
+    ];
+  };
+
+  // ---- a pipeline's window (PipelinePanel.tsx): its steps stage by stage, from an area's ⋯, a card's menu or ⌘K ----
+  /** The landscape's wire edits, for the Pipeline window's pickers (Landscape's wireEditRef). */
+  const wireEditRef = useRef<WireEdits | null>(null);
+  /** A docked Pipeline window's switcher pick, by window id: a docked window has no member of its own. */
+  const [dockPick, setDockPick] = useState<Record<string, string>>({});
+  /** The sessions selected on the landscape: the selected workspace's, and the steps. */
+  const selectedIds: ReadonlySet<string> = new Set([...(focused ? [focused] : []), ...selSteps]);
+  const stepWhere = (s: SessionInfo): StepWhere => (s.planned ? "planned" : isRemote(s) ? "theirs" : sessions.some((x) => x.id === s.id) ? "running" : "closed");
+  /** Session `s`'s card selected: a not-started step among the steps, a running workspace as the selected one; a closed one isn't selected. */
+  const selectCard = (s: SessionInfo) => {
+    const where = stepWhere(s);
+    if (where === "planned") {
+      setFocused(null);
+      setSelArea(null);
+      setSelSteps([s.id]);
+    } else if (where !== "closed") {
+      setSelSteps([]);
+      setFocused(s.id);
+    }
+  };
+  /**
+   * The Pipeline window on area `area`, on the pipeline `member` is in (else the selected card's, else its first): one
+   * placed there already is put on it; a docked one shows the selection's, so `member` is selected; else one is placed
+   * beside the pipeline's cards (planOpenWindow), docked when the area has no room for it.
+   */
+  const openPipeline = (area: string, member: string | null) => {
+    const l = lsNow.current?.landscape;
+    const layout = layoutNow.current;
+    if (!l || !layout) return;
+    setTab("sessions");
+    const wires = bookWires();
+    if (!pipelinesIn(layout, area, wires).length) return lsSay(`No wires join ${areaTitle(area)}'s workspaces into a pipeline yet`);
+    const placed = Object.entries(l.tools).find(([, w]) => w.tool === "pipeline" && !w.docked && w.area === area);
+    if (placed) {
+      if (member && placed[1].session !== member) void lsChange({ tools: { [placed[0]]: { ...placed[1], session: member } } }, "showing its pipeline");
+      return;
+    }
+    if (Object.values(l.tools).some((w) => w.tool === "pipeline" && w.docked)) {
+      const s = member ? knownSession(member) : undefined;
+      if (s) selectCard(s);
+      else if (selectedArea !== area) selectArea(area);
+      return;
+    }
+    const pipe = member ? pipelineOf(layout, member, wires) : pipelinesIn(layout, area, wires)[0];
+    openWindow("pipeline", { area, ...(member ? { member } : {}) }, undefined, pipe ? boundsOf(pipe.tiles.map((t) => t.rect)) : null);
+  };
+  /** A pipeline's row clicked: its card selected and brought into view (a closed one's isn't: it can't be selected). */
+  const revealCard = (s: SessionInfo) => {
+    selectCard(s);
+    if (stepWhere(s) !== "closed") revealWorkspace(s.id);
+  };
+  /** A not-started step's prompt saved from its row (steps:edit); settles with why not, or null. */
+  const savePrompt = async (s: SessionInfo, prompt: string): Promise<string | null> => {
+    let r: IpcResult<SessionInfo>;
+    try {
+      r = await window.mb.editStep(s.id, { prompt });
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) return r.error;
+    await refresh();
+    lsSay(`Saved ${titleOf(r)}'s prompt`);
+    return null;
+  };
+  /** Remove step: a not-started or closed one through the bridging path (forgetStep); a running one stopped and forgotten (forgetSession), with Undo. */
+  const removeStep = (s: SessionInfo) => {
+    if (stepWhere(s) !== "running") return void forgetStep(s);
+    void forgetSession(s).then((r) => isErr(r as IpcResult<unknown>) && lsSay(`Couldn't remove ${titleOf(s)}: ${(r as { error: string }).error}`));
+  };
+  /**
+   * Save as template from a pipeline's window: its stages as nearly as a template holds them (pipelineTemplateOf),
+   * drafted by main (what it keeps, redacted) and shown whole, what was simplified said first.
+   */
+  const savePipelineTemplate = (stages: PipelineStage[]) => {
+    const plan = pipelineTemplateOf(stages);
+    void window.mb.templatesDraft(plan.ids).then(
+      (r: IpcResult<TemplateDraft>) => (isErr(r) ? lsSay(`Couldn't save it as a template: ${r.error}`) : setTemplateSave({ draft: plan.orchestrator ? { ...r, body: asOrchestrated(r.body) } : r, leftOut: [], simplified: plan.simplified })),
+      (err: unknown) => lsSay(`Couldn't save it as a template: ${err instanceof Error ? err.message : String(err)}`)
+    );
+  };
+  /** A Pipeline window's view on `area`, showing the pipeline of the first of `prefer` in one; `onMember` its switcher. */
+  const pipelinePanel = (area: string | null, prefer: readonly (string | null | undefined)[], onMember: (id: string) => void) => (
+    <PipelinePanel
+      layout={landscapeLayout ?? { tiles: [], ghosts: [] }}
+      area={area}
+      prefer={prefer}
+      selected={selectedIds}
+      onMember={onMember}
+      name={(id) => ((x) => (x ? titleOf(x) : id))(knownSession(id))}
+      whereOf={stepWhere}
+      chip={pipelineUi.chip}
+      edits={() => wireEditRef.current}
+      busy={(id) => closedBusy.has(id)}
+      onReveal={revealCard}
+      onPrompt={savePrompt}
+      onStart={(s) => void askStartStep(s)}
+      onRemove={removeStep}
+      onAddStep={insertAfter}
+      onSaveTemplate={savePipelineTemplate}
+    />
+  );
+  /** A Pipeline window's Re-lay out, in its head: the pipeline it shows (the first of `prefer`'s), as its cards' menus lay it out. */
+  const pipelineHead = (area: string | null, prefer: readonly (string | null | undefined)[]) =>
+    area ? (
+      <button
+        type="button"
+        className="ls-win-btn ls-win-txt"
+        data-act="relayout"
+        data-tip="Its pipeline in stage columns along its wires: the rest of the area stays put unless it's in the way — Undo puts it back"
+        onClick={() => {
+          const layout = layoutNow.current;
+          const shown = layout ? shownPipeline(layout, area, bookWires(), prefer).shown : null;
+          if (!shown) return lsSay(`No wires join ${areaTitle(area)}'s workspaces into a pipeline yet`);
+          relayoutPipeline(shown.key);
+        }}
+      >
+        Re-lay out
+      </button>
+    ) : null;
   /**
    * Session `s`'s action `key` as its model has it, for what offers it outside the model's menus (the context chip,
    * the Changes tool, ⌘K), so none of them can run what the menus refuse.
@@ -2529,6 +2750,7 @@ function App() {
       ghosts: landscapeLayout ? ghostRows(key, title) : null,
       artifacts: () => showTool("artifacts", null, key),
       chat: () => showTool("chat", null, key),
+      pipeline: landscapeLayout && pipelinesIn(landscapeLayout, key, bookWires()).length ? () => openPipeline(key, null) : undefined,
       board: () => room && setBoardDlg(room.id),
       share: () => shareDialog(key, title),
       newSession: () => newSessionIn(key),
@@ -2719,6 +2941,22 @@ function App() {
     }
     setTemplateSave(null);
     lsSay(`Saved the template “${name}”: Pipeline from a ticket… lays it out`);
+    return null;
+  };
+  /** Replace, in Save as template: saved template `id` written over (templates:update); settles with why not, or null. */
+  const replaceTemplateNow = async (id: string, name: string, body: TemplateBody): Promise<string | null> => {
+    let r: IpcResult<TemplateList>;
+    try {
+      r = await window.mb.templatesUpdate(id, name, body);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) {
+      console.warn(`[mockingbird] replacing the template ${name}: ${r.error}`);
+      return r.error;
+    }
+    setTemplateSave(null);
+    lsSay(`Replaced the template “${name}”: Pipeline from a ticket… lays it out`);
     return null;
   };
   const newAt = (area: string | null, at: { x: number; y: number }, seed: { launch?: LaunchKind; ticket?: boolean; mode?: "new" | "import" }) => {
@@ -3029,6 +3267,10 @@ function App() {
         <Landscape
           connectRef={connectRef}
           wireActsRef={wireNeeds.actsRef}
+          wireEditRef={wireEditRef}
+          selectedSteps={selSteps}
+          onSelectSteps={setSelSteps}
+          stepsActions={stepsActions}
           resumeOk={costGate.resume}
           rooms={teamRooms}
           layout={landscapeLayout}
@@ -3989,6 +4231,10 @@ function App() {
             { label: "Shortcuts — every key on the landscape", kbd: "?", run: () => setKeysOpen(true) },
             // the landscape: each area to fly to
             ...(landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => viewOnlyPick(() => goToArea(a.key)) })),
+            // each area's pipeline window, on the selected card's pipeline when it's in one there
+            ...(landscapeLayout?.areas ?? [])
+              .filter((a) => pipelinesIn(landscapeLayout!, a.key, bookWires()).length)
+              .map((a) => ({ label: `Pipeline · ${shortAreaName(a.key, areaTitle(a.key))} — its steps, models and handoffs, stage by stage`, run: () => openPipeline(a.key, null) })),
             { label: treeShown ? "Hide the area tree" : "Show the area tree", kbd: "⌘\\", run: () => (treeShown ? hideTree() : showView("sessions")) },
             // the landscape: every ghost at once (Reopen all), while there are any
             ...ghostsActions(ghostRows(null, "the landscape"))
@@ -4119,7 +4365,7 @@ function App() {
         />
       )}
       {templateSave && (
-        <SaveTemplateDialog draft={templateSave.draft} leftOut={templateSave.leftOut} onSave={saveTemplateNow} home={landscapeHome} onClose={() => setTemplateSave(null)} />
+        <SaveTemplateDialog draft={templateSave.draft} leftOut={templateSave.leftOut} simplified={templateSave.simplified} onSave={saveTemplateNow} onReplace={replaceTemplateNow} home={landscapeHome} onClose={() => setTemplateSave(null)} />
       )}
       {startAsk && (
         <StartStepDialog

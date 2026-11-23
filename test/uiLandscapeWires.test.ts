@@ -407,7 +407,7 @@ describe.skipIf(!local)("making wires", () => {
     const m = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=menus", "1600x1000", 120_000)) as unknown as Menus;
     // Shape has a handoff out: Finish step… (W5) sits between Connect… and Save as template… (W9), and its pipeline's
     // Insert step after… and Re-lay out pipeline follow
-    expect(m.wsMenu.slice(-9)).toEqual(["-", "# Wires", "Connect…", "Finish step…", "Save as template…", "Insert step after…", "Re-lay out pipeline", "-", "Close…"]);
+    expect(m.wsMenu.slice(-10)).toEqual(["-", "# Wires", "Connect…", "Finish step…", "Save as template…", "Open pipeline", "Insert step after…", "Re-lay out pipeline", "-", "Close…"]);
     // its own area first, each workspace a wire can't reach off with the reason
     expect(m.connect.slice(0, 9)).toEqual(["# Connect “Shape donor export” to", "# #5120", "Builder", "Reviewer", "Dev server", "Tester", "Fixtures", "Docs", "Spike: streaming (closed)"]);
     expect(m.connect).toContain(`off Donor export: CSV writer — ${TEAMMATE}`);
@@ -842,7 +842,7 @@ describe.skipIf(!local)("Add next step", () => {
     expect(l.doubled).toEqual(shown);
     expect(l.entered).toEqual(shown);
     // its right-click is its card's
-    expect(l.menu).toEqual(["# Session", "Edit…", "-", "# Wires", "Connect…", "Insert step after…", "Re-lay out pipeline", "-", "Start now…", "Forget it"]);
+    expect(l.menu).toEqual(["# Session", "Edit…", "-", "# Wires", "Connect…", "Open pipeline", "Insert step after…", "Re-lay out pipeline", "-", "Start now…", "Forget it"]);
     // ⌘K lists it apart from the sessions to jump to, with only Ask Assistant after it; Enter on it shows its card, the same
     expect(l.palette.groups.slice(-3)).toEqual(["# Steps not started: show the card", "Tester · not started", "Ask Assistant · Tester"]);
     expect(l.palette.groups.filter((g) => g.startsWith("Tester"))).toEqual(["Tester · not started"]);

@@ -9,7 +9,7 @@ import { useChatUnread } from "./team/RoomChat";
 import { titleOf } from "./appModel";
 import { enter, motion } from "./motion";
 import { OVERLAYS } from "./keys";
-import { BAR_MARGIN, areaBarItems, barAnchorFor, barPlace, escapeClears, foldBar, workspaceBarItems, type BarItem, type BarTarget } from "./selectionBarModel";
+import { BAR_MARGIN, areaBarItems, barAnchorFor, barPlace, escapeClears, foldBar, stepBarItems, stepsBarItems, workspaceBarItems, type BarItem, type BarTarget } from "./selectionBarModel";
 import { menuOf, type ModelAction } from "./workspaceActions";
 import { AccentDot } from "./AreaColour";
 
@@ -254,6 +254,44 @@ export function WorkspaceBar({ session, actions, runs, onFocus, place }: { sessi
         </span>
       }
       items={workspaceBarItems(actions, { onFocus, changes, runs })}
+      more={() => menuOf(actions)}
+      place={place}
+    />
+  );
+}
+
+/** A not-started step's bar: its name, Edit…, its model chip, Start now, Insert step after…, Re-lay out pipeline, Forget and ⋯. */
+export function StepBar({ session, actions, chip, place }: { session: SessionInfo; actions: readonly ModelAction[]; chip: ReactNode | null; place: BarPlace }) {
+  return (
+    <SelectionBar
+      label={`${titleOf(session)}: actions`}
+      idText={`${titleOf(session)} not started`}
+      identity={
+        <span className="ls-sb-who" title={`${titleOf(session)}, not started`}>
+          <span className="dot pp-planned" />
+          <span className="ls-sb-name plain">{titleOf(session)}</span>
+          <span className="ls-sb-status">not started</span>
+        </span>
+      }
+      items={stepBarItems(actions, chip)}
+      more={() => menuOf(actions)}
+      place={place}
+    />
+  );
+}
+
+/** Several not-started steps' bar: how many, Re-lay out pipeline (while they're in one) and Forget. */
+export function StepsBar({ count, actions, place }: { count: number; actions: readonly ModelAction[]; place: BarPlace }) {
+  return (
+    <SelectionBar
+      label="Selected steps"
+      idText={`${count} steps selected`}
+      identity={
+        <span className="ls-sb-who">
+          <span className="ls-sb-name plain">{count} steps selected</span>
+        </span>
+      }
+      items={stepsBarItems(actions)}
       more={() => menuOf(actions)}
       place={place}
     />

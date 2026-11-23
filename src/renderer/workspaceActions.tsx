@@ -1,7 +1,7 @@
 import { AGENT_NAME, otherAgent, ticketIdOf, type MessageMode, type MissingFolder, type SessionInfo } from "../shared/types";
 import { LOOSE_GROUP, SIZE_PRESETS, areaKeyOf, type SizePreset } from "../shared/landscape";
 import { menuHeading, tidyMenu, type Action, type MenuEntry } from "./ContextMenu";
-import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, NoteIcon, PanelRightIcon, PencilIcon, PlusIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
+import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, NoteIcon, PanelRightIcon, PencilIcon, PipelineIcon, PlusIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
 import { firstName } from "./team/connectedModel";
 
 /**
@@ -52,7 +52,7 @@ export type Answer = (() => Promise<string | null>) | { no: string };
 export type WorkspaceTool = "files" | "changes" | "search" | "run";
 
 /** Shortcuts the rail's tools open with (main.tsx's keyboard layer). */
-export const TOOL_KEYS: Record<WorkspaceTool | "artifacts" | "chat", string | undefined> = { files: "⇧⌘E", changes: "⌃⇧G", search: "⇧⌘F", run: "⇧⌘D", artifacts: undefined, chat: undefined };
+export const TOOL_KEYS: Record<WorkspaceTool | "artifacts" | "chat" | "pipeline", string | undefined> = { files: "⇧⌘E", changes: "⌃⇧G", search: "⇧⌘F", run: "⇧⌘D", artifacts: undefined, chat: undefined, pipeline: undefined };
 
 /** What a workspace's actions need to know about it, and do. */
 export interface WorkspaceEnv {
@@ -112,11 +112,14 @@ export interface PipelineCans {
   insertAfter?: Can;
   /** Re-lay out pipeline: its pipeline's workspaces and steps in stage columns, the rest of its area left where it is. */
   relayout?: Can;
+  /** Open pipeline: its pipeline's panel (PipelinePanel.tsx), on it. */
+  open?: Can;
 }
 
 /** A pipeline card's edits, in its menu's wires section. */
 export function pipelineActions(p: PipelineCans | undefined): ModelAction[] {
   return [
+    ...(p?.open ? [{ section: "wires" as const, key: "openPipeline", label: "Pipeline", menuLabel: "Open pipeline", icon: <PipelineIcon />, title: "Its pipeline's steps, models and handoffs, stage by stage, in a window", ...can(p.open) }] : []),
     ...(p?.insertAfter ? [{ section: "wires" as const, key: "insertAfter", label: "Insert step", menuLabel: "Insert step after…", title: "A step that waits after this one, handed off to before what came next", ...can(p.insertAfter) }] : []),
     ...(p?.relayout ? [{ section: "wires" as const, key: "relayout", label: "Re-lay out", menuLabel: "Re-lay out pipeline", title: "Its pipeline in stage columns along its wires, from where it starts: the rest of the area stays put unless it's in the way — Undo puts it back", ...can(p.relayout) }] : []),
   ];
@@ -502,6 +505,8 @@ export interface AreaEnv {
   ghosts: GhostsEnv | null;
   artifacts: () => void;
   chat: () => void;
+  /** Pipeline…: its pipeline's panel; absent while no wires join its workspaces into one. */
+  pipeline?: () => void;
   board: () => void;
   share: () => void;
   newSession: () => void;
@@ -546,6 +551,7 @@ export function areaActions(env: AreaEnv): ModelAction[] {
   if (env.ghosts) out.push(...ghostsActions(env.ghosts));
   out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: env.room ? "The room's artifacts" : "The area's artifacts, on this Mac", onPick: env.artifacts });
   if (env.room) out.push({ section: "tools", key: "tool:chat", label: "Chat", icon: env.chatIcon, title: "The room's chat", onPick: env.chat });
+  if (env.pipeline) out.push({ section: "tools", key: "tool:pipeline", label: "Pipeline", menuLabel: "Pipeline…", icon: <PipelineIcon />, title: "Its pipeline's steps, models and handoffs, stage by stage", onPick: env.pipeline });
   for (const m of messageModes(env.messages.defaultSend)) {
     const on = (env.messages.mode ?? "") === m.value;
     out.push({ section: "messages", key: `msg:${m.value || "default"}`, label: m.label, title: m.title, icon: on ? "✓" : undefined, pressed: on, onPick: () => env.messages.set(m.value) });

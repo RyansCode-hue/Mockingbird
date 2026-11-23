@@ -40,6 +40,8 @@ const api = {
   templatesDraft: (ids: string[]): Promise<IpcResult<TemplateDraft>> => ipcRenderer.invoke("templates:draft", ids),
   /** Save template `name`, refused while its text holds a secret-looking value or a home folder's path. */
   templatesSave: (name: string, body: TemplateBody): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:save", name, body),
+  /** Replace saved template `id` with `name`, `body`, under its id, checked as a save is. */
+  templatesUpdate: (id: string, name: string, body: TemplateBody): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:update", id, name, body),
   /** Remove template `id`, one this version can't read too; the list as it is then. */
   templatesRemove: (id: string): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:remove", id),
   /** Saved templates that aren't a list, set aside: a copy kept at `file`, and the list started empty. */

@@ -17,7 +17,7 @@ import { AGENT_NAME, DEFAULT_SETTINGS, HELPDESK_GROUP, asQuitAgent, HELPDESK_PRE
 import { tildePath } from "../shared/paths";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, followsBottom, measuredCell } from "../renderer/cachedTerm";
-import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
+import { PEEK_HOVER_MS, TOOL_WIDTH } from "../renderer/landscapeModel";
 import type { SuggestProblem } from "../shared/suggestions";
 import { changedTags, parseCardRules, type TagChange } from "../shared/cardRules";
 import type { MigrationsView } from "../shared/team/migrations";
@@ -53,6 +53,7 @@ import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAske
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
 import { boardPlan, councilPlan, laidPipeline, pipelinePlan, runPlanAudit, ticketsPlan } from "./planAudit";
 import { runPipelineAudit } from "./pipelineAudit";
+import { runPanelAudit } from "./panelAudit";
 import { WIRE_AREA, acrossBook, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { runColourAudit } from "./colourAudit";
@@ -1805,8 +1806,9 @@ const api: Record<string, (...a: any[]) => any> = {
   // record held for sessions:unforget
   forgetSession: async (id: string) => {
     const record = [...sessions, ...previous, ...planned].find((x) => x.id === id) ?? null;
-    await api.killSession(id, true);
+    // its wires as they were, before the kill drops them: what's bridged, and what Undo puts back
     const gone = withoutSession(wireBook, id);
+    await api.killSession(id, true);
     const ends = wireEnds();
     const bridges = bridgesOver(id, gone.dropped, gone.book.links, ends, createdAtAfter(gone.book.links, Date.now()));
     const links = { ...gone.book.links };
@@ -3527,6 +3529,9 @@ if (params.has("assistantToolAudit")) runAssistantToolAudit({ emit, calls, waitF
 if (params.has("landscapePlanAudit")) runPlanAudit({ calls, waitFor }, params.get("landscapePlanAudit") || "plan");
 // ?landscapePipelineAudit=<part> (with ?lsWires&lsPlan=pipeline&lsLaid&lsModels) edits the laid-out pipeline on the canvas (pipelineAudit.ts) for test/uiPipelineEdit.test.ts
 if (params.has("landscapePipelineAudit")) runPipelineAudit({ calls, waitFor }, params.get("landscapePipelineAudit") || "chip");
+// ?landscapePanelAudit=<part> (with ?lsWires&lsPlan=pipeline&lsLaid&lsModels, and focusTool=pipeline for the window's own parts)
+// works the Pipeline window, Save as template from it, a wire's end dragged and steps selected (panelAudit.ts) for test/uiPipelinePanel.test.ts
+if (params.has("landscapePanelAudit")) runPanelAudit({ calls, waitFor }, params.get("landscapePanelAudit") || "open");
 // S8: ?landscapeSwitchAudit=stack|locked|palette|notes|place works what the grid offered on the landscape (switchAudit.ts) for test/uiLandscapeSwitch.test.ts
 if (params.has("landscapeSwitchAudit")) {
   const newSession = (over: Partial<SessionInfo>) => {
@@ -3566,9 +3571,10 @@ if (lsFocus) {
   });
 }
 // ?focusTool=explorer|scm|run|assistant (with ?lsFocus): that rail icon pressed once focus is up, docking its tool (or
-// the Assistant's tab) beside the focused workspace
+// the Assistant's tab) beside the focused workspace; =pipeline (with ?lsPlan=pipeline&lsLaid): its Pipeline window,
+// placed beside the laid-out pipeline (laidPlan's fixture)
 const focusTool = params.get("focusTool");
-if (focusTool) waitFor(".ls-focus", () => setTimeout(() => click(`.activitybar .ab-btn[data-view="${CSS.escape(focusTool)}"]`), 200));
+if (focusTool && focusTool !== "pipeline") waitFor(".ls-focus", () => setTimeout(() => click(`.activitybar .ab-btn[data-view="${CSS.escape(focusTool)}"]`), 200));
 // ?lsHover=<id>: the pointer over that session's terminal, so a screenshot away from 100% shows the hint
 const lsHover = params.get("lsHover");
 if (lsHover) waitFor(`.ls-world [data-front="${CSS.escape(lsHover)}"] .term-holder`, (el) => el.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })));
@@ -9518,6 +9524,22 @@ Object.assign(api, {
     }
     return readTemplates(tplStore);
   },
+  // main's templates:update (updatedTemplate): Replace, under its id and in its place, its name free of every other's
+  templatesUpdate: async (id: string, name: string, body: unknown) => {
+    const n = String(name ?? "").trim();
+    if (!n) return err("Name the template.");
+    const read = readTemplates(tplStore);
+    if (read.broken) return err(read.broken);
+    if (!read.templates.some((t) => t.template.id === id)) return err("That template isn't saved any more: save this one as a new one.");
+    if (read.templates.some((t) => t.template.id !== id && t.template.name.toLowerCase() === n.toLowerCase())) return err(`There's another template called “${n}”: name this one another way.`);
+    try {
+      const template = { id, name: n, savedAt: Date.now(), ...parseTemplateBody(body) };
+      tplStore = (tplStore as unknown[]).map((v) => (v && typeof v === "object" && (v as { id?: unknown }).id === id ? template : v));
+    } catch (e) {
+      return err(`It can't be saved: ${tplWhy(e)}`);
+    }
+    return readTemplates(tplStore);
+  },
   templatesRemove: async (id: string) => {
     const read = readTemplates(tplStore);
     if (read.broken) return err(read.broken);
@@ -9688,8 +9710,21 @@ if (laidPlan) {
   landscape.areas[planOrch!.orchestrator.taskGroup!] = area;
   landscape.workspaces[planOrch!.orchestrator.id] = cell(1, 1);
   laidPlan.steps.forEach((st, i) => (landscape.workspaces[st.id] = cell([0, 2, 2, 0][i] ?? 0, [0, 0, 1, 1][i] ?? 0)));
+  if (params.get("focusTool") === "pipeline" && params.has("lsDocked")) {
+    // ?focusTool=pipeline&lsDocked: its Pipeline window docked at the landscape's edge, at full size, showing the
+    // selection's pipeline (?lsSelect=area:5115 selects its area)
+    landscape.tools.wpipe = { tool: "pipeline", docked: true };
+    if (!lsCamera) set("mb.landscape.camera", { x: x - 60, y: y - 120, zoom: 0.38 });
+  } else if (params.get("focusTool") === "pipeline") {
+    // ?focusTool=pipeline: its Pipeline window open on the Orchestrator, right of its cards, in view at a readable zoom
+    const win: Rect = { x: x + AREA_PAD + 3 * (M.w + GAP), y: y + AREA_HEADER, w: TOOL_WIDTH.pipeline, h: 2 * M.h + GAP };
+    area.w += TOOL_WIDTH.pipeline + GAP;
+    landscape.tools.wpipe = { tool: "pipeline", docked: false, area: planOrch!.orchestrator.taskGroup!, session: planOrch!.orchestrator.id, placement: win };
+    const zoom = 0.8;
+    // the side bar takes some 320 px of the window's left
+    if (!lsCamera) set("mb.landscape.camera", { x: win.x + win.w + 40 - (window.innerWidth - 320) / zoom, y: y - 60, zoom });
+  } else if (!lsCamera) set("mb.landscape.camera", { x: x - 60, y: y - 120, zoom: 0.38 });
   // in view and big enough to read, cards with their headers (the read-only band)
-  if (!lsCamera) set("mb.landscape.camera", { x: x - 60, y: y - 120, zoom: 0.38 });
 }
 /** Why a plan id is gone, as main says it to a dialog still open on one. */
 const spentPlans = new Map<string, string>();

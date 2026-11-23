@@ -417,7 +417,7 @@ export interface PlaceHint {
 }
 
 /** A tool window's size when it opens, in px at 100%: as tall as the workspace it opens beside, within these. */
-export const TOOL_WIDTH: Record<ToolKind, number> = { files: 360, changes: 384, search: 400, run: 440, artifacts: 384, chat: 440 };
+export const TOOL_WIDTH: Record<ToolKind, number> = { files: 360, changes: 384, search: 400, run: 440, artifacts: 384, chat: 440, pipeline: 400 };
 export const TOOL_HEIGHT = { min: 480, max: 960, plain: 640 };
 /** An artifact card's size at 100% (design O). */
 export const CARD_SIZE: Size = { w: 240, h: 128 };
@@ -1212,6 +1212,9 @@ export const rectFrom = (a: Point, b: Point): Rect => ({ x: Math.min(a.x, b.x), 
 /** The workspaces a marquee touches, in layout order: any part of one inside it picks it, as in Figma. */
 export const tilesIn = (tiles: readonly Tile[], box: Rect): string[] => tiles.filter((t) => !t.hidden && overlaps(t.rect, box)).map((t) => t.key);
 
+/** The not-started steps (their sessions' ids) whose cards touch `box`: a marquee picks them as it picks workspaces. */
+export const stepsIn = (ghosts: readonly GhostView[], box: Rect): string[] => ghosts.filter((g) => !g.hidden && !g.stack && !!g.front.planned && overlaps(g.rect, box)).map((g) => g.front.id);
+
 /**
  * The sessions on screen, for teamLiveView (which decides what teammates stream here): every session of each
  * workspace on screen (`seen`, keysOnScreen's), a stack's tabs included, and of the one in focus; never one in a
@@ -1778,17 +1781,21 @@ export function newExtraId(l: Landscape, prefix: "w" | "c", rand: () => number =
   }
 }
 
-/** What a tool window opens on: a workspace's session (the workspace tools), or an area (Artifacts, Chat). */
-export type ToolScope = { session: string } | { area: string };
+/**
+ * What a tool window opens on: a workspace's session (the workspace tools), or an area (Artifacts, Chat, Pipeline); a
+ * Pipeline window's `member` is the session whose pipeline it shows, of the area's several.
+ */
+export type ToolScope = { session: string } | { area: string; member?: string };
 
 /**
  * Open tool window `id` (new, or a docked one placed again) as `tool` on `scope`. A workspace's window opens beside
  * its workspace, in its area (grown to take it, pushing the areas in its way aside, as a workspace dropped past its
  * edge does), or loose beside a loose one. With its right and below taken, what's to its right moves along to make
- * room (not in a locked area). An area's opens in its first free spot. A locked area takes it only where it has
- * room: refused otherwise, so the caller can dock it instead.
+ * room (not in a locked area). An area's opens beside `beside` (what it's about: a pipeline's cards) where there's
+ * room, else in its first free spot. A locked area takes it only where it has room: refused otherwise, so the caller
+ * can dock it instead.
  */
-export function planOpenWindow(l: Landscape, layout: ResolvedLayout, id: string, tool: ToolKind, scope: ToolScope, titleOf: (key: string) => string): AreaPlan {
+export function planOpenWindow(l: Landscape, layout: ResolvedLayout, id: string, tool: ToolKind, scope: ToolScope, titleOf: (key: string) => string, beside: Rect | null = null): AreaPlan {
   if ("session" in scope !== isWorkspaceTool(tool)) return { refused: `${tool} is ${isWorkspaceTool(tool) ? "a workspace's" : "an area's"} tool` };
   const tile = "session" in scope ? layout.tiles.find((t) => t.members.some((m) => m.id === scope.session)) : undefined;
   if ("session" in scope && !tile) return { refused: "That workspace isn't on the landscape any more" };
@@ -1799,9 +1806,10 @@ export function planOpenWindow(l: Landscape, layout: ResolvedLayout, id: string,
   const size = toolSize(tool, tile?.rect ?? null);
   const p = emptyPatch();
   const makeRoom = tile && area ? () => makeRoomRight(p, l, layout, tile, size) : undefined;
-  const r = spotBeside(placedBut(l, layout, id), area?.rect ?? null, size, tile?.rect ?? null, layout.areas.map((a) => a.rect), makeRoom);
+  const r = spotBeside(placedBut(l, layout, id), area?.rect ?? null, size, tile?.rect ?? beside, layout.areas.map((a) => a.rect), makeRoom);
   if (!r) return { refused: `${titleOf(area!.key)} is locked and has no room for the window` };
-  put(p.tools, id, { tool, docked: false, ...("session" in scope ? { session: scope.session } : {}), area: key, placement: r });
+  const member = "member" in scope && scope.member && tool === "pipeline" ? scope.member : undefined;
+  put(p.tools, id, { tool, docked: false, ...("session" in scope ? { session: scope.session } : member ? { session: member } : {}), area: key, placement: r });
   if (area) {
     const movedAlong = [...Object.values(p.workspaces), ...Object.values(p.stacks).map((s) => s?.placement), ...Object.values(p.tools).map((w) => w?.placement), ...Object.values(p.cards).map((c) => c?.placement), ...Object.values(p.ghosts).map((g) => g?.placement)];
     const grown = fitAreaTo(area.rect, [r, ...movedAlong.filter((x): x is Rect => !!x)]);
@@ -1818,7 +1826,7 @@ export function planOpenWindow(l: Landscape, layout: ResolvedLayout, id: string,
 export function cameraForOpened(before: ReadonlySet<string>, layout: ResolvedLayout, cam: Camera, viewport: Size): Camera | null {
   const w = layout.windows.find((x) => !before.has(x.id) && !x.hidden);
   if (!w || inView(cam, w.rect, viewport)) return null;
-  const t = w.win.session ? layout.tiles.find((x) => x.members.some((m) => m.id === w.win.session)) : undefined;
+  const t = w.win.session && isWorkspaceTool(w.win.tool) ? layout.tiles.find((x) => x.members.some((m) => m.id === w.win.session)) : undefined;
   const both = t ? boundsOf([w.rect, t.rect]) : null;
   const fits = !!both && both.w * cam.zoom <= viewport.w && both.h * cam.zoom <= viewport.h;
   return centreOn(cam, fits ? both! : w.rect, viewport);
@@ -1849,7 +1857,7 @@ export function planMoveExtra(l: Landscape, layout: ResolvedLayout, kind: "windo
   if (toKey !== null && !into) return { refused: `${titleOf(toKey)} isn't on the landscape any more` };
   const crossing = toKey !== fromKey;
   if (crossing && (c || !isWorkspaceTool(w!.win.tool))) {
-    const what = c ? "An artifact's card" : `${titleOf(fromKey!)}'s ${w!.win.tool === "chat" ? "chat" : "artifacts"}`;
+    const what = c ? "An artifact's card" : `${titleOf(fromKey!)}'s ${w!.win.tool}`;
     return { refused: `${what} stays in ${titleOf(fromKey!)}${w ? ": dock it to take it along" : ""}` };
   }
   if (areaOf(fromKey)?.locked) return { refused: `${titleOf(fromKey!)} is locked: unlock it to move what's in it` };
@@ -2427,12 +2435,73 @@ export function pipelineOf(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key
   return { area: start.area, tiles: [...seen].sort((a, b) => madeAt(a) - madeAt(b) || a.rect.y - b.rect.y || a.rect.x - b.rect.x) };
 }
 
+/** Area `area`'s pipelines (pipelineOf), each once, in the order their first workspaces were made. */
+export function pipelinesIn(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, area: string, wires: readonly TidyWire[]): Pipeline[] {
+  const out: Pipeline[] = [];
+  const seen = new Set<string>();
+  const tiles = [...layout.tiles, ...layout.ghosts].filter((t) => t.area === area && !t.hidden).sort((a, b) => madeAt(a) - madeAt(b) || a.rect.y - b.rect.y || a.rect.x - b.rect.x);
+  for (const t of tiles) {
+    if (seen.has(t.key)) continue;
+    const p = pipelineOf(layout, t.key, wires);
+    if (!p) continue;
+    for (const x of p.tiles) seen.add(x.key);
+    out.push(p);
+  }
+  return out;
+}
+
+/** One stage column of a pipeline (pipelineStages): the word its cards' names share, and its steps. */
+export interface PipelineStage {
+  /** stageWord's word (what a fanning column's caption says), else "Stage n". */
+  word: string;
+  steps: SessionInfo[];
+}
+
 /**
- * The pipeline `key` is part of (pipelineOf) in its stages: the columns Re-lay out pipeline and Tidy put it in
- * (alongWires: by the longest path of handoffs into each), left to right, each a column's tiles top to bottom, a tile's
- * terminals sharing its worktree right after it. Null when there's no pipeline.
+ * The pipeline `key` is part of (pipelineOf) as stage columns, in the order Tidy and Re-lay out place them along its
+ * wires (alongWires) and named as their captions are (stageWord), "Stage n" for a column whose names share no first
+ * word. A column's steps are its cards' agents that a wire reaches (a stack's wired tabs; a card no wire reaches by a
+ * tab of its own, its front), terminals left out. `key` names it by its first card. Null when there's no pipeline.
  */
-export function pipelineStages(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: string, wires: readonly TidyWire[]): { area: string; stages: Tile[][] } | null {
+export function pipelineStages(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: string, wires: readonly TidyWire[]): { area: string; key: string; stages: PipelineStage[] } | null {
+  const pipe = pipelineOf(layout, key, wires);
+  const along = pipe ? alongWires(pipe.tiles, wires) : null;
+  if (!pipe || !along) return null;
+  const ends = new Set(wires.flatMap((w) => [w.from, w.to]));
+  const stepsOf = (t: Tile): SessionInfo[] => {
+    const agents = [...t.members, ...(t.closed ?? [])].filter((s) => !s.shell);
+    const wired = agents.filter((s) => ends.has(s.id));
+    return (wired.length ? wired : agents.slice(0, 1)).sort((a, b) => a.createdAt - b.createdAt);
+  };
+  // a pipeline is one chain, so one band; columns at one depth are one stage however they were found
+  const columns: Tile[][] = [];
+  for (const band of along.bands) band.forEach((c, i) => c?.length && (columns[i] = [...(columns[i] ?? []), ...c]));
+  const stages = columns
+    .filter((c) => c?.length)
+    .map((c, i) => ({ word: stageWord(c) ?? `Stage ${i + 1}`, steps: c.flatMap(stepsOf) }))
+    .filter((st) => st.steps.length);
+  return { area: pipe.area, key: pipe.tiles[0].key, stages };
+}
+
+/**
+ * What a Pipeline window on area `area` shows: of its pipelines (`all`, for the window's switcher), the one holding the
+ * first of `prefer` any holds (the window's member, then the selected card), else the first; as stages. Null `shown`
+ * while no wires join its workspaces into one.
+ */
+export function shownPipeline(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, area: string, wires: readonly TidyWire[], prefer: readonly (string | null | undefined)[]): { all: Pipeline[]; shown: ReturnType<typeof pipelineStages> } {
+  const all = pipelinesIn(layout, area, wires);
+  const holds = (p: Pipeline, id: string) => p.tiles.some((t) => t.key === id || [...t.members, ...(t.closed ?? [])].some((s) => s.id === id));
+  const pick = prefer.flatMap((id) => (id ? all.filter((p) => holds(p, id)) : []))[0] ?? all[0];
+  return { all, shown: pick ? pipelineStages(layout, pick.tiles[0].key, wires) : null };
+}
+
+/**
+ * The pipeline `key` is part of (pipelineOf) in its stages as tiles: the columns Re-lay out pipeline and Tidy put it in
+ * (alongWires: by the longest path of handoffs into each), left to right, each a column's tiles top to bottom, a tile's
+ * terminals sharing its worktree right after it (pipelineStages names them and gives their steps). Null when there's no
+ * pipeline.
+ */
+export function pipelineStageTiles(layout: Pick<ResolvedLayout, "tiles" | "ghosts">, key: string, wires: readonly TidyWire[]): { area: string; stages: Tile[][] } | null {
   const pipe = pipelineOf(layout, key, wires);
   const along = pipe && alongWires(pipe.tiles, wires);
   if (!pipe || !along) return null;
@@ -2469,7 +2538,7 @@ export function planRelayoutPipeline(l: Landscape, layout: ResolvedLayout, key: 
       continue;
     }
     const w = k.key.startsWith("tool:") ? layout.windows.find((x) => `tool:${x.id}` === k.key) : undefined;
-    const owner = w?.win.session ? pipe.tiles.find((t) => [...t.members, ...(t.closed ?? [])].some((m) => m.id === w.win.session)) : undefined;
+    const owner = w?.win.session && isWorkspaceTool(w.win.tool) ? pipe.tiles.find((t) => [...t.members, ...(t.closed ?? [])].some((m) => m.id === w.win.session)) : undefined;
     const r = owner ? k.at(none) : null;
     if (!owner || !r) continue;
     leavingKept.add(k.key);
@@ -2659,7 +2728,7 @@ export function planTidy(l: Landscape, layout: ResolvedLayout, key: string, titl
     if (!r || layout.ghosts.some((g) => g.area === key && (k.key === `place:${g.front.id}` || (g.stack && k.key === `stack:${g.stack}`)))) continue;
     const item = { key: k.key, rect: r, move: k.to };
     const w = k.key.startsWith("tool:") ? layout.windows.find((x) => `tool:${x.id}` === k.key) : undefined;
-    const owner = w?.win.session ? tiles.find((t) => [...t.members, ...(t.closed ?? [])].some((m) => m.id === w.win.session)) : undefined;
+    const owner = w?.win.session && isWorkspaceTool(w.win.tool) ? tiles.find((t) => [...t.members, ...(t.closed ?? [])].some((m) => m.id === w.win.session)) : undefined;
     if (owner) windowsOf.set(owner.key, [...(windowsOf.get(owner.key) ?? []), item]);
     else rest.push(item);
   }

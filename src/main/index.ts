@@ -49,7 +49,7 @@ import { Plans } from "./plans";
 import type { PlanLaidOut } from "../shared/plans";
 import { PATCH_NOTES_GUIDANCE } from "./ticketToolSchemas";
 import { presetRequest } from "./presets";
-import { draftTemplate, removedTemplate, savedTemplates, setAsideTemplates, TemplateLayOuts } from "./templates";
+import { draftTemplate, removedTemplate, savedTemplates, setAsideTemplates, TemplateLayOuts, updatedTemplate } from "./templates";
 import { readTemplates } from "../shared/pipelineTemplates";
 import { isObj } from "../shared/landscape";
 import { HELPDESK_KEEPS_ITS_CONVERSATION, helpdeskShareRefusal, inHelpdeskFolder } from "./helpdesk";
@@ -1945,6 +1945,12 @@ handle("templates:draft", (ids) =>
 );
 handle("templates:save", (name, body) => {
   const { list } = savedTemplates(name, body, store.settings.pipelineTemplates, { home: os.homedir() });
+  store.setSettings({ pipelineTemplates: list });
+  return readTemplates(list);
+});
+// Replace, in Save as template: a saved template written over under its id, checked as a new one is
+handle("templates:update", (id, name, body) => {
+  const { list } = updatedTemplate(id, name, body, store.settings.pipelineTemplates, { home: os.homedir() });
   store.setSettings({ pipelineTemplates: list });
   return readTemplates(list);
 });

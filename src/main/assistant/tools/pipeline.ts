@@ -1,6 +1,6 @@
 import { closeWarningLines } from "../../../shared/closing";
 import type { LandscapePatch } from "../../../shared/landscape";
-import { forgetPatch, pipelineStages, resolveLayout, undoOf, withoutGone, type Tile } from "../../../shared/landscapeModel";
+import { forgetPatch, pipelineStageTiles, resolveLayout, undoOf, withoutGone, type Tile } from "../../../shared/landscapeModel";
 import { insertDefaults } from "../../../shared/pipelineEdit";
 import { ME, type PlanView } from "../../../shared/plans";
 import { plainLine, quoted } from "../../../shared/team/agentText";
@@ -317,7 +317,7 @@ export function pipelineTools(d: Deps): AssistantTool[] {
         const full = !!a.full_prompts;
         if (a.session !== undefined) {
           if (!knownTitle(d, a.session)) throw new Error(noSession(a.session));
-          const p = pipelineStages(layout, a.session, wires);
+          const p = pipelineStageTiles(layout, a.session, wires);
           if (!p) return { text: JSON.stringify({ session: a.session, pipeline: null, why: "No wire joins it to another workspace in its area, or it isn't on the landscape" }) };
           return { text: JSON.stringify({ area: p.area, pipeline: pipelineOut(layout, p.stages, wires, full) }) };
         }
@@ -328,7 +328,7 @@ export function pipelineTools(d: Deps): AssistantTool[] {
         const pipelines: ReturnType<typeof pipelineOut>[] = [];
         for (const t of tiles) {
           if (covered.has(t.key)) continue;
-          const p = pipelineStages(layout, t.key, wires);
+          const p = pipelineStageTiles(layout, t.key, wires);
           if (!p) continue;
           for (const x of p.stages.flat()) covered.add(x.key);
           pipelines.push(pipelineOut(layout, p.stages, wires, full));

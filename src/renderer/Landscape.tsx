@@ -69,6 +69,7 @@ import {
   STAGE_CAPTION_H,
   takesKeys,
   tilesIn,
+  stepsIn,
   toLandscape,
   toMinimap,
   undoOfPlan,
@@ -99,13 +100,13 @@ import { ToolWindow } from "./ToolWindow";
 import { LiftOut } from "./lift";
 import { actionOf, connectMenu, focusMenuActions, menuOf, severalActions, severalMenu, usable, wireMenu, type Can, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { GhostCard } from "./GhostCard";
-import type { PipelineUi } from "./PipelineEdit";
+import type { PipelineUi, WireEdits } from "./PipelineEdit";
 import type { SelectOption } from "./Menu";
 import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
 import { AreaSwitcher } from "./AreaTree";
 import { menuHeading, tidyMenu, useContextMenu, type MenuEntry } from "./ContextMenu";
-import { AreaBar, SeveralBar, WorkspaceBar, type BarPlace } from "./SelectionBar";
+import { AreaBar, SeveralBar, StepBar, StepsBar, WorkspaceBar, type BarPlace } from "./SelectionBar";
 import { AREA_NAME_PX, areaStatus, barAnchor, escapeClears, readBarExtended, saveBarExtended, severalBarItems, type BarChrome, type BarTarget } from "./selectionBarModel";
 import { focusTerm, lendTerm, screenText, scrollTerm, termHasKeys } from "./TerminalPane";
 import { usePipelineStrip, type StripGo } from "./PipelineStrip";
@@ -222,6 +223,8 @@ const SETTLE_MS = 1500;
 const WIRE_HIT_PX = 6;
 /** How near a wire's gate dot's centre, in screen px, a click opens its send popover: the dot's radius and a little. */
 const DOT_HIT_PX = 10;
+/** How near a wire's arrowhead or start, in screen px, a press grabs that end to move it: the arrowhead's length and a little. */
+const END_HIT_PX = 12;
 /** Why no wire can be made while the wire book hasn't been read. */
 const WIRES_UNREAD = "The wires haven't been read yet, so none can be made: try again in a moment.";
 
@@ -232,17 +235,21 @@ const WIRES_UNREAD = "The wires haven't been read yet, so none can be made: try 
 interface Gesture {
   /**
    * `resize`: a workspace by an edge or corner (`edges`); `tab`: a stack's tab (`sid`), moved along its tabs or dragged
-   * out of the stack; `wire`: a wire from a workspace's edge handle, to the workspace it's dropped on.
+   * out of the stack; `wire`: a wire from a workspace's edge handle, to the workspace it's dropped on; `wireEnd`: wire
+   * `key`'s `end`, grabbed by its arrowhead or start, to the workspace or step it's dropped on.
    */
-  kind: "marquee" | "tile" | "area" | "window" | "card" | "resize" | "tab" | "wire";
+  kind: "marquee" | "tile" | "area" | "window" | "card" | "resize" | "tab" | "wire" | "wireEnd";
   id: number;
   x0: number;
   y0: number;
   /** The workspace's or the area's key, a window's or a card's id ("" for a marquee). */
   key: string;
-  /** A marquee with Shift held adds to the selection, `base` as it was when it started. */
+  /** A marquee with Shift held adds to the selection, `base` (and `baseSteps`, the steps selected) as it was when it started. */
   add: boolean;
   base: string[];
+  baseSteps?: readonly string[];
+  /** The end of a wire a `wireEnd` moves. */
+  end?: "from" | "to";
   on: boolean;
   els: HTMLElement[];
   edges?: Edges;
@@ -316,6 +323,7 @@ const WIN_SEEN = "win:";
 /** How long a tab brought to the front in focus waits for its terminal to be there to take the keyboard (keysToFront). */
 const FRONT_KEYS_MS = 1500;
 const NO_SESSIONS: readonly SessionInfo[] = [];
+const NO_IDS: readonly string[] = [];
 
 export function Landscape({
   layout,
@@ -369,6 +377,10 @@ export function Landscape({
   focusRef,
   onFocusFront,
   pipeline,
+  selectedSteps = NO_IDS,
+  onSelectSteps,
+  stepsActions,
+  wireEditRef,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -436,7 +448,7 @@ export function Landscape({
    * A placed tool window's scope, as its title names it, what it hosts, and what its head counts zoomed out (an
    * Artifacts window's artifacts). `seen`: it's on screen in the live band, so what it shows is being looked at.
    */
-  windowFor: (w: WindowView, seen: boolean) => { scope: string | null; body: React.ReactNode; count?: React.ReactNode };
+  windowFor: (w: WindowView, seen: boolean) => { scope: string | null; body: React.ReactNode; count?: React.ReactNode; head?: React.ReactNode };
   onCloseWindow: (id: string) => void;
   /** An artifact card's face. */
   cardFor: (c: CardView) => React.ReactNode;
@@ -484,6 +496,16 @@ export function Landscape({
    * always, and the + between stage columns. Absent, none is drawn.
    */
   pipeline?: PipelineUi;
+  /**
+   * The not-started steps selected, by session id: one kind of selection, as workspaces, an area or several workspaces
+   * are, so picking them lets those go, and the selection bar shows their actions.
+   */
+  selectedSteps?: readonly string[];
+  onSelectSteps?: (ids: string[]) => void;
+  /** Several selected steps' actions (their bar and right-click): Re-lay out pipeline, Forget. */
+  stepsActions?: (steps: SessionInfo[]) => ModelAction[];
+  /** Filled with the landscape's wire edits for what's drawn outside it (the Pipeline window); emptied once it isn't up. */
+  wireEditRef?: React.MutableRefObject<WireEdits | null>;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -921,36 +943,61 @@ export function Landscape({
     apply(zoomAbout(cam.current, at ?? { x: vpNow.current.w / 2, y: vpNow.current.h / 2 }, zoom));
   };
 
-  // ---- the selection: one workspace (the window's selected session), one area, or several workspaces (`picked`) ----
+  // ---- the selection: one workspace (the window's selected session), one area, several workspaces (`picked`), or
+  // not-started steps (`selectedSteps`) ----
   // One at a time, as in Figma: selecting one kind lets the others go, and the selection bar shows its actions.
+  const stepsNow = useRef(selectedSteps);
+  stepsNow.current = selectedSteps;
+  const letStepsGo = () => {
+    if (stepsNow.current.length) {
+      stepsNow.current = NO_IDS;
+      onSelectSteps?.([]);
+    }
+  };
   const select = (t: Tile) => {
     onSelect(t.front.id);
     onSelectArea(null);
     if (pickedNow.current.length) setPicked([]);
+    letStepsGo();
   };
   const selectArea = (key: string) => {
     onSelectArea(key);
     if (pickedNow.current.length) setPicked([]);
+    letStepsGo();
   };
-  /** Several picked (a marquee, Shift-clicks): the workspace and the area selected before are let go. */
+  /** Several picked (a marquee, Shift-clicks): the workspace, the area and the steps selected before are let go. */
   const pickTiles = (keys: string[]) => {
     setPicked(keys);
     if (!keys.length) return;
     if (asks.current.selected) onSelect(null);
     if (asks.current.selectedArea) onSelectArea(null);
+    letStepsGo();
   };
+  /** Not-started steps selected (a click on one, Shift-clicks, a marquee over steps alone): the rest let go. */
+  const selectSteps = (ids: string[]) => {
+    stepsNow.current = ids;
+    onSelectSteps?.(ids);
+    if (!ids.length) return;
+    if (pickedNow.current.length) setPicked([]);
+    if (asks.current.selected) onSelect(null);
+    if (asks.current.selectedArea) onSelectArea(null);
+  };
+  /** A step Shift-clicked: added to the steps selected, or let go of; workspaces picked before are let go. */
+  const toggleStep = (id: string) => selectSteps(stepsNow.current.includes(id) ? stepsNow.current.filter((x) => x !== id) : [...stepsNow.current, id]);
   /** Nothing selected: Esc, or a click on the bare landscape outside every area. */
   const clearSelection = () => {
     if (pickedNow.current.length) setPicked([]);
     if (asks.current.selected) onSelect(null);
     if (asks.current.selectedArea) onSelectArea(null);
+    letStepsGo();
   };
-  const selRefs = useRef({ pickTiles, selectArea, clearSelection });
-  selRefs.current = { pickTiles, selectArea, clearSelection };
+  const selRefs = useRef({ pickTiles, selectArea, clearSelection, selectSteps, toggleStep });
+  selRefs.current = { pickTiles, selectArea, clearSelection, selectSteps, toggleStep };
   // a workspace or an area selected from elsewhere (its terminal clicked into, the tree, a notification, N) is the
-  // selection now: the several picked before are let go, so there's only ever one selection
+  // selection now: the several picked before, and steps, are let go, so there's only ever one selection
   useEffect(() => {
     if ((selected || selectedArea) && pickedNow.current.length) setPicked([]);
+    if (selected || selectedArea) letStepsGo();
   }, [selected, selectedArea]);
   /** What takes the landscape's keys: the surface, or in focus the focused workspace's frame (so Esc reaches it). */
   const surfaceEl = () => (focusNow.current ? overlay.current : viewport.current);
@@ -1508,7 +1555,7 @@ export function Landscape({
     } else if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
       handled();
       onShortcuts();
-    } else if (e.key === "Escape" && !e.metaKey && escapeClears({ selected: !!(pickedNow.current.length || selected || selectedArea), peek: !!peekNow.current, overlay: !!document.querySelector(OVERLAYS) })) {
+    } else if (e.key === "Escape" && !e.metaKey && escapeClears({ selected: !!(pickedNow.current.length || selected || selectedArea || stepsNow.current.length), peek: !!peekNow.current, overlay: !!document.querySelector(OVERLAYS) })) {
       handled();
       clearSelection();
     }
@@ -1794,6 +1841,12 @@ export function Landscape({
     }
     // a wire changes no layout: a locked area's workspaces are wired as any are, a ghost's as a workspace's
     if (g.kind === "wire") return [...l.tiles, ...l.ghosts].some((x) => x.key === g.key);
+    if (g.kind === "wireEnd") {
+      if (!wireBookNow.current?.book?.links[g.key]) return false;
+      // the wire as it is goes faint while its end is moved, so the draft is what's read
+      world.current?.querySelector(`.ls-wires g.ls-wire[data-wire="${CSS.escape(g.key)}"]`)?.classList.add("moving");
+      return true;
+    }
     if (g.kind === "window" || g.kind === "card") {
       const v = g.kind === "window" ? l.windows.find((x) => x.id === g.key) : l.cards.find((x) => x.id === g.key);
       if (!v) return false;
@@ -1837,7 +1890,7 @@ export function Landscape({
     const g = gesture.current;
     if (!g || e.pointerId !== g.id) return;
     // a wire's drag whose release was lost (the window lost the pointer) ends, so it can't go on swallowing typing
-    if (g.kind === "wire" && e.buttons === 0) return dropWireDrag();
+    if ((g.kind === "wire" || g.kind === "wireEnd") && e.buttons === 0) return dropWireDrag();
     const dx = e.clientX - g.x0;
     const dy = e.clientY - g.y0;
     if (!g.on) {
@@ -1859,14 +1912,23 @@ export function Landscape({
     }
     e.preventDefault();
     if (g.kind === "wire") return drawDraft(g.key, e);
+    if (g.kind === "wireEnd") return drawEndDraft(g.key, g.end!, e);
     if (g.kind === "marquee") {
       const r = viewport.current!.getBoundingClientRect();
       const box = rectFrom({ x: g.x0 - r.left, y: g.y0 - r.top }, { x: e.clientX - r.left, y: e.clientY - r.top });
       const m = marquee.current;
       if (m) Object.assign(m.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
-      const keys = tilesIn(layoutNow.current.tiles, rectFrom(atPoint({ clientX: g.x0, clientY: g.y0 }), atPoint(e)));
+      const within = rectFrom(atPoint({ clientX: g.x0, clientY: g.y0 }), atPoint(e));
+      const keys = tilesIn(layoutNow.current.tiles, within);
       const next = g.add ? [...new Set([...g.base, ...keys])] : keys;
       if (next.join("\n") !== pickedNow.current.join("\n")) pickTiles(next);
+      // steps are picked where no workspace is: one kind of selection at a time
+      const found = next.length ? [] : stepsIn(layoutNow.current.ghosts, within);
+      const steps = g.add && !next.length ? [...new Set([...(g.baseSteps ?? []), ...found])] : found;
+      if (steps.join("\n") !== stepsNow.current.join("\n")) {
+        if (steps.length) selectSteps(steps);
+        else letStepsGo();
+      }
       return;
     }
     const z = cam.current.zoom;
@@ -1974,7 +2036,19 @@ export function Landscape({
     const z = cam.current.zoom;
     const dx = (e.clientX - g.x0) / z;
     const dy = (e.clientY - g.y0) / z;
-    if (g.kind === "marquee") {
+    if (g.kind === "wireEnd" && g.on) {
+      // the release's click lands on nothing; on nothing to go to, the wire stays as it was
+      swallowClick();
+      const w = wireBookNow.current?.book?.links[g.key];
+      const to = wireTargetAt(e);
+      if (!w || !to || to.s.id === w[g.end!]) return;
+      const no = endRefusal(g.key, w, g.end!, to.s.id);
+      if (no) return say(no);
+      void repointWire(g.key, { [g.end!]: to.s.id }).then((why) => why && say(why));
+      return;
+    }
+    // pressed by a wire's end and let go where it was: a click on the landscape there
+    if (g.kind === "marquee" || g.kind === "wireEnd") {
       // a click on a wire's gate dot (where it was pressed) opens its send popover, and the click it makes lands on nothing
       const dot = !g.on && !g.add ? (wiresRef.current?.dotAt(atPoint({ clientX: g.x0, clientY: g.y0 }), DOT_HIT_PX / z) ?? null) : null;
       if (dot) {
@@ -2101,7 +2175,7 @@ export function Landscape({
   const gestureKey = (e: KeyboardEvent) => {
     const g = gesture.current;
     // while a wire is pressed or dragged nothing typed acts, on the landscape or in a terminal: Esc alone, which drops it
-    if (g?.kind === "wire" && (e.key === "Escape" || typed(e))) {
+    if ((g?.kind === "wire" || g?.kind === "wireEnd") && (e.key === "Escape" || typed(e))) {
       e.preventDefault();
       e.stopPropagation();
       if (e.key === "Escape") dropWireDrag();
@@ -2114,10 +2188,10 @@ export function Landscape({
     release(g.els);
     if (g.kind === "marquee" && !g.add) setPicked([]);
   };
-  /** A wire's press or drag let go with nothing made: Esc, a release the window never saw, or the window losing focus. */
+  /** A wire's press or drag let go with nothing made or moved: Esc, a release the window never saw, or the window losing focus. */
   function dropWireDrag() {
     const g = gesture.current;
-    if (g?.kind !== "wire") return;
+    if (g?.kind !== "wire" && g?.kind !== "wireEnd") return;
     endGesture();
     release(g.els);
   }
@@ -2303,7 +2377,7 @@ export function Landscape({
       }
       if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const node = t.closest<HTMLElement>(".ls-world .ls-node");
-        const press = { id: e.pointerId, x0: e.clientX, y0: e.clientY, add: e.shiftKey, base };
+        const press = { id: e.pointerId, x0: e.clientX, y0: e.clientY, add: e.shiftKey, base, baseSteps: stepsNow.current };
         const win = t.closest<HTMLElement>(".ls-world .ls-window");
         const card = t.closest<HTMLElement>(".ls-world .ls-acard");
         const rz = t.closest<HTMLElement>(".ls-world .ls-rz");
@@ -2338,9 +2412,20 @@ export function Landscape({
           startRef.current({ ...press, kind: "window", key: win.dataset.win! });
         } else if (card && !t.closest("button, a, input")) {
           startRef.current({ ...press, kind: "card", key: card.dataset.card! });
+        } else if (ghostEl?.classList.contains("planned") && !t.closest("button, .ls-wh")) {
+          // a not-started step is selected as a workspace is (Shift: added to the steps selected, or let go of); it
+          // isn't dragged, and its press gives it the keyboard (GhostCard)
+          const id = ghostEl.dataset.front!;
+          if (e.shiftKey) selRefs.current.toggleStep(id);
+          else selRefs.current.selectSteps([id]);
         } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty, .ls-ghost button, .ls-ghost.planned, .ls-insert")) {
-          // a ghost isn't selected: a press on it is one on the landscape where it lies, its buttons aside
-          startRef.current({ ...press, kind: "marquee", key: "" });
+          // a wire's arrowhead or start, where a ghost or the bare landscape is, grabs that end to move it (not a shared
+          // worktree's, whose ends stay); else a ghost isn't selected: a press on it is one on the landscape where it
+          // lies, its buttons aside
+          const end = !e.shiftKey ? (wiresRef.current?.endAt(atPoint(e), END_HIT_PX / cam.current.zoom) ?? null) : null;
+          const movable = end && wireBookNow.current?.book?.links[end.id]?.type !== "worktree" ? end : null;
+          if (movable) startRef.current({ ...press, kind: "wireEnd", key: movable.id, end: movable.end });
+          else startRef.current({ ...press, kind: "marquee", key: "" });
         }
       }
       // a press on the landscape between workspaces gives it the keyboard
@@ -2652,10 +2737,39 @@ export function Landscape({
     const targets = wireTargets(layoutNow.current, other);
     const rules = wireCtx([other, ...targets.map((t) => t.s.id)]);
     return targets.map((t) => {
-      const cand = t.s.id;
-      const refused = cand === w[end] ? null : !rules ? (wireBookNow.current?.refused ?? WIRES_UNREAD) : end === "from" ? wireRefusal(cand, w.to, w.type, { ...rules, self: id }) : wireRefusal(w.from, cand, w.type, { ...rules, self: id });
-      return { value: cand, label: titleOf(t.s), group: t.area === LOOSE_GROUP ? "Loose" : areaTitle(t.area), disabled: !!refused, ...(refused ? { description: refused } : {}) };
+      const refused = endRefusal(id, w, end, t.s.id, rules);
+      return { value: t.s.id, label: titleOf(t.s), group: t.area === LOOSE_GROUP ? "Loose" : areaTitle(t.area), disabled: !!refused, ...(refused ? { description: refused } : {}) };
     });
+  };
+  /**
+   * Why wire `id` (`w`) can't have its `end` at session `cand`, by the rules main checks again (WireService.repoint), or
+   * null: none where it is already. `rules` when they've been read for it already.
+   */
+  const endRefusal = (id: string, w: Wire, end: "from" | "to", cand: string, rules = wireCtx([end === "from" ? w.to : w.from, cand])): string | null => {
+    if (cand === w[end]) return null;
+    if (!rules) return wireBookNow.current?.refused ?? WIRES_UNREAD;
+    return end === "from" ? wireRefusal(cand, w.to, w.type, { ...rules, self: id }) : wireRefusal(w.from, cand, w.type, { ...rules, self: id });
+  };
+  /** Where a new handoff from session `from` can go (the Pipeline window's + hand off to…), each off saying why not. */
+  const handoffChoices = (from: string): SelectOption[] => {
+    const targets = wireTargets(layoutNow.current, from);
+    const rules = wireCtx([from, ...targets.map((t) => t.s.id)]);
+    return targets.map((t) => {
+      const refused = rules ? wireRefusal(from, t.s.id, "handoff", rules) : (wireBookNow.current?.refused ?? WIRES_UNREAD);
+      return { value: t.s.id, label: titleOf(t.s), group: t.area === LOOSE_GROUP ? "Loose" : areaTitle(t.area), disabled: !!refused, ...(refused ? { description: refused } : {}) };
+    });
+  };
+  /** A handoff from `from` to `to` (wires:add), said with Undo (wires:remove); settles with why it wasn't made, or null. */
+  const addHandoff = async (from: string, to: string): Promise<string | null> => {
+    let made: string | undefined;
+    const no = await wireCall("make the wire", async () => {
+      const r = await window.mb.wiresAdd(from, to, "handoff");
+      made = (r as { id?: string }).id;
+      return r;
+    });
+    if (no) return no;
+    say(`${named(from)} hands off to ${named(to)} now`, made ? { label: "Undo", run: () => void wireCall("take the wire back", () => window.mb.wiresRemove(made!)).then((why) => why && say(why)) } : undefined);
+    return null;
   };
   /** Wire `id` moved to `ends` (wires:repoint), said with Undo (wires:unrepoint); settles with why it didn't move, or null. */
   const repointWire = async (id: string, ends: { from?: string; to?: string }): Promise<string | null> => {
@@ -2668,6 +2782,22 @@ export function Landscape({
     });
     return null;
   };
+  if (wireEditRef)
+    wireEditRef.current = {
+      endChoices: (id, end) => {
+        const w = wireBookNow.current?.book?.links[id];
+        return w ? endChoices(id, w, end) : [];
+      },
+      handoffChoices,
+      repoint: repointWire,
+      addHandoff,
+    };
+  useEffect(
+    () => () => {
+      if (wireEditRef) wireEditRef.current = null;
+    },
+    []
+  );
   /** What wire `id`'s settings form needs, Settings…'s and the send popover's alike; `close` closes what it's in. */
   const wireForm = ({ id, w, ctx, gate }: NonNullable<ReturnType<typeof liveWire>>, close: () => void): WireSettingsProps => ({
     wire: w,
@@ -2861,7 +2991,35 @@ export function Landscape({
   function hideDraft() {
     if (draftEl.current) draftEl.current.style.display = "none";
     if (hotEl.current) hotEl.current.hidden = true;
+    for (const el of world.current?.querySelectorAll(".ls-wires g.ls-wire.moving") ?? []) el.classList.remove("moving");
   }
+  /**
+   * Wire `id`'s `end` being dragged: the wire drawn from its other end to the pointer (or to the workspace or step under
+   * it, outlined as a new wire's target is, refused when the rules wouldn't have it there): never through a render.
+   */
+  const drawEndDraft = (id: string, end: "from" | "to", e: PointerEvent) => {
+    const svg = draftEl.current;
+    const hot = hotEl.current;
+    const w = wireBookNow.current?.book?.links[id];
+    const fixed = w ? [...layoutNow.current.tiles, ...layoutNow.current.ghosts].find((t) => t.members.some((m) => m.id === (end === "to" ? w.from : w.to)) || !!t.closed?.some((m) => m.id === (end === "to" ? w.from : w.to))) : undefined;
+    if (!svg || !hot || !w || !fixed) return;
+    const z = cam.current.zoom;
+    const inset = bandNow.current === "cards" ? GHOST_INSET / z : 0;
+    const to = wireTargetAt(e);
+    const onto = to && to.key !== fixed.key ? to : null;
+    const p = atPoint(e);
+    const near = onto ? shiftedBox(onto.rect, undefined, inset) : { x: p.x, y: p.y, w: 0, h: 0 };
+    const box = shiftedBox(fixed.rect, undefined, inset);
+    const c = end === "to" ? wireCurve(box, near, 1 / z) : wireCurve(near, box, 1 / z);
+    svg.style.setProperty("--ls-inv", String(1 / z));
+    svg.style.display = c ? "" : "none";
+    if (c) svg.querySelector("path.draft")?.setAttribute("d", c.d);
+    hot.hidden = !onto;
+    if (!onto) return;
+    Object.assign(hot.style, { left: `${near.x}px`, top: `${near.y}px`, width: `${near.w}px`, height: `${near.h}px` });
+    hot.style.setProperty("--ls-inv", String(1 / z));
+    hot.classList.toggle("no", !!endRefusal(id, w, end, onto.s.id));
+  };
 
   // Finish step is among them for the focus header's button
   const tileActions = (t: Tile): ModelAction[] => actionsFor(t, t.front, { finish: finishOf(t.front) });
@@ -2926,7 +3084,10 @@ export function Landscape({
       const g = layout.ghosts.find((x) => x.key === ghostEl.dataset.ghost);
       if (!g) return;
       e.preventDefault();
-      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(ghostActions(g.front, g.members)));
+      // one of several steps selected: theirs, as their bar's ⋯ has it
+      const several = g.front.planned && stepsActions && stepsNow.current.length > 1 && stepsNow.current.includes(g.front.id);
+      const steps = several ? layout.ghosts.filter((x) => x.front.planned && stepsNow.current.includes(x.front.id)).map((x) => x.front) : [];
+      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(several ? stepsActions!(steps) : ghostActions(g.front, g.members)));
       return;
     }
     const el = t.closest<HTMLElement>(".ls-node");
@@ -3015,6 +3176,15 @@ export function Landscape({
     if (several.length) {
       const top = several.reduce((m, t) => (t.rect.y < m.rect.y ? t : m));
       return <SeveralBar key="several" count={several.length} items={severalBarItems(pickedActions())} menu={pickedMenu} place={place(boundsOf(several.map((t) => t.rect))!, "none", within(top))} />;
+    }
+    const steps = layout.ghosts.filter((g) => !g.hidden && !g.stack && g.front.planned && selectedSteps.includes(g.front.id));
+    if (steps.length === 1) {
+      const g = steps[0];
+      return <StepBar key={`step:${g.key}`} session={g.front} actions={ghostActions(g.front, g.members, ghostExtra(g))} chip={pipeline ? pipeline.chip(g.front, "planned") : null} place={place(g.rect, "none", within(g))} />;
+    }
+    if (steps.length > 1 && stepsActions) {
+      const top = steps.reduce((m, t) => (t.rect.y < m.rect.y ? t : m));
+      return <StepsBar key="steps" count={steps.length} actions={stepsActions(steps.map((g) => g.front))} place={place(boundsOf(steps.map((t) => t.rect))!, "none", within(top))} />;
     }
     const a = selectedArea ? layout.areas.find((x) => x.key === selectedArea) : undefined;
     if (a) {
@@ -3165,6 +3335,7 @@ export function Landscape({
                 inv={1 / cam.current.zoom}
                 onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front, g.members, ghostExtra(g))))}
                 modelChip={pipeline && !g.stack && !g.front.shell && (g.front.planned || wiredIds.has(g.front.id)) ? pipeline.chip(g.front, g.front.planned ? "planned" : "closed") : undefined}
+                selected={!!g.front.planned && selectedSteps.includes(g.front.id)}
                 handle={!g.stack && !g.front.shell && !isRemote(g.front)}
                 planned={g.front.planned ? plannedLine(g.front.id, links, (id) => (sessionOn(id) ? named(id) : null), needsApprove) : undefined}
                 plannedShort={g.front.planned ? plannedShort(g.front.id, links, needsApprove) : undefined}
@@ -3174,7 +3345,7 @@ export function Landscape({
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}
           {layout.windows.map((w) => {
             if (w.hidden) return null;
-            const { scope, body: inner, count } = windowFor(w, band === "live" && seenSet.has(`${WIN_SEEN}${w.id}`));
+            const { scope, body: inner, count, head } = windowFor(w, band === "live" && seenSet.has(`${WIN_SEEN}${w.id}`));
             return (
               <ToolWindow
                 key={w.id}
@@ -3184,6 +3355,7 @@ export function Landscape({
                 docked={false}
                 compact={band === "cards"}
                 count={count}
+                head={head}
                 style={{ left: w.rect.x, top: w.rect.y, width: w.rect.w, height: w.rect.h, ["--ls-inv" as string]: 1 / cam.current.zoom }}
                 onDock={() => dockWindow(w.id)}
                 onClose={() => onCloseWindow(w.id)}

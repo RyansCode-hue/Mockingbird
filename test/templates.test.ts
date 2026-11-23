@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
-import { draftTemplate, FOLDER_MARK, removedTemplate, savedTemplates, setAsideTemplates, TemplateLayOuts, TEMPLATES_KEPT } from "../src/main/templates";
+import { draftTemplate, FOLDER_MARK, removedTemplate, savedTemplates, setAsideTemplates, TemplateLayOuts, TEMPLATES_KEPT, updatedTemplate } from "../src/main/templates";
 import { LandscapeStore } from "../src/main/landscape";
 import { tempDir } from "./helpers";
 import { LayOutLeftError, readTemplates, ticketKickoffPrompt, type LayOutReply, type TemplateBody } from "../src/shared/pipelineTemplates";
@@ -188,6 +188,61 @@ describe("a draft's invisible and control characters", () => {
     const d = draftTemplate(["a", "b"], { sessionOf: (id) => all[id as "a" | "b"], book: () => ({ ...emptyWireBook(), links: { w1: wire("a", "b", "handoff", 1) } }) });
     expect(d.body.steps[0].prompt).toBe(`Implement it. ${emoji}`);
     expect(d.notes).toContain("1 invisible or control character was taken out: they hide text where you read it, or act in a terminal rather than show.");
+  });
+});
+
+describe("replacing a template (templates:update)", () => {
+  const update = (id: unknown, name: unknown, b: unknown, stored: unknown) => updatedTemplate(id, name, b, stored, { home: HOME, now: () => 99 });
+  const stored = () => [
+    { id: "tpl-a", name: "Build and review", savedAt: 1, ...body() },
+    { id: "tpl-b", name: "Broken", steps: "three" },
+    { id: "tpl-c", name: "Other", savedAt: 3, ...body() },
+  ];
+  const other = (): TemplateBody => ({ ...body(), steps: [body().steps[0], { ...body().steps[1], name: "Verifier", prompt: "Check it." }] });
+
+  it("writes over the one of that id, in its place and under its id, saved now; the rest kept as they were", () => {
+    const s = stored();
+    const r = update("tpl-a", "Build and review", other(), s);
+    expect(r.template).toEqual({ id: "tpl-a", name: "Build and review", savedAt: 99, ...other() });
+    expect(r.list).toEqual([r.template, s[1], s[2]]);
+    expect(readTemplates(r.list).templates[0]).toEqual({ template: r.template, unknown: [] });
+  });
+
+  it("takes a new name, its own in another case too, but not another template's", () => {
+    expect(update("tpl-a", "BUILD AND REVIEW", body(), stored()).template.name).toBe("BUILD AND REVIEW");
+    expect(update("tpl-a", "Renamed", body(), stored()).template.name).toBe("Renamed");
+    expect(() => update("tpl-a", "other", body(), stored())).toThrow("There's another template called “other”: name this one another way.");
+    expect(() => update("tpl-a", "Broken", body(), stored())).toThrow(/another template called “Broken”/);
+  });
+
+  it.each<[string, unknown, unknown, unknown, RegExp]>([
+    ["one that isn't saved any more", "tpl-z", "X", body(), /isn't saved any more: save this one as a new one/],
+    ["one this version can't read", "tpl-b", "X", body(), /“Broken” can't be read by this version of Mockingbird, so it's left as it is/],
+    ["the built-in one", "builtin-orchestrator", "X", body(), /built-in template can't be replaced/],
+    ["no id", undefined, "X", body(), /isn't saved any more/],
+    ["no name", "tpl-a", " ", body(), /Name the template/],
+    ["a body that isn't one", "tpl-a", "X", { ...body(), steps: [] }, /It can't be saved: It has no steps/],
+    ["a secret in a prompt", "tpl-a", "X", { ...body(), steps: [{ ...body().steps[0], prompt: `use ghp_${"a1".repeat(18)}` }, body().steps[1]] }, /holds 1 secret-looking value/],
+    ["a folder in the home folder", "tpl-a", "X", { ...body(), steps: [body().steps[0], { ...body().steps[1], prompt: `read ${HOME}/notes.md` }] }, /names a folder in your home folder/],
+  ])("is refused for %s, changing nothing", (_what, id, name, b, re) => {
+    const s = stored();
+    const before = JSON.stringify(s);
+    expect(() => update(id, name, b, s)).toThrow(re);
+    expect(JSON.stringify(s)).toBe(before);
+  });
+
+  it("replaces one in a full list, as it doesn't grow, but holds it to TEMPLATES_KEPT.bytes", () => {
+    const full = Array.from({ length: TEMPLATES_KEPT.count }, (_v, i) => ({ id: `tpl-${i}`, name: `T${i}`, savedAt: i, ...body() }));
+    expect(update("tpl-3", "T3", other(), full).list).toHaveLength(TEMPLATES_KEPT.count);
+    const long = (n: number): TemplateBody => ({ ...body(), steps: body().steps.map((s) => ({ ...s, prompt: "é".repeat(n) })) });
+    const big = Array.from({ length: 16 }, (_v, i) => ({ id: `tpl-${i}`, name: `T${i}`, savedAt: i, ...long(7900) }));
+    const withSmall = [...big, { id: "tpl-x", name: "X", savedAt: 0, ...long(100) }];
+    expect(() => update("tpl-0", "T0", long(7900), withSmall)).not.toThrow();
+    expect(() => update("tpl-x", "X", long(7900), withSmall)).toThrow(/^Replaced so the saved templates would take \d+ KB, past the 512 KB Mockingbird keeps/);
+  });
+
+  it("writes nothing over a list that isn't one", () => {
+    expect(() => update("tpl-a", "X", body(), { a: 1 })).toThrow(/aren't a list/);
   });
 });
 
