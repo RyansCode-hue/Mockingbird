@@ -281,6 +281,24 @@ describe("live panes", () => {
     expect(streamed.length).toBe(n);
   });
 
+  it("gives what it mirrors of a teammate's pane only once a terminal here has asked for it, fetching nothing itself", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    ptyOf(s.id).emit("npm test\r\n");
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    const fetched: string[] = [];
+    nick.m.team.onStream("pty:*", (c) => fetched.push(c));
+    expect(nick.live.mirrored(paneId)).toBeNull();
+    expect(nick.live.mirrored(s.id)).toBeNull(); // Ryan's own id isn't a pane on Nick's Mac
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetched).toEqual([]);
+    await nick.sessions.paneBuffer(paneId);
+    nick.live.setView({ shown: [paneId], focused: paneId });
+    ptyOf(s.id).emit("3 failing\r\n");
+    await until(() => nick.live.mirrored(paneId) === "npm test\r\n3 failing\r\n", "the mirror to follow the live output");
+  });
+
   it("redraws a pane shown again after a spell hidden, and never one that stayed on screen", async () => {
     const { ryan, nick } = await pair();
     const s = await ryan.start();

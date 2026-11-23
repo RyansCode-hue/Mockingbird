@@ -1122,6 +1122,16 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     return this.remotes.has(id);
   }
 
+  /**
+   * What this Mac holds of teammate's session `id`'s output: the copy its terminal here mirrors (the last MIRROR_MAX of
+   * it, as far as it has followed it), or null when no terminal here has asked for it. Nothing is fetched.
+   */
+  mirrored(id: string): string | null {
+    if (!this.remotes.has(id)) return null;
+    const p = this.panes.get(id);
+    return p?.attached && p.mirror ? p.mirror : null;
+  }
+
   private pane(id: string): PaneSync {
     let p = this.panes.get(id);
     if (!p) this.panes.set(id, (p = { epoch: null, expected: 0, mirror: "", inflight: null, pending: [], lastFetch: 0, attached: false, watched: false }));

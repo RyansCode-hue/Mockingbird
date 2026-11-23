@@ -4,7 +4,7 @@ import { resolveLayout } from "../src/shared/landscapeModel";
 import type { SessionInfo } from "../src/shared/types";
 import { areaKeyOf } from "../src/shared/landscape";
 import { LandscapeStore } from "../src/main/landscape";
-import type { AssistantDeps, AssistantLayoutDeps } from "../src/main/assistant/deps";
+import type { AssistantDeps, AssistantFileDeps, AssistantLayoutDeps } from "../src/main/assistant/deps";
 import type { GuardOp } from "../src/main/sessionGuards";
 import { worldGroups, worldRooms, worldSessions, type WorldRoom } from "../src/main/assistant/world";
 import { tempDir } from "./helpers";
@@ -16,8 +16,11 @@ import { unusedWorkDeps } from "./assistantWorkFakes";
  * settings.ts): a landscape kept by the real LandscapeStore in this file's temp HOME, over sessions the test holds.
  */
 
-/** The deps these tools reach, for a test that never calls them: the guard lets everything by, the rest throw. */
-export function unusedToolDeps(): AssistantLayoutDeps {
+/**
+ * The deps these tools reach, and the output and folder readers, for a test that never calls them: the guard lets
+ * everything by, the rest throw.
+ */
+export function unusedToolDeps(): AssistantLayoutDeps & AssistantFileDeps {
   const no = (name: string) => () => {
     throw new Error(`${name} isn't faked in this test`);
   };
@@ -49,8 +52,10 @@ export function unusedToolDeps(): AssistantLayoutDeps {
     roomSandboxed: no("roomSandboxed"),
     setRoomSandbox: no("setRoomSandbox"),
     houseWrite: no("houseWrite"),
-    settingsSeen: no("settingsSeen"),
-    changeSetting: no("changeSetting"),
+    settings: no("settings"),
+    changeSettings: no("changeSettings"),
+    mirroredOutput: no("mirroredOutput"),
+    folders: { list: no("folders.list"), read: no("folders.read"), diff: no("folders.diff") },
   };
 }
 

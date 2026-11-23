@@ -3,6 +3,7 @@
  * tab shows the work. Main's registry fixes each tool's tier, never the model: reads run, "direct" changes run and keep
  * an Undo, "confirm" changes become cards that run only on the user's Do it.
  */
+import type { ToolKind } from "./landscape";
 
 export type AssistantTier = "read" | "direct" | "confirm";
 
@@ -158,8 +159,15 @@ export const assistantModelOf = (s: { assistantModel?: unknown }): AssistantMode
 /** "Sonnet", "Opus". */
 export const assistantModelLabel = (m: AssistantModel): string => ASSISTANT_MODELS.find((x) => x.id === m)?.label ?? m;
 
-/** A step only the window can carry out: going to a session, or showing the Assistant's tab. */
-export type AssistantWindowAction = { kind: "focus"; sessionId: string } | { kind: "openTab" };
+/**
+ * A step only the window can carry out: going to a session, showing the Assistant's tab, or opening a tool window as
+ * the window's own Show does it (beside `session`'s workspace, in `area`, or docked), which places it, or docks it when
+ * its area has no room.
+ */
+export type AssistantWindowAction =
+  | { kind: "focus"; sessionId: string }
+  | { kind: "openTab" }
+  | { kind: "openTool"; tool: ToolKind; session?: string; area?: string; docked?: boolean };
 
 /** IPC channel names (preload.ts ↔ main). Every invoke answers IpcResult<…>: `{ error }` on failure. */
 export const ASSISTANT_IPC = {

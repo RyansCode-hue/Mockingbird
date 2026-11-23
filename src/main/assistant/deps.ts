@@ -3,14 +3,15 @@ import type { Landscape, LandscapePatch } from "../../shared/landscape";
 import type { PermissionMode } from "../../shared/permissionModes";
 import type { RulesApi } from "./rules";
 import type { TakeoverPlan } from "../../shared/team/takeover";
-import type { AgentKind, QuietHours, SessionInfo, SessionStatus } from "../../shared/types";
+import type { AgentKind, SessionInfo, SessionStatus } from "../../shared/types";
 import type { GateState, WireGate, WireType, WireWhen } from "../../shared/wires";
 import type { GuardOp } from "../sessionGuards";
 
 /**
  * What the Assistant's tools reach the app through (index.ts makes it; tests fake it). Each group takes the part it
- * uses (Pick<AssistantDeps, …>). It carries state and actions, never a session's output, files, environment or
- * secrets: no tool can read what isn't here.
+ * uses (Pick<AssistantDeps, …>). It carries state and actions; a session's output only through `output` and
+ * `mirroredOutput`, its folder only through `folders` (sessionFiles.ts: read only, inside the folder, secrets refused),
+ * and never the environment or secrets: no tool can read what isn't here.
  */
 
 /** A session as the Assistant sees it: its state, never its output. */
@@ -164,8 +165,8 @@ export interface AssistantWorkDeps {
   /** Push session `id`'s branch and open its pull request for ticket `ticketId` (pipeline:pr:create); its url. */
   openPr(id: string, ticketId: string, req: { target: import("../../shared/types").PrTarget; base: string; title: string; description: string; ticketTitle: string | null }): Promise<{ url: string }>;
   /**
-   * What session `id` showed last: an exited pane's buffer, a closed one's saved output (raw terminal text). The one
-   * way to a session's output here: its only reader (session_detail) asks guards.whyNot("readOutput") first.
+   * What this Mac's session `id` has shown: a pane's buffer, running or exited, or a closed one's saved output (raw
+   * terminal text). Its readers (session_detail, session_output, an allow/deny card) ask guards.whyNot("readOutput") first.
    */
   output(id: string): string;
   /** Plan usage, as each agent last reported it (usage:get). */
@@ -247,14 +248,28 @@ export interface AssistantLayoutDeps {
   /** Claim or release a House ticket in room `roomId`, as the board's house:write does: what the House said. Throws why not. */
   houseWrite(roomId: string, w: { kind: "claim"; n: number; branch: string } | { kind: "release"; n: number }): Promise<string>;
 
-  /** The settings the Assistant may read (tools/settings.ts): nothing else of Settings, and never the phone handle. */
-  settingsSeen(): AssistantSettings;
-  /** Change one of them, through settings:set's path. Throws why not. */
-  changeSetting(c: AssistantSettingChange): void;
+  /**
+   * Settings as main keeps them. The settings tools show and change only what their table (tools/settings.ts
+   * SETTINGS_TABLE) allows of them: never a credentials path or the phone handle.
+   */
+  settings(): import("../../shared/types").Settings;
+  /** Change settings through settings:set's path (changeSettings), every part that reads them told. Throws why not. */
+  changeSettings(patch: Partial<import("../../shared/types").Settings>): void;
+}
+
+export interface AssistantFileDeps {
+  // ---- reading sessions' output and folders (tools/diagnose.ts session_output, tools/files.ts) ----
+  /**
+   * What this Mac holds of teammate's room session `id`'s output: the copy its open terminal mirrors (livePanes), or
+   * null when no terminal here has it. Nothing is fetched from the teammate.
+   */
+  mirroredOutput(id: string): string | null;
+  /** Sessions' folders, read only and confined to them (sessionFiles.ts FolderReader). */
+  folders: Pick<import("./sessionFiles").FolderReader, "list" | "read" | "diff">;
 }
 
 /** Everything the tools reach, one block per tool group. */
-export interface AssistantDeps extends AssistantCoreDeps, AssistantRuleDeps, AssistantWorkDeps, AssistantLayoutDeps {}
+export interface AssistantDeps extends AssistantCoreDeps, AssistantRuleDeps, AssistantWorkDeps, AssistantLayoutDeps, AssistantFileDeps {}
 
 /** A team room whose House board couldn't be read (houseBoards): its id, its name and why. */
 export interface HouseBoardUnread {
@@ -280,19 +295,3 @@ export interface AssistantWire {
   /** A feedback wire's rounds. */
   rounds: { used: number; limit: number } | null;
 }
-
-/** The settings the Assistant reads. */
-export interface AssistantSettings {
-  notifications: boolean;
-  notifyFinished: boolean;
-  quietHours: QuietHours | null;
-  /** Phone alerts: whether a handle is set up, and whether they're on. */
-  phoneAlerts: { setUp: boolean; enabled: boolean };
-}
-
-/** One change set_setting makes. */
-export type AssistantSettingChange =
-  | { key: "notifications"; on: boolean }
-  | { key: "notifyFinished"; on: boolean }
-  | { key: "quietHours"; value: QuietHours }
-  | { key: "phoneAlerts"; on: boolean };

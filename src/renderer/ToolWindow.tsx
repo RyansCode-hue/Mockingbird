@@ -1,10 +1,10 @@
 import type React from "react";
-import type { ToolKind } from "../shared/landscape";
+import { TOOL_NAME, type ToolKind } from "../shared/landscape";
 import { ChatIcon, CloseIcon, FilesIcon, NoteIcon, RunDebugIcon, SearchIcon, SourceControlIcon } from "./Icons";
 import { TOOL_KEYS } from "./workspaceActions";
 
-/** What each tool window is called, and its icon (the rail's). */
-export const TOOL_NAME: Record<ToolKind, string> = { files: "Files", changes: "Changes", search: "Search", run: "Run & debug", artifacts: "Artifacts", chat: "Chat" };
+export { TOOL_NAME };
+/** Each tool window's icon (the rail's). */
 const TOOL_ICON: Record<ToolKind, () => React.ReactElement> = {
   files: () => <FilesIcon />,
   changes: () => <SourceControlIcon />,

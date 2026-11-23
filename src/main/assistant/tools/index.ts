@@ -9,3 +9,5 @@ export { diagnoseTools } from "./diagnose";
 export { wireTools } from "./wires";
 export { roomTools } from "./rooms";
 export { settingTools } from "./settings";
+export { fileTools } from "./files";
+export { lookTools } from "./look";
