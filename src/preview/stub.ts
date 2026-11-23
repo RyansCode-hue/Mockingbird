@@ -47,7 +47,7 @@ import { runFirstRunAudit } from "./firstRunAudit";
 // the audits' presses on the landscape that are set up rather than driven arm it as a press would (keyArm.ts)
 import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
-import { assistantApi, openAssistantSheet } from "./assistantStub";
+import { assistantApi, openAssistantTab } from "./assistantStub";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
 import { boardPlan, councilPlan, pipelinePlan, runPlanAudit, ticketsPlan } from "./planAudit";
@@ -3325,8 +3325,8 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
     if (el) then(el);
   }, 100);
 };
-// ?assistant=open|empty|unavailable: the Assistant's sheet open over the landscape (assistantStub.ts)
-openAssistantSheet(emit, params);
+// ?assistant=open|empty|unavailable: the Assistant's tab open in the side bar (assistantStub.ts)
+openAssistantTab(emit, params);
 // ?roomSandboxAsk (with ?section=team): the first room's Sandbox this room's sessions switch turned off, which asks first
 if (params.has("roomSandboxAsk")) waitFor('.team-room [aria-label^="Sandbox this room\'s sessions"]', (el) => el.click());
 {
@@ -3443,8 +3443,8 @@ if (lsFocus) {
     setTimeout(() => document.querySelector<HTMLElement>(".ls-viewport")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })), 100);
   });
 }
-// ?focusTool=explorer|scm|run (with ?lsFocus): that rail icon pressed once focus is up, docking its tool beside the
-// focused workspace
+// ?focusTool=explorer|scm|run|assistant (with ?lsFocus): that rail icon pressed once focus is up, docking its tool (or
+// the Assistant's tab) beside the focused workspace
 const focusTool = params.get("focusTool");
 if (focusTool) waitFor(".ls-focus", () => setTimeout(() => click(`.activitybar .ab-btn[data-view="${CSS.escape(focusTool)}"]`), 200));
 // ?lsHover=<id>: the pointer over that session's terminal, so a screenshot away from 100% shows the hint

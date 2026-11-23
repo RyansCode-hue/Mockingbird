@@ -4,12 +4,14 @@
  * `window.mb`, which records every call in window.__mbCalls as it does for the rest.
  *
  * The query picks what it shows:
- * - ?assistant=open: the sheet open on a thread with a done direct step and a live Undo, an undone and a failed step, a
+ * - ?assistant=open: the tab open on a thread with a done direct step and a live Undo, an undone and a failed step, a
  *   running step, a proposed card showing its prompt's pane lines, a danger card, a blocked card, a settled one and a
  *   message card with its text whole and its warnings, two rules (one on, one paused) each with its actions spelled out,
- *   and a rule run. Without ?assistant the same fixtures stand behind a closed sheet.
- * - ?assistant=empty: the sheet open on nothing yet. ?assistant=unavailable: the sheet open, and asking can't work on
- *   this Mac (the Ask row dimmed with the reason).
+ *   and a rule run. Without ?assistant the same fixtures stand behind a closed tab.
+ * - ?assistant=empty: the tab open on nothing yet. ?assistant=unavailable: the tab open, and asking can't work on this
+ *   Mac (the Ask row dimmed with the reason, the message box off).
+ * - ?assistantModel=opus: Settings → Assistant's model (else Sonnet).
+ * - ?assistantThreadProblem: the thread kept from before couldn't be read, and was moved aside: the tab says so.
  * - ?assistantUndoMs=<ms>: the live Undo's window closes that long after load (else 4 minutes).
  * - ?assistantMs=<ms>: each simulated step takes this long (else 300): an ask goes queued → thinking → answered, Do it
  *   and Cancel answer after one step, and a card Do it ran is done one step later.
@@ -17,7 +19,7 @@
  * - ?assistantRulesProblem: the rules file couldn't be read, and was kept aside: the Rules section says so.
  * - ?assistantRulesUnsaved: rule1 was turned off, but that couldn't be saved: it says it holds only until Mockingbird quits.
  */
-import { ASSISTANT_LIMITS, type AssistantCard, type AssistantRule, type AssistantStep, type AssistantTurn, type AssistantView, type RuleRun } from "../shared/assistant";
+import { ASSISTANT_LIMITS, assistantModelOf, type AssistantCard, type AssistantRule, type AssistantStep, type AssistantTurn, type AssistantView, type RuleRun } from "../shared/assistant";
 
 type Emit = (name: string, ...args: unknown[]) => void;
 
@@ -28,7 +30,7 @@ const err = (error: string) => ({ error });
 /** The fixture view the query asks for, `now` its clock. */
 export function assistantFixtures(mode: string | null, now: number, undoMs: number): AssistantView {
   if (mode === "empty" || mode === "unavailable") {
-    return { turns: [], cards: [], rules: [], runs: [], busy: false, ...(mode === "unavailable" ? { unavailable: "Claude Code isn't installed: the Assistant runs its turns on it" } : {}) };
+    return { turns: [], cards: [], rules: [], runs: [], busy: false, model: "sonnet", ...(mode === "unavailable" ? { unavailable: "Claude Code isn't installed: the Assistant runs its turns on it" } : {}) };
   }
   const t1: AssistantTurn = {
     id: "t1",
@@ -145,7 +147,7 @@ export function assistantFixtures(mode: string | null, now: number, undoMs: numb
     },
   ];
   const runs: RuleRun[] = [{ id: "run1", ruleId: "rule1", at: now - 20 * min, ok: true, text: "Started review · tests finished", steps: [{ id: "rs1", tool: "start_review", tier: "confirm", label: "Started codex-review on 5101-orgDropdowns", state: "done" }] }];
-  return { turns: [t1, t2], cards, rules, runs, busy: false };
+  return { turns: [t1, t2], cards, rules, runs, busy: false, model: "sonnet" };
 }
 
 /** The assistant's window.mb methods over the fixtures; `emit` tells the window as main's events would. */
@@ -153,6 +155,10 @@ export function assistantApi(emit: Emit, params: URLSearchParams): Record<string
   const mode = params.get("assistant");
   const stepMs = Number(params.get("assistantMs")) || 300;
   const view = assistantFixtures(mode, Date.now(), Number(params.get("assistantUndoMs")) || 4 * min);
+  view.model = assistantModelOf({ assistantModel: params.get("assistantModel") });
+  if (params.has("assistantThreadProblem")) {
+    view.threadProblem = "Your earlier thread couldn't be read: it isn't valid JSON (Unexpected end of JSON input). It's kept as ~/.mockingbird/assistant-turns.json.corrupt-1763300000000.";
+  }
   if (params.has("assistantRulesProblem")) {
     view.rulesProblem = "Your rules file couldn't be read: it isn't valid JSON (Unexpected end of JSON input). It's kept as ~/.mockingbird/assistant-rules.json.corrupt-1763300000000. The 2 rules that could be read are kept.";
   }
@@ -255,9 +261,10 @@ export function assistantApi(emit: Emit, params: URLSearchParams): Record<string
       return later({ ok: true as const });
     },
     assistantClear: async () => {
-      // a fresh thread: open cards stay, as main keeps them
+      // a fresh thread: open cards stay, as main keeps them, and what the earlier one couldn't read is said no more
       view.turns = view.turns.filter((t) => queue.includes(t));
       view.cards = view.cards.filter((c) => c.state === "open");
+      delete view.threadProblem;
       changed();
       return later({ ok: true as const });
     },
@@ -265,15 +272,15 @@ export function assistantApi(emit: Emit, params: URLSearchParams): Record<string
 }
 
 /**
- * ?assistant=…: the sheet opened once the landscape is there, as main's openSheet does; ?assistantRules: its Rules
+ * ?assistant=…: the tab opened once the landscape is there, as main's openTab does; ?assistantRules: its Rules
  * unfolded. ?assistantPalette=<text>: ⌘K opened with that typed, for a look at the Ask row.
  */
-export function openAssistantSheet(emit: Emit, params: URLSearchParams): void {
+export function openAssistantTab(emit: Emit, params: URLSearchParams): void {
   if (params.has("assistantRules")) localStorage.setItem("mb.assistant.rulesOpen", "true");
   const typed = params.get("assistantPalette");
   if (!params.get("assistant") && typed === null) return;
   const go = () => {
-    if (params.get("assistant")) emit("onAssistantWindow", { kind: "openSheet" });
+    if (params.get("assistant")) emit("onAssistantWindow", { kind: "openTab" });
     if (typed === null) return;
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
     setTimeout(() => {
@@ -292,6 +299,6 @@ export function openAssistantSheet(emit: Emit, params: URLSearchParams): void {
     }
     if (--tries > 0) return;
     clearInterval(t);
-    console.warn("[ui-preview] the landscape never mounted: the Assistant's sheet wasn't opened");
+    console.warn("[ui-preview] the landscape never mounted: the Assistant's tab wasn't opened");
   }, 100);
 }

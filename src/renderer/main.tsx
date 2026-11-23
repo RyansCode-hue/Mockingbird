@@ -7,7 +7,7 @@ import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
 import { QuickOpen } from "./QuickOpen";
 import { keyboardMoves } from "./Modal";
-import { KEYS_SWALLOWED, inputStamp, keyboardNowhere, toNowhere, userLeft } from "./keyArm";
+import { KEYS_SWALLOWED, armFocus, inputStamp, keyboardNowhere, toNowhere, userLeft } from "./keyArm";
 import { EMPTY_EDITOR, closeTab, openTab, tabKey, updateTab } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
@@ -19,7 +19,7 @@ import { DragLabel, installDragListeners } from "./drag";
 import { resumeExited } from "./resumeFlow";
 import { OVERLAYS, inEditor, ownsKeys } from "./keys";
 import { closeAsks, closeStep, closeWaits, groupChoices, ownWorktree, queueClose, sessionHolding, sessionOutline, startedSince, titleOf, worktreeGone } from "./appModel";
-import { FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, UpdateIcon, NoteIcon } from "./Icons";
+import { FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, UpdateIcon, NoteIcon, SparkleIcon } from "./Icons";
 import { ActionBar, pickActions, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
@@ -38,7 +38,7 @@ import { AGENT_NAME, HELPDESK_PRESET, asQuitAgent, otherAgent, isErr, sanitizeSe
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
-import { AssistantSheet, sheetBox, useAssistant } from "./AssistantSheet";
+import { ASSISTANT_KEYS, AssistantTab, useAssistant } from "./AssistantTab";
 import type { AssistantWindowAction } from "../shared/assistant";
 import { UsageMeter } from "./UsageMeter";
 import { DashboardBoard } from "./Dashboard";
@@ -120,9 +120,13 @@ type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "q
 /** What the side bar shows, picked from the activity bar as in VS Code. */
 type SideView = "sessions" | "explorer" | "scm" | "search" | "run"
   // team rooms: team chat
-  | "room";
+  | "room"
+  // the app Assistant: its tab, in the area tree's place (AssistantTab.tsx)
+  | "assistant";
 /** The landscape's rail adds Artifacts, a tool window of the selected workspace's area (docs/landscape.md, Tools). */
 const ARTIFACTS_VIEW = { id: "artifacts" as const, label: "Artifacts", keys: undefined as string | undefined, Icon: NoteIcon };
+/** The Assistant's tab ends the rail, on the landscape and in focus: it's no tool window, and works on no one workspace. */
+const ASSISTANT_VIEW = { id: "assistant" as const, label: "Assistant", keys: ASSISTANT_KEYS, Icon: SparkleIcon };
 const SIDE_VIEWS: { id: SideView; label: string; keys?: string; Icon: () => React.JSX.Element }[] = [
   { id: "sessions", label: "Sessions", Icon: SessionsIcon },
   { id: "explorer", label: "Explorer", keys: "⇧⌘E", Icon: FilesIcon },
@@ -132,7 +136,7 @@ const SIDE_VIEWS: { id: SideView; label: string; keys?: string; Icon: () => Reac
   // team rooms: team chat (the icon carries its own unread badge)
   { id: "room", label: "Team room", Icon: TeamRoomIcon },
 ];
-/** The rail while a workspace is in focus: the area tree, and the tools that dock beside the workspace (FocusPanel). */
+/** The rail while a workspace is in focus: the area tree and the tools that dock beside the workspace (FocusPanel), then the Assistant. */
 const FOCUS_VIEWS: ReadonlySet<SideView> = new Set<SideView>(["sessions", "explorer", "scm", "run"]);
 
 /** Overlaps before main's first answer: none known, and none unread. */
@@ -331,18 +335,26 @@ function App() {
   // a session title being edited inline in its sidebar row
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [sideCollapsed, setSideCollapsed] = usePersisted<boolean>("mb.side", false);
+  /**
+   * The Assistant's tab is open: on the landscape it shows in the side bar in the area tree's place, whether the tree was
+   * shown or hidden (mb.side), which closing it goes back to; in focus it takes the side bar's slot (focusSlot).
+   */
+  const [lsAssistant, setLsAssistant] = usePersisted<boolean>("mb.side.assistant", false);
   // the session in front of the landscape's workspace in focus (null: none is)
   const [focusFront, setFocusFront] = useState<string | null>(null);
   /**
    * What the side bar's slot holds in focus once it was changed there: the area tree, a tool docked beside the
-   * workspace, or nothing; undefined, as the landscape has it (mb.side). Focus's own, until focus ends, so the
-   * landscape's side bar is as it was; only hiding the tree (Sessions, ⌘\, ⇤) hides it on the landscape too, as it does
-   * from there.
+   * workspace, the Assistant, or nothing; undefined, as the landscape has it (mb.side, mb.side.assistant). Focus's own,
+   * until focus ends, so the landscape's side bar is as it was; only hiding the tree (Sessions, ⌘\, ⇤) hides it on the
+   * landscape too, as it does from there, and the Assistant opened or closed in focus is so on the landscape too.
    */
-  const [focusSlot, setFocusSlot] = useState<"tree" | FocusTool | null | undefined>(undefined);
+  const [focusSlot, setFocusSlot] = useState<"tree" | FocusTool | "assistant" | null | undefined>(undefined);
   const focusActs = useRef<FocusActs | null>(null);
-  const slot = focusFront && focusSlot !== undefined ? focusSlot : sideCollapsed ? null : "tree";
-  const sidePanel = slot === "tree" ? null : slot;
+  const slot = focusFront && focusSlot !== undefined ? focusSlot : lsAssistant ? "assistant" : sideCollapsed ? null : "tree";
+  /** The tool docked beside the workspace in focus, in the side bar's slot; null when the slot holds anything else. */
+  const sidePanel = slot === "tree" || slot === "assistant" ? null : slot;
+  /** The side bar shows the Assistant's tab. */
+  const assistantShown = slot === "assistant";
   const sideHidden = slot === null;
   /** The side bar shows the area tree (or the Team view's room list in its place). */
   const treeShown = slot === "tree";
@@ -544,6 +556,7 @@ function App() {
   const runningIn = (cwd: string) => runStates.filter((s) => s.worktree === cwd && (s.status === "running" || s.status === "starting")).length;
   /** Show a side bar view, from anywhere: the side bar lives on the Sessions tab. */
   const showView = (v: SideView) => {
+    if (v === "assistant") return openAssistant(true);
     setTab("sessions");
     // the side bar is the area tree, and the other views are tool windows; in focus Files, Git and Run & debug dock
     // beside the workspace in the tree's slot
@@ -556,6 +569,7 @@ function App() {
     if (focusFront && tool === "search") return searchFromFocus();
     if (tool) return showTool(tool, sessions.find((s) => s.id === focused) ?? null);
     setLsTeam(false);
+    if (lsAssistant) closeAssistant();
     if (!focusFront) return setSideCollapsed(false);
     if (sidePanel) keysOutOfSide();
     setFocusSlot("tree");
@@ -593,6 +607,7 @@ function App() {
   const teamViewOn = (roomId: string | null) => {
     openTeamView(roomId);
     setLsTeam(true);
+    if (lsAssistant) closeAssistant();
     if (focusFront) setFocusSlot("tree");
     else setSideCollapsed(false);
   };
@@ -1297,6 +1312,12 @@ function App() {
       return;
     }
     if (e.ctrlKey && e.shiftKey && !cmd && e.key.toLowerCase() === "g") return viewKey("scm");
+    // the Assistant's tab: from anywhere, the message box included, as its rail button
+    if (cmd && e.shiftKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "a") {
+      handled();
+      toggleAssistant();
+      return;
+    }
     if (cmd && e.shiftKey && e.key.toLowerCase() === "b") {
       handled();
       openControlRoom();
@@ -1363,19 +1384,45 @@ function App() {
     document.addEventListener(KEYS_SWALLOWED, on);
     return () => document.removeEventListener(KEYS_SWALLOWED, on);
   }, []);
-  // ---- the app Assistant (docs/assistant.md): asked in ⌘K, working in a sheet docked over the landscape ----
+  // ---- the app Assistant (docs/assistant.md): a tab of the side bar, asked in its message box or from ⌘K ----
   const assistant = useAssistant();
-  const [assistantOpen, setAssistantOpen] = useState(false);
-  /** Ask from ⌘K: the sheet, which lives on the landscape, opens to show the work. */
-  const askAssistant = (text: string) => {
+  /**
+   * The keyboard, if it's in the Assistant's tab or nowhere, goes where it would be without the tab: the workspace in
+   * focus's terminal, else the landscape, armed. Left in a tab that's closing, it would fall to keyArm's holder.
+   */
+  const keysOutOfAssistant = () => {
+    const a = document.activeElement;
+    if (!keyboardNowhere() && !a?.closest(".as-tab")) return;
+    if (focusFront) focusActs.current?.keysToTerminal();
+    else armFocus(landscapeHome());
+  };
+  /** Show the Assistant's tab (on the landscape's tab), its message box taking the keyboard when `keys`. */
+  const openAssistant = (keys: boolean) => {
     setTab("sessions");
-    setAssistantOpen(true);
+    setLsAssistant(true);
+    if (focusFront) {
+      if (sidePanel) keysOutOfSide();
+      setFocusSlot("assistant");
+    }
+    if (keys) assistant.focusBox();
+  };
+  /** Close it: on the landscape the side bar goes back to the area tree, or hidden, as it was; in focus the slot empties. */
+  const closeAssistant = () => {
+    keysOutOfAssistant();
+    setLsAssistant(false);
+    if (focusFront) setFocusSlot(null);
+  };
+  /** Its rail button and ⇧⌘A: closed if it's showing, else shown with the message box ready to type in. */
+  const toggleAssistant = () => (tab === "sessions" && assistantShown ? closeAssistant() : openAssistant(true));
+  /** Ask from ⌘K: the tab opens to show the work, the message box ready for the next question. */
+  const askAssistant = (text: string) => {
+    openAssistant(true);
     void assistant.ask(text);
   };
-  // steps only the window can carry out: opening the sheet, and going to a session
+  // steps only the window can carry out: showing the tab (the keyboard stays where it is), and going to a session
   const assistantWindow = useRef((_a: AssistantWindowAction) => {});
   assistantWindow.current = (a) => {
-    if (a.kind === "openSheet") return setAssistantOpen(true);
+    if (a.kind === "openTab") return openAssistant(false);
     if (!sessions.some((s) => s.id === a.sessionId)) {
       console.warn(`[mockingbird] the Assistant asked to go to ${a.sessionId}, which isn't a session here`);
       return lsSay("The Assistant asked to go to a session that isn't here any more");
@@ -1543,7 +1590,7 @@ function App() {
   /** Whether `tool` is open where the rail would open it: docked, or placed on the selected workspace (or its area). */
   const toolOpen = (tool: ToolKind) => Object.values(landscapeState?.landscape.tools ?? {}).some((w) => openOn(w, tool, selScope(tool)));
   /** The rail's views and the tools they are on the landscape. */
-  const toolOfView = (v: SideView): ToolKind | null => ({ explorer: "files", scm: "changes", search: "search", run: "run", room: "chat", sessions: null } as const)[v];
+  const toolOfView = (v: SideView): ToolKind | null => ({ explorer: "files", scm: "changes", search: "search", run: "run", room: "chat", sessions: null, assistant: null } as const)[v];
 
   // ---- in focus: the side bar's slot holds the area tree or one tool docked beside the workspace (FocusPanel) ----
   /** The session in front of the workspace in focus, one of this Mac's or a teammate's; null with none in focus. */
@@ -2784,7 +2831,7 @@ function App() {
         migration={migration}
       />
       {landscapeLayout && landscapeState ? (
-        <div className={assistantOpen ? "ls-row with-sheet" : "ls-row"}>
+        <div className="ls-row">
         <BadgeContext.Provider value={badgeEnv}>
         <Landscape
           connectRef={connectRef}
@@ -2823,7 +2870,7 @@ function App() {
           onSeen={onLsSeen}
           switcher={sideCollapsed}
           onShowTree={() => showView("sessions")}
-          treeHidden={sideCollapsed || lsTeam}
+          treeHidden={sideCollapsed || lsTeam || lsAssistant}
           actionsFor={actionsFor}
           chromeFor={chromeFor}
           windowFor={windowFor}
@@ -2844,10 +2891,8 @@ function App() {
           nextStep={addNextStep}
           focusRef={focusActs}
           onFocusFront={onFocusFront}
-          clearOf={sheetBox}
         />
         </BadgeContext.Provider>
-        <AssistantSheet open={assistantOpen} assistant={assistant} home={landscapeHome} onClose={() => setAssistantOpen(false)} />
         {/* in focus, tools dock on the left, in the side bar's slot (FocusPanel); the right edge's are the landscape's */}
         {!focusFront && dockColumn()}
         </div>
@@ -3462,7 +3507,7 @@ function App() {
         {tab === "sessions" && (
         <>
         <nav className="activitybar" aria-label="Side bar views" onClick={focusFront ? keysBackAfterClick : undefined}>
-          {(focusFront ? SIDE_VIEWS.filter((v) => FOCUS_VIEWS.has(v.id)) : [...SIDE_VIEWS, ARTIFACTS_VIEW]).map(({ id, label: viewLabel, keys, Icon }) => {
+          {(focusFront ? [...SIDE_VIEWS.filter((v) => FOCUS_VIEWS.has(v.id)), ASSISTANT_VIEW] : [...SIDE_VIEWS, ARTIFACTS_VIEW, ASSISTANT_VIEW]).map(({ id, label: viewLabel, keys, Icon }) => {
             // on the landscape the views are tool windows, named as their windows are: lit while one is open on the
             // selection (or docked). Artifacts and Chat open on the selection's area. In focus the rail is the tree and
             // the tools that dock beside the workspace, on the session in front of it, in the tree's slot
@@ -3470,7 +3515,7 @@ function App() {
             const docks = focusFront && isFocusTool(tool) ? tool : null;
             const label = tool ? TOOL_NAME[tool] : viewLabel;
             const where = docks ? "docked beside the workspace in focus" : tool === "artifacts" || tool === "chat" ? "a window in the selected workspace's area" : "a window beside the selected workspace";
-            const on = docks ? sidePanel === docks : tool ? toolOpen(tool) : id === "sessions" && treeShown && !lsTeam;
+            const on = docks ? sidePanel === docks : tool ? toolOpen(tool) : id === "assistant" ? assistantShown : id === "sessions" && treeShown && !lsTeam;
             // what the selection's menu has off is off here too (a click says why)
             const no = tool && !on ? (docks ? toolGate(tool, focusSession) : toolGate(tool, selectedAny, selArea)) : null;
             const badge =
@@ -3480,11 +3525,17 @@ function App() {
                 key={id}
                 className={`ab-btn ${on ? "on" : ""} ${no ? "off" : ""}`}
                 data-view={id}
-                title={tool ? `${label}${keys ? ` (${keys})` : ""} — ${on ? (docks ? "close it" : "close its window") : no ?? where}` : `${label}${keys ? ` (${keys})` : ""}${on ? " — click to hide the side bar (⌘\\)" : ""}`}
+                title={
+                  tool
+                    ? `${label}${keys ? ` (${keys})` : ""} — ${on ? (docks ? "close it" : "close its window") : no ?? where}`
+                    : id === "assistant"
+                      ? `${label} (${keys}) — ${on ? "close it" : "ask about your sessions, or for a change to them"}`
+                      : `${label}${keys ? ` (${keys})` : ""}${on ? " — click to hide the side bar (⌘\\)" : ""}`
+                }
                 aria-label={label}
                 aria-pressed={on}
                 aria-disabled={no ? true : undefined}
-                onClick={() => (docks ? (no ? lsSay(no) : toggleFocusTool(docks)) : tool ? toggleTool(tool) : on ? hideTree() : showView("sessions"))}
+                onClick={() => (docks ? (no ? lsSay(no) : toggleFocusTool(docks)) : tool ? toggleTool(tool) : id === "assistant" ? toggleAssistant() : on ? hideTree() : showView("sessions"))}
               >
                 <Icon />
                 {id === "scm" && scmCountError ? (
@@ -3504,8 +3555,9 @@ function App() {
         <div className={`sidebar ${sideHidden ? "collapsed" : ""}`} style={{ width: sideHidden ? 0 : sideW }}>
           <div className="side-inner" ref={sideInner} style={{ width: sideW }}>
           {focusPanel()}
-          {/* kept while a tool is docked in its slot, so the tree and the room's chat keep what they had */}
-          <div className={`side-view ${sidePanel ? "off" : ""}`}>
+          {assistantShown && <AssistantTab assistant={assistant} home={landscapeHome} onClose={closeAssistant} onEscape={keysOutOfAssistant} />}
+          {/* kept while a tool or the Assistant is in its slot, so the tree and the room's chat keep what they had */}
+          <div className={`side-view ${sidePanel || assistantShown ? "off" : ""}`}>
           <div className="side-head">
             {/* the side bar is the area tree (designs B and L) */}
             <span className="side-title">{lsTeam ? "Team rooms" : "Landscape"}</span>
@@ -3763,6 +3815,7 @@ function App() {
             { label: "Source Control — stage, commit, push", kbd: "⌃⇧G", run: () => showView("scm") },
             { label: "Run and Debug — start the focused worktree's services", kbd: "⌘⇧D", run: () => showView("run") },
             { label: "Toggle the log panel", kbd: "⌘J", run: () => (setTab("sessions"), setPanelOpen((o) => !o)) },
+            { label: assistantShown && tab === "sessions" ? "Hide the Assistant" : "Show the Assistant", kbd: "⌘⇧A", run: toggleAssistant },
             { label: "Settings", run: () => setTab("settings") },
             { label: "Import sessions", run: () => setModal("import") },
             { label: "Join a team room — paste a teammate's code", run: () => setJoinDlg(true) },

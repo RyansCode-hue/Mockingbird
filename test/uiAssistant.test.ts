@@ -2,12 +2,12 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
-import { askPlace, cardState, nextChange, undoLive } from "../src/renderer/assistantModel";
+import { ASK_EXAMPLES, askCounter, askPlace, askable, cardState, lastQuestion, nextChange, undoLive } from "../src/renderer/assistantModel";
 import type { AssistantCard, AssistantStep, AssistantView } from "../src/shared/assistant";
 
-// The app Assistant's window side (docs/assistant.md → The sheet and ⌘K) in the UI preview, in real headless Chrome:
+// The app Assistant's window side (docs/assistant.md → The tab and ⌘K) in the UI preview, in real headless Chrome:
 // local only (CI runners have no desktop); the script passes a mock keychain. src/preview/assistantStub.ts stands in for
-// main: ?assistant=open opens the sheet on its fixtures (a done direct step st1 with a live Undo, an undone st2 and a
+// main: ?assistant=open opens the tab on its fixtures (a done direct step st1 with a live Undo, an undone st2 and a
 // failed st3; card c1 running; open cards c2 (its prompt's pane lines), c3 (danger), c4 (blocked) and c6 (a message,
 // whole, with its warnings); c5 settled; rule1 on, rule2 paused, each with its actions spelled out; a run).
 // window.__mbCalls is what the window asked main for.
@@ -18,7 +18,8 @@ const local = !process.env.CI && fs.existsSync(chrome);
  * Open the preview at `query`, wait for `ready` (a selector), run `steps` (an async function body) once, and return
  * what it returns. In `steps`: `$`/`$$` query the page, `sleep`, `until(fn, ms)` polls, `calls()` is window.__mbCalls,
  * `asked(mark)` the Assistant calls since call `mark` (its view reads left out), `rows()` the palette's rows ("ASK" for
- * Ask Assistant, "*" on the selected one), `typeQ(text)` types into the palette, `openPalette()` presses ⌘K.
+ * Ask Assistant, "*" on the selected one), `typeQ(text)` types into the palette, `openPalette()` presses ⌘K, `typeBox(text)`
+ * puts `text` in the tab's message box as typing would (its value whole, then an input event).
  *
  * For the keyboard: `press(...keys)` presses for real (scripts/ui-preview.mjs's window.__mbKeys), `click(el)` presses
  * the mouse on an element's middle, `where()` names what has the keyboard ("term:<id>" for a session's terminal,
@@ -79,6 +80,12 @@ async function drive<T>(query: string, ready: string, steps: string, { size = "1
         input.dispatchEvent(new Event("input", { bubbles: true }));
         await sleep(150);
       };
+      const typeBox = async (text) => {
+        const box = $(".as-tab .as-input");
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(box, text);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+        await sleep(80);
+      };
       w.__asRun = (async () => { ${steps} })().then((v) => (w.__asOut = JSON.stringify(v ?? null)), (e) => (w.__asOut = JSON.stringify({ failed: String(e && e.stack || e) })));
     }
     return w.__asOut ?? null;
@@ -90,10 +97,22 @@ async function drive<T>(query: string, ready: string, steps: string, { size = "1
 }
 
 describe("the Assistant's window-side rules", () => {
-  it("moves the landscape's controls for the open sheet by the row's class, with no :has() on the row, which every change in the landscape would check again", () => {
-    const css = fs.readFileSync(path.join(__dirname, "../src/renderer/styles.css"), "utf8");
-    expect(css).toMatch(/\.ls-row\.with-sheet \.ls-minimap/);
-    expect(css.match(/\.ls-row:has\(/g) ?? []).toEqual([]);
+  it("asks with the message box's words trimmed, does nothing for nothing, and says past the limit rather than cutting", () => {
+    expect(askable("  what's waiting?\n")).toEqual({ ok: true, text: "what's waiting?" });
+    expect(askable(" \n\t ")).toEqual({ ok: false, why: null });
+    expect(askable("x".repeat(4_000))).toEqual({ ok: true, text: "x".repeat(4_000) });
+    expect(askable(`  ${"x".repeat(4_001)}  `)).toEqual({ ok: false, why: "That's 4,001 characters: the Assistant takes at most 4,000" });
+    expect(askCounter("x".repeat(3_599))).toBe(null);
+    expect(askCounter("x".repeat(3_600))).toBe("3,600 / 4,000");
+    expect(askCounter("x".repeat(4_200))).toBe("4,200 / 4,000");
+  });
+
+  it("brings back the question asked last with ↑, answered or refused", () => {
+    expect(lastQuestion([], [])).toBe(null);
+    expect(lastQuestion([{ at: 1, text: "a" }, { at: 5, text: "b" }], [{ at: 3, text: "refused" }])).toBe("b");
+    expect(lastQuestion([{ at: 1, text: "a" }], [{ at: 3, text: "refused" }])).toBe("refused");
+    expect(ASK_EXAMPLES.length).toBeGreaterThanOrEqual(2);
+    for (const x of ASK_EXAMPLES) expect(askable(x).ok).toBe(true);
   });
 
   it("places ⌘K's Ask row: nowhere for nothing, first for no match or a sentence, last otherwise and for a row's own words", () => {
@@ -123,7 +142,7 @@ describe("the Assistant's window-side rules", () => {
     expect(undoLive(step({ undoUntil: 5_000, tier: "confirm" }), 1_000)).toBe(false);
   });
 
-  it("shows an open card past its time as expired, and wakes the sheet at the next Undo or card to run out", () => {
+  it("shows an open card past its time as expired, and wakes the tab at the next Undo or card to run out", () => {
     expect(cardState(card({}), 1_999)).toBe("open");
     expect(cardState(card({}), 2_000)).toBe("expired");
     expect(cardState(card({ state: "done" }), 9_000)).toBe("done");
@@ -133,6 +152,7 @@ describe("the Assistant's window-side rules", () => {
       rules: [],
       runs: [{ id: "r", ruleId: "q", at: 0, ok: true, text: "", steps: [step({ undoUntil: 2_500 })] }],
       busy: false,
+      model: "sonnet",
     };
     expect(nextChange(view, 1_000)).toBe(2_000);
     expect(nextChange(view, 2_000)).toBe(2_500);
@@ -169,8 +189,8 @@ describe.skipIf(!local)("⌘K's Ask Assistant row", () => {
     expect(r.literal.at(-1)).toBe("ASK");
   }, 120_000);
 
-  it("asks with ⌘⏎ even when the row is last, and with ⏎ when it's selected: the palette closes, the sheet opens and the turn goes queued, thinking, answered", async () => {
-    const r = await drive<{ cmdEnter: unknown[]; palette: boolean; sheet: boolean; states: string[]; waits: string[]; reply: string; enter: unknown[]; you: string; html: boolean }>(
+  it("asks with ⌘⏎ even when the row is last, and with ⏎ when it's selected: the palette closes, the tab opens with the keyboard in its box, and the turn goes queued, thinking, answered", async () => {
+    const r = await drive<{ cmdEnter: unknown[]; palette: boolean; tabOpen: boolean; boxKeys: boolean; states: string[]; waits: string[]; reply: string; enter: unknown[]; you: string; html: boolean; boxKeys2: boolean }>(
       "assistantMs=500",
       ".ls-viewport",
       `
@@ -180,7 +200,9 @@ describe.skipIf(!local)("⌘K's Ask Assistant row", () => {
       const mark = calls().length;
       await press({ key: "Enter", meta: true });
       const cmdEnter = asked(mark);
-      await until(() => !!$(".as-sheet"), 2000);
+      await until(() => !!$(".as-tab"), 2000);
+      await sleep(100);
+      const boxKeys = document.activeElement === $(".as-tab .as-input");
       const states = [];
       const waits = [];
       for (let i = 0; i < 120; i++) {
@@ -194,7 +216,7 @@ describe.skipIf(!local)("⌘K's Ask Assistant row", () => {
         await sleep(40);
       }
       const palette = !!$(".palette");
-      const sheet = !!$(".as-sheet");
+      const tabOpen = !!$(".sidebar .as-tab");
       const reply = $('.as-turn[data-turn="ask1"] .as-reply')?.textContent ?? "";
       // ⏎ on the row when it's first: words with markup in them stay text, in the question and in the reply
       await openPalette();
@@ -204,11 +226,14 @@ describe.skipIf(!local)("⌘K's Ask Assistant row", () => {
       const enter = asked(mark2);
       await until(() => $('.as-turn[data-turn="ask2"]')?.dataset.state === "done", 4000);
       const t2 = $('.as-turn[data-turn="ask2"]');
-      return { cmdEnter, palette, sheet, states, waits, reply, enter, you: t2?.querySelector(".as-you")?.textContent ?? "", html: !!t2?.querySelector("b") };`
+      const boxKeys2 = document.activeElement === $(".as-tab .as-input");
+      return { cmdEnter, palette, tabOpen, boxKeys, states, waits, reply, enter, you: t2?.querySelector(".as-you")?.textContent ?? "", html: !!t2?.querySelector("b"), boxKeys2 };`
     );
     expect(r.cmdEnter).toEqual([["assistantAsk", "landscape"]]);
     expect(r.palette).toBe(false);
-    expect(r.sheet).toBe(true);
+    expect(r.tabOpen).toBe(true);
+    expect(r.boxKeys).toBe(true);
+    expect(r.boxKeys2).toBe(true);
     expect(r.states).toEqual(["queued", "thinking", "done"]);
     expect(r.waits[0]).toMatch(/Waiting for the question before it/);
     expect(r.waits[1]).toMatch(/Thinking/);
@@ -218,8 +243,8 @@ describe.skipIf(!local)("⌘K's Ask Assistant row", () => {
     expect(r.html).toBe(false);
   }, 120_000);
 
-  it("opens the landscape and the sheet when asked from another tab", async () => {
-    const r = await drive<{ tab: string | null; sheet: boolean }>(
+  it("opens the landscape and the Assistant's tab when asked from another tab", async () => {
+    const r = await drive<{ tab: string | null; tabOpen: boolean }>(
       "tab=dashboard",
       ".topbar",
       `
@@ -227,13 +252,13 @@ describe.skipIf(!local)("⌘K's Ask Assistant row", () => {
       await openPalette();
       await typeQ("what is waiting on me");
       await press({ key: "Enter" });
-      await until(() => !!$(".as-sheet"), 3000);
-      return { tab: $(".tabs .tab.on")?.textContent ?? null, sheet: !!$(".as-sheet") };`
+      await until(() => !!$(".as-tab"), 3000);
+      return { tab: $(".tabs .tab.on")?.textContent ?? null, tabOpen: !!$(".sidebar .as-tab") };`
     );
-    expect(r).toEqual({ tab: "Landscape", sheet: true });
+    expect(r).toEqual({ tab: "Landscape", tabOpen: true });
   }, 120_000);
 
-  it("shows main's { error } answer in the sheet", async () => {
+  it("shows main's { error } answer in the tab", async () => {
     const r = await drive<{ text: string; said: string; role: string | null }>(
       "assistantAsk=error",
       ".ls-viewport",
@@ -254,7 +279,7 @@ describe.skipIf(!local)("⌘K's Ask Assistant row", () => {
   it("is dimmed with the reason when asking can't work on this Mac, and neither ⏎ nor ⌘⏎ asks", async () => {
     const r = await drive<{ banner: string; row: string[]; off: boolean; state: string; asked: unknown[]; palette: boolean }>(
       "assistant=unavailable",
-      ".as-sheet",
+      ".as-tab",
       `
       await sleep(300);
       const banner = $(".as-unavail")?.textContent ?? "";
@@ -277,11 +302,11 @@ describe.skipIf(!local)("⌘K's Ask Assistant row", () => {
   }, 120_000);
 });
 
-describe.skipIf(!local)("the Assistant's sheet", () => {
-  it("shows each state: steps, cards, rules, rule runs and the hint", async () => {
+describe.skipIf(!local)("the Assistant's tab", () => {
+  it("shows each state: steps, cards, rules, rule runs, and its model in the header", async () => {
     const r = await drive<Record<string, unknown>>(
       "assistant=open&assistantRules",
-      ".as-sheet .as-card",
+      ".as-tab .as-card",
       `
       await sleep(300);
       const stateOf = (el) => (el.className.match(/\\bst-(\\w+)/) || [])[1] ?? null;
@@ -314,8 +339,13 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
         rulesHead: $(".as-rules-h").textContent,
         rules,
         runs: $$(".as-run").map((x) => [x.dataset.run, x.querySelector(".as-run-t").textContent, x.querySelector(".as-run-rule")?.textContent]),
-        hint: $(".as-hint").textContent,
-        head: [$(".as-head-t").textContent, ...$$(".as-head button").map((b) => b.getAttribute("aria-label") ?? b.textContent)],
+        hint: $(".as-ask-hint").textContent,
+        head: [$(".as-head .side-title").textContent, $(".as-head .as-model").textContent, ...$$(".as-head button").map((b) => b.getAttribute("aria-label") ?? b.textContent)],
+        rail: (() => {
+          const b = $('.activitybar .ab-btn[data-view="assistant"]');
+          return { pressed: b?.getAttribute("aria-pressed") ?? null, title: b?.title ?? null };
+        })(),
+        sideBar: { inSideBar: !!$(".sidebar .side-inner > .as-tab"), treeHidden: getComputedStyle($(".sidebar .side-view")).display, clear: $(".ls-viewport").getBoundingClientRect().left >= $(".sidebar").getBoundingClientRect().right - 1 },
       };`
     );
     expect(r.turns).toEqual([
@@ -369,27 +399,66 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
       { id: "rule2", on: "false", paused: "Paused: 3 runs failed in a row: Messages isn't allowed to send", last: expect.stringMatching(/^Failed .*: Messages isn't allowed to send$/) },
     ]);
     expect(r.runs).toEqual([["run1", "Started review · tests finished", "When tests finishes, start the review"]]);
-    expect(r.hint).toBe("⌘K to ask more");
-    expect(r.head).toEqual(["Assistant", "Clear", "Close the Assistant"]);
+    expect(r.hint).toBe("⏎ ask · ⇧⏎ new line");
+    expect(r.head).toEqual(["Assistant", "Sonnet", "Clear", "Close the Assistant"]);
+    expect(r.rail).toEqual({ pressed: "true", title: "Assistant (⇧⌘A) — close it" });
+    // in the side bar, in the area tree's place, and over nothing of the landscape's
+    expect(r.sideBar).toEqual({ inSideBar: true, treeHidden: "none", clear: true });
   }, 120_000);
 
-  it("shows nothing yet as a quiet hint, not an empty box", async () => {
-    const r = await drive<{ quiet: string; turns: number; rulesHead: string }>(
-      "assistant=empty",
-      ".as-sheet .as-quiet",
+  it("invites a question when there's nothing yet, with examples a click puts in the box (asking nothing)", async () => {
+    const r = await drive<{ quiet: string; examples: string[]; turns: number; rulesHead: string; filled: string; boxKeys: boolean; asked: unknown[]; model: string }>(
+      "assistant=empty&assistantModel=opus",
+      ".as-tab .as-quiet",
       `
       await sleep(300);
-      return { quiet: $(".as-body .as-quiet").textContent, turns: $$(".as-turn").length, rulesHead: $(".as-rules-h").textContent };`
+      const examples = $$(".as-example").map((b) => b.textContent);
+      const mark = calls().length;
+      await click($$(".as-example")[1]);
+      await sleep(150);
+      return {
+        quiet: $(".as-body .as-quiet").textContent,
+        examples,
+        turns: $$(".as-turn").length,
+        rulesHead: $(".as-rules-h").textContent,
+        filled: $(".as-input").value,
+        boxKeys: document.activeElement === $(".as-input"),
+        asked: asked(mark),
+        model: $(".as-model").textContent,
+      };`
     );
-    expect(r.quiet).toMatch(/^Ask in ⌘K/);
+    expect(r.quiet).toMatch(/^Ask about your sessions/);
+    expect(r.examples).toEqual([...ASK_EXAMPLES]);
     expect(r.turns).toBe(0);
     expect(r.rulesHead).toBe("Rules· none");
+    expect(r.filled).toBe(ASK_EXAMPLES[1]);
+    expect(r.boxKeys).toBe(true);
+    expect(r.asked).toEqual([]);
+    expect(r.model).toBe("Opus");
+  }, 120_000);
+
+  it("says when the thread kept from before couldn't be read, until Clear", async () => {
+    const r = await drive<{ said: string; role: string | null; after: boolean }>(
+      "assistant=open&assistantThreadProblem",
+      ".as-tab .as-thread-problem",
+      `
+      await sleep(300);
+      const p = $(".as-thread-problem");
+      const said = p.textContent;
+      const role = p.getAttribute("role");
+      await click($(".as-head .as-hbtn"));
+      await until(() => !$(".as-thread-problem"), 2000);
+      return { said, role, after: !!$(".as-thread-problem") };`
+    );
+    expect(r.said).toMatch(/^Your earlier thread couldn't be read: .* It's kept as ~\/\.mockingbird\/assistant-turns\.json\.corrupt-\d+\.$/);
+    expect(r.role).toBe("alert");
+    expect(r.after).toBe(false);
   }, 120_000);
 
   it("says when the rules file couldn't be read and where it was kept, with Rules folded too", async () => {
     const r = await drive<{ text: string; role: string | null; folded: string | null; rules: number }>(
       "assistant=open&assistantRulesProblem",
-      ".as-sheet .as-rules-problem",
+      ".as-tab .as-rules-problem",
       `
       await sleep(300);
       const p = $(".as-rules .as-rules-problem");
@@ -404,7 +473,7 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
   it("says on a rule when its being off couldn't be saved, and holds only until Mockingbird quits", async () => {
     const r = await drive<{ on: string | null; unsaved: string | null; others: number }>(
       "assistant=open&assistantRules&assistantRulesUnsaved",
-      '.as-sheet [data-rule="rule1"]',
+      '.as-tab [data-rule="rule1"]',
       `
       await sleep(300);
       const rule = $('[data-rule="rule1"]');
@@ -416,7 +485,7 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
   it("calls main for Undo, Do it, Cancel, the rule switches, Remove and Clear; Do it and Cancel are off while one runs, and an { error } shows on its card", async () => {
     const r = await drive<Record<string, unknown>>(
       "assistant=open&assistantRules&assistantMs=600",
-      ".as-sheet .as-card",
+      ".as-tab .as-card",
       `
       await sleep(300);
       const mark = calls().length;
@@ -472,7 +541,7 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
   it("hides a step's Undo once its window has closed, without anything else changing", async () => {
     const r = await drive<{ before: boolean; after: boolean; until: number; goneAt: number; step: string }>(
       "assistant=open&assistantUndoMs=5000",
-      ".as-sheet .as-card",
+      ".as-tab .as-card",
       `
       const before = !!$('[data-step="st1"] .as-undo');
       const view = await w.mb.assistantView();
@@ -491,39 +560,45 @@ describe.skipIf(!local)("the Assistant's sheet", () => {
     expect(r.step).toContain("st-done");
   }, 120_000);
 
-  it("goes to a session when main asks, and opens again on openSheet after ×", async () => {
-    const r = await drive<{ selected: string | null; closed: boolean; reopened: boolean; gone: string }>(
+  it("goes to a session when main asks, and opens again on openTab after ×, leaving the keyboard where it was", async () => {
+    const r = await drive<{ selected: string | null; closed: boolean; tree: boolean; reopened: boolean; keysAt: string; keysAfter: string; gone: string }>(
       "assistant=open",
-      ".as-sheet .as-card",
+      ".as-tab .as-card",
       `
       await sleep(300);
       w.__mbEmit("onAssistantWindow", { kind: "focus", sessionId: "s5" });
       await until(() => $(".ls-node.selected")?.dataset.front === "s5", 3000);
       const selected = $(".ls-node.selected")?.dataset.front ?? null;
-      await click($(".as-hbtn.icon"));
+      await click($(".as-close"));
       await sleep(200);
-      const closed = !$(".as-sheet");
-      w.__mbEmit("onAssistantWindow", { kind: "openSheet" });
-      await until(() => !!$(".as-sheet"), 2000);
-      const reopened = !!$(".as-sheet");
+      const closed = !$(".as-tab");
+      const tree = getComputedStyle($(".sidebar .side-view")).display !== "none";
+      const keysAt = where();
+      w.__mbEmit("onAssistantWindow", { kind: "openTab" });
+      await until(() => !!$(".as-tab"), 2000);
+      const reopened = !!$(".as-tab");
+      const keysAfter = where();
       w.__mbEmit("onAssistantWindow", { kind: "focus", sessionId: "nope" });
       await sleep(300);
-      return { selected, closed, reopened, gone: [...document.querySelectorAll(".ls-note")].map((n) => n.textContent).join(" | ") };`
+      return { selected, closed, tree, reopened, keysAt, keysAfter, gone: [...document.querySelectorAll(".ls-note")].map((n) => n.textContent).join(" | ") };`
     );
     expect(r.selected).toBe("s5");
     expect(r.closed).toBe(true);
+    // the area tree it stood in for is back
+    expect(r.tree).toBe(true);
     expect(r.reopened).toBe(true);
+    expect(r.keysAfter).toBe(r.keysAt);
     expect(r.gone).toContain("The Assistant asked to go to a session that isn't here any more");
   }, 120_000);
 });
 
-describe.skipIf(!local)("the Assistant's sheet and the keyboard", () => {
+describe.skipIf(!local)("the Assistant's tab and the keyboard", () => {
   it("leaves the keyboard in the session's terminal whatever is clicked on it, and Esc still reaches the terminal", async () => {
-    const r = await drive<{ start: string; out: { name: string; at?: string; typed?: string[]; missing?: boolean }[]; esc: string[]; sheet: boolean; swallowed: string[] }>(
+    const r = await drive<{ start: string; out: { name: string; at?: string; typed?: string[]; missing?: boolean }[]; esc: string[]; tabOpen: boolean; swallowed: string[] }>(
       "lsFocus=s2&assistant=open&assistantRules&assistantMs=200",
       '.ls-focus .ls-tab[data-sid="s2"]',
       `
-      await until(() => !!$(".as-sheet .as-card"), 4000);
+      await until(() => !!$(".as-tab .as-card"), 4000);
       const start = await termIn("s2");
       const out = [];
       const clickAndType = async (name, el) => {
@@ -545,29 +620,29 @@ describe.skipIf(!local)("the Assistant's sheet and the keyboard", () => {
       await clickAndType("rulesFold", $(".as-rules-h"));
       await clickAndType("words", $('.as-turn[data-turn="t1"] .as-reply'));
       await clickAndType("payload", $('[data-card="c6"] .as-payload'));
-      await clickAndType("background", $(".as-hint"));
+      await clickAndType("background", $(".as-ask-hint"));
       await clickAndType("clear", $(".as-head .as-hbtn:not(.icon)"));
       const mark = w.__mbCalls.length;
       await press({ key: "Escape" });
       await sleep(200);
       const esc = typed(mark);
-      const sheet = !!$(".as-sheet");
-      await clickAndType("close", $(".as-hbtn.icon"));
-      return { start, out, esc, sheet, swallowed };`,
+      const tabOpen = !!$(".as-tab");
+      await clickAndType("close", $(".as-close"));
+      return { start, out, esc, tabOpen, swallowed };`,
       { size: "1600x900" }
     );
     expect(r.start).toBe("term:s2");
     const names = ["undo", "doIt", "cancel", "blocked", "ruleSwitch", "remove", "rulesFold", "words", "payload", "background", "clear", "close"];
     expect(r.out).toEqual(names.map((name) => ({ name, at: "term:s2", typed: ["s2:x"] })));
     expect(r.esc).toEqual(["s2:\u001b"]);
-    expect(r.sheet).toBe(true);
+    expect(r.tabOpen).toBe(true);
     expect(r.swallowed).toEqual([]);
   }, 180_000);
 
   it("keeps the landscape armed when it had the keyboard, arms it from nowhere, and leaves the landscape's Esc to it", async () => {
-    const r = await drive<{ armedAt: string; armedKeys: boolean; nowhereAt: string; nowhereKeys: boolean; selected: number; afterEsc: number; sheet: boolean; swallowed: string[] }>(
+    const r = await drive<{ armedAt: string; armedKeys: boolean; nowhereAt: string; nowhereKeys: boolean; selected: number; afterEsc: number; tabOpen: boolean; swallowed: string[] }>(
       "assistant=open",
-      ".as-sheet .as-card",
+      ".as-tab .as-card",
       `
       await sleep(400);
       const vp = $(".ls-viewport");
@@ -594,15 +669,15 @@ describe.skipIf(!local)("the Assistant's sheet and the keyboard", () => {
       const nowhereKeys = !!$(".ls-keys");
       await press({ key: "Escape" });
       await until(() => !$(".ls-keys"), 1500);
-      // a workspace selected, then a press on the sheet: Esc is still the landscape's, and lets the selection go
+      // a workspace selected, then a press on the tab: Esc is still the landscape's, and lets the selection go
       await click($('.ls-node[data-front="s1"]'));
       await sleep(300);
       const selected = $$(".ls-node.selected").length;
-      await click($(".as-hint"));
+      await click($(".as-ask-hint"));
       await sleep(200);
       await press({ key: "Escape" });
       await sleep(300);
-      return { armedAt, armedKeys, nowhereAt, nowhereKeys, selected, afterEsc: $$(".ls-node.selected").length, sheet: !!$(".as-sheet"), swallowed };`
+      return { armedAt, armedKeys, nowhereAt, nowhereKeys, selected, afterEsc: $$(".ls-node.selected").length, tabOpen: !!$(".as-tab"), swallowed };`
     );
     expect(r.armedAt).toMatch(/^div\.ls-viewport/);
     expect(r.armedKeys).toBe(true);
@@ -610,13 +685,321 @@ describe.skipIf(!local)("the Assistant's sheet and the keyboard", () => {
     expect(r.nowhereKeys).toBe(true);
     expect(r.selected).toBe(1);
     expect(r.afterEsc).toBe(0);
-    expect(r.sheet).toBe(true);
+    expect(r.tabOpen).toBe(true);
     expect(r.swallowed).toEqual([]);
   }, 120_000);
 });
 
-describe.skipIf(!local)("the Assistant's sheet, looked at", () => {
-  /** The sheet's colors against the theme's tokens, and the contrast of its text on what it sits on. */
+describe.skipIf(!local)("the Assistant's message box", () => {
+  it("asks with ⏎, emptying the box and keeping the keyboard in it; a question asked while one runs shows queued; ⇧⏎ is a new line", async () => {
+    const r = await drive<Record<string, unknown>>(
+      "assistant=empty&assistantMs=600",
+      ".as-tab .as-input",
+      `
+      await sleep(300);
+      const box = $(".as-input");
+      await click(box);
+      await typeBox("  what is waiting on me?  ");
+      const mark = calls().length;
+      await press({ key: "Enter" });
+      await sleep(120);
+      const first = { asked: asked(mark), value: box.value, keys: document.activeElement === box };
+      await until(() => $('.as-turn[data-turn="ask1"]')?.dataset.state === "thinking", 3000);
+      // asked while the first one thinks: it waits its turn, and says so
+      await typeBox("and then tidy the 5101 area");
+      await press({ key: "Enter" });
+      await until(() => !!$('.as-turn[data-turn="ask2"]'), 2000);
+      const second = { states: $$(".as-turn").map((t) => [t.dataset.turn, t.dataset.state]), wait: $('.as-turn[data-turn="ask2"] .as-wait')?.textContent ?? "", value: box.value, keys: document.activeElement === box };
+      await until(() => $('.as-turn[data-turn="ask2"]')?.dataset.state === "done", 5000);
+      // ⇧⏎ adds a line, asks nothing; the box grows with its lines, up to a few, then scrolls
+      const oneLine = box.offsetHeight;
+      await typeBox("line one");
+      const mark2 = calls().length;
+      await press({ key: "Enter", shift: true });
+      await sleep(80);
+      const shiftEnter = { value: box.value, asked: asked(mark2) };
+      await typeBox("1\\n2\\n3\\n4");
+      const fourLines = box.offsetHeight;
+      await typeBox(Array.from({ length: 20 }, (_, i) => "line " + i).join("\\n"));
+      const twenty = { h: box.offsetHeight, scrolls: box.scrollHeight > box.clientHeight };
+      // nothing typed: ⏎ asks nothing
+      await typeBox("   ");
+      const mark3 = calls().length;
+      await press({ key: "Enter" });
+      await sleep(80);
+      return { first, second, shiftEnter, oneLine, fourLines, twenty, blank: asked(mark3), you: $('.as-turn[data-turn="ask1"] .as-you').textContent };`
+    );
+    expect(r.first).toEqual({ asked: [["assistantAsk", "what is waiting on me?"]], value: "", keys: true });
+    expect(r.you).toBe("what is waiting on me?");
+    const second = r.second as { states: string[][]; wait: string; value: string; keys: boolean };
+    expect(second.states).toEqual([
+      ["ask1", "thinking"],
+      ["ask2", "queued"],
+    ]);
+    expect(second.wait).toMatch(/Waiting for the question before it to finish/);
+    expect(second.value).toBe("");
+    expect(second.keys).toBe(true);
+    expect(r.shiftEnter).toEqual({ value: "line one\n", asked: [] });
+    expect(r.fourLines as number).toBeGreaterThan((r.oneLine as number) + 30);
+    const twenty = r.twenty as { h: number; scrolls: boolean };
+    expect(twenty.h).toBeLessThan((r.oneLine as number) * 6);
+    expect(twenty.scrolls).toBe(true);
+    expect(r.blank).toEqual([]);
+  }, 120_000);
+
+  it("brings back the last question with ↑ in an empty box, and only there", async () => {
+    const r = await drive<{ recalled: string; caret: number; kept: string; asked: unknown[] }>(
+      "assistant=open",
+      ".as-tab .as-input",
+      `
+      await sleep(300);
+      const box = $(".as-input");
+      await click(box);
+      await press({ key: "ArrowUp" });
+      await sleep(80);
+      const recalled = box.value;
+      const caret = box.selectionStart;
+      const mark = calls().length;
+      await typeBox("my own words");
+      await press({ key: "ArrowUp" });
+      await sleep(80);
+      return { recalled, caret, kept: box.value, asked: asked(mark) };`
+    );
+    // t2 is the fixture thread's last question
+    expect(r.recalled).toBe("restart api-fix in plan mode, allow codex-review's Bash once, and tidy up after old-spike");
+    expect(r.caret).toBe(r.recalled.length);
+    expect(r.kept).toBe("my own words");
+    expect(r.asked).toEqual([]);
+  }, 120_000);
+
+  it("says a question is past 4,000 characters rather than cutting it, and won't ask it; near the limit it counts", async () => {
+    const r = await drive<{ near: string; over: string; invalid: string | null; asked: unknown[]; kept: number; back: { hint: string; invalid: string | null } }>(
+      "assistant=empty",
+      ".as-tab .as-input",
+      `
+      await sleep(300);
+      const box = $(".as-input");
+      await click(box);
+      await typeBox("x".repeat(3700));
+      const near = $(".as-ask-hint")?.textContent ?? "";
+      await typeBox("x".repeat(4120));
+      const over = $(".as-over")?.textContent ?? "";
+      const invalid = box.getAttribute("aria-invalid");
+      const mark = calls().length;
+      await press({ key: "Enter" });
+      await click($(".as-send"));
+      await sleep(150);
+      const kept = box.value.length;
+      await typeBox("x".repeat(40));
+      return { near, over, invalid, asked: asked(mark), kept, back: { hint: $(".as-ask-hint")?.textContent ?? "", invalid: box.getAttribute("aria-invalid") } };`
+    );
+    expect(r.near).toBe("3,700 / 4,000");
+    expect(r.over).toBe("That's 4,120 characters: the Assistant takes at most 4,000");
+    expect(r.invalid).toBe("true");
+    expect(r.asked).toEqual([]);
+    expect(r.kept).toBe(4120);
+    expect(r.back).toEqual({ hint: "⏎ ask · ⇧⏎ new line", invalid: null });
+  }, 120_000);
+
+  it("shows main's { error } inline, as a failed ask from ⌘K does, and keeps going", async () => {
+    const r = await drive<{ said: string; you: string; value: string; keys: boolean }>(
+      "assistant=empty&assistantAsk=error",
+      ".as-tab .as-input",
+      `
+      await sleep(300);
+      const box = $(".as-input");
+      await click(box);
+      await typeBox("rename api to api-fix");
+      await press({ key: "Enter" });
+      await until(() => !!$(".as-turn[data-failure] .as-reply.error"), 3000);
+      return { said: $(".as-turn[data-failure] .as-reply.error").textContent, you: $(".as-turn[data-failure] .as-you").textContent, value: box.value, keys: document.activeElement === box };`
+    );
+    expect(r).toEqual({ said: "Couldn't ask: The Assistant couldn't start a turn: claude exited with code 1", you: "rename api to api-fix", value: "", keys: true });
+  }, 120_000);
+
+  it("is off, saying why, when asking can't work on this Mac", async () => {
+    const r = await drive<{ disabled: boolean; placeholder: string; examples: number }>(
+      "assistant=unavailable",
+      ".as-tab .as-input",
+      `
+      await sleep(300);
+      const box = $(".as-input");
+      return { disabled: box.disabled, placeholder: box.placeholder, examples: $$(".as-example").length };`
+    );
+    expect(r).toEqual({ disabled: true, placeholder: "Can't ask on this Mac", examples: 0 });
+  }, 120_000);
+
+  it("hands the keyboard back with Esc, keeping what's typed and the tab open: to the landscape, or in focus to the workspace's terminal", async () => {
+    const land = await drive<{ before: string; after: string; value: string; open: boolean; keys: boolean }>(
+      "assistant=empty",
+      ".as-tab .as-input",
+      `
+      await sleep(300);
+      const box = $(".as-input");
+      await click(box);
+      await typeBox("half a question");
+      const before = where();
+      await press({ key: "Escape" });
+      await sleep(200);
+      const after = where();
+      // the landscape has it, armed: its own keys work
+      await press({ key: "?", shift: true });
+      await until(() => !!$(".ls-keys"), 1500);
+      const keys = !!$(".ls-keys");
+      await press({ key: "Escape" });
+      return { before, after, value: box.value, open: !!$(".as-tab"), keys };`
+    );
+    expect(land.before).toBe("textarea.as-input");
+    expect(land.after).toMatch(/^div\.ls-viewport/);
+    expect(land.value).toBe("half a question");
+    expect(land.open).toBe(true);
+    expect(land.keys).toBe(true);
+
+    const focus = await drive<{ start: string; inBox: string; after: string; typed: string[]; open: boolean }>(
+      "lsFocus=s2&assistant=open",
+      '.ls-focus .ls-tab[data-sid="s2"]',
+      `
+      await until(() => !!$(".as-tab .as-input"), 4000);
+      const start = await termIn("s2");
+      await click($(".as-input"));
+      await sleep(100);
+      const inBox = where();
+      await press({ key: "Escape" });
+      const after = await termIn("s2");
+      const mark = w.__mbCalls.length;
+      await press({ key: "x" });
+      await sleep(150);
+      return { start, inBox, after, typed: typed(mark), open: !!$(".as-tab") };`,
+      { size: "1600x900" }
+    );
+    expect(focus).toEqual({ start: "term:s2", inBox: "textarea.as-input", after: "term:s2", typed: ["s2:x"], open: true });
+  }, 180_000);
+});
+
+describe.skipIf(!local)("the Assistant's tab on the rail", () => {
+  it("opens and closes with ⇧⌘A and its rail button, the box taking the keyboard; closing goes back to the area tree, or to a hidden side bar", async () => {
+    const r = await drive<Record<string, unknown>>(
+      "",
+      ".ls-viewport",
+      `
+      await sleep(500);
+      const btn = () => $('.activitybar .ab-btn[data-view="assistant"]');
+      const state = () => ({ open: !!$(".sidebar .as-tab"), pressed: btn()?.getAttribute("aria-pressed") ?? null, keys: where(), tree: getComputedStyle($(".sidebar .side-view")).display !== "none", hidden: $(".sidebar").classList.contains("collapsed") });
+      const title = btn()?.title ?? "";
+      await press({ key: "A", shift: true, meta: true });
+      await sleep(250);
+      const byKeys = state();
+      await press({ key: "A", shift: true, meta: true });
+      await sleep(250);
+      const closedByKeys = state();
+      await click(btn());
+      await sleep(250);
+      const byRail = state();
+      await click(btn());
+      await sleep(250);
+      const closedByRail = state();
+      // from a hidden side bar: it shows the tab, and closing hides the side bar again
+      await press({ key: "\\\\", meta: true });
+      await sleep(250);
+      const treeHidden = state();
+      await press({ key: "A", shift: true, meta: true });
+      await sleep(250);
+      const fromHidden = state();
+      await click($(".as-close"));
+      await sleep(250);
+      const backHidden = state();
+      // from another tab of the app: the landscape's tab comes up with it
+      $$(".tabs .tab").find((t) => t.textContent === "Dashboard")?.click();
+      await sleep(400);
+      await press({ key: "A", shift: true, meta: true });
+      await sleep(400);
+      const fromDashboard = { tab: $(".tabs .tab.on")?.textContent ?? null, ...state() };
+      return { title, byKeys, closedByKeys, byRail, closedByRail, treeHidden, fromHidden, backHidden, fromDashboard };`
+    );
+    expect(r.title).toBe("Assistant (⇧⌘A) — ask about your sessions, or for a change to them");
+    expect(r.byKeys).toEqual({ open: true, pressed: "true", keys: "textarea.as-input", tree: false, hidden: false });
+    expect(r.closedByKeys).toMatchObject({ open: false, pressed: "false", tree: true, hidden: false });
+    expect((r.closedByKeys as { keys: string }).keys).toMatch(/^div\.ls-viewport/);
+    expect(r.byRail).toEqual({ open: true, pressed: "true", keys: "textarea.as-input", tree: false, hidden: false });
+    expect(r.closedByRail).toMatchObject({ open: false, pressed: "false", tree: true, hidden: false });
+    expect(r.treeHidden).toMatchObject({ open: false, hidden: true });
+    expect(r.fromHidden).toMatchObject({ open: true, hidden: false, keys: "textarea.as-input" });
+    expect(r.backHidden).toMatchObject({ open: false, hidden: true });
+    expect(r.fromDashboard).toMatchObject({ tab: "Landscape", open: true, keys: "textarea.as-input" });
+  }, 120_000);
+
+  it("takes the side bar's slot in focus, one at a time with the docked tools, and keeps its draft as they swap", async () => {
+    const r = await drive<Record<string, unknown>>(
+      "lsFocus=s2",
+      '.ls-focus .ls-tab[data-sid="s2"]',
+      `
+      await termIn("s2");
+      const rail = () => $$(".activitybar .ab-btn").map((b) => b.dataset.view);
+      const slot = () => ({ assistant: !!$(".sidebar .as-tab"), tool: $(".sidebar .side-tool")?.dataset.tool ?? null });
+      await press({ key: "A", shift: true, meta: true });
+      await sleep(250);
+      const opened = { ...slot(), keys: where() };
+      await typeBox("keep this");
+      await click($('.activitybar .ab-btn[data-view="explorer"]'));
+      await sleep(250);
+      const files = slot();
+      await press({ key: "A", shift: true, meta: true });
+      await sleep(250);
+      const back = { ...slot(), draft: $(".as-input")?.value ?? null };
+      await press({ key: "A", shift: true, meta: true });
+      const closed = { ...slot(), keys: await termIn("s2") };
+      return { rail: rail(), opened, files, back, closed };`,
+      { size: "1600x900" }
+    );
+    expect(r.rail).toEqual(["sessions", "explorer", "scm", "run", "assistant"]);
+    expect(r.opened).toEqual({ assistant: true, tool: null, keys: "textarea.as-input" });
+    expect(r.files).toEqual({ assistant: false, tool: "files" });
+    expect(r.back).toEqual({ assistant: true, tool: null, draft: "keep this" });
+    expect(r.closed).toEqual({ assistant: false, tool: null, keys: "term:s2" });
+  }, 120_000);
+
+  it("runs on the model Settings → Assistant picks: Sonnet, the default, or Opus", async () => {
+    const r = await drive<{ nav: string[]; title: string; before: string[]; after: string[]; saved: unknown[] }>(
+      "section=assistant",
+      ".set-body h2",
+      `
+      await sleep(300);
+      const seg = () => $$(".set-body .seg button").map((b) => b.textContent + (b.getAttribute("aria-pressed") === "true" ? "*" : ""));
+      const before = seg();
+      const mark = calls().length;
+      $$(".set-body .seg button").find((b) => b.textContent === "Opus").click();
+      await sleep(200);
+      return { nav: $$(".set-nav button").map((b) => b.textContent), title: $(".set-body h2").textContent, before, after: seg(), saved: calls().slice(mark).filter((c) => c.fn === "setSettings").map((c) => c.args[0]) };`
+    );
+    expect(r.nav.slice(0, 4)).toEqual(["General", "Notifications", "Agents", "Assistant"]);
+    expect(r.title).toBe("Assistant");
+    expect(r.before).toEqual(["Sonnet*", "Opus"]);
+    expect(r.after).toEqual(["Sonnet", "Opus*"]);
+    expect(r.saved).toEqual([{ assistantModel: "opus" }]);
+  }, 120_000);
+
+  it("is as wide as the side bar is dragged, its words wrapping inside", async () => {
+    const r = await drive<{ before: number; after: number; overflow: boolean }>(
+      "assistant=open",
+      ".as-tab .as-card",
+      `
+      await sleep(300);
+      const before = Math.round($(".as-tab").getBoundingClientRect().width);
+      const grip = $(".side-grip").getBoundingClientRect();
+      const x = Math.round(grip.left + grip.width / 2), y = Math.round(grip.top + 200);
+      await press({ drag: { x0: x, y0: y, x1: x + 180, y1: y } });
+      await sleep(200);
+      const after = Math.round($(".as-tab").getBoundingClientRect().width);
+      const body = $(".as-body");
+      return { before, after, overflow: body.scrollWidth > body.clientWidth + 1 };`
+    );
+    expect(r.after - r.before).toBeGreaterThanOrEqual(170);
+    expect(r.overflow).toBe(false);
+  }, 120_000);
+});
+
+describe.skipIf(!local)("the Assistant's tab, looked at", () => {
+  /** The tab's colors against the theme's tokens, and the contrast of its text on what it sits on. */
   const look = `
       await sleep(300);
       const probe = document.createElement("div");
@@ -655,46 +1038,28 @@ describe.skipIf(!local)("the Assistant's sheet, looked at", () => {
         return "rgb(" + base.r + ", " + base.g + ", " + base.b + ")";
       };
       const texts = [
-        ".as-head-t", '.as-turn[data-turn="t1"] .as-reply', '[data-step="st2"] .as-step-l', '[data-step="st8"] .as-step-res', '[data-card="c2"] .as-card-d', '[data-card="c3"] .as-card-t', '[data-card="c4"] .as-card-blocked',
-        '[data-card="c6"] .as-payload', '[data-rule="rule1"] .as-act-l', '[data-rule="rule1"] .as-payload', ".as-run-at", ".as-rules-n", ".as-hint", ".as-sec-h",
+        ".as-head .side-title", ".as-model", '.as-turn[data-turn="t1"] .as-reply', '[data-step="st2"] .as-step-l', '[data-step="st8"] .as-step-res', '[data-card="c2"] .as-card-d', '[data-card="c3"] .as-card-t', '[data-card="c4"] .as-card-blocked',
+        '[data-card="c6"] .as-payload', '[data-rule="rule1"] .as-act-l', '[data-rule="rule1"] .as-payload', ".as-run-at", ".as-rules-n", ".as-ask-hint", ".as-sec-h", ".as-send",
       ];
       const low = texts.map((s) => [s, ratio(getComputedStyle($(s)).color, bgOf($(s)))]).filter(([, r]) => r < 4.5).map(([s, r]) => s + " " + r.toFixed(2));
-      const sheet = $(".as-sheet");
+      // what's typed, on the box it's typed in
+      const box = $(".as-input");
+      if (ratio(getComputedStyle(box).color, bgOf(box)) < 4.5) low.push(".as-input");
+      const tab = $(".as-tab");
       return {
         theme: document.documentElement.dataset.theme ?? "dark",
-        bg: getComputedStyle(sheet).backgroundColor === token("--bg-sidebar"),
-        title: getComputedStyle($(".as-head-t")).color === token("--text-1"),
+        bg: bgOf(tab) === bgOf($(".sidebar")) && getComputedStyle($(".sidebar")).backgroundColor === token("--bg-sidebar"),
+        title: getComputedStyle($(".as-head .side-title")).color === token("--text-4"),
         danger: getComputedStyle($('[data-card="c3"] .as-card-t')).color === token("--red"),
-        sheetBg: getComputedStyle(sheet).backgroundColor,
+        tabBg: bgOf(tab),
         low,
       };`;
 
   it("follows the dark and the light theme's tokens, every line of text at 4.5:1 or more on what it sits on", async () => {
-    const dark = await drive<{ theme: string; bg: boolean; title: boolean; danger: boolean; sheetBg: string; low: string[] }>("assistant=open&assistantRules", ".as-sheet .as-card", look);
-    const light = await drive<{ theme: string; bg: boolean; title: boolean; danger: boolean; sheetBg: string; low: string[] }>("assistant=open&assistantRules&theme=light", ".as-sheet .as-card", look);
+    const dark = await drive<{ theme: string; bg: boolean; title: boolean; danger: boolean; tabBg: string; low: string[] }>("assistant=open&assistantRules", ".as-tab .as-card", look);
+    const light = await drive<{ theme: string; bg: boolean; title: boolean; danger: boolean; tabBg: string; low: string[] }>("assistant=open&assistantRules&theme=light", ".as-tab .as-card", look);
     expect(dark).toMatchObject({ theme: "dark", bg: true, title: true, danger: true, low: [] });
     expect(light).toMatchObject({ theme: "light", bg: true, title: true, danger: true, low: [] });
-    expect(light.sheetBg).not.toBe(dark.sheetBg);
+    expect(light.tabBg).not.toBe(dark.tabBg);
   }, 180_000);
-
-  it("comes in and goes out with motion on, leaving nothing behind once its animations end", async () => {
-    const r = await drive<{ opened: { opacity: string; transform: string; running: number }; ghost: boolean; after: { sheets: number; ghosts: number } }>(
-      "assistant=open",
-      ".as-sheet",
-      `
-      await sleep(50);
-      for (const a of document.getAnimations()) if (Number.isFinite(a.effect?.getComputedTiming().activeDuration)) a.finish();
-      const sheet = $(".as-sheet");
-      const opened = { opacity: getComputedStyle(sheet).opacity, transform: getComputedStyle(sheet).transform, running: sheet.getAnimations().filter((a) => a.playState === "running").length };
-      await click($(".as-hbtn.icon"));
-      const ghost = !!$(".as-sheet.mb-ghost");
-      for (const a of document.getAnimations()) if (Number.isFinite(a.effect?.getComputedTiming().activeDuration)) a.finish();
-      await sleep(100);
-      return { opened, ghost, after: { sheets: $$(".as-sheet").length, ghosts: $$(".mb-ghost").length } };`,
-      { motion: "full" }
-    );
-    expect(r.opened).toEqual({ opacity: "1", transform: "none", running: 0 });
-    expect(r.ghost).toBe(true);
-    expect(r.after).toEqual({ sheets: 0, ghosts: 0 });
-  }, 120_000);
 });

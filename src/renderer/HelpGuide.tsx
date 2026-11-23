@@ -17,6 +17,7 @@ export function HelpGuide() {
     ["⌃⇧G", "Changes — stage, commit, push"],
     ["⌘⇧D", "Run and debug — the selected worktree's services"],
     ["⌘⇧F", "Search — every conversation on this Mac, or the selected session's files"],
+    ["⌘⇧A", "the Assistant — ask about your sessions, or for a change to them, in the side bar"],
     ["⌘J", "the log panel under the landscape"],
     ["⌘⇧B", "control room — broadcast + CLAUDE.md"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],

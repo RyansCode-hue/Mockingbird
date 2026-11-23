@@ -104,7 +104,7 @@ export function CommandPalette({
     const i = flatIndex;
     const r = rows.askRow;
     return (
-      <div key="ask" className={`row ask ${i === sel ? "sel" : ""} ${r.off ? "off" : ""}`} title={r.off ?? "The Assistant works in a sheet at the landscape's right edge"} onMouseDown={() => runRow(i)}>
+      <div key="ask" className={`row ask ${i === sel ? "sel" : ""} ${r.off ? "off" : ""}`} title={r.off ?? "Asks in the Assistant's tab on the rail (⇧⌘A), where you can keep asking"} onMouseDown={() => runRow(i)}>
         <span className="ask-ico">
           <SparkleIcon />
         </span>

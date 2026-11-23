@@ -453,8 +453,8 @@ describe.skipIf(!local)("the focused header's tabs, to assistive tech", () => {
 
 // In focus the rail is the area tree and the tools that dock beside the workspace (FocusPanel.tsx): one at a time in
 // the side bar's slot, on the left between the rail and the focused workspace, on the session in front of it.
-const WHOLE_RAIL = ["Sessions", "Files", "Changes", "Search", "Run & debug", "Chat", "Artifacts"];
-const FOCUS_RAIL = ["Sessions", "Files", "Changes", "Run & debug"];
+const WHOLE_RAIL = ["Sessions", "Files", "Changes", "Search", "Run & debug", "Chat", "Artifacts", "Assistant"];
+const FOCUS_RAIL = ["Sessions", "Files", "Changes", "Run & debug", "Assistant"];
 /** Each docking view, the tool it docks and the call to main that shows which session it reads. */
 const DOCKS = [
   { view: "explorer", tool: "files", fn: "filesList" },
@@ -473,7 +473,7 @@ const SIDE = `
       const docks = ${JSON.stringify(DOCKS)};`;
 
 describe.skipIf(!local)("the rail while a workspace is in focus", () => {
-  it("offers only Sessions, Files, Changes and Run & debug; unfocused, and once focus ends, the whole rail", async () => {
+  it("offers only Sessions, Files, Changes, Run & debug and the Assistant; unfocused, and once focus ends, the whole rail", async () => {
     const labels = `[...document.querySelectorAll(".activitybar .ab-btn")].map((b) => b.getAttribute("aria-label"))`;
     const r = await drive<{ focused: string[]; after: string[] }>(
       "lsFocus=s5",

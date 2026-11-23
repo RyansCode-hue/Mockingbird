@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { ASSISTANT_LIMITS, type AssistantCard, type AssistantStep, type AssistantTurn } from "../../shared/assistant";
+import { ASSISTANT_LIMITS, DEFAULT_ASSISTANT_MODEL, type AssistantCard, type AssistantModel, type AssistantStep, type AssistantTurn } from "../../shared/assistant";
 import { PERMISSION_MODE_LABEL } from "../../shared/permissionModes";
 import { named, plainLine, quoted } from "../../shared/team/agentText";
 import { assistantCaller } from "./caller";
@@ -29,6 +29,8 @@ export interface SpawnRequest {
   /** The Assistant's tool names, the only ones the turn may call. */
   tools: string[];
   timeoutMs: number;
+  /** The Claude model it runs (Settings → Assistant). */
+  model: AssistantModel;
 }
 
 export interface TurnRunnerDeps {
@@ -39,6 +41,8 @@ export interface TurnRunnerDeps {
   /** What the prompt's snapshot is read from. */
   world: Pick<AssistantDeps, "sessions" | "groups" | "rooms">;
   toolNames(): string[];
+  /** The model each turn runs, read as it starts (Settings → Assistant); Sonnet when absent. */
+  model?(): AssistantModel;
   /** The state of card `id` (cards.ts), for the thread's step outcomes; null once it's gone. */
   cardState?(id: string): AssistantCard["state"] | null;
   /** The view changed. */
@@ -90,6 +94,13 @@ export class TurnRunner {
     return this.turns;
   }
 
+  /** The thread kept from before Mockingbird last quit (thread.ts): finished turns only, set before any is asked. */
+  restore(turns: AssistantTurn[]): void {
+    if (this.turns.length) throw new Error("The thread can be restored only before anything is asked");
+    this.turns = turns.filter((t) => t.state === "done" || t.state === "error");
+    this.trim();
+  }
+
   busy(): boolean {
     return !!this.current || this.queue.length > 0;
   }
@@ -129,7 +140,7 @@ export class TurnRunner {
       if (!bin) throw new Error(UNAVAILABLE);
       const prompt = assistantPrompt({ question: turn.text, thread: this.thread(turn), snapshot: this.snapshot(), cardState: (id) => this.d.cardState?.(id) ?? null });
       const reply = await this.withinLimit(
-        this.d.spawn({ bin, prompt, system: ASSISTANT_RULES, identity: assistantCaller(turn.id), tools: this.d.toolNames(), timeoutMs: this.limits.turnTimeoutMs })
+        this.d.spawn({ bin, prompt, system: ASSISTANT_RULES, identity: assistantCaller(turn.id), tools: this.d.toolNames(), timeoutMs: this.limits.turnTimeoutMs, model: this.d.model?.() ?? DEFAULT_ASSISTANT_MODEL })
       );
       const text = reply.trim();
       // a turn that only acted may say nothing more; one that did nothing and said nothing failed

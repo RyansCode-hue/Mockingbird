@@ -3,6 +3,7 @@ import { Pick } from "./Menu";
 import { reachesBroadcast, titleOf } from "./appModel";
 import { PresetsSection } from "./Presets";
 import { getFormatOnSave, setFormatOnSave } from "./CodeEditor";
+import { ASSISTANT_MODELS, assistantModelOf } from "../shared/assistant";
 import { isErr, OPTIONAL_TABS, type AgentCheck, type BroadcastOutcome, type SetupStatus, type SessionInfo, type SessionPreset, type Settings, type WorktreeEntry, type OptionalTab } from "../shared/types";
 import { TAB_LABELS } from "./tabs";
 import { plural } from "../shared/format";
@@ -390,6 +391,7 @@ const SETTINGS_SECTIONS = [
   { id: "general", label: "General" },
   { id: "notifications", label: "Notifications" },
   { id: "agents", label: "Agents" },
+  { id: "assistant", label: "Assistant" },
   { id: "repos", label: "Repos" },
   { id: "presets", label: "Presets" },
   { id: "ado", label: "Azure DevOps" },
@@ -764,6 +766,22 @@ export function SettingsView({
             </SetRow>
             <SetRow title="Codex binary" note={s.codexBin ?? "codex"}>
               <button className="outline" onClick={() => pickBin("codexBin")}>Change…</button>
+            </SetRow>
+          </>
+        )}
+
+        {section === "assistant" && (
+          <>
+            <h2>Assistant</h2>
+            <p className="set-lede">Ask it about your sessions, or for a change to them, in its tab on the rail (⇧⌘A) or from ⌘K. Each question runs Claude Code once, on this Mac.</p>
+            <SetRow title="Model" note="Sonnet is faster, and the default; Opus is smarter, and slower. The next question runs on it.">
+              <span className="seg">
+                {ASSISTANT_MODELS.map((m) => (
+                  <button key={m.id} className={assistantModelOf(s) === m.id ? "on" : ""} aria-pressed={assistantModelOf(s) === m.id} title={`${m.label}: ${m.note}`} onClick={() => upd({ assistantModel: m.id })}>
+                    {m.label}
+                  </button>
+                ))}
+              </span>
             </SetRow>
           </>
         )}

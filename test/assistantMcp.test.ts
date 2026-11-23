@@ -2,7 +2,7 @@ import * as fs from "fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ASSISTANT_ONLY, Messaging, mcpLaunch, type McpLaunch } from "../src/main/messaging";
 import type { SessionInfo } from "../src/shared/types";
-import type { AssistantWindowAction } from "../src/shared/assistant";
+import type { AssistantModel, AssistantWindowAction } from "../src/shared/assistant";
 import type { AssistantDeps, AssistantSession } from "../src/main/assistant/deps";
 import { buildRegistry } from "../src/main/assistant/registry";
 import * as groups from "../src/main/assistant/tools";
@@ -73,6 +73,8 @@ const fakeClaude: ShellRunner = async (cmd, _input, opts) => {
 
 const audit: unknown[] = [];
 const log: string[] = [];
+/** Settings → Assistant's model. */
+let model: AssistantModel = "sonnet";
 const registry = buildRegistry(deps, Object.values(groups));
 const svc = new AssistantService({
   registry,
@@ -82,6 +84,7 @@ const svc = new AssistantService({
   audit: { record: (kind, who, more) => void audit.push({ kind, ...who, ...more }) },
   emit: () => {},
   log: (c, e) => void log.push(`${c}: ${e instanceof Error ? e.message : String(e)}`),
+  model: () => model,
 });
 let relay: Messaging;
 
@@ -156,6 +159,18 @@ describe("the Assistant as its own MCP caller", () => {
     expect(seen!.env.MOCKINGBIRD_SESSION).toMatch(/^app-assistant-mb-app-assistant-/);
     expect(seen!.env.MOCKINGBIRD_SESSION).not.toMatch(/^[0-9a-f]{8}$/);
     expect(seen!.env.ENABLE_TOOL_SEARCH).toBe("false");
+  });
+
+  it("runs claude -p on the model Settings → Assistant names, as each turn starts", async () => {
+    model = "opus";
+    try {
+      await turn([]);
+      expect(seen!.cmd.startsWith("'/opt/fake/claude' -p --model 'opus' ")).toBe(true);
+    } finally {
+      model = "sonnet";
+    }
+    await turn([]);
+    expect(seen!.cmd.startsWith("'/opt/fake/claude' -p --model 'sonnet' ")).toBe(true);
   });
 
   it("a turn's token stops with its turn", async () => {
