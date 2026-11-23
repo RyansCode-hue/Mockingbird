@@ -115,6 +115,8 @@ export function AnchoredPopover({
       const p = e instanceof MouseEvent ? e : null;
       // a press on what it hangs from (its dot clicked again, a double click's second) is no press outside it
       if (hung && p && p.clientX >= hung.left && p.clientX <= hung.right && p.clientY >= hung.top && p.clientY <= hung.bottom) return;
+      // a dropdown opened from inside it (a Select's list) is drawn apart from it, over everything: a press there is inside
+      if (t instanceof Element && t.closest(".mb-listbox")) return;
       if (!box.current?.contains(t) && !anchorEl()?.contains(t)) close.current("outside");
     };
     const away = () => close.current("away");

@@ -101,7 +101,7 @@ describe.skipIf(!local)("ghosts on the landscape (UI preview)", () => {
     expect(a.fresh).toEqual({ dialog: true, title: "New session", mentions5101: true });
     // Forget from its menu, its right-click zoomed out to cards, where it has no ⋯: let go in main, and its place too
     expect(a.moreZoomedOut).toBe(false);
-    expect(a.forgot).toEqual({ menu: ["Reopen", "Forget it"], kill: [["g1", true]], ghost: false, stored: null });
+    expect(a.forgot).toEqual({ menu: ["Reopen", "Forget it"], kill: [], forget: [["g1"]], ghost: false, stored: null });
     // the area's Clear ghosts, asked first
     // (its one ghost can't be reopened here, so Reopen all is there, off)
     expect(a.cleared.menu).toEqual(expect.arrayContaining(["Tidy [T]", "# Ghosts", "Reopen all (off)", "Clear ghosts (1)…"]));

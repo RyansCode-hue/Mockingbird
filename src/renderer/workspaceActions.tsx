@@ -102,6 +102,24 @@ export interface WorkspaceEnv {
    * feedback wire out, or where wires aren't drawn.
    */
   finish?: Can;
+  /** Its pipeline's edits (W-edit): a step inserted after it, and its pipeline laid out again in stage columns. Absent where it isn't offered. */
+  pipeline?: PipelineCans;
+}
+
+/** What a card in a pipeline offers of its edits (pipelineActions); each absent where it isn't offered. */
+export interface PipelineCans {
+  /** Insert step after…: the Edit dialog for a not-started step after it, then the step made and its pipeline laid out again. */
+  insertAfter?: Can;
+  /** Re-lay out pipeline: its pipeline's workspaces and steps in stage columns, the rest of its area left where it is. */
+  relayout?: Can;
+}
+
+/** A pipeline card's edits, in its menu's wires section. */
+export function pipelineActions(p: PipelineCans | undefined): ModelAction[] {
+  return [
+    ...(p?.insertAfter ? [{ section: "wires" as const, key: "insertAfter", label: "Insert step", menuLabel: "Insert step after…", title: "A step that waits after this one, handed off to before what came next", ...can(p.insertAfter) }] : []),
+    ...(p?.relayout ? [{ section: "wires" as const, key: "relayout", label: "Re-lay out", menuLabel: "Re-lay out pipeline", title: "Its pipeline in stage columns along its wires, from where it starts: the rest of the area stays put unless it's in the way — Undo puts it back", ...can(p.relayout) }] : []),
+  ];
 }
 
 const can = (c: Can): Pick<Action, "onPick" | "disabled" | "title"> => (typeof c === "function" ? { onPick: c } : { onPick: () => {}, disabled: true, title: c.no });
@@ -232,6 +250,7 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
     });
   if (env.saveTemplate && s.role !== "tasks")
     out.push({ section: "wires", key: "saveTemplate", label: "Save as template", menuLabel: "Save as template…", title: "Keep the chain of wires through it as a pipeline template, to lay out again from a ticket", ...can(env.saveTemplate) });
+  out.push(...pipelineActions(env.pipeline));
   out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
   const agentName = AGENT_NAME[s.agent ?? "claude"];
   if (dead && local) {
@@ -329,6 +348,10 @@ export interface GhostEnv {
   fresh: () => void;
   /** Let it go for good: it can't be reopened after. */
   forget: () => void;
+  /** Connect…: a wire from it, as a workspace's (the landscape's; absent elsewhere). */
+  connect?: Can;
+  /** Its pipeline's edits, where it's in one. */
+  pipeline?: PipelineCans;
 }
 
 /** A closed session's status line (its ghost's foot, its Closed sessions row): taken over by a teammate, its folder gone, or Closed. */
@@ -363,6 +386,8 @@ export function ghostActions(s: SessionInfo, env: GhostEnv): ModelAction[] {
     },
   ];
   if (cantRun && !taken) out.push({ section: "end", key: "fresh", label: "Start fresh", menuLabel: "Start fresh…", title: "A new session where it was: its repo, ticket and area, on a new worktree", onPick: env.fresh });
+  if (env.connect && !several) out.push({ section: "wires", key: "connect", label: "Connect", menuLabel: "Connect…", title: "Wire it to another workspace: what it hands off goes once it's reopened and finishes", ...can(env.connect) });
+  if (!several) out.push(...pipelineActions(env.pipeline));
   out.push(...env.room.map((a): ModelAction => ({ ...a, section: "room" })));
   out.push({
     section: "end",
@@ -383,8 +408,14 @@ export interface PlannedEnv {
   busy: boolean;
   /** Start now…: says where it would start and asks, then starts it from the commit the step before it is on. */
   start: () => void;
-  /** Let it go: its place and its wires go with it. */
+  /** Let it go: its place and its wires go with it, the steps either side of it handed off to each other. */
   forget: () => void;
+  /** Edit…: its title, agent, model, effort and prompt. */
+  edit?: Can;
+  /** Connect…: a wire from it (the landscape's; absent elsewhere). */
+  connect?: Can;
+  /** Its pipeline's edits, where it's in one. */
+  pipeline?: PipelineCans;
 }
 
 /** Why a not-started step isn't started or forgotten again while that's under way. */
@@ -397,8 +428,11 @@ export const PLANNED_BUSY_WHY = "It's being started or forgotten already";
 export function plannedActions(env: PlannedEnv): ModelAction[] {
   const busy = env.busy ? { no: PLANNED_BUSY_WHY } : null;
   return [
+    ...(env.edit ? [{ section: "session" as const, key: "edit", label: "Edit", menuLabel: "Edit…", icon: <PencilIcon />, title: "Its name, agent, model, effort and prompt", ...can(busy ?? env.edit) }] : []),
+    ...(env.connect ? [{ section: "wires" as const, key: "connect", label: "Connect", menuLabel: "Connect…", title: "Wire it to another workspace: what it hands off goes once it has started and finishes", ...can(env.connect) }] : []),
+    ...pipelineActions(env.pipeline),
     { section: "end", key: "start", label: "Start now", menuLabel: "Start now…", primary: true, title: "Start it now, from the commit the step before it is on, without waiting for its handoff: it says where first", ...can(busy ?? env.start) },
-    { section: "end", key: "forget", label: "Forget", menuLabel: "Forget it", danger: true, icon: <CloseIcon />, title: env.busy ? PLANNED_BUSY_WHY : "Let it go, with its place and its wires", ...can(busy ?? env.forget) },
+    { section: "end", key: "forget", label: "Forget", menuLabel: "Forget it", danger: true, icon: <CloseIcon />, title: env.busy ? PLANNED_BUSY_WHY : "Let it go, with its place and its wires: the steps either side of it hand off to each other", ...can(busy ?? env.forget) },
   ];
 }
 

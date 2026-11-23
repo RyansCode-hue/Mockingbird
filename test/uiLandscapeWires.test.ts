@@ -405,8 +405,9 @@ describe.skipIf(!local)("making wires", () => {
 
   it("Connect… lists where a wire can go, saying why not; a wire's right-click opens its settings, saved as changed, and Remove has Undo", async () => {
     const m = (await audit("lsCamera=0,3040,1&landscapeWiresAudit=menus", "1600x1000", 120_000)) as unknown as Menus;
-    // Shape has a handoff out: Finish step… (W5) sits between Connect… and Save as template… (W9)
-    expect(m.wsMenu.slice(-7)).toEqual(["-", "# Wires", "Connect…", "Finish step…", "Save as template…", "-", "Close…"]);
+    // Shape has a handoff out: Finish step… (W5) sits between Connect… and Save as template… (W9), and its pipeline's
+    // Insert step after… and Re-lay out pipeline follow
+    expect(m.wsMenu.slice(-9)).toEqual(["-", "# Wires", "Connect…", "Finish step…", "Save as template…", "Insert step after…", "Re-lay out pipeline", "-", "Close…"]);
     // its own area first, each workspace a wire can't reach off with the reason
     expect(m.connect.slice(0, 9)).toEqual(["# Connect “Shape donor export” to", "# #5120", "Builder", "Reviewer", "Dev server", "Tester", "Fixtures", "Docs", "Spike: streaming (closed)"]);
     expect(m.connect).toContain(`off Donor export: CSV writer — ${TEAMMATE}`);
@@ -812,8 +813,8 @@ describe.skipIf(!local)("Add next step", () => {
     expect(s.earlyKey).toEqual({ dialog: true, name: "qb", off: true, plan: 0, open: true });
     // a terminal's handle: said, no dialog, nothing made
     expect(s.terminal).toEqual({ dialog: false, note: "No step can follow Dev server: “Dev server” is a terminal: only a shared worktree wire can reach one.", plan: [] });
-    // its ⋯ with Enter held: the menu opens on Start now…, and the key's repeats run nothing there nor ask anything
-    expect(s.held).toMatchObject({ row: "Start now…", confirm: false, asked: 0, start: 0 });
+    // its ⋯ with Enter held: the menu opens on Edit…, and the key's repeats run nothing there nor ask anything
+    expect(s.held).toMatchObject({ row: "Edit…", editing: false, confirm: false, asked: 0, start: 0 });
     expect(s.held.menu).toContain("Start now…");
     // Start now…: a confirm saying where it starts, off for a moment, so a click straight after it opens starts nothing
     expect(s.confirm).toMatchObject({ open: true, head: "Start Tester now?", off: true, early: { open: true, start: 0 } });
@@ -840,8 +841,8 @@ describe.skipIf(!local)("Add next step", () => {
     expect(l.clicked).toEqual(shown);
     expect(l.doubled).toEqual(shown);
     expect(l.entered).toEqual(shown);
-    // its right-click is its card's: Start now… and Forget, nothing else
-    expect(l.menu).toEqual(["Start now…", "Forget it"]);
+    // its right-click is its card's
+    expect(l.menu).toEqual(["# Session", "Edit…", "-", "# Wires", "Connect…", "Insert step after…", "Re-lay out pipeline", "-", "Start now…", "Forget it"]);
     // ⌘K lists it apart from the sessions to jump to, with only Ask Assistant after it; Enter on it shows its card, the same
     expect(l.palette.groups.slice(-3)).toEqual(["# Steps not started: show the card", "Tester · not started", "Ask Assistant · Tester"]);
     expect(l.palette.groups.filter((g) => g.startsWith("Tester"))).toEqual(["Tester · not started"]);

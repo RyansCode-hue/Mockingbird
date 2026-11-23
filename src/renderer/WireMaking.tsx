@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { carriesWork, templateOf, type Wire, type WireSettings } from "../shared/wires";
 import { AnchoredPopover } from "./Popover";
+import { Select, type SelectOption } from "./Menu";
 import { useDialogFocus } from "./Modal";
 import { afterPause, typed } from "./keyArm";
 import { ANSWER_SETTLE_MS, keyClick, useHeldOff } from "./answerGuard";
@@ -167,6 +168,11 @@ export interface WireSettingsProps {
   actions?: React.ReactNode;
   /** What's under the title: the send popover's why it's blocked or what it waits for, and a blocked merge's Check now. */
   about?: React.ReactNode;
+  /**
+   * Its From and To pickers, which move its ends (wires:repoint), keeping its type and settings: the sessions each end
+   * can go to, off saying why the rules wouldn't have it there. Absent for a wire whose ends don't move (a shared worktree's).
+   */
+  ends?: { from: string; to: string; fromOptions: SelectOption[]; toOptions: SelectOption[]; onRepoint: (ends: { from?: string; to?: string }) => Promise<string | null> };
 }
 
 /**
@@ -181,7 +187,7 @@ export interface WireSettingsProps {
  * the menu row that opened it), and never a double click's second, every click on it is let go before it reaches a
  * control, a checkbox's or its label's included, and its controls show off meanwhile.
  */
-export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusal, onSet, onResetRounds, onRemove, onLost, actions, about }: WireSettingsProps) {
+export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusal, onSet, onResetRounds, onRemove, onLost, actions, about, ends }: WireSettingsProps) {
   // with no template of its own a wire carries its When's: a pr-merged one the merge, then the summary
   const fallback = templateOf({ when: wire.when });
   const saved = templateOf(wire);
@@ -255,6 +261,20 @@ export function WireSettingsForm({ wire, fromTitle, toTitle, state, room, refusa
         </span>
       </div>
       {about}
+      {ends && (
+        <div className="wr-row wr-endpick">
+          <span className="wr-label">From</span>
+          <Select
+            className="wr-end"
+            value={ends.from}
+            title="Where it runs from"
+            options={ends.fromOptions}
+            onChange={(v) => v !== ends.from && void ends.onRepoint({ from: v }).then((why) => alive.current && setErr(why))}
+          />
+          <span className="wr-label">To</span>
+          <Select className="wr-end" value={ends.to} title="Where it runs to" options={ends.toOptions} onChange={(v) => v !== ends.to && void ends.onRepoint({ to: v }).then((why) => alive.current && setErr(why))} />
+        </div>
+      )}
       {carries && (
         <>
           <div className="wr-label">Sends</div>

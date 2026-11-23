@@ -1391,7 +1391,7 @@ async function stepAudit(env: WiresAuditEnv, out: Record<string, unknown>): Prom
   const repeats: Asked[] = Array.from({ length: 12 }, (): Asked[] => [{ key: "Enter", hold: "down", repeat: true }, { pause: 35 }]).flat();
   await drive([{ key: "Enter", hold: "down" }, { pause: 350 }, ...repeats, { key: "Enter", hold: "up" }]);
   await sleep(300);
-  out.held = { menu: menuNow(), row: document.activeElement?.closest(".mb-ctx") ? (document.activeElement.textContent ?? null) : null, confirm: !!confirm(), asked: since(mark, "describeStart").length, start: since(mark, "startPlanned").length };
+  out.held = { menu: menuNow(), row: document.activeElement?.closest(".mb-ctx") ? (document.activeElement.textContent ?? null) : null, editing: !!document.querySelector(".modal.se-dlg"), confirm: !!confirm(), asked: since(mark, "describeStart").length, start: since(mark, "startPlanned").length };
   await drive([{ key: "Escape" }]);
   // Start now… from its right-click: a confirm saying where it starts, which takes no click straight after it opens
   await sleep(1100);

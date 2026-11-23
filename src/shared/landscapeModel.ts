@@ -2440,9 +2440,49 @@ export function planRelayoutPipeline(l: Landscape, layout: ResolvedLayout, key: 
   }, left, fanning ? tilesTop - STAGE_CAPTION_H : tilesTop);
   const leaving = new Set(layout.tiles.filter((t) => members.has(t)).map((t) => t.key));
   pushFrom(p, l, layout, pipe.area, placed, leaving, leavingKept);
-  const patch = finish(p);
-  const names = pipe.tiles.length;
-  return { patch, moves: [], after: null, note: `Laid out ${names} workspaces of ${titleOf(pipe.area)} along their wires` };
+  return { patch: finish(p), moves: [], after: null, note: `Laid out the pipeline in ${titleOf(pipe.area)} along its wires` };
+}
+
+/** Where a step can be put in between two stage columns (stageGaps): handoff `wire` from `from` to `to`, at (`x`, `y`). */
+export interface StageGap {
+  area: string;
+  wire: string;
+  from: string;
+  to: string;
+  x: number;
+  y: number;
+}
+
+/**
+ * The places a step can be inserted in a pipeline laid out in stage columns: for each handoff from a workspace in one
+ * column to one in the next, the middle of the gap between those columns, level with the middle of the one it goes to
+ * (a column that fans out has one for each). Only while the chain's columns still line up, as stageCaptions has them.
+ */
+export function stageGaps(layout: Pick<ResolvedLayout, "areas" | "tiles" | "ghosts">, wires: readonly (TidyWire & { id: string })[]): StageGap[] {
+  const out: StageGap[] = [];
+  for (const a of layout.areas) {
+    if (a.rect.collapsed) continue;
+    const tiles = [...layout.tiles, ...layout.ghosts].filter((t) => t.area === a.key && !t.hidden).sort((x, y) => madeAt(x) - madeAt(y) || x.rect.y - y.rect.y || x.rect.x - y.rect.x);
+    const tileOf = new Map<string, Tile>();
+    for (const t of tiles) for (const s of [...t.members, ...(t.closed ?? [])]) tileOf.set(s.id, t);
+    for (const band of alongWires(tiles, wires)?.bands ?? []) {
+      const columns = band.filter((c) => c?.length);
+      const lined = columns.every((c, i) => c.every((t) => Math.abs(t.rect.x - c[0].rect.x) < 1) && (i === 0 || c[0].rect.x > Math.max(...columns[i - 1].map((t) => t.rect.x + t.rect.w))));
+      if (!lined || columns.length < 2) continue;
+      const colOf = new Map<Tile, number>();
+      columns.forEach((c, i) => c.forEach((t) => colOf.set(t, i)));
+      for (const w of wires) {
+        if (w.type !== "handoff") continue;
+        const from = tileOf.get(w.from);
+        const to = tileOf.get(w.to);
+        const i = from ? colOf.get(from) : undefined;
+        if (!from || !to || i === undefined || colOf.get(to) !== i + 1) continue;
+        const right = Math.max(...columns[i].map((t) => t.rect.x + t.rect.w));
+        out.push({ area: a.key, wire: w.id, from: w.from, to: w.to, x: (right + to.rect.x) / 2, y: to.rect.y + to.rect.h / 2 });
+      }
+    }
+  }
+  return out;
 }
 
 /**
