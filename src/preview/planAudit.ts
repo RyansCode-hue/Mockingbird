@@ -22,6 +22,7 @@
  */
 import type { Plan, PlanShownAt } from "../shared/plans";
 import type { SessionInfo } from "../shared/types";
+import type { Wire } from "../shared/wires";
 import { drive } from "./needsYouAudit";
 
 const AREA = "5120";
@@ -119,6 +120,44 @@ export function pipelinePlan(make: (id: string, over: Partial<SessionInfo>) => S
     ],
   };
   return { orchestrator, held: { id: "pl-pipeline", from: orchestrator.id, at: now - 4 * 60_000, plan } };
+}
+
+/**
+ * pipelinePlan laid out (`?lsLaid`, with `?lsWires&lsPlan=pipeline`), as plans:layOut makes it: its Coders and Verifiers
+ * not started in the Orchestrator's area, each with its model, wired as the plan has them, with no places yet (they go
+ * where there's room, as laid-out steps do), for editing a pipeline on the canvas.
+ */
+export function laidPipeline(p: ReturnType<typeof pipelinePlan>, make: (id: string, over: Partial<SessionInfo>) => SessionInfo, now: number) {
+  const o = p.orchestrator;
+  const steps = p.held.plan.steps.map((st, i) =>
+    make(`pp-${st.key}`, {
+      title: st.name,
+      agent: st.agent === "codex" ? "codex" : "claude",
+      model: st.agent === "codex" ? "gpt-5.1-codex" : "sonnet",
+      taskGroup: o.taskGroup,
+      ticketId: st.ticket ?? o.ticketId,
+      repoPath: o.repoPath,
+      cwd: o.repoPath ?? o.cwd,
+      branch: null,
+      status: "idle",
+      createdAt: now - 30 * 60_000 + i,
+      planned: { worktree: st.folder === "new", ...(typeof st.folder === "object" ? { sharesWith: `pp-${st.folder.sameAs}` } : {}), prompt: st.prompt },
+    })
+  );
+  const id = (k: string) => (k === "me" ? o.id : `pp-${k}`);
+  const links: Record<string, Wire> = {};
+  p.held.plan.wires.forEach((w, i) => {
+    links[`pw${i}`] = {
+      from: id(w.from),
+      to: id(w.to),
+      type: w.type,
+      when: w.type === "handoff" || w.type === "feedback" ? "finished" : "manual",
+      gate: "ask",
+      ...(w.type === "feedback" ? { rounds: { limit: w.rounds ?? 3, used: 0 } } : {}),
+      createdAt: now - 30 * 60_000 + i,
+    } as Wire;
+  });
+  return { steps, links };
 }
 
 /** The Council fixture's title (stub.ts' councils[0]), and its own area (collab.ts' councilArea). */

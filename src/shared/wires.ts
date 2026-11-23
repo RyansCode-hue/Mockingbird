@@ -780,6 +780,76 @@ export function restoredWire(w: Wire): Wire {
   return { ...w, delivery: { ...w.delivery!, state: "unconfirmed", why: "It was being sent when its wire was removed, so it may have reached the other end." } };
 }
 
+/** What a person set on wire `w`, as its settings: what a wire moved or made in its place keeps. */
+export function settingsOf(w: Wire): WireSettings {
+  return {
+    ...(w.template !== undefined ? { template: w.template } : {}),
+    ...(w.files !== undefined ? { files: w.files } : {}),
+    ...(carriesWork(w.type) ? { when: w.when, gate: w.gate } : {}),
+    ...(w.rounds ? { limit: w.rounds.limit } : {}),
+    ...(w.toolOutput === false ? { toolOutput: false } : {}),
+  };
+}
+
+/**
+ * Wire `w` with its ends moved to `from` and `to` (repoint): its type and settings kept, and what it held for its old
+ * ends let go. A new source: nothing waiting at its gate (it was the old source's work), no merge it fired for, its
+ * source's repository read afresh for a pr-merged wire that waits from `now`. Either end new: nothing delivered, and a
+ * feedback wire's rounds counted from none.
+ */
+export function repointedWire(w: Wire, from: string, to: string, now: number): Wire {
+  const next: Wire = { ...w, from, to };
+  if (from !== w.from) {
+    delete next.pending;
+    delete next.fired;
+    delete next.sourceRepo;
+    if (next.when === "pr-merged") next.since = now;
+  }
+  if (from !== w.from || to !== w.to) {
+    delete next.delivery;
+    if (next.rounds) next.rounds = { ...next.rounds, used: 0 };
+  }
+  return next;
+}
+
+/** A handoff to make over a session as it goes (bridgesOver), or one that couldn't be, with why. */
+export type Bridge = { from: string; to: string; wire: Wire } | { from: string; to: string; refused: string };
+
+/**
+ * The handoffs that close the gap session `gone` leaves in its chain as it's forgotten: for each handoff into it from A
+ * and out of it to B, A→B, with A→`gone`→B's out-wire's settings, then the in-wire's when the out-wire's aren't valid
+ * from A, then none. None for a pair that has a handoff already (in `links`, the book without `gone`'s wires) or would
+ * run from A to itself; one the rules refuse now (a room's line, a loop of handoffs) comes back refused, saying why.
+ * Worked out in the order the wires were made, each bridge counted as there for the next.
+ */
+export function bridgesOver(gone: string, dropped: readonly DroppedWire[], links: Readonly<Record<string, Wire>>, ctx: Pick<WireContext, "end" | "kept" | "roomsUnknown">, at: number): Bridge[] {
+  const ins = dropped.filter((d) => d.wire.type === "handoff" && d.wire.to === gone && d.wire.from !== gone);
+  const outs = dropped.filter((d) => d.wire.type === "handoff" && d.wire.from === gone && d.wire.to !== gone);
+  const made: Record<string, Wire> = { ...links };
+  const out: Bridge[] = [];
+  let n = 0;
+  for (const i of ins) {
+    for (const o of outs) {
+      const from = i.wire.from;
+      const to = o.wire.to;
+      if (from === to || Object.values(made).some((w) => w.type === "handoff" && w.from === from && w.to === to)) continue;
+      const here = { ...ctx, links: made };
+      const refused = wireRefusal(from, to, "handoff", here);
+      if (refused) {
+        out.push({ from, to, refused });
+        continue;
+      }
+      const tries = [settingsOf(o.wire), settingsOf(i.wire), {}];
+      const settings = tries.find((s) => !settingsRefusal({ from, to, type: "handoff" }, s, here)) ?? {};
+      const wire = withSettings(newWire(from, to, "handoff", at + n), settings, at);
+      n++;
+      put(made, `\0bridge${n}`, wire);
+      out.push({ from, to, wire });
+    }
+  }
+  return out;
+}
+
 /** The book with session `old`'s wires and note moved to `next`, counters and what's waiting included. A note `next` has of its own stays. */
 export function rekeyedBook(book: WireBook, old: string, next: string): WireBook {
   const links: Record<string, Wire> = {};

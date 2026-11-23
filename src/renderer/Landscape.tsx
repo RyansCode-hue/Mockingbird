@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { formatTokens, isErr, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
-import { carriesWork, gateOf, settingsRefusal, stepRefusal, verdictDue, wiresInOrder, type WireSettings, type WireVerdict } from "../shared/wires";
+import { carriesWork, gateOf, settingsRefusal, stepRefusal, verdictDue, wireRefusal, wiresInOrder, type Wire, type WireSettings, type WireVerdict } from "../shared/wires";
 import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, GAP, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
 import type { LandscapeSave, Migrating } from "./useLandscape";
 import {
@@ -65,6 +65,7 @@ import {
   sessionsOnScreen,
   shortAreaName,
   stageCaptions,
+  stageGaps,
   STAGE_CAPTION_H,
   takesKeys,
   tilesIn,
@@ -98,6 +99,8 @@ import { ToolWindow } from "./ToolWindow";
 import { LiftOut } from "./lift";
 import { actionOf, connectMenu, focusMenuActions, menuOf, severalActions, severalMenu, usable, wireMenu, type Can, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { GhostCard } from "./GhostCard";
+import type { PipelineUi } from "./PipelineEdit";
+import type { SelectOption } from "./Menu";
 import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
 import { AreaSwitcher } from "./AreaTree";
@@ -365,6 +368,7 @@ export function Landscape({
   nextStep,
   focusRef,
   onFocusFront,
+  pipeline,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -423,7 +427,7 @@ export function Landscape({
    * A closed session's actions: what a ghost's buttons, ⋯ and right-click offer (`tabs` a stack ghost's closed tabs, which
    * Reopen and Forget act on together), and a stack's closed tab's.
    */
-  ghostActions: (s: SessionInfo, tabs?: readonly SessionInfo[]) => ModelAction[];
+  ghostActions: (s: SessionInfo, tabs?: readonly SessionInfo[], extra?: { connect?: Can }) => ModelAction[];
   /** A ghost's status line (closedStatus). */
   ghostStatus: (s: SessionInfo) => string;
   /** What a workspace's header chips and footer show. */
@@ -475,6 +479,11 @@ export function Landscape({
   focusRef?: React.MutableRefObject<FocusActs | null>;
   /** The session in front of the workspace in focus, each time that changes (a tab chosen, a move along the strip); null once focus ends. */
   onFocusFront?: (id: string | null) => void;
+  /**
+   * A pipeline's edits on the canvas (PipelineEdit.tsx): each card's model chip in a pipeline, a not-started step's
+   * always, and the + between stage columns. Absent, none is drawn.
+   */
+  pipeline?: PipelineUi;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -1634,6 +1643,21 @@ export function Landscape({
   const wireList = useMemo(() => wireViews(wireBook, layout, rooms), [wireBook, layout, rooms]);
   // what each column of a chain laid out along its wires is, over it
   const stageList = useMemo(() => stageCaptions(layout, wiresInOrder(wireBook?.book?.links ?? {}).map(([, w]) => w)), [layout, wireBook]);
+  /** Where a step can be put in between stage columns (the + over the gap), while a pipeline's columns line up. */
+  const gapList = useMemo(() => (pipeline ? stageGaps(layout, wiresInOrder(wireBook?.book?.links ?? {}).map(([id, w]) => ({ id, from: w.from, to: w.to, type: w.type }))) : []), [layout, wireBook, !!pipeline]);
+  /** The sessions a wire joins to another drawn in their area: the cards of a pipeline, which show their model chip. */
+  const wiredIds = useMemo(() => {
+    const at = new Map<string, { key: string; area: string }>();
+    for (const t of [...layout.tiles, ...layout.ghosts]) for (const m of [...t.members, ...(t.closed ?? [])]) at.set(m.id, { key: t.key, area: t.area });
+    const ids = new Set<string>();
+    for (const w of Object.values(wireBook?.book?.links ?? {})) {
+      const a = at.get(w.from);
+      const b = at.get(w.to);
+      if (!a || !b || a.key === b.key || a.area !== b.area) continue;
+      ids.add(w.from).add(w.to);
+    }
+    return ids;
+  }, [layout, wireBook]);
   const tourArea = useRef<string | null>(null);
   if (tourUp && !layout.areas.some((a) => a.key === tourArea.current)) tourArea.current = tourAreaOf(layout, cam.current, vpNow.current);
   const tourWires = (): TourTarget => {
@@ -1768,8 +1792,8 @@ export function Landscape({
       if (marquee.current) marquee.current.hidden = false;
       return true;
     }
-    // a wire changes no layout: a locked area's workspaces are wired as any are
-    if (g.kind === "wire") return l.tiles.some((x) => x.key === g.key);
+    // a wire changes no layout: a locked area's workspaces are wired as any are, a ghost's as a workspace's
+    if (g.kind === "wire") return [...l.tiles, ...l.ghosts].some((x) => x.key === g.key);
     if (g.kind === "window" || g.kind === "card") {
       const v = g.kind === "window" ? l.windows.find((x) => x.id === g.key) : l.cards.find((x) => x.id === g.key);
       if (!v) return false;
@@ -1967,7 +1991,7 @@ export function Landscape({
       return;
     }
     if (g.kind === "wire") {
-      const from = l.tiles.find((x) => x.key === g.key);
+      const from = [...l.tiles, ...l.ghosts].find((x) => x.key === g.key);
       // the handle clicked (pressed and let go where it was): Add next step, beside its workspace
       if (!g.on) return void (from && offerNextStep(from.front, null));
       // the release's click lands on nothing: not a button on the workspace it was dropped on
@@ -2284,10 +2308,15 @@ export function Landscape({
         const card = t.closest<HTMLElement>(".ls-world .ls-acard");
         const rz = t.closest<HTMLElement>(".ls-world .ls-rz");
         const tab = t.closest<HTMLElement>(".ls-world .ls-tab[data-sid]");
+        const ghostEl = t.closest<HTMLElement>(".ls-world .ls-ghost[data-ghost]");
         if (node && t.closest(".ls-world .ls-wh") && !e.shiftKey) {
           // the edge handle draws a wire from it (the press's own focus move gives the landscape the keyboard, armed)
           e.stopPropagation();
           startRef.current({ ...press, kind: "wire", key: node.dataset.ws! });
+        } else if (ghostEl && t.closest(".ls-wh") && !e.shiftKey) {
+          // a ghost's or a not-started step's handle draws a wire from it as a workspace's does
+          e.stopPropagation();
+          startRef.current({ ...press, kind: "wire", key: ghostEl.dataset.ghost! });
         } else if (node && rz && !e.shiftKey) {
           // an edge or a corner resizes it
           e.stopPropagation();
@@ -2309,13 +2338,13 @@ export function Landscape({
           startRef.current({ ...press, kind: "window", key: win.dataset.win! });
         } else if (card && !t.closest("button, a, input")) {
           startRef.current({ ...press, kind: "card", key: card.dataset.card! });
-        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty, .ls-ghost button")) {
+        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty, .ls-ghost button, .ls-ghost.planned, .ls-insert")) {
           // a ghost isn't selected: a press on it is one on the landscape where it lies, its buttons aside
           startRef.current({ ...press, kind: "marquee", key: "" });
         }
       }
       // a press on the landscape between workspaces gives it the keyboard
-      if (e.button === 0 && !t.closest(".ls-node, .ls-window, .ls-acard, .ls-hud, .ls-banners, .ls-peek, .ls-switcher, .ls-minimap, .ls-selbar")) surface();
+      if (e.button === 0 && !t.closest(".ls-node, .ls-window, .ls-acard, .ls-hud, .ls-banners, .ls-peek, .ls-switcher, .ls-minimap, .ls-selbar, .ls-ghost.planned, .ls-insert, .ls-model")) surface();
     };
     // Below 75% a terminal on the landscape takes no keys, nor ever one lent to a peek: one that still has the
     // keyboard (it had it as the zoom went down) gives it to the landscape, before xterm sees the key.
@@ -2612,6 +2641,33 @@ export function Landscape({
     const ctx = w ? wireCtx([w.from, w.to]) : null;
     return w && ctx ? { id, w, ctx, gate: gateOf(id, w, ctx) } : null;
   };
+  /** What only the landscape offers on a ghost (its ⋯ and right-click): Connect…, a wire from it, for one of its own. */
+  const ghostExtra = (g: { stack: string | null; front: SessionInfo }): { connect?: Can } => (g.stack || g.front.shell || isRemote(g.front) ? {} : { connect: connectOf(g.front) });
+  /**
+   * Wire `w`'s `end` as its From or To picker offers it: every session on the landscape but its other end (wireTargets),
+   * each off saying why the rules wouldn't have the wire run there, as main checks again (WireService.repoint).
+   */
+  const endChoices = (id: string, w: Wire, end: "from" | "to"): SelectOption[] => {
+    const other = end === "from" ? w.to : w.from;
+    const targets = wireTargets(layoutNow.current, other);
+    const rules = wireCtx([other, ...targets.map((t) => t.s.id)]);
+    return targets.map((t) => {
+      const cand = t.s.id;
+      const refused = cand === w[end] ? null : !rules ? (wireBookNow.current?.refused ?? WIRES_UNREAD) : end === "from" ? wireRefusal(cand, w.to, w.type, { ...rules, self: id }) : wireRefusal(w.from, cand, w.type, { ...rules, self: id });
+      return { value: cand, label: titleOf(t.s), group: t.area === LOOSE_GROUP ? "Loose" : areaTitle(t.area), disabled: !!refused, ...(refused ? { description: refused } : {}) };
+    });
+  };
+  /** Wire `id` moved to `ends` (wires:repoint), said with Undo (wires:unrepoint); settles with why it didn't move, or null. */
+  const repointWire = async (id: string, ends: { from?: string; to?: string }): Promise<string | null> => {
+    const no = await wireCall("move the wire", () => window.mb.wiresRepoint(id, ends));
+    if (no) return no;
+    const w = wireBookNow.current?.book?.links[id];
+    say(`Moved the wire${w ? `: ${named(w.from)} → ${named(w.to)}` : ""}`, {
+      label: "Undo",
+      run: () => void wireCall("move the wire back", () => window.mb.wiresUnrepoint(id)).then((why) => why && say(why)),
+    });
+    return null;
+  };
   /** What wire `id`'s settings form needs, Settings…'s and the send popover's alike; `close` closes what it's in. */
   const wireForm = ({ id, w, ctx, gate }: NonNullable<ReturnType<typeof liveWire>>, close: () => void): WireSettingsProps => ({
     wire: w,
@@ -2627,6 +2683,7 @@ export function Landscape({
       close();
       void removeWire(id, `${named(w.from)} → ${named(w.to)}`);
     },
+    ends: w.type === "worktree" ? undefined : { from: w.from, to: w.to, fromOptions: endChoices(id, w, "from"), toOptions: endChoices(id, w, "to"), onRepoint: (e) => repointWire(id, e) },
   });
   /** The wire being set (Settings…). */
   const editing = wireEdit ? liveWire(wireEdit.id) : null;
@@ -2781,7 +2838,7 @@ export function Landscape({
   const drawDraft = (key: string, e: PointerEvent) => {
     const svg = draftEl.current;
     const hot = hotEl.current;
-    const from = layoutNow.current.tiles.find((x) => x.key === key);
+    const from = [...layoutNow.current.tiles, ...layoutNow.current.ghosts].find((x) => x.key === key);
     if (!svg || !hot || !from) return;
     const z = cam.current.zoom;
     const inset = bandNow.current === "cards" ? GHOST_INSET / z : 0;
@@ -3030,6 +3087,7 @@ export function Landscape({
         openFinish(tile.front.id, { x: r.right, y: r.bottom + 2 });
       }}
       body={(s, sz) => body(s, sz, mode === "focus" ? { w: t.rect.w, h: t.rect.h } : null)}
+      modelChip={pipeline && !t.front.shell && !isRemote(t.front) && wiredIds.has(t.front.id) ? pipeline.chip(t.front, "running") : undefined}
     />
   );
 
@@ -3075,6 +3133,24 @@ export function Landscape({
               {c.text}
             </div>
           ))}
+          {band !== "cards" &&
+            gapList.map((g) => (
+              <button
+                key={g.wire}
+                type="button"
+                className="ls-insert"
+                data-gap={g.wire}
+                style={{ left: g.x, top: g.y, ["--ls-inv" as string]: 1 / cam.current.zoom }}
+                aria-label={`Insert a step between ${named(g.from)} and ${named(g.to)}`}
+                data-tip={`Insert a step between ${named(g.from)} and ${named(g.to)}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  pipeline?.insert(g);
+                }}
+              >
+                +
+              </button>
+            ))}
           <WireLayer ref={wiresRef} views={wireList} band={band} cam={cam} listeners={listeners.current} />
           {layout.ghosts.map((g) => {
             const links = wireBook?.book?.links ?? {};
@@ -3084,10 +3160,12 @@ export function Landscape({
                 key={g.key}
                 ghost={g}
                 band={band}
-                actions={ghostActions(g.front, g.members)}
+                actions={ghostActions(g.front, g.members, ghostExtra(g))}
                 status={ghostStatus(g.front)}
                 inv={1 / cam.current.zoom}
-                onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front, g.members)))}
+                onMore={(from) => ctx.openBelow(from, menuOf(ghostActions(g.front, g.members, ghostExtra(g))))}
+                modelChip={pipeline && !g.stack && !g.front.shell && (g.front.planned || wiredIds.has(g.front.id)) ? pipeline.chip(g.front, g.front.planned ? "planned" : "closed") : undefined}
+                handle={!g.stack && !g.front.shell && !isRemote(g.front)}
                 planned={g.front.planned ? plannedLine(g.front.id, links, (id) => (sessionOn(id) ? named(id) : null), needsApprove) : undefined}
                 plannedShort={g.front.planned ? plannedShort(g.front.id, links, needsApprove) : undefined}
               />

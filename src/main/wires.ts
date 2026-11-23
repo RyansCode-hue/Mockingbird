@@ -5,9 +5,14 @@ import { canonical, companionRequest } from "./handlers";
 import { LandscapeShapeError, isObj, own, put, stackKeyOf } from "../shared/landscape";
 import { agentOf, LayOutLeftError, layOutPlan, parseTemplateBody, roomAsked, startsAtOrchestrator, TemplateError, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type TemplateBody, type TemplateWire } from "../shared/pipelineTemplates";
 import { oneLine } from "../shared/team/agentText";
-import type { NewSessionRequest, PlanRequest, PrRepo, SessionInfo, StepStarted } from "../shared/types";
+import type { BridgedWire, NewSessionRequest, PlanRequest, PrRepo, SessionInfo, StepStarted } from "../shared/types";
+import { WireUndo, type HeldWire } from "./wireUndo";
 import {
+  bridgesOver,
   createdAtAfter,
+  isSending,
+  repointedWire,
+  settingsOf,
   emptyWireBook,
   gateOf,
   keptNaming,
@@ -95,6 +100,8 @@ export interface WireServiceOptions {
   log: (context: string, err: unknown) => void;
   /** Delivery's part as a wire leaves and comes back (WireDelivery), the one writer of what's on its way. */
   delivery?: WireDeliveryHooks;
+  /** Where what Undo puts back is kept across restarts (wireUndo.ts); left out, it's held in memory until the app quits. */
+  undoFile?: string;
   /** A new wire id; random unless a test says otherwise. */
   newId?: () => string;
   /** A wire was made and saved (not restored: its ends heard of it when it was first made). Told after the change counts. */
@@ -111,10 +118,15 @@ export interface WireServiceOptions {
  * book any other way: `landscape:update` refuses a patch naming it, and no MCP tool writes it.
  */
 export class WireService {
-  /** The records `remove` took, so a restore puts back what was there, counters included, and a window can't supply its own. */
-  private removed = new Map<string, Wire>();
+  /**
+   * What Undo puts back, kept across restarts: the records `remove` took (so a restore puts back what was there,
+   * counters included, and a window can't supply its own), what `repoint` moved, and what a forgotten session's wires were.
+   */
+  private undo: WireUndo;
 
-  constructor(private readonly o: WireServiceOptions) {}
+  constructor(private readonly o: WireServiceOptions) {
+    this.undo = new WireUndo({ file: o.undoFile, max: RESTORABLE, log: o.log });
+  }
 
   get(): WireState {
     return this.forWindows(this.o.store.wires());
@@ -231,12 +243,8 @@ export class WireService {
       return { book: { ...book, links } };
     });
     if ("refused" in reply) return reply;
-    this.removed.delete(id); // a newer removal under the same id goes to the back of the queue
-    this.removed.set(id, taken!);
-    for (const k of this.removed.keys()) {
-      if (this.removed.size <= RESTORABLE) break;
-      this.removed.delete(k);
-    }
+    // a newer removal under the same id goes to the back of the queue
+    this.undo.set(`removed:${id}`, { kind: "removed", wire: taken!, at: Date.now() });
     try {
       this.o.delivery?.withdraw(id, taken!);
     } catch (err) {
@@ -248,7 +256,7 @@ export class WireService {
 
   /** Whether wire `id` was removed and is still held for `restore` (the most recent RESTORABLE removals are). */
   restorable(idRaw: unknown): boolean {
-    return this.removed.has(String(idRaw ?? ""));
+    return this.undo.has(`removed:${String(idRaw ?? "")}`);
   }
 
   /**
@@ -258,8 +266,9 @@ export class WireService {
    */
   restore(idRaw: unknown): WireReply {
     const id = String(idRaw ?? "");
-    const w = this.removed.get(id);
-    if (!w) return { refused: "That wire can't be restored any more." };
+    const held = this.undo.get(`removed:${id}`);
+    if (held?.kind !== "removed") return { refused: "That wire can't be restored any more." };
+    const w = held.wire;
     const reply = this.o.store.editWires((book, kept) => {
       const refused = restoreRefusal(book, id, w, this.context(book, kept));
       if (refused) return { refused };
@@ -268,12 +277,76 @@ export class WireService {
       return { book: { ...book, links } };
     });
     if ("refused" in reply) return reply;
-    this.removed.delete(id);
+    this.undo.delete(`removed:${id}`);
     try {
       this.o.delivery?.restored(id);
     } catch (err) {
       this.o.log(`wires: ${id} was restored, but what waited at its gate couldn't be tried`, err);
     }
+    return { ...reply, id };
+  }
+
+  /**
+   * Move wire `id`'s ends (`ends.from`, `ends.to`, either or both) to other sessions, keeping its type and settings:
+   * checked as making it there would be (wireRefusal: no wire to itself, none twice, no loop of handoffs, a room's line,
+   * a terminal; then its settings from its new source, settingsRefusal). What it held for its old ends goes
+   * (repointedWire). Refused while it's sending, or when nothing would change. Its Undo is `unrepoint`.
+   */
+  repoint(idRaw: unknown, endsRaw: unknown): WireReply {
+    const id = String(idRaw ?? "");
+    const ends = isObj(endsRaw) ? endsRaw : {};
+    if (ends.from === undefined && ends.to === undefined) return { refused: "Say which end moves: its from, its to, or both." };
+    for (const k of ["from", "to"] as const) if (ends[k] !== undefined && (typeof ends[k] !== "string" || !ends[k])) return { refused: `Its ${k} is a session's id.` };
+    let before: Wire | undefined;
+    let after: Wire | undefined;
+    const reply = this.o.store.editWires((book, kept) => {
+      const w = own(book.links, id);
+      if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
+      const from = (ends.from as string | undefined) ?? w.from;
+      const to = (ends.to as string | undefined) ?? w.to;
+      if (from === w.from && to === w.to) return { refused: "It runs between those two already." };
+      if (isSending(w)) return { refused: "It's sending right now: move it once that's gone." };
+      const ctx = { ...this.context(book, kept), self: id };
+      const refused = wireRefusal(from, to, w.type, ctx) ?? settingsRefusal({ from, to, type: w.type }, settingsOf(w), ctx);
+      if (refused) return { refused };
+      before = w;
+      after = repointedWire(w, from, to, Date.now());
+      const links = { ...book.links };
+      put(links, id, after);
+      return { book: { ...book, links } };
+    });
+    if ("refused" in reply) return reply;
+    this.undo.set(`repointed:${id}`, { kind: "repointed", before: before!, after: { from: after!.from, to: after!.to }, at: Date.now() });
+    if (after!.when === "pr-merged" && after!.from !== before!.from) this.waiting(id);
+    return { ...reply, id };
+  }
+
+  /** Whether wire `id`'s last repoint can still be undone (unrepoint). */
+  repointUndoable(idRaw: unknown): boolean {
+    return this.undo.has(`repointed:${String(idRaw ?? "")}`);
+  }
+
+  /**
+   * Undo wire `id`'s last repoint: the record as it was before, counters included, while it still runs between the ends
+   * that repoint gave it and the rules on making it where it was allow it now.
+   */
+  unrepoint(idRaw: unknown): WireReply {
+    const id = String(idRaw ?? "");
+    const held = this.undo.get(`repointed:${id}`);
+    if (held?.kind !== "repointed") return { refused: "That wire's move can't be undone any more." };
+    const reply = this.o.store.editWires((book, kept) => {
+      const w = own(book.links, id);
+      if (!w) return { refused: "That wire has been removed since." };
+      if (w.from !== held.after.from || w.to !== held.after.to) return { refused: "That wire has been moved again since." };
+      if (isSending(w)) return { refused: "It's sending right now: undo its move once that's gone." };
+      const refused = wireRefusal(held.before.from, held.before.to, held.before.type, { ...this.context(book, kept), self: id });
+      if (refused) return { refused };
+      const links = { ...book.links };
+      put(links, id, this.o.delivery ? this.o.delivery.restoring(held.before) : restoredWire(held.before));
+      return { book: { ...book, links } };
+    });
+    if ("refused" in reply) return reply;
+    this.undo.delete(`repointed:${id}`);
     return { ...reply, id };
   }
 
@@ -291,6 +364,18 @@ export class WireService {
       const refused = rekeyRefusal(book, moved, old, next, this.context(moved, kept));
       return refused ? { refused } : { book: moved };
     });
+  }
+
+  /**
+   * Session `old`'s work carries on in `next` (a brief's fresh session, Continue in Codex): its wires and note move
+   * there as Start fresh moves them (rekey, all or none), so `next` takes its place in the pipeline. When they can't,
+   * they stay on `old`, logged, and why is answered; null once they've moved, or when there were none.
+   */
+  carryOn(old: string, next: string): string | null {
+    const r = this.rekey(old, next);
+    if (!("refused" in r)) return null;
+    this.o.log(`wires: ${old}'s wires stayed on it, as ${next}, which carries on its work, couldn't take them`, new Error(r.refused));
+    return r.refused;
   }
 
   /**
@@ -569,6 +654,100 @@ export class WireService {
     if (!("refused" in r)) return null;
     this.o.log(`wires: couldn't drop the wires of forgotten session ${id}`, new Error(r.refused));
     return r.refused;
+  }
+
+  /**
+   * Session `id` was forgotten (Forget): its wires and note go with it as sessionForgotten takes them, and the gap it
+   * leaves in its chain is closed in the same change: each handoff into it from A and out of it to B becomes A→B
+   * (bridgesOver), with B's wire's settings. A bridge there already, or one to A itself, isn't made; one the rules
+   * refuse is said in `unbridged`. What went and what was bridged is held for `unforget` under `undo`, with `record` (its
+   * record as it was, for a not-started step to come back as it was), unless nothing went. When the book can't be
+   * changed its wires stay (`wiresLeft` says why), as sessionForgotten leaves them.
+   */
+  forgetChain(id: string, record: SessionInfo | null, titleOf: (id: string) => string): { bridged: BridgedWire[]; unbridged: string[]; undo: string | null; wiresLeft: string | null } {
+    let dropped: HeldWire[] = [];
+    let bridged: BridgedWire[] = [];
+    let unbridged: string[] = [];
+    const r = this.o.store.editWires((book, kept) => {
+      const gone = withoutSession(book, id);
+      const ctx = this.context(gone.book, kept);
+      const bridges = bridgesOver(id, gone.dropped, gone.book.links, ctx, createdAtAfter(gone.book.links, Date.now()));
+      const links = { ...gone.book.links };
+      const made: BridgedWire[] = [];
+      for (const b of bridges) {
+        if (!("wire" in b)) continue;
+        const wid = this.unusedId({ ...gone.book, links }, kept);
+        put(links, wid, b.wire);
+        made.push({ id: wid, from: b.from, to: b.to });
+      }
+      dropped = gone.dropped;
+      bridged = made;
+      unbridged = bridges.flatMap((b) => ("refused" in b ? [`${titleOf(b.from)} → ${titleOf(b.to)}: ${b.refused}`] : []));
+      return { book: { ...gone.book, links }, dropped: gone.dropped, dropKept: { ...keptNaming(kept, id), why: `named session ${id}, which was forgotten, and went with it` } };
+    });
+    if ("refused" in r) {
+      this.o.log(`wires: couldn't drop the wires of forgotten session ${id}`, new Error(r.refused));
+      return { bridged: [], unbridged: [], undo: null, wiresLeft: r.refused };
+    }
+    for (const b of bridged) {
+      try {
+        this.o.onAdded?.(b.id, own(r.state.book?.links ?? {}, b.id)!);
+      } catch (err) {
+        this.o.log(`wires: bridge ${b.id} was made over forgotten session ${id}, and telling its ends failed`, err);
+      }
+    }
+    if (!record && !dropped.length) return { bridged, unbridged, undo: null, wiresLeft: null };
+    const undo = `forgot:${id}:${randomUUID().slice(0, 8)}`;
+    this.undo.set(undo, { kind: "forgot", session: record, wires: dropped, bridges: bridged.map((b) => b.id), at: Date.now() });
+    return { bridged, unbridged, undo, wiresLeft: null };
+  }
+
+  /**
+   * Undo a Forget (`token`, forgetChain's): its record put back first when one was kept (`restoreRecord`, which throws
+   * saying why it can't be), then, in one change, the bridges made over it taken away (those still running as they were
+   * made) and its wires put back as restore puts one back. A wire the rules refuse now stays out, said in `notes`.
+   */
+  unforget(tokenRaw: unknown, restoreRecord: (rec: SessionInfo) => void): { state: WireState; notes: string[] } | { refused: string } {
+    const token = String(tokenRaw ?? "");
+    const held = this.undo.get(token);
+    if (held?.kind !== "forgot") return { refused: "That Forget can't be undone any more." };
+    if (held.session) {
+      try {
+        restoreRecord(held.session);
+      } catch (err) {
+        return { refused: `It couldn't be put back: ${errText(err)}` };
+      }
+    }
+    const notes: string[] = [];
+    const back: string[] = [];
+    const reply = this.o.store.editWires((book, kept) => {
+      const links = { ...book.links };
+      for (const b of held.bridges) {
+        const w = own(links, b);
+        if (w && !isSending(w)) delete links[b];
+        else if (w) notes.push(`The handoff made over it, ${w.from} → ${w.to}, is sending, so it stays.`);
+      }
+      for (const { id, wire } of held.wires) {
+        const refused = restoreRefusal({ ...book, links }, id, wire, this.context({ ...book, links }, kept));
+        if (refused) {
+          notes.push(`Its wire ${id} stays out: ${refused}`);
+          continue;
+        }
+        put(links, id, this.o.delivery ? this.o.delivery.restoring(wire) : restoredWire(wire));
+        back.push(id);
+      }
+      return { book: { ...book, links } };
+    });
+    if ("refused" in reply) return { refused: `${held.session ? "It's back, but its wires couldn't be put back" : "Its wires couldn't be put back"}: ${reply.refused}` };
+    this.undo.delete(token);
+    for (const id of back) {
+      try {
+        this.o.delivery?.restored(id);
+      } catch (err) {
+        this.o.log(`wires: ${id} was put back, but what waited at its gate couldn't be tried`, err);
+      }
+    }
+    return { state: reply.state, notes };
   }
 
   /**

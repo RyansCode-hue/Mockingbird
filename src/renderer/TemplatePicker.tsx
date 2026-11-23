@@ -5,7 +5,7 @@ import { RepoPick } from "./RepoPick";
 import { ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { ANSWER_SETTLE_MS, useHeldOff, useOpenSettle } from "./answerGuard";
 import { baseName } from "../shared/paths";
-import { isErr, AGENT_NAME, type ModelCatalog } from "../shared/types";
+import { isErr, AGENT_NAME, type AgentKind, type ModelCatalog } from "../shared/types";
 import { carriesWork, templateOf, WIRE_WHENS, type WireGate, type WireWhen } from "../shared/wires";
 import {
   asShown,
@@ -187,7 +187,7 @@ function ChainSketch({ body, plan, width }: { body: TemplateBody; plan: LayOutPl
 // ---- each step, whole ---------------------------------------------------------------------------
 
 /** A textarea as tall as what it holds: a step's prompt is shown whole, never cut or scrolled. */
-function WholeText({ value, onChange, label, placeholder, mono }: { value: string; onChange: (v: string) => void; label: string; placeholder: string; mono?: boolean }) {
+export function WholeText({ value, onChange, label, placeholder, mono }: { value: string; onChange: (v: string) => void; label: string; placeholder: string; mono?: boolean }) {
   const el = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const t = el.current;
@@ -224,6 +224,22 @@ interface StepsProps {
   folding?: { open: ReadonlySet<string>; toggle: (key: string) => void };
 }
 
+/** The models `agent` offers on this Mac (`catalog`, none while it can't be read) as a step's model choices: its default first, and `current` kept when the catalog doesn't list it. */
+export function modelOptionsFor(catalog: ModelCatalog | null, agent: AgentKind, current: string | null | undefined): SelectOption[] {
+  const models = catalog ? catalog[agent].models : [];
+  return [
+    { value: "", label: "Default model" },
+    ...(current && !models.some((m) => m.id === current) ? [{ value: current, label: current }] : []),
+    ...models.map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
+  ];
+}
+
+/** The efforts `agent` takes as a step's effort choices, as modelOptionsFor gives its models. */
+export function effortOptionsFor(catalog: ModelCatalog | null, agent: AgentKind, current: string | null | undefined): SelectOption[] {
+  const efforts = catalog ? catalog[agent].efforts : [];
+  return [{ value: "", label: "Default effort" }, ...(current && !efforts.includes(current) ? [{ value: current, label: current }] : []), ...efforts.map((e) => ({ value: e, label: e }))];
+}
+
 function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst, folding }: StepsProps) {
   return (
     <>
@@ -231,19 +247,9 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
         const terminal = s.agent === "terminal";
         const p = plan.steps[i];
         const into = body.wires.map((w, j) => ({ w, p: plan.wires[j], j })).filter((x) => x.w.to === s.key && x.w.type !== "worktree");
-        const models = catalog && !terminal ? catalog[s.agent as "claude" | "codex"].models : [];
-        const efforts = catalog && !terminal ? catalog[s.agent as "claude" | "codex"].efforts : [];
-        const effortOptions: SelectOption[] = [
-          { value: "", label: "Default effort" },
-          ...(s.effort && !efforts.includes(s.effort) ? [{ value: s.effort, label: s.effort }] : []),
-          ...efforts.map((e) => ({ value: e, label: e })),
-        ];
+        const effortOptions = terminal ? [] : effortOptionsFor(catalog, s.agent as AgentKind, s.effort);
         const nameOf = (k: string) => body.steps.find((x) => x.key === k)?.name ?? k;
-        const modelOptions: SelectOption[] = [
-          { value: "", label: "Default model" },
-          ...(s.model && !models.some((m) => m.id === s.model) ? [{ value: s.model, label: s.model }] : []),
-          ...models.map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
-        ];
+        const modelOptions = terminal ? [] : modelOptionsFor(catalog, s.agent as AgentKind, s.model);
         const shut = !!folding && !folding.open.has(s.key);
         return (
           <div key={s.key} className={`tp-step${folding ? " folds" : ""}${shut ? " shut" : ""}`} data-step={s.key}>
@@ -381,7 +387,7 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
  * The model catalog as read (models offered on this Mac): `catalog` none while it's read or when it can't be, `error`
  * why not, `reading` while a read is under way.
  */
-interface CatalogRead {
+export interface CatalogRead {
   catalog: ModelCatalog | null;
   error: string | null;
   reading: boolean;
@@ -392,7 +398,7 @@ interface CatalogRead {
  * The model catalog, read as the dialog opens and again on `retry`, one read at a time; a failure is logged and kept to
  * be said (CatalogNote).
  */
-function useCatalog(): CatalogRead {
+export function useCatalog(): CatalogRead {
   const [c, setC] = useState<ModelCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [n, setN] = useState(0);
@@ -436,7 +442,7 @@ function useCatalog(): CatalogRead {
  * The models offered on this Mac couldn't be read: said beside the steps' model choices, which still offer the default
  * and each step's own model, so a template can be laid out or saved as it is.
  */
-function CatalogNote({ read }: { read: CatalogRead }) {
+export function CatalogNote({ read }: { read: CatalogRead }) {
   if (!read.error) return null;
   return (
     <div className="tp-line amber" data-flag="models" role="status">

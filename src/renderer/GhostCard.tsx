@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { isErr, ticketIdOf, type SessionInfo } from "../shared/types";
 import { lastMeaningfulLine, terminalLines } from "../shared/terminalText";
 import type { Band, GhostView } from "./landscapeModel";
@@ -40,7 +40,10 @@ export function useClosedLine(s: SessionInfo): { line: string | null; error: str
  * title, actions, last line, status.
  *
  * A step not started yet (W8, Inbox.dc.html's Tester) is drawn here too, as a faded card rather than an outline: its
- * title, "Not started" and what starts it in place of a last line, where it will work as its foot, and no buttons.
+ * title, "Not started" and what starts it in place of a last line, where it will work as its foot, and no buttons. Its
+ * prompt is its line's tooltip. It takes the keyboard (a press on it, or Tab): Enter edits it, the menu key and ⇧F10
+ * open its menu. Either kind can show a model chip (`modelChip`) and, where wires are made, the edge handle a wire is
+ * dragged from (`handle`).
  */
 export function GhostCard({
   ghost,
@@ -51,6 +54,8 @@ export function GhostCard({
   inv,
   planned,
   plannedShort,
+  modelChip,
+  handle = false,
 }: {
   ghost: GhostView;
   band: Band;
@@ -65,6 +70,10 @@ export function GhostCard({
   planned?: string;
   /** Its line zoomed out, one short enough to leave room for its foot (plannedShort): "Waits for approve". */
   plannedShort?: string;
+  /** Its model chip (ModelChip), beside its kind: a not-started step's, or a closed one's in a pipeline. */
+  modelChip?: ReactNode;
+  /** The edge handle a wire is dragged from, as a workspace has (Landscape.tsx draws the wire). */
+  handle?: boolean;
 }) {
   const s = ghost.front;
   const { line, error } = useClosedLine(s);
@@ -81,12 +90,31 @@ export function GhostCard({
   const name = ghost.stack ? ghost.members.map(titleOf).join(" · ") : titleOf(s);
   const lineText = notYet ? (band === "live" ? planned : (plannedShort ?? planned)) : error ? "Couldn't read what it did last" : (line ?? "It wrote nothing before it closed");
   const compact = band === "cards";
+  const prompt = notYet ? s.planned!.prompt?.trim() : undefined;
   return (
     <div
       className={["ls-ghost", compact ? "compact" : "", notYet ? "planned" : "", notYet && band === "live" ? "roomy" : "", taken ? "taken" : "", gone ? "gone" : "", ghost.hidden ? "hidden" : ""].filter(Boolean).join(" ")}
       data-ghost={ghost.key}
       data-front={s.id}
       data-area={ghost.area}
+      tabIndex={notYet ? 0 : undefined}
+      role={notYet ? "group" : undefined}
+      aria-label={notYet ? `${name}, a step not started yet: Enter edits it, the menu key opens its menu` : undefined}
+      onPointerDown={notYet ? (e) => !(e.target as Element).closest("button") && e.currentTarget.focus({ preventScroll: true }) : undefined}
+      onKeyDown={
+        notYet
+          ? (e) => {
+              if (e.target !== e.currentTarget) return;
+              if (e.key === "Enter") {
+                e.preventDefault();
+                usable(actions, "edit")?.onPick();
+              } else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+                e.preventDefault();
+                onMore(e.currentTarget.querySelector<HTMLElement>(".ls-more") ?? e.currentTarget);
+              }
+            }
+          : undefined
+      }
       // inset by --ci zoomed out to cards, as cards are, its height --gh there kept clear of the next area's name line
       // (styles.css, Landscape's paintCompact)
       style={{ left: `calc(${r.x}px + var(--ci))`, top: `calc(${r.y}px + var(--ci))`, width: `calc(${r.w}px - 2 * var(--ci))`, ["--gh" as string]: `${r.h}px`, ["--ls-inv" as string]: inv }}
@@ -101,6 +129,7 @@ export function GhostCard({
               {name}
             </span>
             <span className="chip lg-kind">{ghost.stack ? `stack · ${ghost.members.length}` : kindLabel(s)}</span>
+            {!compact && modelChip}
           </span>
           {!compact && (
           <button
@@ -132,7 +161,7 @@ export function GhostCard({
             )}
           </div>
         )}
-        <div className="lg-line" data-row="line" title={notYet ? planned : lineText}>
+        <div className="lg-line" data-row="line" title={notYet ? (prompt ? `${planned}\n\nIts prompt:\n${prompt}` : planned) : lineText}>
           {lineText}
         </div>
         <div className="lg-foot" data-row="foot">
@@ -140,6 +169,7 @@ export function GhostCard({
           {where && <span className="lg-where">{where}</span>}
         </div>
       </div>
+      {handle && !compact && !ghost.stack && <div className="ls-wh" aria-hidden="true" data-tip="Drag to another workspace to wire them" style={{ ["--ls-inv" as string]: inv }} />}
     </div>
   );
 }

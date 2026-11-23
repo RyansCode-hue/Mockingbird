@@ -34,7 +34,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, HELPDESK_PRESET, asQuitAgent, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult, type AgentTold, type StepStarted } from "../shared/types";
+import { AGENT_NAME, HELPDESK_PRESET, asQuitAgent, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupKey, isWorkItemId, ticketIdOf, ticketOfSession, UI_COMMANDS, type MissingFolder, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type OverlapReport, type AgentUpdateNotice, type MessageMode, type OptionalTab, type IpcResult, type AgentTold, type StepStarted, type Forgotten, type StepInserted } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -88,13 +88,15 @@ import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type Focus
 import { FocusPanel, isFocusTool, type FocusTool } from "./FocusPanel";
 import { useLandscape, useLandscapeMigration, type LandscapeSave } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
-import { viewOnlyPatch, ACCENT_NAMES, accentOf, areaAccents, automaticAccent, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, plannedIn, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { viewOnlyPatch, ACCENT_NAMES, accentOf, areaAccents, automaticAccent, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, plannedIn, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planRelayoutPipeline, planTidy, planUnstackAll, pipelineOf, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { wiresInOrder } from "../shared/wires";
 import { wiresNow } from "./WireLayer";
 import { droppedNote, unmovedNote } from "./wiresModel";
 import { chainOf } from "./pipelineChain";
 import { REVEAL_WAIT_MS, newAreaPatch } from "./landscapeModel";
 import { PlanPicker, SaveTemplateDialog, TemplatePicker } from "./TemplatePicker";
+import { ModelChip, ModelPopover, StepEditDialog, setModelCall, specOf, type ModelWhere, type PipelineUi, type StepSpec } from "./PipelineEdit";
+import { insertDefaults } from "../shared/pipelineEdit";
 import { usePlans } from "./usePlans";
 import { toldLine } from "./ticketPipelineModel";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
@@ -1131,8 +1133,11 @@ function App() {
   const forgetSession = async (s: SessionInfo): Promise<unknown> => {
     const l = lsNow.current?.landscape;
     const layout = layoutNow.current;
-    const r = await window.mb.killSession(s.id, true);
-    if (!isErr(r) && l && layout) await lsChange(forgetPatch(l, layout, [s.id]), `letting ${titleOf(s)}'s place go`);
+    const r: IpcResult<Forgotten> = await window.mb.forgetSession(s.id);
+    if (isErr(r)) return r;
+    const patch = l && layout ? forgetPatch(l, layout, [s.id]) : null;
+    if (patch) await lsChange(patch, `letting ${titleOf(s)}'s place go`);
+    sayForgotten(s, r, patch && l ? undoOf(l, patch) : null);
     return r;
   };
   /** forceClose where no dialog is open to show the failure. */
@@ -2007,6 +2012,7 @@ function App() {
       resumeAgent: () => void resumeDead(s, true),
       openTerminal: () => void openTerminal(s),
       saveTemplate: saveTemplateOf(s),
+      pipeline: own && !s.shell ? pipelineCans(s) : undefined,
     };
   };
   const tileOfSession = (id: string) => landscapeLayout?.tiles.find((t) => t.members.some((m) => m.id === id)) ?? null;
@@ -2158,18 +2164,26 @@ function App() {
       room: leftCopyActions(left, () => left && takeBack(left), (err) => err && closedSay(`Couldn't send the changes: ${err}`)),
       reopen: () => void (several ? reopenGhosts(tabs, `in ${titleOf(s)}'s stack`) : reopenGhost(s)),
       fresh: () => startFresh(s, fromGhost),
-      forget: () => void forgetGhosts(tabs, several ? `forgetting ${titleOf(s)}'s ${tabs.length} closed tabs` : `forgetting ${titleOf(s)}`),
+      // one on the landscape goes through the bridging path, with Undo; a stack's tabs and the Closed sessions list's as before
+      forget: () => void (several || !fromGhost ? forgetGhosts(tabs, several ? `forgetting ${titleOf(s)}'s ${tabs.length} closed tabs` : `forgetting ${titleOf(s)}`) : forgetStep(s)),
+      ...(fromGhost && !several && !s.shell && !isRemote(s) ? { pipeline: pipelineCans(s) } : {}),
     };
   };
-  /** A ghost's actions (its card's buttons, ⋯ and right-click; a stack's closed tab's): `tabs` a stack ghost's closed tabs. */
-  const ghostActionsFor = (s: SessionInfo, tabs?: readonly SessionInfo[]): ModelAction[] =>
+  /**
+   * A ghost's actions (its card's buttons, ⋯ and right-click; a stack's closed tab's): `tabs` a stack ghost's closed tabs,
+   * `extra` what only the landscape offers (Connect…).
+   */
+  const ghostActionsFor = (s: SessionInfo, tabs?: readonly SessionInfo[], extra: { connect?: Can } = {}): ModelAction[] =>
     s.planned
       ? plannedActions({
           busy: closedBusy.has(s.id),
           start: () => void askStartStep(s),
-          forget: () => void forgetGhosts([s], `forgetting ${titleOf(s)}`),
+          forget: () => void forgetStep(s),
+          edit: () => setStepDlg({ mode: "edit", s }),
+          connect: extra.connect,
+          pipeline: pipelineCans(s),
         })
-      : ghostActions(s, ghostEnv(s, tabs));
+      : ghostActions(s, { ...ghostEnv(s, tabs), connect: extra.connect });
   /** A ghost's foot: a closed session's status (closedStatus), a not-started step's where it will work (plannedWhere). */
   const ghostStatusOf = (s: SessionInfo): string => {
     if (!s.planned) return closedStatus(s, goneFolders.get(s.id));
@@ -2252,6 +2266,155 @@ function App() {
       lsSay(plan.note ?? `Tidied ${title} in the order its workspaces were made`, back ? { label: "Undo", run: undo } : undefined);
     });
   };
+  // ---- a pipeline edited on the canvas (PipelineEdit.tsx): model chips, Edit…, Insert step, Re-lay out, Forget's bridges ----
+  /** A card's model chip clicked: its popover, under the chip. */
+  const [modelAsk, setModelAsk] = useState<{ s: SessionInfo; where: ModelWhere; anchor: HTMLElement } | null>(null);
+  /** Edit… on a not-started step, or a step to insert (after `after`, ahead of `before`, or between them). */
+  const [stepDlg, setStepDlg] = useState<{ mode: "edit"; s: SessionInfo } | { mode: "insert"; after: SessionInfo | null; before: SessionInfo | null } | null>(null);
+  const knownSession = (id: string) => [...sessions, ...resumable, ...planned].find((x) => x.id === id);
+  const bookWires = () => wiresInOrder(wiresNow().state?.book?.links ?? {}).map(([, w]) => w);
+  /**
+   * Re-lay out the pipeline `key` (a tile's key or a session's id) is part of (planRelayoutPipeline): its workspaces and
+   * steps in stage columns from where it starts, what else is in its area left where it is unless it's in the way. Said
+   * with Undo while nothing else has changed the landscape since, as Tidy's is. `said` leads the note (an insert's).
+   */
+  const relayoutPipeline = (key: string, said?: string) => {
+    const now = lsNow.current;
+    const layout = layoutNow.current;
+    const placed = placedNow.current;
+    if (!now || !layout || !placed) return;
+    const lead = said ? `${said}. ` : "";
+    const plan = planRelayoutPipeline(placed, layout, key, areaTitle, bookWires());
+    if ("refused" in plan) return lsSay(`${lead}${plan.refused}`);
+    if (!plan.patch) return lsSay(`${lead}Its pipeline is laid out already`);
+    const back = undoOf(now.landscape, plan.patch);
+    void lsSaves.save(plan.patch, "laying its pipeline out").then((r) => {
+      if ("error" in r) return lsSay(`${lead}Laying its pipeline out: not saved, ${r.error}`);
+      const undo = () => {
+        if (landscapeStore.revNow() !== r.rev) return lsSay("Can't undo laying it out: the landscape has changed since");
+        void lsChange(back, "putting its pipeline back as it was");
+      };
+      lsSay(`${lead}${plan.note ?? "Laid its pipeline out"}`, back ? { label: "Undo", run: undo } : undefined);
+    });
+  };
+  /** Session `s`'s pipeline edits in its menu: Insert step after… and Re-lay out pipeline, while it's in a pipeline. */
+  const pipelineCans = (s: SessionInfo) => {
+    const layout = layoutNow.current;
+    const wires = bookWires();
+    if (!layout || s.shell || !pipelineOf(layout, s.id, wires)) return undefined;
+    const outs = wires.filter((w) => w.type === "handoff" && w.from === s.id);
+    return {
+      // with one handoff out it goes between, else after it alone
+      insertAfter: () => setStepDlg({ mode: "insert", after: s, before: outs.length === 1 ? (knownSession(outs[0].to) ?? null) : null }),
+      relayout: () => relayoutPipeline(s.id),
+    };
+  };
+  /** An inserted step waiting to be drawn, then its pipeline laid out again; said if it isn't drawn in time. */
+  const relayAfter = useRef<{ id: string; wires: string[]; said: string; until: number } | null>(null);
+  const [relayTick, setRelayTick] = useState(0);
+  useEffect(() => {
+    const p = relayAfter.current;
+    if (!p) return;
+    const layout = layoutNow.current;
+    const links = wiresNow().state?.book?.links ?? {};
+    const drawn = !!layout && [...layout.tiles, ...layout.ghosts].some((t) => t.members.some((m) => m.id === p.id));
+    if (!drawn || !p.wires.every((id) => Object.hasOwn(links, id))) {
+      if (Date.now() < p.until) {
+        const t = setTimeout(() => setRelayTick((n) => n + 1), 200);
+        return () => clearTimeout(t);
+      }
+      relayAfter.current = null;
+      return lsSay(`${p.said}. Its pipeline wasn't laid out again, as it wasn't drawn in time: Re-lay out pipeline in its menu does it`);
+    }
+    relayAfter.current = null;
+    relayoutPipeline(p.id, p.said);
+  }, [relayTick, landscapeLayout]);
+  /** The Edit dialog's Save: the step's spec edited (steps:edit), or the step inserted (steps:insert); main's refusal stays in the dialog. */
+  const saveStep = async (spec: StepSpec): Promise<string | null> => {
+    const d = stepDlg;
+    if (!d) return null;
+    const fields = { title: spec.title, agent: spec.agent, model: spec.model || null, effort: spec.effort || null, prompt: spec.prompt };
+    if (d.mode === "edit") {
+      const r: IpcResult<SessionInfo> = await window.mb.editStep(d.s.id, fields);
+      if (isErr(r)) return r.error;
+      setStepDlg(null);
+      await refresh();
+      lsSay(`Saved ${titleOf(r)}`);
+      return null;
+    }
+    const r: IpcResult<StepInserted> = await window.mb.insertStep({ after: d.after?.id ?? null, before: d.before?.id ?? null, ...fields });
+    if (isErr(r)) return r.error;
+    setStepDlg(null);
+    relayAfter.current = { id: r.info.id, wires: r.wires, said: `Inserted ${titleOf(r.info)}${r.note ? ` (${r.note})` : ""}`, until: Date.now() + LAID_OUT_WAIT_MS };
+    await refresh();
+    setRelayTick((n) => n + 1);
+    return null;
+  };
+  /** A card's model chip: what the landscape draws for a pipeline's edits. */
+  const pipelineUi: PipelineUi = {
+    chip: (s, where) => <ModelChip session={s} onOpen={(from) => setModelAsk({ s, where, anchor: from })} />,
+    insert: (g) => {
+      const a = knownSession(g.from);
+      const b = knownSession(g.to);
+      if (!a || !b) return lsSay("That handoff's ends aren't here any more");
+      setStepDlg({ mode: "insert", after: a, before: b });
+    },
+  };
+  /** A model or effort picked in a chip's popover (sessions:setModel): said once it's done, or why not, in the popover. */
+  const applyModel = async (s: SessionInfo, change: { model?: string | null; effort?: string | null }): Promise<string | null> => {
+    const r = await setModelCall(s.id, change);
+    if ("error" in r) return r.error;
+    await refresh();
+    const m = r.set.info.model ?? "its default model";
+    lsSay(r.set.did === "restarted" ? `Restarted ${titleOf(s)} with ${m}, its wires kept` : r.set.did === "edited" ? `${titleOf(s)} will run ${m}` : `${titleOf(s)} runs ${m} when it's reopened`);
+    return null;
+  };
+  /**
+   * What forgetting `s` did to its chain, said with Undo (sessions:unforget, then `back`, its place): each handoff
+   * bridged over it, what couldn't be, and wires that stayed for want of a writable book.
+   */
+  const sayForgotten = (s: SessionInfo, r: Forgotten, back: LandscapePatch | null) => {
+    const name = (id: string) => ((x) => (x ? titleOf(x) : id))(knownSession(id));
+    const bridged = r.bridged.map((b) => `${name(b.from)} → ${name(b.to)}`);
+    const said = [
+      `Forgot ${titleOf(s)}.`,
+      bridged.length ? `${bridged.join(", ")} ${bridged.length === 1 ? "hands" : "hand"} off now.` : "",
+      r.unbridged.length ? `Not bridged: ${r.unbridged.join("; ")}.` : "",
+      r.wiresLeft ? `Its wires stayed (${r.wiresLeft}): remove them from their right-click.` : "",
+    ].filter(Boolean).join(" ");
+    lsSay(said, r.undo ? { label: "Undo", run: () => void unforget(r.undo!, back) } : undefined);
+  };
+  const unforget = async (token: string, back: LandscapePatch | null) => {
+    let r: IpcResult<{ notes: string[] } | { refused: string }>;
+    try {
+      r = await window.mb.unforgetSession(token);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (isErr(r)) return lsSay(`Couldn't put it back: ${r.error}`);
+    if ("refused" in r) return lsSay(r.refused);
+    if (back) await lsChange(back, "putting its place back");
+    await refresh();
+    lsSay(r.notes.length ? `Put it back. ${r.notes.join(" ")}` : "Put it back, with its wires");
+  };
+  /** Forget a not-started step or one ghost through the bridging path (sessions:forget): its place goes too, and Undo brings both back. */
+  const forgetStep = (s: SessionInfo) =>
+    whileClosedBusy([s.id], `forgetting ${titleOf(s)}`, async () => {
+      const l = lsNow.current?.landscape;
+      const layout = layoutNow.current;
+      forgettingNow.current.add(s.id);
+      let r: IpcResult<Forgotten>;
+      try {
+        r = await window.mb.forgetSession(s.id);
+      } finally {
+        forgettingNow.current.delete(s.id);
+      }
+      if (isErr(r)) return closedSay(`Couldn't forget ${titleOf(s)}: ${r.error}`);
+      const patch = l && layout ? forgetPatch(l, layout, [s.id]) : null;
+      if (patch) await lsChange(patch, `letting ${titleOf(s)}'s place go`);
+      await refresh();
+      sayForgotten(s, r, patch && l ? undoOf(l, patch) : null);
+    });
   /**
    * Session `s`'s action `key` as its model has it, for what offers it outside the model's menus (the context chip,
    * the Changes tool, ⌘K), so none of them can run what the menus refuse.
@@ -2898,6 +3061,7 @@ function App() {
           cardFor={cardFor}
           notice={lsNotice}
           ghostActions={ghostActionsFor}
+          pipeline={pipelineUi}
           ghostStatus={ghostStatusOf}
           needs={needs.byArea}
           onNeeds={stepNeeds}
@@ -3620,7 +3784,7 @@ function App() {
               onStep={showStep}
               onHide={hideTree}
               menuFor={sessionActions}
-              stepMenu={(s) => menuOf(ghostActionsFor(s))}
+              stepMenu={(s) => menuOf(ghostActionsFor(s, undefined, { connect: connectFromRow(s) }))}
               areaMenu={(key) => (key === LOOSE_GROUP ? ((rows) => (rows.length ? menuOf(rows) : null))(looseGhostRows()) : areaMenu(key))}
               onColour={openColour}
               footer={
@@ -3902,6 +4066,20 @@ function App() {
           forceClose={forceClose}
           forget={forgetSession}
         />
+      )}
+      {stepDlg && (
+        <StepEditDialog
+          key={stepDlg.mode === "edit" ? `edit:${stepDlg.s.id}` : `insert:${stepDlg.after?.id ?? ""}:${stepDlg.before?.id ?? ""}`}
+          heading={stepDlg.mode === "edit" ? `Edit ${titleOf(stepDlg.s)}` : stepDlg.after && stepDlg.before ? `A step between ${titleOf(stepDlg.after)} and ${titleOf(stepDlg.before)}` : stepDlg.after ? `A step after ${titleOf(stepDlg.after)}` : `A step ahead of ${titleOf(stepDlg.before!)}`}
+          saveLabel={stepDlg.mode === "edit" ? "Save" : "Insert"}
+          note={stepDlg.mode === "insert" ? "It waits until it's handed off to, or started with Start now; its pipeline is laid out again once it's there." : null}
+          initial={stepDlg.mode === "edit" ? specOf(stepDlg.s) : { title: "", ...((d) => ({ agent: d.agent, model: d.model ?? "", effort: d.effort ?? "" }))(insertDefaults(stepDlg.after, stepDlg.before)), prompt: "" }}
+          onSave={saveStep}
+          onClose={() => setStepDlg(null)}
+        />
+      )}
+      {modelAsk && modelAsk.anchor.isConnected && (
+        <ModelPopover key={modelAsk.s.id} session={knownSession(modelAsk.s.id) ?? modelAsk.s} where={modelAsk.where} anchor={modelAsk.anchor} onApply={(c) => applyModel(modelAsk.s, c)} onClose={() => setModelAsk(null)} />
       )}
       {templatePicker && (
         <TemplatePicker

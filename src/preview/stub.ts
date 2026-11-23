@@ -11,7 +11,8 @@
  * the query can also pick the screen (see the end of this file).
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
-import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, PipelineRequest, PlanRequest, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
+import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, InsertStepRequest, Meters, PipelineRequest, PlanRequest, RunProfile, SessionInfo, Settings, StepEdit, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
+import { topOfKey } from "../shared/types";
 import { AGENT_NAME, DEFAULT_SETTINGS, HELPDESK_GROUP, asQuitAgent, HELPDESK_PRESET, HELPDESK_STARTING, HELPDESK_START_IN_ROOM, clearGateTicks, clearsGates, helpdeskOpenAlready, prAskedState, prNeedsYou, splitGroupKey, stepSlug, ticketOfSession } from "../shared/types";
 import { tildePath } from "../shared/paths";
 import { CHANGELOG } from "../shared/changelog";
@@ -50,7 +51,8 @@ import { runSwitchAudit } from "./switchAudit";
 import { assistantApi, openAssistantTab } from "./assistantStub";
 import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
-import { boardPlan, councilPlan, pipelinePlan, runPlanAudit, ticketsPlan } from "./planAudit";
+import { boardPlan, councilPlan, laidPipeline, pipelinePlan, runPlanAudit, ticketsPlan } from "./planAudit";
+import { runPipelineAudit } from "./pipelineAudit";
 import { WIRE_AREA, acrossBook, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
 import { runColourAudit } from "./colourAudit";
@@ -1727,6 +1729,111 @@ const api: Record<string, (...a: any[]) => any> = {
     sessions = sessions.map((s) => (s.id === id ? { ...s, status: "idle", waitingReason: null, waitingSince: null } : s));
     sessionsChanged();
   },
+  // main's steps:edit (PipelineEdits.editStep): a not-started step's spec, a model the preview's catalog doesn't list refused
+  editStep: async (id: string, edit: StepEdit) => {
+    const p = planned.find((x) => x.id === id);
+    if (!p || byId(id)) return err("It has started: only a step that hasn't started yet is edited");
+    const agent = edit.agent ?? p.agent ?? "claude";
+    const offered = (await api.modelCatalog())[agent];
+    if (edit.model && !offered.models.some((m: { id: string }) => m.id === edit.model)) return err(`${AGENT_NAME[agent]} on this Mac doesn't offer “${edit.model}”: pick one it lists, or leave the model out for its default.`);
+    if (edit.title !== undefined && !edit.title.trim()) return err("Name the step");
+    const next: SessionInfo = { ...p, planned: { ...p.planned! } };
+    if (edit.title !== undefined) next.title = edit.title.trim();
+    if (edit.agent !== undefined) next.agent = edit.agent;
+    if (edit.model !== undefined) next.model = edit.model || undefined;
+    if (edit.effort !== undefined) next.effort = edit.effort || undefined;
+    if (edit.prompt !== undefined) next.planned!.prompt = edit.prompt?.trim() || undefined;
+    planned = planned.map((x) => (x.id === id ? next : x));
+    sessionsChanged();
+    return next;
+  },
+  // main's steps:insert (PipelineEdits.insertStep): A→B becomes A→new→B, the wire into B keeping its settings
+  insertStep: async (req: InsertStepRequest) => {
+    const all = [...sessions, ...previous, ...planned];
+    const a = req.after ? all.find((x) => x.id === req.after) : undefined;
+    const b = req.before ? all.find((x) => x.id === req.before) : undefined;
+    if (!a && !b) return err("Say where the step goes: after a session, ahead of one, or between two");
+    const between = a && b ? Object.entries(wireBook.links).find(([, w]) => w.type === "handoff" && w.from === a.id && w.to === b.id) : undefined;
+    if (a && b && !between) return err(`There's no handoff from “${a.title}” to “${b.title}” to put a step in`);
+    const next = (a ?? b)!;
+    const title = String(req.title ?? "").trim();
+    if (!title) return err("Name the step");
+    const id = `pl${Date.now().toString(36)}`;
+    const step: SessionInfo = {
+      ...session(id, { title, agent: req.agent, taskGroup: next.taskGroup ? topOfKey(next.taskGroup) : null, status: "idle", createdAt: Date.now(), branch: null }),
+      repoPath: next.repoPath,
+      cwd: next.repoPath ?? "/Users/you",
+      model: req.model || undefined,
+      effort: req.effort || undefined,
+      planned: { worktree: next.planned ? next.planned.worktree : !!next.repoPath, ...(req.prompt?.trim() ? { prompt: req.prompt.trim() } : {}) },
+    };
+    planned = [...planned, step];
+    sessionsChanged();
+    const made: string[] = [];
+    if (between) {
+      const r: WireReply = await api.wiresRepoint(between[0], { from: id });
+      if ("refused" in r) return err(r.refused);
+      made.push(between[0]);
+    }
+    const r: WireReply = a ? await api.wiresAdd(a.id, id, "handoff") : await api.wiresAdd(id, b!.id, "handoff");
+    if ("refused" in r) return err(r.refused);
+    made[a ? "unshift" : "push"](r.id!);
+    return { info: step, wires: made, note: null };
+  },
+  // main's sessions:setModel: an open one restarts in place (sessionRestart), a step's spec or a closed record keeps it
+  setModel: async (id: string, change: { model?: string | null; effort?: string | null }) => {
+    const pick = (s: SessionInfo): SessionInfo => ({ ...s, ...(change.model !== undefined ? { model: change.model || undefined } : {}), ...(change.effort !== undefined ? { effort: change.effort || undefined } : {}) });
+    if (planned.some((p) => p.id === id)) {
+      planned = planned.map((p) => (p.id === id ? pick(p) : p));
+      sessionsChanged();
+      return { info: planned.find((p) => p.id === id)!, did: "edited" };
+    }
+    if (byId(id)) {
+      sessions = sessions.map((x) => (x.id === id ? pick(x) : x));
+      sessionsChanged();
+      return { info: byId(id)!, did: "restarted" };
+    }
+    if (previous.some((p) => p.id === id)) {
+      previous = previous.map((p) => (p.id === id ? pick(p) : p));
+      sessionsChanged();
+      return { info: previous.find((p) => p.id === id)!, did: "stored" };
+    }
+    return err(`This Mac has no session "${id}"`);
+  },
+  // main's sessions:forget (forgetSession, WireService.forgetChain): its wires go, each A→it→B bridged as A→B, and its
+  // record held for sessions:unforget
+  forgetSession: async (id: string) => {
+    const record = [...sessions, ...previous, ...planned].find((x) => x.id === id) ?? null;
+    await api.killSession(id, true);
+    const gone = withoutSession(wireBook, id);
+    const ends = wireEnds();
+    const bridges = bridgesOver(id, gone.dropped, gone.book.links, ends, createdAtAfter(gone.book.links, Date.now()));
+    const links = { ...gone.book.links };
+    const bridged: { id: string; from: string; to: string }[] = [];
+    for (const b of bridges) {
+      if (!("wire" in b)) continue;
+      const wid = Math.random().toString(16).slice(2, 10);
+      links[wid] = b.wire;
+      bridged.push({ id: wid, from: b.from, to: b.to });
+    }
+    wireChanged({ ...gone.book, links });
+    const undo = `forgot:${id}`;
+    forgottenSteps.set(undo, { record, wires: gone.dropped, bridges: bridged.map((b) => b.id) });
+    return { bridged, unbridged: bridges.flatMap((b) => ("refused" in b ? [`${b.from} → ${b.to}: ${b.refused}`] : [])), undo, wiresLeft: null };
+  },
+  unforgetSession: async (token: string) => {
+    const held = forgottenSteps.get(token);
+    if (!held) return { refused: "That Forget can't be undone any more." };
+    forgottenSteps.delete(token);
+    if (held.record?.planned) planned = [...planned, held.record];
+    else if (held.record) previous = [...previous, { ...held.record, status: "dead" }];
+    sessionsChanged();
+    const links = { ...wireBook.links };
+    for (const b of held.bridges) delete links[b];
+    for (const d of held.wires) links[d.id] = d.wire;
+    const r = wireChanged({ ...wireBook, links });
+    return "refused" in r ? r : { state: r.state, notes: [] };
+  },
   sessionMute: async (id: string, muted: boolean) => {
     sessions = sessions.map((s) => (s.id === id ? { ...s, muted: muted || undefined } : s));
     sessionsChanged();
@@ -2371,6 +2478,12 @@ const api: Record<string, (...a: any[]) => any> = {
   // ?lsModelsMs=<ms>: main takes that long to say so
   modelCatalog: async () => {
     await new Promise((r) => setTimeout(r, Number(new URLSearchParams(location.search).get("lsModelsMs") ?? 0)));
+    // ?lsModels: a catalog as a Mac with both agents has one, for the model chip's popover and a step's Edit…
+    if (new URLSearchParams(location.search).has("lsModels"))
+      return {
+        claude: { models: [{ id: "opus", label: "Opus (latest)", group: "Latest" }, { id: "sonnet", label: "Sonnet (latest)", group: "Latest" }, { id: "haiku", label: "Haiku (latest)", group: "Latest" }], efforts: ["low", "medium", "high", "xhigh", "max"] },
+        codex: { models: [{ id: "gpt-5.1-codex", label: "GPT-5.1 Codex", group: "Codex models" }, { id: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex mini", group: "Codex models" }], efforts: ["low", "medium", "high", "xhigh"] },
+      };
     return err("UI preview: no model catalog");
   },
 
@@ -3409,6 +3522,8 @@ if (params.has("landscapeStripAudit")) runStripAudit({ calls, waitFor });
 if (params.has("landscapeColourAudit")) runColourAudit({ calls, waitFor }, params.get("landscapeColourAudit") || "a");
 // W17: ?landscapePlanAudit=<part> (with ?lsWires&lsPlan) works an Orchestrator's plan and the built-in template (planAudit.ts) for test/uiTemplatePicker.test.ts
 if (params.has("landscapePlanAudit")) runPlanAudit({ calls, waitFor }, params.get("landscapePlanAudit") || "plan");
+// ?landscapePipelineAudit=<part> (with ?lsWires&lsPlan=pipeline&lsLaid&lsModels) edits the laid-out pipeline on the canvas (pipelineAudit.ts) for test/uiPipelineEdit.test.ts
+if (params.has("landscapePipelineAudit")) runPipelineAudit({ calls, waitFor }, params.get("landscapePipelineAudit") || "chip");
 // S8: ?landscapeSwitchAudit=stack|locked|palette|notes|place works what the grid offered on the landscape (switchAudit.ts) for test/uiLandscapeSwitch.test.ts
 if (params.has("landscapeSwitchAudit")) {
   const newSession = (over: Partial<SessionInfo>) => {
@@ -6785,8 +6900,8 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       esc(dlg ?? undefined);
       await sleep(400);
 
-      // Forget g1 from its menu (zoomed out to cards a ghost has no ⋯, so its right-click): let go in main, and its place
-      // on the landscape
+      // Forget g1 from its menu (zoomed out to cards a ghost has no ⋯, so its right-click): forgotten in main, where its
+      // wires are bridged and Undo is kept, and its place on the landscape let go
       mark = calls.length;
       out.moreZoomedOut = !!ghost("g1")!.querySelector(".ls-more");
       ghost("g1")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(ghost("g1")!, 0.5, 0.5) }));
@@ -6794,7 +6909,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const g1Menu = ctxRows();
       await ctxPick("Forget it");
       await sleep(700);
-      out.forgot = { menu: g1Menu, kill: callsSince(mark, "killSession"), ghost: !!ghost("g1"), stored: landscape.workspaces.g1 ?? null };
+      out.forgot = { menu: g1Menu, kill: callsSince(mark, "killSession"), forget: callsSince(mark, "forgetSession"), ghost: !!ghost("g1"), stored: landscape.workspaces.g1 ?? null };
 
       // 5101's Clear ghosts, confirmed
       const asked: string[] = [];
@@ -9105,6 +9220,7 @@ import {
   type WireState,
   type WireType,
 } from "../shared/wires";
+import { bridgesOver, repointedWire, settingsOf, type DroppedWire } from "../shared/wires";
 let wireBook: WireBook = emptyWireBook();
 if (wireBoard) wireBook = stripBoard ? stripBoardBook(stripBoard, now) : wireBoardBook(now);
 else if (lsWiresQ !== null && manyQ) wireBook = manyWiresBook(sessions, Number(lsWiresQ) || 20, now);
@@ -9143,6 +9259,9 @@ if (params.has("landscapeWiresAudit"))
   );
 let wiresRev = 0;
 const removedWires = new Map<string, Wire>();
+/** What wires:repoint moved (wires:unrepoint's), and what sessions:forget let go (sessions:unforget's), as main holds them. */
+const repointedWires = new Map<string, { before: Wire; after: { from: string; to: string } }>();
+const forgottenSteps = new Map<string, { record: SessionInfo | null; wires: DroppedWire[]; bridges: string[] }>();
 const wireState = (): WireState => clone({ book: wireBook, refused: null, wiresRev, problems: [], ...(Object.keys(wireMerges).length ? { merges: wireMerges } : {}) });
 /** The rules' view of this file's sessions: running ones, and closed ones (previous) as main's resumable. */
 const wireEnds = (): Pick<WireContext, "end"> => ({
@@ -9226,6 +9345,28 @@ Object.assign(api, {
     const moved = rekeyedBook(wireBook, old, next);
     const refused = rekeyRefusal(wireBook, moved, old, next, wireEnds());
     return refused ? { refused } : wireChanged(moved);
+  },
+  // main's wires:repoint (WireService.repoint): its ends moved, checked as making it there would be, its type and
+  // settings kept; wires:unrepoint puts the record back
+  wiresRepoint: async (id: string, ends: { from?: string; to?: string }): Promise<WireReply> => {
+    const w = Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined;
+    if (!w) return { refused: `There's no wire ${JSON.stringify(id)}.` };
+    const from = ends.from ?? w.from;
+    const to = ends.to ?? w.to;
+    if (from === w.from && to === w.to) return { refused: "It runs between those two already." };
+    const ctx = { ...wireEnds(), links: wireBook.links, self: id };
+    const refused = wireRefusal(from, to, w.type, ctx) ?? settingsRefusal({ from, to, type: w.type }, settingsOf(w), ctx);
+    if (refused) return { refused };
+    repointedWires.set(id, { before: w, after: { from, to } });
+    return wireChanged(withLink(id, repointedWire(w, from, to, Date.now())), id);
+  },
+  wiresUnrepoint: async (id: string): Promise<WireReply> => {
+    const held = repointedWires.get(id);
+    const w = Object.hasOwn(wireBook.links, id) ? wireBook.links[id] : undefined;
+    if (!held) return { refused: "That wire's move can't be undone any more." };
+    if (!w || w.from !== held.after.from || w.to !== held.after.to) return { refused: "That wire has been moved again since." };
+    repointedWires.delete(id);
+    return wireChanged(withLink(id, held.before), id);
   },
   // W7, as main's WireService.addTerminal: refused before it starts when the wire couldn't be made, else a terminal in
   // the agent's folder and group, wired to it by a shared worktree wire
@@ -9527,6 +9668,26 @@ if (planOrch) {
   if (lsPlanQ === "room" && like && !team.rooms.some((r) => r.groupKey === WIRE_AREA)) team.rooms.push({ ...clone(like), id: "R5120ccccccccccccccccc", name: "#5120 Donor export", groupKey: WIRE_AREA });
 }
 let heldPlans: { id: string; from: string; at: number; replaces?: string; plan: Plan; notes?: string[] }[] = planOrch ? [planOrch.held] : [];
+// ?lsLaid (with ?lsPlan=pipeline): its plan laid out already, its Coders and Verifiers not started (laidPipeline)
+const laidPlan = planOrch && lsPlanQ === "pipeline" && params.has("lsLaid") ? laidPipeline(planOrch, session, now) : null;
+if (laidPlan) {
+  planned.push(...laidPlan.steps);
+  wireBook = { ...wireBook, links: { ...wireBook.links, ...laidPlan.links } };
+  heldPlans = [];
+  // its area right of the others, the Orchestrator and its steps where there was room as they were made, out of stage
+  // columns: Re-lay out pipeline lines them up
+  const M = presetSize("agent", "M");
+  const all = Object.values(landscape.areas);
+  const x = Math.max(0, ...all.map((a) => a.x + a.w)) + AREA_GAP;
+  const y = Math.min(0, ...all.map((a) => a.y));
+  const cell = (c: number, r: number): Rect => ({ x: x + AREA_PAD + c * (M.w + GAP), y: y + AREA_HEADER + r * (M.h + GAP), ...M });
+  const area: Area = { x, y, w: 2 * AREA_PAD + 3 * M.w + 2 * GAP, h: AREA_HEADER + 2 * (M.h + GAP) + AREA_PAD, repos: [] };
+  landscape.areas[planOrch!.orchestrator.taskGroup!] = area;
+  landscape.workspaces[planOrch!.orchestrator.id] = cell(1, 1);
+  laidPlan.steps.forEach((st, i) => (landscape.workspaces[st.id] = cell([0, 2, 2, 0][i] ?? 0, [0, 0, 1, 1][i] ?? 0)));
+  // in view and big enough to read, cards with their headers (the read-only band)
+  if (!lsCamera) set("mb.landscape.camera", { x: x - 60, y: y - 120, zoom: 0.38 });
+}
 /** Why a plan id is gone, as main says it to a dialog still open on one. */
 const spentPlans = new Map<string, string>();
 const plansChanged = () => emit("onPlansChanged");

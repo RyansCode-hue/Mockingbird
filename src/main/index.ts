@@ -34,6 +34,7 @@ import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
 import { WireService } from "./wires";
+import { PipelineEdits } from "./pipelineEdit";
 import { wiresInOrder, type WireState } from "../shared/wires";
 import { WireDelivery } from "./wireDelivery";
 import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
@@ -68,7 +69,7 @@ import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, retryingSync, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, StepStarted, UpdateOutcome, WorktreeCleanupSay } from "../shared/types";
+import type { AgentKind, AgentMessage, BroadcastRequest, ContextWindow, Forgotten, LastReply, Meters, ModelCatalog, OverlapReport, PlanRequest, PrStatus, ScmPushResult, SessionInfo, StepStarted, UpdateOutcome, WorktreeCleanupSay } from "../shared/types";
 import { AGENT_KINDS, asQuitAgent, BY_YOU, HELPDESK_PRESET, isWorkItemId, keptTicksLine, localDay, stageLabel, topOfKey, UI_COMMANDS } from "../shared/types";
 import { plainLine } from "../shared/team/agentText";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
@@ -872,30 +873,45 @@ handle("sessions:resumeAgent", (id) => sessions.resumeAgent(String(id)));
 handle("sessions:openTerminal", (id) => sessions.openTerminal(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {
+  if (forget) {
+    forgetSession(String(id));
+    return;
+  }
+  sessions.kill(id, false);
+});
+/**
+ * Forget session `id` (Forget, sessions:kill with forget): its pane closed and its record gone, with what goes with it.
+ * Its wires go too, and the gap it leaves in its chain is bridged (WireService.forgetChain): each A→it→B becomes A→B.
+ * Its record as it was is held for Undo (sessions:unforget): a not-started step comes back as it was, a closed or
+ * running one closed, its scrollback and snapshots not.
+ */
+function forgetSession(id: string): Forgotten {
   // a pane closed to resume isn't live any more, but forgetting it later must still find it
-  const s = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id);
-  const r = sessions.kill(id, forget);
+  const s = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id) ?? sessions.planned().find((x) => x.id === id);
+  const record = s && !s.shell && !isRemotePaneId(id) ? { ...s } : null;
+  const names = new Map([...sessions.list(), ...sessions.resumable(), ...sessions.planned()].map((x) => [x.id, x.ticketTitle ?? x.title]));
+  sessions.kill(id, true);
   // a forgotten session's snapshots go with it; a resumable one keeps them. They
   // are the repository's refs, so the main checkout reaches them once a
   // worktree has been removed
-  if (forget && s?.repoPath) {
+  if (s?.repoPath && !s.planned) {
     const at = fs.existsSync(s.cwd) ? s.cwd : s.repoPath;
     dropSnapshots(at, s.id).catch((err) => logError(`drop snapshots ${id}`, err));
   }
-  if (forget) void takeover?.sessionForgotten(String(id)); // team rooms: take-over — its room backup goes too (failures shown in the sidebar)
-  if (forget) wires.sessionForgotten(String(id));
-  if (forget) plans.sessionForgotten(String(id));
-  if (forget) {
-    // a Council whose Orchestrator it was can be implemented again; one that can't be saved now still can, as implement
-    // reads which sessions are gone
-    try {
-      collab.sessionForgotten(String(id));
-    } catch (err) {
-      logError(`collab: letting go of forgotten Orchestrator ${id}`, err);
-    }
+  void takeover?.sessionForgotten(id); // team rooms: take-over — its room backup goes too (failures shown in the sidebar)
+  const chain = wires.forgetChain(id, record, (x) => `“${names.get(x) ?? x}”`);
+  plans.sessionForgotten(id);
+  // a Council whose Orchestrator it was can be implemented again; one that can't be saved now still can, as implement
+  // reads which sessions are gone
+  try {
+    collab.sessionForgotten(id);
+  } catch (err) {
+    logError(`collab: letting go of forgotten Orchestrator ${id}`, err);
   }
-  return r;
-});
+  return chain;
+}
+handle("sessions:forget", (id) => forgetSession(String(id ?? "")));
+handle("sessions:unforget", (token) => wires.unforget(token, (rec) => sessions.restoreRecord(rec)));
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
 handle("session:buffer", (id) => sessions.paneBuffer(id));
 handle("sessions:broadcast", (req: Partial<BroadcastRequest>) => {
@@ -1126,8 +1142,16 @@ handle("claudemd:save", (p, content) => {
 handle("usage:get", () => readUsage());
 handle("usage:context", (id: string): ContextWindow => {
   const s = sessions.list().find((x) => x.id === id);
-  return s ? readContextWindow(s) : { state: "none", why: "This session isn't running" };
+  if (!s) return { state: "none", why: "This session isn't running" };
+  const cw = readContextWindow(s);
+  // the model its agent reports running: one typed in with /model becomes its record's, for its next launch
+  if (cw.state === "reading" && cw.model) sessions.noteReportedModel(s.id, cw.model, cw.at);
+  return cw;
 });
+sessions.reportedModel = (s) => {
+  const cw = readContextWindow(s);
+  return cw.state === "reading" && cw.model ? { model: cw.model, at: cw.at } : null;
+};
 // the context warning's actions: Compact (only at an idle prompt), a fresh session from a brief, and cost estimates
 handle("usage:compact", (id: string) => sessions.compact(String(id)));
 /** Weighted units per 1% of `agent`'s 5-hour limit, from this Mac's use of the window; null without a reading. */
@@ -1188,11 +1212,20 @@ function conversationLookup(s: SessionInfo, conv: string): { agent: AgentKind; l
     },
   };
 }
-/** A session of `s`'s agent in its folder and group, started from `brief` (usage:briefStart). */
-function startFromBrief(s: SessionInfo, brief: unknown): Promise<SessionInfo> {
+/** A session of `s`'s agent in its folder and group, started from `brief` (usage:briefStart), taking `s`'s wires. */
+async function startFromBrief(s: SessionInfo, brief: unknown): Promise<SessionInfo> {
   const text = String(brief ?? "").trim();
   if (!text) throw new Error("The brief is empty");
-  return companionSession(s, s.agent ?? "claude", `${s.ticketTitle ?? s.title} · fresh`, text);
+  return carryWires(s, await companionSession(s, s.agent ?? "claude", `${s.ticketTitle ?? s.title} · fresh`, text));
+}
+/**
+ * Session `s`'s wires and note moved to `next`, which carries on its work (a brief's fresh session, Continue in Codex),
+ * as Start fresh moves them (WireService.rekey, all or none): its place in the pipeline is the new one's. When they
+ * can't move they stay on `s`, logged, and `next` is answered all the same, as it has started.
+ */
+function carryWires(s: SessionInfo, next: SessionInfo): SessionInfo {
+  wires.carryOn(s.id, next.id);
+  return next;
 }
 // a session of the same agent in the same folder and group, started from the brief
 handle(
@@ -1822,7 +1855,30 @@ const wires = new WireService({
   merges: { view: (w, source) => prWatch.view(w, source) },
   // its source's repository is recorded as it begins waiting, not at its first check
   onWaiting: () => void prWatch.recordSources().catch((err) => logError("merge watch: recording a waiting wire's source repository failed", err)),
+  undoFile: path.join(MB_DIR, "wire-undo.json"),
 });
+// editing a pipeline once it's laid out: a step's spec, any session's model, a step put in between two
+const pipelineEdits = new PipelineEdits({
+  sessions,
+  wires,
+  forget: (id) => {
+    sessions.kill(id, true);
+    const left = wires.sessionForgotten(id);
+    if (left) throw new Error(`its wires couldn't be taken back (${left})`);
+  },
+  catalog: async () => {
+    try {
+      return await modelCatalog();
+    } catch (err) {
+      logError("models: reading the catalog for a step's model", err);
+      return null;
+    }
+  },
+  log: logError,
+});
+handle("steps:edit", (id, edit) => pipelineEdits.editStep(id, edit));
+handle("steps:insert", (req) => pipelineEdits.insertStep(req));
+handle("sessions:setModel", (id, change) => pipelineEdits.setModel(id, change));
 // a not-started step starts from another session's folder or commit only as a handoff between them could go now
 sessions.startGuard = (step, other) => wires.startRefusal(step, other);
 /** What the window last had of the wires' merge views and worktree folders, so a change in either alone is sent once. */
@@ -1846,6 +1902,8 @@ handle("wires:set", (id, settings) => wires.set(id, settings));
 handle("wires:remove", (id) => wires.remove(id));
 handle("wires:restore", (id) => wires.restore(id));
 handle("wires:rekey", (old, next) => wires.rekey(old, next));
+handle("wires:repoint", (id, ends) => wires.repoint(id, ends));
+handle("wires:unrepoint", (id) => wires.unrepoint(id));
 handle(
   "wires:addTerminal",
   untakenHandler("wires:addTerminal", untaken, (s) => wires.addTerminal(s, { create: (req) => sessions.create(req), forget: (id) => sessions.kill(id, true) }))
@@ -2175,13 +2233,13 @@ async function draftHandoff(id: unknown): Promise<{ handoff: string; from: Agent
   return { handoff, from, to };
 }
 handle("handoff:draft", (id) => draftHandoff(id));
-/** A session of the other agent in `s`'s folder and group, started with `handoff` (handoff:start). */
-function startFromHandoff(s: SessionInfo, handoff: unknown): Promise<SessionInfo> {
+/** A session of the other agent in `s`'s folder and group, started with `handoff` (handoff:start), taking `s`'s wires. */
+async function startFromHandoff(s: SessionInfo, handoff: unknown): Promise<SessionInfo> {
   const text = String(handoff ?? "").trim();
   if (!text) throw new Error("The handoff is empty");
   const from: AgentKind = s.agent ?? "claude";
   const to = otherAgent(from);
-  return companionSession(s, to, `${s.ticketTitle ?? s.title} · ${to}`, handoffKickoff(from, text));
+  return carryWires(s, await companionSession(s, to, `${s.ticketTitle ?? s.title} · ${to}`, handoffKickoff(from, text)));
 }
 // a session of the other agent in the same folder and group, started with the handoff
 handle(

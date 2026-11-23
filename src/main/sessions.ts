@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, type AgentQuit, type RelaunchChange, isWorkItemId, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, asQuitAgent, type AgentQuit, type RelaunchChange, isWorkItemId, slugBranch, stepSlug, ticketIdOf, ticketOfSession, AgentKind, AGENT_KINDS, HELPDESK_IN_ROOM, HELPDESK_START_IN_ROOM, HELPDESK_STARTING, helpdeskOpenAlready, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder, type PlannedStep, type PlanRequest, type SessionRole, type StepEdit, type ModelChange } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch, dropNewWorktree, isBranchName, worktreeRoot } from "./worktrees";
 import { dirtyFileCount } from "./scm";
@@ -249,6 +249,7 @@ interface LiveSession {
   ownPrompts: number; // notices submitted whose UserPromptSubmit hasn't come yet: those prompts aren't counted
   promptAt: number | null; // when the latest of those prompts came (SessionInfo.promptAt)
   toTerminal: boolean; // its agent quit and the terminal it becomes is starting (toTerminal): its pty has exited
+  firstModel: string | null; // the first model its agent reported running this launch (noteReportedModel), else null
 }
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
@@ -283,6 +284,30 @@ type StepWhere = Pick<NewSessionRequest, "repoPath" | "cwd" | "branchName" | "us
 type StepUse = { id: string; what: string };
 /** The commit a not-started step starts at, from the step before it (SessionManager.upstreamCommit), or why there's none. */
 type UpstreamCommit = { sha: string; branch: string | null; of: string; dirty: number | { unread: string }; gone: boolean } | { why: string };
+
+/** A step's name as its record keeps it, or throws saying what's wrong with it. */
+export function stepTitle(raw: unknown): string {
+  const title = String(raw ?? "").trim().replace(/\s+/g, " ");
+  if (!title) throw new Error("Name the step");
+  if (title.length > 120) throw new Error("A step's name is at most 120 characters");
+  return title;
+}
+
+/** Why a step can't run `agent`. */
+export const noAgent = (agent: unknown): string => `There's no agent ${JSON.stringify(agent)}: a step runs Claude or Codex`;
+
+/**
+ * Whether model names `a` and `b` are one line, as a launch's alias and the id its agent reports running: the same
+ * name, or one the other's alias ("opus" in "claude-opus-4-7"), a 1M-context suffix aside.
+ */
+export function sameModelLine(a: string, b: string): boolean {
+  const bare = (m: string) => m.trim().toLowerCase().replace(/\[1m\]$/, "");
+  const x = bare(a);
+  const y = bare(b);
+  if (x === y) return true;
+  const parts = (m: string) => m.split(/[-.@_]/);
+  return (!x.includes("-") && parts(y).includes(x)) || (!y.includes("-") && parts(x).includes(y));
+}
 
 /** Why not-started step `s` can't be reopened, resumed or restarted: it has no conversation or folder to go back to. */
 export const notStartedWhy = (s: Pick<SessionInfo, "title" | "ticketTitle">): string =>
@@ -922,6 +947,7 @@ export class SessionManager {
       folderNotice: null,
       heldInput: [],
       hookEvents: 0,
+      firstModel: null,
       transcripts: new Map(),
       kickoff: false,
       startTimer: null,
@@ -1816,10 +1842,8 @@ export class SessionManager {
    */
   planStep(req: Omit<PlanRequest, "after" | "sharesFolder"> & { sharesWith?: string }): SessionInfo {
     this.refuseWhileQuitting();
-    const title = String(req.title ?? "").trim().replace(/\s+/g, " ");
-    if (!title) throw new Error("Name the step");
-    if (title.length > 120) throw new Error("A step's name is at most 120 characters");
-    if (!AGENT_KINDS.includes(req.agent)) throw new Error(`There's no agent ${JSON.stringify(req.agent)}: a step runs Claude or Codex`);
+    const title = stepTitle(req.title);
+    if (!AGENT_KINDS.includes(req.agent)) throw new Error(noAgent(req.agent));
     const group = req.taskGroup?.trim() || null;
     if (group?.includes("/")) throw new Error(STEP_NOT_IN_STACK);
     let repoPath: string | null;
@@ -1872,6 +1896,129 @@ export class SessionManager {
     this.store.upsertSession(info);
     this.emitChanged();
     return info;
+  }
+
+  /**
+   * Change not-started step `id`'s spec as `edit` says (PipelineEdits.editStep reads and checks it against the agents
+   * first): its name, agent, model, effort, permission mode and prompt, saved in its record, where it starts from.
+   * Refused, changing nothing, for one that has started or is starting, a teammate's, or a mode its role or its room's
+   * sandbox wouldn't take as it starts (create() asks again then).
+   */
+  editPlanned(id: string, edit: StepEdit): SessionInfo {
+    this.ownOnly(id, "edit it");
+    this.refuseWhileQuitting();
+    if (this.starting.has(id)) throw new Error(BEING_STARTED);
+    const rec = this.recordOf(id);
+    if (this.live.has(id) || (rec && !rec.planned)) throw new Error("It has started: only a step that hasn't started yet is edited");
+    if (!rec) throw new Error(`This Mac has no step "${id}"`);
+    const agent = edit.agent ?? rec.agent ?? "claude";
+    const mode = edit.permissionMode !== undefined ? edit.permissionMode : rec.permissionMode;
+    const group = rec.taskGroup ?? null;
+    const why = permissionModeRefusal(agent, mode, { role: rec.role, roomSandboxed: !!group && this.roomSandboxOff?.(group) === false });
+    if (why) throw new Error(why);
+    const next: SessionInfo = { ...rec, planned: { ...rec.planned! } };
+    if (edit.title !== undefined) next.title = stepTitle(edit.title);
+    if (edit.agent !== undefined) next.agent = edit.agent;
+    const set = (k: "model" | "effort", v: string | null | undefined) => {
+      if (v === undefined) return;
+      if (v) next[k] = v;
+      else delete next[k];
+    };
+    set("model", edit.model);
+    set("effort", edit.effort);
+    if (edit.permissionMode !== undefined) {
+      if (edit.permissionMode && edit.permissionMode !== "default") next.permissionMode = edit.permissionMode;
+      else delete next.permissionMode;
+    }
+    if (edit.prompt !== undefined) {
+      const prompt = edit.prompt?.trim();
+      if (prompt) next.planned!.prompt = prompt;
+      else delete next.planned!.prompt;
+    }
+    this.store.upsertSession(next);
+    this.emitChanged();
+    return next;
+  }
+
+  /**
+   * Store `change` on closed session `id`'s record, for its Reopen, Resume or Start fresh to launch with, as a restart
+   * with changes leaves a running one's. Refused for one that's running, not started (editPlanned), being reopened, a
+   * terminal, or a teammate's.
+   */
+  setClosedModel(id: string, change: ModelChange): SessionInfo {
+    this.ownOnly(id, "change its model");
+    this.notResuming(id);
+    if (this.live.has(id)) throw new Error("It's open: restart it with the model instead");
+    const rec = this.recordOf(id);
+    if (!rec) throw new Error(`This Mac has no session "${id}"`);
+    if (rec.planned) throw new Error("It hasn't started: edit its step instead");
+    if (rec.shell) throw new Error("It's a terminal: it has no agent to run a model");
+    if (change.model !== undefined) {
+      if (change.model) rec.model = change.model;
+      else delete rec.model;
+    }
+    if (change.effort !== undefined) {
+      if (change.effort) rec.effort = change.effort;
+      else delete rec.effort;
+    }
+    this.store.save();
+    this.emitChanged();
+    return { ...rec };
+  }
+
+  /**
+   * Put forgotten session `rec`'s record back as it was saved (Forget's Undo): a not-started step as it was, a closed or
+   * running one closed, to reopen. Refused when this Mac has a session under its id again, or while quitting.
+   */
+  restoreRecord(rec: SessionInfo): SessionInfo {
+    this.ownOnly(rec.id, "put it back");
+    this.refuseWhileQuitting();
+    if (this.live.has(rec.id) || this.recordOf(rec.id)) throw new Error(`There's a session “${rec.ticketTitle ?? rec.title}” here already`);
+    const back: SessionInfo = { ...rec, status: rec.planned ? "idle" : "dead", waitingReason: null, waitingSince: null };
+    this.store.upsertSession(back);
+    this.emitChanged();
+    return back;
+  }
+
+  /**
+   * Live pane `id`'s agent reported running `model` at `at` (its status line's report, read for its context meter). A
+   * model other than the first it reported this launch, or another line than its record names, is one typed in with
+   * `/model`: it becomes its record's, so its next restart, Reopen or Resume runs it. A report from before this launch
+   * is an older run's and says nothing. Answers whether the record changed.
+   */
+  noteReportedModel(id: string, model: string, at: number): boolean {
+    const s = this.live.get(id);
+    if (!s || s.info.shell || (s.info.agent ?? "claude") !== "claude" || at < s.info.createdAt || !model.trim()) return false;
+    s.firstModel ??= model;
+    const recorded = s.info.model;
+    if (recorded ? sameModelLine(recorded, model) : s.firstModel === model) return false;
+    s.info.model = model;
+    this.store.upsertSession(s.info);
+    this.emitChanged();
+    console.log(`[sessions] ${id}: its agent reports running ${model}, so its record keeps that for its next launch`);
+    return true;
+  }
+
+  /** What Claude pane `s` last reported running and when (its status line's report): set by main; null when unread. */
+  reportedModel: ((s: SessionInfo) => { model: string; at: number } | null) | null = null;
+
+  /**
+   * Closed record `old`'s model as its next launch runs it: the one its agent last reported running in its last launch
+   * when that's another line than its record's (a `/model` typed in its pane that noteReportedModel didn't see, as its
+   * context meter wasn't read since), else its record's. With no model of its record's there's nothing to tell a
+   * `/model` from its agent's default by, so the default stays.
+   */
+  private stickyModel(old: SessionInfo): string | undefined {
+    if (old.shell || (old.agent ?? "claude") !== "claude" || !old.model) return old.model ?? undefined;
+    let r: { model: string; at: number } | null = null;
+    try {
+      r = this.reportedModel?.(old) ?? null;
+    } catch (err) {
+      console.warn(`[sessions] ${old.id}: couldn't read the model its agent last reported, so it launches with its record's:`, err);
+    }
+    if (!r || r.at < old.createdAt || sameModelLine(old.model, r.model)) return old.model;
+    console.log(`[sessions] ${old.id}: its agent last reported running ${r.model}, not ${old.model}: it launches with ${r.model}`);
+    return r.model;
   }
 
   /**
@@ -2159,7 +2306,7 @@ export class SessionManager {
       shell: old.shell,
       role: old.role,
       ...(old.tickets ? { tickets: old.tickets } : {}),
-      model: (change.model !== undefined ? change.model : old.model) ?? undefined,
+      model: (change.model !== undefined ? change.model : this.stickyModel(old)) ?? undefined,
       effort: (change.effort !== undefined ? change.effort : old.effort) ?? undefined,
       permissionMode: change.permissionMode ?? old.permissionMode ?? undefined,
       agent: old.agent,

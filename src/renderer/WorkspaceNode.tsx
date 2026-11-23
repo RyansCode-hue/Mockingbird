@@ -73,6 +73,7 @@ export function WorkspaceNode({
   tabClose,
   onFinish,
   body,
+  modelChip,
 }: {
   tile: Tile;
   /** A stack's sub-group, shown before its tabs. */
@@ -115,6 +116,8 @@ export function WorkspaceNode({
   onFinish?: (tile: Tile, from: HTMLElement) => void;
   /** The terminal of the session in front, at this size. */
   body: (s: SessionInfo, size: Size) => React.ReactNode;
+  /** Its front session's model chip (PipelineEdit.tsx's ModelChip), beside its kind: a workspace in a pipeline's. */
+  modelChip?: React.ReactNode;
 }) {
   const s = tile.front;
   const waiting = tile.members.some((m) => m.status === "waiting");
@@ -302,6 +305,7 @@ export function WorkspaceNode({
             )}
             {plus}
             <span className="chip ls-kind">{kindLabel(s)}</span>
+            {mode !== "placeholder" && modelChip}
             {mode !== "placeholder" && (
               <span className="ls-chips">
                 <PaneChips
