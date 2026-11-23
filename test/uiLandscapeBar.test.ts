@@ -275,7 +275,7 @@ describe.skipIf(!local)("the selection bar", () => {
     // an area that isn't a room's: no Team room heading; its sessions under Sessions; one choice each for messages;
     // Tidy, and its ghost's Reopen all and Clear ghosts under Ghosts
     expect(e.menus.plain).toEqual([
-      "# Area", "Rename…", "Collapse to a pill", "Lock its layout", "Tidy [T]",
+      "# Area", "Rename…", "Colour…", "Collapse to a pill", "Lock its layout", "Tidy [T]",
       "-", "# Ghosts", "Reopen all (1)", "Clear ghosts (1)…",
       "-", "# Tools", "Artifacts",
       "-", "# Agent messages", "As in Settings (auto-send)", "Always auto-send", "Always leave in prompt", "Agent message log…",
@@ -285,7 +285,7 @@ describe.skipIf(!local)("the selection bar", () => {
     // a room's: its Chat, then its board, Follow and Invite under Team room (its one ghost, g2, can't be reopened here:
     // its worktree and branch are gone, so Reopen all is off)
     expect(e.menus.room).toEqual([
-      "# Area", "Rename…", "Collapse to a pill", "Lock its layout", "Tidy [T]",
+      "# Area", "Rename…", "Colour…", "Collapse to a pill", "Lock its layout", "Tidy [T]",
       "-", "# Ghosts", "Reopen all (off)", "Clear ghosts (1)…",
       "-", "# Tools", "Artifacts", "Chat",
       "-", "# Agent messages", "As in Settings (auto-send)", "Always auto-send", "Always leave in prompt", "Agent message log…",

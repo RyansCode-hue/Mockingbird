@@ -5,6 +5,7 @@ import {
   AREA_PAD,
   CELL_ESTIMATE,
   GAP,
+  ACCENT_COUNT,
   LANDSCAPE_FORMAT,
   LANDSCAPE_VERSION,
   LandscapeShapeError,
@@ -581,6 +582,32 @@ describe("patches", () => {
     expect(() => parsePatch({ areas: { "5101": { repos: [{ path: "/r", base: "" }] } } })).toThrow(/repos\[0\]\.base is empty/);
     expect(parsePatch({ areas: { "5101": { repos: [{ path: "/r", base: null }] } } }).areas!["5101"]!.repos).toEqual([{ path: "/r", base: null }]);
   });
+
+  it("set an area's chosen colour, any of the ACCENT_COUNT, keeping the rest of it, and take it away with null", () => {
+    for (let n = 0; n < ACCENT_COUNT; n++) expect(patched(base(), { areas: { "5101": { accent: n } } }).areas["5101"]).toEqual({ ...base().areas["5101"], accent: n });
+    const red = patched(base(), { areas: { "5101": { accent: 6, collapsed: true } } });
+    const back = patched(red, { areas: { "5101": { accent: null } } });
+    expect(back.areas["5101"]).toEqual({ ...base().areas["5101"], collapsed: true });
+    expect(back.areas["5101"]).not.toHaveProperty("accent");
+    // as a window applies it straight, and on an area with none chosen, where it changes nothing
+    expect(applyPatch(red, { areas: { "5101": { accent: null } } })).toEqual(back);
+    expect(patched(base(), { areas: { "5101": { accent: null } } })).toEqual(base());
+    // a new area comes whole, its colour with it or not
+    expect(patched(base(), { areas: { "5102": { x: 600, y: 0, w: 400, h: 300, repos: [], accent: 9 } } }).areas["5102"].accent).toBe(9);
+    expect(patched(base(), { areas: { "5102": { x: 600, y: 0, w: 400, h: 300, repos: [], accent: null } } }).areas["5102"]).toEqual({ x: 600, y: 0, w: 400, h: 300, repos: [] });
+  });
+
+  it("refuse a colour that isn't one of the ACCENT_COUNT, from another process or a window alike", () => {
+    for (const bad of [-1, ACCENT_COUNT, 2.5, NaN, "3", true]) {
+      expect(() => parsePatch({ areas: { "5101": { accent: bad } } }), String(bad)).toThrow(/areas\["5101"\]\.accent is not a whole number from 0 to 9/);
+      expect(() => applyPatch(base(), { areas: { "5101": { accent: bad as number } } }), String(bad)).toThrow(LandscapeShapeError);
+    }
+  });
+
+  it("take nulls away only where they mean that: a stack's front tab can't be cleared to nothing", () => {
+    expect(() => parsePatch({ stacks: { "5101/api": { active: null } } })).toThrow(/active is not a string/);
+    expect(() => applyPatch(base(), { stacks: { "5101/api": { active: null as unknown as string } } })).toThrow(/active is missing/);
+  });
 });
 
 describe("records keyed by ids and groups", () => {
@@ -641,7 +668,7 @@ describe("a stored landscape", () => {
 
   it("is refused whole, naming the first field that's wrong", () => {
     expect(() => parseLandscape(null)).toThrow(/the landscape is not an object/);
-    expect(() => parseLandscape({ ...base(), v: 4 })).toThrow(/^v is 4, not 3$/);
+    expect(() => parseLandscape({ ...base(), v: 5 })).toThrow(/^v is 5, not 4$/);
     expect(() => parseLandscape({ ...base(), areas: { "5101": { x: 0, y: 0, w: 1, h: 1 } } })).toThrow(/areas\["5101"\]\.repos is missing/);
     expect(() => parseLandscape({ v: 1, workspaces: {}, areas: {}, stacks: {} })).toThrow(/ghosts is missing/);
     expect(() => parseLandscape({ v: 2, workspaces: {}, areas: {}, stacks: {}, ghosts: {} })).toThrow(/tools is missing/);
@@ -655,6 +682,40 @@ describe("a stored landscape", () => {
   it("is refused with keys a window couldn't have written", () => {
     expect(() => parseLandscape({ ...base(), areas: { ungrouped: base().areas["5101"] } })).toThrow(/ungrouped/);
     expect(() => parseLandscape({ ...base(), stacks: { api: base().stacks["5101/api"] } })).toThrow(/group\/sub-group/);
+  });
+
+  it("keeps an area's chosen colour", () => {
+    const l = patched(base(), { areas: { "5101": { accent: 7 } } });
+    expect(parseLandscape(JSON.parse(JSON.stringify(l)))).toEqual(l);
+  });
+
+  it("drops an area's colour that isn't one, saying so, and reads the rest: the area takes its automatic colour", () => {
+    for (const bad of [10, -1, 1.5, "2", null, true]) {
+      const said: string[] = [];
+      const stored = { ...base(), areas: { "5101": { ...base().areas["5101"], accent: bad, collapsed: true }, "5102": { x: 600, y: 0, w: 400, h: 300, repos: [], accent: 3 } } };
+      const l = parseLandscape(JSON.parse(JSON.stringify(stored)), (m) => said.push(m));
+      expect(l.areas["5101"], String(bad)).toEqual({ ...base().areas["5101"], collapsed: true });
+      expect(l.areas["5102"].accent).toBe(3);
+      expect(said, String(bad)).toEqual([`landscape.json's areas["5101"].accent is not a whole number from 0 to 9 (${JSON.stringify(bad)}): it's dropped, and the area takes its automatic colour`]);
+    }
+  });
+
+  it("drops a bad colour from an area named like an Object.prototype member as its own entry", () => {
+    const said: string[] = [];
+    const l = parseLandscape(JSON.parse(`{"v":${LANDSCAPE_VERSION},"workspaces":{},"areas":{"__proto__":{"x":0,"y":0,"w":10,"h":10,"repos":[],"accent":99}},"stacks":{},"ghosts":{},"tools":{},"cards":{}}`), (m) => said.push(m));
+    expect(Object.getPrototypeOf(l.areas)).toBe(Object.prototype);
+    expect(own(l.areas, "__proto__")).toEqual({ x: 0, y: 0, w: 10, h: 10, repos: [] });
+    expect(said).toHaveLength(1);
+  });
+
+  it("is still refused whole for anything else wrong with an area that has a bad colour", () => {
+    expect(() => parseLandscape({ ...base(), areas: { "5101": { x: 0, y: 0, w: 1, h: 1, accent: 99 } } }, () => {})).toThrow(/areas\["5101"\]\.repos is missing/);
+  });
+
+  it("reads a version 3 file as one with no colour chosen, and refuses one holding a colour, which version 3 never had", () => {
+    const v3 = { ...base(), v: 3, wires: { wv: 1, links: {}, notes: {} } };
+    expect(parseLandscape(JSON.parse(JSON.stringify(v3)))).toEqual(base());
+    expect(() => parseLandscape({ ...v3, areas: { "5101": { ...base().areas["5101"], accent: 2 } } })).toThrow(/areas\["5101"\] has a field this version doesn't know \(accent\)/);
   });
 });
 
@@ -695,6 +756,21 @@ const FORMATS: Record<number, typeof LANDSCAPE_FORMAT> = {
     landscape: { fields: ["areas", "cards", "ghosts", "migratedAt", "stacks", "tools", "tourDone", "v", "wires", "workspaces"], required: ["areas", "cards", "ghosts", "stacks", "tools", "v", "workspaces"] },
     placement: { fields: ["h", "w", "x", "y"], required: ["h", "w", "x", "y"] },
     area: { fields: ["autoCreate", "collapsed", "h", "locked", "repos", "w", "x", "y"], required: ["h", "repos", "w", "x", "y"] },
+    repo: { fields: ["base", "path"], required: ["base", "path"] },
+    stack: { fields: ["active", "placement"], required: ["active", "placement"] },
+    ghost: {
+      fields: ["agent", "branch", "closedAt", "conversation", "cwd", "group", "placement", "repoPath", "summary", "ticketId", "title", "worktreeRemoved"],
+      required: ["agent", "closedAt", "cwd", "group", "placement", "repoPath", "title"],
+    },
+    conversation: { fields: ["agent", "id"], required: ["agent", "id"] },
+    tool: { fields: ["area", "docked", "placement", "session", "tool"], required: ["docked", "tool"] },
+    card: { fields: ["area", "artifact", "placement", "shelf"], required: ["area", "artifact", "shelf"] },
+  },
+  // an area's chosen colour (`accent`)
+  4: {
+    landscape: { fields: ["areas", "cards", "ghosts", "migratedAt", "stacks", "tools", "tourDone", "v", "wires", "workspaces"], required: ["areas", "cards", "ghosts", "stacks", "tools", "v", "workspaces"] },
+    placement: { fields: ["h", "w", "x", "y"], required: ["h", "w", "x", "y"] },
+    area: { fields: ["accent", "autoCreate", "collapsed", "h", "locked", "repos", "w", "x", "y"], required: ["h", "repos", "w", "x", "y"] },
     repo: { fields: ["base", "path"], required: ["base", "path"] },
     stack: { fields: ["active", "placement"], required: ["active", "placement"] },
     ghost: {

@@ -11,6 +11,7 @@ import { enter, motion } from "./motion";
 import { OVERLAYS } from "./keys";
 import { BAR_MARGIN, areaBarItems, barAnchorFor, barPlace, escapeClears, foldBar, workspaceBarItems, type BarItem, type BarTarget } from "./selectionBarModel";
 import { menuOf, type ModelAction } from "./workspaceActions";
+import { AccentDot } from "./AreaColour";
 
 /**
  * The selection bar (designs Q and Q2; docs/landscape.md, Tools): the actions of whatever is selected on the
@@ -190,8 +191,33 @@ export function SelectionBar({ label, identity, idText, items, more, menu = more
   );
 }
 
-/** An area's bar (Q): its colour, short name and status, its room tools when it's a room's, Ask for status, Tools ▾ and ⋯. */
-export function AreaBar({ name, title, accent, status, actions, roomId, members, place }: { name: string; title: string; accent: number; status: string; actions: readonly ModelAction[]; roomId: string | null; members: ReactNode | null; place: BarPlace }) {
+/**
+ * An area's bar (Q): its colour (a press on it opens the area's Colour popover, `onColour`), short name and status,
+ * its room tools when it's a room's, Ask for status, Tools ▾ and ⋯.
+ */
+export function AreaBar({
+  group,
+  name,
+  title,
+  accent,
+  status,
+  actions,
+  roomId,
+  members,
+  onColour,
+  place,
+}: {
+  group: string;
+  name: string;
+  title: string;
+  accent: number;
+  status: string;
+  actions: readonly ModelAction[];
+  roomId: string | null;
+  members: ReactNode | null;
+  onColour?: (dot: HTMLElement) => void;
+  place: BarPlace;
+}) {
   const u = useChatUnread()[roomId ?? ""];
   const chatCount = roomId && u?.unread ? (u.mentions ? `@${u.mentions}` : String(u.unread)) : null;
   return (
@@ -200,7 +226,7 @@ export function AreaBar({ name, title, accent, status, actions, roomId, members,
       idText={`${name} ${status}`}
       identity={
         <span className={`ls-sb-who a${accent}`} title={title}>
-          <span className="ls-sb-dot" aria-hidden="true" />
+          <AccentDot className="ls-sb-dot" area={group} title={title} onColour={onColour} />
           <span className="ls-sb-name">{name}</span>
           {status && <span className="ls-sb-status">{status}</span>}
         </span>

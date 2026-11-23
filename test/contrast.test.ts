@@ -47,7 +47,7 @@ const layered: [string, string][] = [
   ["--fill-blocked", "--bg-pane"], // a blocked work item's card, and the header's blocked filter when on
   ["--fill-blocked", "--bg-pane-header"], // the blocked note in a work item's detail
 ];
-const text = ["--text-1", "--text-1-warm", "--text-2", "--text-3", "--text-4", "--amber-ink", "--amber-text", "--amber-text-dim", "--teal-text", "--red", "--git-add", "--git-mod", "--m-0", "--m-1", "--m-2", "--m-3", "--m-4", "--m-5"];
+const text = ["--text-1", "--text-1-warm", "--text-2", "--text-3", "--text-4", "--amber-ink", "--amber-text", "--amber-text-dim", "--teal-text", "--red", "--git-add", "--git-mod", "--m-0", "--m-1", "--m-2", "--m-3", "--m-4", "--m-5", "--area-red", "--area-green", "--area-brown", "--area-slate"];
 // a tinted chip: its text on its own tint, over the surfaces chips sit on
 const tinted: [string, string][] = [
   ["--amber-text", "--fill-waiting"],
@@ -130,20 +130,29 @@ describe("the design tokens' contrast", () => {
     for (const t of Object.values(themes)) expect(contrast(parse(t["--primary"]), parse(t["--bg-sidebar"]))).toBeGreaterThanOrEqual(3);
   });
 
+  // CIE76 colour difference, for telling area accents apart
+  const lab = ([r, g, b]: RGBA) => {
+    const lin = (c: number) => ((c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+    const [R, G, B] = [lin(r), lin(g), lin(b)];
+    const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    const [x, y, z] = [(R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047, R * 0.2126 + G * 0.7152 + B * 0.0722, (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883].map(f);
+    return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+  };
+  const dE = (a: string, b: string) => Math.hypot(...lab(parse(a)).map((v, i) => v - lab(parse(b))[i]));
+  // what areas are drawn in: --ls-a0, --ls-a1… each naming a theme's token
+  const accents = [...css.matchAll(/--ls-a\d:\s*var\((--[\w-]+)\)/g)].map((m) => m[1]);
+
   it("draws snap guides in a colour no area accent is near (CIE76 ΔE 50 or more), so a guide never reads as an area's edge: both themes", () => {
-    const lab = ([r, g, b]: RGBA) => {
-      const lin = (c: number) => ((c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-      const [R, G, B] = [lin(r), lin(g), lin(b)];
-      const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
-      const [x, y, z] = [(R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047, R * 0.2126 + G * 0.7152 + B * 0.0722, (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883].map(f);
-      return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
-    };
-    const dE = (a: string, b: string) => Math.hypot(...lab(parse(a)).map((v, i) => v - lab(parse(b))[i]));
-    // what areas are drawn in: --ls-a0, --ls-a1… each naming a theme's token
-    const accents = [...css.matchAll(/--ls-a\d:\s*var\((--[\w-]+)\)/g)].map((m) => m[1]);
-    expect(accents).toEqual(["--amber", "--teal", "--git-mod", "--m-2", "--m-4", "--m-5"]);
+    expect(accents).toEqual(["--amber", "--teal", "--git-mod", "--m-2", "--m-4", "--m-5", "--area-red", "--area-green", "--area-brown", "--area-slate"]);
     for (const t of Object.values(themes)) {
       expect(accents.filter((k) => dE(t["--snap-guide"], t[k]) < 50).map((k) => `${k} ΔE ${Math.round(dE(t["--snap-guide"], t[k]))}`)).toEqual([]);
+    }
+  });
+
+  it("keeps every area accent apart from every other (CIE76 ΔE 20 or more), so a chosen colour never reads as another: both themes", () => {
+    for (const [name, t] of Object.entries(themes)) {
+      const near = accents.flatMap((a, i) => accents.slice(i + 1).filter((b) => dE(t[a], t[b]) < 20).map((b) => `${a}–${b} ΔE ${Math.round(dE(t[a], t[b]))}`));
+      expect(near, name).toEqual([]);
     }
   });
 

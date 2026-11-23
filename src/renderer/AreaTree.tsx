@@ -11,6 +11,7 @@ import { usePersisted } from "./prefs";
 import { initialsOf } from "./Team";
 import type { AreaCounts } from "./landscapeModel";
 import { needsLabel } from "./needsYouModel";
+import { AccentDot } from "./AreaColour";
 
 /** One row under an area in the tree: a workspace, or a stack (a sub-group) with its tabs. */
 export type TreeItem = { kind: "ws"; key: string; s: SessionInfo } | { kind: "stack"; key: string; name: string; members: SessionInfo[] };
@@ -89,6 +90,7 @@ export function AreaTree({
   menuFor,
   stepMenu,
   areaMenu,
+  onColour,
   footer,
 }: {
   areas: TreeArea[];
@@ -110,6 +112,8 @@ export function AreaTree({
   /** A not-started step's row's right-click: its card's actions. */
   stepMenu: (s: SessionInfo) => MenuEntry[];
   areaMenu: (key: string) => MenuEntry[] | null;
+  /** An area's colour square pressed: its Colour popover, from the square. */
+  onColour?: (key: string, dot: HTMLElement) => void;
   /** Under the tree: the Closed sessions list and the Connected line. */
   footer: React.ReactNode;
 }) {
@@ -230,7 +234,11 @@ export function AreaTree({
                 >
                   <ChevronIcon open={isOpen} />
                 </button>
-                <span className={`lt-sq ${a.accent === null ? "none" : `a${a.accent}`}`} />
+                {a.accent === null ? (
+                  <span className="lt-sq none" />
+                ) : (
+                  <AccentDot className={`lt-sq a${a.accent}`} area={a.key} title={a.title} onColour={onColour && ((dot) => onColour(a.key, dot))} />
+                )}
                 <span className="lt-t">{a.title}</span>
                 {a.online && !a.online.length && (
                   <span className="lt-tag" title="A team room: shared with your teammates, none of them online now">

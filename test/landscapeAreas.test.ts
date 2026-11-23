@@ -3,8 +3,12 @@ import path from "path";
 import { describe, expect, it } from "vitest";
 import {
   ACCENTS,
+  ACCENT_NAMES,
+  ACCENT_ORDER,
   accentOf,
   accentsOf,
+  areaAccents,
+  automaticAccent,
   areaCamera,
   areaCounts,
   areaInView,
@@ -36,6 +40,7 @@ import {
   AREA_GAP,
   AREA_HEADER,
   AREA_PAD,
+  ACCENT_COUNT,
   GAP,
   GRID,
   LOOSE_GROUP,
@@ -964,6 +969,83 @@ describe("what an area says about itself", () => {
     // past ACCENTS they repeat, each still one of them
     const many = accentsOf(Array.from({ length: 9 }, (_, i) => `${6000 + i}`));
     expect([...many.values()].every((c) => c >= 0 && c < ACCENTS)).toBe(true);
+  });
+
+  /** accentsOf as it was before a colour could be chosen: what an area that hasn't chosen one must keep showing. */
+  const before = (keys: readonly string[]) => {
+    const out = new Map<string, number>();
+    const taken = new Set<number>();
+    for (const k of [...keys].sort()) {
+      let c = accentOf(k);
+      if (taken.size < ACCENTS) while (taken.has(c)) c = (c + 1) % ACCENTS;
+      taken.add(c);
+      out.set(k, c);
+    }
+    return out;
+  };
+
+  it("gives every area that hasn't chosen a colour the one it had before colours could be chosen", () => {
+    expect(accentsOf(["5101", "5102", "5110"])).toEqual(new Map([["5101", 4], ["5102", 1], ["5110", 5]]));
+    for (let n = 0; n <= 14; n++) {
+      for (const at of [5000, 7300, 91]) {
+        const keys = Array.from({ length: n }, (_, i) => `${at + i * 7}`);
+        expect(accentsOf(keys), `${n} from ${at}`).toEqual(before(keys));
+        expect(accentsOf(keys, new Map()), `${n} from ${at}`).toEqual(before(keys));
+      }
+    }
+  });
+
+  it("honours a chosen colour first, any of the ten, and keeps the automatic ones off it while there are others free", () => {
+    const keys = ["5101", "5102", "5110", "Spike"];
+    const auto = accentsOf(keys);
+    // 5102 chooses 5101's colour: it has it, and 5101 moves to the next one free, apart from everyone
+    const took = accentsOf(keys, new Map([["5102", auto.get("5101")!]]));
+    expect(took.get("5102")).toBe(auto.get("5101"));
+    expect(new Set(took.values()).size).toBe(keys.length);
+    expect([...took.entries()].filter(([k]) => k !== "5102").every(([, c]) => c < ACCENTS)).toBe(true);
+    // a colour only ever chosen (6 to 9) takes nothing from the automatic ones: those sorting before it keep theirs
+    const red = accentsOf(keys, new Map([["5110", 6]]));
+    expect(red.get("5110")).toBe(6);
+    expect(red.get("5101")).toBe(auto.get("5101"));
+    expect(red.get("5102")).toBe(auto.get("5102"));
+    for (let c = 0; c < ACCENT_COUNT; c++) expect(accentsOf(keys, new Map([["Spike", c]])).get("Spike")).toBe(c);
+    // two areas may choose the same colour
+    const same = accentsOf(keys, new Map([["5101", 8], ["Spike", 8]]));
+    expect([same.get("5101"), same.get("Spike")]).toEqual([8, 8]);
+    // the order the areas come in still doesn't matter
+    const chosen = new Map([["5110", 0], ["Spike", 9]]);
+    expect(accentsOf([...keys].reverse(), chosen)).toEqual(accentsOf(keys, chosen));
+  });
+
+  it("shares the automatic colours out among themselves once colours chosen have taken every one", () => {
+    const keys = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    const chosen = new Map(["a", "b", "c", "d", "e", "f"].map((k, i) => [k, i] as const));
+    const out = accentsOf(keys, chosen);
+    for (const [k, c] of chosen) expect(out.get(k)).toBe(c);
+    expect(out.get("g")).toBe(accentOf("g"));
+    expect(out.get("h")).toBe(accentOf("h"));
+  });
+
+  it("reads the chosen colours off a landscape's areas, and says what an area would take automatically", () => {
+    const l = emptyLandscape();
+    l.areas["5101"] = area(0, 0, 1000, 800);
+    l.areas["5102"] = { ...area(1200, 0, 1000, 800), accent: 1 };
+    l.areas["5110"] = { ...area(0, 1000, 1000, 800), accent: 7 };
+    const areas = resolveLayout(l, []).areas;
+    const got = areaAccents(areas);
+    expect(got).toEqual(accentsOf(["5101", "5102", "5110"], new Map([["5102", 1], ["5110", 7]])));
+    expect(got.get("5110")).toBe(7);
+    // 5101 wanted 1, which 5102 chose: it takes the next one free
+    expect(got.get("5101")).not.toBe(1);
+    expect(automaticAccent(areas, "5110")).toBe(accentsOf(["5101", "5102", "5110"], new Map([["5102", 1]])).get("5110"));
+    expect(automaticAccent(areas, "5101")).toBe(got.get("5101"));
+  });
+
+  it("names every colour once, and lays each out once", () => {
+    expect(ACCENT_NAMES).toHaveLength(ACCENT_COUNT);
+    expect(new Set(ACCENT_NAMES).size).toBe(ACCENT_COUNT);
+    expect([...ACCENT_ORDER].sort((x, y) => x - y)).toEqual(Array.from({ length: ACCENT_COUNT }, (_, i) => i));
+    expect(ACCENTS).toBeLessThan(ACCENT_COUNT);
   });
 
   it("counts its workspaces (a stack once) and this Mac's sessions' statuses, and says so in a line", () => {

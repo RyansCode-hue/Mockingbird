@@ -47,7 +47,12 @@ export interface Area extends Rect {
   locked?: boolean;
   /** Phase 2: agents' proposals for workspaces are created without asking. */
   autoCreate?: boolean;
+  /** The colour chosen for it, 0 to ACCENT_COUNT - 1; without one it takes an automatic colour (accentsOf). */
+  accent?: number;
 }
+
+/** How many colours an area can be given (Area.accent): styles.css draws colour n as `.a<n>`. */
+export const ACCENT_COUNT = 10;
 
 /**
  * A sub-group ("top/sub") shown as one card with a tab per member. Its members
@@ -116,7 +121,7 @@ export interface ArtifactCard {
 }
 
 export interface Landscape {
-  v: 3;
+  v: 4;
   /** Set once the grid's layout has been read in. */
   migratedAt?: string;
   tourDone?: boolean;
@@ -143,8 +148,9 @@ export interface Landscape {
  * 2 added tool windows and artifact cards (`tools`, `cards`); a version 1 file is read as one with none.
  * 3 added the wire book (`wires`), kept beside the layout rather than in it (shared/wires.ts); a version 1 or 2 file
  * is read as one with none.
+ * 4 added an area's chosen colour (`accent`); a version 1, 2 or 3 file is read as one with none chosen.
  */
-export const LANDSCAPE_VERSION = 3;
+export const LANDSCAPE_VERSION = 4;
 
 export const emptyLandscape = (): Landscape => ({ v: LANDSCAPE_VERSION, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} });
 
@@ -638,11 +644,39 @@ const repos: Check<AreaRepo[]> = (v, where) => {
   }
   return out;
 };
-const AREA: Part = {
-  checks: { ...RECT_CHECKS, repos, collapsed: bool, locked: bool, autoCreate: bool } satisfies Record<keyof Area, Check<unknown>>,
-  required: [...PLACEMENT.required, "repos"],
-};
+const accent: Check<number> = (v, where) => (Number.isInteger(v) && (v as number) >= 0 && (v as number) < ACCENT_COUNT ? (v as number) : fail(where, `is not a whole number from 0 to ${ACCENT_COUNT - 1}`));
+/** An area as versions 1 to 3 stored it: no chosen colour. */
+const AREA_V3_CHECKS = { ...RECT_CHECKS, repos, collapsed: bool, locked: bool, autoCreate: bool } satisfies Record<Exclude<keyof Area, "accent">, Check<unknown>>;
+const AREA_V3: Part = { checks: AREA_V3_CHECKS, required: [...PLACEMENT.required, "repos"] };
+const areaV3: Check<Area> = (v, where) => fields(v, where, AREA_V3);
+const AREA: Part = { checks: { ...AREA_V3_CHECKS, accent } satisfies Record<keyof Area, Check<unknown>>, required: AREA_V3.required };
 const area: Check<Area> = (v, where) => fields(v, where, AREA);
+/** A change to an area: as an area's fields, with `accent: null` taking its chosen colour away (AreaPatch). */
+const AREA_PATCH: Part = { checks: { ...AREA.checks, accent: orNull(accent) }, required: [] };
+
+/**
+ * `v` with each area's colour that isn't one dropped, each said to `warn`: a hand-edited or newer file's colour is no
+ * reason to set the whole layout aside, and the area takes its automatic colour instead. Anything else about an area
+ * is left for the whole check to refuse.
+ */
+function withoutBadAccents(v: unknown, warn: (message: string) => void): unknown {
+  if (!isObj(v) || !isObj(v.areas)) return v;
+  let areas: Record<string, unknown> | null = null;
+  for (const [k, a] of Object.entries(v.areas)) {
+    if (!isObj(a) || a.accent === undefined) continue;
+    const where = `areas[${JSON.stringify(k)}].accent`;
+    try {
+      accent(a.accent, where);
+    } catch (err) {
+      if (!(err instanceof LandscapeShapeError)) throw err;
+      warn(`landscape.json's ${err.message} (${JSON.stringify(a.accent)}): it's dropped, and the area takes its automatic colour`);
+      const { accent: _bad, ...rest } = a;
+      areas ??= { ...v.areas };
+      put(areas, k, rest);
+    }
+  }
+  return areas ? { ...v, areas } : v;
+}
 
 const STACK: Part = { checks: { active: name, placement: rect } satisfies Record<keyof Stack, Check<unknown>>, required: ["active", "placement"] };
 const stack: Check<Stack> = (v, where) => fields(v, where, STACK);
@@ -720,7 +754,7 @@ const V1_CHECKS = {
   migratedAt: str,
   tourDone: bool,
   workspaces: (v: unknown, where: string) => entries(v, where, rect),
-  areas: (v: unknown, where: string) => entries(v, where, area, areaKey),
+  areas: (v: unknown, where: string) => entries(v, where, areaV3, areaKey),
   stacks: (v: unknown, where: string) => entries(v, where, stack, stackKey),
   ghosts: (v: unknown, where: string) => entries(v, where, ghost),
 };
@@ -738,13 +772,16 @@ const LANDSCAPE_V2: Part = { checks: V2_CHECKS, required: [...LANDSCAPE_V1.requi
  * `wires` is one field here, whatever it holds: its inside is shared/wires.ts's to read, entry by entry, so nothing in
  * it can get the layout moved aside as a file that isn't a landscape. It isn't required for the same reason.
  */
+const V3_CHECKS = { ...V2_CHECKS, v: version(3), wires: (v: unknown) => v };
+/** Version 3's landscape: what a file written before areas' chosen colours holds, and nothing more. */
+const LANDSCAPE_V3: Part = { checks: V3_CHECKS, required: LANDSCAPE_V2.required };
 const LANDSCAPE: Part = {
   checks: {
-    ...V2_CHECKS,
+    ...V3_CHECKS,
     v: version(LANDSCAPE_VERSION),
-    wires: (v) => v,
+    areas: (v: unknown, where: string) => entries(v, where, area, areaKey),
   } satisfies Record<keyof Landscape | "wires", Check<unknown>>,
-  required: LANDSCAPE_V2.required,
+  required: LANDSCAPE_V3.required,
 };
 
 /**
@@ -765,15 +802,21 @@ export const LANDSCAPE_FORMAT: Record<string, { fields: string[]; required: stri
  * version's with what that version didn't have empty: every placement it holds is kept as it is. The wire book stays
  * out of what this returns: the store reads it apart (parseWireBook), since a wire isn't layout and a change to one
  * mustn't look like a change to the layout.
+ *
+ * An area's colour that isn't one is the exception: it's dropped, said to `warn`, and the rest is read (withoutBadAccents).
  */
-export function parseLandscape(v: unknown): Landscape {
+export function parseLandscape(v: unknown, warn: (message: string) => void = (m) => console.warn(`[mockingbird] ${m}`)): Landscape {
   const stored = versionOf(v);
   if (stored === 1) {
     const old = fields<Omit<Landscape, "v" | "tools" | "cards">>(v, "", LANDSCAPE_V1, false, "the landscape");
     return { ...old, v: LANDSCAPE_VERSION, tools: {}, cards: {} };
   }
   if (stored === 2) return { ...fields<Omit<Landscape, "v">>(v, "", LANDSCAPE_V2, false, "the landscape"), v: LANDSCAPE_VERSION };
-  const { wires: _book, ...layout } = fields<Landscape & { wires?: unknown }>(v, "", LANDSCAPE, false, "the landscape");
+  if (stored === 3) {
+    const { wires: _book, ...layout } = fields<Omit<Landscape, "v"> & { wires?: unknown }>(v, "", LANDSCAPE_V3, false, "the landscape");
+    return { ...layout, v: LANDSCAPE_VERSION };
+  }
+  const { wires: _book, ...layout } = fields<Landscape & { wires?: unknown }>(withoutBadAccents(v, warn), "", LANDSCAPE, false, "the landscape");
   return layout;
 }
 
@@ -785,11 +828,12 @@ export function parseLandscape(v: unknown): Landscape {
  * undefined entry or field changes nothing. Areas and stacks merge field by
  * field (collapsing an area leaves its repos alone), so a new one has to come
  * whole; a placement, a ghost, a tool window or a card is replaced whole.
- * `migratedAt: null` clears it, so the grid's layout is read in again.
+ * `migratedAt: null` clears it, so the grid's layout is read in again, and
+ * an area's `accent: null` takes its chosen colour away.
  */
 export interface LandscapePatch {
   workspaces?: Record<string, Placement | null>;
-  areas?: Record<string, Partial<Area> | null>;
+  areas?: Record<string, AreaPatch | null>;
   stacks?: Record<string, Partial<Stack> | null>;
   ghosts?: Record<string, Ghost | null>;
   tools?: Record<string, ToolWindow | null>;
@@ -798,13 +842,16 @@ export interface LandscapePatch {
   tourDone?: boolean;
 }
 
+/** A change to one area: the fields it sets, and `accent: null` to go back to its automatic colour. */
+export type AreaPatch = Partial<Omit<Area, "accent">> & { accent?: number | null };
+
 /** The records a patch changes entry by entry, in the order a patch is applied. */
 export const PATCH_RECORDS = ["workspaces", "areas", "stacks", "ghosts", "tools", "cards"] as const;
 
 const PATCH: Part = {
   checks: {
     workspaces: (v, where) => entries(v, where, orNull(rect)),
-    areas: (v, where) => entries(v, where, orNull((x, w) => fields<Partial<Area>>(x, w, AREA, true)), areaKey),
+    areas: (v, where) => entries(v, where, orNull((x, w) => fields<AreaPatch>(x, w, AREA_PATCH, true)), areaKey),
     stacks: (v, where) => entries(v, where, orNull((x, w) => fields<Partial<Stack>>(x, w, STACK, true)), stackKey),
     ghosts: (v, where) => entries(v, where, orNull(ghost)),
     tools: (v, where) => entries(v, where, orNull(toolWindow)),
@@ -821,6 +868,8 @@ export function parsePatch(v: unknown): LandscapePatch {
 }
 
 const defined = (o: object): Record<string, unknown> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
+/** A merged entry's fields: a null one (an area's `accent: null`) is taken away. No stored field holds null itself. */
+const unset = (o: object): Record<string, unknown> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null));
 
 function merged<T>(cur: Record<string, T>, changes: Record<string, unknown> | undefined, where: string, check: Check<T>, partial: boolean, key?: KeyCheck): Record<string, T> {
   if (!changes) return cur;
@@ -832,10 +881,10 @@ function merged<T>(cur: Record<string, T>, changes: Record<string, unknown> | un
     if (change === undefined) continue;
     if (change === null) delete out[k];
     else if (!partial) put(out, k, check(change, at));
-    else if (Object.hasOwn(out, k)) put(out, k, check({ ...out[k], ...defined(record(change, at)) }, at));
+    else if (Object.hasOwn(out, k)) put(out, k, check(unset({ ...out[k], ...defined(record(change, at)) }), at));
     else {
       try {
-        put(out, k, check(defined(record(change, at)), at));
+        put(out, k, check(unset(defined(record(change, at))), at));
       } catch (err) {
         if (!(err instanceof LandscapeShapeError)) throw err;
         throw new LandscapeShapeError(at, `isn't on the landscape, so the patch has to give all of it (${err.message})`);

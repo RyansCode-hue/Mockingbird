@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { guarded } from "../src/main/handlers";
 import { LANDSCAPE_SAVE_MS, LandscapeStore } from "../src/main/landscape";
-import { PATCH_RECORDS, emptyLandscape, parsePatch, type LandscapeChange } from "../src/shared/landscape";
+import { LANDSCAPE_VERSION, PATCH_RECORDS, emptyLandscape, parsePatch, type LandscapeChange } from "../src/shared/landscape";
 import { newWire, WIRE_VERSION, type WireBook, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
 import { tempDir } from "./helpers";
 
@@ -63,7 +63,7 @@ describe("the landscape store", () => {
     // placed again from the dock: a window is replaced whole, taking the scope and place it's given
     store.update({ tools: { w2: { tool: "search", docked: false, session: "s2", area: "5101", placement: { x: 1280, y: 0, w: 420, h: 600 } } } });
     store.flush();
-    expect(onDisk(file).v).toBe(3);
+    expect(onDisk(file).v).toBe(LANDSCAPE_VERSION);
     const again = open().get().landscape;
     expect(again.tools).toEqual({
       w1: { tool: "run", docked: false, session: "s1", area: "5101", placement: { x: 820, y: 0, w: 440, h: 600 } },
@@ -404,7 +404,7 @@ describe("a landscape file that can't be used", () => {
   it("is left as it is when a newer Mockingbird wrote it, and changes aren't saved over it", () => {
     vi.useFakeTimers();
     const { file, open, logged } = setup();
-    const newer = JSON.stringify({ v: 4, everything: "else" });
+    const newer = JSON.stringify({ v: LANDSCAPE_VERSION + 1, everything: "else" });
     fs.writeFileSync(file, newer);
     const store = open();
     const [p] = store.get().problems;
@@ -461,7 +461,7 @@ describe("the wire book in the landscape's file", () => {
     expect(fs.existsSync(file)).toBe(false);
   });
 
-  it("reads a version 2 file as one with no wires, with nothing to report, and saves it as version 3", () => {
+  it("reads a version 2 file as one with no wires, with nothing to report, and saves it as this version", () => {
     vi.useFakeTimers();
     const { file, open } = setup();
     fs.writeFileSync(file, JSON.stringify(v2));
@@ -472,7 +472,7 @@ describe("the wire book in the landscape's file", () => {
     expect(onDisk(file).v).toBe(2); // reading writes nothing
     store.update({ tourDone: true });
     vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
-    expect(onDisk(file)).toMatchObject({ v: 3, workspaces: { a: placement(8) }, wires: { wv: WIRE_VERSION, links: {}, notes: {} } });
+    expect(onDisk(file)).toMatchObject({ v: LANDSCAPE_VERSION, workspaces: { a: placement(8) }, wires: { wv: WIRE_VERSION, links: {}, notes: {} } });
   });
 
   it("reads a version 1 file the same way", () => {
@@ -480,8 +480,57 @@ describe("the wire book in the landscape's file", () => {
     const { tools: _t, cards: _c, ...v1 } = { ...v2, v: 1 };
     fs.writeFileSync(file, JSON.stringify(v1));
     const store = open();
-    expect(store.get().landscape).toMatchObject({ v: 3, workspaces: { a: placement(8) }, tools: {}, cards: {} });
+    expect(store.get().landscape).toMatchObject({ v: LANDSCAPE_VERSION, workspaces: { a: placement(8) }, tools: {}, cards: {} });
     expect(store.wires()).toMatchObject({ book: { links: {} }, refused: null, problems: [] });
+  });
+
+  it("reads a version 3 file, its wires kept, with no colour chosen, and saves it as this version", () => {
+    vi.useFakeTimers();
+    const { file, open } = setup();
+    fs.writeFileSync(file, JSON.stringify(v3({ wv: 1, links: { w1: WIRE }, notes: {} })));
+    const store = open();
+    expect(store.get().problems).toEqual([]);
+    expect(store.get().landscape.areas["5101"]).toEqual(AREA);
+    expect(store.wires().book!.links.w1).toEqual(WIRE);
+    store.update({ areas: { "5101": { accent: 6 } } });
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
+    expect(onDisk(file)).toMatchObject({ v: LANDSCAPE_VERSION, areas: { "5101": { ...AREA, accent: 6 } }, wires: { links: { w1: WIRE } } });
+  });
+
+  it("reports a version 3 file with no wires as edited, as it does one of this version", () => {
+    const { file, open, logged } = setup();
+    fs.writeFileSync(file, JSON.stringify({ ...v2, v: 3 }));
+    expect(open().wires().problems).toEqual([expect.objectContaining({ kind: "missing" })]);
+    expect(logged).toEqual([expect.stringMatching(/has no wires in it/)]);
+  });
+
+  it("drops an area's colour that isn't one as it reads the file, logs it, and keeps everything else", () => {
+    vi.useFakeTimers();
+    const { file, open, logged } = setup();
+    fs.writeFileSync(file, JSON.stringify({ ...v3({ wv: 1, links: {}, notes: {} }), v: LANDSCAPE_VERSION, areas: { "5101": { ...AREA, accent: 42, collapsed: true } } }));
+    const store = open();
+    expect(store.get().problems).toEqual([]);
+    expect(store.get().landscape.areas["5101"]).toEqual({ ...AREA, collapsed: true });
+    expect(store.get().landscape.workspaces.a).toEqual(placement(8));
+    expect(logged).toEqual([`landscape: landscape.json's areas["5101"].accent is not a whole number from 0 to 9 (42): it's dropped, and the area takes its automatic colour`]);
+    // the file stays as it is until the next change, which saves it without
+    expect(onDisk(file).areas["5101"].accent).toBe(42);
+    store.update({ tourDone: true });
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
+    expect(onDisk(file).areas["5101"]).toEqual({ ...AREA, collapsed: true });
+  });
+
+  it("saves an area's chosen colour, and Automatic takes it off disk", () => {
+    const { store, open, file } = setup();
+    store.update({ areas: { "5101": AREA } });
+    store.update({ areas: { "5101": { accent: 9 } } });
+    store.flush();
+    expect(onDisk(file).areas["5101"].accent).toBe(9);
+    expect(open().get().landscape.areas["5101"].accent).toBe(9);
+    store.update({ areas: { "5101": { accent: null } } });
+    store.flush();
+    expect(onDisk(file).areas["5101"]).toEqual(AREA);
+    expect(() => store.update({ areas: { "5101": { accent: 10 } } })).toThrow(/accent is not a whole number from 0 to 9/);
   });
 
   it("moves aside a version 2 file holding wires, as a field that version never had", () => {
@@ -702,11 +751,11 @@ describe("the wire book in the landscape's file", () => {
 
   it("refuses a file a newer Mockingbird wrote, as it does a book", () => {
     const { file, open } = setup();
-    const newer = JSON.stringify({ v: 4, wires: { wv: 1, links: { w1: WIRE }, notes: {} } });
+    const newer = JSON.stringify({ v: LANDSCAPE_VERSION + 1, wires: { wv: 1, links: { w1: WIRE }, notes: {} } });
     fs.writeFileSync(file, newer);
     const store = open();
     noBook(store.wires());
-    expect(store.wires().refused).toMatch(/newer Mockingbird \(landscape version 4\)/);
+    expect(store.wires().refused).toContain(`newer Mockingbird (landscape version ${LANDSCAPE_VERSION + 1})`);
     expect(refusedBy(store.editWires(withWire))).toMatch(/newer Mockingbird/);
     store.flush();
     expect(fs.readFileSync(file, "utf8")).toBe(newer);

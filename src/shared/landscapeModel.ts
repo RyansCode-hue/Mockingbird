@@ -1009,14 +1009,14 @@ export function partialMigration(unreadable: readonly string[], ignored: readonl
 
 /**
  * Whether a patch only brings stacks' tabs to the front (a stack's `active`, with the place it's shown at) or opens,
- * collapses, locks or unlocks areas: nothing that moves a workspace, and what reading the grid's layout in gives anew
- * (every stack it makes is given whole), so it's saved while that read-in has failed.
+ * collapses, locks, unlocks or colours areas: nothing that moves a workspace, and what reading the grid's layout in
+ * gives anew (every stack it makes is given whole), so it's saved while that read-in has failed.
  */
 export function viewOnlyPatch(p: LandscapePatch): boolean {
   const only = (rec: Record<string, unknown> | undefined, fields: readonly string[]) =>
     !!rec && Object.values(rec).every((v) => !!v && typeof v === "object" && Object.keys(v).every((f) => fields.includes(f)));
   const parts = Object.entries(p).filter(([, v]) => v !== undefined);
-  return parts.length > 0 && parts.every(([k]) => (k === "stacks" ? only(p.stacks, ["active", "placement"]) : k === "areas" ? only(p.areas, ["collapsed", "locked"]) : false));
+  return parts.length > 0 && parts.every(([k]) => (k === "stacks" ? only(p.stacks, ["active", "placement"]) : k === "areas" ? only(p.areas, ["collapsed", "locked", "accent"]) : false));
 }
 
 /** A migrated landscape as the patch that puts it in: placements, areas, stacks and migratedAt; whatever else is there stays. */
@@ -1026,7 +1026,18 @@ export function migrationPatch(m: Landscape): LandscapePatch {
 
 // ---- areas (S4) -------------------------------------------------------------------------------
 
-/** How many accent colours areas take turns with: AreaFrame draws accent n with `--ls-a<n>`. */
+/**
+ * The colours an area can be, by accent number, as the Colour popover names them: AreaFrame draws accent n with
+ * `--ls-a<n>`. ACCENT_COUNT of them; the first ACCENTS are the ones given out automatically.
+ */
+export const ACCENT_NAMES: readonly string[] = ["Amber", "Teal", "Blue", "Violet", "Pink", "Olive", "Red", "Green", "Brown", "Slate"];
+/** The order the Colour popover lays them out in, round the colour wheel: two rows of five. */
+export const ACCENT_ORDER: readonly number[] = [6, 0, 8, 5, 7, 1, 2, 9, 3, 4];
+
+/**
+ * How many accent colours areas take turns with automatically: the first ones, as before a colour could be chosen, so
+ * an area that hasn't chosen one keeps the colour it always had. The rest are only ever chosen.
+ */
 export const ACCENTS = 6;
 
 /** An area's accent colour: the same for the same key in every window and launch (a rename may change it). */
@@ -1038,20 +1049,44 @@ export function accentOf(key: string): number {
 }
 
 /**
- * The areas' accents, all different while there are no more areas than ACCENTS: each key takes accentOf's unless a
- * key sorting before it has it, then the next one free. Sorted, so every window with the same areas agrees, and an
- * area's colour changes only when one sorting before it that wanted the same colour comes or goes.
+ * The areas' accents. A chosen colour (`chosen`, by key) is the area's whatever else is there, two areas choosing the
+ * same one included. The rest are automatic, all different while there are no more of them than ACCENTS and colours
+ * chosen leave room: each key takes accentOf's unless a chosen colour or a key sorting before it has it, then the next
+ * one free. Sorted, so every window with the same areas agrees, and an automatic colour changes only when one sorting
+ * before it that wanted the same colour comes or goes, or a colour is chosen.
  */
-export function accentsOf(keys: readonly string[]): Map<string, number> {
+export function accentsOf(keys: readonly string[], chosen: ReadonlyMap<string, number> = new Map()): Map<string, number> {
   const out = new Map<string, number>();
   const taken = new Set<number>();
-  for (const k of [...keys].sort()) {
+  const sorted = [...keys].sort();
+  for (const k of sorted) {
+    const c = chosen.get(k);
+    if (c === undefined) continue;
+    taken.add(c);
+    out.set(k, c);
+  }
+  let free = Array.from({ length: ACCENTS }, (_, i) => i).filter((i) => !taken.has(i)).length;
+  for (const k of sorted) {
+    if (out.has(k)) continue;
     let c = accentOf(k);
-    if (taken.size < ACCENTS) while (taken.has(c)) c = (c + 1) % ACCENTS;
+    if (free > 0) while (taken.has(c)) c = (c + 1) % ACCENTS;
+    if (!taken.has(c)) free--;
     taken.add(c);
     out.set(k, c);
   }
   return out;
+}
+
+/** The accents of a landscape's areas, as accentsOf gives them, each one's chosen colour honoured. */
+export const areaAccents = (areas: readonly AreaView[]): Map<string, number> =>
+  accentsOf(
+    areas.map((a) => a.key),
+    new Map(areas.flatMap((a) => (a.rect.accent === undefined ? [] : [[a.key, a.rect.accent] as const])))
+  );
+
+/** The colour area `key` would take automatically: its accent were its chosen one taken away. */
+export function automaticAccent(areas: readonly AreaView[], key: string): number {
+  return areaAccents(areas.map((a) => (a.key === key ? { ...a, rect: { ...a.rect, accent: undefined } } : a))).get(key) ?? accentOf(key);
 }
 
 /** An area's name where there's little room (the switcher): a ticket's number, else its title. */

@@ -88,7 +88,7 @@ import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type Focus
 import { FocusPanel, isFocusTool, type FocusTool } from "./FocusPanel";
 import { useLandscape, useLandscapeMigration, type LandscapeSave } from "./useLandscape";
 import { NO_READ_NOTES, noteCleared, noteDismissed, noteFailed, type ReadNotes } from "./readNotes";
-import { viewOnlyPatch, accentOf, accentsOf, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, plannedIn, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { viewOnlyPatch, ACCENT_NAMES, accentOf, areaAccents, automaticAccent, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, carryPlan, closedIn, closedListOf, forgetPatch, plannedIn, freeSubName, mentionTarget, newExtraId, newStackName, planJoinStack, planOpenWindow, planPlaceCard, planResizeTile, planTidy, planUnstackAll, presetFor, readProblem, tidyRefusal, renamesLeft, resolveLayout, sameScope, selectionFor, tileSize, undoOf, unstackRefusal, withoutGone, type AreaPlan, type CardView, type GoToAsk, type GroupMove, type MovesFailed, type PendingRename, type PlaceHint, type RevealAsk, type ScreenBox, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { wiresInOrder } from "../shared/wires";
 import { wiresNow } from "./WireLayer";
 import { droppedNote, unmovedNote } from "./wiresModel";
@@ -110,6 +110,7 @@ import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
 import { AreaHeader, stageChip, type GroupBarProps } from "./GroupBar";
 import { AreaTree, treeCounts, treeOf, type TreeArea } from "./AreaTree";
+import { AreaColourPopover, colourAnchor, type ColourAnchor } from "./AreaColour";
 import { ClosedSessions } from "./ClosedSessions";
 import { MembersMenu } from "./team/MembersMenu";
 import { settled } from "./settled";
@@ -361,6 +362,8 @@ function App() {
   const teamStatus = useTeamStatus();
   const teamRooms = useMemo(() => (teamStatus && !isErr(teamStatus) ? teamStatus.rooms : []), [teamStatus]);
   const [shareDlg, setShareDlg] = useState<{ key: string; title: string } | null>(null);
+  /** An area's Colour popover: the area, and what it hangs from. */
+  const [colourAsk, setColourAsk] = useState<{ key: string; anchor: ColourAnchor } | null>(null);
   // a room dialog asked for from an area's Members ▾: shown here, so it outlives the header it came from
   const [memberDlg, setMemberDlg] = useState<MemberDialog | null>(null);
   const [joinDlg, setJoinDlg] = useState(false);
@@ -868,9 +871,9 @@ function App() {
   });
   // While reading the grid's layout in has failed, what moves on the landscape isn't saved: reading it in, on a retry or
   // the next launch, would put those places back. Each such save is refused and said, as the banner says; a stack's
-  // front tab and an area's collapse or lock are saved (viewOnlyPatch), so a back tab can still be brought forward to
-  // answer what waits in it. Reading it in, or keeping the landscape as it is, saves through the store itself. (A file
-  // that can't be read is a stand-in main never saves, and says so.)
+  // front tab and an area's collapse, lock or colour are saved (viewOnlyPatch), so a back tab can still be brought
+  // forward to answer what waits in it. Reading it in, or keeping the landscape as it is, saves through the store
+  // itself. (A file that can't be read is a stand-in main never saves, and says so.)
   const readInFailed = useRef(false);
   readInFailed.current = !!migration.failed;
   const lsSaves = useMemo(() => {
@@ -2257,6 +2260,20 @@ function App() {
     if (ask) setJoinShown(ask);
   };
   /**
+   * Area `key`'s Colour popover: from its dot (`dot`), which closes it again when it's open from there, or from Colour…
+   * in its menu, hung from its dot or whatever else of it is drawn (colourAnchor).
+   */
+  const openColour = (key: string, dot?: HTMLElement) =>
+    setColourAsk((open) => (dot && open?.key === key && open.anchor === dot ? null : { key, anchor: dot ?? colourAnchor(key) }));
+  // an area removed or renamed while its popover is open takes the popover with it, rather than leaving it to come back
+  // over an area made later under the same name
+  useEffect(() => {
+    if (colourAsk && landscapeState && !own(landscapeState.landscape.areas, colourAsk.key)) setColourAsk(null);
+  }, [colourAsk, landscapeState]);
+  /** A colour picked in area `key`'s popover, saved as its collapse is: null takes its chosen one away. */
+  const setAreaColour = (key: string, accent: number | null) =>
+    void lsChange({ areas: { [key]: { accent } } }, `${areaTitle(key)}'s colour set to ${accent === null ? "Automatic" : ACCENT_NAMES[accent]}`);
+  /**
    * An area's actions, as one model (workspaceActions.tsx) its ⋯, its right-click (on its header, its patch zoomed out,
    * its pill, its tree row) and its header's buttons all render: everything its header has no button for, and its tools.
    */
@@ -2285,6 +2302,7 @@ function App() {
       // following one of the room's teammates (FollowButtons' handlers): a room's area's only
       follow: ((f) => ({ leader: f.leader?.name ?? null, candidates: f.candidates, stop: f.stop, start: (member: string) => f.follow(member) }))(followIn(follow, room)),
       rename: () => setRenameDlg({ kind: "group", key, initial: key }),
+      colour: () => openColour(key),
       collapse: () => a && flag({ collapsed: !a.collapsed }, `${title} ${a.collapsed ? "opened" : "collapsed"}`),
       lock: () => a && flag({ locked: !a.locked }, `${title} ${a.locked ? "unlocked" : "locked"}`),
       tidy: landscapeLayout ? ((no) => (no ? { no } : () => tidyArea(key)))(tidyRefusal(landscapeLayout, key, areaTitle)) : null,
@@ -2502,11 +2520,13 @@ function App() {
           members={membersFor(a.key)}
           menu={() => areaMenu(a.key)}
           onArtifacts={() => showTool("artifacts", null, a.key)}
+          onColour={(dot) => openColour(a.key, dot)}
           onGrab={onGrab}
         />
       );
     },
     bar: (key) => ({ actions: areaActions(key), roomId: roomOfGroup(teamStatus, key)?.id ?? null, members: membersFor(key) }),
+    colour: openColour,
     // outside every area: what's made there is loose, and so are the closed workspaces it offers back
     create: (area, at) => [
       ...createActions({
@@ -2707,7 +2727,7 @@ function App() {
   // the area tree: areas in the landscape's order, each with its workspaces (those the filter keeps)
   const treeAreas = useMemo((): TreeArea[] => {
     const order = landscapeLayout?.areas.map((a) => a.key) ?? [];
-    const accents = accentsOf(order);
+    const accents = areaAccents(landscapeLayout?.areas ?? []);
     const all = new Map(treeOf(workSessions, order).map((g) => [g.key, g.items]));
     const shownItems = new Map(treeOf(visible, order).map((g) => [g.key, g.items]));
     const keys = [...all.keys()];
@@ -3550,6 +3570,7 @@ function App() {
               menuFor={sessionActions}
               stepMenu={(s) => menuOf(ghostActionsFor(s))}
               areaMenu={(key) => (key === LOOSE_GROUP ? ((rows) => (rows.length ? menuOf(rows) : null))(looseGhostRows()) : areaMenu(key))}
+              onColour={openColour}
               footer={
                 <>
                   {/* team rooms: live panes */}
@@ -3973,6 +3994,18 @@ function App() {
         />
       )}
 
+      {colourAsk &&
+        ((a) =>
+          a && landscapeLayout ? (
+            <AreaColourPopover
+              anchor={colourAsk.anchor}
+              title={areaTitle(colourAsk.key)}
+              chosen={a.accent}
+              automatic={automaticAccent(landscapeLayout.areas, colourAsk.key)}
+              onPick={(accent) => setAreaColour(colourAsk.key, accent)}
+              onClose={() => setColourAsk(null)}
+            />
+          ) : null)(landscapeState ? own(landscapeState.landscape.areas, colourAsk.key) : undefined)}
       {shareDlg && (
         <ShareRoomDialog
           groupKey={shareDlg.key}

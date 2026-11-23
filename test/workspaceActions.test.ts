@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, connectMenu, createActions, focusMenuActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, PLANNED_BUSY_WHY, plannedActions, plannedWhere, usable, wireActions, wireMenu, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { AREA_UNPLACED_WHY, CLOSED_BUSY_WHY, actionOf, areaActions, artifactsOf, connectMenu, createActions, focusMenuActions, ghostActions, ghostsActions, inSection, lockTitle, menuOf, paneRow, PLANNED_BUSY_WHY, plannedActions, plannedWhere, usable, wireActions, wireMenu, workspaceActions, type AreaEnv, type GhostEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -390,6 +390,7 @@ describe("an area's actions", () => {
     messages: { mode: undefined, defaultSend: true, set: vi.fn(), log: vi.fn() },
     follow: { leader: null, candidates: [], stop: vi.fn(), start: vi.fn() },
     rename: vi.fn(),
+    colour: vi.fn(),
     collapse: vi.fn(),
     lock: vi.fn(),
     tidy: null,
@@ -413,7 +414,7 @@ describe("an area's actions", () => {
 
   it("group an area that isn't a room's with no Team room heading: its sessions under Sessions, sharing on its own", () => {
     expect(labels(area())).toEqual([
-      "# Area", "Rename…", "Collapse to a pill", "Lock its layout",
+      "# Area", "Rename…", "Colour…", "Collapse to a pill", "Lock its layout",
       "-", "# Tools", "Artifacts",
       "-", "# Agent messages", "As in Settings (auto-send) ✓", "Always auto-send", "Always leave in prompt", "Agent message log…",
       "-", "# Sessions", "New session here…", "Ask for status",
@@ -436,6 +437,21 @@ describe("an area's actions", () => {
         expect(rows.filter((r) => r.pressed).map((r) => r.key)).toEqual([`msg:${mode ?? "default"}`]);
       }
     }
+  });
+
+  it("offer Colour… under Area, opening its popover; off, saying why, while it has no record to keep a colour in", () => {
+    const colour = vi.fn();
+    const on = actionOf(areaActions(area({ colour })), "colour")!;
+    expect(on).toMatchObject({ section: "area", label: "Colour", menuLabel: "Colour…" });
+    expect(on.disabled).toBeFalsy();
+    on.onPick();
+    expect(colour).toHaveBeenCalledOnce();
+    // a room's area too: its colour is this Mac's to choose
+    expect(actionOf(areaActions(area({ room: true })), "colour")?.disabled).toBeFalsy();
+    const off = actionOf(areaActions(area({ colour, stored: null })), "colour")!;
+    expect(off).toMatchObject({ disabled: true, title: AREA_UNPLACED_WHY });
+    off.onPick();
+    expect(colour).toHaveBeenCalledOnce();
   });
 
   it("can be removed only once it has no sessions and a place on the landscape", () => {

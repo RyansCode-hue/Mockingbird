@@ -765,11 +765,13 @@ describe("what a migration read in without", () => {
 
 describe("what's saved while reading the grid's layout in has failed", () => {
   const at = { x: 24, y: 48, w: 1056, h: 882 };
-  it("is a stack's front tab, and an area opened, collapsed, locked or unlocked", () => {
+  it("is a stack's front tab, and an area opened, collapsed, locked, unlocked or given a colour", () => {
     expect(viewOnlyPatch({ stacks: { "5101/api": { active: "s3", placement: at } } })).toBe(true);
     expect(viewOnlyPatch({ stacks: { "5101/api": { active: "s3" } } })).toBe(true);
     expect(viewOnlyPatch({ areas: { "5101": { collapsed: true } }, stacks: { "5101/api": { active: "s2" } } })).toBe(true);
     expect(viewOnlyPatch({ areas: { "5101": { locked: false } } })).toBe(true);
+    expect(viewOnlyPatch({ areas: { "5101": { accent: 6 } } })).toBe(true);
+    expect(viewOnlyPatch({ areas: { "5101": { accent: null } } })).toBe(true);
   });
 
   it("is never a move, a resize, a removal, an area's place, a ghost or a window, or nothing at all", () => {

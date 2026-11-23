@@ -53,6 +53,7 @@ import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan
 import { boardPlan, councilPlan, pipelinePlan, runPlanAudit, ticketsPlan } from "./planAudit";
 import { WIRE_AREA, acrossBook, boardTemplates, gateBoardBook, gateMerges, gatePipeline, heldWaitsBook, manyWiresBook, placeWireBoard, runWiresAudit, stripBoardBook, stripBoardOf, twinBook, wireBoardBook, wireBoardSessions } from "./wiresAudit";
 import { runStripAudit } from "./stripAudit";
+import { runColourAudit } from "./colourAudit";
 import { openFinishShot } from "./wireNeedsAudit";
 import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, reopenPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
@@ -1247,7 +1248,8 @@ const landscapeFixture = (): Landscape => {
   }
   const a5101 = area("5101", 0, 0, ["s1", "s2", "s3", SAM_PANE, NICK_PANE, "s4", "s8", "g2"]);
   const a5102 = area("5102", a5101.w + AREA_GAP, 0, ["s5", "s6", "g1"]);
-  area("5110", a5102.x, a5102.y + a5102.h + AREA_GAP, ["y1", remotePaneId(NICK, "n7")]);
+  // 5110's colour is chosen (Red), as its Colour popover saves it; 5101 and 5102 take theirs automatically
+  area("5110", a5102.x, a5102.y + a5102.h + AREA_GAP, ["y1", remotePaneId(NICK, "n7")]).accent = 6;
   if (wireBoard) placeWireBoard(l, a5101.x, a5101.y + a5101.h + AREA_GAP, REPO);
   // the assistant is ungrouped: loose, next to the first area, and p1's ghost beside it
   const placed = [...Object.values(l.areas), ...Object.values(l.workspaces)];
@@ -3403,6 +3405,8 @@ if (params.has("landscapeNeedsAudit")) {
 }
 // W6: ?landscapeStripAudit (with ?wires=fanout) works the pipeline strip in focus (stripAudit.ts) for test/uiLandscapeStrip.test.ts
 if (params.has("landscapeStripAudit")) runStripAudit({ calls, waitFor });
+// ?landscapeColourAudit=a|b works an area's Colour popover (colourAudit.ts) for test/uiLandscapeColour.test.ts
+if (params.has("landscapeColourAudit")) runColourAudit({ calls, waitFor }, params.get("landscapeColourAudit") || "a");
 // W17: ?landscapePlanAudit=<part> (with ?lsWires&lsPlan) works an Orchestrator's plan and the built-in template (planAudit.ts) for test/uiTemplatePicker.test.ts
 if (params.has("landscapePlanAudit")) runPlanAudit({ calls, waitFor }, params.get("landscapePlanAudit") || "plan");
 // S8: ?landscapeSwitchAudit=stack|locked|palette|notes|place works what the grid offered on the landscape (switchAudit.ts) for test/uiLandscapeSwitch.test.ts
@@ -3537,8 +3541,8 @@ if (lsDrag)
   );
 // the selection bar (S6a): ?lsSelect=area:<key> clicks that area's bare patch (its lower right corner) as a person
 // would, =ws:<id> that workspace's header (or card), =pick:<id,…> Shift-clicks those after Esc lets the selection go;
-// ?lsBarMenu=more|tools|move then opens the bar's ⋯, Tools ▾ or Move to area ▾; ?lsBarExtended starts with the bar's
-// folded buttons on a second row
+// ?lsBarMenu=more|tools|move then opens the bar's ⋯, Tools ▾ or Move to area ▾, and ?lsColour an area's colour dot (its
+// Colour popover); ?lsBarExtended starts with the bar's folded buttons on a second row
 if (params.has("lsBarExtended")) set("mb.landscape.barExtended", true);
 const lsSelect = params.get("lsSelect");
 if (lsSelect)
@@ -3576,6 +3580,7 @@ if (lsSelect)
       }
       const menu = params.get("lsBarMenu");
       if (menu) setTimeout(() => document.querySelector<HTMLElement>(`.ls-selbar [data-act="${menu}"]`)?.click(), 600);
+      if (params.has("lsColour")) setTimeout(() => document.querySelector<HTMLElement>(".ls-selbar [data-colour-dot]")?.click(), 600);
     }, 500)
   );
 const typeArea = (area: HTMLTextAreaElement, text: string) => {
@@ -3609,7 +3614,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu") || params.has("stripMore") || params.has("lsFinish") || ["pick", "settings", "pop"].includes(params.get("landscapeWiresAudit") ?? ""))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu") || params.has("lsColour") || params.has("needsTray") || params.has("keysSheet") || params.has("newMenu") || params.has("stripMore") || params.has("lsFinish") || ["pick", "settings", "pop"].includes(params.get("landscapeWiresAudit") ?? ""))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {

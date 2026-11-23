@@ -13,7 +13,7 @@ import {
   ZOOM_MAX,
   ZOOM_MIN,
   accentOf,
-  accentsOf,
+  areaAccents,
   areaAt,
   areaShown,
   areaCamera,
@@ -162,6 +162,8 @@ export interface AreaHooks {
    * unread chat the Chat button counts), and the room's Members ▾ (the header's, with the same handlers).
    */
   bar: (key: string) => { actions: ModelAction[]; roomId: string | null; members: React.ReactNode };
+  /** Its colour dot in the selection bar pressed: its Colour popover, from the dot. */
+  colour: (key: string, dot: HTMLElement) => void;
   /** The kinds of workspace a right-click on empty landscape makes, placed at `at` (landscape px), in area `area` when it's in one. */
   create: (area: string | null, at: Point) => ModelAction[];
 }
@@ -2475,7 +2477,7 @@ export function Landscape({
   useEffect(() => {
     if (picked.some((k) => !pickable.has(k))) setPicked((p) => p.filter((k) => pickable.has(k)));
   }, [pickable]);
-  const accents = useMemo(() => accentsOf(layout.areas.map((a) => a.key)), [layout.areas]);
+  const accents = useMemo(() => areaAccents(layout.areas), [layout.areas]);
   const areaViews = layout.areas.map((a) => ({ a, accent: accents.get(a.key) ?? accentOf(a.key), counts: areaCounts(layout.tiles, a.key, layout.ghosts), title: areaTitle(a.key), info: areaHooks.info(a.key) }));
   const loose = useMemo(() => (switcher ? looseStop(layout.tiles) : null), [switcher, layout]);
   const stops = useMemo(() => (loose ? [...layout.areas, loose] : layout.areas), [loose, layout]);
@@ -2981,6 +2983,7 @@ export function Landscape({
       return (
         <AreaBar
           key={`area:${a.key}`}
+          group={a.key}
           name={shortAreaName(a.key, title)}
           title={title}
           accent={accents.get(a.key) ?? accentOf(a.key)}
@@ -2988,6 +2991,7 @@ export function Landscape({
           actions={b.actions}
           roomId={b.roomId}
           members={b.members}
+          onColour={(dot) => areaHooks.colour(a.key, dot)}
           place={place(a.rect, a.rect.collapsed ? "pill" : areaChrome)}
         />
       );

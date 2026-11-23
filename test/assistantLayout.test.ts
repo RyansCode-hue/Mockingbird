@@ -67,7 +67,7 @@ describe("the Assistant's layout tools", () => {
   });
 
   it("refuses every change while the landscape can't be saved or isn't laid out yet", async () => {
-    const w = world({ over: { landscapeState: () => ({ landscape: { v: 3, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} }, rev: 1, problem: null }) } });
+    const w = world({ over: { landscapeState: () => ({ landscape: { v: 4, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} }, rev: 1, problem: null }) } });
     expect(await w.tool("move_workspace").check!({ session: "a1", area: "docs" })).toContain("hasn't been laid out yet");
     const v = world({ over: { landscapeState: () => ({ ...w.store.get(), problem: "landscape.json couldn't be read" }) } });
     expect(await v.tool("tidy_area").check!({ area: "atticus" })).toBe("The landscape can't be changed now: landscape.json couldn't be read");

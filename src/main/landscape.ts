@@ -371,7 +371,7 @@ export class LandscapeStore {
       return fresh({ kind: "newer", message, file, readOnly: true }, true);
     }
     try {
-      return { landscape: parseLandscape(parsed), wires: this.readWires(parsed, v), problem: null, readOnly: false, standIn: false, standInChanges: 0 };
+      return { landscape: parseLandscape(parsed, (m) => this.o.log("landscape", m)), wires: this.readWires(parsed, v), problem: null, readOnly: false, standIn: false, standInChanges: 0 };
     } catch (err) {
       if (!(err instanceof LandscapeShapeError)) throw err;
       return this.setAside(`isn't a landscape (${err.message})`, err, fresh);
@@ -382,8 +382,8 @@ export class LandscapeStore {
   private readWires(parsed: unknown, v: number | null): WireBookRead {
     const raw = (parsed as { wires?: unknown }).wires;
     const read = parseWireBook(raw);
-    // this version always writes one, so a file of this version without one was edited: read as none, said once
-    if (raw === undefined && v === LANDSCAPE_VERSION) read.problems.push({ kind: "missing", message: `${this.o.file} has no wires in it, though this version always saves them. It's read as having none.` });
+    // version 3 and later always write one, so such a file without one was edited: read as none, said once
+    if (raw === undefined && v !== null && v >= 3) read.problems.push({ kind: "missing", message: `${this.o.file} has no wires in it, though this version always saves them. It's read as having none.` });
     for (const p of read.problems) this.o.log("landscape", new Error(p.message));
     return read;
   }

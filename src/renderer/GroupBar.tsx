@@ -8,6 +8,7 @@ import { RoomChatChip } from "./team/RoomChat";
 import { FollowButtons, type Follow } from "./team/RoomLive";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { LockIcon, MoreIcon } from "./Icons";
+import { AccentDot } from "./AreaColour";
 
 /**
  * A group's bar: each area's header along its top edge on the landscape (design B, with O's room buttons): the
@@ -48,9 +49,10 @@ function AreaUsage({ g, what }: { g: GroupMeter | undefined; what: string }) {
 }
 
 /**
- * An area's header on the landscape (design B, with O's room buttons): its name, repos, the ticket's stage or
- * Pipeline, what its sessions are doing, the room's Chat, Board and Members ▾, Follow, its usage, Ask for status, and
- * ⋯ (also on right-click) for everything else. A press on its bare part starts moving the area (`onGrab`).
+ * An area's header on the landscape (design B, with O's room buttons): its colour (a press chooses another), its name,
+ * repos, the ticket's stage or Pipeline, what its sessions are doing, the room's Chat, Board and Members ▾, Follow, its
+ * usage, Ask for status, and ⋯ (also on right-click) for everything else. A press on its bare part starts moving the
+ * area (`onGrab`).
  */
 export function AreaHeader(
   p: GroupBarProps & {
@@ -62,6 +64,8 @@ export function AreaHeader(
     menu: () => MenuEntry[];
     /** Open the area's Artifacts window (the room's, or its own on this Mac). */
     onArtifacts?: () => void;
+    /** Its colour dot pressed: the area's Colour popover, from the dot. */
+    onColour?: (dot: HTMLElement) => void;
     onGrab?: (e: React.PointerEvent) => void;
   }
 ) {
@@ -80,6 +84,7 @@ export function AreaHeader(
         p.onGrab?.(e);
       }}
     >
+      <AccentDot className="ls-ah-dot" area={p.group} title={p.title} onColour={p.onColour} />
       <span className="ls-ah-name" title={p.title}>
         {p.title}
       </span>

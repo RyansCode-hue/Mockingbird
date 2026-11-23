@@ -447,8 +447,8 @@ export function ghostsActions(g: GhostsEnv, o: { what?: string; clearLabel?: str
 /** What an area's actions need to know about it, and do (main.tsx's `areaActions` makes it). */
 export interface AreaEnv {
   title: string;
-  /** Its record on the landscape (collapsed, locked); null where it has none. */
-  stored: { collapsed?: boolean; locked?: boolean } | null;
+  /** Its record on the landscape (collapsed, locked, its chosen colour); null where it has none. */
+  stored: { collapsed?: boolean; locked?: boolean; accent?: number } | null;
   /** A team room's area: the room tools (Chat, Board, Members, Follow) are only ever a room's. */
   room: boolean;
   /** No session is in it, so it can go (its ghosts come back to it otherwise). */
@@ -458,6 +458,8 @@ export interface AreaEnv {
   /** Following a teammate's view: the one followed (null: no one), and the room's teammates who can be. */
   follow: { leader: string | null; candidates: readonly { member: string; name: string }[]; stop: () => void; start: (member: string) => void };
   rename: () => void;
+  /** Colour…: its Colour popover, over its dot (AreaColour.tsx). */
+  colour: () => void;
   collapse: () => void;
   lock: () => void;
   /** Pack it in creation order (T), or why it can't be (locked, collapsed, nothing in it); null where there's no landscape. */
@@ -482,6 +484,9 @@ const messageModes = (defaultSend: boolean): { value: MessageMode | ""; label: s
   { value: "prompt", label: "Always leave in prompt", title: "Typed into the prompt; you press Enter" },
 ];
 
+/** Why an area that has no record on the landscape yet can't have its colour chosen. */
+export const AREA_UNPLACED_WHY = "It isn't on the landscape yet";
+
 /** What Lock does, as its button and menu row say it: an area's layout frozen, the area itself still pushed aside whole. */
 export const lockTitle = (locked: boolean): string =>
   locked ? "Unlock: workspaces can be moved into, out of and within it again" : "Lock its layout: its workspaces keep their places, and none move in or out; it's still pushed aside whole when another area grows";
@@ -493,7 +498,11 @@ export const lockTitle = (locked: boolean): string =>
  */
 export function areaActions(env: AreaEnv): ModelAction[] {
   const st = env.stored;
-  const out: ModelAction[] = [{ section: "area", key: "rename", label: "Rename", menuLabel: "Rename…", onPick: env.rename }];
+  const out: ModelAction[] = [
+    { section: "area", key: "rename", label: "Rename", menuLabel: "Rename…", onPick: env.rename },
+    // its colour is kept in its record, as collapse and lock are, so an area with no record can't be given one
+    { section: "area", key: "colour", label: "Colour", menuLabel: "Colour…", title: "Choose its colour, or let it take one", ...can(st ? env.colour : { no: AREA_UNPLACED_WHY }) },
+  ];
   if (st)
     out.push(
       { section: "area", key: "collapse", label: st.collapsed ? "Open" : "Collapse", menuLabel: st.collapsed ? "Open the area" : "Collapse to a pill", onPick: env.collapse },

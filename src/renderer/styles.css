@@ -34,6 +34,11 @@
   --m-3: #6fb3d8;
   --m-4: #d88fb0;
   --m-5: #b8c46a;
+  /* the area colours only ever chosen (--ls-a6…9), apart from the six given out automatically */
+  --area-red: #ec7a68;
+  --area-green: #7cc482;
+  --area-brown: #c49c7c;
+  --area-slate: #a6aeb8;
   --diff-add: rgba(143, 181, 115, .14);
   --diff-del: rgba(207, 106, 90, .15);
   --line-strong: rgba(255, 255, 255, .09);
@@ -98,6 +103,10 @@
   --m-3: #246085;
   --m-4: #953b66;
   --m-5: #575f1a;
+  --area-red: #a3332a;
+  --area-green: #2a6630;
+  --area-brown: #764f33;
+  --area-slate: #4f5864;
   --diff-add: rgba(77, 125, 44, .14);
   --diff-del: rgba(184, 70, 50, .13);
   --line-strong: rgba(0, 0, 0, .13);
@@ -2870,18 +2879,25 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-viewport.grab-ready, .ls-viewport.grab-ready * { cursor: grab !important; }
 .ls-viewport.grab-on, .ls-viewport.grab-on * { cursor: grabbing !important; user-select: none; }
 .ls-world { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; }
-/* ---- areas (S4; AreaFrame.tsx): a group's area, in one of six accents (accentOf). At 75% and up and in the
-   read-only band its dashed outline with the header bar along its top edge (design B); zoomed out to cards a solid
-   patch with its name over it (C); collapsed, a pill (E). Outlines keep their width on screen (--ls-inv is 1 / zoom),
-   and the header, the name and the pill their size (--ls-hs is 1 / zoom, never below 1): zoomed out, the header
-   grows up from the area's top edge rather than down over its workspaces ---- */
-:root { --ls-a0: var(--amber); --ls-a1: var(--teal); --ls-a2: var(--git-mod); --ls-a3: var(--m-2); --ls-a4: var(--m-4); --ls-a5: var(--m-5); }
+/* ---- areas (S4; AreaFrame.tsx): a group's area, in its chosen accent or one of the first six (accentsOf). At 75% and
+   up and in the read-only band its dashed outline with the header bar along its top edge (design B); zoomed out to
+   cards a solid patch with its name over it (C); collapsed, a pill (E). Outlines keep their width on screen (--ls-inv
+   is 1 / zoom), and the header, the name and the pill their size (--ls-hs is 1 / zoom, never below 1): zoomed out, the
+   header grows up from the area's top edge rather than down over its workspaces ---- */
+:root {
+  --ls-a0: var(--amber); --ls-a1: var(--teal); --ls-a2: var(--git-mod); --ls-a3: var(--m-2); --ls-a4: var(--m-4); --ls-a5: var(--m-5);
+  --ls-a6: var(--area-red); --ls-a7: var(--area-green); --ls-a8: var(--area-brown); --ls-a9: var(--area-slate);
+}
 .a0 { --acc: var(--ls-a0); --acc-text: var(--amber); }
 .a1 { --acc: var(--ls-a1); --acc-text: var(--teal-text); }
 .a2 { --acc: var(--ls-a2); --acc-text: var(--git-mod); }
 .a3 { --acc: var(--ls-a3); --acc-text: var(--m-2); }
 .a4 { --acc: var(--ls-a4); --acc-text: var(--m-4); }
 .a5 { --acc: var(--ls-a5); --acc-text: var(--m-5); }
+.a6 { --acc: var(--ls-a6); --acc-text: var(--area-red); }
+.a7 { --acc: var(--ls-a7); --acc-text: var(--area-green); }
+.a8 { --acc: var(--ls-a8); --acc-text: var(--area-brown); }
+.a9 { --acc: var(--ls-a9); --acc-text: var(--area-slate); }
 .ls-area {
   --acc-line: color-mix(in srgb, var(--acc) 35%, transparent);
   position: absolute; box-sizing: border-box; pointer-events: none; border-radius: calc(10px * var(--ls-hs, 1));
@@ -3084,6 +3100,31 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-minimap .area, .ls-minimap .loose { fill: color-mix(in srgb, var(--acc) 5%, transparent); stroke: color-mix(in srgb, var(--acc) 70%, transparent); stroke-width: 1; stroke-dasharray: 3 2; }
 .ls-minimap .loose { --acc: var(--text-3); }
 .ls-minimap .view { fill: color-mix(in srgb, var(--text-1) 6%, transparent); stroke: var(--text-2); stroke-width: 1; }
+/* an area's colour dot as a button (AreaColour.tsx's AccentDot): a 16 px target laid out as the 8 px square it draws */
+button.ls-dot-btn {
+  box-sizing: border-box; width: 16px; height: 16px; margin: -4px; padding: 4px; border: none; border-radius: 4px;
+  background: var(--acc); background-clip: content-box; cursor: pointer;
+}
+button.ls-dot-btn:hover { box-shadow: inset 0 0 0 1px var(--line-btn-hover); }
+button.ls-dot-btn:focus-visible { outline-offset: -1px; }
+.ls-ah-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 2px; background: var(--acc); }
+/* an area's Colour popover: Automatic, then its colours as swatches in two rows of five (COLOUR_COLUMNS) */
+.mb-menu.ls-colour { min-width: 0; padding: 8px; gap: 6px; font: 400 12px var(--ui); color: var(--text-1); outline: none; }
+.ls-colour-head { padding: 0 2px; font-size: 11px; color: var(--text-3); }
+.ls-colour-grid { display: flex; flex-direction: column; gap: 6px; }
+.mb-menu .ls-colour-auto { display: flex; align-items: center; gap: 8px; padding: 5px 6px; color: var(--text-1); }
+.mb-menu .ls-colour-auto.on { background: var(--fill-selected); }
+.ls-colour-dot { flex-shrink: 0; width: 10px; height: 10px; border-radius: 3px; background: var(--acc); }
+.ls-colour-auto .ls-colour-check { margin-left: auto; color: var(--text-2); }
+.ls-colour-rows { display: grid; grid-template-columns: repeat(5, 24px); gap: 6px; }
+.mb-menu .ls-colour-sw {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border-radius: 5px;
+  background: var(--acc); color: var(--bg-app); font-size: 12px; line-height: 1;
+}
+.mb-menu .ls-colour-sw:hover { background: var(--acc); box-shadow: 0 0 0 2px var(--bg-pane), 0 0 0 3px var(--line-btn-hover); }
+.mb-menu .ls-colour-sw.on { box-shadow: 0 0 0 2px var(--bg-pane), 0 0 0 4px var(--acc); }
+.mb-menu .ls-colour-sw:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.ls-colour-name { min-height: 15px; padding: 0 2px; font-size: 11px; color: var(--text-3); }
 /* a room area's Members ▾ (design P) */
 /* the popover takes the keyboard as it opens (AnchoredPopover), as a context menu does, without a ring round it all */
 .mb-menu.ls-members { width: 380px; max-width: calc(100vw - 24px); padding: 6px; display: flex; flex-direction: column; gap: 2px; font: 400 12.5px var(--ui); color: var(--text-1); outline: none; }
