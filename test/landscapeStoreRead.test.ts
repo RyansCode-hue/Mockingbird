@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LANDSCAPE_SAVE_MS, LandscapeStore } from "../src/main/landscape";
-import { emptyLandscape, type LandscapeChange } from "../src/shared/landscape";
+import { LANDSCAPE_WRITTEN_VERSION, emptyLandscape, type LandscapeChange } from "../src/shared/landscape";
 import { emptyWireBook } from "../src/shared/wires";
 import { tempDir } from "./helpers";
 
@@ -22,7 +22,7 @@ const placement = (x: number) => ({ x, y: 0, w: 800, h: 600 });
 const asRoot = process.getuid?.() === 0;
 const SAVED = { ...emptyLandscape(), migratedAt: "2026-11-01T00:00:00.000Z", workspaces: { a: placement(0) } };
 /** The file as this version writes it: the layout, and the wire book beside it. */
-const ON_DISK = { ...SAVED, wires: emptyWireBook() };
+const ON_DISK = { ...SAVED, v: LANDSCAPE_WRITTEN_VERSION, wires: emptyWireBook() };
 
 function setup() {
   const dir = tempDir("landscape-read");

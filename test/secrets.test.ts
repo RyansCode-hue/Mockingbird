@@ -45,10 +45,14 @@ describe("the secret file list", () => {
     // the file, and the copies beside it: a write's temp file, an unreadable one set aside
     expect(rules).toContain("Read(~/.mockingbird/landscape.json)");
     expect(rules).toContain("Read(~/.mockingbird/landscape.json.*)");
+    expect(rules).toContain("Read(~/.mockingbird/landscape-additions.json)");
+    expect(rules).toContain("Read(~/.mockingbird/landscape-additions.json.*)");
     const profile = codexRoomPermissions({ workTrackerPath: tempDir("none"), git: null, hooks: [] }).config.join("\n");
     expect(profile).toContain(`"~/.mockingbird/scrollback"="deny"`);
     expect(profile).toContain(`"~/.mockingbird/landscape.json"="deny"`);
     expect(profile).toContain(`"~/.mockingbird/landscape.json.*"="deny"`);
+    expect(profile).toContain(`"~/.mockingbird/landscape-additions.json"="deny"`);
+    expect(profile).toContain(`"~/.mockingbird/landscape-additions.json.*"="deny"`);
   });
 
   it("keeps room agents out of the Orchestrators' held plans, which hold what private sessions were told", () => {

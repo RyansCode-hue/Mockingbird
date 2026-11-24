@@ -1,15 +1,22 @@
 import * as fs from "fs";
+import * as path from "path";
 import {
+  ADDITIONS_FILE,
+  ADDITIONS_VERSION,
   LANDSCAPE_VERSION,
   LandscapeShapeError,
   applyPatch,
   emptyLandscape,
+  noAdditions,
+  parseAdditions,
   parseLandscape,
   parsePatch,
   renameAreaPatch,
   reopenPatch,
   sameLandscape,
+  storedLandscape,
   versionOf,
+  withAdditions,
   type Landscape,
   type LandscapeChange,
   type LandscapeProblem,
@@ -43,7 +50,25 @@ export interface LandscapeStoreOptions {
   emitWires?: (change: WireChange) => void;
   log: (context: string, err: unknown) => void;
   saveMs?: number;
+  /**
+   * Whether session `id` is still this Mac's or a teammate's: a Pipeline window read back from landscape-additions.json
+   * lets go of a member that isn't (withAdditions). Without it, members are kept as they are.
+   */
+  sessionKnown?: (id: string) => boolean;
 }
+
+/** landscape-additions.json as this run read it (ADDITIONS_FILE): the colours and windows landscape.json's format can't hold. */
+interface AdditionsRead {
+  /** The text it holds as last read or written; null for no file. A save that would write the same leaves it. */
+  onDisk: string | null;
+  /** It's written with the layout: false while it's left as it is (a newer one, or one that couldn't be read or moved aside). */
+  writable: boolean;
+  /** What reading it found wrong. */
+  problem: LandscapeProblem | null;
+}
+
+/** What landscape-additions.json holds, as its problems name it. */
+const ADDITIONS_HOLD = "areas' chosen colours and Pipeline windows";
 
 interface Loaded {
   landscape: Landscape;
@@ -57,7 +82,11 @@ interface Loaded {
   standIn: boolean;
   /** Changes made to the stand-in. */
   standInChanges: number;
+  /** landscape-additions.json: neither read nor written while landscape.json is read-only or only stood in for. */
+  additions: AdditionsRead;
 }
+
+const noAdditionsRead = (): AdditionsRead => ({ onDisk: null, writable: false, problem: null });
 
 /**
  * Where workspaces and areas sit, owned by the main process
@@ -84,6 +113,12 @@ interface Loaded {
  * The file is read on first use, not at startup, so a second copy of the app
  * that only hands over to the first never moves it.
  *
+ * landscape.json is written in 1.8's format, so an older Mockingbird opens it as its own; what that format can't hold
+ * (areas' chosen colours, Pipeline windows) is saved beside it in landscape-additions.json (storedLandscape), which an
+ * older one never touches, and merged back as the file is read (withAdditions), each entry checked against
+ * landscape.json as it is then. What's wrong with that file is said and never gets landscape.json set aside: one that
+ * isn't additions is moved aside, and one that's newer or can't be read is left as it is and not written this run.
+ *
  * The wire book (shared/wires.ts) lives in the same file and goes out in the same atomic write, but it isn't the layout:
  * its changes have their own count and channel and leave `rev` alone, since a layout Undo ends when `rev` moves. A wire
  * change is written at once and only then takes effect: nothing about a wire is held back in memory. While a stand-in
@@ -100,9 +135,12 @@ export class LandscapeStore {
   private dirty = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly saveMs: number;
+  /** landscape-additions.json, beside landscape.json. */
+  private readonly additionsFile: string;
 
   constructor(private readonly o: LandscapeStoreOptions) {
     this.saveMs = o.saveMs ?? LANDSCAPE_SAVE_MS;
+    this.additionsFile = path.join(path.dirname(o.file), ADDITIONS_FILE);
   }
 
   get(): LandscapeState {
@@ -234,7 +272,7 @@ export class LandscapeStore {
   }
 
   private problems(): LandscapeProblem[] {
-    return [this.loaded?.problem, this.droppedProblem, this.saveProblem].filter((p): p is LandscapeProblem => !!p);
+    return [this.loaded?.problem, this.loaded?.additions.problem, this.droppedProblem, this.saveProblem].filter((p): p is LandscapeProblem => !!p);
   }
 
   private wireState(l: Loaded): WireState {
@@ -292,9 +330,29 @@ export class LandscapeStore {
     return null;
   }
 
-  /** The layout and the wire book, in one atomic write. Throws when it can't be written. */
+  /**
+   * The layout and the wire book: landscape.json in its written format, and what that can't hold in
+   * landscape-additions.json, each in one atomic write. The additions go first. They're where a version 4 file's
+   * colours and Pipeline windows move, so a crash between the two leaves those in one file or the other, never in
+   * neither; and a landscape.json left a save behind them is read as one an older Mockingbird changed alone, each
+   * addition checked against it. Additions that haven't changed aren't written again, nor none where there's no file.
+   * Throws when either can't be written; when the additions can't, landscape.json is left as it was.
+   */
   private write(l: Loaded): void {
-    writeFileAtomic(this.o.file, JSON.stringify({ ...l.landscape, wires: storedWireBook(l.wires) }, null, 2));
+    const { landscape, additions } = storedLandscape(l.landscape);
+    const a = l.additions;
+    if (a.writable) {
+      const text = JSON.stringify(additions, null, 2);
+      if (a.onDisk === null ? !noAdditions(additions) : text !== a.onDisk) {
+        try {
+          writeFileAtomic(this.additionsFile, text);
+        } catch (err) {
+          throw new Error(`${this.additionsFile} couldn't be written: ${(err as Error).message}`, { cause: err });
+        }
+        a.onDisk = text;
+      }
+    }
+    writeFileAtomic(this.o.file, JSON.stringify({ ...landscape, wires: storedWireBook(l.wires) }, null, 2));
   }
 
   /**
@@ -345,10 +403,19 @@ export class LandscapeStore {
     return next;
   }
 
-  /** The file as it is now: a landscape, a fresh one when there's no file, or a stand-in when reading it failed. */
+  /**
+   * The file as it is now, with landscape-additions.json merged in: a landscape, a fresh one when there's no file, or a
+   * stand-in when reading it failed. The additions aren't read for a file left as it is: nothing is written then.
+   */
   private read(): Loaded {
+    const l = this.readLandscape();
+    return l.readOnly || l.standIn ? l : this.readAdditions(l);
+  }
+
+  /** landscape.json alone. */
+  private readLandscape(): Loaded {
     const file = this.o.file;
-    const fresh = (problem: LandscapeProblem | null, readOnly = false): Loaded => ({ landscape: emptyLandscape(), wires: freshWireRead(), problem, readOnly, standIn: false, standInChanges: 0 });
+    const fresh = (problem: LandscapeProblem | null, readOnly = false): Loaded => ({ landscape: emptyLandscape(), wires: freshWireRead(), problem, readOnly, standIn: false, standInChanges: 0, additions: noAdditionsRead() });
     let text: string;
     try {
       text = fs.readFileSync(file, "utf8");
@@ -356,7 +423,7 @@ export class LandscapeStore {
       if (isMissing(err)) return fresh(null);
       // an I/O failure says nothing about what the file holds: it's left alone, and nothing is saved over it
       const message = `${file} couldn't be read (${(err as Error).message}). It's left as it is and read again with the next change; until then the layout is an empty stand-in, and changes to it aren't saved.`;
-      return { landscape: emptyLandscape(), wires: freshWireRead(), problem: { kind: "unreadable", message, file, readOnly: true }, readOnly: true, standIn: true, standInChanges: 0 };
+      return { landscape: emptyLandscape(), wires: freshWireRead(), problem: { kind: "unreadable", message, file, readOnly: true }, readOnly: true, standIn: true, standInChanges: 0, additions: noAdditionsRead() };
     }
     let parsed: unknown;
     try {
@@ -371,7 +438,7 @@ export class LandscapeStore {
       return fresh({ kind: "newer", message, file, readOnly: true }, true);
     }
     try {
-      return { landscape: parseLandscape(parsed, (m) => this.o.log("landscape", m)), wires: this.readWires(parsed, v), problem: null, readOnly: false, standIn: false, standInChanges: 0 };
+      return { landscape: parseLandscape(parsed, (m) => this.o.log("landscape", m)), wires: this.readWires(parsed, v), problem: null, readOnly: false, standIn: false, standInChanges: 0, additions: noAdditionsRead() };
     } catch (err) {
       if (!(err instanceof LandscapeShapeError)) throw err;
       return this.setAside(`isn't a landscape (${err.message})`, err, fresh);
@@ -386,6 +453,56 @@ export class LandscapeStore {
     if (raw === undefined && v !== null && v >= 3) read.problems.push({ kind: "missing", message: `${this.o.file} has no wires in it, though this version always saves them. It's read as having none.` });
     for (const p of read.problems) this.o.log("landscape", new Error(p.message));
     return read;
+  }
+
+  /**
+   * `l` with landscape-additions.json merged in (withAdditions), and the file's state for the saves. What's wrong with
+   * it is logged and kept for the banner, and leaves `l` as landscape.json alone has it: no file is read as no
+   * additions; one that isn't additions is moved aside, so they start over; one that's newer, can't be read or won't
+   * move is left as it is, and not written this run.
+   */
+  private readAdditions(l: Loaded): Loaded {
+    const file = this.additionsFile;
+    const held = (message: string, err?: unknown): Loaded => {
+      this.o.log("landscape", new Error(message, { cause: err }));
+      return { ...l, additions: { onDisk: null, writable: false, problem: { kind: "additions", message, file } } };
+    };
+    const aside = (why: string, err: unknown): Loaded => {
+      const movedTo = `${file}.bad-${Date.now()}`;
+      try {
+        fs.renameSync(file, movedTo);
+      } catch (moveErr) {
+        return held(`${file} ${why} and couldn't be moved aside (${(moveErr as Error).message}). It's left as it is: ${ADDITIONS_HOLD} aren't shown, and changes to them aren't saved, until it's fixed or removed.`, err);
+      }
+      const message = `${file} ${why}. It was moved to ${movedTo}, and ${ADDITIONS_HOLD} start over.`;
+      this.o.log("landscape", new Error(message, { cause: err }));
+      return { ...l, additions: { onDisk: null, writable: true, problem: { kind: "additions", message, file, movedTo } } };
+    };
+    let text: string;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch (err) {
+      if (isMissing(err)) return { ...l, additions: { onDisk: null, writable: true, problem: null } };
+      return held(`${file} couldn't be read (${(err as Error).message}). It's left as it is: ${ADDITIONS_HOLD} aren't shown, and changes to them aren't saved, this run.`, err);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      return aside(`isn't valid JSON (${(err as Error).message})`, err);
+    }
+    const v = versionOf(parsed);
+    if (v !== null && v > ADDITIONS_VERSION) {
+      return held(`${file} was written by a newer Mockingbird (additions version ${v}). It's left as it is: ${ADDITIONS_HOLD} aren't shown, and changes to them aren't saved, until this Mockingbird is updated.`);
+    }
+    const warn = (m: string) => this.o.log("landscape", m);
+    try {
+      const additions = parseAdditions(parsed, warn);
+      return { ...l, landscape: withAdditions(l.landscape, additions, { warn, sessionKnown: this.o.sessionKnown }), additions: { onDisk: text, writable: true, problem: null } };
+    } catch (err) {
+      if (!(err instanceof LandscapeShapeError)) throw err;
+      return aside(`isn't landscape additions (${err.message})`, err);
+    }
   }
 
   /** Move a file that isn't a landscape out of the way, so the next save can't overwrite it; when it won't move, nothing is written this run. */

@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { guarded } from "../src/main/handlers";
 import { LANDSCAPE_SAVE_MS, LandscapeStore } from "../src/main/landscape";
-import { LANDSCAPE_VERSION, PATCH_RECORDS, emptyLandscape, parsePatch, type LandscapeChange } from "../src/shared/landscape";
+import { ADDITIONS_FILE, LANDSCAPE_VERSION, LANDSCAPE_WRITTEN_VERSION, PATCH_RECORDS, emptyLandscape, parsePatch, type LandscapeChange } from "../src/shared/landscape";
 import { newWire, WIRE_VERSION, type WireBook, type WireChange, type WireReply, type WireState } from "../src/shared/wires";
 import { tempDir } from "./helpers";
 
@@ -63,7 +63,7 @@ describe("the landscape store", () => {
     // placed again from the dock: a window is replaced whole, taking the scope and place it's given
     store.update({ tools: { w2: { tool: "search", docked: false, session: "s2", area: "5101", placement: { x: 1280, y: 0, w: 420, h: 600 } } } });
     store.flush();
-    expect(onDisk(file).v).toBe(LANDSCAPE_VERSION);
+    expect(onDisk(file).v).toBe(LANDSCAPE_WRITTEN_VERSION);
     const again = open().get().landscape;
     expect(again.tools).toEqual({
       w1: { tool: "run", docked: false, session: "s1", area: "5101", placement: { x: 820, y: 0, w: 440, h: 600 } },
@@ -472,7 +472,7 @@ describe("the wire book in the landscape's file", () => {
     expect(onDisk(file).v).toBe(2); // reading writes nothing
     store.update({ tourDone: true });
     vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
-    expect(onDisk(file)).toMatchObject({ v: LANDSCAPE_VERSION, workspaces: { a: placement(8) }, wires: { wv: WIRE_VERSION, links: {}, notes: {} } });
+    expect(onDisk(file)).toMatchObject({ v: LANDSCAPE_WRITTEN_VERSION, workspaces: { a: placement(8) }, wires: { wv: WIRE_VERSION, links: {}, notes: {} } });
   });
 
   it("reads a version 1 file the same way", () => {
@@ -484,7 +484,7 @@ describe("the wire book in the landscape's file", () => {
     expect(store.wires()).toMatchObject({ book: { links: {} }, refused: null, problems: [] });
   });
 
-  it("reads a version 3 file, its wires kept, with no colour chosen, and saves it as this version", () => {
+  it("reads a version 3 file, its wires kept, with no colour chosen, and saves it as version 3 with the colour beside it", () => {
     vi.useFakeTimers();
     const { file, open } = setup();
     fs.writeFileSync(file, JSON.stringify(v3({ wv: 1, links: { w1: WIRE }, notes: {} })));
@@ -494,7 +494,9 @@ describe("the wire book in the landscape's file", () => {
     expect(store.wires().book!.links.w1).toEqual(WIRE);
     store.update({ areas: { "5101": { accent: 6 } } });
     vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
-    expect(onDisk(file)).toMatchObject({ v: LANDSCAPE_VERSION, areas: { "5101": { ...AREA, accent: 6 } }, wires: { links: { w1: WIRE } } });
+    expect(onDisk(file)).toMatchObject({ v: 3, areas: { "5101": AREA }, wires: { links: { w1: WIRE } } });
+    expect(onDisk(file).areas["5101"]).toEqual(AREA);
+    expect(onDisk(path.join(path.dirname(file), ADDITIONS_FILE))).toEqual({ v: 1, areas: { "5101": { accent: 6 } }, tools: {} });
   });
 
   it("reports a version 3 file with no wires as edited, as it does one of this version", () => {
@@ -520,16 +522,24 @@ describe("the wire book in the landscape's file", () => {
     expect(onDisk(file).areas["5101"]).toEqual({ ...AREA, collapsed: true });
   });
 
-  it("saves an area's chosen colour, and Automatic takes it off disk", () => {
+  it("saves an area's chosen colour beside landscape.json, and Automatic takes it off disk", () => {
     const { store, open, file } = setup();
+    const additions = path.join(path.dirname(file), ADDITIONS_FILE);
     store.update({ areas: { "5101": AREA } });
+    store.flush();
+    // nothing to add, and no file to say so in
+    expect(fs.existsSync(additions)).toBe(false);
     store.update({ areas: { "5101": { accent: 9 } } });
     store.flush();
-    expect(onDisk(file).areas["5101"].accent).toBe(9);
+    expect(onDisk(file).areas["5101"]).toEqual(AREA);
+    expect(onDisk(additions).areas["5101"]).toEqual({ accent: 9 });
     expect(open().get().landscape.areas["5101"].accent).toBe(9);
     store.update({ areas: { "5101": { accent: null } } });
     store.flush();
     expect(onDisk(file).areas["5101"]).toEqual(AREA);
+    // emptied rather than left, so the colour can't come back with the next start
+    expect(onDisk(additions)).toEqual({ v: 1, areas: {}, tools: {} });
+    expect(open().get().landscape.areas["5101"]).toEqual(AREA);
     expect(() => store.update({ areas: { "5101": { accent: 10 } } })).toThrow(/accent is not a whole number from 0 to 9/);
   });
 

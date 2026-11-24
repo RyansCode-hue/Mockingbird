@@ -6,8 +6,12 @@ import {
   CELL_ESTIMATE,
   GAP,
   ACCENT_COUNT,
+  ADDITIONS_FORMAT,
+  ADDITIONS_VERSION,
   LANDSCAPE_FORMAT,
+  LANDSCAPE_FORMATS,
   LANDSCAPE_VERSION,
+  LANDSCAPE_WRITTEN_VERSION,
   LandscapeShapeError,
   MAX_COORD,
   MAX_EXTENT,
@@ -22,6 +26,7 @@ import {
   growSpot,
   overlaps,
   own,
+  parseAdditions,
   parseLandscape,
   parsePatch,
   placeAt,
@@ -33,6 +38,7 @@ import {
   snap,
   snapUp,
   stackKeyOf,
+  storedLandscape,
   type Area,
   type Ghost,
   type Landscape,
@@ -717,12 +723,43 @@ describe("a stored landscape", () => {
     expect(parseLandscape(JSON.parse(JSON.stringify(v3)))).toEqual(base());
     expect(() => parseLandscape({ ...v3, areas: { "5101": { ...base().areas["5101"], accent: 2 } } })).toThrow(/areas\["5101"\] has a field this version doesn't know \(accent\)/);
   });
+
+  it("refuses a version 2 or 3 file holding a Pipeline window, which neither version had", () => {
+    for (const v of [2, 3]) {
+      const old = { ...base(), v, tools: { w: { tool: "pipeline", docked: true } } };
+      expect(() => parseLandscape(old), String(v)).toThrow(/tools\["w"\]\.tool is not one of files, changes, search, run, artifacts, chat/);
+    }
+    expect(parseLandscape({ ...base(), tools: { w: { tool: "pipeline", docked: true } } }).tools.w).toEqual({ tool: "pipeline", docked: true });
+  });
+});
+
+describe("what landscape.json's written format can't hold", () => {
+  const placed = { tool: "pipeline" as const, docked: false, area: "5101", placement: { x: 10, y: 60, w: 400, h: 300 } };
+  const additions = (tools: unknown) => ({ v: ADDITIONS_VERSION, areas: {}, tools });
+
+  it("is split off as it's saved, and what's left is checked as the written format, so a field added to the model and not split off throws", () => {
+    const l: Landscape = { ...base(), areas: { "5101": { ...base().areas["5101"], accent: 4 } }, tools: { d: { tool: "files", docked: true }, p: placed } };
+    const { landscape, additions: a } = storedLandscape(l);
+    expect(landscape).toEqual({ ...base(), v: LANDSCAPE_WRITTEN_VERSION, tools: { d: { tool: "files", docked: true } } });
+    expect(a).toEqual({ v: 1, areas: { "5101": { accent: 4 } }, tools: { p: { window: placed, areaAt: { x: 0, y: 0, w: 500, h: 400 } } } });
+    expect(() => storedLandscape({ ...l, areas: { "5101": { ...l.areas["5101"], pattern: "dots" } as Area } })).toThrow(/has a field this version doesn't know \(pattern\)/);
+  });
+
+  it("is read strictly: a window landscape.json holds, a corner for a window with no place, or a field it doesn't know is refused", () => {
+    const warn = () => {};
+    expect(parseAdditions(additions({ p: { window: placed, before: "d", areaAt: { x: 0, y: 0, w: 2000, h: 1000 } } }), warn).tools.p.window).toEqual(placed);
+    expect(() => parseAdditions(additions({ p: { window: { tool: "chat", docked: true } } }), warn)).toThrow(/tools\["p"\]\.window\.tool is chat, which landscape\.json holds/);
+    expect(() => parseAdditions(additions({ p: { window: { tool: "pipeline", docked: true }, areaAt: { x: 0, y: 0, w: 1, h: 1 } } }), warn)).toThrow(/areaAt is only for a placed window with a place/);
+    expect(() => parseAdditions(additions({ p: { window: placed, colour: 1 } }), warn)).toThrow(/doesn't know \(colour\)/);
+    expect(() => parseAdditions({ v: 1, areas: {} }, warn)).toThrow(/tools is missing/);
+    expect(() => parseAdditions({ v: 1, areas: { "a/b": {} }, tools: {} }, warn)).toThrow(/has a sub-group in it/);
+  });
 });
 
 /**
  * The stored format, version by version. A field added, removed or made
  * required changes what an older Mockingbird can read, so it needs a new
- * LANDSCAPE_VERSION and its format pinned here; the old ones stay as they were.
+ * version and its format pinned here; the old ones stay as they were, each still read.
  */
 const FORMATS: Record<number, typeof LANDSCAPE_FORMAT> = {
   1: {
@@ -766,7 +803,7 @@ const FORMATS: Record<number, typeof LANDSCAPE_FORMAT> = {
     tool: { fields: ["area", "docked", "placement", "session", "tool"], required: ["docked", "tool"] },
     card: { fields: ["area", "artifact", "placement", "shelf"], required: ["area", "artifact", "shelf"] },
   },
-  // an area's chosen colour (`accent`)
+  // an area's chosen colour (`accent`), written by 1.9.0's first build only: read, never written
   4: {
     landscape: { fields: ["areas", "cards", "ghosts", "migratedAt", "stacks", "tools", "tourDone", "v", "wires", "workspaces"], required: ["areas", "cards", "ghosts", "stacks", "tools", "v", "workspaces"] },
     placement: { fields: ["h", "w", "x", "y"], required: ["h", "w", "x", "y"] },
@@ -783,11 +820,40 @@ const FORMATS: Record<number, typeof LANDSCAPE_FORMAT> = {
   },
 };
 
+/**
+ * landscape-additions.json's format, version by version, as FORMATS pins landscape.json's: what landscape.json's
+ * written format can't hold. Its `window` is a tool window, whose fields are FORMATS' `tool`.
+ */
+const ADDITIONS_FORMATS: Record<number, typeof ADDITIONS_FORMAT> = {
+  1: {
+    additions: { fields: ["areas", "tools", "v"], required: ["areas", "tools", "v"] },
+    area: { fields: ["accent"], required: [] },
+    tool: { fields: ["areaAt", "before", "window"], required: ["window"] },
+    window: { fields: ["area", "docked", "placement", "session", "tool"], required: ["docked", "tool"] },
+    placement: { fields: ["h", "w", "x", "y"], required: ["h", "w", "x", "y"] },
+  },
+};
+
 describe("the stored format", () => {
-  it("is the one pinned for its LANDSCAPE_VERSION", () => {
+  it("writes landscape.json in the format pinned for LANDSCAPE_WRITTEN_VERSION, 1.8's", () => {
+    expect(LANDSCAPE_WRITTEN_VERSION).toBe(3);
     expect(
       LANDSCAPE_FORMAT,
-      `landscape.json's format isn't the one pinned for LANDSCAPE_VERSION ${LANDSCAPE_VERSION}. A changed format needs LANDSCAPE_VERSION raised, so an older Mockingbird leaves the new file alone instead of moving it aside, and the new format pinned under the new version in FORMATS (test/landscape.test.ts)`
-    ).toEqual(FORMATS[LANDSCAPE_VERSION]);
+      `landscape.json's written format isn't the one pinned for LANDSCAPE_WRITTEN_VERSION ${LANDSCAPE_WRITTEN_VERSION}. Something new goes in landscape-additions.json (ADDITIONS_VERSION raised), so an older Mockingbird still opens landscape.json as its own`
+    ).toEqual(FORMATS[LANDSCAPE_WRITTEN_VERSION]);
+  });
+
+  it("reads every version up to LANDSCAPE_VERSION in the format pinned for it", () => {
+    expect(Object.keys(LANDSCAPE_FORMATS).map(Number)).toEqual(Array.from({ length: LANDSCAPE_VERSION }, (_, i) => i + 1));
+    for (const v of Object.keys(FORMATS).map(Number)) {
+      expect(LANDSCAPE_FORMATS[v], `landscape.json's version ${v} format isn't the one pinned for it in FORMATS (test/landscape.test.ts): a changed format needs a new version`).toEqual(FORMATS[v]);
+    }
+  });
+
+  it("keeps landscape-additions.json in the format pinned for ADDITIONS_VERSION", () => {
+    expect(
+      ADDITIONS_FORMAT,
+      `landscape-additions.json's format isn't the one pinned for ADDITIONS_VERSION ${ADDITIONS_VERSION}. A changed format needs ADDITIONS_VERSION raised, so an older Mockingbird leaves the new file alone instead of moving it aside, and the new format pinned under it in ADDITIONS_FORMATS (test/landscape.test.ts)`
+    ).toEqual(ADDITIONS_FORMATS[ADDITIONS_VERSION]);
   });
 });

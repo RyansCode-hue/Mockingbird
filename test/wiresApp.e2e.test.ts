@@ -124,7 +124,7 @@ describe.skipIf(!appE2E)("wires in the real app", () => {
         const before = await app.evaluate<{ rev: number }>(`window.mb.landscapeGet()`);
         const made = await app.evaluate<WireReply & { id: string }>(`window.mb.wiresAdd(${JSON.stringify(builder.id)}, ${JSON.stringify(reviewer.id)}, "handoff")`);
         expect(made).not.toHaveProperty("refused");
-        expect(onDisk(home)).toMatchObject({ v: 4, wires: { wv: 1, links: { [made.id]: { from: builder.id, to: reviewer.id, type: "handoff", gate: "ask" } } } });
+        expect(onDisk(home)).toMatchObject({ v: 3, wires: { wv: 1, links: { [made.id]: { from: builder.id, to: reviewer.id, type: "handoff", gate: "ask" } } } });
         expect((await app.evaluate<{ rev: number }>(`window.mb.landscapeGet()`)).rev).toBe(before.rev);
         expect(parsed(await claude.call("list_links")).links).toEqual([{ wire: made.id, direction: "out", type: "handoff", other: { id: reviewer.id, title: "Reviewer", where: "running" }, state: "idle" }]);
         expect(parsed(await codex.call("list_links")).links[0]).toMatchObject({ wire: made.id, direction: "in" });

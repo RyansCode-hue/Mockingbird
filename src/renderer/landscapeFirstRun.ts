@@ -14,6 +14,7 @@ export const PROBLEM_TITLE: Record<LandscapeProblem["kind"], string> = {
   newer: "A newer Mockingbird's layout",
   save: "The layout isn't saved",
   dropped: "Layout changes were dropped",
+  additions: "Area colours and Pipeline windows weren't read",
 };
 
 type Drawn = Pick<ResolvedLayout, "areas" | "tiles" | "ghosts" | "windows" | "cards">;

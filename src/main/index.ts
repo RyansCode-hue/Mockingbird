@@ -177,7 +177,14 @@ const toWindow = (channel: string, ...args: unknown[]) => appWindow()?.webConten
 // the landscape (docs/landscape.md): where workspaces and areas sit. Its wires go to the window with what only main can
 // tell for drawing them (WireService.forWindows), once the service is there
 let wiresForWindows = <S extends WireState>(s: S): S => s;
-const landscape = new LandscapeStore({ file: path.join(MB_DIR, "landscape.json"), emit: (change) => toWindow("landscape:changed", change), emitWires: (change) => toWindow("wires:changed", wiresForWindows(change)), log: logError });
+const landscape = new LandscapeStore({
+  file: path.join(MB_DIR, "landscape.json"),
+  emit: (change) => toWindow("landscape:changed", change),
+  emitWires: (change) => toWindow("wires:changed", wiresForWindows(change)),
+  log: logError,
+  // every session this Mac launched is recorded as it starts, and a forgotten one's record goes
+  sessionKnown: (id) => isRemotePaneId(id) || store.state.sessions.some((s) => s.id === id),
+});
 
 // Team rooms (docs/team-rooms.md): identity, rooms and the WebRTC transport
 configureWebRtc(app);
