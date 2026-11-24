@@ -1,7 +1,7 @@
 import { closeWarningLines } from "../../../shared/closing";
 import type { LandscapePatch } from "../../../shared/landscape";
 import { forgetPatch, pipelineStages, pipelineStageTiles, resolveLayout, undoOf, withoutGone, type Tile } from "../../../shared/landscapeModel";
-import { asOrchestrated, insertDefaults, pipelineTemplateOf } from "../../../shared/pipelineEdit";
+import { insertDefaults, pipelineTemplateOf } from "../../../shared/pipelineEdit";
 import { BUILT_IN_ID, TEMPLATE_MAX, type PipelineTemplate, type TemplateBody } from "../../../shared/pipelineTemplates";
 import { ME, type PlanView } from "../../../shared/plans";
 import { plainLine, quoted } from "../../../shared/team/agentText";
@@ -308,13 +308,31 @@ export function pipelineTools(d: Deps): AssistantTool[] {
     const k = v.trim().toLowerCase();
     return all.find((t) => t.id === v.trim()) ?? all.find((t) => t.name.trim().toLowerCase() === k) ?? null;
   };
-  /** The pipeline `session` is in as a template (pipelineTemplateOf, then main's draft), with what was simplified and noted. */
-  const templateOf = (session: string): { body: TemplateBody; said: string[] } => {
+  /** The stages `session`'s pipeline runs once per ticket as a template keeps them (pipelineTemplateOf), `ticket`'s row kept, else the fullest. Throws why not. */
+  const templatePlanOf = (session: string, ticket?: string) => {
     const p = pipelineStages(drawn(), session, d.wireList());
     if (!p) throw new Error(`${name(session)} isn't wired to another workspace in its area, so there's no pipeline to save`);
-    const plan = pipelineTemplateOf(p.stages);
-    const draft = d.templateDraft(plan.ids);
-    return { body: plan.orchestrator ? asOrchestrated(draft.body) : draft.body, said: [...plan.simplified, ...draft.notes] };
+    return pipelineTemplateOf(p.stages, ticket ?? null);
+  };
+  /**
+   * The pipeline `session` is in as a template (templatePlanOf, then main's draft): its stages that run once per ticket
+   * as steps that do, from `ticket`'s row or the fullest; with what was simplified and noted.
+   */
+  const templateOf = (session: string, ticket?: string): { body: TemplateBody; said: string[] } => {
+    const plan = templatePlanOf(session, ticket);
+    const draft = d.templateDraft(plan.ids, { perTicket: plan.perTicket, others: plan.others, orchestrator: plan.orchestrator });
+    const choose = plan.differ ? [`Say ticket to keep another's row: ${plan.rows.map((r) => (r.ticket ? `#${r.ticket}` : "no ticket")).join(", ")}.`] : [];
+    return { body: draft.body, said: [...plan.simplified, ...choose, ...draft.notes] };
+  };
+  /** Why `ticket` can't choose the row `session`'s template keeps, or null. */
+  const rowRefusal = (session: string, ticket: string | undefined): string | null => {
+    if (ticket === undefined) return null;
+    try {
+      templatePlanOf(session, ticket);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
   };
 
   return [
@@ -857,19 +875,20 @@ export function pipelineTools(d: Deps): AssistantTool[] {
       },
     }),
 
-    defineTool<{ session: string; name: string }>({
+    defineTool<{ session: string; name: string; ticket?: string }>({
       name: "save_template",
       tier: "direct",
       description:
         "Save the pipeline a session is in as a new template, as its Pipeline window's Save as template does: its steps in stage order with their agents, models, effort and prompts " +
-        "(redacted), and its wires as far as a template holds them; what a template can't hold as the pipeline has it is said. A name a template already has is refused: " +
-        "replace_template writes over a saved one, on a card. The user can Undo it.",
-      inputSchema: { type: "object", properties: { session: SESSION_ARG, name: TEMPLATE_NAME_ARG }, required: ["session", "name"], additionalProperties: false },
+        "(redacted), and its wires as far as a template holds them; a stage that runs once per ticket is kept as steps that run once per ticket, from one ticket's row (the fullest, or ticket's). " +
+        "What a template can't hold as the pipeline has it is said. A name a template already has is refused: replace_template writes over a saved one, on a card. The user can Undo it.",
+      inputSchema: { type: "object", properties: { session: SESSION_ARG, name: TEMPLATE_NAME_ARG, ticket: ROW_TICKET_ARG }, required: ["session", "name"], additionalProperties: false },
       label: (a) => `Save ${name(a.session)}'s pipeline as the template “${plainLine(a.name, TEMPLATE_MAX.name)}”`,
       target: (a) => target(a.session),
-      check: (a) => (knownTitle(d, a.session) ? (templateNamed(a.name) ? `A template is already named “${templateNamed(a.name)!.name}”: replace_template writes over a saved one, on a card` : null) : noSession(a.session)),
+      check: (a) =>
+        knownTitle(d, a.session) ? (templateNamed(a.name) ? `A template is already named “${templateNamed(a.name)!.name}”: replace_template writes over a saved one, on a card` : rowRefusal(a.session, a.ticket)) : noSession(a.session),
       run: (a) => {
-        const draft = templateOf(a.session);
+        const draft = templateOf(a.session, a.ticket);
         const t = d.saveTemplate(a.name.trim(), draft.body);
         const saved = JSON.stringify(bodyOf(t));
         return {
@@ -883,15 +902,15 @@ export function pipelineTools(d: Deps): AssistantTool[] {
       },
     }),
 
-    defineTool<{ session: string; template: string }>({
+    defineTool<{ session: string; template: string; ticket?: string }>({
       name: "replace_template",
       tier: "confirm",
       description:
-        "Write a saved template over with the pipeline a session is in, keeping the template's name and its place in the picker, as Save as template's Replace does. " +
-        "Name the template by its name or id; the built-in one can't be replaced. This puts a card in front of the user; it runs only when they confirm.",
+        "Write a saved template over with the pipeline a session is in, keeping the template's name and its place in the picker, as Save as template's Replace does; a stage that runs " +
+        "once per ticket is kept as save_template keeps it. Name the template by its name or id; the built-in one can't be replaced. This puts a card in front of the user; it runs only when they confirm.",
       inputSchema: {
         type: "object",
-        properties: { session: SESSION_ARG, template: { type: "string", minLength: 1, maxLength: 120, description: "A saved template's name or id (list_templates)" } },
+        properties: { session: SESSION_ARG, template: { type: "string", minLength: 1, maxLength: 120, description: "A saved template's name or id (list_templates)" }, ticket: ROW_TICKET_ARG },
         required: ["session", "template"],
         additionalProperties: false,
       },
@@ -901,11 +920,11 @@ export function pipelineTools(d: Deps): AssistantTool[] {
         if (!knownTitle(d, a.session)) return noSession(a.session);
         const t = templateNamed(a.template);
         if (!t) return `No saved template is named or has the id “${plainLine(a.template, TEMPLATE_MAX.name)}”: list_templates lists them, and save_template saves a new one`;
-        return t.id === BUILT_IN_ID ? "The built-in template can't be replaced: save_template saves the pipeline as a new one" : null;
+        return t.id === BUILT_IN_ID ? "The built-in template can't be replaced: save_template saves the pipeline as a new one" : rowRefusal(a.session, a.ticket);
       },
       card: (a) => {
         const t = templateNamed(a.template)!;
-        const draft = templateOf(a.session);
+        const draft = templateOf(a.session, a.ticket);
         templateSaw.set(a, { id: t.id, was: JSON.stringify(bodyOf(t)), body: draft.body });
         return {
           title: `Replace the template “${t.name}” with ${ref(a.session)}'s pipeline`,
@@ -930,6 +949,12 @@ export function pipelineTools(d: Deps): AssistantTool[] {
 }
 
 const TEMPLATE_NAME_ARG: JsonSchema = { type: "string", minLength: 1, maxLength: TEMPLATE_MAX.name, description: "The template's name, as the picker will list it" };
+const ROW_TICKET_ARG: JsonSchema = {
+  type: "string",
+  minLength: 1,
+  maxLength: 40,
+  description: "When stages run once per ticket and the tickets' rows differ: the ticket (its number) whose row the template keeps; left out, the fullest row",
+};
 
 /** A template's steps and wires, what Undo and a card compare: not its id, name or when it was saved. */
 const bodyOf = (t: PipelineTemplate): TemplateBody => ({ startFirst: t.startFirst, steps: t.steps, wires: t.wires });

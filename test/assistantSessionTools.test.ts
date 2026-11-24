@@ -505,7 +505,7 @@ describe("lay_out_template", () => {
     mac.deps.layOut = async (req) => (asked.push(req), { steps: [{ key: "o", id: "s1", title: "Orchestrator" }], wires: [], started: "s1", notes: [] });
     const t = mac.tool("lay_out_template");
     const a = { template: "t-orch", area: "atticus", repo: "atticus", ticket: "5038", more_tickets: ["#5040"] };
-    expect(await t.check!({ ...a, template: "t-build" })).toBe("“Build → Review” doesn't start at an Orchestrator, so it takes one ticket: lay it out once for each");
+    expect(await t.check!({ ...a, template: "t-build" })).toBe("“Build → Review” doesn't start at an Orchestrator or have steps that run once per ticket, so it takes one ticket: lay it out once for each");
     expect(await t.check!({ ...a, ticket: undefined })).toBe("more_tickets come after ticket: name the first one as ticket");
     expect(await t.check!({ ...a, more_tickets: ["5038"] })).toBe("#5038 is named twice");
     expect(await t.check!({ ...a, more_tickets: ["5041"] })).toBe("#5041 isn't among the Azure DevOps work items the Dashboard lists");
@@ -526,6 +526,43 @@ describe("lay_out_template", () => {
         area: "atticus",
       },
     ]);
+  });
+
+  it("gives a template with steps that run once per ticket several tickets, each such step said made for each, up to what one lay-out takes", async () => {
+    const mac = fakeMac();
+    const perTicket = template({
+      id: "t-per",
+      name: "Per ticket",
+      steps: [
+        { key: "build", name: "Builder", agent: "claude", folder: "new", prompt: "Build {ticket}", perTicket: true },
+        { key: "review", name: "Reviewer", agent: "codex", folder: { sameAs: "build" }, prompt: "Review it", perTicket: true },
+        { key: "ship", name: "Shipper", agent: "claude", folder: "new", prompt: "Ship {ticket}" },
+      ],
+      wires: [
+        { from: "build", to: "review", type: "handoff" },
+        { from: "review", to: "ship", type: "handoff" },
+      ],
+    });
+    mac.deps.templates = () => ({ templates: [perTicket], refused: [] });
+    const item = (id: number, title: string) => ({ id, title, state: "Active", type: "Bug", assignedTo: "Ryan", changed: "", description: "", url: "", tags: [] });
+    mac.deps.adoItems = async () => ({ me: "Ryan", total: 3, items: [item(5038, "Filter orgs"), item(5040, "Sort orgs"), item(5041, "Page orgs")] });
+    const asked: { moreTickets?: unknown }[] = [];
+    mac.deps.layOut = async (req) => (asked.push(req), { steps: [{ key: "build", id: "s1", title: "Builder" }], wires: [], started: "s1", notes: [] });
+    const t = mac.tool("lay_out_template");
+    const a = { template: "t-per", area: "atticus", repo: "atticus", ticket: "5038", more_tickets: ["5040", "5041"] };
+    expect(await t.check!(a)).toBeNull();
+    expect((await t.card!(a)).detail).toBe(
+      "Makes Builder (Claude) for each ticket, Reviewer (Codex) for each ticket, Shipper (Claude) in “atticus”, in atticus, for #5038 “Filter orgs”, #5040 “Sort orgs”, #5041 “Page orgs”. Each step made for each ticket is on it, in a worktree of its own on its branch; the rest are on #5038. Builder starts now; the rest wait for their handoffs."
+    );
+    await t.run(a);
+    expect(asked[0].moreTickets).toEqual([
+      { ticketId: "5040", ticketTitle: "Sort orgs", ticketDescription: "" },
+      { ticketId: "5041", ticketTitle: "Page orgs", ticketDescription: "" },
+    ]);
+    // 8 steps each run once per ticket: 3 tickets make 24, the most one lay-out makes
+    const wide = template({ id: "t-wide", name: "Wide", steps: [...Array(8).keys()].map((i) => ({ key: `s${i}`, name: `Step ${i}`, agent: "claude" as const, folder: "new" as const, prompt: "", perTicket: true as const })), wires: [] });
+    mac.deps.templates = () => ({ templates: [wide], refused: [] });
+    expect(await t.check!({ ...a, template: "t-wide", more_tickets: ["5040", "5041", "5042"] })).toBe("“Wide” takes at most 3 tickets in one lay-out (24 steps at most): name fewer");
   });
 });
 

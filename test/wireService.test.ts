@@ -1024,6 +1024,175 @@ describe("laying a template out (W9)", () => {
     expect(t.logged).toContain("wires: laying out “Build, review, test”, session p1: Builder → Tester wasn't made: “Builder” continues on Nick's laptop: “Builder” continues on Nick's laptop");
   });
 
+  /**
+   * Planner (once) → Coder (once per ticket, its own worktree) → Verifier (once per ticket, in Coder's folder) → Merger
+   * (once), Verifier's feedback to Coder, Dev server on each Coder's tree.
+   */
+  const fanBody = (): TemplateBody => ({
+    startFirst: true,
+    steps: [
+      { key: "plan", name: "Planner", agent: "claude", folder: "new", prompt: "Plan {ticket}." },
+      { key: "code", name: "Coder", agent: "codex", folder: "new", prompt: "Implement {ticket}.", perTicket: true },
+      { key: "verify", name: "Verifier", agent: "claude", folder: { sameAs: "code" }, prompt: "Verify {ticket}.", perTicket: true },
+      { key: "merge", name: "Merger", agent: "claude", folder: "new", prompt: "Merge {ticket}." },
+      { key: "dev", name: "Dev server", agent: "terminal", folder: { sameAs: "code" }, prompt: "npm run dev", perTicket: true },
+    ],
+    wires: [
+      { from: "plan", to: "code", type: "handoff" },
+      { from: "code", to: "verify", type: "handoff", gate: "automatic" },
+      { from: "verify", to: "code", type: "feedback", rounds: 3 },
+      { from: "verify", to: "merge", type: "handoff" },
+      { from: "code", to: "dev", type: "worktree" },
+    ],
+  });
+  const more = [
+    { ticketId: "5110", ticketTitle: "CSV export", ticketDescription: "" },
+    { ticketId: "5116", ticketTitle: "Rotate keys", ticketDescription: "" },
+  ];
+  const line = (id: string, title: string) => `#${id} (its title, the ticket's own words: "${title}")`;
+
+  it("lays a step that runs once per ticket out for each of 3 tickets, each on its ticket's branch, the rest once, its wires fanning out and in", async () => {
+    const t = laying();
+    const r = await t.service.layOut(request({ name: "Fan", template: fanBody(), moreTickets: more }), t.d);
+    const all = `${line("5115", "Stream the donor export")}, ${line("5110", "CSV export")} and ${line("5116", "Rotate keys")}`;
+    expect(t.asked).toEqual([
+      { title: "Planner", agent: "claude", repoPath: "/code/backoffice", worktree: true, base: "dev", taskGroup: "5115", ticketId: "5115", prompt: `Plan ${all}.` },
+      ...[
+        ["5115", "Stream the donor export"],
+        ["5110", "CSV export"],
+        ["5116", "Rotate keys"],
+      ].map(([id, title]) => ({ title: "Coder", agent: "codex", repoPath: "/code/backoffice", worktree: true, base: "dev", taskGroup: "5115", ticketId: id, prompt: `Implement ${line(id, title)}.`, ticketBranch: true })),
+      ...[
+        ["5115", "Stream the donor export", "p2"],
+        ["5110", "CSV export", "p3"],
+        ["5116", "Rotate keys", "p4"],
+      ].map(([id, title, coder]) => ({ title: "Verifier", agent: "claude", repoPath: null, worktree: false, taskGroup: "5115", ticketId: id, prompt: `Verify ${line(id, title)}.`, sharesWith: coder })),
+      { title: "Merger", agent: "claude", repoPath: "/code/backoffice", worktree: true, base: "dev", taskGroup: "5115", ticketId: "5115", prompt: `Merge ${all}.` },
+    ]);
+    expect(r.steps.map((s) => [s.key, s.id, s.ticket ?? null])).toEqual([
+      ["plan", "p1", null],
+      ["code", "p2", "5115"],
+      ["code", "p3", "5110"],
+      ["code", "p4", "5116"],
+      ["verify", "p5", "5115"],
+      ["verify", "p6", "5110"],
+      ["verify", "p7", "5116"],
+      ["merge", "p8", null],
+    ]);
+    expect(t.links().map((w) => [w.from, w.to, w.type, w.gate])).toEqual([
+      ["p1", "p2", "handoff", "ask"],
+      ["p1", "p3", "handoff", "ask"],
+      ["p1", "p4", "handoff", "ask"],
+      ["p2", "p5", "handoff", "automatic"],
+      ["p3", "p6", "handoff", "automatic"],
+      ["p4", "p7", "handoff", "automatic"],
+      ["p5", "p2", "feedback", "ask"],
+      ["p6", "p3", "feedback", "ask"],
+      ["p7", "p4", "feedback", "ask"],
+      ["p5", "p8", "handoff", "ask"],
+      ["p6", "p8", "handoff", "ask"],
+      ["p7", "p8", "handoff", "ask"],
+    ]);
+    // only the Planner starts; a Dev server for each Coder can't wait as a step, said once
+    expect(t.start.mock.calls).toEqual([["p1", "Stream the donor export"]]);
+    expect(r.started).toBe("p1");
+    expect(r.startedAll).toBeUndefined();
+    expect(r.notes).toEqual([expect.stringMatching(/^“Dev server” isn't laid out: a terminal takes no handoff/)]);
+  });
+
+  it("starts a first step that runs once per ticket on each ticket, with its terminal and PR-merged wire as each starts", async () => {
+    const t = laying();
+    const body: TemplateBody = {
+      startFirst: true,
+      steps: [fanBody().steps[1], fanBody().steps[4], fanBody().steps[3]],
+      wires: [
+        { from: "code", to: "merge", type: "handoff", when: "pr-merged", gate: "ask" },
+        { from: "code", to: "dev", type: "worktree" },
+      ],
+    };
+    const r = await t.service.layOut(request({ name: "Fan", template: body, moreTickets: more }), t.d);
+    expect(t.start.mock.calls).toEqual([
+      ["p1", "Stream the donor export"],
+      ["p2", "CSV export"],
+      ["p3", "Rotate keys"],
+    ]);
+    expect(r.started).toBe("p1");
+    expect(r.startedAll).toEqual(["p1", "p2", "p3"]);
+    // a Dev server on each Coder's tree as it starts, running its command
+    expect(t.created.map((c) => [c.title, c.cwd, c.initialPrompt])).toEqual([
+      ["Dev server", "/w/p1", "npm run dev"],
+      ["Dev server", "/w/p2", "npm run dev"],
+      ["Dev server", "/w/p3", "npm run dev"],
+    ]);
+    expect(r.steps.map((s) => [s.key, s.id, s.ticket ?? null])).toEqual([
+      ["code", "p1", "5115"],
+      ["code", "p2", "5110"],
+      ["code", "p3", "5116"],
+      ["merge", "p4", null],
+      ["dev", "t1", "5115"],
+      ["dev", "t2", "5110"],
+      ["dev", "t3", "5116"],
+    ]);
+    expect(t.links().map((w) => [w.from, w.to, w.type, w.when])).toEqual([
+      ["p1", "p4", "handoff", "pr-merged"],
+      ["p1", "t1", "worktree", "manual"],
+      ["p2", "p4", "handoff", "pr-merged"],
+      ["p2", "t2", "worktree", "manual"],
+      ["p3", "p4", "handoff", "pr-merged"],
+      ["p3", "t3", "worktree", "manual"],
+    ]);
+    expect(r.notes).toEqual([]);
+  });
+
+  it("names the ticket of a copy that didn't start, and keeps the others started", async () => {
+    const t = laying();
+    t.start.mockImplementationOnce(t.start.getMockImplementation()!).mockRejectedValueOnce(new Error("origin/dev isn't there"));
+    const body: TemplateBody = { startFirst: true, steps: [fanBody().steps[1], fanBody().steps[4]], wires: [{ from: "code", to: "dev", type: "worktree" }] };
+    const r = await t.service.layOut(request({ name: "Fan", template: body, moreTickets: more }), t.d);
+    expect(r.startedAll).toEqual(["p1", "p3"]);
+    expect(r.notes).toEqual([
+      "“Coder (#5110)” didn't start: origin/dev isn't there. It's laid out and waits: start it with Start now in its menu.",
+      "“Dev server (#5110)” wasn't made, as it runs on “Coder (#5110)”'s tree: once that has started, Add terminal on its tree makes one.",
+    ]);
+  });
+
+  it("lays a template with steps that run once per ticket out on one ticket exactly as one without", async () => {
+    const plain = (): TemplateBody => ({ ...fanBody(), steps: fanBody().steps.map(({ perTicket: _p, ...s }) => s) });
+    const a = laying();
+    const ra = await a.service.layOut(request({ name: "Fan", template: fanBody() }), a.d);
+    const b = laying();
+    const rb = await b.service.layOut(request({ name: "Fan", template: plain() }), b.d);
+    expect(a.asked).toEqual(b.asked);
+    expect(a.asked.some((q) => "ticketBranch" in q)).toBe(false);
+    // wire ids are random: the rest of the reply is the same
+    expect({ ...ra, wires: ra.wires.length }).toEqual({ ...rb, wires: rb.wires.length });
+    expect(a.links().map((w) => [w.from, w.to, w.type])).toEqual(b.links().map((w) => [w.from, w.to, w.type]));
+  });
+
+  it.each<[string, Partial<LayOutRequest>, RegExp]>([
+    ["several tickets for a template with no step that runs once per ticket", { moreTickets: more }, /has no step that runs once per ticket, and doesn't start at an Orchestrator, so it takes one ticket/],
+    ["several tickets with no first", { template: fanBody(), ticketId: null, moreTickets: more }, /Its other tickets come after its first/],
+    ["a ticket twice", { template: fanBody(), moreTickets: [more[0], { ...more[0] }] }, /#5110 is chosen twice/],
+    ["a ticket that isn't a work item", { template: fanBody(), moreTickets: [{ ...more[0], ticketId: "abc" }] }, /Its ticket 2 isn't a work item/],
+    ["more tickets than one lay-out takes", { template: fanBody(), moreTickets: ["1", "2", "3", "4", "5", "6"].map((id) => ({ ...more[0], ticketId: id })) }, /A lay-out takes at most 6 tickets/],
+    [
+      "more steps than one lay-out makes",
+      { template: { startFirst: true, steps: [...Array(8).keys()].map((i) => ({ key: `s${i}`, name: `Step ${i}`, agent: "claude" as const, folder: "new" as const, prompt: "", perTicket: true as const })), wires: [] }, moreTickets: ["1", "2", "3"].map((id) => ({ ...more[0], ticketId: id })) },
+      /would make 32 steps for its 4 tickets, and one lay-out makes at most 24: choose fewer tickets/,
+    ],
+  ])("is refused whole for %s, before any step is made", async (_what, over, re) => {
+    const t = laying();
+    await expect(t.service.layOut(request(over), t.d)).rejects.toThrow(re);
+    expect(t.planStep).not.toHaveBeenCalled();
+  });
+
+  it("makes every copy's gate ask in a team room's area, counting each", async () => {
+    const t = laying({ groupRooms: { "5115": "R1" } });
+    const r = await t.service.layOut(request({ name: "Fan", template: fanBody(), moreTickets: more }), t.d);
+    expect(t.links().filter((w) => w.type === "handoff").every((w) => w.gate === "ask")).toBe(true);
+    expect(r.notes[0]).toBe("In a team room's area every gate asks, so its 3 automatic gates were laid out asking.");
+  });
+
   it("lays out one template at a time", async () => {
     const t = laying();
     let go = () => {};

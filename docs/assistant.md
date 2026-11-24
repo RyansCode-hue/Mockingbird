@@ -239,7 +239,10 @@ one-prompt check and the rules' ban on answering prompts.
     a not-started step (Undo through `sessions:unforget`, its place put back);
     `save_template` (the pipeline as a new template, as its Pipeline window's
     Save as template drafts it, `pipelineTemplateOf` then `templates:draft`;
-    a name a template has is refused; Undo removes it while it's as saved).
+    a stage that runs once per ticket becomes steps that run once per ticket
+    (`perTicket`), from one ticket's row: the fullest, or `ticket`'s when the
+    rows differ; a name a template has is refused; Undo removes it while it's
+    as saved).
   - **Confirm**: `restart_with_model` (a running session restarted in place,
     its card saying it keeps its id, wires, place and area); `automate_wire`
     (a change after which the wire sends without asking: an automatic gate
@@ -250,8 +253,11 @@ one-prompt check and the rules' ban on answering prompts.
     instead tidies a plan's steps only when its area holds nothing else);
     `dismiss_plan` (its Orchestrator told, with the note); `replace_template`
     (a saved template written over with the pipeline under its id and name,
-    as Replace does; the built-in one can't be; the card stands only while
-    the template is as it was when the card was shown). A plan card expires
+    as Replace does, its row chosen as `save_template`'s; the built-in one
+    can't be; the card stands only while the template is as it was when the
+    card was shown). `lay_out_template` takes `more_tickets` for an
+    Orchestrator template or one with steps that run once per ticket (made
+    for each ticket, the rest once on the first). A plan card expires
     when a newer plan is held in its place.
   - Model names are checked against what this Mac's agent offers (the
     models catalog, `modelRefusal`) before anything changes. Insert and

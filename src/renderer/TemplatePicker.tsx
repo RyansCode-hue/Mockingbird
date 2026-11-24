@@ -12,9 +12,12 @@ import {
   flowOf,
   automaticGates,
   BUILT_IN_TEMPLATE,
+  LAY_OUT_MAX,
   layOutPlan,
   startsAtOrchestrator,
+  templateRefusal,
   ticketLine,
+  ticketsTaken,
   ROOM_ASKS,
   type LayOutPlan,
   type LayOutRequest,
@@ -26,6 +29,7 @@ import {
 } from "../shared/pipelineTemplates";
 import { checkPlan, ME, ORCHESTRATOR_TICKETS_MAX, PLAN_MAX, planFlags, provenanceOf, type Plan, type PlanLayOut, type PlanShownAt, type PlanStep, type PlanView, type PlanWire } from "../shared/plans";
 import { agoShort } from "../shared/format";
+import type { TicketRow } from "../shared/pipelineEdit";
 
 /**
  * The template picker (docs/landscape-wires.md, W9; section 5's WireTemplates.dc.html A) and Save as template's dialog,
@@ -65,6 +69,8 @@ export interface SketchBox {
   w: number;
   h: number;
   terminal: boolean;
+  /** It runs once per ticket: drawn as a stack of them. */
+  perTicket?: boolean;
 }
 export interface SketchPath {
   d: string;
@@ -106,7 +112,7 @@ export function chainSketch(b: TemplateBody, plan: LayOutPlan, width: number): S
     const c = col.get(s.key)!;
     const r = rowIn.get(c) ?? 0;
     rowIn.set(c, r + 1);
-    const box: SketchBox = { key: s.key, name: s.name, sub: s.agent, x: c * (bw + COL_GAP), y: 2 + r * (BOX_H + ROW_GAP), w: bw, h: BOX_H, terminal: false };
+    const box: SketchBox = { key: s.key, name: s.name, sub: s.perTicket ? `${s.agent} · per ticket` : s.agent, x: c * (bw + COL_GAP), y: 2 + r * (BOX_H + ROW_GAP), w: bw, h: BOX_H, terminal: false, perTicket: !!s.perTicket };
     boxes.push(box);
     at.set(s.key, box);
   }
@@ -117,7 +123,7 @@ export function chainSketch(b: TemplateBody, plan: LayOutPlan, width: number): S
   for (const s of b.steps) {
     if (s.agent !== "terminal") continue;
     const agent = at.get((s.folder as { sameAs: string }).sameAs);
-    const box: SketchBox = { key: s.key, name: s.name, sub: "terminal", x: agent?.x ?? 0, y: termTop, w: Math.round(bw * 0.86), h: TERM_H, terminal: true };
+    const box: SketchBox = { key: s.key, name: s.name, sub: "terminal", x: agent?.x ?? 0, y: termTop, w: Math.round(bw * 0.86), h: TERM_H, terminal: true, perTicket: !!s.perTicket };
     boxes.push(box);
     at.set(s.key, box);
   }
@@ -174,7 +180,7 @@ function ChainSketch({ body, plan, width }: { body: TemplateBody; plan: LayOutPl
         ))}
       </svg>
       {s.boxes.map((b) => (
-        <div key={b.key} className={`tp-box${b.terminal ? " term" : ""}`} data-step={b.key} style={{ left: b.x, top: b.y, width: b.w, height: b.h }}>
+        <div key={b.key} className={`tp-box${b.terminal ? " term" : ""}${b.perTicket ? " per" : ""}`} data-step={b.key} style={{ left: b.x, top: b.y, width: b.w, height: b.h }}>
           <span className="t">{b.name}</span>
           {!b.terminal && <span className="s">{b.sub}</span>}
         </div>
@@ -216,6 +222,8 @@ interface StepsProps {
   onStep: (key: string, patch: Partial<TemplateStep>) => void;
   onWire: (index: number, patch: Partial<TemplateWire>) => void;
   onStartFirst: (starts: boolean) => void;
+  /** Step `key` runs once per ticket, or once: its Once per ticket box (its terminals follow it, withPerTicket). */
+  onPerTicket: (key: string, on: boolean) => void;
   /**
    * Steps folded to their one line (Pipeline from a ticket…): `open` holds those unfolded, whose prompt and what's sent
    * into them show. A warning (a problem, an automatic gate, one a room makes ask) and the first step's start show
@@ -240,7 +248,9 @@ export function effortOptionsFor(catalog: ModelCatalog | null, agent: AgentKind,
   return [{ value: "", label: "Default effort" }, ...(current && !efforts.includes(current) ? [{ value: current, label: current }] : []), ...efforts.map((e) => ({ value: e, label: e }))];
 }
 
-function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst, folding }: StepsProps) {
+function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst, onPerTicket, folding }: StepsProps) {
+  // steps whose Once per ticket box was used: theirs stays in view folded once unticked
+  const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
   return (
     <>
       {body.steps.map((s, i) => {
@@ -284,6 +294,27 @@ function StepRows({ body, plan, catalog, editNames, onStep, onWire, onStartFirst
                 </button>
               )}
             </div>
+            {/* folded, a step that runs once shows none (its box is with its prompt), unless it was just unticked */}
+            {!s.role && (!shut || s.perTicket || touched.has(s.key)) && (
+              <div className="tp-line dim tp-per-line">
+                <label
+                  className="tp-check tp-per"
+                  title={terminal ? "A terminal runs once per ticket just when the agent whose tree it's on does" : "Laid out once for each ticket a lay-out is for, each on its ticket; unticked, once"}
+                >
+                  <input
+                    type="checkbox"
+                    data-per={s.key}
+                    checked={!!s.perTicket}
+                    disabled={terminal}
+                    onChange={(e) => {
+                      setTouched((t) => new Set([...t, s.key, ...body.steps.filter((x) => x.agent === "terminal" && typeof x.folder === "object" && x.folder.sameAs === s.key).map((x) => x.key)]));
+                      onPerTicket(s.key, e.target.checked);
+                    }}
+                  />
+                  Once per ticket
+                </label>
+              </div>
+            )}
             {!shut && (
               <>
                 <WholeText
@@ -455,6 +486,8 @@ export function CatalogNote({ read }: { read: CatalogRead }) {
 }
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+/** A row's ticket as Save as template says it (TicketRow): "#5115", or "no ticket" for steps on none. */
+const rowLabel = (t: string) => (t ? `#${t}` : "no ticket");
 
 /** Why the picker's Lay out is off for want of a repo, or of an area to lay out in: on its button, and said under what's missing. */
 const NEEDS_REPO = "Its steps work in worktrees of their own: choose a repo";
@@ -466,10 +499,15 @@ const withStep = (b: TemplateBody, key: string, patch: Partial<TemplateStep>): T
   steps: b.steps.map((s) => {
     if (s.key !== key) return s;
     const next: TemplateStep = { ...s, ...patch };
-    for (const k of ["model", "effort"] as const) if (next[k] === undefined) delete next[k];
+    for (const k of ["model", "effort", "perTicket"] as const) if (next[k] === undefined) delete next[k];
     return next;
   }),
 });
+/** A body with step `key` run once per ticket (`on`) or once, and each terminal on its tree with it (TemplateStep.perTicket). */
+export const withPerTicket = (b: TemplateBody, key: string, on: boolean): TemplateBody =>
+  b.steps
+    .filter((s) => s.key === key || (s.agent === "terminal" && typeof s.folder === "object" && s.folder.sameAs === key))
+    .reduce((x, s) => withStep(x, s.key, { perTicket: on ? true : undefined }), b);
 const withWire = (b: TemplateBody, i: number, patch: Partial<TemplateWire>): TemplateBody => ({ ...b, wires: b.wires.map((w, j) => (j === i ? { ...w, ...patch } : w)) });
 
 // ---- Pipeline from a ticket… --------------------------------------------------------------------
@@ -530,7 +568,8 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const name = chosen === OFFERED ? offered!.name : chosen === BUILT_IN_TEMPLATE.id ? BUILT_IN_TEMPLATE.name : (templates.find((x) => x.template.id === chosen)?.template.name ?? "");
 
   // the tickets, ticked on the board's list: yours first, then anyone's. The first ticked is the lead, whose branch
-  // holds the Orchestrator's folder; only a template that starts at an Orchestrator takes more than one
+  // holds the Orchestrator's folder, or which the steps that run once are on; only a template that starts at an
+  // Orchestrator, or has steps that run once per ticket, takes more than one
   const ado = useAdoTickets();
   const all = ado.items ?? [];
   const [whoPick, setWhoPick] = useState("");
@@ -542,8 +581,12 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   }, [all, who]);
   const [picked, setPicked] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
-  const several = !!body && startsAtOrchestrator(body);
-  const chosenIds = (several ? picked : picked.slice(0, 1)).filter((id) => all.some((t) => String(t.id) === id));
+  const orchestrated = !!body && startsAtOrchestrator(body);
+  // how many tickets it takes: an Orchestrator's, or as many as its steps that run once per ticket can be made for
+  const most = !body ? 1 : orchestrated ? ORCHESTRATOR_TICKETS_MAX : ticketsTaken(body);
+  const several = most > 1;
+  const perCount = body && !orchestrated ? body.steps.filter((s) => s.perTicket).length : 0;
+  const chosenIds = picked.filter((id) => all.some((t) => String(t.id) === id)).slice(0, most);
   const [ticket = null, ...more] = chosenIds.map((id) => all.find((t) => String(t.id) === id)!);
   const tLine = ticket ? ticketLine(String(ticket.id), ticket.title) : "";
   // what's ticked always shows, whoever's it is and whatever the filter says
@@ -558,7 +601,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
     setCapped(false);
     if (picked.includes(id)) return setPicked(picked.filter((x) => x !== id));
     if (!several) return setPicked([id]);
-    if (picked.length >= ORCHESTRATOR_TICKETS_MAX) return setCapped(true);
+    if (picked.length >= most) return setCapped(true);
     setPicked([...picked, id]);
   };
   const makeLead = (id: string) => setPicked([id, ...picked.filter((x) => x !== id)]);
@@ -580,7 +623,9 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const plan = useMemo(() => (body ? layOutPlan(body, { room, ticket: !!ticket }) : null), [body, room, ticket]);
   const needsRepo = !!body && body.steps.some((s) => s.folder === "new") && !repo;
   const needsArea = !!body && !area;
-  const blocked = !body ? "Choose a template" : plan!.problems[0] ?? (needsRepo ? NEEDS_REPO : needsArea ? NEEDS_AREA : null);
+  // a step's Once per ticket box can break a template's rules (a step in the checkout, a terminal apart from its agent)
+  const ruleWhy = useMemo(() => (body ? templateRefusal(asShown(body)) : null), [body]);
+  const blocked = !body ? "Choose a template" : (ruleWhy ?? plan!.problems[0] ?? (needsRepo ? NEEDS_REPO : needsArea ? NEEDS_AREA : null));
 
   const [busy, setBusy] = useState(false);
   const busyNow = useRef(false);
@@ -596,7 +641,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
         name: name || "The template",
         template: asShown(body),
         // an Orchestrator is told the ticket's description, fenced as text others wrote (main builds its kickoff)
-        ...(ticket ? { ticketId: String(ticket.id), ticketTitle: ticket.title, ...(startsAtOrchestrator(body) ? { ticketDescription: ticket.description } : {}) } : {}),
+        ...(ticket ? { ticketId: String(ticket.id), ticketTitle: ticket.title, ...(orchestrated ? { ticketDescription: ticket.description } : {}) } : {}),
         ...(more.length ? { moreTickets: more.map((t) => ({ ticketId: String(t.id), ticketTitle: t.title, ticketDescription: t.description })) } : {}),
         repoPath: repo || null,
         ...(repo && base ? { base } : {}),
@@ -652,7 +697,7 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
   const existing = area ? where.areaTitle(area) : null;
   const usesWorktree = !!body?.steps.some((s) => s.folder === "new");
   const foot = [
-    ...(more.length ? [`${more.length + 1} tickets · Orchestrator on #${ticket!.id}'s branch`] : []),
+    ...(more.length ? [orchestrated ? `${more.length + 1} tickets · Orchestrator on #${ticket!.id}'s branch` : `${more.length + 1} tickets · ${plural(perCount, "step")} on each`] : []),
     !area ? "no area yet" : existing ? `in ${existing}` : `new area ${ticket ? `#${ticket.id}` : area}`,
     !repo ? "no repo" : usesWorktree ? `worktree from ${base ? `origin/${base}` : `${baseName(repo)}'s HEAD`}` : `${baseName(repo)}'s checkout`,
     ...(room ? ["team room: gates ask"] : []),
@@ -718,7 +763,15 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
                         aria-checked={on}
                         className="tp-tk-pick"
                         onClick={() => tick(id)}
-                        title={on ? `Leave #${id} out` : several ? "Its Orchestrator plans for every ticket ticked, each workspace on one" : "The ticket its steps are on: {ticket} in a prompt names it"}
+                        title={
+                          on
+                            ? `Leave #${id} out`
+                            : orchestrated
+                              ? "Its Orchestrator plans for every ticket ticked, each workspace on one"
+                              : several
+                                ? "Its steps that run once per ticket are made for every ticket ticked, each on its ticket"
+                                : "The ticket its steps are on: {ticket} in a prompt names it"
+                        }
                       >
                         <span className="tp-cb" aria-hidden="true">
                           {on ? "✓" : ""}
@@ -727,12 +780,18 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
                         <span className="tp-tk-t">{t.title}</span>
                       </button>
                       {lead && (
-                        <span className="tp-lead" title="Its Orchestrator's own folder is on this ticket's branch">
+                        <span className="tp-lead" title={orchestrated ? "Its Orchestrator's own folder is on this ticket's branch" : "Its steps that run once are on this ticket"}>
                           lead
                         </span>
                       )}
                       {on && more.length > 0 && !lead && (
-                        <button type="button" className="link tp-mklead" data-ticket-act="lead" onClick={() => makeLead(id)} title={`Put the Orchestrator's own folder on #${id}'s branch`}>
+                        <button
+                          type="button"
+                          className="link tp-mklead"
+                          data-ticket-act="lead"
+                          onClick={() => makeLead(id)}
+                          title={orchestrated ? `Put the Orchestrator's own folder on #${id}'s branch` : `Put its steps that run once on #${id}`}
+                        >
                           Make lead
                         </button>
                       )}
@@ -746,12 +805,19 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
       </div>
       {capped && (
         <div className="tp-note amber" data-flag="capped">
-          An Orchestrator takes at most {ORCHESTRATOR_TICKETS_MAX} tickets: leave one out first.
+          {orchestrated
+            ? `An Orchestrator takes at most ${ORCHESTRATOR_TICKETS_MAX} tickets: leave one out first.`
+            : `“${name}” makes ${perCount === 1 ? "its step that runs once per ticket" : `its ${perCount} steps that run once per ticket`} for each ticket, and one lay-out takes at most ${most} tickets (${LAY_OUT_MAX.steps} steps): leave one out first.`}
         </div>
       )}
       {!several && picked.length > 1 && ticket && (
         <div className="tp-note dim" data-flag="onlyone">
-          “{name}” doesn&apos;t start at an Orchestrator, so it takes one ticket: #{ticket.id}.
+          “{name}” doesn&apos;t start at an Orchestrator or have steps that run once per ticket, so it takes one ticket: #{ticket.id}.
+        </div>
+      )}
+      {several && picked.length > most && ticket && (
+        <div className="tp-note dim" data-flag="onlyone">
+          “{name}” takes at most {most} tickets: the first {most} ticked.
         </div>
       )}
       {ado.error && <div className="tp-note dim">Azure DevOps: {ado.error}</div>}
@@ -851,7 +917,12 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
               <CatalogNote read={modelRead} />
               {open.size > 0 && body.steps.some((s) => s.agent !== "terminal" && s.prompt.includes("{ticket}")) && (
                 <div className="tp-line dim" data-flag="ticket">
-                  {tLine ? `{ticket} in a prompt is “${tLine}”.` : "{ticket} in a prompt is empty: no ticket is chosen."}
+                  {!tLine ? "{ticket} in a prompt is empty: no ticket is chosen." : more.length && !orchestrated ? `{ticket} in a prompt is its own ticket's, in a step that runs once per ticket; in the others, every ticket's.` : `{ticket} in a prompt is “${tLine}”.`}
+                </div>
+              )}
+              {ruleWhy && (
+                <div className="tp-line red" data-flag="rules">
+                  {ruleWhy}
                 </div>
               )}
               <StepRows
@@ -862,10 +933,16 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
                 onStep={(k, p) => setBody((b) => b && withStep(b, k, p))}
                 onWire={(j, p) => setBody((b) => b && withWire(b, j, p))}
                 onStartFirst={(starts) => setBody((b) => b && { ...b, startFirst: starts })}
+                onPerTicket={(k, on) => setBody((b) => b && withPerTicket(b, k, on))}
               />
-              {several && body.steps.length > 1 && (
+              {orchestrated && body.steps.length > 1 && (
                 <div className="tp-line dim" data-flag="shapes">
                   Only its Orchestrator starts now: the other steps are the shape it plans from, and nothing more is made until you lay its plan out.
+                </div>
+              )}
+              {!orchestrated && more.length > 0 && (
+                <div className="tp-line dim" data-flag="perticket">
+                  Its steps that run once per ticket are made for each of the {more.length + 1} tickets, each on its ticket in a worktree of its own; the others once, on #{ticket!.id}. Their wires fan out and in.
                 </div>
               )}
             </>
@@ -897,12 +974,23 @@ export function TemplatePicker({ where, offered, onLayOut, home, onClose }: Temp
 
 // ---- Save as template ---------------------------------------------------------------------------
 
+/** Which ticket's row a pipeline's template keeps (pipelineTemplateOf), offered when its tickets' rows differ. */
+export interface RowChoice {
+  rows: readonly TicketRow[];
+  /** The ticket whose row the draft shown keeps. */
+  ticket: string;
+  /** The draft again, keeping `ticket`'s row, and what's said of it; or why not. */
+  choose: (ticket: string) => Promise<{ draft: TemplateDraft; simplified: string[] } | { error: string }>;
+}
+
 export interface SaveTemplateProps {
   draft: TemplateDraft;
   /** What the chain leaves out that main can't see: the other branches at its steps. */
   leftOut: string[];
   /** What the template can't hold as the pipeline has it (pipelineTemplateOf), said first. */
   simplified?: readonly string[];
+  /** Its tickets' rows, when they differ: which one it keeps is chosen here. */
+  rows?: RowChoice;
   /** Save it: settles with why it wasn't saved, or null once it was (and the dialog closes). */
   onSave: (name: string, body: TemplateBody) => Promise<string | null>;
   /** Replace saved template `id` with it (templates:update), offered while its name is that one's; settles as onSave does. */
@@ -934,23 +1022,50 @@ function useSavedNames(on: boolean): { saved: { id: string; name: string }[]; er
  * Save as template: the chain as it'll be kept, every step's prompt whole, what was simplified, redacted or left out
  * said above it. What's saved is what's shown: main refuses text holding a secret-looking value or a home folder's path
  * rather than changing it. A name a saved template has offers Replace in Save's place (with `onReplace`), which writes
- * over that one. Kept on this Mac only, never sent to teammates.
+ * over that one. A pipeline whose tickets' rows differ (`rows`) offers which row it keeps: choosing another drafts it
+ * again, what was edited below starting over. Kept on this Mac only, never sent to teammates.
  */
-export function SaveTemplateDialog({ draft, leftOut, simplified = [], onSave, onReplace, home, onClose }: SaveTemplateProps) {
+export function SaveTemplateDialog({ draft: firstDraft, leftOut, simplified: firstSaid = [], rows, onSave, onReplace, home, onClose }: SaveTemplateProps) {
   const head = useRef<HTMLDivElement>(null);
   const { heldOff } = useOpenSettle(() => head.current?.closest<HTMLElement>(".modal"));
   const modelRead = useCatalog();
   const catalog = modelRead.catalog;
-  const [name, setName] = useState(draft.name);
-  const [body, setBody] = useState<TemplateBody>(() => structuredClone(draft.body));
+  const [drafted, setDrafted] = useState<{ draft: TemplateDraft; simplified: readonly string[]; ticket: string | null }>({ draft: firstDraft, simplified: firstSaid, ticket: rows?.ticket ?? null });
+  const { draft, simplified } = drafted;
+  const [name, setName] = useState(firstDraft.name);
+  const [body, setBody] = useState<TemplateBody>(() => structuredClone(firstDraft.body));
   const plan = useMemo(() => layOutPlan(body, { room: false, ticket: true }), [body]);
+  // a step's Once per ticket box can break a template's rules (a step in the checkout, a terminal apart from its agent)
+  const ruleWhy = useMemo(() => templateRefusal(asShown(body)), [body]);
   const [busy, setBusy] = useState(false);
   const busyNow = useRef(false);
   const [error, setError] = useState("");
+  const [rowBusy, setRowBusy] = useState(false);
+  const chooseRow = async (t: string) => {
+    if (!rows || rowBusy || t === drafted.ticket) return;
+    setRowBusy(true);
+    setError("");
+    let r: Awaited<ReturnType<RowChoice["choose"]>>;
+    try {
+      r = await rows.choose(t);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    setRowBusy(false);
+    if (isErr(r)) {
+      console.warn(`[mockingbird] drafting the template from ${rowLabel(t)}'s row: ${r.error}`);
+      return setError(`Couldn't keep ${rowLabel(t)}'s row: ${r.error}`);
+    }
+    const next = r;
+    // a name not typed over follows the draft
+    setName((n) => (n === draft.name ? next.draft.name : n));
+    setBody(structuredClone(next.draft.body));
+    setDrafted({ draft: next.draft, simplified: next.simplified, ticket: t });
+  };
   const names = useSavedNames(!!onReplace);
   const clash = onReplace ? names.saved.find((t) => t.name.toLowerCase() === name.trim().toLowerCase()) : undefined;
   const save = async () => {
-    if (busyNow.current || heldOff("settle") || !name.trim()) return;
+    if (busyNow.current || heldOff("settle") || !name.trim() || ruleWhy || rowBusy) return;
     busyNow.current = true;
     setBusy(true);
     setError("");
@@ -1003,9 +1118,29 @@ export function SaveTemplateDialog({ draft, leftOut, simplified = [], onSave, on
           {n}
         </div>
       ))}
+      {rows && (
+        <div className="tp-sec tp-rows" data-rows>
+          <div className="tp-k">Keep</div>
+          <div className="tp-line2">
+            <Select
+              className="tp-row"
+              value={drafted.ticket ?? ""}
+              disabled={rowBusy}
+              title="Whose row of steps it keeps: another drafts it again, and what's edited below starts over"
+              options={rows.rows.map((r) => ({ value: r.ticket, label: `${rowLabel(r.ticket)}'s row`, description: r.says }))}
+              onChange={(v) => void chooseRow(v)}
+            />
+          </div>
+        </div>
+      )}
       <div className="tp-steps solo">
         <ChainSketch body={body} plan={plan} width={540} />
         <CatalogNote read={modelRead} />
+        {ruleWhy && (
+          <div className="tp-line red" data-flag="rules">
+            {ruleWhy}
+          </div>
+        )}
         <StepRows
           body={body}
           plan={plan}
@@ -1014,6 +1149,7 @@ export function SaveTemplateDialog({ draft, leftOut, simplified = [], onSave, on
           onStep={(k, p) => setBody((b) => withStep(b, k, p))}
           onWire={(j, p) => setBody((b) => withWire(b, j, p))}
           onStartFirst={(starts) => setBody((b) => ({ ...b, startFirst: starts }))}
+          onPerTicket={(k, on) => setBody((b) => withPerTicket(b, k, on))}
         />
       </div>
       {error && (
@@ -1026,7 +1162,7 @@ export function SaveTemplateDialog({ draft, leftOut, simplified = [], onSave, on
         <button className="outline" onClick={onClose}>
           Cancel
         </button>
-        <button className="primary" data-act={clash ? "replace" : "save"} disabled={busy || !name.trim() || heldOff("settle")} onClick={() => void save()}>
+        <button className="primary" data-act={clash ? "replace" : "save"} disabled={busy || rowBusy || !name.trim() || !!ruleWhy || heldOff("settle")} title={ruleWhy ?? undefined} onClick={() => void save()}>
           {busy ? "Saving…" : clash ? "Replace" : "Save template"}
           {!busy && <span className="kbd"> ⌘↵</span>}
         </button>

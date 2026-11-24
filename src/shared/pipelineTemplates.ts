@@ -2,7 +2,7 @@ import { fence } from "./fence";
 import { isObj, type Area } from "./landscape";
 import { oneLine, quoted } from "./team/agentText";
 import { hiddenTextRefusal, INVISIBLE_RE, visibleLine, type TextUse } from "./hiddenText";
-import { AGENT_KINDS, ticketIdOf, type AgentKind } from "./types";
+import { AGENT_KINDS, isWorkItemId, ticketIdOf, type AgentKind } from "./types";
 import { carriesWork, linkRefusal, templateOf, WIRE_GATES, WIRE_TYPES, WIRE_WHENS, type Wire, type WireGate, type WireSettings, type WireType, type WireWhen } from "./wires";
 
 /**
@@ -40,6 +40,13 @@ export interface TemplateStep {
    * the ticket and the rest of the template as its plan's starting shape, and proposes the steps itself (W17).
    */
   role?: TemplateRole;
+  /**
+   * Laid out once for each ticket a lay-out is for, each on its ticket: `{ticket}` that ticket's, a worktree of its own
+   * on that ticket's branch (folder new) or an earlier such step's folder on its ticket. A step without it is laid out
+   * once, on the first ticket, its `{ticket}` naming them all. Wires between the two fan out and in. A terminal's
+   * follows its agent step's; an Orchestrator's never is: it plans for every ticket. On one ticket, it changes nothing.
+   */
+  perTicket?: true;
 }
 
 /** A wire between two steps, by key, with the settings a person can set on one (WireSettings). */
@@ -121,6 +128,7 @@ const inside: Read<string> = (v, what) => {
 const files: Read<string[]> = (v, what) => (Array.isArray(v) ? v.map((f, i) => inside(f, `${what} ${i + 1}`)) : bad(`${what} isn't a list.`));
 const rounds: Read<number> = (v, what) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= TEMPLATE_MAX.rounds ? (v as number) : bad(`${what} isn't a whole number from 1 to ${TEMPLATE_MAX.rounds}.`));
 const onlyFalse: Read<false> = (v, what) => (v === false ? false : bad(`${what} is only ever false.`));
+const onlyTrue: Read<true> = (v, what) => (v === true ? true : bad(`${what} is only ever true: a step without it runs once.`));
 
 interface Spec {
   fields: Record<string, Read<unknown>>;
@@ -136,6 +144,7 @@ const STEP: Spec = {
     folder,
     prompt: text(TEMPLATE_MAX.prompt),
     role: oneOf(TEMPLATE_ROLES),
+    perTicket: onlyTrue,
   } satisfies Record<keyof TemplateStep, Read<unknown>>,
   required: ["key", "name", "agent", "folder", "prompt"],
 };
@@ -198,6 +207,17 @@ export function parseTemplateBody(v: unknown): TemplateBody {
   return readBody(o, null);
 }
 
+/** Why `b` (as a dialog shows it) can't be saved or laid out as a template (parseTemplateBody), or null when it can. */
+export function templateRefusal(b: TemplateBody): string | null {
+  try {
+    parseTemplateBody(b);
+    return null;
+  } catch (err) {
+    if (err instanceof TemplateError) return err.message;
+    throw err;
+  }
+}
+
 /** A template as it's kept: its id, name and when it was saved, beside its body. */
 const STORED: Spec = { fields: { id: (v, what) => (typeof v === "string" && ID_RE.test(v) ? v : bad(`${what} isn't an id.`)), name: line(TEMPLATE_MAX.name), savedAt: when, ...BODY.fields }, required: ["id", "name", "savedAt", ...BODY.required] };
 
@@ -256,6 +276,11 @@ const label = (b: TemplateBody, w: Pick<TemplateWire, "from" | "to">): string =>
  * - a step working in another's folder works in an earlier agent step's;
  * - a terminal works on one agent step's tree, joined to it by that step's shared worktree wire, and takes no other
  *   wire: a message typed into a terminal would run as a command;
+ * - a step that runs once per ticket (perTicket) isn't an Orchestrator, and works on its ticket's branch: in a worktree of
+ *   its own, or the folder of an earlier step that runs once per ticket too (an Orchestrator's, whose plan places each);
+ *   a step that runs once shares no such step's folder, which is one per ticket; a terminal runs once per ticket just
+ *   when its agent step does. Its wires fan out and in as it's laid out, each copy between two ends this checks, so the
+ *   rules below hold on every ticket's;
  * - each wire between two of its steps, with only the settings its type has, and no second wire of a type between the
  *   same two, no second feedback wire either way, and no cycle of handoffs (linkRefusal).
  */
@@ -275,6 +300,7 @@ function bodyRules(b: TemplateBody): void {
   for (const [i, s] of b.steps.entries()) {
     if (!s.role) continue;
     if (i > 0) bad(`“${s.name}” is an Orchestrator, and only a template's first step can be: it proposes the rest.`);
+    if (s.perTicket) bad(`“${s.name}” is an Orchestrator, which runs once and plans for every ticket: it can't run once per ticket.`);
     if (s.folder !== "new") bad(`“${s.name}” is an Orchestrator, which works in a worktree of its own on its ticket's branch: say new.`);
     if (!b.startFirst) bad(`“${s.name}” is an Orchestrator, which starts as it's laid out: it's what proposes the rest.`);
   }
@@ -287,13 +313,18 @@ function bodyRules(b: TemplateBody): void {
       if (s.model || s.effort) bad(`“${s.name}” is a terminal: it has no model or effort.`);
       // a ticket's title is text others wrote: typed into a shell, it would run
       if (s.prompt.includes("{ticket}")) bad(`“${s.name}” is a terminal, whose command doesn't take {ticket}: a ticket's text typed into a shell would run.`);
+      if (!!s.perTicket !== !!other!.perTicket) bad(`“${s.name}” is a terminal on “${other!.name}”'s tree, so it runs once per ticket just when “${other!.name}” does: say the same of both.`);
       continue;
     }
+    if (s.perTicket && s.folder === "checkout") bad(`“${s.name}” runs once per ticket, each on its ticket's branch, so the repo's checkout can't hold them: say new.`);
     if (shares === null) continue;
     if (!other) bad(`“${s.name}” works in the folder of a step it doesn't have (${shares}).`);
     if (other!.key === s.key) bad(`“${s.name}” works in its own folder: say new or checkout.`);
     if (other!.agent === "terminal") bad(`“${s.name}” works in “${other!.name}”'s folder, and that's a terminal: a step shares an agent step's.`);
     if (at.get(shares)! > i) bad(`“${s.name}” works in “${other!.name}”'s folder, which comes after it: a step shares the folder of one before it.`);
+    if (s.perTicket && !other!.perTicket && !other!.role)
+      bad(`“${s.name}” runs once per ticket, each on its ticket's branch, and “${other!.name}” runs once: give it a worktree of its own (new), or the folder of a step that runs once per ticket too.`);
+    if (!s.perTicket && other!.perTicket) bad(`“${s.name}” runs once, and “${other!.name}” runs once per ticket, so it has a folder for each ticket: give “${s.name}” a worktree of its own, or run it once per ticket too.`);
   }
   const made: Record<string, Wire> = {};
   b.wires.forEach((w, j) => {
@@ -345,6 +376,11 @@ export const titleQuotable = (t: string): string =>
     .replace(/\[/g, "\uff3b")
     .replace(/\]/g, "\uff3d");
 export const withTicket = (prompt: string, line: string): string => prompt.replace(/\{ticket\}/g, line);
+/** `{ticket}` in a step laid out once for several tickets: each one's ticketLine, "#1 (…), #2 (…) and #3 (…)"; one's alone. */
+export const ticketsLine = (tickets: readonly { id: string; title?: string | null }[]): string => {
+  const lines = tickets.map((t) => ticketLine(t.id, t.title)).filter(Boolean);
+  return lines.length > 1 ? `${lines.slice(0, -1).join(", ")} and ${lines[lines.length - 1]}` : (lines[0] ?? "");
+};
 
 /**
  * What a person's ticket kickoff (ticketKickoffPrompt) reads as, from its first line to its last: the fenced one, and
@@ -434,7 +470,7 @@ export const roomAsked = (n: number) => `${ROOM_ASKS}, so ${n === 1 ? "its autom
  */
 export function layOutPlan(b: TemplateBody, where: LayOutWhere): LayOutPlan {
   const hidden = hiddenTextProblems(b);
-  const plan = layOutPlanOf(b, where);
+  const plan = layOutPlanOf(b, where, new Set([b.steps[0]?.key]));
   return hidden.length ? { ...plan, problems: [...hidden, ...plan.problems] } : plan;
 }
 
@@ -457,7 +493,8 @@ export function hiddenTextProblems(b: TemplateBody): string[] {
   });
 }
 
-function layOutPlanOf(b: TemplateBody, where: LayOutWhere): LayOutPlan {
+/** layOutPlan of `b`, the steps keyed `firsts` those that start as it's laid out (when it says its first starts). */
+function layOutPlanOf(b: TemplateBody, where: LayOutWhere, firsts: ReadonlySet<string>): LayOutPlan {
   const first = b.steps[0];
   if (startsAtOrchestrator(b)) {
     // only the Orchestrator is laid out: the rest is its plan's starting shape, and its wires are the plan's to propose
@@ -470,7 +507,7 @@ function layOutPlanOf(b: TemplateBody, where: LayOutWhere): LayOutPlan {
     };
   }
   const named = (k: string) => b.steps.find((s) => s.key === k)!;
-  const startsNow = (k: string) => b.startFirst && k === first.key;
+  const startsNow = (k: string) => b.startFirst && firsts.has(k);
   const steps: PlannedStep[] = b.steps.map((s) => {
     if (s.agent !== "terminal") return { step: s, starts: startsNow(s.key), terminal: null };
     const agent = named((s.folder as { sameAs: string }).sameAs);
@@ -490,12 +527,98 @@ function layOutPlanOf(b: TemplateBody, where: LayOutWhere): LayOutPlan {
     let problem: string | null = null;
     if (w.when === "pr-merged") {
       const from = named(w.from);
-      const why = !where.ticket ? "no ticket is chosen" : !startsNow(from.key) ? `“${from.name}” ${from.key === first.key ? "waits" : "isn't the first step, so it waits"} as this is laid out` : null;
+      const why = !where.ticket ? "no ticket is chosen" : !startsNow(from.key) ? `“${from.name}” ${firsts.has(from.key) ? "waits" : "isn't the first step, so it waits"} as this is laid out` : null;
       if (why) problem = `${from.name} → ${to.name} goes when “${from.name}”'s pull request merges, which needs “${from.name}” started on a ticket's branch, and ${why}.`;
     }
     return { wire: w, gate: asks ? "ask" : (w.gate ?? "ask"), forced: asks, afterStart: w.when === "pr-merged" || (w.type === "worktree" && !skipped), skipped, problem };
   });
   return { steps, wires, forced, problems: wires.flatMap((w) => (w.problem ? [w.problem] : [])) };
+}
+
+// ---- laid out on several tickets ---------------------------------------------------------------
+
+/**
+ * The most one lay-out takes and makes: tickets (as many as an Orchestrator is given), and steps once its steps that
+ * run once per ticket are made for each.
+ */
+export const LAY_OUT_MAX = { tickets: 6, steps: 24 } as const;
+
+/** Whether template `b` has a step that runs once per ticket, so a lay-out of it takes several tickets. */
+export const runsPerTicket = (b: Pick<TemplateBody, "steps">): boolean => b.steps.some((s) => s.perTicket === true);
+
+/**
+ * How many tickets one lay-out of `b` takes: one, unless a step runs once per ticket; then as many as LAY_OUT_MAX's
+ * steps hold with each such step made for each, up to its tickets. An Orchestrator template's are plans.ts'.
+ */
+export function ticketsTaken(b: Pick<TemplateBody, "steps">): number {
+  const per = b.steps.filter((s) => s.perTicket === true).length;
+  if (!per) return 1;
+  return Math.max(1, Math.min(LAY_OUT_MAX.tickets, Math.floor((LAY_OUT_MAX.steps - (b.steps.length - per)) / per)));
+}
+
+/** Where a laid-out step came from: its template step's key, and its ticket's place among the lay-out's (null: it runs once). */
+export interface LaidStepOf {
+  key: string;
+  ticket: number | null;
+}
+
+/**
+ * Template `b` as it's laid out on `tickets` tickets: each step that runs once per ticket made once for each, keyed
+ * `key@n` (n from 1) where it stands, its folder the copy on its ticket of the step it shares one with; each other step
+ * once, as it is. A wire between two of the first kind is made for each ticket between its copies; one between a step
+ * of each kind fans out from the step made once to every copy, or in from every copy to it; one between two made once,
+ * once. `of` says where each laid-out step came from. On one ticket (or none) it's `b` itself.
+ */
+export function perTicketBody(b: TemplateBody, tickets: number): { body: TemplateBody; of: ReadonlyMap<string, LaidStepOf> } {
+  const n = Math.max(1, tickets);
+  const per = new Set(b.steps.filter((s) => s.perTicket === true).map((s) => s.key));
+  if (n === 1) return { body: b, of: new Map(b.steps.map((s) => [s.key, { key: s.key, ticket: per.has(s.key) ? 0 : null }])) };
+  const at = (k: string, i: number) => (per.has(k) ? `${k}@${i + 1}` : k);
+  const each = [...Array(n).keys()];
+  const of = new Map<string, LaidStepOf>();
+  const steps: TemplateStep[] = b.steps.flatMap((s) => {
+    if (!per.has(s.key)) {
+      of.set(s.key, { key: s.key, ticket: null });
+      return [s];
+    }
+    return each.map((i): TemplateStep => {
+      of.set(at(s.key, i), { key: s.key, ticket: i });
+      return { ...s, key: at(s.key, i), folder: typeof s.folder === "object" ? { sameAs: at(s.folder.sameAs, i) } : s.folder };
+    });
+  });
+  const wires = b.wires.flatMap((w): TemplateWire[] => (per.has(w.from) || per.has(w.to) ? each.map((i) => ({ ...w, from: at(w.from, i), to: at(w.to, i) })) : [w]));
+  return { body: { ...b, steps, wires }, of };
+}
+
+/**
+ * How `b` is laid out `where` on `tickets` tickets (perTicketBody): layOutPlan of what's made, each copy of its first
+ * step starting as its first does, and what stops it said once each. On one ticket it's layOutPlan's.
+ */
+export function ticketedLayOutPlan(b: TemplateBody, where: LayOutWhere, tickets: number): { body: TemplateBody; of: ReadonlyMap<string, LaidStepOf>; plan: LayOutPlan } {
+  const laid = perTicketBody(b, tickets);
+  const firsts = new Set([...laid.of].filter(([, o]) => o.key === b.steps[0]?.key).map(([k]) => k));
+  const plan = layOutPlanOf(laid.body, where, firsts);
+  return { ...laid, plan: { ...plan, problems: [...new Set([...hiddenTextProblems(b), ...plan.problems])] } };
+}
+
+/**
+ * A lay-out's tickets after its first (`first`, LayOutRequest.moreTickets), read strictly: each a work item id (none
+ * twice, nor the first again) with its title and description as the board has them; past `max` in all, refused saying
+ * `tooMany`. Refused whole, saying why.
+ */
+export function moreTicketsOf(v: unknown, first: string, max: number, tooMany: string): { ticketId: string; title: string; description: string }[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) throw new Error("Its other tickets aren't a list.");
+  if (v.length + 1 > max) throw new Error(tooMany);
+  const seen = new Set([first]);
+  return v.map((t, i) => {
+    const id = isObj(t) && typeof t.ticketId === "string" ? ticketIdOf(t.ticketId.trim()) : "";
+    if (!isWorkItemId(id)) throw new Error(`Its ticket ${i + 2} isn't a work item.`);
+    if (seen.has(id)) throw new Error(`#${id} is chosen twice.`);
+    seen.add(id);
+    const o = t as Record<string, unknown>;
+    return { ticketId: id, title: visibleLine(o.ticketTitle, 500), description: typeof o.ticketDescription === "string" ? o.ticketDescription : "" };
+  });
 }
 
 /** A template wire's settings as wires:add takes them (WireSettings), its gate `gate`. */
@@ -537,8 +660,9 @@ export interface LayOutRequest {
   /** The ticket's description as the board has it: an Orchestrator is told it, fenced as text others wrote. */
   ticketDescription?: string | null;
   /**
-   * An Orchestrator template's other tickets, as the board has them: its Orchestrator plans for all of them, each step on
-   * one, its folder on the first ticket's branch (Plans.startOrchestrator). Refused for any other template.
+   * Its other tickets, as the board has them. An Orchestrator template's Orchestrator plans for all of them, each step on
+   * one, its folder on the first ticket's branch (Plans.startOrchestrator). A template with steps that run once per
+   * ticket makes those for each (perTicketBody), the rest once, on the first. Refused for any other template.
    */
   moreTickets?: { ticketId: string; ticketTitle: string; ticketDescription: string }[];
   /** The repo its steps' worktrees (and checkouts) are in; none: their checkouts are home. */
@@ -565,16 +689,28 @@ export class LayOutLeftError extends Error {
   }
 }
 export interface LayOutReply {
-  /** Each step made, by its key: its session's id and title. */
-  steps: { key: string; id: string; title: string }[];
+  /** Each step made, by its template key: its session's id and title, and its ticket when it runs once per ticket on several. */
+  steps: { key: string; id: string; title: string; ticket?: string }[];
   /** Each wire made, by its id. */
   wires: string[];
   /** The first step's id, when it started. */
   started: string | null;
+  /** Each copy of a first step that runs once per ticket that started, on several tickets (`started` the first of them). */
+  startedAll?: string[];
   /** What was forced, left out, or didn't go after the steps were made, each said. */
   notes: string[];
   /** Whether this lay-out made its area (LayOutRequest.newArea): only an area made for it is tidied along its wires. */
   madeArea?: boolean;
+}
+
+/** What templates:draft is told beyond a pipeline's sessions (pipelineTemplateOf's plan), as the window and the Assistant send it. */
+export interface DraftShape {
+  /** Sessions among those drafted that run once per ticket: their steps are marked so (TemplateStep.perTicket), their terminals too. */
+  perTicket?: string[];
+  /** Sessions a kept step stands for (other tickets' rows): left out, and their wires aren't said to be. */
+  others?: string[];
+  /** Its first step is an Orchestrator, kept as one (asOrchestrated). */
+  orchestrator?: boolean;
 }
 
 /** Save as template's first half (templates:draft): the chain as a template would keep it, and what that leaves out. */

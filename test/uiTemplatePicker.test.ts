@@ -243,6 +243,75 @@ describe.skipIf(!local)("the built-in Orchestrator → Coder → Verifier", () =
   }, 200_000);
 });
 
+describe.skipIf(!local)("a template whose steps run once per ticket", () => {
+  it("takes several tickets, holds its Once per ticket boxes to the rules, and lays each such step out on each ticket, a ticket to a row", async () => {
+    const t = await audit<{
+      template: string | null;
+      three: { head: string | null; ticked: (string | null)[]; lead: string | null; foot: string | null; note: string | null; off: boolean | null };
+      unticked: { dev: boolean | null; devOff: boolean | null; rules: string | null; off: boolean | null };
+      ticked: { dev: boolean | null; rules: string | null; off: boolean | null };
+      laid: { calls: number; ticket: string | null; more: string[] | null; steps: [string, boolean][] | null; open: boolean; note: string | null; made: [string, string | null, string, [number, number] | null][] };
+    }>("lsTemplates=perticket&landscapePlanAudit=perticket");
+    expect(t.template).toBe("Build and review each ticket");
+    // three ticked, the first the lead, which its Shipper (run once) is on
+    expect(t.three).toEqual({
+      head: "Tickets",
+      ticked: expect.arrayContaining(["5115", "5110", "5120"]),
+      lead: "lead",
+      foot: "3 tickets · 3 steps on each · new area #5115 · worktree from origin/dev",
+      note: "Its steps that run once per ticket are made for each of the 3 tickets, each on its ticket in a worktree of its own; the others once, on #5115. Their wires fan out and in.",
+      off: false,
+    });
+    // Builder unticked: its Dev server follows, and its Reviewer, run once per ticket in its folder, is refused
+    expect(t.unticked).toEqual({
+      dev: false,
+      devOff: true,
+      rules: "“Reviewer” runs once per ticket, each on its ticket's branch, and “Builder” runs once: give it a worktree of its own (new), or the folder of a step that runs once per ticket too.",
+      off: true,
+    });
+    expect(t.ticked).toEqual({ dev: true, rules: null, off: false });
+    expect(t.laid).toMatchObject({
+      calls: 1,
+      ticket: "5115",
+      more: ["5110", "5120"],
+      steps: [
+        ["Builder", true],
+        ["Reviewer", true],
+        ["Shipper", false],
+        ["Dev server", true],
+      ],
+      open: false,
+      note: "Laid out “Build and review each ticket” in #5115: Builder on #5115, #5110, #5120 started, 4 steps wait for their handoffs.",
+    });
+    const made = (title: string) => t.laid.made.filter((m) => m[0] === title);
+    // a Builder started on each ticket with its Dev server, a Reviewer waiting on each, one Shipper
+    expect(made("Builder").map((m) => [m[1], m[2]])).toEqual([
+      ["5115", "started"],
+      ["5110", "started"],
+      ["5120", "started"],
+    ]);
+    expect(made("Dev server").map((m) => m[2])).toEqual(["terminal", "terminal", "terminal"]);
+    expect(made("Reviewer").map((m) => [m[1], m[2]])).toEqual([
+      ["5115", "waits"],
+      ["5110", "waits"],
+      ["5120", "waits"],
+    ]);
+    expect(made("Shipper").map((m) => [m[1], m[2]])).toEqual([["5115", "waits"]]);
+    // in stage columns along its wires, a ticket to a row: each column at one left edge, its tickets top to bottom
+    const at = (title: string) => made(title).map((m) => m[3]!);
+    for (const title of ["Builder", "Reviewer"]) {
+      const xs = at(title).map((p) => p[0]);
+      const ys = at(title).map((p) => p[1]);
+      expect(new Set(xs).size, title).toBe(1);
+      expect([...ys].sort((a, b) => a - b), title).toEqual(ys);
+    }
+    expect(at("Builder")[0][0]).toBeLessThan(at("Reviewer")[0][0]);
+    expect(at("Reviewer")[0][0]).toBeLessThan(at("Shipper")[0][0]);
+    // each ticket's first row level: its Builder and its Reviewer
+    expect(at("Reviewer")[0][1]).toBe(at("Builder")[0][1]);
+  }, 200_000);
+});
+
 describe.skipIf(!local)("an Orchestrator's plan on several tickets", () => {
   it("shows every ticket and each step's own, refuses a step where another ticket's branch is, and lays each out on its ticket", async () => {
     const t = await audit<{

@@ -1,6 +1,6 @@
 import type { AgentTold, Forgotten, InsertStepRequest, IpcResult, MissingFolder, ModelChange, ModelSet, PlanRequest, RelaunchChange, SessionInfo, StepEdit, StepInserted, StepStarted, TicketPipeline, UiCommand, WorktreeCleanupMode, WorktreeCleanupSay } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
-import type { LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
+import type { DraftShape, LayOutReply, LayOutRequest, TemplateBody, TemplateDraft, TemplateList } from "../shared/pipelineTemplates";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
 import type { FinishOutcome, LatestMessage, SendReply, WireChange, WireReply, WireSettings, WireState, WireType, WireVerdict } from "../shared/wires";
 import { ASSISTANT_IPC, type AssistantCard, type AssistantRule, type AssistantStep, type AssistantView, type AssistantWindowAction } from "../shared/assistant";
@@ -36,8 +36,8 @@ const api = {
   unforgetSession: (token: string): Promise<IpcResult<{ state: WireState; notes: string[] } | { refused: string }>> => ipcRenderer.invoke("sessions:unforget", token),
   /** Pipeline templates (W9): the saved ones as this version reads them, each refused one with why. */
   templatesList: (): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:list"),
-  /** Save as template's draft of chain `ids` (first to last): what it keeps, redacted, and what it leaves out. */
-  templatesDraft: (ids: string[]): Promise<IpcResult<TemplateDraft>> => ipcRenderer.invoke("templates:draft", ids),
+  /** Save as template's draft of chain `ids` (first to last), shaped as a pipeline's (`shape`): what it keeps, redacted, and what it leaves out. */
+  templatesDraft: (ids: string[], shape?: DraftShape): Promise<IpcResult<TemplateDraft>> => ipcRenderer.invoke("templates:draft", ids, shape),
   /** Save template `name`, refused while its text holds a secret-looking value or a home folder's path. */
   templatesSave: (name: string, body: TemplateBody): Promise<IpcResult<TemplateList>> => ipcRenderer.invoke("templates:save", name, body),
   /** Replace saved template `id` with `name`, `body`, under its id, checked as a save is. */

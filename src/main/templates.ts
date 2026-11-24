@@ -18,6 +18,7 @@ import {
   readTemplates,
   TemplateError,
   TEMPLATE_MAX,
+  type DraftShape,
   type LayOutReply,
   type PipelineTemplate,
   type TemplateBody,
@@ -27,6 +28,7 @@ import {
   type TemplateStep,
   type TemplateWire,
 } from "../shared/pipelineTemplates";
+import { asOrchestrated } from "../shared/pipelineEdit";
 import { AGENT_NAME, ticketIdOf, type SessionInfo } from "../shared/types";
 import { carriesWork, wiresInOrder, type WireBook } from "../shared/wires";
 
@@ -83,11 +85,20 @@ const holdsHome = (f: string, home: string): boolean => {
  * prompts and folder choices, the terminals on their trees, and the wires among them with their settings. A
  * not-started step's prompt is its "Tell it"; a running one's isn't kept anywhere, so it's empty for the user to fill
  * in. A ticket kickoff in a prompt becomes `{ticket}`, the chain's folders become FOLDER_MARK, and secret-looking values
- * are redacted, each said in `notes`. Throws saying why when it can't be one.
+ * are redacted, each said in `notes`.
+ *
+ * `shapeRaw` (DraftShape, a pipeline's as pipelineTemplateOf has it) marks the steps that run once per ticket and their
+ * terminals, makes the first an Orchestrator, and names the sessions those steps stand for, whose wires aren't said to be
+ * left out. A step that runs once per ticket works on its ticket's branch, so one that worked in the repo's checkout or
+ * a once-run step's folder is saved with a worktree of its own, as is a once-run step that worked in one of theirs:
+ * said. Throws saying why when it can't be one.
  */
-export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
+export function draftTemplate(idsRaw: unknown, d: DraftDeps, shapeRaw?: unknown): TemplateDraft {
   if (!Array.isArray(idsRaw) || !idsRaw.length) throw new Error("There's no chain to save: Save as template saves the workspaces a chain of wires joins.");
   const ids = [...new Set(idsRaw.map((x) => String(x)))];
+  const shape = draftShapeOf(shapeRaw);
+  const per = new Set((shape.perTicket ?? []).filter((id) => ids.includes(id)));
+  const others = new Set(shape.others ?? []);
   const book = d.book();
   if ("refused" in book) throw new Error(book.refused);
   const sessionOf = (id: string): SessionInfo => {
@@ -194,6 +205,8 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
     if (new RegExp(`#${escapeRe(ticketIdOf(s.ticketId))}(?!\\d)`).test(text)) stillNamed.push(`“${name}”`);
     return text;
   };
+  // a terminal runs once per ticket just when the agent whose tree it's on does
+  const perTicket = (s: SessionInfo) => per.has(s.shell ? links.find(([, w]) => w.type === "worktree" && w.to === s.id)![1].from : s.id);
   const steps: TemplateStep[] = all.map((s, i) => {
     const name = nameOf(s);
     const told = toldOf(s, name);
@@ -208,8 +221,24 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
       ...(effort ? { effort } : {}),
       folder: folderOf(s, i),
       prompt: clean(told, s.shell ? "command" : "prompt").slice(0, TEMPLATE_MAX.prompt),
+      ...(perTicket(s) ? { perTicket: true as const } : {}),
     };
   });
+  // each on its ticket's branch: a step that runs once per ticket shares only the folder of another (or the
+  // Orchestrator's, whose plan places each), and a once-run step none of theirs
+  const stepAt = new Map(steps.map((s) => [s.key, s]));
+  for (const s of steps) {
+    if (s.agent === "terminal") continue;
+    const shared = typeof s.folder === "object" ? stepAt.get(s.folder.sameAs)! : null;
+    const was = shared ? `“${shared.name}”'s folder` : s.folder === "checkout" ? "the repo's checkout" : null;
+    if (s.perTicket && was && !(shared && (shared.perTicket || (shape.orchestrator && shared === steps[0])))) {
+      notes.push(`“${s.name}” runs once per ticket, each on its ticket's branch, so it's saved with a worktree of its own: it worked in ${was}.`);
+      s.folder = "new";
+    } else if (!s.perTicket && shared?.perTicket) {
+      notes.push(`“${s.name}” runs once, and worked in “${shared.name}”'s folder, which there's one of for each ticket: it's saved with a worktree of its own.`);
+      s.folder = "new";
+    }
+  }
 
   let outside = 0;
   const wires: TemplateWire[] = [];
@@ -217,7 +246,8 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
     const from = keyOf.get(w.from);
     const to = keyOf.get(w.to);
     if (!from || !to) {
-      if (keyOf.has(w.from) || keyOf.has(w.to)) outside++;
+      // a wire to another ticket's row is this one's, made for each ticket as it's laid out
+      if ((keyOf.has(w.from) || keyOf.has(w.to)) && !others.has(w.from) && !others.has(w.to)) outside++;
       continue;
     }
     wires.push({
@@ -245,7 +275,8 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
   if (unsaid.length) notes.push(`What ${unsaid.map((t) => `“${t}”`).join(", ")} ${unsaid.length === 1 ? "was" : "were"} told as ${unsaid.length === 1 ? "it" : "they"} started isn't kept once running: say it here${terminals.length ? `, and what ${terminals.length === 1 ? "its terminal runs" : "each terminal runs"}` : ""}.`);
   else if (terminals.length) notes.push(`What ${terminals.length === 1 ? "its terminal runs" : "its terminals run"} isn't kept: say it here.`);
 
-  const body: TemplateBody = { startFirst: true, steps, wires };
+  const drafted: TemplateBody = { startFirst: true, steps, wires };
+  const body = shape.orchestrator ? asOrchestrated(drafted) : drafted;
   try {
     parseTemplateBody(body);
   } catch (err) {
@@ -258,6 +289,20 @@ export function draftTemplate(idsRaw: unknown, d: DraftDeps): TemplateDraft {
   const homeAt = textsOf(name, body).flatMap(({ where, text }) => (text && namesHome(text, home) ? [where] : []));
   if (homeAt.length) notes.push(`${homeAt.join(", ")} ${homeAt.length === 1 ? "names" : "name"} a folder in your home folder: a template is laid out in other folders, so take ${homeAt.length === 1 ? "it" : "them"} out before saving.`);
   return { name, body, notes };
+}
+
+/** templates:draft's shape as a window or the Assistant sent it, read strictly: lists of session ids, and a flag. */
+function draftShapeOf(v: unknown): DraftShape {
+  if (v === undefined || v === null) return {};
+  if (!isObj(v)) throw new Error("What Save as template was told of the pipeline isn't an object.");
+  const ids = (x: unknown, what: string): string[] | undefined => {
+    if (x === undefined) return undefined;
+    if (!Array.isArray(x) || !x.every((id) => typeof id === "string")) throw new Error(`What Save as template was told of the pipeline's ${what} isn't a list of sessions.`);
+    return x as string[];
+  };
+  for (const k of Object.keys(v)) if (!["perTicket", "others", "orchestrator"].includes(k)) throw new Error(`What Save as template was told of the pipeline has a field this version doesn't know (${k}).`);
+  if (v.orchestrator !== undefined && typeof v.orchestrator !== "boolean") throw new Error("Whether the pipeline starts at an Orchestrator isn't true or false.");
+  return { perTicket: ids(v.perTicket, "steps that run once per ticket"), others: ids(v.others, "other rows"), orchestrator: v.orchestrator === true };
 }
 
 /** Each piece of text a template keeps, with where it is for what's said. */

@@ -140,6 +140,8 @@ export interface PlannedStep {
   sharesWith?: string;
   /** What it's told as it starts, ahead of what its wire carries (the dialog's ticket kickoff, or its own words). */
   prompt?: string;
+  /** Its new branch leads with its ticket, whatever the step before's is: a template's step laid out once for each of several tickets. */
+  ticketBranch?: true;
 }
 
 /**
@@ -240,6 +242,8 @@ export interface PlanRequest {
   prompt?: string;
   /** Start in `after`'s folder instead of a folder of its own (decision 7). */
   sharesFolder?: boolean;
+  /** A worktree of its own on a branch led by its ticket (PlannedStep.ticketBranch). */
+  ticketBranch?: boolean;
 }
 
 /** Every agent, in the order the app lists them. */

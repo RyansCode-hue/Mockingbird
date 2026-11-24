@@ -1719,7 +1719,7 @@ const assistantDeps: AssistantDeps = {
   editStep: (id, edit) => pipelineEdits.editStep(id, edit),
   insertStep: (req) => pipelineEdits.insertStep(req),
   setModel: (id, change, o) => pipelineEdits.setModel(id, change, o),
-  templateDraft: (ids) => templateDraftOf(ids),
+  templateDraft: (ids, shape) => templateDraftOf(ids, shape),
   saveTemplate: (name, body) => saveTemplate(name, body),
   replaceTemplate: (id, name, body) => replaceTemplate(id, name, body),
   removeTemplate: (id) => void removeTemplate(id),
@@ -1937,7 +1937,7 @@ handle(
 // ---- pipeline templates (W9): saved from a chain, laid out from a ticket; kept in settings, on this Mac only ----
 handle("templates:list", () => readTemplates(store.settings.pipelineTemplates));
 // what Save as template keeps of sessions, and saved templates' changes: the window's and the Assistant's
-function templateDraftOf(ids: unknown) {
+function templateDraftOf(ids: unknown, shape?: unknown) {
   return draftTemplate(ids, {
     sessionOf: (id) => [...sessions.list(), ...sessions.resumable(), ...sessions.planned()].find((s) => s.id === id),
     book: () => {
@@ -1946,7 +1946,7 @@ function templateDraftOf(ids: unknown) {
     },
     ticketTitleOf: (id) => pipeline.get(id)?.title ?? null,
     home: os.homedir(),
-  });
+  }, shape);
 }
 function saveTemplate(name: unknown, body: unknown) {
   const { list, template } = savedTemplates(name, body, store.settings.pipelineTemplates, { home: os.homedir() });
@@ -1964,7 +1964,7 @@ function removeTemplate(id: unknown) {
   store.setSettings({ pipelineTemplates: list });
   return name;
 }
-handle("templates:draft", (ids) => templateDraftOf(ids));
+handle("templates:draft", (ids, shape) => templateDraftOf(ids, shape));
 handle("templates:save", (name, body) => {
   saveTemplate(name, body);
   return readTemplates(store.settings.pipelineTemplates);
@@ -1997,18 +1997,17 @@ const layOutTemplate = (raw: unknown): Promise<LayOutReply> =>
             for (const t of more) sessionOpened(info, t.id, t.title);
           },
         })
-      : isObj(req) && Array.isArray(req.moreTickets) && req.moreTickets.length
-        ? Promise.reject(new Error("Only a template that starts at an Orchestrator takes several tickets: choose one ticket, or that template."))
-        : wires.layOut(req, {
-            planStep: (q) => sessions.planStep(q),
-            forget: (id) => {
-              sessions.kill(id, true);
-              return wires.sessionForgotten(id);
-            },
-            start: (id, ticketTitle) => startStep(id, undefined, ticketTitle),
-            addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
-            roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
-          })
+      : // several tickets only for steps that run once per ticket: WireService.layOut refuses them otherwise
+        wires.layOut(req, {
+          planStep: (q) => sessions.planStep(q),
+          forget: (id) => {
+            sessions.kill(id, true);
+            return wires.sessionForgotten(id);
+          },
+          start: (id, ticketTitle) => startStep(id, undefined, ticketTitle),
+          addTerminal: (agent, as) => wires.addTerminal(agent, { create: (q) => sessions.create(q), forget: (id) => sessions.kill(id, true) }, as),
+          roomOfGroup: (group) => sessions.roomOfGroup?.(group) ?? null,
+        })
   );
 handle("templates:layOut", (raw) => layOutTemplate(raw));
 // the agents' finish_step, read_context and read_terminal (routed by messaging), a person's Finish step, and what an

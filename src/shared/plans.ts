@@ -599,11 +599,22 @@ export function orchestratorKickoff(o: KickoffTicket & { told: string; template:
       "Where tickets touch the same code, say so in your summary, and order or link their steps rather than have two edit it at once.",
     ...(shape
       ? [
-          "The user's template gives the starting shape for one ticket: repeat or change it to fit these tickets, then propose it with propose_plan. In propose_plan's terms:",
+          `The user's template gives the starting shape for one ticket: repeat or change it to fit these tickets, then propose it with propose_plan.${perTicketShape(o.template)} In propose_plan's terms:`,
           "```json\n" + JSON.stringify(shape, null, 2) + "\n```",
         ]
       : ["Propose the workspaces and wires to do them with propose_plan."]),
   ].join("\n\n");
+}
+
+/**
+ * What an Orchestrator on several tickets is told of its template's steps that run once per ticket (TemplateStep.perTicket),
+ * by key as its starting shape names them, after a space; nothing when none does.
+ */
+function perTicketShape(b: TemplateBody): string {
+  const keys = b.steps.slice(1).filter((s) => s.perTicket === true).map((s) => `"${s.key}"`);
+  if (!keys.length) return "";
+  const them = keys.length > 1 ? `${keys.slice(0, -1).join(", ")} and ${keys[keys.length - 1]}` : keys[0];
+  return ` In it, the step${keys.length === 1 ? "" : "s"} keyed ${them} ${keys.length === 1 ? "runs" : "run"} once per ticket: give every ticket ${keys.length === 1 ? "one" : "one of each"}, on that ticket. The other steps run once.`;
 }
 
 // ---- a Council's Orchestrator (W18) -----------------------------------------------------------
