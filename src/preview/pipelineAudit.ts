@@ -7,7 +7,10 @@
  * - =relayout: Re-lay out pipeline from the Orchestrator's menu puts it in stage columns, and Undo puts it back;
  * - =insert: the + between two stage columns, its dialog prefilled from the step before, inserting and laying out again;
  * - =repoint: a wire's Settings, its To picker moving it, and Undo moving it back;
- * - =shot, =chipshot, =editshot: laid out again, with a step's model popover open, or a step's Edit dialog, for --shot.
+ * - =drag: not-started steps and the wires board's closed Spike dragged as workspaces are, within their area and into
+ *   another (their groups following), one of two steps selected dragged alone, and a click on the closed one;
+ * - =shot, =chipshot, =editshot, =dragshot: laid out again, with a step's model popover open, a step's Edit dialog, or
+ *   Coder 5115 and Spike dragged (=drag's first and third drags), for --shot.
  */
 
 interface Env {
@@ -181,6 +184,130 @@ async function repointAudit(env: Env, out: Record<string, unknown>): Promise<voi
   out.undoCalls = since(env, mark, "wiresUnrepoint").length;
 }
 
+type Pt = { x: number; y: number };
+type Box = { x: number; y: number; w: number; h: number };
+/** Pointer events as a mouse makes them (Landscape.tsx takes the press on the viewport, the moves and release on the window). */
+const POINTER = 7;
+const pointer = (type: string, at: Pt, buttons: number, shiftKey = false) =>
+  new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: POINTER, button: 0, buttons, clientX: at.x, clientY: at.y, shiftKey });
+/** Where a card is grabbed: its title's start, clear of its buttons, its model chip and its wire handle. */
+const grip = (card: HTMLElement): { el: HTMLElement; at: Pt } => {
+  const el = card.querySelector<HTMLElement>(".lg-title") ?? card;
+  const r = el.getBoundingClientRect();
+  return { el, at: { x: r.left + Math.min(r.width / 2, 20), y: r.top + r.height / 2 } };
+};
+/** A card pressed at its title and let go there (Shift: a Shift-click). */
+function clickCard(card: HTMLElement, shiftKey = false): void {
+  const g = grip(card);
+  g.el.dispatchEvent(pointer("pointerdown", g.at, 1, shiftKey));
+  window.dispatchEvent(pointer("pointerup", g.at, 0, shiftKey));
+}
+/** A card pressed at its title, moved by (dx, dy) screen px in steps, and let go; `settle` ms for its drop to be saved. */
+async function dragCard(card: HTMLElement, dx: number, dy: number, settle = 800): Promise<void> {
+  const g = grip(card);
+  g.el.dispatchEvent(pointer("pointerdown", g.at, 1));
+  for (let i = 1; i <= 6; i++) {
+    window.dispatchEvent(pointer("pointermove", { x: g.at.x + (dx * i) / 6, y: g.at.y + (dy * i) / 6 }, 1));
+    await sleep(16);
+  }
+  window.dispatchEvent(pointer("pointerup", { x: g.at.x + dx, y: g.at.y + dy }, 0));
+  await sleep(settle);
+}
+type Stored = { workspaces: Record<string, Box>; areas: Record<string, Box> };
+const stored = async (): Promise<Stored> => ((await (window as any).mb.landscapeGet()) as { landscape: Stored }).landscape;
+const within = (r: Box, a: Box) => r.x >= a.x && r.y >= a.y && r.x + r.w <= a.x + a.w && r.y + r.h <= a.y + a.h;
+/** The screen px a landscape px is now, read off area `key`'s frame. */
+const zoomOf = (key: string, areas: Record<string, Box>) => document.querySelector(`.ls-area[data-area="${CSS.escape(key)}"]`)!.getBoundingClientRect().width / areas[key].w;
+/** How far, in screen px, wire `id`'s arrowhead ends from `card` as drawn (0: on it); null when either isn't drawn. */
+function endOff(id: string, card: HTMLElement | null): number | null {
+  const p = document.querySelector<SVGPathElement>(`.ls-wires g[data-wire="${CSS.escape(id)}"] path.line`);
+  if (!p || !card) return null;
+  const e = p.getPointAtLength(p.getTotalLength()).matrixTransform(p.getScreenCTM()!);
+  const r = card.getBoundingClientRect();
+  return Math.round(Math.hypot(Math.max(r.left - e.x, 0, e.x - r.right), Math.max(r.top - e.y, 0, e.y - r.bottom)));
+}
+const selectedSteps = () => [...document.querySelectorAll<HTMLElement>(".ls-ghost.planned.selected")].map((g) => g.dataset.front);
+async function fit(): Promise<void> {
+  [...document.querySelectorAll<HTMLElement>(".ls-hud-btn")].find((b) => b.textContent === "Fit")!.click();
+  await sleep(400);
+}
+
+/**
+ * Drags (=drag; =dragshot the first and third, briefly), everything in view: Coder 5115 into the free cell above the
+ * Orchestrator; one of two steps selected into the cell Coder 5115 left; Spike from 5120 into 5115; Verifier 5115 from
+ * 5115 into 5120; then a click on Spike. Each reports the places stored before and after, the calls it made and the
+ * cards as drawn.
+ */
+async function dragAudit(env: Env, out: Record<string, unknown>, brief = false): Promise<void> {
+  await fit();
+  const before = await stored();
+  const area = ghost("pp-c1")!.dataset.area!;
+  const at = (id: string) => before.workspaces[id];
+  const z = zoomOf(area, before.areas);
+  const record = (id: string, now: Stored) => ({ before: at(id), after: now.workspaces[id] });
+  const book = await links();
+  const wireTo = (to: string) => Object.entries(book).find(([, w]) => w.to === to)?.[0] ?? "";
+  const by = (id: string, to: Pt) => [(to.x - at(id).x) * z, (to.y - at(id).y) * z] as const;
+
+  // a step within its area, into the free cell above the Orchestrator
+  let mark = env.calls.length;
+  const free = { x: at("pp-orch").x, y: at("pp-c1").y };
+  await dragCard(ghost("pp-c1")!, ...by("pp-c1", free), brief ? 300 : 800);
+  let now = await stored();
+  out.step = { area, free, ...record("pp-c1", now), setGroup: since(env, mark, "setGroup"), saves: since(env, mark, "landscapeUpdate").length, translate: ghost("pp-c1")?.style.translate ?? null, wire: endOff(wireTo("pp-c1"), ghost("pp-c1")) };
+
+  if (!brief) {
+    // two steps selected (a click, a Shift-click); the one pressed is dragged, alone, into the cell Coder 5115 left
+    clickCard(ghost("pp-c2")!);
+    await sleep(150);
+    clickCard(ghost("pp-v2")!, true);
+    await sleep(250);
+    const picked = selectedSteps();
+    mark = env.calls.length;
+    await dragCard(ghost("pp-v2")!, ...by("pp-v2", at("pp-c1")));
+    now = await stored();
+    out.several = { picked, v2: record("pp-v2", now), c2: record("pp-c2", now), selected: selectedSteps(), setGroup: since(env, mark, "setGroup") };
+  }
+
+  // the closed Spike from 5120 into 5115, where Verifier 5115 left (brief: where Coder 5115 left): its group follows
+  mark = env.calls.length;
+  const into = brief ? at("pp-c1") : at("pp-v2");
+  await dragCard(ghost("wb-spike")!, ...by("wb-spike", into), brief ? 300 : 800);
+  now = await stored();
+  const spike = ((await (window as any).mb.resumableSessions()) as { id: string; taskGroup: string | null }[]).find((x) => x.id === "wb-spike");
+  out.closed = {
+    into,
+    ...record("wb-spike", now),
+    inside: within(now.workspaces["wb-spike"], now.areas[area]),
+    setGroup: since(env, mark, "setGroup"),
+    group: spike?.taskGroup ?? null,
+    drawnIn: ghost("wb-spike")?.dataset.area ?? null,
+    translate: ghost("wb-spike")?.style.translate ?? null,
+    wire: endOff(wireTo("wb-spike"), ghost("wb-spike")),
+  };
+  if (brief) return;
+
+  // a step from 5115 into 5120, where Spike was: its group follows too
+  mark = env.calls.length;
+  await dragCard(ghost("pp-v1")!, ...by("pp-v1", at("wb-spike")));
+  now = await stored();
+  const v1 = ((await (window as any).mb.plannedSessions()) as { id: string; taskGroup: string | null }[]).find((x) => x.id === "pp-v1");
+  out.across = {
+    ...record("pp-v1", now),
+    inside: within(now.workspaces["pp-v1"], now.areas["5120"]),
+    setGroup: since(env, mark, "setGroup"),
+    group: v1?.taskGroup ?? null,
+    drawnIn: ghost("pp-v1")?.dataset.area ?? null,
+    wire: endOff(wireTo("pp-v1"), ghost("pp-v1")),
+  };
+
+  // a click on the closed card, not dragged: its area selected, as a click on the landscape where it lies, nothing saved
+  mark = env.calls.length;
+  clickCard(ghost("wb-spike")!);
+  await sleep(300);
+  out.click = { area: document.querySelector<HTMLElement>(".ls-area.selected")?.dataset.area ?? null, saves: since(env, mark, "landscapeUpdate").length };
+}
+
 export function runPipelineAudit(env: Env, part: string): void {
   const report = (out: unknown) => {
     const tag = document.createElement("script");
@@ -198,6 +325,8 @@ export function runPipelineAudit(env: Env, part: string): void {
       else if (part === "relayout") await relayoutAudit(env, out);
       else if (part === "insert") await insertAudit(env, out);
       else if (part === "repoint") await repointAudit(env, out);
+      else if (part === "drag") await dragAudit(env, out);
+      else if (part === "dragshot") await dragAudit(env, out, true);
       else if (part === "shot") await relayout();
       else if (part === "chipshot") {
         document.querySelector<HTMLElement>('[data-model="pp-v1"]')?.click();

@@ -24,6 +24,7 @@ import {
   minimapFit,
   planMakeArea,
   planMoveArea,
+  planMoveGhost,
   planMoveTile,
   renamedKeys,
   areaSelectionNow,
@@ -61,6 +62,7 @@ import {
 } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
 import { treeCounts, treeOf } from "../src/renderer/AreaTree";
+import { anchorOf } from "../src/renderer/wiresModel";
 import { backupLine, presenceLine } from "../src/renderer/team/MembersMenu";
 import type { TeamRoomSummary } from "../src/shared/team/types";
 import type { TakeoverView } from "../src/shared/team/takeover";
@@ -735,6 +737,138 @@ describe("making and moving areas", () => {
     const r = p.patch!.workspaces!.loose1!;
     expect(overlaps(r, l.areas.A, GAP - 1e-6)).toBe(false);
     expect(p.moves).toEqual([]);
+  });
+
+  describe("a ghost dragged as a workspace is", () => {
+    /** A closed session of this Mac's, and a step not started yet, as main lists them with the layout's `closed`. */
+    const closedS = (id: string, group: string | null) => session(id, { taskGroup: group, status: "dead" });
+    const step = (id: string, group: string | null) => session(id, { taskGroup: group, planned: { worktree: false } });
+    /** A's second row: c1 closed and s1 not started, each with its place kept. */
+    const withGhosts = () => {
+      const l = base();
+      l.areas.A.h += M.h + GAP;
+      l.workspaces.c1 = { x: AREA_PAD, y: AREA_HEADER + M.h + GAP, ...M };
+      l.workspaces.s1 = { x: AREA_PAD + M.w + GAP, y: AREA_HEADER + M.h + GAP, ...M };
+      l.areas.B = area(l.areas.A.w + AREA_GAP, 0, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+      return l;
+    };
+    const ghosts = [closedS("c1", "A"), step("s1", "A")];
+    /** `p` carried out with `closed` drawn as ghosts: its patch, the ghosts' sessions' groups set, then `after`. */
+    const settleGhosts = (l: Landscape, p: Exclude<AreaPlan, { refused: string }>, closed: SessionInfo[] = ghosts) => {
+      let next = p.patch ? applyPatch(l, p.patch) : l;
+      const groups = new Map(p.moves.map((m) => [m.id, m.group]));
+      const after = closed.map((s) => (groups.has(s.id) ? { ...s, taskGroup: groups.get(s.id) ?? null } : s));
+      if (p.after) next = applyPatch(next, p.after);
+      return { l: next, closed: after, r: resolveLayout(next, shown, undefined, [], null, after) };
+    };
+    const ghostOf = (r: ResolvedLayout, id: string) => r.ghosts.find((g) => g.members.some((m) => m.id === id));
+
+    it("moves within its area on the grid, pushing the workspace it lands on aside, its group left as it is", () => {
+      const l = withGhosts();
+      const layout = resolveLayout(l, shown, undefined, [], null, ghosts);
+      expect(layout.ghosts.map((g) => [g.key, g.area])).toEqual([
+        ["ghost:c1", "A"],
+        ["ghost:s1", "A"],
+      ]);
+      // dropped a little off a1's place: snapped onto it, and a1 goes aside
+      const p = ready(planMoveGhost(l, layout, "ghost:c1", { x: AREA_PAD + 3, y: AREA_HEADER - 2 }, "A", (k) => k));
+      expect(p.moves).toEqual([]);
+      expect(p.patch?.workspaces?.c1).toEqual({ x: AREA_PAD, y: AREA_HEADER, ...M });
+      const done = settleGhosts(l, p);
+      const c1 = ghostOf(done.r, "c1")!;
+      expect(c1.rect).toEqual({ x: AREA_PAD, y: AREA_HEADER, ...M });
+      expect(c1.area).toBe("A");
+      // nothing drawn over it, and everything still in A, which grew to hold it all
+      const a = done.r.areas.find((x) => x.key === "A")!.rect;
+      for (const t of done.r.tiles.filter((t) => t.area === "A")) {
+        expect(overlaps(t.rect, c1.rect), t.key).toBe(false);
+        expect(inside(t.rect, a), t.key).toBe(true);
+      }
+      expect(done.r.patch).toBeNull();
+      // its wires find it by its session, where it is now
+      expect(anchorOf(done.r, "c1")).toMatchObject({ kind: "ghost", key: "ghost:c1", rect: c1.rect });
+    });
+
+    it("pushes the ghosts it lands on aside without their pushing anything on", () => {
+      const l = withGhosts();
+      const layout = resolveLayout(l, shown, undefined, [], null, ghosts);
+      const p = ready(planMoveGhost(l, layout, "ghost:s1", { x: AREA_PAD, y: AREA_HEADER + M.h + GAP }, "A", (k) => k));
+      expect(p.patch?.workspaces?.s1).toEqual(l.workspaces.c1);
+      expect(overlaps(p.patch!.workspaces!.c1!, p.patch!.workspaces!.s1!)).toBe(false);
+      // back where it started: nothing to save
+      expect(planMoveGhost(l, layout, "ghost:s1", { x: l.workspaces.s1.x + 3, y: l.workspaces.s1.y - 2 }, "A", (k) => k)).toEqual({ patch: null, moves: [], after: null });
+    });
+
+    it("dropped in another area joins its group, a closed session's and a not-started step's alike, drawn there after", () => {
+      const l = withGhosts();
+      const layout = resolveLayout(l, shown, undefined, [], null, ghosts);
+      const into = { x: l.areas.B.x + 30, y: 60 };
+      const c = ready(planMoveGhost(l, layout, "ghost:c1", into, "B", (k) => k));
+      expect(c.moves).toEqual([{ id: "c1", group: "B" }]);
+      const doneC = settleGhosts(l, c);
+      expect(ghostOf(doneC.r, "c1")!.area).toBe("B");
+      expect(inside(ghostOf(doneC.r, "c1")!.rect, doneC.r.areas.find((a) => a.key === "B")!.rect)).toBe(true);
+      apart(doneC.r);
+      expect(doneC.r.patch).toBeNull();
+      const s = ready(planMoveGhost(l, layout, "ghost:s1", into, "B", (k) => k));
+      expect(s.moves).toEqual([{ id: "s1", group: "B" }]);
+      expect(ghostOf(settleGhosts(l, s).r, "s1")!.area).toBe("B");
+      // its place is saved before its group is set: drawn in B from the first, as it lies there
+      expect(ghostOf(resolveLayout(applyPatch(l, s.patch!), shown, undefined, [], null, ghosts), "s1")!.area).toBe("B");
+    });
+
+    it("dropped loose stays clear of every area and leaves its group; one already in its group's area isn't moved to it again", () => {
+      const l = withGhosts();
+      const layout = resolveLayout(l, shown, undefined, [], null, ghosts);
+      const p = ready(planMoveGhost(l, layout, "ghost:c1", { x: -M.w / 2, y: 100 }, LOOSE_GROUP, (k) => k));
+      expect(p.moves).toEqual([{ id: "c1", group: null }]);
+      const r = p.patch!.workspaces!.c1!;
+      for (const a of Object.values(l.areas)) expect(overlaps(r, a, GAP - 1e-6)).toBe(false);
+      const done = settleGhosts(l, p);
+      expect(ghostOf(done.r, "c1")!.area).toBe(LOOSE_GROUP);
+      for (const t of done.r.tiles.filter((t) => t.area === LOOSE_GROUP)) expect(overlaps(t.rect, r), t.key).toBe(false);
+      // a ghost of A's lying loose, dropped back in A: its place only
+      const back = ready(planMoveGhost(done.l, resolveLayout(done.l, shown, undefined, [], null, ghosts), "ghost:c1", { x: AREA_PAD, y: AREA_HEADER + M.h + GAP }, "A", (k) => k));
+      expect(back.moves).toEqual([]);
+      expect(ghostOf(settleGhosts(done.l, back).r, "c1")!.area).toBe("A");
+    });
+
+    it("takes a stack's ghost to another area as its stack, and refuses it loose", () => {
+      const l = withGhosts();
+      l.stacks["A/old"] = { active: "o1", placement: { x: AREA_PAD + 2 * (M.w + GAP), y: AREA_HEADER + M.h + GAP, ...M } };
+      l.areas.A.w += M.w + GAP;
+      l.areas.B.x += M.w + GAP;
+      const closed = [...ghosts, closedS("o1", "A/old"), closedS("o2", "A/old")];
+      const layout = resolveLayout(l, shown, undefined, [], null, closed);
+      expect(layout.ghosts.map((g) => g.key)).toContain("ghost:ws:A/old");
+      const p = ready(planMoveGhost(l, layout, "ghost:ws:A/old", { x: l.areas.B.x + 30, y: 60 }, "B", (k) => k));
+      expect(p.moves).toEqual([
+        { id: "o1", group: "B/old" },
+        { id: "o2", group: "B/old" },
+      ]);
+      expect(p.after).toEqual({ stacks: { "A/old": null } });
+      const done = settleGhosts(l, p, closed);
+      expect(done.r.ghosts.find((g) => g.key === "ghost:ws:B/old")?.area).toBe("B");
+      expect(planMoveGhost(l, layout, "ghost:ws:A/old", { x: -3000, y: 0 }, LOOSE_GROUP, (k) => k)).toEqual({ refused: "A stack can't be loose: drop it in an area, or take its sessions out of it first" });
+    });
+
+    it("refuses a move out of or into a locked area, a teammate's to another area, and one no longer drawn", () => {
+      const l = withGhosts();
+      l.areas.R = area(0, 2000, 2000, 900);
+      l.workspaces.n7 = { x: 24, y: 2048, w: 800, h: 600 };
+      const closed = [...ghosts, { ...theirs("n7", "R"), status: "dead" as const }];
+      const layout = resolveLayout(l, shown, undefined, [], null, closed);
+      expect(planMoveGhost(l, layout, "ghost:n7", { x: 24, y: 60 }, "A", (k) => k)).toEqual({ refused: "Nick's workspace moves to another area only on their Mac" });
+      expect(ready(planMoveGhost(l, layout, "ghost:n7", { x: 400, y: 2100 }, "R", (k) => k)).moves).toEqual([]);
+      expect(planMoveGhost(l, layout, "ghost:gone", { x: 0, y: 0 }, "A", (k) => k)).toEqual({ refused: "That card isn't on the landscape any more" });
+      l.areas.A.locked = true;
+      const lockedA = resolveLayout(l, shown, undefined, [], null, closed);
+      expect(planMoveGhost(l, lockedA, "ghost:s1", { x: 400, y: 600 }, "A", (k) => `area ${k}`)).toEqual({ refused: "area A is locked: unlock it to move what's in it" });
+      l.areas.A.locked = false;
+      l.areas.B.locked = true;
+      const lockedB = resolveLayout(l, shown, undefined, [], null, closed);
+      expect(planMoveGhost(l, lockedB, "ghost:c1", { x: l.areas.B.x + 30, y: 60 }, "B", (k) => `area ${k}`)).toEqual({ refused: "area B is locked: unlock it to add to it" });
+    });
   });
 
   it("moves an area on the grid with its workspaces and ghosts, clear of the others, and not while it's locked", () => {

@@ -141,6 +141,12 @@ together so work and context flow between them.
     its buttons, keeping its title; ⋯ and right-click offer every action
     (zoomed out to cards, right-click only, so the title keeps the room).
   - Its wires stay in place.
+  - It's dragged as a workspace is, and so is a step not started yet (one of
+    several selected moves alone, as a workspace does): it snaps, pushes what
+    it's dropped on aside, and its area grows to hold it. Dropped in another
+    area, its session joins that area's group (not out of or into a locked
+    area, nor a teammate's), and its wires follow it. A click on a closed one,
+    not dragged, selects the area it lies in.
   - **Reopen** resumes its conversation in the same spot (the session is
     relaunched under its own id).
   - **Forget** lets it go for good; an area's ⋯ has **Reopen all** and
@@ -152,7 +158,8 @@ together so work and context flow between them.
     place exactly. One a teammate continues shows **Take it back**.
   - A closed tab of a stack still on screen is a faded tab on that stack. A
     stack's ghost of several closed tabs reopens and forgets them all.
-  - Ghosts are pushed aside like anything else but push nothing.
+  - Ghosts are pushed aside like anything else but push nothing on; one being
+    dropped pushes what's in its way, as a dropped workspace does.
 - **Closed sessions** list, under the area tree above the Connected line (and
   in ⌘K): the closed sessions with no ghost, every closed session while the
   landscape is still being read in. Each row has Reopen (a new workspace in

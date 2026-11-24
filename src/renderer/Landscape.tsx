@@ -49,6 +49,7 @@ import {
   planMakeArea,
   planMoveArea,
   planMoveExtra,
+  planMoveGhost,
   planMoveTile,
   planResizeTo,
   planStack,
@@ -229,20 +230,21 @@ const END_HIT_PX = 12;
 const WIRES_UNREAD = "The wires haven't been read yet, so none can be made: try again in a moment.";
 
 /**
- * A press that may become a drag: a marquee over the bare landscape, a workspace by its header (or a card), or an
- * area by its header. `on` once it has moved DRAG_PX; `els` are what move with it until the layout has them there.
+ * A press that may become a drag: a marquee over the bare landscape, a workspace by its header (or a card), a ghost, or
+ * an area by its header. `on` once it has moved DRAG_PX; `els` are what move with it until the layout has them there.
  */
 interface Gesture {
   /**
    * `resize`: a workspace by an edge or corner (`edges`); `tab`: a stack's tab (`sid`), moved along its tabs or dragged
-   * out of the stack; `wire`: a wire from a workspace's edge handle, to the workspace it's dropped on; `wireEnd`: wire
-   * `key`'s `end`, grabbed by its arrowhead or start, to the workspace or step it's dropped on.
+   * out of the stack; `ghost`: a closed workspace's ghost or a not-started step's card, moved as a workspace is; `wire`:
+   * a wire from a workspace's edge handle, to the workspace it's dropped on; `wireEnd`: wire `key`'s `end`, grabbed by
+   * its arrowhead or start, to the workspace or step it's dropped on.
    */
-  kind: "marquee" | "tile" | "area" | "window" | "card" | "resize" | "tab" | "wire" | "wireEnd";
+  kind: "marquee" | "tile" | "ghost" | "area" | "window" | "card" | "resize" | "tab" | "wire" | "wireEnd";
   id: number;
   x0: number;
   y0: number;
-  /** The workspace's or the area's key, a window's or a card's id ("" for a marquee). */
+  /** The workspace's, the ghost's or the area's key, a window's or a card's id ("" for a marquee). */
   key: string;
   /** A marquee with Shift held adds to the selection, `base` (and `baseSteps`, the steps selected) as it was when it started. */
   add: boolean;
@@ -1830,6 +1832,7 @@ export function Landscape({
     return toLandscape(cam.current, { x: e.clientX - r.left, y: e.clientY - r.top });
   };
   const nodeEl = (key: string) => world.current?.querySelector<HTMLElement>(`.ls-node[data-ws="${CSS.escape(key)}"]`) ?? null;
+  const ghostElOf = (key: string) => world.current?.querySelector<HTMLElement>(`.ls-ghost[data-ghost="${CSS.escape(key)}"]`) ?? null;
   /** Where a dragged workspace would go: the area under the pointer, LOOSE_GROUP over the bare landscape. */
   const dropArea = (e: PointerEvent): string => areaAt(layoutNow.current.areas, atPoint(e))?.key ?? LOOSE_GROUP;
   /** A drag starting: what moves with it, or false when it can't (said). */
@@ -1873,6 +1876,15 @@ export function Landscape({
       }
       // a resize and a tab show where they'd land (sizeBox); the workspace itself moves only when it's dragged
       g.els = g.kind === "tile" ? [nodeEl(t.key)].filter((x): x is HTMLElement => !!x) : [];
+    } else if (g.kind === "ghost") {
+      const gh = l.ghosts.find((x) => x.key === g.key);
+      if (!gh) return false;
+      const a = l.areas.find((x) => x.key === gh.area);
+      if (a?.rect.locked) {
+        say(`${areaTitle(a.key)} is locked: unlock it to move what's in it`);
+        return false;
+      }
+      g.els = [ghostElOf(gh.key)].filter((x): x is HTMLElement => !!x);
     } else {
       const a = l.areas.find((x) => x.key === g.key);
       if (!a) return false;
@@ -1932,9 +1944,9 @@ export function Landscape({
       return;
     }
     const z = cam.current.zoom;
-    if (g.kind === "tile" || g.kind === "resize" || g.kind === "tab") {
+    if (g.kind === "tile" || g.kind === "ghost" || g.kind === "resize" || g.kind === "tab") {
       const l = layoutNow.current;
-      const t = l.tiles.find((x) => x.key === g.key);
+      const t = (g.kind === "ghost" ? l.ghosts : l.tiles).find((x) => x.key === g.key);
       if (!t) return;
       const target = dropArea(e);
       // snapped to the grid and to the edges of what's near, in the area it's over (its inside edges too)
@@ -1974,12 +1986,12 @@ export function Landscape({
     for (const el of g.els) el.style.translate = `${dx / z}px ${dy / z}px`;
     wiresRef.current?.follow();
   };
-  /** What a workspace moved or resized snaps to: everything else drawn (workspaces, ghosts, windows, cards) but `except`. */
+  /** What a workspace or a ghost moved or resized snaps to: everything else drawn (workspaces, ghosts, windows, cards) but `except`. */
   const snapTargets = (except: string): Rect[] => {
     const l = layoutNow.current;
     return [
       ...l.tiles.filter((t) => !t.hidden && t.key !== except).map((t) => t.rect),
-      ...l.ghosts.filter((g) => !g.hidden).map((g) => g.rect),
+      ...l.ghosts.filter((g) => !g.hidden && g.key !== except).map((g) => g.rect),
       ...l.windows.filter((w) => !w.hidden).map((w) => w.rect),
       ...l.cards.filter((c) => !c.hidden).map((c) => c.rect),
     ];
@@ -2047,8 +2059,11 @@ export function Landscape({
       void repointWire(g.key, { [g.end!]: to.s.id }).then((why) => why && say(why));
       return;
     }
-    // pressed by a wire's end and let go where it was: a click on the landscape there
-    if (g.kind === "marquee" || g.kind === "wireEnd") {
+    // a ghost pressed and let go where it was: a not-started step's press selected it; a closed workspace's is a click
+    // on the landscape where it lies, as a wire's end pressed and let go is
+    const ghostClick = g.kind === "ghost" && !g.on;
+    if (ghostClick && l.ghosts.find((x) => x.key === g.key)?.front.planned) return;
+    if (g.kind === "marquee" || g.kind === "wireEnd" || ghostClick) {
       // a click on a wire's gate dot (where it was pressed) opens its send popover, and the click it makes lands on nothing
       const dot = !g.on && !g.add ? (wiresRef.current?.dotAt(atPoint({ clientX: g.x0, clientY: g.y0 }), DOT_HIT_PX / z) ?? null) : null;
       if (dot) {
@@ -2134,6 +2149,27 @@ export function Landscape({
       const plan = planUnstack(storedNow.current, l, s.id, { x: g.snapped.x, y: g.snapped.y }, dropArea(e), areaTitle);
       if ("refused" in plan) return say(plan.refused);
       void unstack(plan, s, t);
+      return;
+    }
+    if (g.kind === "ghost") {
+      const gh = l.ghosts.find((x) => x.key === g.key);
+      if (!gh) return release(g.els);
+      const to = g.snapped ?? { x: gh.rect.x + dx, y: gh.rect.y + dy };
+      const plan = planMoveGhost(storedNow.current, l, gh.key, { x: to.x, y: to.y }, dropArea(e), areaTitle);
+      if ("refused" in plan) {
+        release(g.els);
+        return say(plan.refused);
+      }
+      const from = gh.rect;
+      const front = gh.front.id;
+      void carryOut(plan, `${titleOf(gh.front)}'s place`, {
+        els: g.els,
+        // a stack's ghost moved to another area is keyed by its new stack, so it's found by its session
+        moved: () => {
+          const now = layoutNow.current.ghosts.find((x) => x.members.some((m) => m.id === front));
+          return !now || now.rect.x !== from.x || now.rect.y !== from.y;
+        },
+      });
       return;
     }
     if (g.kind === "tile") {
@@ -2413,18 +2449,23 @@ export function Landscape({
         } else if (card && !t.closest("button, a, input")) {
           startRef.current({ ...press, kind: "card", key: card.dataset.card! });
         } else if (ghostEl?.classList.contains("planned") && !t.closest("button, .ls-wh")) {
-          // a not-started step is selected as a workspace is (Shift: added to the steps selected, or let go of); it
-          // isn't dragged, and its press gives it the keyboard (GhostCard)
+          // a not-started step is selected as a workspace is (Shift: added to the steps selected, or let go of), and
+          // dragged as one is, alone; its press gives it the keyboard (GhostCard)
           const id = ghostEl.dataset.front!;
           if (e.shiftKey) selRefs.current.toggleStep(id);
-          else selRefs.current.selectSteps([id]);
+          else {
+            selRefs.current.selectSteps([id]);
+            startRef.current({ ...press, kind: "ghost", key: ghostEl.dataset.ghost! });
+          }
         } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty, .ls-ghost button, .ls-ghost.planned, .ls-insert")) {
           // a wire's arrowhead or start, where a ghost or the bare landscape is, grabs that end to move it (not a shared
-          // worktree's, whose ends stay); else a ghost isn't selected: a press on it is one on the landscape where it
-          // lies, its buttons aside
+          // worktree's, whose ends stay); else a closed workspace's ghost, its buttons aside, is dragged as a workspace
+          // is (it isn't selected: a click on it is one on the landscape where it lies), and Shift on it adds to the
+          // selection with a marquee from there, as on the bare landscape
           const end = !e.shiftKey ? (wiresRef.current?.endAt(atPoint(e), END_HIT_PX / cam.current.zoom) ?? null) : null;
           const movable = end && wireBookNow.current?.book?.links[end.id]?.type !== "worktree" ? end : null;
           if (movable) startRef.current({ ...press, kind: "wireEnd", key: movable.id, end: movable.end });
+          else if (ghostEl && !e.shiftKey) startRef.current({ ...press, kind: "ghost", key: ghostEl.dataset.ghost! });
           else startRef.current({ ...press, kind: "marquee", key: "" });
         }
       }

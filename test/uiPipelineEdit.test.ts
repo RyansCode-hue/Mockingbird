@@ -93,4 +93,38 @@ describe.skipIf(!local)("a laid-out pipeline edited on the canvas", () => {
     expect(o.undoCalls).toBe(1);
     expect(o.undone).toMatchObject({ from: "pp-orch", to: "pp-c1" });
   }, 120_000);
+
+  it("drags not-started steps and a closed card as workspaces are: within an area, one of two selected alone, and into another area with its group", async () => {
+    const o = await audit("drag");
+    // a step within its area: its place saved where it was dropped, on the grid, its group left alone, its wire on it
+    expect(o.step.area).toBe("5115");
+    expect(o.step.after).toEqual({ ...o.step.before, x: o.step.free.x, y: o.step.free.y });
+    expect(o.step.setGroup).toEqual([]);
+    expect(o.step.saves).toBe(1);
+    expect(o.step.translate).toBe("");
+    expect(o.step.wire).toBeLessThanOrEqual(4);
+    // two selected, the one pressed dragged: it alone moves, as a workspace dragged from several picked does, and it's
+    // the selection after
+    expect(o.several.picked).toEqual(["pp-c2", "pp-v2"]);
+    expect(o.several.v2.after).toEqual({ ...o.several.v2.before, x: o.step.before.x, y: o.step.before.y });
+    expect(o.several.c2.after).toEqual(o.several.c2.before);
+    expect(o.several.selected).toEqual(["pp-v2"]);
+    expect(o.several.setGroup).toEqual([]);
+    // the closed Spike from 5120 into 5115: its place, then its record's group, drawn there with its wire attached
+    expect(o.closed.after).toEqual({ ...o.closed.before, x: o.closed.into.x, y: o.closed.into.y });
+    expect(o.closed.inside).toBe(true);
+    expect(o.closed.setGroup).toEqual([["wb-spike", "5115"]]);
+    expect(o.closed.group).toBe("5115");
+    expect(o.closed.drawnIn).toBe("5115");
+    expect(o.closed.translate).toBe("");
+    expect(o.closed.wire).toBeLessThanOrEqual(4);
+    // a step from 5115 into 5120: the not-started step's record follows too
+    expect(o.across.inside).toBe(true);
+    expect(o.across.setGroup).toEqual([["pp-v1", "5120"]]);
+    expect(o.across.group).toBe("5120");
+    expect(o.across.drawnIn).toBe("5120");
+    expect(o.across.wire).toBeLessThanOrEqual(4);
+    // a click on the closed card selects the area it lies in, saving nothing
+    expect(o.click).toEqual({ area: "5115", saves: 0 });
+  }, 120_000);
 });

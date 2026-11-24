@@ -1680,9 +1680,11 @@ const api: Record<string, (...a: any[]) => any> = {
   setGroup: async (id: string, group: string | null) => {
     // ?setGroupFail=<id>: that session's group can't be set
     if (params.get("setGroupFail") === id) return err(`${id}'s group can't be set here`);
-    // a live session or a closed one, as main's setGroup moves either
+    if (group?.includes("/") && planned.some((p) => p.id === id) && !sessions.some((s) => s.id === id)) return err("A not-started step goes in an area, not a stack");
+    // a live session, a closed one or a step not started yet, as main's setGroup moves any of them
     sessions = sessions.map((s) => (s.id === id ? { ...s, taskGroup: group } : s));
     previous = previous.map((s) => (s.id === id ? { ...s, taskGroup: group } : s));
+    planned = planned.map((s) => (s.id === id ? { ...s, taskGroup: group } : s));
     sessionsChanged();
   },
   renameSession: async (id: string, title: string) => {

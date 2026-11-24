@@ -109,12 +109,14 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
     const px = 1 / zoom;
     // zoomed out to cards, workspaces and ghosts are drawn a few screen px in from their places (styles.css --ci)
     const inset = now.current.band === "cards" ? GHOST_INSET * px : 0;
-    // a drag moves a workspace by its `translate` until the layout has it where it was let go; its `dragging` class is
-    // no sign of one, as a render of the workspace (its selection) sets its class names again
+    // a drag moves a workspace or a ghost by its `translate` until the layout has it where it was let go; its `dragging`
+    // class is no sign of one, as a render of it (its selection) sets its class names again. Ghosts' keys and
+    // workspaces' never meet (GHOST_KEY)
     const moved = new Map<string, Point>();
-    for (const el of world.querySelectorAll<HTMLElement>(".ls-node[data-ws][style*='translate']")) {
+    for (const el of world.querySelectorAll<HTMLElement>(".ls-node[data-ws][style*='translate'], .ls-ghost[data-ghost][style*='translate']")) {
       const by = translateOf(el.style.translate);
-      if (by && el.dataset.ws) moved.set(el.dataset.ws, by);
+      const key = el.dataset.ws ?? el.dataset.ghost;
+      if (by && key) moved.set(key, by);
     }
     // the pills' sizes, read before anything is written, so a frame lays out once
     const pills = new Map<string, { w: number; h: number } | null>();
@@ -142,7 +144,7 @@ export const WireLayer = memo(forwardRef<WireLayerHandle, { views: WireView[]; b
       }
     }
     const box = (a: WireAnchor): Rect =>
-      a.kind === "pill" ? pillBox(a.rect, pills.get(a.key) ?? null, zoom) : shiftedBox(a.rect, a.kind === "tile" ? moved.get(a.key) : undefined, inset);
+      a.kind === "pill" ? pillBox(a.rect, pills.get(a.key) ?? null, zoom) : shiftedBox(a.rect, moved.get(a.key), inset);
     const texts = new Map<string, HTMLElement[]>();
     for (const el of lb.querySelectorAll<HTMLElement>("[data-wire]")) texts.set(el.dataset.wire!, [...(texts.get(el.dataset.wire!) ?? []), el]);
     // the mid labels' sizes on screen (scaled by --ls-inv, so a CSS px is a screen px), read before anything is written

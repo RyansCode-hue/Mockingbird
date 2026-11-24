@@ -1618,13 +1618,33 @@ export function moveTargets(l: Landscape, layout: ResolvedLayout, picked: readon
 export function planMoveTile(l: Landscape, layout: ResolvedLayout, tileKey: string, at: Point, target: string, titleOf: (key: string) => string): AreaPlan {
   const t = layout.tiles.find((x) => x.key === tileKey);
   if (!t) return { refused: "That workspace isn't on the landscape any more" };
+  return planMoveDrawn(l, layout, t, false, at, target, titleOf);
+}
+
+/**
+ * A ghost (a closed workspace, or a step not started yet) dragged to `at` and dropped over area `target`, by
+ * planMoveTile's rules: snapped, kept inside the area's padding or clear of every area loose, and refused out of or
+ * into a locked area, for a teammate's to another area, and for a stack going loose. Like a dropped workspace it pushes
+ * what it lands on aside (ghosts in its way are pushed but push nothing on, as always) and its area grows to hold it,
+ * so the session it stands for, reopened or started there, finds its place free. Into another area its sessions'
+ * groups follow, those whose group isn't that already: a ghost lying in an area other than its group's is drawn in the
+ * one it lies in.
+ */
+export function planMoveGhost(l: Landscape, layout: ResolvedLayout, ghostKey: string, at: Point, target: string, titleOf: (key: string) => string): AreaPlan {
+  const g = layout.ghosts.find((x) => x.key === ghostKey);
+  if (!g) return { refused: "That card isn't on the landscape any more" };
+  return planMoveDrawn(l, layout, g, true, at, target, titleOf);
+}
+
+/** Workspace or ghost (`ghost`) `t` dragged to `at` and dropped over area `target`: planMoveTile's and planMoveGhost's plan. */
+function planMoveDrawn(l: Landscape, layout: ResolvedLayout, t: Tile, ghost: boolean, at: Point, target: string, titleOf: (key: string) => string): AreaPlan {
   const areaOf = (k: string) => (k === LOOSE_GROUP ? undefined : layout.areas.find((a) => a.key === k)?.rect);
   const from = areaOf(t.area);
   const into = areaOf(target);
   if (target !== LOOSE_GROUP && !into) return { refused: `${titleOf(target)} isn't on the landscape any more` };
   const crossing = target !== t.area;
-  if (from?.locked) return { refused: `${titleOf(t.area)} is locked: unlock it to move its workspaces` };
-  if (crossing && into?.locked) return { refused: `${titleOf(target)} is locked: unlock it to add workspaces` };
+  if (from?.locked) return { refused: `${titleOf(t.area)} is locked: unlock it to move ${ghost ? "what's in it" : "its workspaces"}` };
+  if (crossing && into?.locked) return { refused: `${titleOf(target)} is locked: unlock it to ${ghost ? "add to it" : "add workspaces"}` };
   const theirs = t.members.find(isTheirs);
   if (crossing && theirs) return { refused: `${theirs.room!.ownerName}'s workspace moves to another area only on their Mac` };
   if (crossing && t.stack && target === LOOSE_GROUP) return { refused: "A stack can't be loose: drop it in an area, or take its sessions out of it first" };
@@ -1640,14 +1660,17 @@ export function planMoveTile(l: Landscape, layout: ResolvedLayout, tileKey: stri
   }
   // back where it started, there's nothing to save or to wait for
   if (!crossing && r.x === t.rect.x && r.y === t.rect.y) return { patch: null, moves: [], after: null };
-  // what it's dropped on is pushed aside, and its area grows to hold it all (it never moves itself)
-  pushFrom(p, l, layout, target, r, new Set([t.key]));
+  // what it's dropped on is pushed aside, and its area grows to hold it all (it never moves itself); a ghost is among
+  // what's kept (keptOf), by its place's key
+  if (ghost) pushFrom(p, l, layout, target, r, NONE_LEAVING, new Set([ghostKept(t, t.area).key]));
+  else pushFrom(p, l, layout, target, r, new Set([t.key]));
   if (t.stack && crossing) restack(p, after, l, t, target, r);
   else if (t.stack) put(p.stacks, t.stack, { active: t.front.id, placement: r });
   else put(p.workspaces, t.front.id, r);
   const group = target === LOOSE_GROUP ? null : t.stack ? `${target}/${subOf(t)}` : target;
   // a stack's closed tabs go along with it
-  return { patch: finish(p), moves: crossing ? [...t.members, ...(t.closed ?? [])].map((s) => ({ id: s.id, group })) : [], after: finish(after) };
+  const moving = crossing ? [...t.members, ...(t.closed ?? [])].filter((s) => !ghost || (s.taskGroup ?? null) !== group) : [];
+  return { patch: finish(p), moves: moving.map((s) => ({ id: s.id, group })), after: finish(after) };
 }
 
 /**

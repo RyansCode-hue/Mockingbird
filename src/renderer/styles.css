@@ -3692,6 +3692,8 @@ pre.wg-body { margin: 0; resize: none; white-space: pre-wrap; overflow-wrap: any
   height: calc(var(--ls-gh, var(--gh)) - 2 * var(--ci)); padding: calc(7 * var(--u)) calc(9 * var(--u));
 }
 .ls-ghost.hidden { display: none; }
+/* dragged as a workspace is (Landscape.tsx's ghost gesture): over what it passes, lifted as a dragged workspace is */
+.ls-ghost.dragging { z-index: 6; box-shadow: 0 0 0 calc(1.5 * var(--u)) var(--pane-focus), 0 18px 40px rgba(0, 0, 0, .38); }
 /* W8: a step not started yet (Inbox.dc.html's Tester, Zoomed.dc.html's): a workspace's card, faded, its dot filled grey
    rather than a closed one's ring, what starts it in plain type, no buttons */
 .ls-ghost.planned { border: calc(1 * var(--u)) solid var(--line-strong); background: var(--bg-pane); opacity: .8; }
