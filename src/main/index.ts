@@ -17,6 +17,7 @@ import { debugTargetFor } from "./dap/targets";
 import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan, readContextWindow } from "./usage";
+import { readLaunchModels } from "./agentModels";
 import { planRateOf, refreshBrief, resumeEstimate, type RefreshBrief, type ResumeEstimate } from "./contextActions";
 import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef, inside, branchStat, forgetBranchStat } from "./files";
 import { scmRoomPush, scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
@@ -1146,13 +1147,10 @@ handle("usage:context", (id: string): ContextWindow => {
   if (!s) return { state: "none", why: "This session isn't running" };
   const cw = readContextWindow(s);
   // the model its agent reports running: one typed in with /model becomes its record's, for its next launch
-  if (cw.state === "reading" && cw.model) sessions.noteReportedModel(s.id, cw.model, cw.at);
+  if (cw.state === "reading" && cw.model) sessions.noteReportedModel(s.id, { first: null, earliest: { model: cw.model }, last: { model: cw.model }, at: cw.at });
   return cw;
 });
-sessions.reportedModel = (s) => {
-  const cw = readContextWindow(s);
-  return cw.state === "reading" && cw.model ? { model: cw.model, at: cw.at } : null;
-};
+sessions.launchModels = (s, opts) => readLaunchModels(s, opts);
 // the context warning's actions: Compact (only at an idle prompt), a fresh session from a brief, and cost estimates
 handle("usage:compact", (id: string) => sessions.compact(String(id)));
 /** Weighted units per 1% of `agent`'s 5-hour limit, from this Mac's use of the window; null without a reading. */

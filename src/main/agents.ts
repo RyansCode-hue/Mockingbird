@@ -14,6 +14,8 @@ import { TICKET_TOOL } from "./ticketToolSchemas";
 import { WIRE_TOOL } from "./wireToolSchemas";
 
 export interface LaunchContext {
+  /** The folder the agent runs in: where Claude reads a project's settings (a statusLine among them) from. */
+  cwd?: string;
   /** The per-session Mockingbird MCP server that lets agents message each other; absent for an agent outside messaging. */
   mcp?: McpLaunch;
   /** Claude permission rules denying file reads (a team room session's secrets), as --disallowedTools. */
@@ -208,8 +210,10 @@ const claude: AgentAdapter = {
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
     // one --settings, carrying the status line and a room's sandbox. Hooks from every settings file run, and outside
     // the sandbox, as do the MCP servers a project's .mcp.json starts: a room launch reads only the user's settings
-    // (Mockingbird's own hooks are there) and runs only Mockingbird's server
-    args.push("--settings", JSON.stringify({ ...usageReporterSettings(), ...ctx.claudeSettings, ...CLAUDE_PANE_SETTINGS }));
+    // (Mockingbird's own hooks are there) and runs only Mockingbird's server. The status line wraps the one this
+    // launch would otherwise draw: from the settings it reads, in its folder
+    const statusLine = usageReporterSettings({ cwd: ctx.cwd ?? null, userOnly: !!ctx.claudeSettings });
+    args.push("--settings", JSON.stringify({ ...statusLine, ...ctx.claudeSettings, ...CLAUDE_PANE_SETTINGS }));
     if (ctx.claudeSettings) args.push("--setting-sources", "user", "--strict-mcp-config");
     // --mcp-config adds to the user's own servers (outside a room); the allow
     // rule spares a permission prompt on every message

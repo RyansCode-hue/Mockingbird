@@ -1,6 +1,9 @@
+import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { tempDir } from "./helpers";
+import { readLaunchModels, type LaunchModels, type ModelReport } from "../src/main/agentModels";
 import { LandscapeStore } from "../src/main/landscape";
 import { WireService } from "../src/main/wires";
 import { PipelineEdits, modelRefusal } from "../src/main/pipelineEdit";
@@ -84,6 +87,8 @@ async function setup(opts: { catalog?: ModelCatalog | null; whileReadingCatalog?
 const pane = (o: Partial<NewSessionRequest> = {}): NewSessionRequest => ({ repoPath: null, useWorktree: false, agent: "claude", title: "a", ...o });
 const step = (m: Awaited<ReturnType<typeof setup>>["m"], title: string, o: Record<string, unknown> = {}) => m.planStep({ title, agent: "claude", repoPath: null, worktree: false, taskGroup: "5200", ...o });
 const last = () => ptys.at(-1)!.args.join(" ");
+/** What an agent reported running in a launch: its latest report at `at`, its first when known, and the earliest read. */
+const reported = (latest: ModelReport, at: number, first: ModelReport | null = null, earliest: ModelReport = first ?? latest): LaunchModels => ({ first, earliest, last: latest, at });
 const made = (r: WireReply) => {
   if ("refused" in r) throw new Error(`refused: ${r.refused}`);
   return r.id!;
@@ -212,39 +217,167 @@ describe("a model that sticks", () => {
     expect(last()).toContain("'--model' 'sonnet'");
   });
 
-  it("records a /model its agent reports running (its status line's model) for the next launch, an older run's report saying nothing", async () => {
+  it("records a /model its agent reports running for the next launch: against its record's model, or with none against its launch's first report", async () => {
     const { m, store } = await setup();
     const s = await m.create(pane({ model: "opus" }));
-    const now = s.createdAt + 1;
-    // the alias's own model is no change
-    expect(m.noteReportedModel(s.id, "claude-opus-4-7", now)).toBe(false);
-    expect(m.noteReportedModel(s.id, "claude-sonnet-4-5", s.createdAt - 1)).toBe(false);
-    expect(m.noteReportedModel(s.id, "claude-sonnet-4-5", now)).toBe(true);
+    const at = s.createdAt + 1;
+    // the alias's own model is no change, and an older run's report says nothing
+    expect(m.noteReportedModel(s.id, reported({ model: "claude-opus-4-7" }, at))).toBe(false);
+    expect(m.noteReportedModel(s.id, reported({ model: "claude-sonnet-4-5" }, s.createdAt - 1))).toBe(false);
+    expect(m.noteReportedModel(s.id, reported({ model: "claude-sonnet-4-5" }, at))).toBe(true);
     expect(store.state.sessions.find((x) => x.id === s.id)?.model).toBe("claude-sonnet-4-5");
     await m.restart(s.id);
     expect(last()).toContain("'--model' 'claude-sonnet-4-5'");
-    // with none of its own, the first it reports is its default, and a later other one a /model
+    // with none of its own: nothing to tell a /model by until its launch's first report is known
     const d = await m.create(pane());
-    expect(m.noteReportedModel(d.id, "claude-opus-4-7", d.createdAt)).toBe(false);
+    expect(m.noteReportedModel(d.id, reported({ model: "claude-haiku-4-5" }, d.createdAt))).toBe(false);
+    expect(m.noteReportedModel(d.id, reported({ model: "claude-opus-4-7[1m]" }, d.createdAt + 1, { model: "claude-opus-4-7" }))).toBe(false);
     expect(m.list().find((x) => x.id === d.id)?.model).toBeUndefined();
-    expect(m.noteReportedModel(d.id, "claude-haiku-4-5", d.createdAt + 5)).toBe(true);
+    expect(m.noteReportedModel(d.id, reported({ model: "claude-haiku-4-5" }, d.createdAt + 5))).toBe(true);
     expect(m.list().find((x) => x.id === d.id)?.model).toBe("claude-haiku-4-5");
+  });
+
+  it("reads what a pane's agent runs at each turn's end, its launch's first report once, and takes the model a starting Claude names as that first", async () => {
+    const { m } = await setup();
+    const modelOf = (id: string) => m.list().find((x) => x.id === id)?.model;
+    const asked: boolean[] = [];
+    let report: LaunchModels | null = null;
+    m.launchModels = (_s, o) => (asked.push(o.first), report);
+    const d = await m.create(pane());
+    const finish = (id: string, conv: string) => m.statusFromHook({ paneId: id, conversationId: conv, agent: "claude", status: "idle", finished: true });
+    m.statusFromHook({ paneId: d.id, conversationId: "conv-d", agent: "claude", status: "idle", started: true });
+    report = reported({ model: "claude-opus-4-7" }, d.createdAt + 1, { model: "claude-opus-4-7" });
+    finish(d.id, "conv-d");
+    report = reported({ model: "claude-haiku-4-5" }, d.createdAt + 9);
+    expect(modelOf(d.id)).toBeUndefined();
+    finish(d.id, "conv-d");
+    expect(asked).toEqual([true, false]);
+    expect(modelOf(d.id)).toBe("claude-haiku-4-5");
+    // a /model typed before its first reply: its first reply is already the new model, its start named the default
+    const s = await m.create(pane());
+    m.statusFromHook({ paneId: s.id, conversationId: "conv-s", agent: "claude", status: "idle", started: true, model: "claude-opus-4-7", at: Math.floor(Date.now() / 1000) });
+    asked.length = 0;
+    report = reported({ model: "claude-sonnet-4-5" }, s.createdAt + 5, { model: "claude-sonnet-4-5" });
+    finish(s.id, "conv-s");
+    expect(asked).toEqual([false]);
+    expect(modelOf(s.id)).toBe("claude-sonnet-4-5");
+    // what fails to read is logged, and the record kept as it was
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    m.launchModels = () => {
+      throw new Error("EACCES: the transcript");
+    };
+    finish(s.id, "conv-s");
+    expect(String(warn.mock.calls[0][0])).toContain(`${s.id}: couldn't read which model its agent reports running`);
+    expect(modelOf(s.id)).toBe("claude-sonnet-4-5");
   });
 
   it("reopens a closed session with what its agent last reported running when its record's line differs", async () => {
     const { m } = await setup();
     const s = await m.create(pane({ model: "opus" }));
     m.kill(s.id, false);
-    let report: { model: string; at: number } | null = { model: "claude-sonnet-4-5", at: s.createdAt + 10 };
-    m.reportedModel = () => report;
+    let report: LaunchModels | null = reported({ model: "claude-sonnet-4-5" }, s.createdAt + 10);
+    m.launchModels = () => report;
     await m.relaunch(s.id);
     expect(last()).toContain("'--model' 'claude-sonnet-4-5'");
     // one from before its last launch is an older run's
     const t = await m.create(pane({ model: "opus" }));
     m.kill(t.id, false);
-    report = { model: "claude-sonnet-4-5", at: t.createdAt - 10 };
+    report = reported({ model: "claude-sonnet-4-5" }, t.createdAt - 10);
     await m.relaunch(t.id);
     expect(last()).toContain("'--model' 'opus'");
+  });
+
+  it("reopens a record with no model or effort of its own with what its agent ran last when that's not what its launch first ran", async () => {
+    const { m } = await setup();
+    let report: LaunchModels | null = null;
+    m.launchModels = () => report;
+    const reopen = async (o: Partial<NewSessionRequest>, r: (createdAt: number) => LaunchModels) => {
+      const x = await m.create(pane(o));
+      m.kill(x.id, false);
+      report = r(x.createdAt);
+      await m.relaunch(x.id);
+      return last();
+    };
+    // Claude: a model typed in, its default's own line, and a first report that's out of reach
+    expect(await reopen({}, (t) => reported({ model: "claude-sonnet-4-5" }, t + 9, { model: "claude-opus-4-7" }))).toContain("'--model' 'claude-sonnet-4-5'");
+    expect(await reopen({}, (t) => reported({ model: "claude-opus-4-7[1m]" }, t + 9, { model: "claude-opus-4-7" }))).not.toContain("--model");
+    expect(await reopen({}, (t) => reported({ model: "claude-sonnet-4-5" }, t + 9, null))).not.toContain("--model");
+    // Codex: its reasoning effort alone, its model alone, and an effort a launch can't be given
+    const codex = { agent: "codex" as const };
+    const effort = await reopen(codex, (t) => reported({ model: "gpt-5.1-codex", effort: "high" }, t + 9, { model: "gpt-5.1-codex", effort: "medium" }));
+    expect(effort).toContain('model_reasoning_effort="high"');
+    expect(effort).not.toContain("--model");
+    const model = await reopen(codex, (t) => reported({ model: "gpt-5.2-codex", effort: "medium" }, t + 9, { model: "gpt-5.1-codex", effort: "medium" }));
+    expect(model).toContain("'--model' 'gpt-5.2-codex'");
+    expect(model).not.toContain("model_reasoning_effort");
+    expect(await reopen(codex, (t) => reported({ model: "gpt-5.1-codex", effort: "minimal" }, t + 9, { model: "gpt-5.1-codex", effort: "medium" }))).not.toContain("model_reasoning_effort");
+  });
+
+  it("reads a closed record's files further back for its launch's first report only when what's within reach shows a change", async () => {
+    const { m } = await setup();
+    const asked: boolean[] = [];
+    let near: LaunchModels | null = null;
+    let far: LaunchModels | null = null;
+    m.launchModels = (_s, o) => (asked.push(o.first), o.first ? far : near);
+    const closed = async () => {
+      const x = await m.create(pane());
+      m.kill(x.id, false);
+      asked.length = 0;
+      return x;
+    };
+    // no change within reach: a /model from before it was followed by a turn's end, which kept it
+    let x = await closed();
+    near = reported({ model: "claude-opus-4-7" }, x.createdAt + 9, null, { model: "claude-opus-4-7" });
+    await m.relaunch(x.id);
+    expect(asked).toEqual([false]);
+    expect(last()).not.toContain("--model");
+    // one shown: its launch's first decides
+    x = await closed();
+    near = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, null, { model: "claude-opus-4-7" });
+    far = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, { model: "claude-opus-4-7" });
+    await m.relaunch(x.id);
+    expect(asked).toEqual([false, true]);
+    expect(last()).toContain("'--model' 'claude-sonnet-4-5'");
+    // it started on that model, and switched away and back: no change
+    x = await closed();
+    near = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, null, { model: "claude-opus-4-7" });
+    far = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, { model: "claude-sonnet-4-5" });
+    await m.relaunch(x.id);
+    expect(asked).toEqual([false, true]);
+    expect(last()).not.toContain("--model");
+  });
+
+  it("keeps a Codex session's /model and reasoning effort, read from its rollout, for its next launch: at a turn's end, or as it reopens", async () => {
+    const { m, store } = await setup();
+    m.launchModels = (s, o) => readLaunchModels(s, o);
+    const turn = (at: number, model: string, effort: string) => JSON.stringify({ timestamp: new Date(at).toISOString(), type: "turn_context", payload: { cwd: "/w", model, effort } });
+    const rollout = (id: string, lines: string[]) => {
+      const dir = path.join(os.homedir(), ".codex", "sessions", "2026", "10", "12");
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `rollout-2026-10-12T09-00-00-${id}.jsonl`);
+      fs.writeFileSync(file, lines.join("\n") + "\n");
+      return file;
+    };
+    const s = await m.create(pane({ agent: "codex", model: "gpt-5.1-codex", effort: "medium" }));
+    const sId = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    const file = rollout(sId, [turn(s.createdAt + 1_000, "gpt-5.1-codex", "medium"), turn(s.createdAt + 2_000, "gpt-5.1-codex-max", "xhigh")]);
+    m.statusFromHook({ paneId: s.id, conversationId: sId, agent: "codex", status: "idle", started: true, transcriptPath: file });
+    m.statusFromHook({ paneId: s.id, conversationId: sId, agent: "codex", status: "idle", finished: true, transcriptPath: file });
+    expect(store.state.sessions.find((x) => x.id === s.id)).toMatchObject({ model: "gpt-5.1-codex-max", effort: "xhigh" });
+    m.kill(s.id, false);
+    await m.relaunch(s.id);
+    expect(last()).toContain(`'resume' '${sId}'`);
+    expect(last()).toContain("'--model' 'gpt-5.1-codex-max'");
+    expect(last()).toContain('model_reasoning_effort="xhigh"');
+    // one closed before a turn's end saw its /model: its Reopen reads its rollout
+    const t = await m.create(pane({ agent: "codex", model: "gpt-5.1-codex", effort: "medium" }));
+    const tId = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c";
+    m.statusFromHook({ paneId: t.id, conversationId: tId, agent: "codex", status: "idle", started: true });
+    m.kill(t.id, false);
+    rollout(tId, [turn(t.createdAt + 1_000, "gpt-5.1-codex", "medium"), turn(t.createdAt + 2_000, "gpt-5.1-codex", "high")]);
+    await m.relaunch(t.id);
+    expect(last()).toContain("'--model' 'gpt-5.1-codex'");
+    expect(last()).toContain('model_reasoning_effort="high"');
   });
 
   it("tells a launch's alias from another line by its name", () => {

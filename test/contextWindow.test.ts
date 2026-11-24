@@ -84,11 +84,13 @@ describe("a Claude session's context window", () => {
     write({ session_id: ID, context_window: contextWindow(0, 200_000) });
     expect(claudeContext(ID)).toEqual({ state: "none", why: "No reply yet in this conversation" });
   });
-  it("says no report has come yet, or that the user's own statusLine replaces the reporter", () => {
+  it("says no report has come yet, the user's own statusLine (which the reporter wraps) or not, and why the reporter is off when it is", () => {
     expect(claudeContext(ID)).toMatchObject({ state: "none", why: expect.stringContaining("No report yet") });
     fs.mkdirSync(path.dirname(settings), { recursive: true });
     fs.writeFileSync(settings, JSON.stringify({ statusLine: { type: "command", command: "mine.sh" } }));
-    expect(claudeContext(ID)).toMatchObject({ state: "none", why: expect.stringContaining("your own statusLine") });
+    expect(claudeContext(ID)).toMatchObject({ state: "none", why: expect.stringContaining("No report yet") });
+    fs.writeFileSync(settings, "{not json");
+    expect(claudeContext(ID)).toMatchObject({ state: "none", why: expect.stringMatching(/^Not reported: .*couldn't be read/) });
   });
   it("shows a short error and logs it for a corrupt report or one without a window", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

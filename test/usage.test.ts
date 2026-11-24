@@ -133,8 +133,8 @@ describe("usageReporterSettings", () => {
     expect(fs.readFileSync(script, "utf8")).toContain("Mockingbird usage reporter");
     expect(fs.statSync(script).mode & 0o777).toBe(0o755);
   });
-  it("stays out of the way of the user's own statusLine", () => {
-    fs.writeFileSync(settings, JSON.stringify({ statusLine: { type: "command", command: "mine.sh" } }));
-    expect(usageReporterSettings()).toBeNull();
+  it("wraps the user's own statusLine rather than replacing it (statuslineWrap.test.ts runs it)", () => {
+    fs.writeFileSync(settings, JSON.stringify({ statusLine: { type: "command", command: "mine.sh", padding: 0 } }));
+    expect(usageReporterSettings()!.statusLine).toEqual({ type: "command", command: `"${path.join(mb, "statusline.sh")}" '\\x6d\\x69\\x6e\\x65\\x2e\\x73\\x68'`, padding: 0 });
   });
 });

@@ -12,7 +12,8 @@ import { BASE_NAMES, branchesOf, currentBranch, git } from "./git";
 import { uniqueBranch } from "./presets";
 import { roomFolderRefusal, samePath } from "./handlers";
 import { adoEnv } from "./ado";
-import { agentFor, agentLabel, AgentAdapter, listsChromeFlag, permissionModeRefusal, readRelaunchChange, widerModeWarning, type LaunchContext } from "./agents";
+import { agentFor, agentLabel, AgentAdapter, CODEX_EFFORTS, listsChromeFlag, permissionModeRefusal, readRelaunchChange, widerModeWarning, type LaunchContext } from "./agents";
+import type { LaunchModels, ModelReport } from "./agentModels";
 import { isPermissionMode, WIDER_MODES, type PermissionMode } from "../shared/permissionModes";
 import { HELPDESK_FOLDER_ONLY, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
 import { which, whichSync, quote } from "./shell";
@@ -249,7 +250,8 @@ interface LiveSession {
   ownPrompts: number; // notices submitted whose UserPromptSubmit hasn't come yet: those prompts aren't counted
   promptAt: number | null; // when the latest of those prompts came (SessionInfo.promptAt)
   toTerminal: boolean; // its agent quit and the terminal it becomes is starting (toTerminal): its pty has exited
-  firstModel: string | null; // the first model its agent reported running this launch (noteReportedModel), else null
+  firstModel: ModelReport | null; // what its agent reported running first this launch (noteReportedModel), else null
+  firstSought: boolean; // its files were read for that first report once it had reported (checkReportedModel)
 }
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
@@ -307,6 +309,22 @@ export function sameModelLine(a: string, b: string): boolean {
   if (x === y) return true;
   const parts = (m: string) => m.split(/[-.@_]/);
   return (!x.includes("-") && parts(y).includes(x)) || (!y.includes("-") && parts(x).includes(y));
+}
+
+/**
+ * What of `last` (the latest an `agent` reported running in a launch) is a change typed in its pane with `/model`, for
+ * a record that runs `rec`: a model of another line (sameModelLine) than its record's or, with no model of its own,
+ * than `first` (the launch's first report, its agent's default then); Codex's reasoning effort the same way, by name.
+ * With `first` unknown (null), or naming no effort, nothing tells a change from the default, so the default stays. An
+ * effort a Codex launch can't be given (CODEX_EFFORTS) is left as it is.
+ */
+export function typedChange(agent: AgentKind, rec: { model?: string | null; effort?: string | null }, first: ModelReport | null, last: ModelReport): { model?: string; effort?: string } {
+  const out: { model?: string; effort?: string } = {};
+  const model = last.model.trim();
+  if (model && (rec.model ? !sameModelLine(rec.model, model) : !!first && !sameModelLine(first.model, model))) out.model = model;
+  const effort = agent === "codex" ? last.effort : null;
+  if (effort && CODEX_EFFORTS.includes(effort) && (rec.effort ? rec.effort !== effort : !!first && first.effort !== undefined && first.effort !== effort)) out.effort = effort;
+  return out;
 }
 
 /** Why not-started step `s` can't be reopened, resumed or restarted: it has no conversation or folder to go back to. */
@@ -775,6 +793,7 @@ export class SessionManager {
     if (modeWhy) throw new Error(modeWhy);
     const instructions = tasks ? HELPDESK_RULES : [room?.instructions, req.shell || req.debrief ? null : this.launchNotes(id, req.role, ticketOfSession({ ticketId: req.ticketId, taskGroup: group }))].filter(Boolean).join("\n\n");
     const roomCtx: LaunchContext = {
+      cwd,
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
       ...(room?.codexPermissions.length ? { codexPermissions: room.codexPermissions } : {}),
       ...(room?.claudeSettings ? { claudeSettings: room.claudeSettings } : {}),
@@ -948,6 +967,7 @@ export class SessionManager {
       heldInput: [],
       hookEvents: 0,
       firstModel: null,
+      firstSought: false,
       transcripts: new Map(),
       kickoff: false,
       startTimer: null,
@@ -1500,6 +1520,9 @@ export class SessionManager {
   private async restartWith(id: string, change: RelaunchChange | undefined): Promise<SessionInfo> {
     const why = this.restartRefusal(id);
     if (why) throw new Error(why);
+    // a /model since its last turn ended is kept while what it started on is still known
+    const running = this.live.get(id);
+    if (running) this.checkReportedModel(running);
     this.kill(id, false); // keep the store entry so relaunch can resume it
     const info = await this.relaunch(id, change);
     if (!info) throw new Error("no persisted session to resume");
@@ -1981,44 +2004,83 @@ export class SessionManager {
   }
 
   /**
-   * Live pane `id`'s agent reported running `model` at `at` (its status line's report, read for its context meter). A
-   * model other than the first it reported this launch, or another line than its record names, is one typed in with
-   * `/model`: it becomes its record's, so its next restart, Reopen or Resume runs it. A report from before this launch
-   * is an older run's and says nothing. Answers whether the record changed.
+   * Live pane `id`'s agent reported running `r` (its launch's latest report, and its first when known: launchModels at
+   * a turn's end, or its status line's report read for its context meter). A change typed in with `/model`
+   * (typedChange, against the first it reported this launch) becomes its record's, so its next restart, Reopen or
+   * Resume runs it. A report from before this launch is an older run's and says nothing. Answers whether the record
+   * changed.
    */
-  noteReportedModel(id: string, model: string, at: number): boolean {
+  noteReportedModel(id: string, r: LaunchModels): boolean {
     const s = this.live.get(id);
-    if (!s || s.info.shell || (s.info.agent ?? "claude") !== "claude" || at < s.info.createdAt || !model.trim()) return false;
-    s.firstModel ??= model;
-    const recorded = s.info.model;
-    if (recorded ? sameModelLine(recorded, model) : s.firstModel === model) return false;
-    s.info.model = model;
+    if (!s || s.info.shell || r.at < s.info.createdAt) return false;
+    if (r.first) s.firstModel ??= r.first;
+    const change = typedChange(s.info.agent ?? "claude", s.info, s.firstModel, r.last);
+    if (change.model === undefined && change.effort === undefined) return false;
+    if (change.model !== undefined) {
+      s.info.model = change.model;
+      console.log(`[sessions] ${id}: its agent reports running ${change.model}, so its record keeps that for its next launch`);
+    }
+    if (change.effort !== undefined) {
+      s.info.effort = change.effort;
+      console.log(`[sessions] ${id}: its agent reports ${change.effort} reasoning effort, so its record keeps that for its next launch`);
+    }
     this.store.upsertSession(s.info);
     this.emitChanged();
-    console.log(`[sessions] ${id}: its agent reports running ${model}, so its record keeps that for its next launch`);
     return true;
   }
 
-  /** What Claude pane `s` last reported running and when (its status line's report): set by main; null when unread. */
-  reportedModel: ((s: SessionInfo) => { model: string; at: number } | null) | null = null;
+  /**
+   * What session `s`'s agent reported running in its launch, from its own files (agentModels.ts, set by main): its
+   * latest report, and with `first` its launch's first; `transcript` is its conversation's file when a hook named it.
+   * Null when it reported nothing this launch.
+   */
+  launchModels: ((s: SessionInfo, opts: { first: boolean; transcript?: string | null }) => LaunchModels | null) | null = null;
 
   /**
-   * Closed record `old`'s model as its next launch runs it: the one its agent last reported running in its last launch
-   * when that's another line than its record's (a `/model` typed in its pane that noteReportedModel didn't see, as its
-   * context meter wasn't read since), else its record's. With no model of its record's there's nothing to tell a
-   * `/model` from its agent's default by, so the default stays.
+   * What pane `s`'s agent reports running now, from its files (launchModels), to noteReportedModel: at each turn's end,
+   * and as it's restarted. Its launch's first report is read for once, when it has reported something and its record
+   * leaves a choice to its agent's default.
    */
-  private stickyModel(old: SessionInfo): string | undefined {
-    if (old.shell || (old.agent ?? "claude") !== "claude" || !old.model) return old.model ?? undefined;
-    let r: { model: string; at: number } | null = null;
+  private checkReportedModel(s: LiveSession): void {
+    const conv = s.info.conversation;
+    if (!this.launchModels || s.info.shell || !conv) return;
+    const first = !s.firstModel && !s.firstSought && (!s.info.model || ((s.info.agent ?? "claude") === "codex" && !s.info.effort));
+    let r: LaunchModels | null;
     try {
-      r = this.reportedModel?.(old) ?? null;
+      r = this.launchModels(s.info, { first, transcript: s.transcripts.get(conv.id) ?? null });
+    } catch (err) {
+      console.warn(`[sessions] ${s.info.id}: couldn't read which model its agent reports running, so a /model typed in it isn't kept yet:`, err);
+      return;
+    }
+    if (!r) return;
+    if (first) s.firstSought = true;
+    this.noteReportedModel(s.info.id, r);
+  }
+
+  /**
+   * Closed record `old`'s model and effort as its next launch runs them: what its agent last reported running in its
+   * last launch where that's a change typed in its pane (typedChange) that noteReportedModel didn't see, else its
+   * record's. Its launch's first report is read for further back only when what's within reach shows a change: one
+   * made before that was followed by a turn's end, where noteReportedModel kept it.
+   */
+  private stickyModel(old: SessionInfo): { model?: string; effort?: string } {
+    const kept = { model: old.model ?? undefined, effort: old.effort ?? undefined };
+    if (old.shell || !this.launchModels) return kept;
+    const agent = old.agent ?? "claude";
+    const choosesNothing = !old.model || (agent === "codex" && !old.effort);
+    let r: LaunchModels | null = null;
+    try {
+      r = this.launchModels(old, { first: false });
+      const shown = r && !r.first && choosesNothing ? typedChange(agent, old, r.earliest, r.last) : {};
+      if (shown.model !== undefined || shown.effort !== undefined) r = this.launchModels(old, { first: true }) ?? r;
     } catch (err) {
       console.warn(`[sessions] ${old.id}: couldn't read the model its agent last reported, so it launches with its record's:`, err);
     }
-    if (!r || r.at < old.createdAt || sameModelLine(old.model, r.model)) return old.model;
-    console.log(`[sessions] ${old.id}: its agent last reported running ${r.model}, not ${old.model}: it launches with ${r.model}`);
-    return r.model;
+    if (!r || r.at < old.createdAt) return kept;
+    const change = typedChange(agent, old, r.first, r.last);
+    if (change.model !== undefined) console.log(`[sessions] ${old.id}: its agent last reported running ${change.model}, not ${old.model ?? "its default"}: it launches with ${change.model}`);
+    if (change.effort !== undefined) console.log(`[sessions] ${old.id}: its agent last reported ${change.effort} reasoning effort, not ${old.effort ?? "its default"}: it launches with ${change.effort}`);
+    return { model: change.model ?? kept.model, effort: change.effort ?? kept.effort };
   }
 
   /**
@@ -2289,6 +2351,7 @@ export class SessionManager {
     const notice = [freed, place.moved, ...(place.warnings ?? [])].filter(Boolean).join("\n") || undefined;
     if (notice) console.warn(`[sessions] ${old.id}: ${notice}`);
     const { conv, sameAgent, resume } = plan;
+    const sticky = change.model !== undefined && change.effort !== undefined ? {} : this.stickyModel(old);
     // create() re-adds the record; only forget the old one once it has, or a
     // failed relaunch (missing worktree, spawn error) erases the session for good
     const info = await this.create({
@@ -2306,8 +2369,8 @@ export class SessionManager {
       shell: old.shell,
       role: old.role,
       ...(old.tickets ? { tickets: old.tickets } : {}),
-      model: (change.model !== undefined ? change.model : this.stickyModel(old)) ?? undefined,
-      effort: (change.effort !== undefined ? change.effort : old.effort) ?? undefined,
+      model: (change.model !== undefined ? change.model : sticky.model) ?? undefined,
+      effort: (change.effort !== undefined ? change.effort : sticky.effort) ?? undefined,
       permissionMode: change.permissionMode ?? old.permissionMode ?? undefined,
       agent: old.agent,
     }, { notice, ...(old.shell && old.agentQuit ? { agentQuit: old.agentQuit, conversation: old.conversation } : {}) });
@@ -2981,6 +3044,8 @@ export class SessionManager {
     at?: number;
     /** The mode its agent reported (hookMode): null for one narrower than the default; absent when it named none. */
     mode?: PermissionMode | null;
+    /** The model a starting (or resuming) Claude names (SessionStart's `model`): the one its launch starts on. */
+    model?: string;
   }): SessionInfo | null {
     // a tagged event that names no live pane comes from something else Mockingbird
     // runs (a Collaborate room) or a closed pane — never guess a pane for it
@@ -3026,6 +3091,9 @@ export class SessionManager {
       s.transcripts.set(ev.conversationId, ev.transcriptPath);
       if (s.transcripts.size > 8) s.transcripts.delete(s.transcripts.keys().next().value!);
     }
+    // the model this launch starts on, from its own agent's start (`at` is whole seconds): what a /model is told from
+    if (ev.model && ev.started && ev.paneId === s.info.id && (ev.at === undefined || ev.at >= Math.floor(s.info.createdAt / 1000))) s.firstModel ??= { model: ev.model };
+    if (ev.finished) this.checkReportedModel(s);
     // a starting agent that is about to be given its kickoff prompt is about to work
     if (ev.started && s.kickoff) return s.info;
     this.setStatus(s.info.id, ev.status, ev.reason, finishedAtAfter(s.info, ev, Date.now()));
