@@ -209,7 +209,7 @@ export interface AssistantLayoutDeps {
   /** Whether session `id` is muted now; null when it isn't open here. */
   muted(id: string): boolean | null;
 
-  /** The wire book as the Assistant reads it (wiresSeen): ends, types, gates; never what a wire carries. Throws when it can't be read. */
+  /** The wire book as the Assistant reads it (wiresSeen), earliest first: ends, types, gates; never what a wire carries. Throws when it can't be read. */
   wireList(): AssistantWire[];
   /** Why a wire `type` from `from` to `to` can't be made now (wireRefusal, and whether the book can be saved), or null. */
   wireAddRefusal(from: string, to: string, type: WireType): string | null;

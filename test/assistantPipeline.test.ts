@@ -6,7 +6,7 @@ import { PipelineEdits, type PipelineEditDeps } from "../src/main/pipelineEdit";
 import { draftTemplate, removedTemplate, savedTemplates, updatedTemplate } from "../src/main/templates";
 import { WireService } from "../src/main/wires";
 import { pipelineTools } from "../src/main/assistant/tools/pipeline";
-import { wireTools } from "../src/main/assistant/tools/wires";
+import { wireTools, wiresSeen } from "../src/main/assistant/tools/wires";
 import { sessionTools } from "../src/main/assistant/tools/sessions";
 import { diagnoseTools } from "../src/main/assistant/tools/diagnose";
 import { startTools } from "../src/main/assistant/tools/start";
@@ -30,7 +30,8 @@ const CATALOG: ModelCatalog = {
 
 const step = (id: string, title: string, prompt: string, over: Partial<SessionInfo> = {}) => info(id, { title, planned: { worktree: false, prompt }, ...over });
 
-function world() {
+/** `newId` names the wires the service makes, in turn: random 8-hex ids otherwise. */
+function world(o: { newId?: () => string } = {}) {
   const own = [info("a1", { title: "Planner", model: "opus", status: "working" }), info("t1", { title: "Dev server", shell: true, agent: undefined })];
   // made once atticus's area is there, as steps are added to a pipeline laid out in it
   const ghosts: SessionInfo[] = [];
@@ -101,7 +102,8 @@ function world() {
       describeRelaunch: () => ({ blocked: null, warnings: ["It's mid-turn: restarting stops the turn it's on"] }),
       wireList: () => {
         const st = w.store.wires();
-        return (st.book ? (Object.entries(st.book.links) as [string, any][]) : []).map(([id, x]) => ({ id, from: x.from, to: x.to, type: x.type, when: x.when, state: "idle", why: null, gate: x.gate ?? "ask", waiting: null, rounds: x.rounds ?? null }));
+        if (!st.book) throw new Error(st.refused ?? "The wire book can't be read");
+        return wiresSeen(st.book, service.context(st.book));
       },
       modelCatalog: async () => CATALOG,
       editStep: (id, e) => edits.editStep(id, e),
@@ -170,7 +172,7 @@ function world() {
   };
   ghosts.push(step("p1", "Coder", "Build the org filter.\nThen add its tests, and run them all."), step("p2", "Reviewer", "Review what Coder changed"), info("c1", { title: "Old", status: "dead", model: "sonnet" }));
   place();
-  service = new WireService({ store: w.store, sessions: { list: () => own, resumable: closed, planned }, roomOf: () => null, takenOver: () => null, log: (c, e) => void problems.push(`${c}: ${String(e)}`) });
+  service = new WireService({ store: w.store, sessions: { list: () => own, resumable: closed, planned }, roomOf: () => null, takenOver: () => null, log: (c, e) => void problems.push(`${c}: ${String(e)}`), newId: o.newId });
   edits = new PipelineEdits({
     sessions: sessions as unknown as PipelineEditDeps["sessions"],
     wires: service,
@@ -276,6 +278,17 @@ describe("the Assistant's pipeline tools", () => {
     expect(g.unwired).toBe("1 workspace isn't wired to another in it");
     expect(json(await go(w, "pipeline", { session: "t1" }))).toMatchObject({ pipeline: null });
     expect(await w.tool("pipeline").check!({ session: "a1", group: "atticus" })).toBe("Name a session or a group (one of them)");
+  });
+
+  it("pipeline and list_wires give wires in the order they were made, whatever their ids: one that reads as an integer isn't put first", async () => {
+    const ids = ["ab12cd34", "14016261"];
+    const w = world({ newId: () => ids.shift()! });
+    expect([w.ap, w.pp]).toEqual(["ab12cd34", "14016261"]);
+    expect(Object.keys(w.store.wires().book!.links)).toEqual([w.pp, w.ap]); // the book's own key order
+    const out = json(await go(w, "pipeline", { session: "p2" }));
+    expect(out.pipeline.wires.map((x: { id: string }) => x.id)).toEqual([w.ap, w.pp]);
+    const listed = JSON.parse((await wireTools(w.deps).find((t) => t.name === "list_wires")!.run({})).text).wires;
+    expect(listed.map((x: { id: string }) => x.id)).toEqual([w.ap, w.pp]);
   });
 
   it("the snapshot counts not-started steps and closed sessions per group and the held plans, and lists none of them", () => {
