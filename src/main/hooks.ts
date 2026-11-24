@@ -242,6 +242,12 @@ function turnsIn(events: any[]): Set<string> {
   return new Set(events.filter((e) => typeof e?.pane === "string" && e.pane && !NOT_A_TURN.has(e.event)).map((e) => e.pane as string));
 }
 
+/** A SessionStart payload's `model` (Claude Code 2.1.3xx: a model id; an object with one is taken too), else undefined. */
+function startingModel(v: unknown): string | undefined {
+  const id = typeof v === "string" ? v : v && typeof v === "object" ? (v as { id?: unknown }).id : undefined;
+  return typeof id === "string" && id.trim() ? id.trim() : undefined;
+}
+
 /** One hook event → its pane's status, and the alert and prompt callbacks that follow from it. */
 function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler, onClaim?: ClaimHandler, turns: Set<string> = new Set()): void {
   if (evt.event === "RoomSandbox") {
@@ -270,9 +276,11 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
   // its prompt: no turn has run, so no Stop will come until someone prompts it.
   // A compaction's SessionStart can come mid-turn, so it says nothing. A starting
   // pane is no "Finished" to announce, so onStatus doesn't hear it.
+  // Claude's start (or resume) names the model it starts on: what a later report tells a /model typed in it from.
   if (evt.event === "SessionStart") {
     const source = typeof evt.payload?.source === "string" ? evt.payload.source : "startup";
-    if (source !== "compact") sessions.statusFromHook({ ...route, status: "idle", started: true });
+    const model = agent === "claude" && (source === "startup" || source === "resume") ? startingModel(evt.payload?.model) : undefined;
+    if (source !== "compact") sessions.statusFromHook({ ...route, status: "idle", started: true, ...(model ? { model } : {}) });
     return;
   }
   // Claude Code's ~60s idle reminder ("Claude is waiting for your input")

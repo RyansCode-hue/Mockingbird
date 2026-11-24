@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { MB_DIR } from "./store";
+import { tildePath } from "../shared/paths";
 import { capitalize, type AgentUsage, type ContextWindow, type SessionInfo, type UsageLimit, type UsageReport } from "../shared/types";
 import { isMissing, readJsonFile, readSlice, writeGenerated } from "./fileOps";
 import { CLAUDE_SETTINGS, codexRolloutOf, codexRollouts, epochMs } from "./agentFiles";
@@ -12,7 +13,7 @@ const STATUSLINE_SCRIPT = path.join(MB_DIR, "statusline.sh");
 /** Each Claude conversation's latest statusline payload, as <conversation id>.json: its context window. */
 export const CONTEXT_DIR = path.join(MB_DIR, "context");
 /** A conversation id safe to name a file with: what the script accepts, and what the reader looks up. */
-const CONVERSATION_ID_RE = /^[A-Za-z0-9-]{1,100}$/;
+export const CONVERSATION_ID_RE = /^[A-Za-z0-9-]{1,100}$/;
 const CONTEXT_KEEP_MS = 14 * 86_400_000;
 
 // Claude Code only exposes plan rate limits through the statusline payload.
@@ -23,10 +24,18 @@ const CONTEXT_KEEP_MS = 14 * 86_400_000;
 // the weekly window but not the 5-hour one, so the last one that had it is kept too.
 // Every payload is also kept per conversation, for its context window; the
 // first session_id is the top-level one (the payload's nested ones come later).
+// With an argument it wraps the user's own status line (wrappingStatusLine): once
+// the payload is saved it becomes their command, which reads the same payload
+// from the saved copy (stdin, opened before that copy is moved or removed), so
+// what it prints and its exit status are theirs. An argument of \xHH escapes is
+// a shell-form command, decoded by bash's printf and run once, with /bin/sh -c,
+// as Claude Code runs one; --exec comes before an exec-form one's program and
+// arguments. Panes run this every few hundred ms: wrapping adds no process.
 const SCRIPT = `#!/bin/bash
-# Mockingbird usage reporter — saves Claude Code's statusline payload for the app to read.
+# Mockingbird usage reporter — saves Claude Code's statusline payload for the app to read, then runs the user's own status line when it wraps one.
 tmp="${USAGE_FILE}.$$"
 cat > "$tmp"
+exec < "$tmp"
 sid=$(grep -oE '"session_id" *: *"[A-Za-z0-9-]{1,100}"' "$tmp" | head -n 1 | sed -E 's/.*"([A-Za-z0-9-]+)"$/\\1/')
 if [ -n "$sid" ] && grep -q '"context_window"' "$tmp"; then
   mkdir -p "${CONTEXT_DIR}" && cp -f "$tmp" "${CONTEXT_DIR}/$sid.json.$$" && mv -f "${CONTEXT_DIR}/$sid.json.$$" "${CONTEXT_DIR}/$sid.json"
@@ -37,25 +46,92 @@ if grep -Eq '"(five_hour|seven_day)"' "$tmp"; then
 else
   rm -f "$tmp"
 fi
-exit 0
+case "$1" in
+  "") exit 0 ;;
+  --exec) shift; exec "$@" ;;
+  *[!\\\\x0-9a-f]*) echo "Mockingbird's status line was given a statusLine it can't read: $1" >&2; exit 1 ;;
+esac
+printf -v own '%b' "$1"
+exec /bin/sh -c "$own"
 `;
 
+/** A statusLine as a settings file gives it: Claude Code runs one of type "command". */
+type StatusLine = Record<string, unknown>;
+
 /**
- * The status line that makes a Claude session report usage, for the one --settings its launch passes (agents.ts). Null
- * when the user has their own statusLine: --settings outranks ~/.claude/settings.json and would replace it.
+ * What a Claude pane's status line runs: Mockingbird's reporter alone (the user has no status line of their own), the
+ * reporter wrapping theirs, or none of Mockingbird's, and why (as the context meter's "Not reported: …" says it).
  */
-export function usageReporterSettings(): { statusLine: { type: "command"; command: string } } | null {
-  try {
-    if (readJsonFile(CLAUDE_SETTINGS, {})?.statusLine) return null;
-  } catch (err) {
-    console.warn(`usage: cannot read ${CLAUDE_SETTINGS}, usage reporting off: ${(err as Error).message}`);
+export type ReporterPlan = { kind: "alone" } | { kind: "wraps"; own: StatusLine } | { kind: "off"; why: string };
+
+/**
+ * The settings files a Claude pane in `cwd` takes its statusLine from, lowest precedence first: the user's, then,
+ * unless it reads only theirs (a room launch's --setting-sources user), that folder's project and local ones. The
+ * launch's --settings outranks each of them. An administrator's managed settings outrank --settings in turn and aren't
+ * read here: a statusLine there replaces the reporter, whatever the launch says.
+ */
+export function statusLineSources(cwd: string | null, userOnly: boolean): string[] {
+  return [CLAUDE_SETTINGS, ...(cwd && !userOnly ? [path.join(cwd, ".claude", "settings.json"), path.join(cwd, ".claude", "settings.local.json")] : [])];
+}
+
+/**
+ * What the status line of a Claude pane in `cwd` runs (ReporterPlan). The user's own statusLine is the sources' merged
+ * (statusLineSources), each later file's fields over the earlier's, as Claude Code merges settings; one with no command,
+ * or of another type than "command", draws nothing, so the reporter runs alone. A source that can't be read, or a
+ * statusLine run in another shell than the /bin/sh Claude Code runs commands with, leaves the status line to the user:
+ * the reporter is off.
+ */
+export function reporterPlan(cwd: string | null, userOnly: boolean): ReporterPlan {
+  let own: StatusLine | null = null;
+  for (const file of statusLineSources(cwd, userOnly)) {
+    let line: unknown;
+    try {
+      line = readJsonFile(file, {})?.statusLine;
+    } catch (err) {
+      return { kind: "off", why: `${tildePath(file)} couldn't be read (${(err as Error).message}), so Mockingbird's reporter stays out rather than replace a status line it can't see` };
+    }
+    if (line && typeof line === "object" && !Array.isArray(line)) own = { ...(own ?? {}), ...(line as StatusLine) };
+  }
+  if (!own || (own.type !== undefined && own.type !== "command") || typeof own.command !== "string" || !own.command.trim()) return { kind: "alone" };
+  if (own.args !== undefined) {
+    if (!Array.isArray(own.args) || !own.args.every((a) => typeof a === "string")) return { kind: "off", why: "your own statusLine's args aren't a list of strings, so Mockingbird's reporter can't run it" };
+  } else if (own.shell !== undefined && own.shell !== "bash") {
+    return { kind: "off", why: `your own statusLine runs in ${String(own.shell)}, which Mockingbird's reporter can't run it in` };
+  }
+  return { kind: "wraps", own };
+}
+
+/**
+ * The statusLine that runs Mockingbird's reporter and then `own` (the user's), its other fields (padding, timeout,
+ * refreshInterval…) kept. A shell-form command travels as one single-quoted argument of \xHH escapes, a byte each:
+ * every shell keeps a backslash, an x and hex digits inside single quotes as they are, so the command reaches the
+ * script as written, which decodes it without starting a process and runs it once, with /bin/sh -c, as Claude Code
+ * runs it. An exec-form one (`args`) stays exec form: no shell runs it, and Claude Code substitutes its variables in
+ * the arguments as it would in the user's.
+ */
+export function wrappingStatusLine(own: StatusLine): StatusLine {
+  const { command, args, shell: _shell, type: _type, ...rest } = own;
+  if (Array.isArray(args)) return { ...rest, type: "command", command: STATUSLINE_SCRIPT, args: ["--exec", String(command), ...args] };
+  const escaped = [...Buffer.from(String(command), "utf8")].map((b) => `\\x${b.toString(16).padStart(2, "0")}`).join("");
+  return { ...rest, type: "command", command: `"${STATUSLINE_SCRIPT}" '${escaped}'` };
+}
+
+/**
+ * The status line that makes a Claude session report usage, for the one --settings its launch passes (agents.ts): the
+ * reporter, wrapping the user's own status line when they have one (reporterPlan; `cwd` is the pane's folder, and
+ * `userOnly` a launch that reads only the user's settings). Null, and logged, when the reporter is off for it.
+ */
+export function usageReporterSettings(where: { cwd?: string | null; userOnly?: boolean } = {}): { statusLine: StatusLine } | null {
+  const plan = reporterPlan(where.cwd ?? null, !!where.userOnly);
+  if (plan.kind === "off") {
+    console.warn(`usage: ${plan.why}: this Claude launch reports no usage or context window`);
     return null;
   }
-  const settings = { statusLine: { type: "command" as const, command: `"${STATUSLINE_SCRIPT}"` } };
+  const statusLine = plan.kind === "wraps" ? wrappingStatusLine(plan.own) : { type: "command", command: `"${STATUSLINE_SCRIPT}"` };
   // running panes run the script every few hundred ms: it is only replaced when it changed, and in one step
   writeGenerated(STATUSLINE_SCRIPT, SCRIPT, 0o755);
   pruneContextReports();
-  return settings;
+  return { statusLine };
 }
 
 /** Drops the context reports of conversations that haven't run for two weeks. */
@@ -224,17 +300,11 @@ function contextError(what: string, err: unknown): ContextWindow {
   return { state: "error", why: `Couldn't read ${what}` };
 }
 
-/** Whether the user's own statusLine replaces Mockingbird's reporter (so Claude's sessions report nothing). */
-function ownStatusLine(): boolean {
-  try {
-    return !!readJsonFile(CLAUDE_SETTINGS, {})?.statusLine;
-  } catch {
-    return true; // usageReporterArgs turns reporting off then too, and logs why
-  }
-}
-
-/** A Claude conversation's context window, from the statusline payload the reporter kept for it. */
-export function claudeContext(id: string, dir = CONTEXT_DIR): ContextWindow {
+/**
+ * A Claude conversation's context window, from the statusline payload the reporter kept for it. With none, `cwd` (its
+ * pane's folder) says whether the reporter is off there (reporterPlan), and why.
+ */
+export function claudeContext(id: string, dir = CONTEXT_DIR, cwd: string | null = null): ContextWindow {
   if (!CONVERSATION_ID_RE.test(id)) return contextError("the report", new Error(`unexpected conversation id ${JSON.stringify(id)}`));
   const file = path.join(dir, `${id}.json`);
   let payload: any;
@@ -244,9 +314,8 @@ export function claudeContext(id: string, dir = CONTEXT_DIR): ContextWindow {
     return contextError("Claude's report", err);
   }
   if (!payload) {
-    return ownStatusLine()
-      ? { state: "none", why: "Not reported: your own statusLine in ~/.claude/settings.json replaces Mockingbird's reporter" }
-      : { state: "none", why: "No report yet — appears after this session's next reply" };
+    const plan = reporterPlan(cwd, false);
+    return plan.kind === "off" ? { state: "none", why: `Not reported: ${plan.why}` } : { state: "none", why: "No report yet — appears after this session's next reply" };
   }
   const cw = payload.context_window;
   const tokens = cw?.total_input_tokens;
@@ -289,22 +358,31 @@ export function claudeExtras(payload: any): Pick<Extract<ContextWindow, { state:
 const rolloutFiles = new Map<string, string>();
 
 /**
+ * Codex conversation `id`'s rollout file, remembered once found (finding one reads Codex's date folders); null when
+ * there's none. Throws when Codex's sessions can't be listed.
+ */
+export function rolloutFileOf(id: string, root?: string): string | null {
+  const known = rolloutFiles.get(id);
+  if (known && fs.existsSync(known)) return known;
+  const file = root ? codexRolloutOf(id, root) : codexRolloutOf(id);
+  if (file) rolloutFiles.set(id, file);
+  return file;
+}
+
+/**
  * A Codex conversation's context window, from the newest token_count event in
  * its rollout: the last turn's tokens (what the next one starts from) over
  * the model's window. Codex's own "% context left" sets aside a fixed baseline
  * first, so it reads a little differently.
  */
 export function codexContext(id: string, root?: string): ContextWindow {
-  let file = rolloutFiles.get(id) ?? null;
-  if (!file || !fs.existsSync(file)) {
-    try {
-      file = root ? codexRolloutOf(id, root) : codexRolloutOf(id);
-    } catch (err) {
-      return contextError("Codex's session log", err);
-    }
-    if (!file) return { state: "none", why: NO_REPLY_YET };
-    rolloutFiles.set(id, file);
+  let file: string | null;
+  try {
+    file = rolloutFileOf(id, root);
+  } catch (err) {
+    return contextError("Codex's session log", err);
   }
+  if (!file) return { state: "none", why: NO_REPLY_YET };
   let lines: string[];
   try {
     lines = readSlice(file, "end", CODEX_TAIL_BYTES).split("\n");
@@ -331,9 +409,9 @@ export function codexContext(id: string, root?: string): ContextWindow {
 }
 
 /** The context window of a session on this Mac: its current conversation's, as its agent last reported it. */
-export function readContextWindow(s: Pick<SessionInfo, "shell" | "agent" | "conversation">): ContextWindow {
+export function readContextWindow(s: Pick<SessionInfo, "shell" | "agent" | "conversation"> & { cwd?: string }): ContextWindow {
   if (s.shell) return { state: "none", why: "A terminal has no context window" };
   const conv = s.conversation;
   if (!conv || conv.agent !== (s.agent ?? "claude")) return { state: "none", why: NO_REPLY_YET };
-  return conv.agent === "codex" ? codexContext(conv.id) : claudeContext(conv.id);
+  return conv.agent === "codex" ? codexContext(conv.id) : claudeContext(conv.id, CONTEXT_DIR, s.cwd ?? null);
 }

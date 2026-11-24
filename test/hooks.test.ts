@@ -331,17 +331,18 @@ describe("watchEvents", () => {
     const seen: any[] = [];
     const sessions = { statusFromHook: (ev: any) => (seen.push(ev), { id: ev.paneId, title: "t" }) };
     stops.push(watchEvents(sessions as any, (info, status) => alerts.push(`${info.id} ${status}`)));
-    drop(event("SessionStart", { source: "startup" }, "a"));
-    drop(event("SessionStart", { source: "resume", transcript_path: "/h/.codex/sessions/r.jsonl" }, "b"));
-    drop(event("SessionStart", { source: "clear" }, "c"));
+    drop(event("SessionStart", { source: "startup", model: "claude-opus-4-7" }, "a"));
+    drop(event("SessionStart", { source: "resume", model: "gpt-5.1-codex", transcript_path: "/h/.codex/sessions/r.jsonl" }, "b"));
+    drop(event("SessionStart", { source: "clear", model: "claude-sonnet-4-5" }, "c"));
     drop(event("SessionStart", { source: "compact" }, "d"));
-    drop(event("SessionStart", {}, "e"));
+    drop(event("SessionStart", { model: { id: "claude-haiku-4-5" } }, "e"));
     await settle();
-    expect(seen.map((ev) => [ev.paneId, ev.status, ev.started, ev.agent])).toEqual([
-      ["a", "idle", true, "claude"],
-      ["b", "idle", true, "codex"],
-      ["c", "idle", true, "claude"],
-      ["e", "idle", true, "claude"],
+    // the model a starting or resuming Claude names is its launch's; a /clear's comes once a /model may have been typed
+    expect(seen.map((ev) => [ev.paneId, ev.status, ev.started, ev.agent, ev.model])).toEqual([
+      ["a", "idle", true, "claude", "claude-opus-4-7"],
+      ["b", "idle", true, "codex", undefined],
+      ["c", "idle", true, "claude", undefined],
+      ["e", "idle", true, "claude", "claude-haiku-4-5"],
     ]);
     expect(alerts).toEqual([]);
   });

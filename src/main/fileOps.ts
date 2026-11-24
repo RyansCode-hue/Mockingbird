@@ -250,13 +250,18 @@ export function appendNoFollow(file: string, text: string): void {
  * when the file is smaller. The line the window cuts is the caller's to drop.
  */
 export function readSlice(file: string, from: "start" | "end", bytes: number): string {
+  return readWindow(file, from, bytes).text;
+}
+
+/** readSlice, saying too whether the window holds the whole file (with no cut line to drop). */
+export function readWindow(file: string, from: "start" | "end", bytes: number): { text: string; whole: boolean } {
   const fd = fs.openSync(file, "r");
   try {
     const size = fs.fstatSync(fd).size;
     const len = Math.min(size, bytes);
     const buf = Buffer.alloc(len);
     const n = fs.readSync(fd, buf, 0, len, from === "start" ? 0 : size - len);
-    return buf.toString("utf8", 0, n);
+    return { text: buf.toString("utf8", 0, n), whole: len === size };
   } finally {
     fs.closeSync(fd);
   }

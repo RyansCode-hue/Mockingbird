@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpLaunch } from "../src/main/messaging";
+import { tempDir } from "./helpers";
 
 const mcp: McpLaunch = { command: "/Apps/Mockingbird", args: ["/h/.mockingbird/mcp.js"], env: { MOCKINGBIRD_SESSION: "abc12345", ELECTRON_RUN_AS_NODE: "1" } };
 const base = { repoPath: null, useWorktree: false };
@@ -56,14 +57,20 @@ describe("Claude launch", () => {
     expect(JSON.parse(unsandboxed[unsandboxed.indexOf("--settings") + 1])).toEqual({ statusLine, crossSessionInbound: "refuse" });
     expect(unsandboxed).not.toContain("--setting-sources");
     expect(unsandboxed).not.toContain("--strict-mcp-config");
-    // the user's own status line is theirs: the room's settings go without Mockingbird's
+    // the user's own status line still draws: the reporter wraps the one the launch would read — the folder's project
+    // settings' outside a room, the user's alone in one (it reads no other settings)
+    const hex = (s: string) => [...Buffer.from(s)].map((b) => `\\x${b.toString(16).padStart(2, "0")}`).join("");
+    const folder = tempDir("pane");
     fs.mkdirSync(path.join(os.homedir(), ".claude"), { recursive: true });
+    fs.mkdirSync(path.join(folder, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(os.homedir(), ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "mine" } }));
+    fs.writeFileSync(path.join(folder, ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "the project's" } }));
+    const wraps = (own: string) => ({ type: "command", command: expect.stringMatching(new RegExp(`statusline\\.sh" '${hex(own).replace(/\\/g, "\\\\")}'$`)) });
     try {
-      const own = agentFor("claude").launchArgs({ ...base }, { claudeSettings: { sandbox: { enabled: true } } });
-      expect(JSON.parse(own[own.indexOf("--settings") + 1])).toEqual({ sandbox: { enabled: true }, crossSessionInbound: "refuse" });
-      const ownLocal = agentFor("claude").launchArgs({ ...base }, {});
-      expect(JSON.parse(ownLocal[ownLocal.indexOf("--settings") + 1])).toEqual({ crossSessionInbound: "refuse" });
+      const own = agentFor("claude").launchArgs({ ...base }, { cwd: folder, claudeSettings: { sandbox: { enabled: true } } });
+      expect(JSON.parse(own[own.indexOf("--settings") + 1])).toEqual({ statusLine: wraps("mine"), sandbox: { enabled: true }, crossSessionInbound: "refuse" });
+      const ownLocal = agentFor("claude").launchArgs({ ...base }, { cwd: folder });
+      expect(JSON.parse(ownLocal[ownLocal.indexOf("--settings") + 1])).toEqual({ statusLine: wraps("the project's"), crossSessionInbound: "refuse" });
     } finally {
       fs.rmSync(path.join(os.homedir(), ".claude", "settings.json"));
     }
