@@ -1146,8 +1146,8 @@ handle("usage:context", (id: string): ContextWindow => {
   const s = sessions.list().find((x) => x.id === id);
   if (!s) return { state: "none", why: "This session isn't running" };
   const cw = readContextWindow(s);
-  // the model its agent reports running: one typed in with /model becomes its record's, for its next launch
-  if (cw.state === "reading" && cw.model) sessions.noteReportedModel(s.id, { first: null, earliest: { model: cw.model }, last: { model: cw.model }, at: cw.at });
+  // the model its agent reports running: one a /model typed in it set becomes its record's, for its next launch
+  if (cw.state === "reading" && cw.model) sessions.noteMeterModel(s.id, cw.model, cw.at);
   return cw;
 });
 sessions.launchModels = (s, opts) => readLaunchModels(s, opts);

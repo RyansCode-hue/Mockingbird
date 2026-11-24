@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { tempDir } from "./helpers";
-import { readLaunchModels, type LaunchModels, type ModelReport } from "../src/main/agentModels";
+import { readLaunchModels, type ChosenModel, type LaunchModels, type ModelReport } from "../src/main/agentModels";
 import { LandscapeStore } from "../src/main/landscape";
 import { WireService } from "../src/main/wires";
 import { PipelineEdits, modelRefusal } from "../src/main/pipelineEdit";
@@ -89,6 +89,8 @@ const step = (m: Awaited<ReturnType<typeof setup>>["m"], title: string, o: Recor
 const last = () => ptys.at(-1)!.args.join(" ");
 /** What an agent reported running in a launch: its latest report at `at`, its first when known, and the earliest read. */
 const reported = (latest: ModelReport, at: number, first: ModelReport | null = null, earliest: ModelReport = first ?? latest): LaunchModels => ({ first, earliest, last: latest, at });
+/** What a Claude /model set: `named` when its output said what. */
+const chose = (model: string, named = true): ChosenModel => ({ model, named });
 const made = (r: WireReply) => {
   if ("refused" in r) throw new Error(`refused: ${r.refused}`);
   return r.id!;
@@ -217,27 +219,52 @@ describe("a model that sticks", () => {
     expect(last()).toContain("'--model' 'sonnet'");
   });
 
-  it("records a /model its agent reports running for the next launch: against its record's model, or with none against its launch's first report", async () => {
+  it("keeps the model a Claude /model set for the next launch, never one Claude changed to itself, against its record's or its launch's first", async () => {
     const { m, store } = await setup();
     const s = await m.create(pane({ model: "opus" }));
     const at = s.createdAt + 1;
-    // the alias's own model is no change, and an older run's report says nothing
-    expect(m.noteReportedModel(s.id, reported({ model: "claude-opus-4-7" }, at))).toBe(false);
-    expect(m.noteReportedModel(s.id, reported({ model: "claude-sonnet-4-5" }, s.createdAt - 1))).toBe(false);
-    expect(m.noteReportedModel(s.id, reported({ model: "claude-sonnet-4-5" }, at))).toBe(true);
+    // a fallback from Opus to Sonnet at a plan limit: no /model, so nothing is kept
+    expect(m.noteReportedModel(s.id, reported({ model: "claude-sonnet-4-5" }, at))).toBe(false);
+    expect(store.state.sessions.find((x) => x.id === s.id)?.model).toBe("opus");
+    // a /model to the alias's own model is no change, and an older run's report says nothing
+    expect(m.noteReportedModel(s.id, { ...reported({ model: "claude-opus-4-7" }, at), chosen: chose("claude-opus-4-7") })).toBe(false);
+    expect(m.noteReportedModel(s.id, { ...reported({ model: "claude-sonnet-4-5" }, s.createdAt - 1), chosen: chose("claude-sonnet-4-5") })).toBe(false);
+    // a /model, then a reply on what it set: kept, even with a fallback since
+    expect(m.noteReportedModel(s.id, { ...reported({ model: "claude-haiku-4-5" }, at), chosen: chose("claude-sonnet-4-5") })).toBe(true);
     expect(store.state.sessions.find((x) => x.id === s.id)?.model).toBe("claude-sonnet-4-5");
     await m.restart(s.id);
     expect(last()).toContain("'--model' 'claude-sonnet-4-5'");
-    // with none of its own: nothing to tell a /model by until its launch's first report is known
+    // with none of its own: a /model to its default's line keeps the default; one to another, or with its first not known, is kept
     const d = await m.create(pane());
-    expect(m.noteReportedModel(d.id, reported({ model: "claude-haiku-4-5" }, d.createdAt))).toBe(false);
-    expect(m.noteReportedModel(d.id, reported({ model: "claude-opus-4-7[1m]" }, d.createdAt + 1, { model: "claude-opus-4-7" }))).toBe(false);
+    expect(m.noteReportedModel(d.id, { ...reported({ model: "claude-opus-4-7[1m]" }, d.createdAt + 1, { model: "claude-opus-4-7" }), chosen: chose("claude-opus-4-7[1m]") })).toBe(false);
+    expect(m.noteReportedModel(d.id, reported({ model: "claude-haiku-4-5" }, d.createdAt + 5))).toBe(false);
     expect(m.list().find((x) => x.id === d.id)?.model).toBeUndefined();
-    expect(m.noteReportedModel(d.id, reported({ model: "claude-haiku-4-5" }, d.createdAt + 5))).toBe(true);
+    expect(m.noteReportedModel(d.id, { ...reported({ model: "claude-haiku-4-5" }, d.createdAt + 5), chosen: chose("claude-haiku-4-5") })).toBe(true);
     expect(m.list().find((x) => x.id === d.id)?.model).toBe("claude-haiku-4-5");
+    const e = await m.create(pane());
+    expect(m.noteReportedModel(e.id, { ...reported({ model: "claude-sonnet-4-5" }, e.createdAt + 5), chosen: chose("claude-sonnet-4-5") })).toBe(true);
   });
 
-  it("reads what a pane's agent runs at each turn's end, its launch's first report once, and takes the model a starting Claude names as that first", async () => {
+  it("leaves an opusplan record alone as it runs Opus and Sonnet, and keeps a /model that set another model or named it again", async () => {
+    const { m, store } = await setup();
+    const modelOf = (id: string) => store.state.sessions.find((x) => x.id === id)?.model;
+    const s = await m.create(pane({ model: "opusplan" }));
+    const at = s.createdAt + 1;
+    expect(m.noteReportedModel(s.id, reported({ model: "claude-opus-4-7" }, at))).toBe(false);
+    expect(m.noteReportedModel(s.id, reported({ model: "claude-sonnet-4-5" }, at))).toBe(false);
+    // a /model naming opusplan again, and one whose output couldn't be read landing on a model it runs: no change
+    expect(m.noteReportedModel(s.id, { ...reported({ model: "claude-opus-4-7" }, at), chosen: chose("opusplan") })).toBe(false);
+    expect(m.noteReportedModel(s.id, { ...reported({ model: "claude-sonnet-4-5" }, at), chosen: chose("claude-sonnet-4-5", false) })).toBe(false);
+    expect(modelOf(s.id)).toBe("opusplan");
+    // `/model sonnet`: named, so exactly that
+    expect(m.noteReportedModel(s.id, { ...reported({ model: "claude-sonnet-4-5" }, at), chosen: chose("claude-sonnet-4-5") })).toBe(true);
+    expect(modelOf(s.id)).toBe("claude-sonnet-4-5");
+    // and `/model opusplan` from another model is kept as the alias
+    expect(m.noteReportedModel(s.id, { ...reported({ model: "claude-opus-4-7" }, at), chosen: chose("opusplan") })).toBe(true);
+    expect(modelOf(s.id)).toBe("opusplan");
+  });
+
+  it("reads what a pane's agent runs at each turn's end and as its context meter shows another model, its launch's first report once, and takes the model a starting Claude names as that first", async () => {
     const { m } = await setup();
     const modelOf = (id: string) => m.list().find((x) => x.id === id)?.model;
     const asked: boolean[] = [];
@@ -248,18 +275,30 @@ describe("a model that sticks", () => {
     m.statusFromHook({ paneId: d.id, conversationId: "conv-d", agent: "claude", status: "idle", started: true });
     report = reported({ model: "claude-opus-4-7" }, d.createdAt + 1, { model: "claude-opus-4-7" });
     finish(d.id, "conv-d");
-    report = reported({ model: "claude-haiku-4-5" }, d.createdAt + 9);
+    report = { ...reported({ model: "claude-haiku-4-5" }, d.createdAt + 9), chosen: chose("claude-haiku-4-5") };
     expect(modelOf(d.id)).toBeUndefined();
     finish(d.id, "conv-d");
     expect(asked).toEqual([true, false]);
     expect(modelOf(d.id)).toBe("claude-haiku-4-5");
+    // the meter: its files are read for a model it shows that's another line, once each
+    asked.length = 0;
+    m.noteMeterModel(d.id, "claude-haiku-4-5", d.createdAt + 10);
+    expect(asked).toEqual([]);
+    report = { ...reported({ model: "claude-sonnet-4-5" }, d.createdAt + 11), chosen: chose("claude-sonnet-4-5") };
+    m.noteMeterModel(d.id, "claude-sonnet-4-5", d.createdAt + 11);
+    m.noteMeterModel(d.id, "claude-sonnet-4-5", d.createdAt + 12);
+    expect(asked).toEqual([false]);
+    expect(modelOf(d.id)).toBe("claude-sonnet-4-5");
     // a /model typed before its first reply: its first reply is already the new model, its start named the default
     const s = await m.create(pane());
     m.statusFromHook({ paneId: s.id, conversationId: "conv-s", agent: "claude", status: "idle", started: true, model: "claude-opus-4-7", at: Math.floor(Date.now() / 1000) });
     asked.length = 0;
-    report = reported({ model: "claude-sonnet-4-5" }, s.createdAt + 5, { model: "claude-sonnet-4-5" });
+    report = { ...reported({ model: "claude-opus-4-7[1m]" }, s.createdAt + 5, { model: "claude-opus-4-7[1m]" }), chosen: chose("claude-opus-4-7[1m]") };
     finish(s.id, "conv-s");
     expect(asked).toEqual([false]);
+    expect(modelOf(s.id)).toBeUndefined(); // its default's line
+    report = { ...reported({ model: "claude-sonnet-4-5" }, s.createdAt + 5, { model: "claude-sonnet-4-5" }), chosen: chose("claude-sonnet-4-5") };
+    finish(s.id, "conv-s");
     expect(modelOf(s.id)).toBe("claude-sonnet-4-5");
     // what fails to read is logged, and the record kept as it was
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -271,20 +310,21 @@ describe("a model that sticks", () => {
     expect(modelOf(s.id)).toBe("claude-sonnet-4-5");
   });
 
-  it("reopens a closed session with what its agent last reported running when its record's line differs", async () => {
+  it("reopens a closed session with what a /model in its last launch set, not what Claude fell back to by itself", async () => {
     const { m } = await setup();
-    const s = await m.create(pane({ model: "opus" }));
-    m.kill(s.id, false);
-    let report: LaunchModels | null = reported({ model: "claude-sonnet-4-5" }, s.createdAt + 10);
+    let report: LaunchModels | null = null;
     m.launchModels = () => report;
-    await m.relaunch(s.id);
-    expect(last()).toContain("'--model' 'claude-sonnet-4-5'");
-    // one from before its last launch is an older run's
-    const t = await m.create(pane({ model: "opus" }));
-    m.kill(t.id, false);
-    report = reported({ model: "claude-sonnet-4-5" }, t.createdAt - 10);
-    await m.relaunch(t.id);
-    expect(last()).toContain("'--model' 'opus'");
+    const reopen = async (r: (createdAt: number) => LaunchModels) => {
+      const x = await m.create(pane({ model: "opus" }));
+      m.kill(x.id, false);
+      report = r(x.createdAt);
+      await m.relaunch(x.id);
+      return last();
+    };
+    expect(await reopen((t) => ({ ...reported({ model: "claude-sonnet-4-5" }, t + 10, { model: "claude-opus-4-7" }), chosen: chose("claude-sonnet-4-5") }))).toContain("'--model' 'claude-sonnet-4-5'");
+    // a fallback, a cancelled picker (no switch), and one from before its last launch: its record's
+    expect(await reopen((t) => ({ ...reported({ model: "claude-sonnet-4-5" }, t + 10, { model: "claude-opus-4-7" }), chosen: null }))).toContain("'--model' 'opus'");
+    expect(await reopen((t) => ({ ...reported({ model: "claude-sonnet-4-5" }, t - 10), chosen: chose("claude-sonnet-4-5") }))).toContain("'--model' 'opus'");
   });
 
   it("reopens a record with no model or effort of its own with what its agent ran last when that's not what its launch first ran", async () => {
@@ -298,10 +338,13 @@ describe("a model that sticks", () => {
       await m.relaunch(x.id);
       return last();
     };
-    // Claude: a model typed in, its default's own line, and a first report that's out of reach
-    expect(await reopen({}, (t) => reported({ model: "claude-sonnet-4-5" }, t + 9, { model: "claude-opus-4-7" }))).toContain("'--model' 'claude-sonnet-4-5'");
-    expect(await reopen({}, (t) => reported({ model: "claude-opus-4-7[1m]" }, t + 9, { model: "claude-opus-4-7" }))).not.toContain("--model");
-    expect(await reopen({}, (t) => reported({ model: "claude-sonnet-4-5" }, t + 9, null))).not.toContain("--model");
+    // Claude: a /model to another model, one to its default's own line, a change with no /model, and a /model with its
+    // first report out of reach
+    const switched = (model: string, first: string | null) => (t: number) => ({ ...reported({ model }, t + 9, first ? { model: first } : null), chosen: chose(model) });
+    expect(await reopen({}, switched("claude-sonnet-4-5", "claude-opus-4-7"))).toContain("'--model' 'claude-sonnet-4-5'");
+    expect(await reopen({}, switched("claude-opus-4-7[1m]", "claude-opus-4-7"))).not.toContain("--model");
+    expect(await reopen({}, (t) => reported({ model: "claude-sonnet-4-5" }, t + 9, { model: "claude-opus-4-7" }))).not.toContain("--model");
+    expect(await reopen({}, switched("claude-sonnet-4-5", null))).toContain("'--model' 'claude-sonnet-4-5'");
     // Codex: its reasoning effort alone, its model alone, and an effort a launch can't be given
     const codex = { agent: "codex" as const };
     const effort = await reopen(codex, (t) => reported({ model: "gpt-5.1-codex", effort: "high" }, t + 9, { model: "gpt-5.1-codex", effort: "medium" }));
@@ -313,14 +356,14 @@ describe("a model that sticks", () => {
     expect(await reopen(codex, (t) => reported({ model: "gpt-5.1-codex", effort: "minimal" }, t + 9, { model: "gpt-5.1-codex", effort: "medium" }))).not.toContain("model_reasoning_effort");
   });
 
-  it("reads a closed record's files further back for its launch's first report only when what's within reach shows a change", async () => {
+  it("reads a closed record's files further back (its launch's first report, Claude's /model) only when what's within reach shows a change", async () => {
     const { m } = await setup();
     const asked: boolean[] = [];
     let near: LaunchModels | null = null;
     let far: LaunchModels | null = null;
     m.launchModels = (_s, o) => (asked.push(o.first), o.first ? far : near);
-    const closed = async () => {
-      const x = await m.create(pane());
+    const closed = async (o: Partial<NewSessionRequest> = {}) => {
+      const x = await m.create(pane(o));
       m.kill(x.id, false);
       asked.length = 0;
       return x;
@@ -331,20 +374,68 @@ describe("a model that sticks", () => {
     await m.relaunch(x.id);
     expect(asked).toEqual([false]);
     expect(last()).not.toContain("--model");
-    // one shown: its launch's first decides
+    // a /model shown: its launch's first decides
     x = await closed();
-    near = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, null, { model: "claude-opus-4-7" });
-    far = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, { model: "claude-opus-4-7" });
+    near = { ...reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, null, { model: "claude-opus-4-7" }), chosen: chose("claude-sonnet-4-5") };
+    far = { ...reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, { model: "claude-opus-4-7" }), chosen: chose("claude-sonnet-4-5") };
     await m.relaunch(x.id);
     expect(asked).toEqual([false, true]);
     expect(last()).toContain("'--model' 'claude-sonnet-4-5'");
     // it started on that model, and switched away and back: no change
     x = await closed();
-    near = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, null, { model: "claude-opus-4-7" });
-    far = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, { model: "claude-sonnet-4-5" });
+    far = { ...reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, { model: "claude-sonnet-4-5" }), chosen: chose("claude-sonnet-4-5") };
     await m.relaunch(x.id);
     expect(asked).toEqual([false, true]);
     expect(last()).not.toContain("--model");
+    // a record's model, another shown with no /model within reach: further back finds the /model, or that there's none
+    x = await closed({ model: "opus" });
+    near = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, null, { model: "claude-sonnet-4-5" });
+    far = { ...reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, { model: "claude-opus-4-7" }), chosen: chose("claude-sonnet-4-5") };
+    await m.relaunch(x.id);
+    expect(asked).toEqual([false, true]);
+    expect(last()).toContain("'--model' 'claude-sonnet-4-5'");
+    x = await closed({ model: "opus" });
+    near = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, null, { model: "claude-sonnet-4-5" });
+    far = { ...reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, { model: "claude-opus-4-7" }), chosen: null };
+    await m.relaunch(x.id);
+    expect(last()).toContain("'--model' 'opus'");
+    // an opusplan record running Sonnet shows no change: nothing more is read
+    x = await closed({ model: "opusplan" });
+    near = reported({ model: "claude-sonnet-4-5" }, x.createdAt + 9, null, { model: "claude-sonnet-4-5" });
+    await m.relaunch(x.id);
+    expect(asked).toEqual([false]);
+    expect(last()).toContain("'--model' 'opusplan'");
+  });
+
+  it("keeps a /model typed in a Claude pane, read from its transcript, and leaves a fallback with none alone", async () => {
+    const { m, store } = await setup();
+    m.launchModels = (s, o) => readLaunchModels(s, o);
+    const s = await m.create(pane({ model: "opus" }));
+    const conv = "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
+    const file = path.join(tempDir("projects"), `${conv}.jsonl`);
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const reply = (at: number, model: string) => JSON.stringify({ type: "assistant", isSidechain: false, message: { model, role: "assistant", content: [] }, timestamp: iso(at) });
+    const lines = [reply(s.createdAt + 1_000, "claude-opus-4-7"), reply(s.createdAt + 2_000, "claude-sonnet-4-5")];
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    const finish = () => m.statusFromHook({ paneId: s.id, conversationId: conv, agent: "claude", status: "idle", finished: true, transcriptPath: file });
+    finish();
+    expect(store.state.sessions.find((x) => x.id === s.id)?.model).toBe("opus"); // Claude's own fallback
+    // a cancelled picker sets nothing, whatever runs after it
+    lines.push(
+      JSON.stringify({ type: "system", subtype: "local_command", content: "<local-command-stdout>Kept model as `Sonnet 4.5`</local-command-stdout>", timestamp: iso(s.createdAt + 3_000) }),
+      reply(s.createdAt + 3_500, "claude-haiku-4-5")
+    );
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    finish();
+    expect(store.state.sessions.find((x) => x.id === s.id)?.model).toBe("opus");
+    lines.push(
+      JSON.stringify({ type: "user", message: { role: "user", content: "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>" }, timestamp: iso(s.createdAt + 4_000) }),
+      JSON.stringify({ type: "user", message: { role: "user", content: "<local-command-stdout>Set model to `Sonnet 4.5` for this session only</local-command-stdout>" }, timestamp: iso(s.createdAt + 4_001) }),
+      reply(s.createdAt + 5_000, "claude-sonnet-4-5")
+    );
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    finish();
+    expect(store.state.sessions.find((x) => x.id === s.id)?.model).toBe("claude-sonnet-4-5");
   });
 
   it("keeps a Codex session's /model and reasoning effort, read from its rollout, for its next launch: at a turn's end, or as it reopens", async () => {
@@ -386,6 +477,12 @@ describe("a model that sticks", () => {
     expect(sameModelLine("opus", "claude-sonnet-4-5")).toBe(false);
     expect(sameModelLine("claude-opus-4-7", "claude-opus-4-5")).toBe(false);
     expect(sameModelLine("gpt-5.1-codex", "gpt-5.1-codex")).toBe(true);
+    // an alias covering several lines is each of them, unless a /model named exactly what it set
+    expect(sameModelLine("opusplan", "claude-opus-4-7[1m]")).toBe(true);
+    expect(sameModelLine("opusplan", "claude-sonnet-4-5")).toBe(true);
+    expect(sameModelLine("opusplan", "claude-haiku-4-5")).toBe(false);
+    expect(sameModelLine("opusplan", "claude-sonnet-4-5", false)).toBe(false);
+    expect(sameModelLine("opus", "opusplan")).toBe(false);
   });
 });
 

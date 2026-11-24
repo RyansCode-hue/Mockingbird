@@ -13,7 +13,7 @@ import { uniqueBranch } from "./presets";
 import { roomFolderRefusal, samePath } from "./handlers";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, CODEX_EFFORTS, listsChromeFlag, permissionModeRefusal, readRelaunchChange, widerModeWarning, type LaunchContext } from "./agents";
-import type { LaunchModels, ModelReport } from "./agentModels";
+import type { ChosenModel, LaunchModels, ModelReport } from "./agentModels";
 import { isPermissionMode, WIDER_MODES, type PermissionMode } from "../shared/permissionModes";
 import { HELPDESK_FOLDER_ONLY, HELPDESK_RULES, helpdeskFolder, inHelpdeskFolder, readClaudeHelp } from "./helpdesk";
 import { which, whichSync, quote } from "./shell";
@@ -252,6 +252,7 @@ interface LiveSession {
   toTerminal: boolean; // its agent quit and the terminal it becomes is starting (toTerminal): its pty has exited
   firstModel: ModelReport | null; // what its agent reported running first this launch (noteReportedModel), else null
   firstSought: boolean; // its files were read for that first report once it had reported (checkReportedModel)
+  meterModel: string | null; // the model its context meter last reported (noteMeterModel), its files read for once
 }
 
 /** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
@@ -299,30 +300,53 @@ export function stepTitle(raw: unknown): string {
 export const noAgent = (agent: unknown): string => `There's no agent ${JSON.stringify(agent)}: a step runs Claude or Codex`;
 
 /**
- * Whether model names `a` and `b` are one line, as a launch's alias and the id its agent reports running: the same
- * name, or one the other's alias ("opus" in "claude-opus-4-7"), a 1M-context suffix aside.
+ * Claude Code's aliases whose line covers several models: opusplan runs Opus in plan mode and Sonnet otherwise, and
+ * 2.1.3xx runs haiku's plan mode on Sonnet.
  */
-export function sameModelLine(a: string, b: string): boolean {
+const COVERING: Record<string, readonly string[]> = { opusplan: ["opus", "sonnet"], haiku: ["haiku", "sonnet"] };
+
+/**
+ * Whether model names `a` and `b` are one line, as a launch's alias and the id its agent reports running: the same
+ * name, or one the other's alias ("opus" in "claude-opus-4-7"), a 1M-context suffix aside. A launch's alias `a` that
+ * covers several lines (COVERING: opusplan) is each of them, unless `covering` is false: a /model naming what it set
+ * is exactly that.
+ */
+export function sameModelLine(a: string, b: string, covering = true): boolean {
   const bare = (m: string) => m.trim().toLowerCase().replace(/\[1m\]$/, "");
   const x = bare(a);
   const y = bare(b);
   if (x === y) return true;
   const parts = (m: string) => m.split(/[-.@_]/);
-  return (!x.includes("-") && parts(y).includes(x)) || (!y.includes("-") && parts(x).includes(y));
+  if ((!x.includes("-") && parts(y).includes(x)) || (!y.includes("-") && parts(x).includes(y))) return true;
+  return covering && (COVERING[x] ?? []).some((line) => sameModelLine(line, y, false));
 }
 
 /**
- * What of `last` (the latest an `agent` reported running in a launch) is a change typed in its pane with `/model`, for
- * a record that runs `rec`: a model of another line (sameModelLine) than its record's or, with no model of its own,
- * than `first` (the launch's first report, its agent's default then); Codex's reasoning effort the same way, by name.
- * With `first` unknown (null), or naming no effort, nothing tells a change from the default, so the default stays. An
- * effort a Codex launch can't be given (CODEX_EFFORTS) is left as it is.
+ * What of what an `agent` reported running in a launch is a change typed in its pane, for a record that runs `rec`.
+ * Claude's is what its latest `/model` set (`chosen`), when that's of another line (sameModelLine) than its record's
+ * model or, with none of its own, than `first` (the launch's first report, its agent's default then): with no /model,
+ * a change is its own (a fallback at a plan limit, plan mode's model) and nothing is kept; with `first` unknown, a
+ * /model's choice is. Codex's is `last` (its model changes only when one is picked), against its record's or else
+ * `first`, and its reasoning effort the same way, by name; with `first` unknown, or naming no effort, nothing tells a
+ * change from the default, so the default stays. An effort a Codex launch can't be given (CODEX_EFFORTS) is left.
  */
-export function typedChange(agent: AgentKind, rec: { model?: string | null; effort?: string | null }, first: ModelReport | null, last: ModelReport): { model?: string; effort?: string } {
+export function typedChange(
+  agent: AgentKind,
+  rec: { model?: string | null; effort?: string | null },
+  first: ModelReport | null,
+  last: ModelReport,
+  chosen?: ChosenModel | null
+): { model?: string; effort?: string } {
   const out: { model?: string; effort?: string } = {};
+  if (agent !== "codex") {
+    const to = chosen?.model.trim();
+    const from = rec.model ?? first?.model;
+    if (to && !(from && sameModelLine(from, to, !chosen!.named))) out.model = to;
+    return out;
+  }
   const model = last.model.trim();
   if (model && (rec.model ? !sameModelLine(rec.model, model) : !!first && !sameModelLine(first.model, model))) out.model = model;
-  const effort = agent === "codex" ? last.effort : null;
+  const effort = last.effort;
   if (effort && CODEX_EFFORTS.includes(effort) && (rec.effort ? rec.effort !== effort : !!first && first.effort !== undefined && first.effort !== effort)) out.effort = effort;
   return out;
 }
@@ -968,6 +992,7 @@ export class SessionManager {
       hookEvents: 0,
       firstModel: null,
       firstSought: false,
+      meterModel: null,
       transcripts: new Map(),
       kickoff: false,
       startTimer: null,
@@ -2004,17 +2029,16 @@ export class SessionManager {
   }
 
   /**
-   * Live pane `id`'s agent reported running `r` (its launch's latest report, and its first when known: launchModels at
-   * a turn's end, or its status line's report read for its context meter). A change typed in with `/model`
-   * (typedChange, against the first it reported this launch) becomes its record's, so its next restart, Reopen or
-   * Resume runs it. A report from before this launch is an older run's and says nothing. Answers whether the record
-   * changed.
+   * Live pane `id`'s agent reported running `r` (launchModels: its launch's latest report, its first when known, and
+   * Claude's latest /model). A change typed in with `/model` (typedChange, against the first it reported this launch)
+   * becomes its record's, so its next restart, Reopen or Resume runs it. A report from before this launch is an older
+   * run's and says nothing. Answers whether the record changed.
    */
   noteReportedModel(id: string, r: LaunchModels): boolean {
     const s = this.live.get(id);
     if (!s || s.info.shell || r.at < s.info.createdAt) return false;
     if (r.first) s.firstModel ??= r.first;
-    const change = typedChange(s.info.agent ?? "claude", s.info, s.firstModel, r.last);
+    const change = typedChange(s.info.agent ?? "claude", s.info, s.firstModel, r.last, r.chosen);
     if (change.model === undefined && change.effort === undefined) return false;
     if (change.model !== undefined) {
       s.info.model = change.model;
@@ -2037,9 +2061,24 @@ export class SessionManager {
   launchModels: ((s: SessionInfo, opts: { first: boolean; transcript?: string | null }) => LaunchModels | null) | null = null;
 
   /**
+   * Live pane `id`'s context meter read its agent running `model` at `at` (its status line's report). One other than
+   * its record's (or, with none, its launch's first) that it hasn't read for before has its files read for whether a
+   * /model set it (checkReportedModel): the meter is read every few seconds, and a /model shows there before any turn
+   * ends.
+   */
+  noteMeterModel(id: string, model: string, at: number): void {
+    const s = this.live.get(id);
+    if (!s || s.info.shell || at < s.info.createdAt || s.meterModel === model) return;
+    s.meterModel = model;
+    const from = s.info.model ?? s.firstModel?.model;
+    if (from && sameModelLine(from, model)) return;
+    this.checkReportedModel(s);
+  }
+
+  /**
    * What pane `s`'s agent reports running now, from its files (launchModels), to noteReportedModel: at each turn's end,
-   * and as it's restarted. Its launch's first report is read for once, when it has reported something and its record
-   * leaves a choice to its agent's default.
+   * as its context meter shows another model, and as it's restarted. Its launch's first report is read for once, when
+   * it has reported something and its record leaves a choice to its agent's default.
    */
   private checkReportedModel(s: LiveSession): void {
     const conv = s.info.conversation;
@@ -2060,24 +2099,25 @@ export class SessionManager {
   /**
    * Closed record `old`'s model and effort as its next launch runs them: what its agent last reported running in its
    * last launch where that's a change typed in its pane (typedChange) that noteReportedModel didn't see, else its
-   * record's. Its launch's first report is read for further back only when what's within reach shows a change: one
-   * made before that was followed by a turn's end, where noteReportedModel kept it.
+   * record's. Its files are read further back (for its launch's first report, or Claude's /model) only when what's
+   * within reach shows a change: one made before that was followed by a turn's end, where noteReportedModel kept it.
    */
   private stickyModel(old: SessionInfo): { model?: string; effort?: string } {
     const kept = { model: old.model ?? undefined, effort: old.effort ?? undefined };
     if (old.shell || !this.launchModels) return kept;
     const agent = old.agent ?? "claude";
-    const choosesNothing = !old.model || (agent === "codex" && !old.effort);
+    const unknown = (r: LaunchModels) => !r.first && (!old.model || (agent === "codex" ? !old.effort : !r.chosen));
     let r: LaunchModels | null = null;
     try {
       r = this.launchModels(old, { first: false });
-      const shown = r && !r.first && choosesNothing ? typedChange(agent, old, r.earliest, r.last) : {};
+      // as though its latest were picked: a change only that would make is worth the longer read
+      const shown = r && unknown(r) ? typedChange(agent, old, r.earliest, r.last, r.chosen ?? { model: r.last.model, named: false }) : {};
       if (shown.model !== undefined || shown.effort !== undefined) r = this.launchModels(old, { first: true }) ?? r;
     } catch (err) {
       console.warn(`[sessions] ${old.id}: couldn't read the model its agent last reported, so it launches with its record's:`, err);
     }
     if (!r || r.at < old.createdAt) return kept;
-    const change = typedChange(agent, old, r.first, r.last);
+    const change = typedChange(agent, old, r.first, r.last, r.chosen);
     if (change.model !== undefined) console.log(`[sessions] ${old.id}: its agent last reported running ${change.model}, not ${old.model ?? "its default"}: it launches with ${change.model}`);
     if (change.effort !== undefined) console.log(`[sessions] ${old.id}: its agent last reported ${change.effort} reasoning effort, not ${old.effort ?? "its default"}: it launches with ${change.effort}`);
     return { model: change.model ?? kept.model, effort: change.effort ?? kept.effort };
