@@ -93,14 +93,23 @@ describe("the reporter wrapping the user's own status line", () => {
     expect(fs.existsSync(path.join(CONTEXT_DIR, `${ID}.json`))).toBe(true);
   });
 
-  it("wraps the status line the pane would draw: its folder's local settings over its project's over the user's, fields merged; a room launch reads the user's alone", () => {
+  it("wraps only the user's own status line; a folder's project or local statusLine is left to Claude Code, which runs it once the folder is trusted; a room launch reads the user's alone", () => {
     const folder = tempDir("pane");
     writeStatusLine(userSettings, { type: "command", command: "echo user", padding: 1 });
-    writeStatusLine(path.join(folder, ".claude", "settings.json"), { type: "command", command: "echo project" });
+    const own = usageReporterSettings({ cwd: folder })!.statusLine;
+    expect(own.padding).toBe(1);
+    expect(runShell(String(own.command), folder).out).toBe("user\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     writeStatusLine(path.join(folder, ".claude", "settings.local.json"), { type: "command", command: "echo local", refreshInterval: 2 });
-    expect(reporterPlan(folder, false)).toEqual({ kind: "wraps", own: { type: "command", command: "echo local", padding: 1, refreshInterval: 2 } });
-    const local = usageReporterSettings({ cwd: folder })!.statusLine;
-    expect(runShell(String(local.command), folder).out).toBe("local\n");
+    expect(reporterPlan(folder, false)).toEqual({ kind: "off", why: expect.stringContaining("settings.local.json has its own statusLine") });
+    fs.rmSync(path.join(folder, ".claude", "settings.local.json"));
+    writeStatusLine(path.join(folder, ".claude", "settings.json"), { type: "command", command: "echo project" });
+    expect(usageReporterSettings({ cwd: folder })).toBeNull();
+    expect(String(warn.mock.calls.at(-1)?.[0])).toContain("has its own statusLine");
+    // the payload the wrapped line saved above would answer first: with none, the meter says why there's no report
+    fs.rmSync(path.join(CONTEXT_DIR, `${ID}.json`), { force: true });
+    expect(claudeContext(ID, CONTEXT_DIR, folder)).toEqual({ state: "none", why: expect.stringMatching(/^Not reported: .*settings\.json has its own statusLine/) });
+    warn.mockRestore();
     const room = usageReporterSettings({ cwd: folder, userOnly: true })!.statusLine;
     expect(room.padding).toBe(1);
     expect(runShell(String(room.command), folder).out).toBe("user\n");

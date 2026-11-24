@@ -57,8 +57,8 @@ describe("Claude launch", () => {
     expect(JSON.parse(unsandboxed[unsandboxed.indexOf("--settings") + 1])).toEqual({ statusLine, crossSessionInbound: "refuse" });
     expect(unsandboxed).not.toContain("--setting-sources");
     expect(unsandboxed).not.toContain("--strict-mcp-config");
-    // the user's own status line still draws: the reporter wraps the one the launch would read — the folder's project
-    // settings' outside a room, the user's alone in one (it reads no other settings)
+    // the user's own status line still draws: the reporter wraps theirs; a folder's project statusLine is left to
+    // Claude Code outside a room (no reporter), and a room launch reads the user's settings alone
     const hex = (s: string) => [...Buffer.from(s)].map((b) => `\\x${b.toString(16).padStart(2, "0")}`).join("");
     const folder = tempDir("pane");
     fs.mkdirSync(path.join(os.homedir(), ".claude"), { recursive: true });
@@ -70,7 +70,7 @@ describe("Claude launch", () => {
       const own = agentFor("claude").launchArgs({ ...base }, { cwd: folder, claudeSettings: { sandbox: { enabled: true } } });
       expect(JSON.parse(own[own.indexOf("--settings") + 1])).toEqual({ statusLine: wraps("mine"), sandbox: { enabled: true }, crossSessionInbound: "refuse" });
       const ownLocal = agentFor("claude").launchArgs({ ...base }, { cwd: folder });
-      expect(JSON.parse(ownLocal[ownLocal.indexOf("--settings") + 1])).toEqual({ statusLine: wraps("the project's"), crossSessionInbound: "refuse" });
+      expect(JSON.parse(ownLocal[ownLocal.indexOf("--settings") + 1])).toEqual({ crossSessionInbound: "refuse" });
     } finally {
       fs.rmSync(path.join(os.homedir(), ".claude", "settings.json"));
     }

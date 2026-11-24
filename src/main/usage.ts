@@ -75,11 +75,12 @@ export function statusLineSources(cwd: string | null, userOnly: boolean): string
 }
 
 /**
- * What the status line of a Claude pane in `cwd` runs (ReporterPlan). The user's own statusLine is the sources' merged
- * (statusLineSources), each later file's fields over the earlier's, as Claude Code merges settings; one with no command,
- * or of another type than "command", draws nothing, so the reporter runs alone. A source that can't be read, or a
- * statusLine run in another shell than the /bin/sh Claude Code runs commands with, leaves the status line to the user:
- * the reporter is off.
+ * What the status line of a Claude pane in `cwd` runs (ReporterPlan). Only the user's own settings' statusLine is
+ * wrapped: one with no command, or of another type than "command", draws nothing, so the reporter runs alone. A
+ * project's or its local settings' statusLine is the folder's, which Claude Code runs only once the folder is trusted;
+ * run from the launch's --settings it would skip that check, so the reporter stays out of that folder and Claude Code
+ * draws the folder's line itself. A source that can't be read, or a statusLine run in another shell than the /bin/sh
+ * Claude Code runs commands with, leaves the status line alone too: the reporter is off.
  */
 export function reporterPlan(cwd: string | null, userOnly: boolean): ReporterPlan {
   let own: StatusLine | null = null;
@@ -90,7 +91,9 @@ export function reporterPlan(cwd: string | null, userOnly: boolean): ReporterPla
     } catch (err) {
       return { kind: "off", why: `${tildePath(file)} couldn't be read (${(err as Error).message}), so Mockingbird's reporter stays out rather than replace a status line it can't see` };
     }
-    if (line && typeof line === "object" && !Array.isArray(line)) own = { ...(own ?? {}), ...(line as StatusLine) };
+    if (!line || typeof line !== "object" || Array.isArray(line)) continue;
+    if (file !== CLAUDE_SETTINGS) return { kind: "off", why: `${tildePath(file)} has its own statusLine, which Claude Code runs itself once the folder is trusted, so Mockingbird's reporter stays out of this folder` };
+    own = line as StatusLine;
   }
   if (!own || (own.type !== undefined && own.type !== "command") || typeof own.command !== "string" || !own.command.trim()) return { kind: "alone" };
   if (own.args !== undefined) {
