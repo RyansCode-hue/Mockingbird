@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
-import { ensureAdapter, installDir } from "../dap/adapters";
+import { ensureAdapter, installDir, installProblem } from "../dap/adapters";
 import { spawnRpcProcess } from "../rpc";
 import { LspConnection } from "./connection";
 import { WatchedFiles } from "./watchedFiles";
@@ -168,8 +168,7 @@ export class LspManager {
   private key = (spec: LspServerSpec, root: string) => `${spec.id}:${root}`;
 
   installed(spec: LspServerSpec): boolean {
-    const p = spec.pinned();
-    return fs.existsSync(path.join(installDir(p, this.deps.dir), p.marker));
+    return !installProblem(spec.pinned(), this.deps.dir);
   }
 
   /** Download and unpack a server (pinned version, checksum checked). */

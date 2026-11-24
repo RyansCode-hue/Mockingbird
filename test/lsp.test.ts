@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFileSync } from "child_process";
 import { afterAll, describe, expect, it } from "vitest";
+import { listInstallFiles } from "../src/main/dap/adapters";
 import { LspManager, completionItems, hoverText, locations, workspaceEdits } from "../src/main/lsp/manager";
 import { SERVERS, serverFor, type LspServerSpec } from "../src/main/lsp/servers";
 import { applyTextEdits, lineStarts, offsetAt } from "../src/shared/textEdits";
@@ -80,6 +81,33 @@ describe("asking about a file that has no ready server", () => {
   });
 });
 
+describe("a server install that has lost files", () => {
+  const ts = SERVERS.find((s) => s.id === "typescript")!;
+  const deps = { env: () => ({}), which: async () => null, node: process.execPath, onDiagnostics: () => {}, onStatus: () => {} };
+  const tsDir = (root: string) => path.join(root, `typescript-${ts.pinned().version}`);
+
+  it("asks for an install, rather than starting the server, when only the marker is left", async () => {
+    const dir = tempDir("lsp-purged");
+    write(tsDir(dir), { "package/lib/tsc": "" });
+    const m = new LspManager({ dir, ...deps });
+    expect(m.installed(ts)).toBe(false);
+    const root = tempDir("lsp-purged-proj");
+    expect(await m.open(root, path.join(root, "a.ts"), "")).toMatchObject({ state: "install", server: { id: "typescript" } });
+  });
+
+  it("asks for an install when a file its list names is gone, and trusts it when none is", () => {
+    const dir = tempDir("lsp-listed");
+    write(tsDir(dir), { "package/lib/tsc": "", "package/lib/lib.d.ts": "" });
+    listInstallFiles(tsDir(dir));
+    const m = new LspManager({ dir, ...deps });
+    // missing first: an install once found whole is remembered for the process
+    fs.rmSync(path.join(tsDir(dir), "package/lib/lib.d.ts"));
+    expect(m.installed(ts)).toBe(false);
+    fs.writeFileSync(path.join(tsDir(dir), "package/lib/lib.d.ts"), "");
+    expect(m.installed(ts)).toBe(true);
+  });
+});
+
 /**
  * A pull-diagnostics server scripted by the `mode` file in its folder; a file
  * whose text says ERROR has one problem. "out-of-order": the first request
@@ -147,6 +175,7 @@ describe("pulled problems", () => {
   };
   fs.mkdirSync(path.join(dir, "fake-1"), { recursive: true });
   fs.writeFileSync(path.join(dir, "fake-1", "server.js"), FAKE_SERVER);
+  listInstallFiles(path.join(dir, "fake-1"));
   SERVERS.push(spec);
   afterAll(() => {
     SERVERS.splice(SERVERS.indexOf(spec), 1);
@@ -226,7 +255,8 @@ describe("pulled problems", () => {
   });
 });
 
-// Real servers, downloaded once into a cache that outlives the per-file temp HOME.
+// Real servers, downloaded once into a cache that outlives the per-file temp HOME. macOS may clear some of
+// its files out of $TMPDIR; the install's file list notices, and `install` downloads it again.
 const CACHE = path.join(os.tmpdir(), "mockingbird-test-lsp-cache");
 const has = (bin: string) => {
   try {

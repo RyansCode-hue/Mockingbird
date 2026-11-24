@@ -1,4 +1,5 @@
-import { spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
+import { createHash } from "crypto";
 import * as fs from "fs";
 import * as http from "http";
 import type * as https from "https";
@@ -8,7 +9,7 @@ import * as os from "os";
 import * as path from "path";
 import * as pty from "node-pty";
 import { PassThrough } from "stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DapConnection } from "../src/main/dap/client";
 import { FrameParser, frame } from "../src/main/rpc";
 import { DebugManager } from "../src/main/dap/session";
@@ -317,6 +318,56 @@ describe("downloading an adapter", () => {
       await expect(download(`${base}/stall`, path.join(dir, "b"), { get, timeoutMs: 300 })).rejects.toThrow(/Downloading .*\/stall failed/);
       await expect(download(`${base}/missing`, path.join(dir, "c"), { get })).rejects.toThrow(/HTTP 404/);
     } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("installs again when an install has lost files, and leaves a whole one alone", async () => {
+    const { ensureAdapter, installProblem } = await import("../src/main/dap/adapters");
+    const src = tempDir("pkg-src");
+    fs.mkdirSync(path.join(src, "package/lib"), { recursive: true });
+    fs.writeFileSync(path.join(src, "package/lib/tsc"), "#!/bin/sh\n");
+    fs.writeFileSync(path.join(src, "package/lib/lib.d.ts"), "declare var x: number;\n");
+    const tgz = path.join(tempDir("pkg-tgz"), "pkg-1.tgz");
+    execFileSync("/usr/bin/tar", ["-czf", tgz, "-C", src, "package"]);
+    const bytes = fs.readFileSync(tgz);
+    let downloads = 0;
+    const server = http.createServer((_req, res) => {
+      downloads++;
+      res.writeHead(200, { "Content-Length": bytes.length }).end(bytes);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const p = { name: "pkg", version: "1", url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/pkg-1.tgz`, sha256: createHash("sha256").update(bytes).digest("hex"), marker: "package/lib/tsc" };
+    const get = http.get as unknown as typeof https.get;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // only the marker is left, and no list of files
+      const root = tempDir("adapters");
+      fs.mkdirSync(path.join(root, "pkg-1/package/lib"), { recursive: true });
+      fs.writeFileSync(path.join(root, "pkg-1/package/lib/tsc"), "");
+      expect(installProblem(p, root)).toBe("has no list of its files");
+      const said: string[] = [];
+      const dir = await ensureAdapter(p, (m) => said.push(m), root, { get });
+      expect(downloads).toBe(1);
+      expect(said[0]).toBe("pkg 1 has no list of its files — reinstalling it…");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`pkg 1 at ${dir} has no list of its files — reinstalling it`));
+      expect(fs.readFileSync(path.join(dir, "package/lib/lib.d.ts"), "utf8")).toBe("declare var x: number;\n");
+      expect(installProblem(p, root)).toBeNull();
+      await ensureAdapter(p, () => {}, root, { get });
+      expect(downloads).toBe(1);
+
+      // listed, then one file gone (a copy elsewhere: a whole install is remembered for the process)
+      const root2 = tempDir("adapters2");
+      fs.cpSync(dir, path.join(root2, "pkg-1"), { recursive: true });
+      fs.rmSync(path.join(root2, "pkg-1/package/lib/lib.d.ts"));
+      expect(installProblem(p, root2)).toBe("is missing 1 of its 2 files (package/lib/lib.d.ts)");
+      const dir2 = await ensureAdapter(p, () => {}, root2, { get });
+      expect(downloads).toBe(2);
+      expect(fs.existsSync(path.join(dir2, "package/lib/lib.d.ts"))).toBe(true);
+      expect(installProblem(p, root2)).toBeNull();
+    } finally {
+      warn.mockRestore();
       server.closeAllConnections();
       server.close();
     }

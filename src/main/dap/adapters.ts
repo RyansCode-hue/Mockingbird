@@ -56,6 +56,62 @@ export const NETCOREDBG: Pinned = {
 
 export const installDir = (p: Pinned, root = DEBUG_DIR) => path.join(root, `${p.name}-${p.version}`);
 
+/** Written into each install as it's unpacked: every file it came with, relative to its folder. */
+const FILE_LIST = ".mockingbird-files.json";
+
+function filesUnder(dir: string, rel = ""): string[] {
+  return fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap((e) => {
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    // a symlink is listed, not followed: its target may sit outside the install
+    return e.isDirectory() ? filesUnder(dir, r) : [r];
+  });
+}
+
+/** Record an unpacked install's files, so `installProblem` can tell when any go missing. */
+export function listInstallFiles(dir: string): void {
+  fs.writeFileSync(path.join(dir, FILE_LIST), JSON.stringify(filesUnder(dir)));
+}
+
+/** Whether an entry exists, without following a symlink; errors other than its absence are thrown. */
+function present(file: string): boolean {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw err;
+  }
+}
+
+/** Installs found whole in this process, so a server's thousands of files are checked once, not on every use. */
+const whole = new Set<string>();
+
+/**
+ * Why an install can't be trusted, or null when every file it was unpacked
+ * with is still there. An install can lose files one at a time — macOS clears
+ * old files out of $TMPDIR, and unpacked files keep their archive's dates
+ * (npm's are all from 1985) — and a server missing some still has its marker,
+ * then fails to start. One with no file list predates the list and is
+ * reinstalled too.
+ */
+export function installProblem(p: Pinned, root = DEBUG_DIR): string | null {
+  const dir = installDir(p, root);
+  if (whole.has(dir) && present(path.join(dir, p.marker))) return null;
+  if (!present(dir)) return "isn't installed";
+  let files: unknown;
+  try {
+    files = JSON.parse(fs.readFileSync(path.join(dir, FILE_LIST), "utf8"));
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "has no list of its files" : `has an unreadable list of its files (${(err as Error).message})`;
+  }
+  if (!Array.isArray(files) || !files.every((f) => typeof f === "string")) return "has an unreadable list of its files (not a list of paths)";
+  const missing = files.filter((f) => !present(path.join(dir, f)));
+  if (missing.length) return `is missing ${missing.length} of its ${files.length} files (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""})`;
+  whole.add(dir);
+  return null;
+}
+
 /**
  * Download `url` to `dest`, following redirects. Settles exactly once: an
  * HTTP error, a connection that fails or sits idle for `timeoutMs` (before or
@@ -95,17 +151,23 @@ const run = (cmd: string, args: string[], cwd: string) =>
  * Make sure an adapter is installed, downloading it if needed; returns its
  * folder. A download whose hash doesn't match is deleted and reported — never
  * unpacked. Installs go to a temp folder and are renamed into place, so a
- * half-finished install is never mistaken for a good one.
+ * half-finished install is never mistaken for a good one, and one that has
+ * since lost files (`installProblem`) is logged and installed again.
  */
-export async function ensureAdapter(p: Pinned, onProgress: (msg: string) => void = () => {}, root = DEBUG_DIR): Promise<string> {
+export async function ensureAdapter(p: Pinned, onProgress: (msg: string) => void = () => {}, root = DEBUG_DIR, opts: { get?: typeof https.get } = {}): Promise<string> {
   const dir = installDir(p, root);
-  if (fs.existsSync(path.join(dir, p.marker))) return dir;
+  const problem = installProblem(p, root);
+  if (!problem) return dir;
+  if (present(dir)) {
+    console.warn(`[install] ${p.name} ${p.version} at ${dir} ${problem} — reinstalling it`);
+    onProgress(`${p.name} ${p.version} ${problem} — reinstalling it…`);
+  }
   fs.mkdirSync(root, { recursive: true });
   const tmp = fs.mkdtempSync(path.join(root, `.${p.name}-`));
   try {
     const file = path.join(tmp, path.basename(new URL(p.url).pathname));
     onProgress(`Downloading ${p.name} ${p.version}…`);
-    await download(p.url, file);
+    await download(p.url, file, opts);
     const bytes = fs.readFileSync(file);
     const [want, got] = p.sha256
       ? [p.sha256, crypto.createHash("sha256").update(bytes).digest("hex")]
@@ -124,8 +186,10 @@ export async function ensureAdapter(p: Pinned, onProgress: (msg: string) => void
     await run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", into], tmp).catch((err) =>
       onProgress(`Couldn't clear macOS's quarantine flag on ${p.name} (${err.message}) — if it won't start, run: xattr -dr com.apple.quarantine ${quote(dir)}`)
     );
+    listInstallFiles(into);
     fs.rmSync(dir, { recursive: true, force: true });
     fs.renameSync(into, dir);
+    whole.add(dir);
     return dir;
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
