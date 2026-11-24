@@ -296,7 +296,8 @@ describe("the Assistant's pipeline tools", () => {
     w.service.add("c1", "p2", "context");
     const wires = wireTools(w.deps).find((t) => t.name === "list_wires")!;
     const out = JSON.parse((await wires.run({})).text).wires;
-    expect(out.map((x: { fromTitle: string; toTitle: string }) => `${x.fromTitle}→${x.toTitle}`)).toEqual(["Planner→Coder", "Coder→Reviewer", "Old→Reviewer"]);
+    // wires are listed in the book's key order, and an all-digit random id sorts first: the set is what's under test
+    expect(out.map((x: { fromTitle: string; toTitle: string }) => `${x.fromTitle}→${x.toTitle}`).sort()).toEqual(["Coder→Reviewer", "Old→Reviewer", "Planner→Coder"]);
     const listed = JSON.parse((await sessionTools(w.deps).find((t) => t.name === "list_sessions")!.run({})).text);
     expect(listed.sessions.map((s: { id: string }) => s.id)).toEqual(["a1", "t1"]);
     expect(listed.notRunning).toEqual([

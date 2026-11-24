@@ -2365,10 +2365,9 @@ export class SessionManager {
       this.store.upsertSession(s.info);
     } else {
       const p = this.store.state.sessions.find((x) => x.id === id);
-      if (p) {
-        p.taskGroup = g;
-        this.store.save();
-      }
+      if (!p) throw new Error(`There's no session ${JSON.stringify(id)} to move: it may have been forgotten`);
+      p.taskGroup = g;
+      this.store.save();
     }
     this.emitChanged();
   }

@@ -1496,6 +1496,7 @@ describe("the Helpdesk tasks workspace", () => {
     expect(m.list().find((x) => x.id === s.id)!.taskGroup).toBe("Helpdesk");
     m.setGroup(s.id, "Elsewhere/sub");
     expect(m.list().find((x) => x.id === s.id)!.taskGroup).toBe("Elsewhere/sub");
+    expect(() => m.setGroup("no-such-session", "Elsewhere")).toThrow(/There's no session "no-such-session" to move/);
     // nor does its area, renamed onto a room's
     expect(() => m.renameGroup("Elsewhere", "Shared")).toThrow(/never runs in a team room's area/);
     expect(m.list().find((x) => x.id === s.id)!.taskGroup).toBe("Elsewhere/sub");
