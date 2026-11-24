@@ -90,6 +90,8 @@ export interface Ghost {
  */
 export type ToolKind = "files" | "changes" | "search" | "run" | "artifacts" | "chat" | "pipeline";
 export const TOOL_KINDS: readonly ToolKind[] = ["files", "changes", "search", "run", "artifacts", "chat", "pipeline"];
+/** The kinds landscape.json's written format holds (1.8's): a window of any other kind is kept in landscape-additions.json. */
+export const WRITTEN_TOOL_KINDS: readonly ToolKind[] = ["files", "changes", "search", "run", "artifacts", "chat"];
 /** The tools scoped to a workspace; the others are scoped to an area. */
 export const WORKSPACE_TOOLS: readonly ToolKind[] = ["files", "changes", "search", "run"];
 export const isWorkspaceTool = (t: ToolKind): boolean => WORKSPACE_TOOLS.includes(t);
@@ -144,17 +146,27 @@ export interface Landscape {
 }
 
 /**
- * The landscape's format. A field this version doesn't know makes a file
- * unreadable here, so a version that adds one raises this: an older
- * Mockingbird then leaves the newer file alone instead of dropping the field
- * on its next save.
+ * The newest landscape.json format this version reads. A field a version doesn't know makes a file unreadable there,
+ * so a format that adds one gets a new number: an older Mockingbird then leaves the newer file alone (read-only)
+ * instead of dropping the field on its next save.
  *
  * 2 added tool windows and artifact cards (`tools`, `cards`); a version 1 file is read as one with none.
  * 3 added the wire book (`wires`), kept beside the layout rather than in it (shared/wires.ts); a version 1 or 2 file
  * is read as one with none.
- * 4 added an area's chosen colour (`accent`); a version 1, 2 or 3 file is read as one with none chosen.
+ * 4 added an area's chosen colour (`accent`) and the Pipeline window inline. Only 1.9.0's first build wrote it: this
+ * version reads it and writes 3 (LANDSCAPE_WRITTEN_VERSION), with what 3 can't hold in landscape-additions.json. 4 is
+ * spent, so a later landscape.json format is 5.
+ *
+ * The in-memory Landscape is this version's whole model whatever file it came from, so its `v` is this.
  */
 export const LANDSCAPE_VERSION = 4;
+
+/**
+ * The format this version writes landscape.json in: 1.8's, so an older Mockingbird opens a file this one saved and can
+ * change it. What it can't hold (LandscapeAdditions) goes beside it, in a file an older one never reads or writes.
+ * Something new on the landscape goes there too, raising ADDITIONS_VERSION, not this.
+ */
+export const LANDSCAPE_WRITTEN_VERSION = 3;
 
 export const emptyLandscape = (): Landscape => ({ v: LANDSCAPE_VERSION, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} });
 
@@ -659,11 +671,11 @@ const area: Check<Area> = (v, where) => fields(v, where, AREA);
 const AREA_PATCH: Part = { checks: { ...AREA.checks, accent: orNull(accent) }, required: [] };
 
 /**
- * `v` with each area's colour that isn't one dropped, each said to `warn`: a hand-edited or newer file's colour is no
- * reason to set the whole layout aside, and the area takes its automatic colour instead. Anything else about an area
- * is left for the whole check to refuse.
+ * `v` with each area's colour that isn't one dropped, each said to `warn` as `file`'s: a hand-edited or newer file's
+ * colour is no reason to set the whole layout aside, and the area takes its automatic colour instead. Anything else
+ * about an area is left for the whole check to refuse.
  */
-function withoutBadAccents(v: unknown, warn: (message: string) => void): unknown {
+function withoutBadAccents(v: unknown, warn: (message: string) => void, file = "landscape.json"): unknown {
   if (!isObj(v) || !isObj(v.areas)) return v;
   let areas: Record<string, unknown> | null = null;
   for (const [k, a] of Object.entries(v.areas)) {
@@ -673,7 +685,7 @@ function withoutBadAccents(v: unknown, warn: (message: string) => void): unknown
       accent(a.accent, where);
     } catch (err) {
       if (!(err instanceof LandscapeShapeError)) throw err;
-      warn(`landscape.json's ${err.message} (${JSON.stringify(a.accent)}): it's dropped, and the area takes its automatic colour`);
+      warn(`${file}'s ${err.message} (${JSON.stringify(a.accent)}): it's dropped, and the area takes its automatic colour`);
       const { accent: _bad, ...rest } = a;
       areas ??= { ...v.areas };
       put(areas, k, rest);
@@ -706,7 +718,10 @@ const GHOST: Part = {
 };
 const ghost: Check<Ghost> = (v, where) => fields(v, where, GHOST);
 
-const toolKind: Check<ToolKind> = (v, where) => (TOOL_KINDS.includes(v as ToolKind) ? (v as ToolKind) : fail(where, `is not one of ${TOOL_KINDS.join(", ")}`));
+const toolKindIn =
+  (kinds: readonly ToolKind[]): Check<ToolKind> =>
+  (v, where) =>
+    kinds.includes(v as ToolKind) ? (v as ToolKind) : fail(where, `is not one of ${kinds.join(", ")}`);
 /** An area's key where one is named: a top-level group, never the loose bucket. */
 const areaName: Check<string> = (v, where) => {
   const k = name(v, where);
@@ -714,25 +729,31 @@ const areaName: Check<string> = (v, where) => {
   return bad ? fail(where, bad) : k;
 };
 const TOOL: Part = {
-  checks: { tool: toolKind, docked: bool, session: name, area: orNull(areaName), placement: rect } satisfies Record<keyof ToolWindow, Check<unknown>>,
+  checks: { tool: toolKindIn(TOOL_KINDS), docked: bool, session: name, area: orNull(areaName), placement: rect } satisfies Record<keyof ToolWindow, Check<unknown>>,
   required: ["tool", "docked"],
 };
+/** A tool window as landscape.json's format holds it, versions 2 to 3: no Pipeline window. */
+const TOOL_V3: Part = { checks: { ...TOOL.checks, tool: toolKindIn(WRITTEN_TOOL_KINDS) }, required: TOOL.required };
 /**
  * A tool window, its fields and what they say together: a docked one has no scope or place (it follows the
  * selection), and a placed one has its scope, a workspace tool its session and an area tool its area (a Pipeline window
  * the member it shows too, when it names one).
  */
-const toolWindow: Check<ToolWindow> = (v, where) => {
-  const t = fields<ToolWindow>(v, where, TOOL);
-  if (t.docked) {
-    if (t.session !== undefined || t.area !== undefined || t.placement !== undefined) fail(where, "is docked, so it has no session, area or placement");
-  } else if (isWorkspaceTool(t.tool)) {
-    if (t.session === undefined) fail(`${where}.session`, "is missing");
-    if (t.area === undefined) fail(`${where}.area`, "is missing");
-  } else if (typeof t.area !== "string") fail(`${where}.area`, t.area === null ? `is null, but ${t.tool} is an area's` : "is missing");
-  else if (t.session !== undefined && t.tool !== "pipeline") fail(where, `is an area's ${t.tool}, so it has no session`);
-  return t;
-};
+const windowOf =
+  (part: Part): Check<ToolWindow> =>
+  (v, where) => {
+    const t = fields<ToolWindow>(v, where, part);
+    if (t.docked) {
+      if (t.session !== undefined || t.area !== undefined || t.placement !== undefined) fail(where, "is docked, so it has no session, area or placement");
+    } else if (isWorkspaceTool(t.tool)) {
+      if (t.session === undefined) fail(`${where}.session`, "is missing");
+      if (t.area === undefined) fail(`${where}.area`, "is missing");
+    } else if (typeof t.area !== "string") fail(`${where}.area`, t.area === null ? `is null, but ${t.tool} is an area's` : "is missing");
+    else if (t.session !== undefined && t.tool !== "pipeline") fail(where, `is an area's ${t.tool}, so it has no session`);
+    return t;
+  };
+const toolWindow = windowOf(TOOL);
+const toolWindowV3 = windowOf(TOOL_V3);
 const CARD: Part = {
   checks: { area: areaName, shelf: name, artifact: name, placement: rect } satisfies Record<keyof ArtifactCard, Check<unknown>>,
   required: ["area", "shelf", "artifact"],
@@ -768,7 +789,7 @@ const LANDSCAPE_V1: Part = { checks: V1_CHECKS, required: ["v", "workspaces", "a
 const V2_CHECKS = {
   ...V1_CHECKS,
   v: version(2),
-  tools: (v: unknown, where: string) => entries(v, where, toolWindow),
+  tools: (v: unknown, where: string) => entries(v, where, toolWindowV3),
   cards: (v: unknown, where: string) => entries(v, where, card),
 };
 /** Version 2's landscape: what a file written before wires holds, and nothing more. */
@@ -778,28 +799,37 @@ const LANDSCAPE_V2: Part = { checks: V2_CHECKS, required: [...LANDSCAPE_V1.requi
  * it can get the layout moved aside as a file that isn't a landscape. It isn't required for the same reason.
  */
 const V3_CHECKS = { ...V2_CHECKS, v: version(3), wires: (v: unknown) => v };
-/** Version 3's landscape: what a file written before areas' chosen colours holds, and nothing more. */
+/** Version 3's landscape: what a file written before areas' chosen colours holds, and nothing more. What this version writes. */
 const LANDSCAPE_V3: Part = { checks: V3_CHECKS, required: LANDSCAPE_V2.required };
+/** Version 4's landscape, as 1.9.0's first build wrote it: areas' chosen colours and Pipeline windows inline. Read only. */
 const LANDSCAPE: Part = {
   checks: {
     ...V3_CHECKS,
     v: version(LANDSCAPE_VERSION),
     areas: (v: unknown, where: string) => entries(v, where, area, areaKey),
+    tools: (v: unknown, where: string) => entries(v, where, toolWindow),
   } satisfies Record<keyof Landscape | "wires", Check<unknown>>,
   required: LANDSCAPE_V3.required,
 };
 
+/** A stored format: each part's fields and the ones it requires. */
+export type StoredFormat = Record<string, { fields: string[]; required: string[] }>;
+const formatOf = (parts: Record<string, Part>): StoredFormat =>
+  Object.fromEntries(Object.entries(parts).map(([k, p]) => [k, { fields: Object.keys(p.checks).sort(), required: [...p.required].sort() }]));
+const EVERY_VERSION = { placement: PLACEMENT, repo: REPO, stack: STACK, ghost: GHOST, conversation: CONVERSATION };
+
 /**
- * The stored format as this version checks it: each part's fields and the
- * ones it requires. A test pins it under LANDSCAPE_VERSION, so the format
- * can't change without the version being raised.
+ * Each landscape.json format this version reads, by version. A test pins every one, so none can change without a new
+ * version: a file of an older one is still read as it was written.
  */
-export const LANDSCAPE_FORMAT: Record<string, { fields: string[]; required: string[] }> = Object.fromEntries(
-  Object.entries({ landscape: LANDSCAPE, placement: PLACEMENT, area: AREA, repo: REPO, stack: STACK, ghost: GHOST, conversation: CONVERSATION, tool: TOOL, card: CARD }).map(([k, p]) => [
-    k,
-    { fields: Object.keys(p.checks).sort(), required: [...p.required].sort() },
-  ])
-);
+export const LANDSCAPE_FORMATS: Readonly<Record<number, StoredFormat>> = {
+  1: formatOf({ landscape: LANDSCAPE_V1, area: AREA_V3, ...EVERY_VERSION }),
+  2: formatOf({ landscape: LANDSCAPE_V2, area: AREA_V3, tool: TOOL_V3, card: CARD, ...EVERY_VERSION }),
+  3: formatOf({ landscape: LANDSCAPE_V3, area: AREA_V3, tool: TOOL_V3, card: CARD, ...EVERY_VERSION }),
+  4: formatOf({ landscape: LANDSCAPE, area: AREA, tool: TOOL, card: CARD, ...EVERY_VERSION }),
+};
+/** The format this version writes landscape.json in (LANDSCAPE_WRITTEN_VERSION's). */
+export const LANDSCAPE_FORMAT: StoredFormat = LANDSCAPE_FORMATS[LANDSCAPE_WRITTEN_VERSION];
 
 /**
  * A landscape read from disk, checked whole: throws LandscapeShapeError naming the first field that's wrong. A file of
@@ -823,6 +853,184 @@ export function parseLandscape(v: unknown, warn: (message: string) => void = (m)
   }
   const { wires: _book, ...layout } = fields<Landscape & { wires?: unknown }>(withoutBadAccents(v, warn), "", LANDSCAPE, false, "the landscape");
   return layout;
+}
+
+// ---- what landscape.json's written format can't hold --------------------------------------
+
+/** The file beside landscape.json that holds what its written format can't (LandscapeAdditions). */
+export const ADDITIONS_FILE = "landscape-additions.json";
+
+/**
+ * landscape-additions.json's format, numbered as landscape.json's is (LANDSCAPE_VERSION): a field a version doesn't
+ * know makes the file unreadable there, so one that adds a field raises this, and an older one leaves the newer file
+ * alone. 1: areas' chosen colours and Pipeline windows.
+ */
+export const ADDITIONS_VERSION = 1;
+
+/**
+ * What the landscape holds that landscape.json, written in 1.8's format (LANDSCAPE_WRITTEN_VERSION), can't. It's kept
+ * beside it in landscape-additions.json, a file an older Mockingbird never reads or writes, so that one opens
+ * landscape.json as its own and can change it. Each entry is keyed to what it's about in landscape.json (an area, a
+ * window's id), and checked against it as it's read back (withAdditions).
+ */
+export interface LandscapeAdditions {
+  v: typeof ADDITIONS_VERSION;
+  /** By area key: the area's fields landscape.json's format lacks. */
+  areas: Record<string, AreaAddition>;
+  /** By window id, in the order of the landscape's `tools`: the windows of a kind its format lacks (WRITTEN_TOOL_KINDS). */
+  tools: Record<string, ToolAddition>;
+}
+
+export interface AreaAddition {
+  accent?: number;
+}
+
+export interface ToolAddition {
+  window: ToolWindow;
+  /** The window landscape.json holds that this one came before in `tools`, whose order is a dock's; absent: after them all. */
+  before?: string;
+  /** Its area's rectangle when it was written, for a placed window with a place: the area moved since takes it along. */
+  areaAt?: Rect;
+}
+
+export const emptyAdditions = (): LandscapeAdditions => ({ v: ADDITIONS_VERSION, areas: {}, tools: {} });
+export const noAdditions = (a: LandscapeAdditions): boolean => Object.keys(a.areas).length === 0 && Object.keys(a.tools).length === 0;
+
+const ADDED_AREA: Part = { checks: { accent } satisfies Record<keyof AreaAddition, Check<unknown>>, required: [] };
+const ADDED_TOOL: Part = { checks: { window: toolWindow, before: name, areaAt: rect } satisfies Record<keyof ToolAddition, Check<unknown>>, required: ["window"] };
+const addedTool: Check<ToolAddition> = (v, where) => {
+  const t = fields<ToolAddition>(v, where, ADDED_TOOL);
+  if (WRITTEN_TOOL_KINDS.includes(t.window.tool)) fail(`${where}.window.tool`, `is ${t.window.tool}, which landscape.json holds`);
+  if (t.areaAt !== undefined && (t.window.docked || t.window.placement === undefined)) fail(`${where}.areaAt`, "is only for a placed window with a place");
+  return t;
+};
+const ADDITIONS: Part = {
+  checks: {
+    v: version(ADDITIONS_VERSION),
+    areas: (v, where) => entries(v, where, (x, w) => fields<AreaAddition>(x, w, ADDED_AREA), areaKey),
+    tools: (v, where) => entries(v, where, addedTool),
+  } satisfies Record<keyof LandscapeAdditions, Check<unknown>>,
+  required: ["v", "areas", "tools"],
+};
+
+/** landscape-additions.json's format, pinned by a test under ADDITIONS_VERSION as landscape.json's are. */
+export const ADDITIONS_FORMAT: StoredFormat = formatOf({ additions: ADDITIONS, area: ADDED_AREA, tool: ADDED_TOOL, window: TOOL, placement: PLACEMENT });
+
+/**
+ * landscape-additions.json read from disk, checked whole as parseLandscape checks landscape.json: throws
+ * LandscapeShapeError naming the first thing that's wrong, a field this version doesn't know included. An area's colour
+ * that isn't one is the same exception: dropped, said to `warn`. A newer version's file is the store's to leave alone
+ * before this is asked.
+ */
+export function parseAdditions(v: unknown, warn: (message: string) => void): LandscapeAdditions {
+  return fields(withoutBadAccents(v, warn, ADDITIONS_FILE), "", ADDITIONS, false, "the file");
+}
+
+/** A landscape as landscape.json holds it, in the written format (LANDSCAPE_WRITTEN_VERSION); the wire book goes beside it. */
+export type StoredLandscape = Omit<Landscape, "v"> & { v: typeof LANDSCAPE_WRITTEN_VERSION };
+
+/**
+ * Landscape `l` as it's saved: what landscape.json's written format holds, and the rest as additions. The first is
+ * checked as that format before it's handed back, so nothing an older Mockingbird would set aside is ever written: a
+ * field added to the model and not moved into the additions throws here.
+ */
+export function storedLandscape(l: Landscape): { landscape: StoredLandscape; additions: LandscapeAdditions } {
+  const additions = emptyAdditions();
+  const areas: Record<string, Area> = {};
+  for (const [k, a] of Object.entries(l.areas)) {
+    const { accent: chosen, ...rest } = a;
+    put(areas, k, rest);
+    if (chosen !== undefined) put(additions.areas, k, { accent: chosen });
+  }
+  const tools: Record<string, ToolWindow> = {};
+  let waiting: ToolAddition[] = [];
+  for (const [id, w] of Object.entries(l.tools)) {
+    if (WRITTEN_TOOL_KINDS.includes(w.tool)) {
+      put(tools, id, w);
+      for (const t of waiting) t.before = id;
+      waiting = [];
+      continue;
+    }
+    const at = !w.docked && w.placement && typeof w.area === "string" ? own(l.areas, w.area) : undefined;
+    const t: ToolAddition = { window: w, ...(at ? { areaAt: { x: at.x, y: at.y, w: at.w, h: at.h } } : {}) };
+    put(additions.tools, id, t);
+    waiting.push(t);
+  }
+  const landscape = fields<StoredLandscape>({ ...l, v: LANDSCAPE_WRITTEN_VERSION, areas, tools }, "", LANDSCAPE_V3, false, "the landscape as saved");
+  return { landscape, additions };
+}
+
+/** What withAdditions is told by and tells. */
+export interface AdditionsContext {
+  /** Said for each addition dropped or changed to fit landscape.json as it is. */
+  warn: (message: string) => void;
+  /** Whether session `id` is still this Mac's or a teammate's. Without it, a Pipeline window's member is kept as it is. */
+  sessionKnown?: (id: string) => boolean;
+}
+
+/**
+ * Landscape `l`, read from landscape.json, with additions `a` merged in. landscape.json may have changed since `a` was
+ * written (an older Mockingbird changes it alone, and a crash between the store's two writes leaves `a` a save ahead
+ * of it), so each entry is checked against `l` as it is, and one that doesn't fit is dropped or changed, said to `warn`:
+ * - an area's colour goes when there's no such area now (renamed or removed); a version 4 file's own colour for an
+ *   area is kept over it;
+ * - a window goes when its id is landscape.json's now (a window or card made under it) or, placed, when its area is
+ *   gone. Its area moved or resized, it moves with the area's corner, and is placed anew in it when it doesn't fit
+ *   there then. A Pipeline window lets go of a member that's gone (sessionKnown), showing another of its pipelines.
+ * - a window goes back among landscape.json's where it was in `tools` (a dock's order): before the one it came before,
+ *   or after them all when that one's gone.
+ */
+export function withAdditions(l: Landscape, a: LandscapeAdditions, o: AdditionsContext): Landscape {
+  const say = (what: string) => o.warn(`${ADDITIONS_FILE}: ${what}`);
+  const gone = (key: string) => `landscape.json has no area ${JSON.stringify(key)} now (it was renamed or removed since)`;
+  const areas = { ...l.areas };
+  for (const [k, add] of Object.entries(a.areas)) {
+    const cur = own(l.areas, k);
+    if (!cur) {
+      say(`the colour of area ${JSON.stringify(k)} is dropped: ${gone(k)}`);
+      continue;
+    }
+    if (add.accent === undefined) continue;
+    if (cur.accent === undefined) put(areas, k, { ...cur, accent: add.accent });
+    else if (cur.accent !== add.accent) say(`area ${JSON.stringify(k)}'s colour ${add.accent} is dropped for the one landscape.json holds itself (${cur.accent})`);
+  }
+  const order = Object.keys(l.tools);
+  const tools: Record<string, ToolWindow> = { ...l.tools };
+  for (const [id, add] of Object.entries(a.tools)) {
+    let w = add.window;
+    const what = `the ${TOOL_NAME[w.tool]} window ${JSON.stringify(id)}`;
+    if (Object.hasOwn(l.tools, id) || Object.hasOwn(l.cards, id)) {
+      if (!same(own(l.tools, id), w)) say(`${what} is dropped: landscape.json has a window or card under its id now`);
+      continue;
+    }
+    if (!w.docked && typeof w.area === "string") {
+      const area = own(l.areas, w.area);
+      if (!area) {
+        say(`${what} is dropped: ${gone(w.area)}`);
+        continue;
+      }
+      if (w.placement && add.areaAt && !same(add.areaAt, { x: area.x, y: area.y, w: area.w, h: area.h })) {
+        const moved = { ...w.placement, x: w.placement.x + area.x - add.areaAt.x, y: w.placement.y + area.y - add.areaAt.y };
+        if (within(moved, area)) w = { ...w, placement: moved };
+        else {
+          const { placement: _old, ...placedAnew } = w;
+          w = placedAnew;
+          say(`${what} is placed anew in area ${JSON.stringify(w.area)}: the area changed since, and its place doesn't fit in it now`);
+        }
+      }
+      if (w.session !== undefined && !isWorkspaceTool(w.tool) && o.sessionKnown && !o.sessionKnown(w.session)) {
+        const { session: member, ...without } = w;
+        w = without;
+        say(`${what} lets go of session ${JSON.stringify(member)}, which is gone: it shows another of its area's pipelines`);
+      }
+    }
+    const before = add.before === undefined ? -1 : order.indexOf(add.before);
+    order.splice(before < 0 ? order.length : before, 0, id);
+    put(tools, id, w);
+  }
+  const ordered: Record<string, ToolWindow> = {};
+  for (const id of order) put(ordered, id, own(tools, id)!);
+  return { ...l, areas, tools: ordered };
 }
 
 // ---- patches ----------------------------------------------------------------------------
@@ -1184,11 +1392,14 @@ export const sameLandscape = (a: Landscape, b: Landscape): boolean => same(a, b)
  *   be migrated into it;
  * - dropped: it could be read again, and the changes made to the stand-in were dropped for the file's layout;
  * - newer: a newer Mockingbird wrote it; it's left as it is;
- * - save: the latest changes couldn't be written; they're kept and tried again with the next change and on quit.
+ * - save: the latest changes couldn't be written; they're kept and tried again with the next change and on quit;
+ * - additions: landscape-additions.json, beside it, couldn't be used (ADDITIONS_FILE): moved to `movedTo` when it
+ *   wasn't additions, else left as it is (a newer one, or one that couldn't be read or moved) and not written this run.
+ *   The layout is read and saved either way, without what that file holds.
  * With `readOnly`, the file is left as it is: changes this run are kept in memory and never written.
  */
 export interface LandscapeProblem {
-  kind: "corrupt" | "unreadable" | "dropped" | "newer" | "save";
+  kind: "corrupt" | "unreadable" | "dropped" | "newer" | "save" | "additions";
   message: string;
   file: string;
   movedTo?: string;
