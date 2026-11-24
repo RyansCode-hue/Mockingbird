@@ -58,7 +58,9 @@ const notToTerminal =
 const BOX_H = 38;
 const TERM_H = 24;
 const COL_GAP = 24;
-const ROW_GAP = 16;
+const ROW_GAP = 20;
+/** Room for a loop drawn over the steps or under them, its chip at the curve's far point. */
+const LOOP_ROOM = 34;
 
 export interface SketchBox {
   key: string;
@@ -75,6 +77,7 @@ export interface SketchBox {
 export interface SketchPath {
   d: string;
   kind: "handoff" | "feedback" | "context" | "worktree";
+  /** Its label: `x` is its centre, `y` its top. */
   chip: { x: number; y: number; text: string; tone: "amber" | "plain" } | null;
 }
 export interface Sketch {
@@ -89,6 +92,9 @@ export interface Sketch {
  * into each, a column's steps one under another, each terminal under its agent; handoffs across, a feedback loop under
  * the steps with its rounds, a context link dashed, a shared worktree the thick stub. An automatic gate (`plan`'s gate
  * in force) is the amber chip on its wire.
+ *
+ * A loop's chip never sits on a step: with steps stacked in a column, one between two top-row steps goes over the
+ * steps, and any other goes under all of them (under only its own two, it would run into the row below).
  */
 export function chainSketch(b: TemplateBody, plan: LayOutPlan, width: number): Sketch {
   const agents = b.steps.filter((s) => s.agent !== "terminal");
@@ -106,23 +112,32 @@ export function chainSketch(b: TemplateBody, plan: LayOutPlan, width: number): S
   const cols = Math.max(1, ...agents.map((s) => col.get(s.key)! + 1));
   const bw = Math.max(64, Math.min(108, Math.floor((width - (cols - 1) * COL_GAP) / cols)));
   const rowIn = new Map<number, number>();
+  const rowOf = new Map<string, number>();
+  for (const s of agents) {
+    const c = col.get(s.key)!;
+    rowOf.set(s.key, rowIn.get(c) ?? 0);
+    rowIn.set(c, (rowOf.get(s.key) ?? 0) + 1);
+  }
+  const rows = Math.max(1, ...rowIn.values());
+  // a terminal stands in its agent's column
+  const sameAs = (k: string) => (b.steps.find((s) => s.key === k)?.folder as { sameAs?: string } | undefined)?.sameAs;
+  const colAt = (k: string) => col.get(k) ?? col.get(sameAs(k) ?? "") ?? 0;
+  const isLoop = (w: TemplateWire) => w.type === "feedback" || (w.type === "handoff" && colAt(w.to) <= colAt(w.from));
+  const over = (w: TemplateWire) => rows > 1 && isLoop(w) && rowOf.get(w.from) === 0 && rowOf.get(w.to) === 0;
+  const top = 2 + (b.wires.some(over) ? LOOP_ROOM : 0);
+  const under = b.wires.some((w) => isLoop(w) && !over(w));
   const boxes: SketchBox[] = [];
   const at = new Map<string, SketchBox>();
   for (const s of agents) {
-    const c = col.get(s.key)!;
-    const r = rowIn.get(c) ?? 0;
-    rowIn.set(c, r + 1);
-    const box: SketchBox = { key: s.key, name: s.name, sub: s.perTicket ? `${s.agent} · per ticket` : s.agent, x: c * (bw + COL_GAP), y: 2 + r * (BOX_H + ROW_GAP), w: bw, h: BOX_H, terminal: false, perTicket: !!s.perTicket };
+    const box: SketchBox = { key: s.key, name: s.name, sub: s.perTicket ? `${s.agent} · per ticket` : s.agent, x: col.get(s.key)! * (bw + COL_GAP), y: top + rowOf.get(s.key)! * (BOX_H + ROW_GAP), w: bw, h: BOX_H, terminal: false, perTicket: !!s.perTicket };
     boxes.push(box);
     at.set(s.key, box);
   }
-  const rows = Math.max(1, ...rowIn.values());
-  const loops = b.wires.some((w) => w.type === "feedback");
-  const agentsBottom = 2 + rows * BOX_H + (rows - 1) * ROW_GAP;
-  const termTop = agentsBottom + (loops ? 36 : 22);
+  const agentsBottom = top + rows * BOX_H + (rows - 1) * ROW_GAP;
+  const termTop = agentsBottom + (under ? LOOP_ROOM + 2 : 22);
   for (const s of b.steps) {
     if (s.agent !== "terminal") continue;
-    const agent = at.get((s.folder as { sameAs: string }).sameAs);
+    const agent = at.get(sameAs(s.key) ?? "");
     const box: SketchBox = { key: s.key, name: s.name, sub: "terminal", x: agent?.x ?? 0, y: termTop, w: Math.round(bw * 0.86), h: TERM_H, terminal: true, perTicket: !!s.perTicket };
     boxes.push(box);
     at.set(s.key, box);
@@ -138,15 +153,19 @@ export function chainSketch(b: TemplateBody, plan: LayOutPlan, width: number): S
       paths.push({ d: `M${a.x + 18} ${a.y + a.h} V ${z.y}`, kind: "worktree", chip: null });
       return;
     }
-    if (w.type === "feedback" || (w.type !== "context" && z.x <= a.x)) {
-      const y = Math.max(a.y + a.h, z.y + z.h);
+    if (isLoop(w)) {
       const ax = a.x + a.w / 2;
       const zx = z.x + z.w / 2;
-      paths.push({
-        d: `M${ax} ${a.y + a.h} C ${ax} ${y + 32}, ${zx} ${y + 32}, ${zx} ${z.y + z.h + 2}`,
-        kind: w.type === "feedback" ? "feedback" : "handoff",
-        chip: { x: (ax + zx) / 2 - 26, y: y + 16, text: automatic ? "automatic" : w.type === "feedback" ? `↺ ${w.rounds ?? 3} rounds` : "", tone: automatic ? "amber" : "plain" },
-      });
+      const kind = w.type === "feedback" ? "feedback" : "handoff";
+      const text = automatic ? "automatic" : w.type === "feedback" ? `↺ ${w.rounds ?? 3} rounds` : "";
+      const tone = automatic ? "amber" : "plain";
+      if (over(w)) {
+        // over the steps, from the top edges: the curve's far point is 24 above them, the chip centred on it
+        paths.push({ d: `M${ax} ${a.y} C ${ax} ${top - 32}, ${zx} ${top - 32}, ${zx} ${z.y - 2}`, kind, chip: { x: (ax + zx) / 2, y: top - 32, text, tone } });
+        return;
+      }
+      const y = Math.max(a.y + a.h, z.y + z.h, agentsBottom);
+      paths.push({ d: `M${ax} ${a.y + a.h} C ${ax} ${y + 32}, ${zx} ${y + 32}, ${zx} ${z.y + z.h + 2}`, kind, chip: { x: (ax + zx) / 2, y: y + 16, text, tone } });
       return;
     }
     const x1 = a.x + a.w;
@@ -157,11 +176,11 @@ export function chainSketch(b: TemplateBody, plan: LayOutPlan, width: number): S
     paths.push({
       d: `M${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`,
       kind: w.type === "context" ? "context" : "handoff",
-      chip: automatic ? { x: mid - 26, y: (y1 + y2) / 2 + 22, text: "automatic", tone: "amber" } : null,
+      chip: automatic ? { x: mid, y: (y1 + y2) / 2 + 22, text: "automatic", tone: "amber" } : null,
     });
   });
   const right = Math.max(...boxes.map((x) => x.x + x.w));
-  const bottom = Math.max(...boxes.map((x) => x.y + x.h), agentsBottom + (loops ? 34 : 0));
+  const bottom = Math.max(...boxes.map((x) => x.y + x.h), agentsBottom + (under ? LOOP_ROOM : 0));
   return { w: Math.max(right, 1), h: bottom + 2, boxes, paths: paths.map((p) => (p.chip && !p.chip.text ? { ...p, chip: null } : p)) };
 }
 
