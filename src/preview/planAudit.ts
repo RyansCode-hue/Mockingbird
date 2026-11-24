@@ -405,6 +405,64 @@ async function pipelineAudit(out: Record<string, unknown>): Promise<void> {
   };
 }
 
+/**
+ * ?lsTemplates=perticket's first template, whose Builder, Reviewer and Dev server run once per ticket, from Pipeline
+ * from a ticket… on three tickets: what the picker says, its Builder's Once per ticket box unticked (its Dev server
+ * following; refused) and ticked again, what Lay out sends, and where the steps go: stage columns, a ticket to a row.
+ */
+async function perTicketAudit(env: PlanAuditEnv, out: Record<string, unknown>, shot = false): Promise<void> {
+  const v = document.querySelector<HTMLElement>(".ls-viewport")!.getBoundingClientRect();
+  document.querySelector(".ls-viewport")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: Math.round(v.right - 120), clientY: Math.round(v.bottom - 80), button: 2 }));
+  await sleep(300);
+  menuRow("Pipeline from a ticket…")?.click();
+  await sleep(900);
+  out.template = flat(picker()?.querySelector(".tp-template .mb-select-val"));
+  for (const id of ["5115", "5110", "5120"]) {
+    await click(picker()?.querySelector(`.tp-tk[data-ticket="${id}"] .tp-tk-pick`));
+    await sleep(350);
+  }
+  // a screenshot shows it with its three tickets ticked
+  if (shot) return;
+  const act = () => picker()?.querySelector<HTMLButtonElement>('button[data-act="layout"]');
+  out.three = {
+    head: flat(picker()?.querySelector(".tp-tix .tp-k")),
+    ticked: [...(picker()?.querySelectorAll<HTMLElement>(".tp-tk.on") ?? [])].map((r) => r.dataset.ticket ?? null),
+    lead: flat(picker()?.querySelector(".tp-tk.on .tp-lead")),
+    foot: flat(picker()?.querySelector(".tp-where")),
+    note: flat(picker()?.querySelector('[data-flag="perticket"]')),
+    off: act()?.disabled ?? null,
+  };
+  const box = (key: string) => picker()?.querySelector<HTMLInputElement>(`.tp-step[data-step="${key}"] .tp-per input`);
+  box("s1")?.click();
+  await sleep(300);
+  out.unticked = { dev: box("s4")?.checked ?? null, devOff: box("s4")?.disabled ?? null, rules: flat(picker()?.querySelector('[data-flag="rules"]')), off: act()?.disabled ?? null };
+  box("s1")?.click();
+  await sleep(300);
+  out.ticked = { dev: box("s4")?.checked ?? null, rules: flat(picker()?.querySelector('[data-flag="rules"]')), off: act()?.disabled ?? null };
+  await sleep(600);
+  const every = async () => [...((await window.mb.listSessions()) as SessionInfo[]), ...((await window.mb.plannedSessions()) as SessionInfo[])];
+  const before = new Set((await every()).map((s) => s.id));
+  const mark = env.calls.length;
+  await click(act());
+  await sleep(3500);
+  const sent = env.calls.slice(mark).filter((c) => c.fn === "templatesLayOut").map((c) => c.args[0] as { ticketId: string; moreTickets?: { ticketId: string }[]; template: { steps: { name: string; perTicket?: true }[] } });
+  const all = (await every()).filter((s) => !before.has(s.id));
+  const place = (s: SessionInfo) => {
+    const el = document.querySelector<HTMLElement>(`.ls-node[data-ws="${CSS.escape(s.id)}"], .ls-ghost[data-front="${CSS.escape(s.id)}"]`);
+    const r = el?.getBoundingClientRect();
+    return r ? [Math.round(r.left), Math.round(r.top)] : null;
+  };
+  out.laid = {
+    calls: sent.length,
+    ticket: sent[0]?.ticketId ?? null,
+    more: sent[0]?.moreTickets?.map((t) => t.ticketId) ?? null,
+    steps: sent[0]?.template.steps.map((s) => [s.name, !!s.perTicket]) ?? null,
+    open: !!picker(),
+    note: noteNow(),
+    made: all.map((s) => [s.title, s.ticketId, s.shell ? "terminal" : s.planned ? "waits" : "started", place(s)]),
+  };
+}
+
 async function builtinAudit(env: PlanAuditEnv, out: Record<string, unknown>, shot: boolean, many = false): Promise<void> {
   const v = document.querySelector<HTMLElement>(".ls-viewport")!.getBoundingClientRect();
   const at = { x: Math.round(v.right - 120), y: Math.round(v.bottom - 80) };
@@ -507,6 +565,7 @@ export function runPlanAudit(env: PlanAuditEnv, part: string): void {
       else if (part === "builtin" || part === "builtinshot") await builtinAudit(env, out, part === "builtinshot");
       else if (part === "builtinmany" || part === "builtinmanyshot") await builtinAudit(env, out, part === "builtinmanyshot", true);
       else if (part === "tickets") await ticketsAudit(env, out);
+      else if (part === "perticket" || part === "perticketshot") await perTicketAudit(env, out, part === "perticketshot");
       else if (part === "pipeline") await pipelineAudit(out);
       else if (part === "pipelineshot") {
         const item = await trayItem(false);

@@ -4250,6 +4250,12 @@ button.ls-empty-link { pointer-events: auto; }
 .tp-box .s { font: 400 10.5px var(--ui); color: var(--idle); }
 .tp-box.term { background: var(--bg-pane-dead); flex-direction: row; align-items: center; }
 .tp-box.term .t { font: 400 11.5px var(--ui); }
+/* a step that runs once per ticket: drawn as a stack of them */
+.tp-box.per { box-shadow: 3px 3px 0 -1px var(--bg-pane-header), 3px 3px 0 0 var(--line-btn); }
+.tp-per-line { padding-left: 13px; }
+.modal .tp-check.tp-per { color: var(--text-3); font-size: 11px; }
+.modal .tp-check.tp-per:has(input:disabled) { opacity: .7; }
+.modal.tp .mb-select.tp-row { flex: 1; min-width: 0; }
 .tp-chip { position: absolute; font: 400 10.5px var(--ui); white-space: nowrap; border-radius: 9px; padding: 1px 7px; }
 .tp-chip.plain { color: var(--text-2); background: var(--bg-pane-header); border: 1px solid var(--line-strong2); }
 .tp-chip.amber { color: var(--on-amber); background: var(--amber); font-weight: 500; }

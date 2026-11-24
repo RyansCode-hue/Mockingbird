@@ -49,8 +49,9 @@ import { runFirstRunAudit } from "./firstRunAudit";
 import { armFocus } from "../renderer/keyArm";
 import { runSwitchAudit } from "./switchAudit";
 import { assistantApi, openAssistantTab } from "./assistantStub";
-import { kickoffAsTicket, layOutPlan, parseTemplateBody, readTemplates, roomAsked, startsAtOrchestrator, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
+import { kickoffAsTicket, LAY_OUT_MAX, layOutPlan, parseTemplateBody, readTemplates, roomAsked, runsPerTicket, startsAtOrchestrator, ticketedLayOutPlan, ticketLine, ticketsLine, wireSettingsOf, withTicket, type DraftShape, type LayOutReply, type LayOutRequest, type TemplateBody, type TemplateDraft, type TemplateStep, type TemplateWire } from "../shared/pipelineTemplates";
 import { checkPlan, ME as PLAN_ME, orchestratorKickoff, readShownPlan, type Plan, type PlanContext, type PlanLaidOut, type PlanView } from "../shared/plans";
+import { asOrchestrated } from "../shared/pipelineEdit";
 import { boardPlan, councilPlan, laidPipeline, pipelinePlan, runPlanAudit, ticketsPlan } from "./planAudit";
 import { runPipelineAudit } from "./pipelineAudit";
 import { runPanelAudit } from "./panelAudit";
@@ -9464,9 +9465,10 @@ let layOutLeaves = Number(params.get("lsLayOutLeaves") ?? 0);
 const tplWhy = (e: unknown) => (e instanceof Error ? e.message : String(e));
 Object.assign(api, {
   templatesList: async () => readTemplates(tplStore),
-  // main's draft: the chain's steps and their terminals, the wires among them, a ticket kickoff as {ticket}; nothing here
-  // is secret, so nothing is redacted
-  templatesDraft: async (ids: string[]) => {
+  // main's draft: the chain's steps and their terminals, the wires among them, a ticket kickoff as {ticket}, shaped as
+  // the pipeline's (DraftShape: steps that run once per ticket, its Orchestrator); nothing here is secret, so nothing is
+  // redacted
+  templatesDraft: async (ids: string[], shape: DraftShape = {}) => {
     const known = (id: string) => byId(id) ?? previous.find((x) => x.id === id) ?? planned.find((x) => x.id === id);
     const agents = ids.map(known);
     if (agents.some((a) => !a)) return err("This Mac has no session in that chain any more.");
@@ -9474,6 +9476,7 @@ Object.assign(api, {
     const terms = [...new Set(links.filter((w) => w.type === "worktree" && ids.includes(w.from) && !ids.includes(w.to)).map((w) => w.to))].flatMap((id) => (known(id)?.shell ? [known(id)!] : []));
     const all = [...(agents as SessionInfo[]), ...terms];
     const keyOf = new Map(all.map((x, i) => [x.id, `s${i + 1}`]));
+    const per = new Set(shape.perTicket ?? []);
     const unsaid: string[] = [];
     const steps: TemplateStep[] = all.map((x, i) => {
       const shares = x.shell ? links.find((w) => w.type === "worktree" && w.to === x.id)!.from : x.planned?.sharesWith ?? (agents as SessionInfo[]).slice(0, i).find((y) => !y.planned && !x.planned && y.cwd === x.cwd)?.id;
@@ -9486,8 +9489,15 @@ Object.assign(api, {
         ...(x.effort && !x.shell ? { effort: x.effort } : {}),
         folder: shares && keyOf.has(shares) ? { sameAs: keyOf.get(shares)! } : x.planned ? (x.planned.worktree ? "new" : "checkout") : x.repoPath && x.cwd !== x.repoPath ? "new" : "checkout",
         prompt: kickoffAsTicket(x.planned?.prompt ?? "").text,
+        ...(per.has(x.shell ? shares! : x.id) ? { perTicket: true as const } : {}),
       };
     });
+    // as main's: a step that runs once per ticket shares only another's folder (or its Orchestrator's), a once-run step none of theirs
+    const stepAt = new Map(steps.map((x) => [x.key, x]));
+    for (const x of steps) {
+      const shared = x.agent !== "terminal" && typeof x.folder === "object" ? stepAt.get(x.folder.sameAs)! : null;
+      if ((x.perTicket && (x.folder === "checkout" || (shared && !shared.perTicket && !(shape.orchestrator && shared === steps[0])))) || (!x.perTicket && shared?.perTicket)) x.folder = "new";
+    }
     const wires: TemplateWire[] = links
       .filter((w) => keyOf.has(w.from) && keyOf.has(w.to))
       .map((w) => ({
@@ -9499,7 +9509,8 @@ Object.assign(api, {
         ...(w.files?.length ? { files: w.files } : {}),
         ...(w.rounds ? { rounds: w.rounds.limit } : {}),
       }));
-    const body: TemplateBody = { startFirst: true, steps, wires };
+    const drafted: TemplateBody = { startFirst: true, steps, wires };
+    const body = shape.orchestrator ? asOrchestrated(drafted) : drafted;
     try {
       parseTemplateBody(body);
     } catch (e) {
@@ -9616,6 +9627,17 @@ Object.assign(api, {
       return { steps: [{ key: first.key, id, title: first.name }], wires: [], started: id, notes: [`It reads ${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}` : ids[0]} and proposes the rest as its plan, which comes to Needs you: nothing more is made until you lay it out.`] } satisfies LayOutReply;
     }
     if (!req.repoPath && body.steps.some((x) => x.folder === "new")) return err("Its steps work in worktrees of their own, which need a repo: choose one.");
+    // as main's: on several tickets, each step that runs once per ticket made for each, on it; the rest once on the first
+    const more = req.moreTickets ?? [];
+    if (more.length && !runsPerTicket(body)) return err(`“${req.name}” has no step that runs once per ticket, and doesn't start at an Orchestrator, so it takes one ticket: choose one, or mark the steps that run once per ticket.`);
+    const tickets = req.ticketId ? [{ id: String(req.ticketId), title: req.ticketTitle ?? null }, ...more.map((t) => ({ id: t.ticketId, title: t.ticketTitle }))] : [];
+    const laid = ticketedLayOutPlan(body, { room: !!room, ticket: !!req.ticketId }, tickets.length);
+    if (laid.body.steps.length > LAY_OUT_MAX.steps) return err(`“${req.name}” would make ${laid.body.steps.length} steps for its ${tickets.length} tickets, and one lay-out makes at most ${LAY_OUT_MAX.steps}: choose fewer tickets.`);
+    const several = tickets.length > 1;
+    const onOf = (k: string) => laid.of.get(k)!.ticket;
+    const ticketOf = (k: string) => tickets[onOf(k) ?? 0] ?? null;
+    const lineOf = (k: string) => (onOf(k) === null || !ticketOf(k) ? ticketsLine(tickets) : ticketLine(ticketOf(k)!.id, ticketOf(k)!.title));
+    const madeOf = (k: string, id: string, title: string): LayOutReply["steps"][number] => ({ key: laid.of.get(k)!.key, id, title, ...(several && onOf(k) !== null ? { ticket: ticketOf(k)!.id } : {}) });
     const steps: LayOutReply["steps"] = [];
     const idOf = new Map<string, string>();
     const undo = (why: string) => {
@@ -9626,24 +9648,24 @@ Object.assign(api, {
       emit("onWiresChanged", wireState());
       return err(`Couldn't lay out “${req.name}”: ${why}. Nothing was left.`);
     };
-    const line = ticketLine(req.ticketId, req.ticketTitle);
     let n = 0;
-    for (const p of plan.steps) {
+    for (const p of laid.plan.steps) {
       const st = p.step;
       if (st.agent === "terminal") continue;
       const id = `pl${Date.now().toString(36)}${n++}`;
       const shares = typeof st.folder === "object" ? planned.find((x) => x.id === idOf.get((st.folder as { sameAs: string }).sameAs)) : undefined;
+      const on = ticketOf(st.key);
       planned = [
         ...planned,
         {
-          ...session(id, { title: st.name, agent: st.agent as "claude" | "codex", taskGroup: req.area, status: "idle", createdAt: Date.now(), branch: null, ...(req.ticketId ? { ticketId: req.ticketId } : {}) }),
+          ...session(id, { title: st.name, agent: st.agent as "claude" | "codex", taskGroup: req.area, status: "idle", createdAt: Date.now() + n, branch: null, ...(on ? { ticketId: on.id } : {}) }),
           repoPath: shares ? shares.repoPath : req.repoPath,
           cwd: shares ? shares.cwd : (req.repoPath ?? "/Users/you"),
           ...(st.model ? { model: st.model } : {}),
-          planned: { worktree: st.folder === "new", ...(shares ? { sharesWith: shares.id } : {}), ...(st.prompt.trim() ? { prompt: withTicket(st.prompt, line) } : {}) },
+          planned: { worktree: st.folder === "new", ...(shares ? { sharesWith: shares.id } : {}), ...(st.prompt.trim() ? { prompt: withTicket(st.prompt, lineOf(st.key)) } : {}), ...(several && st.folder === "new" && onOf(st.key) !== null ? { ticketBranch: true as const } : {}) },
         },
       ];
-      steps.push({ key: st.key, id, title: st.name });
+      steps.push(madeOf(st.key, id, st.name));
       idOf.set(st.key, id);
     }
     if (layOutLeaves > 0 && steps.length) {
@@ -9654,32 +9676,39 @@ Object.assign(api, {
       return { ...err(`Couldn't lay out “${req.name}”: a wire was refused. “${kept.title}” couldn't be taken back: forget it from its menu.`), left: [kept.id] };
     }
     const wires: string[] = [];
-    for (const p of plan.wires) {
+    for (const p of laid.plan.wires) {
       if (p.skipped || p.afterStart) continue;
       const r: WireReply = await api.wiresAdd(idOf.get(p.wire.from), idOf.get(p.wire.to), p.wire.type, wireSettingsOf(p.wire, p.gate));
       if ("refused" in r) return undo(`${p.wire.from} → ${p.wire.to} was refused: ${r.refused}`);
       wires.push(r.id!);
     }
     sessionsChanged();
-    const notes = [...(plan.forced ? [roomAsked(plan.forced)] : []), ...plan.steps.flatMap((p) => (p.terminal && !p.terminal.laid ? [`“${p.step.name}” ${p.terminal.why.replace(/^It /, "")}`] : []))];
+    const notes = [...new Set([...(laid.plan.forced ? [roomAsked(laid.plan.forced)] : []), ...laid.plan.steps.flatMap((p) => (p.terminal && !p.terminal.laid ? [`“${p.step.name}” ${p.terminal.why.replace(/^It /, "")}`] : []))])];
     if (!body.startFirst) return { steps, wires, started: null, notes } satisfies LayOutReply;
-    const first = plan.steps[0].step;
-    const started = await api.previewStartPlanned(idOf.get(first.key)!);
-    if (started && typeof started === "object" && "error" in started) return { steps, wires, started: null, notes: [...notes, `“${first.name}” didn't start: ${started.error}.`] } satisfies LayOutReply;
-    for (const p of plan.wires) {
-      if (!p.afterStart || p.skipped) continue;
-      const to = body.steps.find((x) => x.key === p.wire.to)!;
-      if (p.wire.type === "worktree") {
-        const t = await api.wiresAddTerminal(started.id, { title: to.name, command: to.prompt });
-        if (t && "error" in t) notes.push(`“${to.name}” wasn't made on “${first.name}”'s tree: ${t.error}`);
-        else steps.push({ key: to.key, id: t.id, title: to.name });
+    const startedAll: string[] = [];
+    for (const s of laid.plan.steps.filter((x) => x.starts)) {
+      const first = s.step;
+      const started = await api.previewStartPlanned(idOf.get(first.key)!);
+      if (started && typeof started === "object" && "error" in started) {
+        notes.push(`“${first.name}” didn't start: ${started.error}.`);
         continue;
       }
-      const r: WireReply = await api.wiresAdd(idOf.get(p.wire.from), idOf.get(p.wire.to), p.wire.type, wireSettingsOf(p.wire, p.gate));
-      if ("refused" in r) notes.push(`${p.wire.from} → ${p.wire.to} wasn't made: ${r.refused}`);
-      else wires.push(r.id!);
+      startedAll.push(started.id);
+      for (const p of laid.plan.wires) {
+        if (!p.afterStart || p.skipped || p.wire.from !== first.key) continue;
+        const to = laid.body.steps.find((x) => x.key === p.wire.to)!;
+        if (p.wire.type === "worktree") {
+          const t = await api.wiresAddTerminal(started.id, { title: to.name, command: to.prompt });
+          if (t && "error" in t) notes.push(`“${to.name}” wasn't made on “${first.name}”'s tree: ${t.error}`);
+          else steps.push(madeOf(to.key, t.id, to.name));
+          continue;
+        }
+        const r: WireReply = await api.wiresAdd(idOf.get(p.wire.from), idOf.get(p.wire.to), p.wire.type, wireSettingsOf(p.wire, p.gate));
+        if ("refused" in r) notes.push(`${p.wire.from} → ${p.wire.to} wasn't made: ${r.refused}`);
+        else wires.push(r.id!);
+      }
     }
-    return { steps, wires, started: started.id, notes } satisfies LayOutReply;
+    return { steps, wires, started: startedAll[0] ?? null, ...(startedAll.length > 1 ? { startedAll } : {}), notes } satisfies LayOutReply;
   },
 });
 // ---- W17: the Orchestrators' plans, as main's plans:* calls (src/main/plans.ts) ----
@@ -9695,8 +9724,17 @@ if (planOrch) {
   if (lsPlanQ === "room" && like && !team.rooms.some((r) => r.groupKey === WIRE_AREA)) team.rooms.push({ ...clone(like), id: "R5120ccccccccccccccccc", name: "#5120 Donor export", groupKey: WIRE_AREA });
 }
 let heldPlans: { id: string; from: string; at: number; replaces?: string; plan: Plan; notes?: string[] }[] = planOrch ? [planOrch.held] : [];
-// ?lsLaid (with ?lsPlan=pipeline): its plan laid out already, its Coders and Verifiers not started (laidPipeline)
-const laidPlan = planOrch && lsPlanQ === "pipeline" && params.has("lsLaid") ? laidPipeline(planOrch, session, now) : null;
+// ?lsLaid (with ?lsPlan=pipeline): its plan laid out already, its Coders and Verifiers not started (laidPipeline);
+// =uneven with a second Verifier on #5115, so its tickets' rows differ
+const laidAll = planOrch && lsPlanQ === "pipeline" && params.has("lsLaid") ? laidPipeline(planOrch, session, now) : null;
+const v1 = laidAll?.steps.find((s) => s.id === "pp-v1");
+const laidPlan =
+  laidAll && v1 && params.get("lsLaid") === "uneven"
+    ? {
+        steps: [...laidAll.steps, { ...v1, id: "pp-v3", title: "Verifier 5115 – security", createdAt: v1.createdAt + 10, planned: { ...v1.planned!, prompt: "Check {ticket}'s change for secrets and auth gaps, then call finish_step." } }],
+        links: { ...laidAll.links, pw9: { ...laidAll.links.pw2, to: "pp-v3", createdAt: laidAll.links.pw2.createdAt + 10 } },
+      }
+    : laidAll;
 if (laidPlan) {
   planned.push(...laidPlan.steps);
   wireBook = { ...wireBook, links: { ...wireBook.links, ...laidPlan.links } };
@@ -9708,10 +9746,11 @@ if (laidPlan) {
   const x = Math.max(0, ...all.map((a) => a.x + a.w)) + AREA_GAP;
   const y = Math.min(0, ...all.map((a) => a.y));
   const cell = (c: number, r: number): Rect => ({ x: x + AREA_PAD + c * (M.w + GAP), y: y + AREA_HEADER + r * (M.h + GAP), ...M });
-  const area: Area = { x, y, w: 2 * AREA_PAD + 3 * M.w + 2 * GAP, h: AREA_HEADER + 2 * (M.h + GAP) + AREA_PAD, repos: [] };
+  const rows = laidPlan.steps.length > 4 ? 3 : 2;
+  const area: Area = { x, y, w: 2 * AREA_PAD + 3 * M.w + 2 * GAP, h: AREA_HEADER + rows * (M.h + GAP) + AREA_PAD, repos: [] };
   landscape.areas[planOrch!.orchestrator.taskGroup!] = area;
   landscape.workspaces[planOrch!.orchestrator.id] = cell(1, 1);
-  laidPlan.steps.forEach((st, i) => (landscape.workspaces[st.id] = cell([0, 2, 2, 0][i] ?? 0, [0, 0, 1, 1][i] ?? 0)));
+  laidPlan.steps.forEach((st, i) => (landscape.workspaces[st.id] = cell([0, 2, 2, 0, 2][i] ?? 0, [0, 0, 1, 1, 2][i] ?? 0)));
   if (params.get("focusTool") === "pipeline" && params.has("lsDocked")) {
     // ?focusTool=pipeline&lsDocked: its Pipeline window docked at the landscape's edge, at full size, showing the
     // selection's pipeline (?lsSelect=area:5115 selects its area)

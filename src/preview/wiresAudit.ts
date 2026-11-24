@@ -213,12 +213,33 @@ export const LONG_PROMPT = [
  * The saved templates of ?lsTemplates (W9), as settings.pipelineTemplates holds them: WireTemplates.dc.html A's
  * "Build, review, test" (Builder → Reviewer → Tester, Reviewer's feedback to Builder, an automatic gate into Tester, a
  * Dev server on Builder's tree), "Quick fix" (saved by a newer version: fields this one doesn't read), and an entry
- * this version can't use. `?lsTemplates=none`: none saved; `=broken`: a setting that isn't a list at all.
+ * this version can't use. `?lsTemplates=none`: none saved; `=broken`: a setting that isn't a list at all;
+ * `=perticket`: first, "Build and review each ticket", its Builder, Reviewer and Builder's Dev server run once per
+ * ticket, its Shipper once.
  */
 export function boardTemplates(q: string | null): unknown {
   if (q === "none") return [];
   if (q === "broken") return { "tpl-brt": { name: "Build, review, test" } };
+  const perTicket = {
+    id: "tpl-each",
+    name: "Build and review each ticket",
+    savedAt: 4,
+    startFirst: true,
+    steps: [
+      { key: "s1", name: "Builder", agent: "codex", folder: "new", prompt: "Implement {ticket}. Run the tests, commit, then finish the step.", perTicket: true },
+      { key: "s2", name: "Reviewer", agent: "claude", folder: { sameAs: "s1" }, prompt: "Review the diff for {ticket}. Finish with approve or changes.", perTicket: true },
+      { key: "s3", name: "Shipper", agent: "claude", folder: "new", prompt: "Merge what was approved for {ticket}, then finish." },
+      { key: "s4", name: "Dev server", agent: "terminal", folder: { sameAs: "s1" }, prompt: "dotnet watch", perTicket: true },
+    ],
+    wires: [
+      { from: "s1", to: "s2", type: "handoff", when: "finished", gate: "ask" },
+      { from: "s2", to: "s1", type: "feedback", when: "finished", gate: "ask", rounds: 3 },
+      { from: "s2", to: "s3", type: "handoff", when: "finished", gate: "ask" },
+      { from: "s1", to: "s4", type: "worktree" },
+    ],
+  };
   return [
+    ...(q === "perticket" ? [perTicket] : []),
     {
       id: "tpl-brt",
       name: "Build, review, test",

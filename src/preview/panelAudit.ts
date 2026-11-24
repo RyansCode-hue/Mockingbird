@@ -11,6 +11,7 @@
  * - =remove: Remove step forgets it, its handoffs bridged, and Undo brings it back;
  * - =add: + Add step after the last step (and after another), through the Edit dialog;
  * - =template: Save as template, what's simplified said, saved, then saved again under its name with Replace;
+ * - =templaterows (with `lsLaid=uneven`): its tickets' rows differ: another row kept, a Once per ticket box unticked and ticked, saved;
  * - =drag: a wire's arrowhead dragged onto another step moves it; Esc, and a drop on nothing, leave it;
  * - =select: a not-started step clicked is selected with its bar, ⇧-click adds another, a workspace clicked lets them go;
  * - =shot, =rowshot, =saveshot: the window, a row open, Save as template's dialog, for --shot.
@@ -224,6 +225,8 @@ async function templateAudit(env: Env, out: Record<string, unknown>): Promise<vo
   const dlg = await until(() => document.querySelector<HTMLElement>(".tp-save"), "Save as template");
   out.drafted = since(env, mark, "templatesDraft");
   out.notes = [...dlg.querySelectorAll("[data-note]")].map((n) => n.textContent);
+  out.keep = dlg.querySelector("[data-rows]")?.textContent ?? null;
+  out.boxes = [...dlg.querySelectorAll<HTMLElement>(".tp-step")].map((s) => [s.querySelector<HTMLInputElement>(".tp-name-edit")?.value ?? null, ((b) => (b ? b.checked : null))(s.querySelector<HTMLInputElement>(".tp-per input"))]);
   out.name = dlg.querySelector<HTMLInputElement>(".tp-name-in")?.value ?? null;
   out.button = dlg.querySelector('[data-act="save"], [data-act="replace"]')?.textContent ?? null;
   typeIn(dlg.querySelector<HTMLInputElement>(".tp-name-in")!, "Orchestrated pair");
@@ -231,7 +234,11 @@ async function templateAudit(env: Env, out: Record<string, unknown>): Promise<vo
   await sleep(800);
   dlg.querySelector<HTMLElement>('[data-act="save"]')!.click();
   await sleep(600);
-  out.saved = since(env, mark, "templatesSave").map((a) => [a[0], (a[1] as { steps: { name: string; role?: string }[] }).steps.map((s) => (s.role ? `${s.name} (${s.role})` : s.name)), (a[1] as { wires: { type: string }[] }).wires.map((w) => w.type)]);
+  out.saved = since(env, mark, "templatesSave").map((a) => [
+    a[0],
+    (a[1] as { steps: { name: string; role?: string; perTicket?: true }[] }).steps.map((s) => (s.role ? `${s.name} (${s.role})` : s.perTicket ? `${s.name} (per ticket)` : s.name)),
+    (a[1] as { wires: { type: string }[] }).wires.map((w) => w.type),
+  ]);
   out.closed = !document.querySelector(".tp-save");
   out.note = noteNow();
   // again, under the same name: Replace writes over it
@@ -250,6 +257,45 @@ async function templateAudit(env: Env, out: Record<string, unknown>): Promise<vo
   out.savedAgain = since(env, mark2, "templatesSave").length;
   out.list = list.templates.map((t) => t.template.name);
   out.replacedNote = noteNow();
+}
+
+/**
+ * Save as template from ?lsLaid=uneven's pipeline, whose tickets' rows differ: the row kept said and offered, another
+ * chosen (drafted again), a step's Once per ticket box unticked (refused, Save off) and ticked again, then saved.
+ */
+async function templateRowsAudit(env: Env, out: Record<string, unknown>): Promise<void> {
+  const win = await until(panel, "the Pipeline window");
+  const mark = env.calls.length;
+  win.querySelector<HTMLElement>('[data-act="save-template"]')!.click();
+  const dlg = await until(() => document.querySelector<HTMLElement>(".tp-save"), "Save as template");
+  const boxes = () => [...dlg.querySelectorAll<HTMLElement>(".tp-step")].map((s) => [s.querySelector<HTMLInputElement>(".tp-name-edit")?.value ?? null, ((b) => (b ? b.checked : null))(s.querySelector<HTMLInputElement>(".tp-per input"))]);
+  const keep = () => dlg.querySelector<HTMLElement>("[data-rows] .tp-row");
+  await until(keep, "the row it keeps");
+  out.notes = [...dlg.querySelectorAll("[data-note]")].map((n) => n.textContent);
+  out.keep = keep()?.querySelector(".mb-select-val")?.textContent ?? null;
+  out.boxes = boxes();
+  out.drafted = since(env, mark, "templatesDraft");
+  out.options = await pickIn(keep()!, "#5110's row");
+  await until(() => since(env, mark, "templatesDraft").length > 1 && keep()?.textContent?.startsWith("#5110"), "the draft of #5110's row", 30);
+  await sleep(300);
+  out.redrafted = since(env, mark, "templatesDraft")[1];
+  out.notesAfter = [...dlg.querySelectorAll("[data-note]")].map((n) => n.textContent);
+  out.boxesAfter = boxes();
+  // the Verifier run once while it works in its Coder's folder, which there's one of for each ticket: refused
+  const verifier = () => [...dlg.querySelectorAll<HTMLElement>(".tp-step")].find((s) => s.querySelector<HTMLInputElement>(".tp-name-edit")?.value.startsWith("Verifier"))!.querySelector<HTMLInputElement>(".tp-per input")!;
+  verifier().click();
+  await sleep(300);
+  const save = () => dlg.querySelector<HTMLButtonElement>('[data-act="save"]')!;
+  out.unticked = { rules: dlg.querySelector('[data-flag="rules"]')?.textContent ?? null, off: save().disabled, title: save().title || null };
+  verifier().click();
+  await sleep(300);
+  out.ticked = { rules: dlg.querySelector('[data-flag="rules"]')?.textContent ?? null, off: save().disabled };
+  typeIn(dlg.querySelector<HTMLInputElement>(".tp-name-in")!, "Coder and Verifier each");
+  await sleep(800);
+  save().click();
+  await sleep(600);
+  out.saved = since(env, mark, "templatesSave").map((a) => (a[1] as { steps: { name: string; perTicket?: true; role?: string }[] }).steps.map((s) => [s.name, s.role ?? (s.perTicket ? "per ticket" : "once")]));
+  out.closed = !document.querySelector(".tp-save");
 }
 
 async function dragAudit(env: Env, out: Record<string, unknown>): Promise<void> {
@@ -355,6 +401,7 @@ export function runPanelAudit(env: Env, part: string): void {
       else if (part === "remove") await removeAudit(env, out);
       else if (part === "add") await addAudit(env, out);
       else if (part === "template") await templateAudit(env, out);
+      else if (part === "templaterows") await templateRowsAudit(env, out);
       else if (part === "drag") await dragAudit(env, out);
       else if (part === "select") await selectAudit(env, out);
       else if (part === "rowshot") await openRow("pp-v1");

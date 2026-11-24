@@ -94,10 +94,10 @@ import { wiresNow } from "./WireLayer";
 import { droppedNote, unmovedNote } from "./wiresModel";
 import { chainOf } from "./pipelineChain";
 import { REVEAL_WAIT_MS, newAreaPatch } from "./landscapeModel";
-import { PlanPicker, SaveTemplateDialog, TemplatePicker } from "./TemplatePicker";
+import { PlanPicker, SaveTemplateDialog, TemplatePicker, type RowChoice } from "./TemplatePicker";
 import { ModelChip, ModelPopover, StepEditDialog, setModelCall, specOf, type ModelWhere, type PipelineUi, type StepSpec, type WireEdits } from "./PipelineEdit";
 import { PipelinePanel, type StepWhere } from "./PipelinePanel";
-import { asOrchestrated, insertDefaults, pipelineTemplateOf } from "../shared/pipelineEdit";
+import { insertDefaults, pipelineTemplateOf, type PipelineTemplatePlan } from "../shared/pipelineEdit";
 import { usePlans } from "./usePlans";
 import { toldLine } from "./ticketPipelineModel";
 import type { Plan, PlanLaidOut, PlanShownAt, PlanView } from "../shared/plans";
@@ -300,7 +300,7 @@ function App() {
   const [startAsk, setStartAsk] = useState<{ step: SessionInfo; where: string } | null>(null);
   // pipeline templates (W9): the picker, opened in an area (or none), and Save as template's dialog
   const [templatePicker, setTemplatePicker] = useState<{ area: string | null } | null>(null);
-  const [templateSave, setTemplateSave] = useState<{ draft: TemplateDraft; leftOut: string[]; simplified?: string[] } | null>(null);
+  const [templateSave, setTemplateSave] = useState<{ draft: TemplateDraft; leftOut: string[]; simplified?: string[]; rows?: RowChoice } | null>(null);
   // a held plan open in the picker, as it was when it opened: one replaced meanwhile stays shown, saying it's gone
   const [planFor, setPlanFor] = useState<{ view: PlanView; dismissing: boolean } | null>(null);
   // a lone pane's "+" promotes it to a workspace, but only once the new session
@@ -2597,16 +2597,37 @@ function App() {
     void forgetSession(s).then((r) => isErr(r as IpcResult<unknown>) && lsSay(`Couldn't remove ${titleOf(s)}: ${(r as { error: string }).error}`));
   };
   /**
-   * Save as template from a pipeline's window: its stages as nearly as a template holds them (pipelineTemplateOf),
-   * drafted by main (what it keeps, redacted) and shown whole, what was simplified said first.
+   * A pipeline's stages as a template (pipelineTemplateOf), keeping `ticket`'s row of the stages that run once per ticket
+   * (else the fullest), drafted by main: what it keeps, redacted. Settles with why not.
    */
-  const savePipelineTemplate = (stages: PipelineStage[]) => {
-    const plan = pipelineTemplateOf(stages);
-    void window.mb.templatesDraft(plan.ids).then(
-      (r: IpcResult<TemplateDraft>) => (isErr(r) ? lsSay(`Couldn't save it as a template: ${r.error}`) : setTemplateSave({ draft: plan.orchestrator ? { ...r, body: asOrchestrated(r.body) } : r, leftOut: [], simplified: plan.simplified })),
-      (err: unknown) => lsSay(`Couldn't save it as a template: ${err instanceof Error ? err.message : String(err)}`)
-    );
+  const draftPipeline = async (stages: PipelineStage[], ticket: string | null): Promise<{ draft: TemplateDraft; plan: PipelineTemplatePlan } | { error: string }> => {
+    let plan: PipelineTemplatePlan;
+    try {
+      plan = pipelineTemplateOf(stages, ticket);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+    let r: IpcResult<TemplateDraft>;
+    try {
+      r = await window.mb.templatesDraft(plan.ids, { perTicket: plan.perTicket, others: plan.others, orchestrator: plan.orchestrator });
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : String(err) };
+    }
+    return isErr(r) ? r : { draft: r, plan };
   };
+  /**
+   * Save as template from a pipeline's window: its stages as a template holds them (draftPipeline), shown whole, what
+   * was simplified said first; when its tickets' rows differ, the dialog offers which one to keep.
+   */
+  const savePipelineTemplate = (stages: PipelineStage[]) =>
+    void draftPipeline(stages, null).then((x) => {
+      if (isErr(x)) return lsSay(`Couldn't save it as a template: ${x.error}`);
+      const choose = async (t: string) => {
+        const y = await draftPipeline(stages, t);
+        return isErr(y) ? y : { draft: y.draft, simplified: y.plan.simplified };
+      };
+      setTemplateSave({ draft: x.draft, leftOut: [], simplified: x.plan.simplified, ...(x.plan.differ ? { rows: { rows: x.plan.rows, ticket: x.plan.ticket!, choose } } : {}) });
+    });
   /** A Pipeline window's view on `area`, showing the pipeline of the first of `prefer` in one; `onMember` its switcher. */
   const pipelinePanel = (area: string | null, prefer: readonly (string | null | undefined)[], onMember: (id: string) => void) => (
     <PipelinePanel
@@ -2838,16 +2859,22 @@ function App() {
     }
     setTemplatePicker(null);
     await refresh();
-    const started = r.steps.find((s) => s.id === r.started)?.title;
+    // on several tickets, the first step that runs once per ticket started on each
+    const startedIds = new Set(r.startedAll ?? (r.started ? [r.started] : []));
+    const startedOnes = r.steps.filter((s) => startedIds.has(s.id));
+    const started = startedOnes.length > 1 ? `${startedOnes[0].title} on ${startedOnes.map((s) => `#${s.ticket}`).join(", ")}` : startedOnes[0]?.title;
     // a terminal made on the first step's tree runs already: it waits for nothing
     const terminals = new Set(req.template.steps.filter((s) => s.agent === "terminal").map((s) => s.key));
-    const waiting = r.steps.filter((s) => s.id !== r.started && !terminals.has(s.key)).length;
+    const waiting = r.steps.filter((s) => !startedIds.has(s.id) && !terminals.has(s.key)).length;
     const said = [
       `Laid out “${req.name}” in ${areaTitle(req.area)}:`,
       started ? `${started} started${waiting ? `, ${waiting === 1 ? "1 step waits" : `${waiting} steps wait`} for ${waiting === 1 ? "its" : "their"} handoffs` : ""}.` : `${waiting === 1 ? "its step waits" : `its ${waiting} steps wait`}.`,
       ...r.notes,
     ].join(" ");
-    laidOut.current = { area: req.area, ids: r.steps.map((s) => s.id), wires: r.wires, said, tidy: !!r.madeArea, until: Date.now() + LAID_OUT_WAIT_MS };
+    // on several tickets, in stage columns a ticket to a row as a laid-out plan is: in an area there already, only
+    // when it holds nothing else
+    const tickets = !!req.moreTickets?.length;
+    laidOut.current = { area: req.area, ids: r.steps.map((s) => s.id), wires: r.wires, said, tidy: r.madeArea ? true : tickets ? new Set(r.steps.map((s) => s.id)) : false, until: Date.now() + LAID_OUT_WAIT_MS };
     setLaidTick((n) => n + 1);
     return null;
   };
@@ -4365,7 +4392,7 @@ function App() {
         />
       )}
       {templateSave && (
-        <SaveTemplateDialog draft={templateSave.draft} leftOut={templateSave.leftOut} simplified={templateSave.simplified} onSave={saveTemplateNow} onReplace={replaceTemplateNow} home={landscapeHome} onClose={() => setTemplateSave(null)} />
+        <SaveTemplateDialog draft={templateSave.draft} leftOut={templateSave.leftOut} simplified={templateSave.simplified} rows={templateSave.rows} onSave={saveTemplateNow} onReplace={replaceTemplateNow} home={landscapeHome} onClose={() => setTemplateSave(null)} />
       )}
       {startAsk && (
         <StartStepDialog

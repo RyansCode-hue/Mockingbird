@@ -1727,6 +1727,29 @@ describe("a step not started yet (W8)", () => {
     expect((await m.startPlanned(same.id, a.id)).branch).toBe("4182-donors-coder");
   });
 
+  it("leads its branch with its ticket when it's laid out once for each of several tickets, unless it follows its own ticket's", async () => {
+    const { m } = await manager();
+    const origin = makeRepo({ "a.txt": "1" }, "origin");
+    const clone = path.join(path.dirname(origin), "clone");
+    git(path.dirname(origin), "clone", "-q", origin, clone);
+    const onTicket = (ticketId: string, title: string, more: { ticketBranch?: boolean; worktree?: boolean } = {}) =>
+      m.planStep({ title, agent: "claude", repoPath: clone, worktree: more.worktree ?? true, taskGroup: "4182", ticketId, ...(more.ticketBranch === false ? {} : { ticketBranch: true }) });
+    // first, with nothing before it
+    const first = onTicket("4190", "Coder");
+    expect(first.planned?.ticketBranch).toBe(true);
+    expect((await m.startPlanned(first.id, null)).branch).toBe("4190-coder");
+    // after a step on no ticket's branch
+    const planner = await m.create({ repoPath: clone, useWorktree: true, branchName: "planner", agent: "claude", title: "Planner", taskGroup: "4182" });
+    expect((await m.startPlanned(onTicket("4191", "Coder").id, planner.id)).branch).toBe("4191-coder");
+    // after its own ticket's: that branch leads
+    const coder = await m.create({ repoPath: clone, useWorktree: true, branchName: "4192-coder", agent: "claude", title: "Coder", taskGroup: "4182" });
+    expect((await m.startPlanned(onTicket("4192", "Verifier").id, coder.id)).branch).toBe("4192-coder-verifier");
+    // a step laid out otherwise is as it was
+    expect((await m.startPlanned(onTicket("4193", "Tester", { ticketBranch: false }).id, null)).branch).toBe("step-tester");
+    // and one with no worktree of its own has no branch to lead
+    expect(onTicket("4194", "Docs", { worktree: false }).planned).toEqual({ worktree: false });
+  });
+
   it("says in its pane that the step before's uncommitted files aren't there, and takes a branch no other has", async () => {
     const { m, clone, a, work } = await upstream();
     fs.writeFileSync(path.join(a.cwd, "draft.txt"), "not committed");

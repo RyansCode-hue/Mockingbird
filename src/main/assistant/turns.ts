@@ -225,6 +225,7 @@ export const ASSISTANT_RULES = [
   "- A running session's model (restart_with_model), forgetting a running or closed session (forget_session), a wire that would send without asking (automate_wire), and laying out or dismissing an Orchestrator's held plan (lay_out_plan, dismiss_plan; list_plans reads them) are cards.",
   "- insert_step and lay_out_template lay the pipeline out again afterwards; relayout_pipeline does it on its own when asked.",
   "- save_template saves a pipeline as a new template (Undo removes it); replace_template writes a saved one over, on a card. What a template can't hold as the pipeline has it is said: pass it on.",
+  "- A template's step marked to run once per ticket is laid out for each ticket it's given (more_tickets), each on its ticket; the rest once. A pipeline's stage that runs once per ticket is saved as such steps from one ticket's row: the fullest, unless ticket names another; when the rows differ, say which was kept.",
   "",
   "## Settings, colours and windows",
   "- get_settings says how each setting changes: set_setting changes a view or notification setting at once; change_setting puts one that changes what agents may do, or what runs as the user or leaves the Mac, on a card.",

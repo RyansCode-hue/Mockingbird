@@ -1,4 +1,4 @@
-import { layOutPlan, roomAsked, type PipelineTemplate } from "../../../shared/pipelineTemplates";
+import { LAY_OUT_MAX, layOutPlan, roomAsked, ticketsTaken, type PipelineTemplate, type TemplateStep } from "../../../shared/pipelineTemplates";
 import { ORCHESTRATOR_TICKETS_MAX } from "../../../shared/plans";
 import { PERMISSION_MODE_LABEL, type PermissionMode } from "../../../shared/permissionModes";
 import { plainLine } from "../../../shared/team/agentText";
@@ -495,7 +495,8 @@ export function startTools(d: Deps): AssistantTool[] {
       description:
         "Lay a pipeline template out in an area of the landscape that's there: its steps as workspaces joined by their wires, the first started when the template says so, then laid out in stage columns along their wires. " +
         "repo: where its steps' worktrees go; ticket: an Azure DevOps work item id it's for. " +
-        "more_tickets: for a template that starts at an Orchestrator, further work items it's for: one Orchestrator reads them all with ticket and proposes one plan, each step on one of them. " +
+        "more_tickets: further work items it's for, for a template that starts at an Orchestrator (one Orchestrator reads them all with ticket and proposes one plan, each step on one of them) " +
+        "or has steps that run once per ticket (those are made for each ticket, on it; the rest once, on ticket). " +
         "This puts a card in front of the user; it runs only when they confirm.",
       inputSchema: {
         type: "object",
@@ -510,7 +511,8 @@ export function startTools(d: Deps): AssistantTool[] {
             items: { type: "string", minLength: 1, maxLength: 20, pattern: "^#?\\d+$" },
             minItems: 1,
             maxItems: ORCHESTRATOR_TICKETS_MAX - 1,
-            description: "An Orchestrator template only, with ticket: further Azure DevOps work item ids, from list_tickets, that its Orchestrator plans for along with ticket",
+            description:
+              "With ticket, for an Orchestrator template or one with steps that run once per ticket: further Azure DevOps work item ids, from list_tickets, that it's laid out for along with ticket",
           },
         },
         required: ["template", "area"],
@@ -538,7 +540,9 @@ export function startTools(d: Deps): AssistantTool[] {
         const more: AdoWorkItem[] = [];
         if (a.more_tickets?.length) {
           if (a.ticket === undefined) return "more_tickets come after ticket: name the first one as ticket";
-          if (l.t.steps[0]?.role !== "orchestrator") return `“${plainLine(l.t.name, 60)}” doesn't start at an Orchestrator, so it takes one ticket: lay it out once for each`;
+          const most = l.t.steps[0]?.role === "orchestrator" ? ORCHESTRATOR_TICKETS_MAX : ticketsTaken(l.t);
+          if (most < 2) return `“${plainLine(l.t.name, 60)}” doesn't start at an Orchestrator or have steps that run once per ticket, so it takes one ticket: lay it out once for each`;
+          if (a.more_tickets.length + 1 > most) return `“${plainLine(l.t.name, 60)}” takes at most ${most} tickets in one lay-out (${LAY_OUT_MAX.steps} steps at most): name fewer`;
         }
         if (a.ticket !== undefined) {
           const ids = [a.ticket, ...(a.more_tickets ?? [])].map((t) => t.replace(/^#/, ""));
@@ -573,12 +577,16 @@ export function startTools(d: Deps): AssistantTool[] {
         const plan = layOutPlan(l.t, { room: !!room, ticket: !!ticket });
         const made = plan.steps.filter((s) => !s.shape && (!s.terminal || s.terminal.laid));
         const starts = plan.steps.find((s) => s.starts);
+        const orchestrated = l.t.steps[0]?.role === "orchestrator";
+        // on several tickets, a step that runs once per ticket is made for each
+        const each = (s: TemplateStep) => (more.length && !orchestrated && s.perTicket ? ` for each ticket` : "");
         return {
           title: `Lay out “${plainLine(l.t.name, 60)}” in “${plainLine(a.area, 120)}”`,
           detail:
-            `Makes ${made.map((s) => `${plainLine(s.step.name, 60)} (${s.step.agent === "terminal" ? "a terminal" : AGENT_NAME[s.step.agent]})`).join(", ")} in “${plainLine(a.area, 120)}”` +
+            `Makes ${made.map((s) => `${plainLine(s.step.name, 60)} (${s.step.agent === "terminal" ? "a terminal" : AGENT_NAME[s.step.agent]})${each(s.step)}`).join(", ")} in “${plainLine(a.area, 120)}”` +
             `${l.repo ? `, in ${l.repo.name}` : ""}${ticket ? `, for ${[ticket, ...more].map((w) => `#${w.id} “${plainLine(w.title, 120)}”`).join(", ")}` : ""}. ` +
-            (more.length ? `Its Orchestrator reads ${more.length === 1 ? "both tickets" : `all ${more.length + 1} tickets`} and proposes one plan, each step on one of them. ` : "") +
+            (more.length && orchestrated ? `Its Orchestrator reads ${more.length === 1 ? "both tickets" : `all ${more.length + 1} tickets`} and proposes one plan, each step on one of them. ` : "") +
+            (more.length && !orchestrated ? `Each step made for each ticket is on it, in a worktree of its own on its branch; the rest are on #${ticket!.id}. ` : "") +
             (starts ? `${plainLine(starts.step.name, 60)} starts now; the rest wait for their handoffs.` : "Every step waits for its handoff."),
           warnings: [...(plan.forced ? [roomAsked(plan.forced)] : []), ...(room ? [joinsRoomWarning(room, a.area, made.length > 1)] : [])],
           ...(room ? { danger: true } : {}),

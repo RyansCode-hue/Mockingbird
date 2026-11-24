@@ -1865,13 +1865,15 @@ export class SessionManager {
     let id = randomUUID().slice(0, 8);
     while (this.live.has(id) || this.recordOf(id)) id = randomUUID().slice(0, 8);
     const prompt = req.prompt?.trim();
+    const ticketId = req.ticketId?.trim() || null;
+    const worktree = !sharesWith && !!repoPath && !!req.worktree;
     const planned: PlannedStep = {
-      worktree: !sharesWith && !!repoPath && !!req.worktree,
+      worktree,
       ...(!sharesWith && repoPath && req.base ? { base: req.base } : {}),
       ...(sharesWith ? { sharesWith } : {}),
       ...(prompt ? { prompt } : {}),
+      ...(worktree && ticketId && req.ticketBranch ? { ticketBranch: true as const } : {}),
     };
-    const ticketId = req.ticketId?.trim() || null;
     const info: SessionInfo = {
       id,
       title,
@@ -2199,9 +2201,10 @@ export class SessionManager {
       notes.push(`The branch it follows, ${JSON.stringify(head)}, can't lead a branch's name, so its own starts "step".`);
       head = null;
     }
-    // a step following another ticket's branch (an Orchestrator's several tickets) leads with its own ticket instead
+    // a step following another ticket's branch (an Orchestrator's several tickets) leads with its own ticket instead, as
+    // one laid out for each of several tickets always does (ticketBranch) unless it follows its own ticket's
     const ticket = rec.ticketId ? ticketIdOf(rec.ticketId) : null;
-    if (head && ticket && isWorkItemId(ticket) && /^\d+-/.test(head) && !head.startsWith(`${ticket}-`)) head = ticket;
+    if (ticket && isWorkItemId(ticket) && !head?.startsWith(`${ticket}-`) && (rec.planned?.ticketBranch || (head && /^\d+-/.test(head)))) head = ticket;
     const name = `${head ?? "step"}-${stepSlug(rec.title)}`;
     const bases = [...BASE_NAMES.dev, ...BASE_NAMES.main, ...(rec.planned?.base ? [rec.planned.base] : [])].map((b) => b.toLowerCase());
     if (bases.includes(name.toLowerCase())) throw new Error(`${titled(rec)} would start on ${name}, a base branch's name: rename the step`);

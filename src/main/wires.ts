@@ -3,9 +3,9 @@ import type { LandscapeStore } from "./landscape";
 import type { Reply } from "./messaging";
 import { canonical, companionRequest } from "./handlers";
 import { LandscapeShapeError, isObj, own, put, stackKeyOf } from "../shared/landscape";
-import { agentOf, LayOutLeftError, layOutPlan, parseTemplateBody, roomAsked, startsAtOrchestrator, TemplateError, ticketLine, wireSettingsOf, withTicket, type LayOutReply, type TemplateBody, type TemplateWire } from "../shared/pipelineTemplates";
+import { agentOf, LAY_OUT_MAX, LayOutLeftError, moreTicketsOf, parseTemplateBody, roomAsked, runsPerTicket, startsAtOrchestrator, TemplateError, ticketedLayOutPlan, ticketLine, ticketsLine, wireSettingsOf, withTicket, type LayOutReply, type TemplateBody, type TemplateWire } from "../shared/pipelineTemplates";
 import { oneLine } from "../shared/team/agentText";
-import type { BridgedWire, NewSessionRequest, PlanRequest, PrRepo, SessionInfo, StepStarted } from "../shared/types";
+import { ticketIdOf, type BridgedWire, type NewSessionRequest, type PlanRequest, type PrRepo, type SessionInfo, type StepStarted } from "../shared/types";
 import { WireUndo, type HeldWire } from "./wireUndo";
 import {
   bridgesOver,
@@ -452,6 +452,11 @@ export class WireService {
    * refusal is thrown, saying what couldn't be taken back if anything. Once they're all made, what doesn't go is said in
    * `notes` and the rest stays: the first step not starting (they all wait, to Start now), a wire that needs it started
    * (when its PR merges), or a terminal on its tree.
+   *
+   * On several tickets (`raw.moreTickets`, for a template with steps that run once per ticket; refused for any other)
+   * it's laid out as ticketedLayOutPlan has it: each such step made for each ticket, on it (its own worktree on its
+   * ticket's branch), the rest once on the first, their wires fanning out and in, and each copy of the first step
+   * started. At most LAY_OUT_MAX tickets and steps.
    */
   async layOut(raw: unknown, d: LayOutDeps): Promise<LayOutReply> {
     if (this.layingOut) throw new Error("A template is being laid out already: wait for that to finish.");
@@ -480,12 +485,23 @@ export class WireService {
     if (area.includes("/")) throw new Error("A template's steps go in an area, not a stack.");
     const ticketId = text(req.ticketId);
     const ticketTitle = ticketId ? text(req.ticketTitle) : null;
+    // its other tickets: only steps that run once per ticket are made for each
+    const moreRaw = Array.isArray(req.moreTickets) && req.moreTickets.length ? req.moreTickets : null;
+    if (moreRaw && !runsPerTicket(body)) throw new Error(`“${name}” has no step that runs once per ticket, and doesn't start at an Orchestrator, so it takes one ticket: choose one, or mark the steps that run once per ticket.`);
+    if (moreRaw && !ticketId) throw new Error("Its other tickets come after its first: choose that one too.");
+    const tickets: { id: string; title: string | null }[] = ticketId
+      ? [{ id: ticketId, title: ticketTitle }, ...moreTicketsOf(moreRaw, ticketIdOf(ticketId), LAY_OUT_MAX.tickets, `A lay-out takes at most ${LAY_OUT_MAX.tickets} tickets: choose fewer.`).map((t) => ({ id: t.ticketId, title: t.title || null }))]
+      : [];
+    const several = tickets.length > 1;
     const repoPath = text(req.repoPath);
     const base = text(req.base);
     if (this.o.roomsKnown && !this.o.roomsKnown()) throw new Error(ROOMS_STARTING);
     const room = d.roomOfGroup(area);
-    const plan = layOutPlan(body, { room: !!room, ticket: !!ticketId });
+    const laid = ticketedLayOutPlan(body, { room: !!room, ticket: !!ticketId }, tickets.length);
+    const plan = laid.plan;
     if (plan.problems.length) throw new Error(`“${name}” can't be laid out as it is: ${plan.problems.join(" ")}`);
+    if (laid.body.steps.length > LAY_OUT_MAX.steps)
+      throw new Error(`“${name}” would make ${laid.body.steps.length} steps for its ${tickets.length} tickets, and one lay-out makes at most ${LAY_OUT_MAX.steps}: choose fewer tickets.`);
     const worktrees = body.steps.filter((s) => s.folder === "new");
     if (worktrees.length && !repoPath) throw new Error(`${worktrees.map((s) => `“${s.name}”`).join(", ")} ${worktrees.length === 1 ? "works" : "work"} in a worktree of ${worktrees.length === 1 ? "its" : "their"} own, which needs a repo: choose one.`);
     const unwritable = this.o.store.wiresWriteRefusal();
@@ -493,13 +509,24 @@ export class WireService {
     const state = this.o.store.wires();
     if (!state.book) throw new Error(state.refused ?? "Wires can't be read right now.");
 
-    const keyed = new Map(body.steps.map((s) => [s.key, s]));
-    const label = (w: TemplateWire) => `${keyed.get(w.from)!.name} → ${keyed.get(w.to)!.name}`;
+    const keyed = new Map(laid.body.steps.map((s) => [s.key, s]));
+    // a step that runs once per ticket is on its ticket, told it; one that runs once is on the first, told them all
+    const ticketOf = (k: string) => tickets[laid.of.get(k)!.ticket ?? 0] ?? null;
+    const lineOf = (k: string) => {
+      const on = ticketOf(k);
+      return laid.of.get(k)!.ticket === null || !on ? ticketsLine(tickets) : ticketLine(on.id, on.title);
+    };
+    // a copy named with its ticket, on several: they share their template step's name
+    const nameOf = (k: string) => {
+      const t = laid.of.get(k)!.ticket;
+      return several && t !== null ? `${keyed.get(k)!.name} (#${ticketIdOf(tickets[t].id)})` : keyed.get(k)!.name;
+    };
+    const label = (w: TemplateWire) => `${nameOf(w.from)} → ${nameOf(w.to)}`;
     // each wire made between the steps to be, as the rules see it with them in the area's room
     const ctx = this.context(state.book);
     const probe = (k: string): WireEnd => {
       const s = keyed.get(k)!;
-      return { id: `\0${k}`, title: s.name, kind: s.agent === "terminal" ? "terminal" : "agent", debrief: false, tasks: false, room, takenOver: null, outsideSandbox: false, where: "planned", placed: true, folder: `\0${k}`, hooksSilent: false, ticket: ticketId, branch: null };
+      return { id: `\0${k}`, title: s.name, kind: s.agent === "terminal" ? "terminal" : "agent", debrief: false, tasks: false, room, takenOver: null, outsideSandbox: false, where: "planned", placed: true, folder: `\0${k}`, hooksSilent: false, ticket: ticketOf(k)?.id ?? null, branch: null };
     };
     const probed: GateContext = { ...ctx, links: {}, kept: {}, end: (id) => (id.startsWith("\0") ? probe(id.slice(1)) : ctx.end(id)) };
     for (const p of plan.wires) {
@@ -513,6 +540,10 @@ export class WireService {
 
     const made: LayOutReply["steps"] = [];
     const idOf = new Map<string, string>();
+    const madeOf = (k: string, id: string): LayOutReply["steps"][number] => {
+      const t = laid.of.get(k)!.ticket;
+      return { key: laid.of.get(k)!.key, id, title: keyed.get(k)!.name, ...(several && t !== null ? { ticket: ticketIdOf(tickets[t].id) } : {}) };
+    };
     const undo = (why: string): never => {
       const left: typeof made = [];
       let wiresLeft: string | null = null;
@@ -533,11 +564,11 @@ export class WireService {
       // the steps left stay in the area: one made for this lay-out is kept for them (TemplateLayOuts)
       throw left.length ? new LayOutLeftError(message, left.map((m) => m.id)) : new Error(message);
     };
-    const line = ticketLine(ticketId, ticketTitle);
     for (const p of plan.steps) {
       const s = p.step;
       const agent = agentOf(s);
       if (!agent) continue;
+      const on = ticketOf(s.key);
       let info: SessionInfo;
       try {
         info = d.planStep({
@@ -550,14 +581,16 @@ export class WireService {
           ...(s.folder === "new" && base ? { base } : {}),
           taskGroup: area,
           // the ticket's title only in its prompt: a session's ticketTitle would stand for every step's own name
-          ...(ticketId ? { ticketId } : {}),
-          ...(s.prompt.trim() ? { prompt: withTicket(s.prompt, line) } : {}),
+          ...(on ? { ticketId: on.id } : {}),
+          ...(s.prompt.trim() ? { prompt: withTicket(s.prompt, lineOf(s.key)) } : {}),
           ...(typeof s.folder === "object" ? { sharesWith: idOf.get(s.folder.sameAs)! } : {}),
+          // a copy for one of several tickets: its own worktree on its ticket's branch
+          ...(several && s.folder === "new" && laid.of.get(s.key)!.ticket !== null ? { ticketBranch: true } : {}),
         });
       } catch (err) {
-        return undo(`“${s.name}” was refused: ${errText(err)}`);
+        return undo(`“${nameOf(s.key)}” was refused: ${errText(err)}`);
       }
-      made.push({ key: s.key, id: info.id, title: s.name });
+      made.push(madeOf(s.key, info.id));
       idOf.set(s.key, info.id);
     }
     const wires: string[] = [];
@@ -570,48 +603,56 @@ export class WireService {
 
     const notes: string[] = [];
     if (plan.forced) notes.push(roomAsked(plan.forced));
+    // a terminal for each ticket says what one does: they're alike
     for (const p of plan.steps) if (p.terminal && !p.terminal.laid) notes.push(`“${p.step.name}” ${p.terminal.why.replace(/^It /, "")}`);
-    const first = plan.steps[0].step;
-    const waiting = plan.wires.filter((p) => p.afterStart && !p.skipped);
-    if (!body.startFirst) return { steps: made, wires, started: null, notes };
+    if (!body.startFirst) return { steps: made, wires, started: null, notes: [...new Set(notes)] };
     // what goes wrong once the steps are made is said in the reply and logged here, under the session it's about
     const missed = (id: string, note: string, err: unknown) => {
       notes.push(note);
       this.o.log(`wires: laying out “${name}”, session ${id}: ${note}`, err);
     };
-    const firstId = idOf.get(first.key)!;
-    let started: SessionInfo;
-    try {
-      const r = await d.start(firstId, ticketTitle);
-      started = r.info;
-      if (r.stageWhy) notes.push(`“${first.name}” started, but ${r.stageWhy}.`);
-    } catch (err) {
-      missed(firstId, `“${first.name}” didn't start: ${errText(err)}. ${made.length === 1 ? "It's laid out and waits" : `Its ${made.length} steps are laid out and wait`}: start it with Start now in its menu.`, err);
-      for (const p of waiting)
-        notes.push(
-          p.wire.type === "worktree"
-            ? `“${keyed.get(p.wire.to)!.name}” wasn't made, as it runs on “${first.name}”'s tree: once that has started, Add terminal on its tree makes one.`
-            : `${label(p.wire)} wasn't made, as it needs “${first.name}” started on its branch: make it from “${first.name}” once it has.`
-        );
-      return { steps: made, wires, started: null, notes };
-    }
-    for (const p of waiting) {
-      const to = keyed.get(p.wire.to)!;
-      if (p.wire.type === "worktree") {
-        try {
-          const t = await d.addTerminal(started, { title: to.name, command: to.prompt });
-          made.push({ key: to.key, id: t.id, title: to.name });
-          idOf.set(to.key, t.id);
-        } catch (err) {
-          missed(started.id, `“${to.name}” wasn't made on “${first.name}”'s tree: ${errText(err)}`, err);
-        }
+    // the first step starts, a copy on each ticket when it runs once per ticket, each with what waits for it
+    const started: string[] = [];
+    for (const p of plan.steps.filter((x) => x.starts)) {
+      const k = p.step.key;
+      const id = idOf.get(k)!;
+      const first = nameOf(k);
+      const waiting = plan.wires.filter((w) => w.afterStart && !w.skipped && w.wire.from === k);
+      let info: SessionInfo;
+      try {
+        const r = await d.start(id, ticketOf(k)?.title ?? null);
+        info = r.info;
+        if (r.stageWhy) notes.push(`“${first}” started, but ${r.stageWhy}.`);
+      } catch (err) {
+        const waits = several ? "It's laid out and waits" : made.length === 1 ? "It's laid out and waits" : `Its ${made.length} steps are laid out and wait`;
+        missed(id, `“${first}” didn't start: ${errText(err)}. ${waits}: start it with Start now in its menu.`, err);
+        for (const w of waiting)
+          notes.push(
+            w.wire.type === "worktree"
+              ? `“${nameOf(w.wire.to)}” wasn't made, as it runs on “${first}”'s tree: once that has started, Add terminal on its tree makes one.`
+              : `${label(w.wire)} wasn't made, as it needs “${first}” started on its branch: make it from “${first}” once it has.`
+          );
         continue;
       }
-      const r = this.add(idOf.get(p.wire.from), idOf.get(p.wire.to), p.wire.type, wireSettingsOf(p.wire, p.gate));
-      if ("refused" in r) missed(started.id, `${label(p.wire)} wasn't made: ${r.refused}`, new Error(r.refused));
-      else wires.push(r.id!);
+      started.push(info.id);
+      for (const w of waiting) {
+        const to = keyed.get(w.wire.to)!;
+        if (w.wire.type === "worktree") {
+          try {
+            const t = await d.addTerminal(info, { title: to.name, command: to.prompt });
+            made.push(madeOf(to.key, t.id));
+            idOf.set(to.key, t.id);
+          } catch (err) {
+            missed(info.id, `“${nameOf(to.key)}” wasn't made on “${first}”'s tree: ${errText(err)}`, err);
+          }
+          continue;
+        }
+        const r = this.add(idOf.get(w.wire.from), idOf.get(w.wire.to), w.wire.type, wireSettingsOf(w.wire, w.gate));
+        if ("refused" in r) missed(info.id, `${label(w.wire)} wasn't made: ${r.refused}`, new Error(r.refused));
+        else wires.push(r.id!);
+      }
     }
-    return { steps: made, wires, started: started.id, notes };
+    return { steps: made, wires, started: started[0] ?? null, ...(started.length > 1 ? { startedAll: started } : {}), notes: [...new Set(notes)] };
   }
 
   /**

@@ -8,7 +8,7 @@ import { REDACTED, redactSecrets } from "./wirePrompt";
 import { WIRE_TOOL } from "./wireToolSchemas";
 import type { LayOutDeps, WireService } from "./wires";
 import { isObj } from "../shared/landscape";
-import { agentOf, layOutPlan, parseTemplateBody, startsAtOrchestrator, TemplateError, ticketLine, withTicket, type LayOutReply, type TemplateBody } from "../shared/pipelineTemplates";
+import { agentOf, layOutPlan, moreTicketsOf, parseTemplateBody, startsAtOrchestrator, TemplateError, ticketLine, withTicket, type LayOutReply, type TemplateBody } from "../shared/pipelineTemplates";
 import {
   checkPlan,
   ME,
@@ -31,7 +31,7 @@ import {
 } from "../shared/plans";
 import { visibleLine, withoutHidden, type TextUse } from "../shared/hiddenText";
 import { oneLine, plainLine } from "../shared/team/agentText";
-import { isWorkItemId, slugBranch, suggestTicketName, ticketIdOf, ticketOfSession, ticketsOfSession, topOfKey, type AgentKind, type AgentTold, type ModelCatalog, type NewSessionRequest, type SessionInfo, type StepStarted } from "../shared/types";
+import { slugBranch, suggestTicketName, ticketIdOf, ticketOfSession, ticketsOfSession, topOfKey, type AgentKind, type AgentTold, type ModelCatalog, type NewSessionRequest, type SessionInfo, type StepStarted } from "../shared/types";
 import { carriesWork, ROOM_LINE, ROOMS_STARTING, settingsRefusal, wireRefusal, type GateContext, type Wire, type WireEnd, type WireGate, type WireReply, type WireSettings } from "../shared/wires";
 
 /**
@@ -832,7 +832,7 @@ export class Plans {
     const description = typeof req.ticketDescription === "string" ? req.ticketDescription : "";
     const base = text(req.base);
     const id = ticketIdOf(ticketId);
-    const more = moreTicketsOf(req.moreTickets, id);
+    const more = orchestratorTicketsOf(req.moreTickets, id);
     const info = await d.create({
       repoPath,
       ticketId: id,
@@ -861,21 +861,6 @@ export class Plans {
   }
 }
 
-/**
- * A lay-out's tickets after its first (`first`, LayOutRequest.moreTickets), read strictly: each a work item id (none
- * twice, nor the first again) with its title and description as the board has them. Refused whole, saying why.
- */
-function moreTicketsOf(v: unknown, first: string): KickoffTicket[] {
-  if (v === undefined || v === null) return [];
-  if (!Array.isArray(v)) throw new Error("Its other tickets aren't a list.");
-  if (v.length + 1 > ORCHESTRATOR_TICKETS_MAX) throw new Error(`An Orchestrator takes at most ${ORCHESTRATOR_TICKETS_MAX} tickets, one for each step its plan can have: choose fewer.`);
-  const seen = new Set([first]);
-  return v.map((t, i) => {
-    const id = isObj(t) && typeof t.ticketId === "string" ? ticketIdOf(t.ticketId.trim()) : "";
-    if (!isWorkItemId(id)) throw new Error(`Its ticket ${i + 2} isn't a work item.`);
-    if (seen.has(id)) throw new Error(`#${id} is chosen twice.`);
-    seen.add(id);
-    const o = t as Record<string, unknown>;
-    return { ticketId: id, title: visibleLine(o.ticketTitle, 500), description: typeof o.ticketDescription === "string" ? o.ticketDescription : "" };
-  });
-}
+/** An Orchestrator's lay-out's tickets after its first (`first`), read strictly (shared moreTicketsOf), at most ORCHESTRATOR_TICKETS_MAX in all. */
+const orchestratorTicketsOf = (v: unknown, first: string): KickoffTicket[] =>
+  moreTicketsOf(v, first, ORCHESTRATOR_TICKETS_MAX, `An Orchestrator takes at most ${ORCHESTRATOR_TICKETS_MAX} tickets, one for each step its plan can have: choose fewer.`);

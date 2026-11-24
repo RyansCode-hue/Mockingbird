@@ -79,6 +79,89 @@ describe("Save as template's draft", () => {
   });
 });
 
+describe("Save as template's draft of a pipeline whose stages run once per ticket", () => {
+  /**
+   * Planner (not started) → a Coder on each of #1 and #2 (#1's running, with its Dev server) → each one's Verifier in its
+   * folder, sending changes back → Merger: what pipelineTemplateOf hands templates:draft is #1's row and the rest once.
+   */
+  function fan(over: Record<string, Partial<SessionInfo>> = {}) {
+    const planned = (id: string, more: Partial<SessionInfo>) => session(id, { cwd: REPO, branch: null, planned: { worktree: true, prompt: `${more.title} {ticket}` }, ...more, ...over[id] });
+    const all: Record<string, SessionInfo> = {
+      p: planned("p", { title: "Planner", ticketId: "1" }),
+      c1: session("c1", { title: "Coder", agent: "codex", ticketId: "1", ...over.c1 }),
+      c2: planned("c2", { title: "Coder", agent: "codex", ticketId: "2" }),
+      v1: planned("v1", { title: "Verifier", ticketId: "1", planned: { worktree: false, sharesWith: "c1", prompt: "Verify {ticket}" } }),
+      v2: planned("v2", { title: "Verifier", ticketId: "2", planned: { worktree: false, sharesWith: "c2", prompt: "Verify {ticket}" } }),
+      m: planned("m", { title: "Merger", ticketId: "1" }),
+      d: session("d", { title: "Dev server", shell: true, agent: undefined, cwd: `${REPO}/.worktrees/c1` }),
+    };
+    const links: Record<string, Wire> = {};
+    [
+      ["p", "c1", "handoff"],
+      ["p", "c2", "handoff"],
+      ["c1", "v1", "handoff"],
+      ["c2", "v2", "handoff"],
+      ["v1", "c1", "feedback"],
+      ["v2", "c2", "feedback"],
+      ["v1", "m", "handoff"],
+      ["v2", "m", "handoff"],
+      ["c1", "d", "worktree"],
+    ].forEach(([from, to, type], i) => (links[`w${i}`] = wire(from, to, type as Wire["type"], i)));
+    const book: WireBook = { ...emptyWireBook(), links };
+    return { sessionOf: (id: string) => all[id], book: () => book };
+  }
+  const shape = { perTicket: ["c1", "v1"], others: ["c2", "v2"] };
+
+  it("marks the kept row's steps and their terminal to run once per ticket, its wires fanning, the other row's not said to be left out", () => {
+    const d = draftTemplate(["p", "c1", "v1", "m"], fan(), shape);
+    expect(d.body.steps.map((s) => [s.key, s.name, s.perTicket ?? false, typeof s.folder === "object" ? s.folder.sameAs : s.folder])).toEqual([
+      ["s1", "Planner", false, "new"],
+      ["s2", "Coder", true, "new"],
+      ["s3", "Verifier", true, "s2"],
+      ["s4", "Merger", false, "new"],
+      ["s5", "Dev server", true, "s2"],
+    ]);
+    expect(d.body.wires.map((w) => `${w.from}→${w.to} ${w.type}`)).toEqual(["s1→s2 handoff", "s2→s3 handoff", "s3→s2 feedback", "s3→s4 handoff", "s2→s5 worktree"]);
+    expect(d.notes).toEqual(["What “Coder” was told as it started isn't kept once running: say it here, and what its terminal runs."]);
+    // without the shape, the other row's wires are wires outside it
+    expect(draftTemplate(["p", "c1", "v1", "m"], fan()).notes).toContain("2 wires to workspaces outside the chain aren't kept.");
+  });
+
+  it("gives a step that runs once per ticket a worktree of its own where it worked in a once-run step's folder, and a once-run step in its", () => {
+    const deps = fan({ c1: { planned: { worktree: false, sharesWith: "p", prompt: "Code {ticket}" }, cwd: REPO }, m: { planned: { worktree: false, sharesWith: "v1" } } });
+    const d = draftTemplate(["p", "c1", "v1", "m"], deps, shape);
+    expect(d.body.steps.map((s) => [s.name, typeof s.folder === "object" ? s.folder.sameAs : s.folder])).toEqual([
+      ["Planner", "new"],
+      ["Coder", "new"],
+      ["Verifier", "s2"],
+      ["Merger", "new"],
+      ["Dev server", "s2"],
+    ]);
+    expect(d.notes).toEqual([
+      "“Coder” runs once per ticket, each on its ticket's branch, so it's saved with a worktree of its own: it worked in “Planner”'s folder.",
+      "“Merger” runs once, and worked in “Verifier”'s folder, which there's one of for each ticket: it's saved with a worktree of its own.",
+      "What its terminal runs isn't kept: say it here.",
+    ]);
+  });
+
+  it("keeps an Orchestrator first as one, a step that runs once per ticket in its folder as the plan places it", () => {
+    const deps = fan({ p: { role: "orchestrator" }, c1: { planned: { worktree: false, sharesWith: "p", prompt: "Code {ticket}" }, cwd: REPO } });
+    const d = draftTemplate(["p", "c1", "v1", "m"], deps, { ...shape, orchestrator: true });
+    expect(d.body.startFirst).toBe(true);
+    expect(d.body.steps[0]).toMatchObject({ name: "Planner", role: "orchestrator", folder: "new" });
+    expect(d.body.steps[1]).toMatchObject({ name: "Coder", perTicket: true, folder: { sameAs: "s1" } });
+  });
+
+  it.each<[string, unknown, RegExp]>([
+    ["a shape that isn't one", "c1", /isn't an object/],
+    ["steps that aren't a list", { perTicket: "c1" }, /steps that run once per ticket isn't a list of sessions/],
+    ["a field it doesn't know", { colour: "teal" }, /doesn't know \(colour\)/],
+    ["an Orchestrator that isn't a flag", { orchestrator: "yes" }, /isn't true or false/],
+  ])("is refused for %s", (_what, raw, re) => {
+    expect(() => draftTemplate(["p", "c1"], fan(), raw)).toThrow(re);
+  });
+});
+
 const body = (): TemplateBody => ({
   startFirst: true,
   steps: [
